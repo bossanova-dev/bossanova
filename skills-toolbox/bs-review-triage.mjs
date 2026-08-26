@@ -524,10 +524,20 @@ function readFindingsDir(dir, { lensEntries = null, expectedOutputs = null } = {
     .sort()
   const items = []
   const invalid = []
+  const reviewers = new Set()
+  const reporting = new Set()
+  const silent = new Set()
+  const missing = new Set()
   const present = new Set(files)
   for (const output of expectedOutputs ?? []) {
     if (!present.has(output)) {
       invalid.push({ item: null, reason: `${output}: expected reviewer output is missing` })
+      const reviewer = reviewerForFile(output, lensEntries)
+      missing.add(
+        'reason' in reviewer
+          ? output.replace(/^findings-/, '').replace(/\.json$/, '')
+          : reviewer.lens,
+      )
     }
   }
 
@@ -580,6 +590,9 @@ function readFindingsDir(dir, { lensEntries = null, expectedOutputs = null } = {
         rejectFile(name, parsed, reviewer.reason)
         continue
       }
+      reviewers.add(reviewer.lens)
+      if (parsed.length > 0) reporting.add(reviewer.lens)
+      else silent.add(reviewer.lens)
       items.push(...withReviewerLens(parsed, reviewer.lens, name))
     } else if (
       parsed !== null &&
@@ -630,12 +643,24 @@ function readFindingsDir(dir, { lensEntries = null, expectedOutputs = null } = {
         rejectFile(name, parsed, reviewer.reason)
         continue
       }
+      reviewers.add(reviewer.lens)
+      if (parsed.items.length > 0) reporting.add(reviewer.lens)
+      else silent.add(reviewer.lens)
       items.push(...withReviewerLens(parsed.items, reviewer.lens, name))
     } else {
       rejectFile(name, parsed, `${name}: top level is not a list of findings`)
     }
   }
-  return { items, invalid }
+  return {
+    items,
+    invalid,
+    panel: {
+      reviewers: [...reviewers].sort(),
+      reporting: [...reporting].sort(),
+      silent: [...silent].sort(),
+      missing: [...missing].sort(),
+    },
+  }
 }
 
 function readJsonFile(path, label) {
@@ -711,6 +736,7 @@ if (isMainModule(import.meta.url)) {
     // File-level rejections lead: a whole reviewer's output going unread is
     // worse news than one malformed item, and must not be paged past.
     result.invalid.unshift(...read.invalid)
+    result.panel = read.panel
     process.stdout.write(`${JSON.stringify(result)}\n`)
   } else {
     process.stderr.write(

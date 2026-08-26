@@ -322,6 +322,11 @@ export function selectTargets(files) {
       }
     }
 
+    if (file.startsWith('proto/')) {
+      selectWholeTarget(selections, 'test-web')
+      selectedPrimaryTarget = true
+    }
+
     if (file.startsWith('proto/') && file.endsWith('.proto')) {
       for (const target of protoTargets) {
         selectWholeTarget(selections, target)
@@ -337,6 +342,18 @@ export function selectTargets(files) {
     }
 
     if (file.startsWith('proof/')) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+      continue
+    }
+
+    if (
+      PATH_FILTERED_WORKFLOW_INPUTS.has(file) ||
+      file === 'README.md' ||
+      file === 'buf.yaml' ||
+      file === 'buf.gen.yaml' ||
+      file.startsWith('services/docs/docs/')
+    ) {
       selectWholeTarget(selections, 'test-scripts')
       selectedPrimaryTarget = true
       continue
@@ -385,6 +402,19 @@ export function selectTargets(files) {
       // Deliberately no `continue` for the root lockfile: isWebPath() claims it too, and
       // swallowing it here would silently drop the web targets it has always selected.
       if (file !== 'pnpm-lock.yaml') continue
+    }
+
+    if (
+      file.startsWith('plugins/bossd-plugin-claude/skilldata/skills/') ||
+      file.startsWith('lib/bossalib/bossmcp/') ||
+      file.startsWith('lib/bossalib/config/') ||
+      file.startsWith('services/bossd/internal/tmux/') ||
+      file === 'services/boss/internal/tuidriver/keybytes.go' ||
+      file === 'services/boss/internal/tuidriver/testdata/key-vocab.json' ||
+      file === 'docs/testing/test-command-manifest.md'
+    ) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
     }
 
     if (isSkillPath(file)) {
@@ -518,6 +548,16 @@ const PRETTIER_PIN_INPUTS = new Set([
   'services/docs/package.json',
   'pnpm-lock.yaml',
   'services/docs/pnpm-lock.yaml',
+])
+
+const PATH_FILTERED_WORKFLOW_INPUTS = new Set([
+  '.github/workflows/test-bosso-production-deployment.yml',
+  '.github/workflows/test-docs.yml',
+  '.github/workflows/test-marketing.yml',
+  '.github/workflows/test-plugin-distribution.yml',
+  '.github/workflows/test-proto.yml',
+  '.github/workflows/test-scripts.yml',
+  '.github/workflows/test-web.yml',
 ])
 
 function isManifestPath(file) {

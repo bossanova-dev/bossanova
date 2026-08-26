@@ -90,6 +90,14 @@ The verdict is an enumerated non-secret outcome plus, only when the record was f
 
 ## Chat / session status
 
+### Effective runtime
+
+The model and reasoning-effort values Boss resolved for a session at launch time, after applying request fields, per-agent plugin settings, and agent-owned defaults. It is historical session metadata: later plugin-default changes do not rewrite what an existing session says it ran with.
+
+### Requested runtime
+
+The model or reasoning-effort preference a caller supplies when creating or launching a session. An omitted requested value is an instruction to use the relevant agent's default, not proof that the effective runtime is unknown.
+
 ### Duplicate target
 
 The work identity a live session reserves so another session cannot start the same work at the same time. A target can be a tracker issue, a pull request, or a branch; dead or terminal sessions release their targets, while active sessions keep them reserved.
@@ -767,14 +775,25 @@ The `make` → `bazel` delegation (BOS-339): `make test` and its smoke/per-modul
 
 The reconciliation between what `bazel test //...` runs and what `make` must still cover natively. A small set of tests are tagged out of the sandbox (`manual`/`local`); the ledger (`scripts/bazel/ledger.json`, mirrored in the sandbox-patterns doc) records each exclusion and its native fallback so `make test` runs them as an extra `go test` pass and no coverage is lost.
 
+### Review ledger
+
+The per-run `boss-review` dispatch ledger, stored under `.git/boss-review-ledgers/` by default. It is
+unrelated to the Bazel reconciliation ledger above: this one records reviewer coverage, not test-runner
+coverage. Each row is a dispatch record for one discovered reviewer (`lens:<id>`,
+`round:<extension>`, or `default:<capability>`) with its phase, tier, mode (`dispatched`, `inlined`,
+or `unknown`), outcome (`completed`, `skipped`, `timed-out`, or `not-reached`), cause, and timing.
+
+The important value is the seeded `not-reached` row. `boss-review` writes one before dispatching so a
+killed run, skipped tier, or missing reviewer remains visible later instead of collapsing into "no
+row, therefore no problem."
+
 ### Test command manifest
 
-A generated inventory of the repository's test commands, module targets, and expected test-file
-surface, used by agents and reviewers to choose appropriately scoped verification and to notice when
-a branch changes what the test graph is supposed to cover. It is evidence about the intended
-verification surface, not the runner itself: a stale manifest can mislead review even when the
-underlying build target is correct, and a correct manifest cannot make a missing build-target entry
-execute.
+A generated inventory of the repository's test commands, module targets, and command-selection
+guidance, used by agents and reviewers to choose appropriately scoped verification and to notice when
+a branch changes the declared command surface. It is evidence about the intended verification
+surface, not the runner itself: a stale manifest can mislead review even when the underlying build
+target is correct, and a correct manifest cannot make a missing build-target entry execute.
 
 ### Budget regime
 
@@ -948,6 +967,14 @@ gate** unless it is made on the producing side rather than over an error a clien
 the wire.
 
 ## Review and verification
+
+### Dispatch record
+
+A single row in a durable review ledger describing the fate of one planned reviewer invocation. It is
+not a finding and it is not the human decisions ledger: it answers whether the reviewer was reached,
+how it was reached, and whether it produced a readable envelope. Report confidence and diagnostics
+consume dispatch records so a skipped or timed-out reviewer lowers confidence even when the remaining
+reviewers found no code issue.
 
 ### Vacuous gate
 

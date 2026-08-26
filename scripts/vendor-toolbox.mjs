@@ -19,9 +19,14 @@ export const VENDOR_MAP = {
     // and batch planning. It imports bs-run-sentinel.mjs for terminal artefacts and
     // dag-scheduler.mjs for fail-closed dependency waves, so all three ship together.
     'bs-dispatch-await.mjs',
+    // bs-dispatch-batch-audit.mjs (BOS-1027) powers Phase 7's report-only transcript self-audit;
+    // it must resolve from installed boss-review toolboxes in user repos with no repo-root
+    // skills-toolbox/.
+    'bs-dispatch-batch-audit.mjs',
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
     'bs-review-caps.mjs',
+    'bs-review-ledger.mjs',
     'bs-review-triage.mjs',
     'bs-review-report.mjs',
     'bs-review-detect.mjs',
@@ -40,6 +45,7 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'worktree-lock.sh',
     'bs-review-caps.mjs',
+    'bs-review-ledger.mjs',
     'bs-review-report.mjs',
     // BOS-1020: the Step 6 review loop re-checks base drift at every round boundary, so the
     // detector must resolve inside an installed boss-build toolbox — the review stack runs in
@@ -84,6 +90,7 @@ export const VENDOR_MAP = {
     'finalize/adapter.mjs',
     'finalize/cli.mjs',
     'finalize/boss-finalize.mjs',
+    'finalize/route-contract.mjs',
     'skill-extensions.mjs',
     'pr-ownership.mjs',
     'remove-bossd-stop-hooks.mjs',
@@ -205,6 +212,9 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
     'skill-extensions.mjs',
+    // Preflight drift probe used only when no boss CLI is available for the
+    // fail-closed `boss skills check --gate` path.
+    'toolbox-drift.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
   ],

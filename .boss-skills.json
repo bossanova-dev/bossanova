@@ -38,6 +38,7 @@
   ],
   "reviewDefaults": {
     "deltaFileThreshold": 20,
+    "maxDispatchedRounds": 6,
     "forceFull": false,
     "rounds": [
       { "capability": "second-voice", "kind": "cross-agent" },
@@ -148,6 +149,7 @@
     }
   },
   "planStorage": { "kind": "tracker-attachment" },
+  "reviewLedger": { "dir": ".git/boss-review-ledgers" },
   "planContract": {
     "version": 1,
     "sections": [

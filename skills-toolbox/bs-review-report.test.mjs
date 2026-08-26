@@ -19,6 +19,14 @@ import {
 
 const scriptPath = fileURLToPath(new URL('./bs-review-report.mjs', import.meta.url))
 
+const cleanLedger = {
+  discovered: 2,
+  completed: 2,
+  skipped: 0,
+  timedOut: 0,
+  notReached: 0,
+}
+
 /** Run the CLI block as a subprocess and return { stdout, stderr, status }. */
 function runCli(args = [], input = '') {
   const res = spawnSync(process.execPath, [scriptPath, ...args], { input, encoding: 'utf8' })
@@ -36,6 +44,19 @@ function cleanFixture() {
       { name: 'golang-pro', status: 'clean' },
       { name: 'requesting-code-review', status: 'clean', note: 'no actionable findings' },
     ],
+    panel: {
+      initial: ['golang-pro', 'requesting-code-review', 'cross-model'],
+      reviewers: ['golang-pro', 'requesting-code-review'],
+    },
+    agreement: {
+      panelSize: 2,
+      initialPanelSize: 3,
+      terminalPanel: ['golang-pro', 'requesting-code-review'],
+      initialPanel: ['golang-pro', 'requesting-code-review', 'cross-model'],
+      panelShrank: true,
+      uncorroboratedMustFixCount: 0,
+      vanishedFindings: [],
+    },
     issuesHeadline: '1 must-fix found and fixed this run across 3 files',
     verdict: {
       assessment: 'Sound',
@@ -63,6 +84,8 @@ function cleanFixture() {
         },
       ],
     },
+    invalid: [],
+    ledger: cleanLedger,
     leaveAsIs: [
       {
         title: 'isTTY guard branch',
@@ -96,6 +119,217 @@ test('verdict block badges each field per VERDICT_OK', () => {
   assert.match(md, /✅ \*\*Confidence:\*\* Medium/)
   assert.match(md, /✅ \*\*Test Coverage:\*\* Satisfactory/)
   assert.match(md, /✅ \*\*Recommendation:\*\* Approve/)
+})
+
+test('contradicted clean report with invalid evidence renders capped header and problem badges', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    status: 'clean',
+    rounds: 2,
+    invalid: [{ reason: 'findings-lens-0-go.json: unexpected end of JSON input' }],
+    verdict: {
+      assessment: 'Sound',
+      evidence: 'All gates green',
+      confidence: 'High',
+      testing_assessment: 'Satisfactory',
+      recommendation: 'Approve',
+    },
+  })
+  assert.match(
+    md,
+    /bs-review completed after 2 round\(s\)\. 1 invalid entry remains \(surfaced below\); see gates\./,
+  )
+  assert.doesNotMatch(md, /All must-fix findings fixed; required gates green\./)
+  assert.match(md, /❌ \*\*Assessment:\*\* Unsound/)
+  assert.match(md, /❌ \*\*Recommendation:\*\* Fix/)
+  assert.equal((md.match(/Contradiction notice/g) || []).length, 1)
+  assert.match(md, /caller supplied `clean` but report evidence derives `capped`/)
+  assert.match(md, /Invalid reviewer findings — repair or re-run required/)
+  assert.match(md, /findings-lens-0-go\.json: unexpected end of JSON input/)
+})
+
+test('review coverage counts render in the always-visible verdict block', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    ledger: { discovered: 3, completed: 2, skipped: 0, timedOut: 0, notReached: 1 },
+  })
+  assert.match(
+    md,
+    /Review coverage: discovered 3; completed 2; skipped 0; timed-out 0; not-reached 1\./,
+  )
+  assert.match(md, /❌ \*\*Confidence:\*\* Low/)
+})
+
+test('missing ledger evidence fails closed instead of rendering as clean', () => {
+  const fixture = cleanFixture()
+  delete fixture.ledger
+  const md = renderReport(fixture)
+  assert.match(md, /❌ \*\*Assessment:\*\* Unsound/)
+  assert.match(md, /Contradiction notice/)
+  assert.doesNotMatch(md, /All must-fix findings fixed; required gates green\./)
+})
+
+test('single-reviewer panel derives Low confidence despite caller-supplied High', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    panel: { initial: ['only-one'], reviewers: ['only-one'] },
+    agreement: {
+      panelSize: 1,
+      initialPanelSize: 1,
+      terminalPanel: ['only-one'],
+      initialPanel: ['only-one'],
+      panelShrank: false,
+      uncorroboratedMustFixCount: 0,
+      vanishedFindings: [],
+    },
+    verdict: { ...cleanFixture().verdict, confidence: 'High' },
+  })
+  assert.match(md, /❌ \*\*Confidence:\*\* Low/)
+  assert.equal((md.match(/Confidence contradiction/g) || []).length, 1)
+  assert.match(md, /caller supplied `High` but report evidence derives `Low`/)
+  assert.match(md, /#### Code Review/)
+  assert.match(md, /<details><summary>Agreement<\/summary>/)
+})
+
+test('Agreement section renders panel size, shrink, uncorroborated must-fix and vanished findings', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    panel: { initial: ['a', 'b', 'c'], reviewers: ['a', 'b'] },
+    agreement: {
+      panelSize: 2,
+      initialPanelSize: 3,
+      terminalPanel: ['a', 'b'],
+      initialPanel: ['a', 'b', 'c'],
+      panelShrank: true,
+      uncorroboratedMustFixCount: 1,
+      vanishedFindings: [{ file: 'review.go', line: 42, title: 'vanished concern' }],
+    },
+  })
+  assert.match(md, /<details><summary>Agreement<\/summary>/)
+  assert.match(md, /Panel: 2 reviewer\(s\) terminal; 3 initial\./)
+  assert.match(md, /Terminal panel: `a`, `b`\./)
+  assert.match(md, /Initial panel: `a`, `b`, `c`\./)
+  assert.match(md, /Panel shrank: yes\./)
+  assert.match(md, /Uncorroborated must-fix findings: 1\./)
+  assert.match(md, /vanished concern \(`review\.go:42`\)/)
+})
+
+test('Agreement section is omitted when panel evidence is absent', () => {
+  const data = cleanFixture()
+  delete data.panel
+  delete data.agreement
+  const md = renderReport(data)
+  assert.doesNotMatch(md, /<details><summary>Agreement<\/summary>/)
+})
+
+test('Low confidence from disagreement renders an explicit escalation line', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    panel: { initial: ['only-one'], reviewers: ['only-one'] },
+    agreement: {
+      panelSize: 1,
+      initialPanelSize: 1,
+      terminalPanel: ['only-one'],
+      initialPanel: ['only-one'],
+      panelShrank: false,
+      uncorroboratedMustFixCount: 0,
+      vanishedFindings: [],
+    },
+    verdict: { ...cleanFixture().verdict, confidence: 'High' },
+  })
+  assert.match(md, /Escalation: human adjudication needed for single-sample-panel\./)
+})
+
+test('vanished findings in agreement derive Low confidence and escalation', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    panel: { initial: ['a', 'b'], reviewers: ['a', 'b'] },
+    agreement: {
+      panelSize: 2,
+      initialPanelSize: 2,
+      terminalPanel: ['a', 'b'],
+      initialPanel: ['a', 'b'],
+      panelShrank: false,
+      uncorroboratedMustFixCount: 0,
+      vanishedFindings: [{ file: 'review.go', line: 42, title: 'vanished concern' }],
+    },
+    verdict: { ...cleanFixture().verdict, confidence: 'High' },
+  })
+  assert.match(md, /❌ \*\*Confidence:\*\* Low/)
+  assert.match(md, /caller supplied `High` but report evidence derives `Low`/)
+  assert.match(md, /Escalation: human adjudication needed for vanished-finding\./)
+})
+
+test('contradicted clean report with unresolved must-fix renders capped header and problem badges', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    status: 'clean',
+    rounds: 3,
+    mustfix: {
+      found: 1,
+      fixed: 0,
+      verified: 0,
+      unresolved: 1,
+      items: [{ disposition: 'unresolved', title: 'Still open', file: 'service.go', line: 12 }],
+    },
+    invalid: [],
+    verdict: {
+      assessment: 'Sound',
+      evidence: 'All gates green',
+      confidence: 'High',
+      testing_assessment: 'Satisfactory',
+      recommendation: 'Approve',
+    },
+  })
+  assert.match(
+    md,
+    /bs-review completed after 3 round\(s\)\. 1 must-fix finding remains \(surfaced below\); see gates\./,
+  )
+  assert.doesNotMatch(md, /All must-fix findings fixed; required gates green\./)
+  assert.match(md, /❌ \*\*Assessment:\*\* Unsound/)
+  assert.match(md, /❌ \*\*Recommendation:\*\* Fix/)
+  assert.equal((md.match(/Contradiction notice/g) || []).length, 1)
+  assert.match(md, /caller supplied `clean` but report evidence derives `capped`/)
+  assert.match(md, /Must-fix detail — found 1 \/ fixed 0 \/ verified 0 \/ unresolved 1/)
+})
+
+test('uncontradicted clean report remains byte-identical when evidence is clean', () => {
+  const data = { ...cleanFixture(), invalid: [] }
+  assert.equal(renderReport(data), renderReport({ ...data, status: 'clean' }))
+})
+
+test('missing report evidence renders capped instead of contradicting the verdict CLI', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-report-'))
+  try {
+    const report = {
+      status: 'clean',
+      rounds: 1,
+      verdict: { assessment: 'Sound', recommendation: 'Approve' },
+    }
+    const md = renderReport(report)
+    assert.match(md, /Unresolved review evidence remains \(surfaced below\); see gates\./)
+    assert.doesNotMatch(md, /All must-fix findings fixed; required gates green\./)
+    assert.match(md, /❌ \*\*Assessment:\*\* Unsound/)
+    assert.match(md, /❌ \*\*Recommendation:\*\* Fix/)
+    assert.match(md, /caller supplied `clean` but report evidence derives `capped`/)
+
+    const reportPath = join(scratch, 'missing-evidence.json')
+    writeFileSync(reportPath, JSON.stringify(report))
+    const verdict = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL('./bs-review-caps.mjs', import.meta.url)),
+        'verdict',
+        '--in',
+        reportPath,
+      ],
+      { encoding: 'utf8' },
+    )
+    assert.equal(verdict.status, 0)
+    assert.match(verdict.stdout, /bs-review capped:/)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
 })
 
 test('failing verdict values flip the badge to ❌', () => {
@@ -160,13 +394,24 @@ test('VERDICT_OK classifies the per-field good direction', () => {
 })
 
 test('caller-embedded badge is stripped and re-derived', () => {
-  const md = renderReport({ verdict: { assessment: '❌ Sound' } })
+  const md = renderReport({
+    mustfix: { unresolved: 0 },
+    invalid: [],
+    ledger: cleanLedger,
+    verdict: { assessment: '❌ Sound' },
+  })
   assert.match(md, /✅ \*\*Assessment:\*\* Sound/)
   assert.doesNotMatch(md, /❌ \*\*Assessment/)
 })
 
 test('capped status changes the header wording and reports open count', () => {
-  const md = renderReport({ status: 'capped', rounds: 3, mustfix: { unresolved: 2 } })
+  const md = renderReport({
+    status: 'capped',
+    rounds: 3,
+    mustfix: { unresolved: 2 },
+    invalid: [],
+    ledger: cleanLedger,
+  })
   assert.match(
     md,
     /bs-review completed after 3 round\(s\)\. 2 must-fix findings remain \(surfaced below\); see gates\./,
@@ -182,6 +427,7 @@ test('an invalid-only cap names invalid evidence, never "0 must-fix findings"', 
     rounds: 2,
     mustfix: { unresolved: 0 },
     invalid: [{ reason: 'findings-lens-0-x.json: unexpected end of JSON input' }],
+    ledger: cleanLedger,
   })
   assert.match(
     md,
@@ -196,6 +442,7 @@ test('a cap with both blockers reports both counts', () => {
     rounds: 4,
     mustfix: { unresolved: 2 },
     invalid: [{ reason: 'a' }, { reason: 'b' }, { reason: 'c' }],
+    ledger: cleanLedger,
   })
   assert.match(md, /2 must-fix findings and 3 invalid entries remain \(surfaced below\)/)
 })
@@ -217,7 +464,13 @@ test('zero patch summary is omitted and never claims a patch was applied', () =>
 
 // Neither count is reportable: stay truthful rather than asserting a zero.
 test('a cap with neither count falls back to generic wording, not a zero claim', () => {
-  const md = renderReport({ status: 'capped', rounds: 1, mustfix: { unresolved: 0 }, invalid: [] })
+  const md = renderReport({
+    status: 'capped',
+    rounds: 1,
+    mustfix: { unresolved: 'unknown' },
+    invalid: [],
+    ledger: cleanLedger,
+  })
   assert.match(md, /Unresolved review evidence remains \(surfaced below\); see gates\./)
   assert.doesNotMatch(md, /0 must-fix/)
   assert.doesNotMatch(md, /0 invalid/)
@@ -460,6 +713,8 @@ test('empty sections are omitted entirely (no empty <details>)', () => {
     status: 'clean',
     verdict: { assessment: 'Sound', confidence: 'High' },
     mustfix: { found: 0, fixed: 0, verified: 0, unresolved: 0, items: [] },
+    invalid: [],
+    ledger: cleanLedger,
     leaveAsIs: [],
     suggestions: [],
     evidenceRows: [],
@@ -482,6 +737,9 @@ test('evidence section renders a markdown table and the gate roster', () => {
 test('BOS-1019: evidence rows can render review mode, base, and carried count', () => {
   const md = renderReport({
     reviewerInputBytes: { baseline: 900, resolved: 420 },
+    mustfix: { unresolved: 0 },
+    invalid: [],
+    ledger: cleanLedger,
     evidenceRows: [
       {
         round: 'Round 2',
@@ -510,6 +768,8 @@ test('must-fix items badge each disposition', () => {
         { disposition: 'unresolved', title: 'C' },
       ],
     },
+    invalid: [],
+    ledger: cleanLedger,
   })
   assert.match(md, /- ✅ \*\*Fixed\*\* — \*\*A\*\* \(`abc1234`\)/)
   assert.match(md, /- ☑️ \*\*Verified\*\* — \*\*B\*\*/)

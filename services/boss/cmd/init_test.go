@@ -114,7 +114,7 @@ func TestInit(t *testing.T) {
 			if err := json.Unmarshal(raw, &onDisk); err != nil {
 				t.Fatalf("written config is not JSON: %v (%s)", err, raw)
 			}
-			for _, forbidden := range []string{"trackerConfig", "lensMap", "adapters", "planStorage", "planContract", "env", "test"} {
+			for _, forbidden := range []string{"trackerConfig", "lensMap", "adapters", "planStorage", "reviewLedger", "planContract", "reviewDefaults", "env", "test"} {
 				if _, ok := onDisk[forbidden]; ok {
 					t.Errorf("emitted config carries undetected block %q: %s", forbidden, raw)
 				}

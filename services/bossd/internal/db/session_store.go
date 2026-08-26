@@ -30,8 +30,8 @@ func NewSessionStore(db *sql.DB) *SQLiteSessionStore {
 func (s *SQLiteSessionStore) UpdateStateConditional(ctx context.Context, id string, newState, expectedState int) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ? AND state = ?`,
-		newState, now, id, expectedState)
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND state = ?`,
+		newState, newState, now, now, id, expectedState)
 	if err != nil {
 		return false, fmt.Errorf("update state conditional: %w", err)
 	}
@@ -49,8 +49,8 @@ func (s *SQLiteSessionStore) UpdateStateConditional(ctx context.Context, id stri
 func (s *SQLiteSessionStore) OrphanHeadlessRun(ctx context.Context, id, reason string) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, blocked_reason = ?, updated_at = ? WHERE id = ? AND state = ?`,
-		machine.Orphaned, reason, now, id, machine.ImplementingPlan)
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, blocked_reason = ?, updated_at = ? WHERE id = ? AND state = ?`,
+		machine.Orphaned, machine.Orphaned, now, reason, now, id, machine.ImplementingPlan)
 	if err != nil {
 		return false, fmt.Errorf("orphan headless run: %w", err)
 	}
@@ -68,8 +68,8 @@ func (s *SQLiteSessionStore) OrphanHeadlessRun(ctx context.Context, id, reason s
 func (s *SQLiteSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reason string) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ? AND state = ? AND archived_at IS NULL AND blocked_reason = ?`,
-		machine.ImplementingPlan, now, id, machine.Orphaned, reason)
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND state = ? AND archived_at IS NULL AND blocked_reason = ?`,
+		machine.ImplementingPlan, machine.ImplementingPlan, now, now, id, machine.Orphaned, reason)
 	if err != nil {
 		return false, fmt.Errorf("claim unarchived orphan: %w", err)
 	}
@@ -102,8 +102,8 @@ func (s *SQLiteSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reas
 func (s *SQLiteSessionStore) ResurrectToState(ctx context.Context, id string, newState int) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET archived_at = NULL, state = ?, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
-		newState, now, id)
+		`UPDATE sessions SET archived_at = NULL, state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
+		newState, newState, now, now, id)
 	if err != nil {
 		return false, fmt.Errorf("resurrect session to state: %w", err)
 	}
@@ -134,8 +134,8 @@ func (s *SQLiteSessionStore) ResurrectToState(ctx context.Context, id string, ne
 func (s *SQLiteSessionStore) RollbackFailedResurrect(ctx context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET archived_at = ?, state = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL AND state = ?`,
-		sqlutil.FormatTime(archivedAt), restoreState, now, id, expectState)
+		`UPDATE sessions SET archived_at = ?, state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND archived_at IS NULL AND state = ?`,
+		sqlutil.FormatTime(archivedAt), restoreState, restoreState, now, now, id, expectState)
 	if err != nil {
 		return false, fmt.Errorf("rollback failed resurrect: %w", err)
 	}
@@ -177,9 +177,9 @@ func (s *SQLiteSessionStore) CommitOrphanResume(ctx context.Context, id, reason 
 func (s *SQLiteSessionStore) ReleaseOrphanResumeClaim(ctx context.Context, id, reason string, priorAgentSession *string) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, updated_at = ?
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ?
 		 WHERE id = ? AND state = ? AND archived_at IS NULL AND (blocked_reason = ? OR blocked_reason IS NULL) AND agent_session_id IS ?`,
-		machine.Orphaned, now, id, machine.ImplementingPlan, reason, priorAgentSession)
+		machine.Orphaned, machine.Orphaned, now, now, id, machine.ImplementingPlan, reason, priorAgentSession)
 	if err != nil {
 		return false, fmt.Errorf("release orphan resume claim: %w", err)
 	}
@@ -196,9 +196,9 @@ func (s *SQLiteSessionStore) ReleaseOrphanResumeClaim(ctx context.Context, id, r
 func (s *SQLiteSessionStore) ReparkOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, agent_session_id = ?, blocked_reason = ?, updated_at = ?
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, agent_session_id = ?, blocked_reason = ?, updated_at = ?
 		 WHERE id = ? AND state = ? AND archived_at IS NULL AND blocked_reason IS NULL AND agent_session_id = ?`,
-		machine.Orphaned, priorAgentSession, reason, now, id, machine.ImplementingPlan, newAgentSessionID)
+		machine.Orphaned, machine.Orphaned, now, priorAgentSession, reason, now, id, machine.ImplementingPlan, newAgentSessionID)
 	if err != nil {
 		return false, fmt.Errorf("repark orphan resume: %w", err)
 	}
@@ -221,9 +221,9 @@ func (s *SQLiteSessionStore) UpdateStateConditionalFrom(ctx context.Context, id 
 		return false, nil
 	}
 	placeholders := make([]string, len(expectedStates))
-	args := make([]any, 0, len(expectedStates)+3)
+	args := make([]any, 0, len(expectedStates)+5)
 	now := sqlutil.TimeNow()
-	args = append(args, newState, now, id)
+	args = append(args, newState, newState, now, now, id)
 	for i, st := range expectedStates {
 		placeholders[i] = "?"
 		args = append(args, st)
@@ -231,7 +231,7 @@ func (s *SQLiteSessionStore) UpdateStateConditionalFrom(ctx context.Context, id 
 	// #nosec G202 -- `... IN (` + static `?` placeholder builder + `)`; states bound via ?, not user text
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ? AND state IN (`+strings.Join(placeholders, ", ")+`)`,
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND state IN (`+strings.Join(placeholders, ", ")+`)`,
 		args...)
 	if err != nil {
 		return false, fmt.Errorf("update state conditional from: %w", err)
@@ -254,11 +254,11 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 		agentName = "claude"
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, agent_name, model, account_id, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, state_entered_at, agent_name, model, effective_model, effective_effort, account_id, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Title, params.Plan,
 		params.WorktreePath, params.BranchName, params.BaseBranch,
-		int(machine.CreatingWorktree), agentName, params.Model, params.AccountID, params.PRNumber, params.PRURL,
+		int(machine.CreatingWorktree), now, agentName, params.Model, params.EffectiveModel, params.EffectiveEffort, params.AccountID, params.PRNumber, params.PRURL,
 		params.TrackerID, params.TrackerURL, now, now,
 	)
 	if err != nil {
@@ -425,6 +425,8 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		args = append(args, *params.Title)
 	}
 	if params.State != nil {
+		sets = append(sets, "state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END")
+		args = append(args, *params.State, now)
 		sets = append(sets, "state = ?")
 		args = append(args, *params.State)
 	}
@@ -463,6 +465,14 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	if params.LastCheckState != nil {
 		sets = append(sets, "last_check_state = ?")
 		args = append(args, *params.LastCheckState)
+	}
+	if params.LastCheckStateHeadSHA != nil {
+		sets = append(sets, "last_check_state_head_sha = ?")
+		args = append(args, *params.LastCheckStateHeadSHA)
+	}
+	if params.LastCheckStateAt != nil {
+		sets = append(sets, "last_check_state_at = ?")
+		args = append(args, *params.LastCheckStateAt)
 	}
 	if params.LastObservedReviewState != nil {
 		sets = append(sets, "last_observed_review_state = ?")
@@ -572,14 +582,14 @@ func (s *SQLiteSessionStore) Archive(ctx context.Context, id string) error {
 func (s *SQLiteSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, updated_at = ?
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ?
 		 WHERE state = ?
 		   AND NOT EXISTS (
 		       SELECT 1 FROM workflows
 		       WHERE workflows.session_id = sessions.id
 		         AND workflows.status IN ('running', 'pending')
 		   )`,
-		int(machine.AwaitingChecks), now, int(machine.ImplementingPlan))
+		int(machine.AwaitingChecks), int(machine.AwaitingChecks), now, now, int(machine.ImplementingPlan))
 	if err != nil {
 		return 0, fmt.Errorf("advance orphaned sessions: %w", err)
 	}
@@ -723,8 +733,9 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model,
+	s.last_check_state, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at,
+	s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
+	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model, s.effective_model, s.effective_effort,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
@@ -737,8 +748,9 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 // still appears with an empty display name.
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model,
+	s.last_check_state, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at,
+	s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
+	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model, s.effective_model, s.effective_effort,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
@@ -765,6 +777,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	var sess models.Session
 	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended, quickChat, detach int
 	var archivedAt, createdAt, updatedAt *string
+	var lastCheckStateAt, stateEnteredAt *string
 	var displayIntent int
 	var displaySpinner int
 	var lastRepairStartedAt *string
@@ -775,9 +788,10 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
-		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
+		&lastCheckState, &sess.LastCheckStateHeadSHA, &lastCheckStateAt, &stateEnteredAt,
+		&lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &quickChat, &detach, &createdAt, &updatedAt,
-		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
+		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model, &sess.EffectiveModel, &sess.EffectiveEffort,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
@@ -786,6 +800,8 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		return nil, "", "", err
 	}
 	sess.RotationResumeAt = sqlutil.ParseOptionalTime(rotationResumeAt)
+	sess.LastCheckStateAt = sqlutil.ParseOptionalTime(lastCheckStateAt)
+	sess.StateEnteredAt = sqlutil.ParseOptionalTime(stateEnteredAt)
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.LastObservedReviewState = lastObservedReviewState
@@ -814,6 +830,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var sess models.Session
 	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended, quickChat, detach int
 	var archivedAt, createdAt, updatedAt *string
+	var lastCheckStateAt, stateEnteredAt *string
 	var displayIntent int
 	var displaySpinner int
 	var lastRepairStartedAt *string
@@ -823,9 +840,10 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
-		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
+		&lastCheckState, &sess.LastCheckStateHeadSHA, &lastCheckStateAt, &stateEnteredAt,
+		&lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &quickChat, &detach, &createdAt, &updatedAt,
-		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
+		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model, &sess.EffectiveModel, &sess.EffectiveEffort,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
@@ -834,6 +852,8 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		return nil, err
 	}
 	sess.RotationResumeAt = sqlutil.ParseOptionalTime(rotationResumeAt)
+	sess.LastCheckStateAt = sqlutil.ParseOptionalTime(lastCheckStateAt)
+	sess.StateEnteredAt = sqlutil.ParseOptionalTime(stateEnteredAt)
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.LastObservedReviewState = lastObservedReviewState

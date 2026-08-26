@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 	"strings"
+
+	"github.com/recurser/bossalib/config"
 )
 
 const maxModelLen = 200
@@ -16,4 +18,31 @@ func (s *Server) validateModel(model string) error {
 		return fmt.Errorf("model too long (max %d chars)", maxModelLen)
 	}
 	return nil
+}
+
+func effectiveAgentSetting(agentName, key, requested string) string {
+	if requested != "" {
+		return requested
+	}
+	settings, err := config.Load()
+	if err == nil {
+		if value := config.PluginConfigString(&settings, agentName, key); value != "" {
+			return value
+		}
+	}
+	return defaultAgentSetting(agentName, key)
+}
+
+func defaultAgentSetting(agentName, key string) string {
+	if key != "effort" {
+		return ""
+	}
+	switch agentName {
+	case "claude":
+		return "high"
+	case "codex":
+		return "medium"
+	default:
+		return ""
+	}
 }

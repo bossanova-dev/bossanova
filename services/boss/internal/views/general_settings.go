@@ -50,7 +50,8 @@ type settingsRow struct {
 	Key      string   // setting key for plugin-config rows
 	Label    string   // text shown to the user
 	Allowed  []string // for enum rows
-	IsHeader bool     // header rows are non-interactive
+	Default  string
+	IsHeader bool // header rows are non-interactive
 }
 
 // GeneralSettingsModel renders both the built-in global settings and a
@@ -384,6 +385,7 @@ func (m *GeneralSettingsModel) rebuildRows() {
 				Key:     us.Key,
 				Label:   us.Label,
 				Allowed: us.AllowedValues,
+				Default: us.DefaultValue,
 			}
 			switch us.Type {
 			case client.SettingTypeBool:
@@ -903,14 +905,17 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 	case settingsRowKindEnum:
 		val := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
 		if val == "" && len(row.Allowed) > 0 {
-			// When Allowed[0] is the empty string the plugin advertises ""
-			// as the explicit "use plugin default" sentinel — render it as
-			// "(default)" rather than " (default)" so the row reads
-			// cleanly without a leading space.
-			if row.Allowed[0] == "" {
-				val = "(default)"
+			if row.Default != "" {
+				val = row.Default + " (default)"
 			} else {
-				val = row.Allowed[0] + " (default)"
+				// When Allowed[0] is the empty string the plugin advertises ""
+				// as the explicit "use plugin default" sentinel; render it as a
+				// named reset state so the row reads cleanly.
+				if row.Allowed[0] == "" {
+					val = "use the CLI default"
+				} else {
+					val = row.Allowed[0] + " (default)"
+				}
 			}
 		}
 		line = fmt.Sprintf("%s: %s", row.Label, val)

@@ -343,8 +343,9 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    recovered. Then enumerate the parent's existing children with
    `list_issues parentId=<parentId> limit=250` (the same op `boss-epic` uses — `get_issue` on the
    parent does not return the children's descriptions where the child markers live) and join them against
-   the spec with `reconcileEpicChildren(spec, liveChildren)` — never adopt by eye, never by title —
-   which matches each live child's `epicChildMarker(key)` marker in its description against
+   the spec with `reconcileEpicChildren(spec, hydratedLiveChildren)` after re-reading each child with
+   `get_issue`, because `list_issues` descriptions can be truncated before the marker. Never adopt by eye, never by title;
+   this matches each live child's `epicChildMarker(key)` marker in its full description against
    `spec.children[].key` and returns `{adopted, missing, orphans, unmarked, repairs, errors}`. This
    exists because the per-child marker and the parent spec's `children[].key` are two independent
    stores that can drift apart: a child gets retitled after creation, and if the parent spec is later
@@ -621,6 +622,9 @@ it. Example:``- [ ] (central) the target helper does not already reject stale ci
   exact casing, capital `Q` included. The description contract requires the cased form, so a plan
   file that drifts to `## Open questions` leaves a consumer grepping the plan file finding nothing
   while the description says the section exists.
+- A terminal **`## Original notes`** section whose body is copied from `DESCRIPTION_SNAPSHOT_PATH`
+  only. Do not retype, summarize, or reconstruct it. The plan attachment is gated with
+  `plan-image-guard.mjs --require-verbatim`, so a model-authored reproduction is not a valid source.
 
 **The plan file must contain ONLY the plan body.** No tool-call scaffolding, no XML-ish wrapper
 tags, no transcript residue, no preamble narrating what you are about to write, and no trailing
@@ -640,7 +644,7 @@ the value. When in doubt, redact.
 
 ## Step 7 — Compose the description summary (byte-identical template)
 
-Compose the Linear description block the orchestrator will write back **verbatim** and return it as
+Assemble the Linear description block the orchestrator will write back **verbatim** and return it as
 `descriptionSummary`. This template is the **byte-identical external contract** boss-build and
 bs-sweep-plan consume — do not rename or drop sections. Do NOT add the `- Dependencies:` line — the
 orchestrator appends that itself when it links conflicting dependencies.
@@ -710,21 +714,36 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 <verbatim prior description if the ticket had one — preserved, never discarded>
 ```
 
-For headless runs, the prior description above comes from `DESCRIPTION_SNAPSHOT_PATH` only. Do not
-fetch or reconstruct it from any other source.
+For headless runs, append the prior description from `DESCRIPTION_SNAPSHOT_PATH` only. Do not fetch,
+reconstruct, or retype it from any other source. Build the summary body as bytes, then return
+`descriptionSummary` from those assembled file bytes:
 
-**Preserve every image reference.** When composing `## Original notes`, copy every image reference
-the ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
-`uploads.linear.app`/attachment URLs — byte-for-byte except that an upload URL may, and a signed
-upload URL **must**, be written in its query-stripped unsigned form. The parity guard compares upload
-asset identity, so this preserves the asset while avoiding a credential-like signature. **Never** replace an image
-with a `[screenshot: …]` text placeholder or any paraphrase: Linear does not expose description
-history to agents, so the rewritten description is the only surviving copy of those URLs, and a
-paraphrase destroys them permanently (this is the exact screenshot-dropping data-loss failure). You MAY _additionally_
-list the images under a `## Screenshots` bullet list in the plan body for the implementer's
-convenience, but the original URLs must stay intact inside `## Original notes`. A mechanical
-orchestrator-side guard (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`) aborts the Linear write if any source image
-is missing from your `descriptionSummary`, so a dropped image fails the whole run — do not let it.
+```bash
+BODY="$(mktemp)"
+cat >"$BODY" <<'DESCRIPTION_SUMMARY_WITHOUT_ORIGINAL_NOTES'
+## Summary
+
+<all sections through `## Original notes`, ending with one blank line after the heading>
+DESCRIPTION_SUMMARY_WITHOUT_ORIGINAL_NOTES
+cat "${DESCRIPTION_SNAPSHOT_PATH:?DESCRIPTION_SNAPSHOT_PATH unset}" >>"$BODY"
+```
+
+Return the contents of `"$BODY"` as `descriptionSummary`; do not assign it through shell command
+substitution such as `DESCRIPTION_SUMMARY="$(cat "$BODY")"`, because command substitution strips
+trailing newline bytes and can make an otherwise copied `## Original notes` block non-verbatim.
+
+**Preserve the whole `## Original notes` block.** Its body must be copied byte-for-byte from
+`DESCRIPTION_SNAPSHOT_PATH`, except that an upload URL may, and a signed upload URL **must**, be
+written in its query-stripped unsigned form. The parity guard compares upload asset identity, so this
+preserves the asset while avoiding a credential-like signature. **Never** replace an image with a
+`[screenshot: …]` text placeholder or any paraphrase: Linear does not expose description history to
+agents, so the rewritten description is the only surviving copy of those URLs, and a paraphrase
+destroys them permanently (this is the exact screenshot-dropping data-loss failure). You MAY
+_additionally_ list the images under a `## Screenshots` bullet list in the plan body for the
+implementer's convenience, but the original URLs must stay intact inside `## Original notes`. A
+mechanical orchestrator-side guard (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`) aborts the Linear
+write if any source image is missing from your `descriptionSummary`, so a dropped image fails the
+whole run — do not let it.
 For any literal whose leading or trailing whitespace is semantically significant, use a fenced code
 block rather than an inline code span: the tracker's Markdown normalizer can move leading whitespace
 outside inline spans on save. The plan attachment is authoritative wherever the stored description
@@ -761,7 +780,7 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
     --arg childPlan ".linear-plans/<child-plan-path>.md" \
     --argjson childIds '["<child-id>"]' \
     --argjson epicSpecPaths '[]' \
-    --argjson guardScratchPaths '[".linear-plans/<ISSUE-ID>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.image-guard-new.md",".linear-plans/<child-id>.image-guard-orig.md",".linear-plans/<child-id>.attachment-guard-orig.md",".linear-plans/<child-id>.image-guard-new.md"]' \
+    --argjson guardScratchPaths '[".linear-plans/<ISSUE-ID>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.image-guard-new.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-new.md"]' \
     '{epic:true, epicParentId:$id, childIds:$childIds, childPlanPaths:{($childId):$childPlan}, epicSpecPaths:$epicSpecPaths, guardScratchPaths:$guardScratchPaths}')"
 ```
 
@@ -791,10 +810,13 @@ failed and you fell back to a single-ticket plan, write the single-ticket sentin
 
 Before writing the sentinel, **self-verify image parity**: first make a safe copy of
 `DESCRIPTION_SNAPSHOT_PATH` with the same mandatory secret/PII redactions and upload-signature stripping
-required for `descriptionSummary`, then confirm every image URL in that safe source (inline
-`![](…)`, `<img>`, `uploads.linear.app`/attachment URLs) survives verbatim in
-`descriptionSummary`'s `## Original notes`. Run the guard against that safe source — re-deriving the
-toolbox dir in the same block, because this Bash call inherits nothing:
+required for `descriptionSummary`, then anchor that safe copy against the real snapshot before using
+it for the verbatim check. A safe source reproduced from memory makes the verbatim exit 0 vacuous:
+it proves only that two model-authored copies match, not that either one came from the tracker
+snapshot. Then confirm every image URL in that safe source (inline `![](…)`, `<img>`,
+`uploads.linear.app`/attachment URLs) survives verbatim in `descriptionSummary`'s
+`## Original notes`. Run the guard against that safe source — re-deriving the toolbox dir in the same
+block, because this Bash call inherits nothing:
 
 ```bash
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
@@ -806,6 +828,8 @@ test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not fo
 BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
 export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
 # Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
+node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$DESCRIPTION_SNAPSHOT_PATH" \
+  --rewritten <safe-orig.md> --require-safe-source
 node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original <safe-orig.md> --rewritten <new.md> \
   --require-verbatim --require-unsigned-uploads
 ```

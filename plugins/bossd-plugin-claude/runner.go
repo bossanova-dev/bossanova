@@ -21,16 +21,20 @@ type Runner struct {
 	dangerouslySkipPermissions bool
 	loginShell                 string
 	model                      string
+	effort                     string
 	cmdFactory                 agentruntime.CommandFactory
 }
+
+const defaultClaudeEffort = "high"
 
 // StartWithModel starts a headless Claude run, pinning the model for this run.
 // It carries no MCP wiring: boss does not own MCP configuration, so a headless
 // run discovers servers exactly as an interactive one does — through Claude
 // Code's own scopes, from what the repo declared.
-func (r *Runner) StartWithModel(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
+func (r *Runner) StartWithModelAndEffort(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string) (string, error) {
 	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
-		"model": model,
+		"model":  model,
+		"effort": effort,
 	})
 }
 
@@ -63,6 +67,13 @@ func WithModel(model string) RunnerOption {
 	return func(r *Runner) { r.model = model }
 }
 
+// WithEffort pins the fallback claude --effort selection for runs that do not
+// carry their own. Empty means "pass no --effort", which lets the claude CLI
+// resolve the reasoning effort from its own settings.
+func WithEffort(effort string) RunnerOption {
+	return func(r *Runner) { r.effort = effort }
+}
+
 // resolveClaudeModel applies per-request-wins/plugin-default-fallback. A run
 // that carries an explicit model (session.model / agent_chats.model, set via
 // `boss new --model`, a cron job's model, or MCP create_session) always wins;
@@ -82,6 +93,13 @@ func resolveClaudeModel(reqModel, pluginModel string) string {
 	return pluginModel
 }
 
+func resolveClaudeEffort(reqEffort, pluginEffort string) string {
+	if reqEffort != "" {
+		return reqEffort
+	}
+	return pluginEffort
+}
+
 // WithCommandFactory overrides the agent command factory (for testing).
 // Delegates to agentruntime.WithCommandFactory; preserved as a claude-side
 // RunnerOption so existing tests don't have to import agentruntime.
@@ -91,7 +109,7 @@ func WithCommandFactory(f agentruntime.CommandFactory) RunnerOption {
 
 // NewRunner creates a Claude process runner backed by agentruntime.
 func NewRunner(logger zerolog.Logger, opts ...RunnerOption) *Runner {
-	r := &Runner{}
+	r := &Runner{effort: defaultClaudeEffort}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -136,6 +154,9 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	}
 	if model := resolveClaudeModel(in.Options["model"], r.model); model != "" {
 		args = append(args, "--model", model)
+	}
+	if effort := resolveClaudeEffort(in.Options["effort"], r.effort); effort != "" {
+		args = append(args, "--effort", effort)
 	}
 	// No MCP flags, deliberately. Boss does not own MCP configuration: Claude
 	// Code discovers servers its own native way (project .mcp.json gated by

@@ -31,6 +31,14 @@ import { fileURLToPath } from 'node:url'
 // suite's underscore/dollar case. A lookbehind excluding `$` as well as `\w` still refuses a
 // suffix match (`bodyText.slice(…)` must not match as receiver `Text`).
 const RAW_REGION_SLICE = /(?<![\w$])([A-Za-z_$][\w$]*)\s*\.\s*slice\s*\(\s*\1\s*\.\s*indexOf\s*\(/g
+const RAW_SECTION_DISTANCE_WINDOW =
+  /(?<![\w$])([A-Za-z_$][\w$]*)\s*\.\s*slice\s*\(\s*([A-Za-z_$][\w$]*|0)\s*,\s*(?:\2\s*\+\s*([0-9]+)|([0-9]+))\s*\)/g
+const RAW_SECTION_HEADING_TERMINATOR =
+  /\.(?:search|indexOf)\s*\(\s*(?:\/\\n#(?:\{[0-9,]+\}|#+)?(?:\\s| )\/|'\\n##(?: |\\s)'|"\\n##(?: |\\s)"|`\\n##(?: |\\s)`)/g
+const WHOLE_DOC_FLATTENED_ASSIGN =
+  /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\.\s*replace\s*\(\s*\/\\s\+\/g\s*,\s*['"] ['"]\s*\)/g
+const DOES_NOT_MATCH_CALL = /assert\s*\.\s*doesNotMatch\s*\(\s*([A-Za-z_$][\w$]*)\b/g
+const WHOLE_DOC_NAMES = new Set(['source', 'skill', 'raw'])
 
 // The escape hatch, on the match's own line or the line immediately before it. The reason
 // is REQUIRED and must be non-empty — an unexplained opt-out is the next vacuous gate. This
@@ -52,6 +60,10 @@ export const SCANNED_ROOTS = ['scripts', 'skills-toolbox']
 // is what proves the detector fires — so it is the one file exempt from the scan, by exact
 // repo-relative path. Nothing else may be added here: opt out a real call site instead.
 export const SCAN_EXCLUSIONS = ['scripts/check-vacuous-regions.test.mjs']
+export const UNFALSIFIABLE_PROSE_PIN_FILES = [
+  'scripts/boss-build-skill.test.mjs',
+  'scripts/boss-review-skill.test.mjs',
+]
 
 // ─── OPT_OUT_SCOPE_LIMITS — the authoritative statement of both, stated once ─────────────
 //
@@ -162,11 +174,12 @@ function hasOptOut(lines, lineNumber) {
 /**
  * Find every un-opted-out raw region slice in `contents`.
  * @param {string} contents Whole file text.
- * @returns {{line: number, receiver: string, text: string}[]} Offenders, in source order.
+ * @returns {{line: number, receiver: string, text: string, rule: string}[]} Offenders, in source order.
  */
 export function findVacuousRegions(contents) {
   const lines = contents.split('\n')
   const offenders = []
+  const flattenedWholeDocAliases = new Set()
   RAW_REGION_SLICE.lastIndex = 0
   for (const match of contents.matchAll(RAW_REGION_SLICE)) {
     // The reported line is where the receiver sits, which is the first line of a
@@ -175,7 +188,49 @@ export function findVacuousRegions(contents) {
     if (hasOptOut(lines, line)) continue
     offenders.push({ line, receiver: match[1], text: match[0] })
   }
-  return offenders
+  RAW_SECTION_DISTANCE_WINDOW.lastIndex = 0
+  for (const match of contents.matchAll(RAW_SECTION_DISTANCE_WINDOW)) {
+    const literal = Number(match[3] ?? match[4])
+    const isDisplayHeadSlice = match[2] === '0' && match[4] !== undefined
+    if (!Number.isFinite(literal) || (isDisplayHeadSlice && literal < 100)) continue
+    const line = contents.slice(0, match.index).split('\n').length
+    if (hasOptOut(lines, line)) continue
+    offenders.push({
+      line,
+      receiver: match[1],
+      text: match[0],
+      rule: 'raw-section-window',
+    })
+  }
+  RAW_SECTION_HEADING_TERMINATOR.lastIndex = 0
+  for (const match of contents.matchAll(RAW_SECTION_HEADING_TERMINATOR)) {
+    const line = contents.slice(0, match.index).split('\n').length
+    if (hasOptOut(lines, line)) continue
+    offenders.push({
+      line,
+      receiver: '',
+      text: match[0],
+      rule: 'raw-section-window',
+    })
+  }
+  WHOLE_DOC_FLATTENED_ASSIGN.lastIndex = 0
+  for (const match of contents.matchAll(WHOLE_DOC_FLATTENED_ASSIGN)) {
+    if (WHOLE_DOC_NAMES.has(match[2])) flattenedWholeDocAliases.add(match[1])
+  }
+  DOES_NOT_MATCH_CALL.lastIndex = 0
+  for (const match of contents.matchAll(DOES_NOT_MATCH_CALL)) {
+    const subject = match[1]
+    if (!WHOLE_DOC_NAMES.has(subject) && !flattenedWholeDocAliases.has(subject)) continue
+    const line = contents.slice(0, match.index).split('\n').length
+    if (hasOptOut(lines, line)) continue
+    offenders.push({
+      line,
+      receiver: subject,
+      text: match[0],
+      rule: 'unfalsifiable-prose-pin',
+    })
+  }
+  return offenders.sort((a, b) => a.line - b.line || a.text.localeCompare(b.text))
 }
 
 export function findMjsFiles(root, deps = {}) {
@@ -196,16 +251,22 @@ export function findMjsFiles(root, deps = {}) {
 export function findVacuousRegionsInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
   const excluded = new Set(SCAN_EXCLUSIONS.map((rel) => path.join(repoRoot, ...rel.split('/'))))
+  const prosePinFiles = new Set(
+    UNFALSIFIABLE_PROSE_PIN_FILES.map((rel) => path.join(repoRoot, ...rel.split('/'))),
+  )
   return SCANNED_ROOTS.map((dir) => path.join(repoRoot, dir))
     .filter((dir) => fsImpl.existsSync(dir))
     .flatMap((root) => findMjsFiles(root, deps))
     .filter((file) => !excluded.has(file))
-    .flatMap((file) =>
-      findVacuousRegions(fsImpl.readFileSync(file, 'utf8')).map((offender) => ({
+    .flatMap((file) => {
+      const offenders = findVacuousRegions(fsImpl.readFileSync(file, 'utf8')).filter(
+        (offender) => offender.rule !== 'unfalsifiable-prose-pin' || prosePinFiles.has(file),
+      )
+      return offenders.map((offender) => ({
         ...offender,
         file,
-      })),
-    )
+      }))
+    })
 }
 
 function main() {
@@ -213,19 +274,21 @@ function main() {
   const offenders = findVacuousRegionsInRepo(repoRoot)
   if (offenders.length > 0) {
     console.error(
-      'Raw slice(indexOf(…)) region extraction found — use region() from ' +
-        'scripts/gate-region-lib.mjs, or add `// gate-region-ok: <reason>`:',
+      'Raw slice/indexOf, raw section-window, or unfalsifiable prose-pin extraction found — use ' +
+        'region()/sectionRegion() and scripts/prose-pin-lib.mjs, or add `// gate-region-ok: <reason>`:',
     )
     for (const offender of offenders) {
-      console.error(`  - ${path.relative(repoRoot, offender.file)}:${offender.line}`)
+      console.error(
+        `  - ${path.relative(repoRoot, offender.file)}:${offender.line} (${offender.rule ?? 'raw-region-slice'})`,
+      )
     }
     process.exit(1)
   }
   // Qualified with the scanned roots on purpose: an unqualified "none found" reads as a
   // whole-tree verdict, and this gate looks at two directories. See SCANNED_ROOTS above.
   console.log(
-    `No raw slice(indexOf(…)) region extractions in ${SCANNED_ROOTS.join(', ')} ` +
-      `(fail-closed region() OK). Other roots are not scanned.`,
+    `No raw slice(indexOf(…)) region extractions or raw section windows in ${SCANNED_ROOTS.join(', ')} ` +
+      `(fail-closed region()/sectionRegion() OK; unfalsifiable-prose-pin OK). Other roots are not scanned; parser-free raw-section-window does not trace hoisted bounds, and unfalsifiable-prose-pin cannot prove mutation relevance.`,
   )
 }
 

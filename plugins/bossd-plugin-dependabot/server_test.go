@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 )
 
 // mockHostService is a test double for hostServiceClient that returns
@@ -80,11 +81,12 @@ func TestGetInfo(t *testing.T) {
 	}
 }
 
-func TestAggregateCheckResults(t *testing.T) {
+func TestEvaluateProtoChecks(t *testing.T) {
 	tests := []struct {
-		name   string
-		checks []*bossanovav1.CheckResult
-		want   checksOverall
+		name       string
+		checks     []*bossanovav1.CheckResult
+		wantState  vcs.CheckVerdictState
+		wantReason string
 	}{
 		{
 			name: "all passed",
@@ -92,7 +94,8 @@ func TestAggregateCheckResults(t *testing.T) {
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)},
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)},
 			},
-			want: checksOverallPassed,
+			wantState:  vcs.CheckVerdictGreen,
+			wantReason: vcs.CheckVerdictReasonOK,
 		},
 		{
 			name: "one failure",
@@ -100,7 +103,8 @@ func TestAggregateCheckResults(t *testing.T) {
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)},
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_FAILURE)},
 			},
-			want: checksOverallFailed,
+			wantState:  vcs.CheckVerdictFailing,
+			wantReason: vcs.CheckVerdictReasonFailed,
 		},
 		{
 			name: "still in progress",
@@ -108,57 +112,64 @@ func TestAggregateCheckResults(t *testing.T) {
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)},
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_IN_PROGRESS},
 			},
-			want: checksOverallPending,
+			wantState:  vcs.CheckVerdictPending,
+			wantReason: vcs.CheckVerdictReasonPending,
 		},
 		{
 			name: "queued",
 			checks: []*bossanovav1.CheckResult{
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_QUEUED},
 			},
-			want: checksOverallPending,
+			wantState:  vcs.CheckVerdictPending,
+			wantReason: vcs.CheckVerdictReasonPending,
 		},
 		{
 			name: "neutral conclusion counts as pass",
 			checks: []*bossanovav1.CheckResult{
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_NEUTRAL)},
 			},
-			want: checksOverallPassed,
+			wantState:  vcs.CheckVerdictGreen,
+			wantReason: vcs.CheckVerdictReasonNoGateRan,
 		},
 		{
 			name: "skipped conclusion counts as pass",
 			checks: []*bossanovav1.CheckResult{
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SKIPPED)},
 			},
-			want: checksOverallPassed,
+			wantState:  vcs.CheckVerdictGreen,
+			wantReason: vcs.CheckVerdictReasonNoGateRan,
 		},
 		{
 			name: "cancelled conclusion counts as failure",
 			checks: []*bossanovav1.CheckResult{
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_CANCELLED)},
 			},
-			want: checksOverallFailed,
+			wantState:  vcs.CheckVerdictFailing,
+			wantReason: vcs.CheckVerdictReasonFailed,
 		},
 		{
 			name: "timed out conclusion counts as failure",
 			checks: []*bossanovav1.CheckResult{
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_TIMED_OUT)},
 			},
-			want: checksOverallFailed,
+			wantState:  vcs.CheckVerdictFailing,
+			wantReason: vcs.CheckVerdictReasonFailed,
 		},
 		{
-			name: "nil conclusion on completed check counts as failure",
+			name: "nil conclusion on completed check is unclassified",
 			checks: []*bossanovav1.CheckResult{
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED},
 			},
-			want: checksOverallFailed,
+			wantState:  vcs.CheckVerdictUnknown,
+			wantReason: vcs.CheckVerdictReasonUnclassified,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := aggregateCheckResults(tt.checks)
-			if got != tt.want {
-				t.Errorf("aggregateCheckResults() = %v, want %v", got, tt.want)
+			got := evaluateProtoChecks(tt.checks)
+			if got.State != tt.wantState || got.Reason != tt.wantReason {
+				t.Errorf("evaluateProtoChecks() = %s/%s, want %s/%s", got.State, got.Reason, tt.wantState, tt.wantReason)
 			}
 		})
 	}

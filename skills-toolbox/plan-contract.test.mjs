@@ -28,6 +28,9 @@ const BRIEF = read(`${CORE}/boss-plan/references/headless-drafting-brief.md`)
 const SWEEP = read('.claude/skills/bs-sweep-plan/SKILL.md')
 const IMPLEMENT = read(`${CORE}/boss-build/SKILL.md`)
 const FINALIZE = read(`${CORE}/boss-build/references/finalize-and-stop.md`)
+const BOS_1015_PLAN = read(
+  'docs/plans/BOS-1015-14-the-verify-only-evidence-gate-silently-rejects-valid-criteria-on-shape-unbackticked-command-sub-bullet-marker-position-tense-and-never-checks-the-command-is-runnable.md',
+)
 // The whole boss-build tree, so a literal may live in the resident body or in any reference —
 // the contract is that the consumer names the bytes, not which file it names them in.
 const IMPLEMENT_TREE = `${IMPLEMENT}\n${FINALIZE}`
@@ -136,6 +139,30 @@ describe('plan-contract sync', () => {
       FINALIZE.includes('validateVerifyOnlyEvidence'),
       'boss-build Step 9 must run validateVerifyOnlyEvidence over the PR body before readying',
     )
+    for (const reason of [
+      'no-clause',
+      'undelimited-command',
+      'planned-tense-on-ticked',
+      'empty-command',
+      'empty-result',
+      'command-unresolvable',
+    ]) {
+      assert.ok(FINALIZE.includes(reason), `boss-build Step 9 must document ${reason}`)
+    }
+    assert.ok(
+      FINALIZE.includes('advisory'),
+      'boss-build Step 9 must document that advisory findings do not block',
+    )
+  })
+
+  test('BOS-1015 plan documents shell-runnable command heads, not bare Makefile targets', () => {
+    assert.ok(
+      !BOS_1015_PLAN.includes('no `Makefile` target'),
+      'BOS-1015 plan must not document bare Makefile targets as runnable verify-only commands',
+    )
+    assert.match(BOS_1015_PLAN, /executable `PATH` binary/)
+    assert.match(BOS_1015_PLAN, /absolute executable file/)
+    assert.match(BOS_1015_PLAN, /executable repo-relative script/)
   })
 
   test('the brief`s own Step 7 verify-only row round-trips through the evidence gate', () => {
@@ -166,7 +193,8 @@ describe('plan-contract sync', () => {
       (line) => line.startsWith('- [x] ') && line.includes(VERIFY_ONLY_MARKER),
     )
     assert.ok(row, 'the Step 7 PR-body template must show a discharged verify-only row')
-    const body = `## Acceptance criteria\n\n${row}\n\n## Original notes\n\nx`
+    const executableRow = row.replace('<command>', 'true')
+    const body = `## Acceptance criteria\n\n${executableRow}\n\n## Original notes\n\nx`
     const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
     assert.equal(result.verifyOnly.length, 1, 'the template row must classify as verify-only')
     assert.equal(

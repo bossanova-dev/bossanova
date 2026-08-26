@@ -9,6 +9,16 @@
 // Awaiting means staying in the turn and re-reading through this helper; ending
 // the turn is not waiting.
 //
+// Agent bindings for the neutral dispatch contract:
+// - Claude Code: issue awaited `Task` calls (for example with `subagent_type: general-purpose`);
+//   never treat a `run_in_background` launcher result as completion.
+// - Codex: use `spawn_agent` to create a fresh subagent and `wait_agent` to await its terminal
+//   result before consuming the extension output.
+//
+// A discovered extension is dispatched whenever the running agent exposes an awaited-dispatch
+// mechanism. Inline execution is reachable only through the documented tier fallback for that core,
+// and every inline fallback writes a ledger line naming the tier and reason.
+//
 // Node built-ins only — cron worktrees are dependency-free.
 
 import { readdirSync, statSync } from 'node:fs'
@@ -32,7 +42,9 @@ export const ABANDONED = 'abandoned'
 export const DEFAULT_DISPATCH_LEG_TIMEOUT_MS = 300_000
 export const DEFAULT_AWAIT_TIMEOUT_MULTIPLIER = 1.25
 export const DEFAULT_OPEN_DISPATCH_STALE_MS = 30 * 60 * 1000
-// Matches the largest batch the payload issues today: the default review-round fan-out.
+// Default for callers that do not supply a width. Merged review barriers can assemble more than four
+// read-only nodes, so those callers pass the admitted roster size explicitly; this fallback remains
+// the conservative width for unclassified dispatch graphs.
 export const MAX_BATCH_WIDTH = 4
 export const DEFAULT_POLL_INTERVAL_MS = 1_000
 

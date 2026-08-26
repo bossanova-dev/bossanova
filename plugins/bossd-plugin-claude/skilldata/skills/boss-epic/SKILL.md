@@ -315,11 +315,11 @@ assumeCleared, assumeClearedAndMerge}`.
    '  # → authoritative checklists, one per transport
    ```
 
-   Enumerate the boss MCP tools this runtime exposes (host-specific — do not
-   overfit to one host) and the `boss` subcommands it can run, then diff both at
-   once via
+   Use `boss env --json`: `.capabilities.mcp` is `availableTools` and
+   `.capabilities.cli` is `availableCliCommands`. Do not use `boss --help`; it
+   lists bare top-level names and cannot prove `boss chat send`. Then diff via
    `bossEpicTransportPreflight({availableTools, availableCliCommands})` →
-   `{ ok, transport, missing, degraded, partial }`.
+   `{ ok, transport, missing, degraded, partial, inventoryHint }`.
 
    The CLI is **preferred, not a fallback**: a complete CLI set wins even when
    the MCP set is also complete. That preference is what made it safe to stop
@@ -331,13 +331,10 @@ assumeCleared, assumeClearedAndMerge}`.
    - `transport: 'mcp'` — the CLI set is incomplete but the MCP tool set is
      complete. Proceed on the richer carrier; nothing is degraded.
    - `ok: false` — neither transport is complete. Stop
-     `BLOCKED: no complete boss transport: <comma-separated missing>`, naming
-     everything absent from both so the repair set is visible in one line.
+     `BLOCKED: no complete boss transport: <comma-separated missing>; <inventoryHint when non-null>`.
 
-   Report the outcome in the run's opening line — `transport: <mcp|cli>`, plus
-   `degraded: <capabilities>` and `partial: <capability>(<missing fields>)` when
-   each is non-empty — so a reader can tell a full-fidelity run from one that
-   never consulted those capabilities, and from one that read them half-blind.
+   Report `transport: <mcp|cli>`, plus `degraded: <capabilities>` and
+   `partial: <capability>(<missing fields>)` when non-empty, in the opening line.
 
    `degraded` = no CLI equivalent at all: `resolveContext`,
    `getSessionStatuses`, `createPlanningChat` (three, not two — `boss new` has
@@ -573,6 +570,12 @@ Every 2–5 minutes (or on a callback wake), for each in-flight ticket read
 `get_session` (state, `last_agent_activity_at`, `AGENT_AUTH_FAILED`),
 `list_check_snapshots` (DisplayStatus), and `get_chat_statuses {session_id}` for the entry whose
 `agent_session_id` equals the ticket's recorded `chat_id`.
+Feed only these already-read facts to `classifyChildLiveness` (bs-epic-lib):
+tracked chat status/readability, aggregate session `state`, caller-classified
+last-message kind (`agent-conclusion`, `usage-limit`, `transient-api-error`, or
+absent), `headShaMoved`, activity staleness, `attention_status` reasons, and the
+wall-clock-expired bit. The classifier returns `{verdict, action, reasons}`;
+route on `action`, never on a liveness proxy directly.
 
 **Session state carries no push information.** A `state` transition, and a
 `last_check_state` appearing where there was none, both fire when the daemon
@@ -585,7 +588,8 @@ guard: before the first push `origin/<branch>` does not exist and `rev-list`
 errors with empty output instead of printing `0`. An unmoving remote head means
 either the child produced no commit or it has local commits that never pushed;
 establish whether a push happened before reading the head, and record which
-cause was observed.
+cause was observed. An unmoving remote head is never admissible as evidence of
+child death; it is only a `classifyChildLiveness` reason annotation.
 
 A green is trustworthy only once that tracked chat has **settled**: `IDLE` or
 `STOPPED` on **two consecutive polls** with the spinner absent. STOPPED +
@@ -593,8 +597,9 @@ missing `last_agent_activity_at` = settled once the second poll agrees. Never
 gate settled on timestamp staleness: `last_output_at` is a floor that any pane
 change advances (a spinner's elapsed counter alone keeps it fresh), and chats
 seeded in one tick can share it to the nanosecond, so a staleness test can never
-pass. `WORKING`/`QUESTION` = still running, and `LIMITED` = not merge-settled.
-If unreadable, treat the child as **not settled** and re-poll; never assume settled on an unreadable status.
+pass. `WORKING`/`QUESTION`/`WAITING` = still alive and running or parked, and
+`LIMITED` = usage-limit resume lane, never merge-settled. `UNSPECIFIED` or an
+unreadable status is **unknown**, not settled and not dead; investigate/re-poll.
 
 `get_session_statuses` is a session-level `get_session_statuses` aggregate across
 all chats; display/diagnostic only. Never gate green/settled on it: an older
@@ -613,7 +618,7 @@ IDLE/STOPPED + passing.
   `do not merge — partial: <satisfied>/<total> acceptance criteria`.
   All five hold → add to the
   **greens** (merge queue). Do not add a ticket to `greens` while that chat is
-  WORKING, QUESTION, or LIMITED. The daemon Blocks an empty/no-op
+  WORKING, QUESTION, WAITING, LIMITED, UNSPECIFIED, or unreadable. The daemon Blocks an empty/no-op
   run (a bootstrap-only branch is **not** surfaced as green), so a green here
   genuinely means real work landed. Reads for each condition:
   [`references/merge-recovery.md`](references/merge-recovery.md).
@@ -621,12 +626,22 @@ IDLE/STOPPED + passing.
   never green. CI on a draft is expected noise, not merge-eligibility; the child
   has not declared the slice finished. Re-poll until it is marked ready, or route
   it as an unfinished child.
-- **Passing but chat still WORKING/QUESTION/LIMITED** → **hold**: neither green
+- **Passing but chat still WORKING/QUESTION/WAITING** → **hold**: neither green
   nor repair; re-poll while the tracked `chat_id` finalizes review/comments.
-- **BLOCKED, or tracked `chat_id` status IDLE/STOPPED + Failing / Conflict /
-  Rejected** → **repair
-  round**. First classify the repair lease with `classifyRepairLease`
-  (bs-epic-lib), fed from `get_session` (`repair_active`, `repair_stalled_at`,
+- **Liveness classifier gate** — before any repair, resume, or wall-clock
+  isolation, classify the child with `classifyChildLiveness` (bs-epic-lib):
+  `alive/hold` → re-poll; `environmental-death/resume` → one wake-to-resume;
+  `agent-blocked/repair` → repair round below; `wall-clock-expired/fail-isolate`
+  → fail-isolate and **never** repair; `unknown/investigate` → read the tracked
+  chat's last message and `waiting_reason`, reclassify if that yields a known
+  last-message kind, otherwise re-poll. An `unknown` verdict never dispatches
+  repair.
+- **Agent-blocked / repair** — only when `classifyChildLiveness` returns
+  `agent-blocked/repair`: a `BLOCKED` aggregate session state must be
+  corroborated by the tracked chat's own agent-conclusion last message. A
+  `BLOCKED` state without that conclusion is `unknown/investigate`, not repair.
+  Then classify the repair lease with `classifyRepairLease` (bs-epic-lib), fed
+  from `get_session` (`repair_active`, `repair_stalled_at`,
   `last_repair_head_sha`), the driver's `prevLastRepairHeadSha`, and the tracked
   repair chat's last output time:
 
@@ -675,9 +690,12 @@ IDLE/STOPPED + passing.
   needs a repair round, not a merge. Track the repair chat in place of
   the original in `inFlight`; still red after round 4 → fail-isolate.
 
-- **Infra-death** — a state distinct from BLOCKED: the session is idle, the
-  chat's last message is a **transient API/5xx error** (not an agent
-  conclusion), no spinner, activity frozen. Deliver **one** wake-to-resume —
+- **Environmental-death / resume** — a state distinct from BLOCKED: the
+  classifier action is `resume` because the tracked chat is `LIMITED`, the
+  chat's last message is a **usage-limit** banner, or the last message is a
+  **transient API/5xx error** (not an agent conclusion), with no spinner and
+  frozen activity. The usage-limit lane belongs here; a 429/rate cap is not the
+  transient-API detector's 5xx lane. Deliver **one** wake-to-resume —
   `send_chat_message` with wake + submit, telling it to continue from committed
   state and not restart completed work. No resume — or a re-error — within one
   poll cycle → fail-isolate. This is **not** the forbidden BLOCKED-nudge below:
@@ -685,11 +703,14 @@ IDLE/STOPPED + passing.
   dying mid-work. Diagnosis cheat sheet:
   [`references/merge-recovery.md`](references/merge-recovery.md).
 
-- **Wall clock exceeded** (default **90 min**) → fail-isolate. Do **not**
-  `stop_session` — leave the session open for a human.
+- **Wall clock exceeded** (default **90 min**) → `classifyChildLiveness` returns
+  `wall-clock-expired/fail-isolate`. Do **not** `stop_session` — leave the
+  session open for a human. Wall-clock expiry is a budget fact, not death
+  evidence, and can never route to repair.
 
-A BLOCKED run gets a capped repair round or is fail-isolated — never a nudge
-into the original chat.
+A BLOCKED run gets a capped repair round only after the classifier returns
+`agent-blocked/repair`, or it is fail-isolated — never a nudge into the original
+chat. Unknown liveness gets investigation/re-poll, never repair.
 
 ### 3d. Merge (serialized — at most one merge in flight, ever)
 
@@ -811,12 +832,11 @@ The owning orchestrator writes at most five secret-scrubbed candidate observatio
 `NOTES_OBSERVATIONS` (maximum 8 KiB): problem + pointer, no transcript/output/user content/secrets;
 empty is valid and this is the worker's only run history.
 
-Ascending `(order,name)` fresh **awaited** workers (timeout `BOSS_SKILL_EXTENSION_TIMEOUT_MS`, default
-`300000`) are loaded by **reading the descriptor's `skillPath` from disk** (`dir` is its directory),
-passing both `skillPath` and `dir` in the worker brief, and requiring relative extension resources to
-resolve from `dir`. Pass that `SKILL.md` content into the dispatch as the extension's instructions — never by a
-bare descriptor `name` through the Skill tool, which refuses a skill declaring
-`disable-model-invocation: true`.
+Dispatch descriptors in ascending `(order, name)` order. Each gets a fresh **awaited** worker (`Task`
+or `spawn_agent`+`wait_agent`) bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms).
+Read `skillPath` (`dir` is its directory), pass both in the brief, and require relative extension
+resources to resolve from `dir`. Pass `SKILL.md` as instructions — never descriptor `name` through
+the Skill tool, which refuses `disable-model-invocation: true`.
 Each receives `{role:"notes",core:"boss-epic",context:{mode:"<interactive if the run
 interacted; else headless>",core:"boss-epic",outcome:"<decided>",repoId:"<BOSS_REPO_ID or
 null>",observationPath:"<NOTES_OBSERVATIONS>"},runTmp:"<NOTES_RUN_TMP>",

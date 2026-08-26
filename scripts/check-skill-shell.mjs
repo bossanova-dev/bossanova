@@ -278,6 +278,19 @@
 //     engineering/SKILL.md:73-75`, which works around it in prose). Same class of defect — a
 //     publisher rewriting a skill body before execution — different trigger and different tool.
 //
+// (k) BUILD/VERIFY PIPELINES MUST NOT MASK THE HEAD COMMAND'S STATUS. In `make test | tee log.txt`
+//     the pipeline's exit status is `tee` unless `pipefail` is set, so the command can fail while
+//     the block continues green. The rule fires only when the pipeline HEAD's command word is in the
+//     build/verify allowlist (`make`, `go`, `bazel`, package managers, linters and formatters),
+//     because `printf | jq` is normally value plumbing rather than a status gate. It consumes the
+//     same execution-order `shellOptionStateAfter` model as (g): a `set -o pipefail` below the
+//     pipeline does not help, `set +o pipefail` clears it, and subshell-local changes do not leak.
+//     Three shapes are deliberately exempt: a pipeline in an `if`/`while`/`until` predicate, a
+//     pipeline nested in command substitution where the value is the consumed signal, and a same-line
+//     or next-line `${PIPESTATUS[0]}` / `$pipestatus[1]` guard that exits or returns on failure.
+//     Accepted false negatives, same direction as the other rules: unallowlisted command heads,
+//     status guards farther away, and pipelines in prose or non-shell fences.
+//
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
 // silently runs the OLD extractor after you edit it, and `lint-all` reusing a stamp makes the
@@ -2185,6 +2198,26 @@ function staticallySelectedConditionalBody(text, conditional, bodies) {
   return null
 }
 
+function staticallySelectedInlineCaseBody(text) {
+  if (!caseOpener(text)) return null
+  const selector = staticCaseSelector(text)
+  if (selector === null) return null
+  const body = /\bcase\s+[^\s]+\s+in\b([\s\S]*?)(?:\besac\b|$)/.exec(text)?.[1]
+  if (!body) return null
+  const armPattern = /(?:^|;;)\s*([^()]*)\)\s*([\s\S]*?)(?=;;|$)/g
+  for (const match of body.matchAll(armPattern)) {
+    const patterns = match[1].split('|').map((pattern) => pattern.trim())
+    const literals = patterns.map(staticCaseWord)
+    if (patterns.includes('*') || literals.includes(selector)) return match[2]
+  }
+  return null
+}
+
+function caseArmCommandBody(text) {
+  const match = /^\s*(?:[^()\\]|\\.)*\)\s*([\s\S]*?)(?:;;|;&|;;&)?\s*(?:esac)?\s*$/.exec(text)
+  return match ? match[1] : null
+}
+
 function compoundErrexitExempt(text) {
   const trimmed = text.trimStart()
   const close =
@@ -2359,9 +2392,13 @@ function annotateFunctionScopes(logical) {
         arm: 0,
         selector: staticCaseSelector(trimmed),
         armMatches: null,
+        selectedArm: null,
       })
     const caseArmMatches = staticCaseArmMatches(trimmed, cases.at(-1)?.selector ?? null)
-    if (caseArmMatches !== null) cases.at(-1).armMatches = caseArmMatches
+    if (caseArmMatches !== null) {
+      cases.at(-1).armMatches = caseArmMatches
+      if (caseArmMatches === true) cases.at(-1).selectedArm = cases.at(-1).arm
+    }
     line.functionScope = functions.at(-1)?.id ?? null
     line.groupScope = groups.map(({ id }) => id).join('/')
     line.inSubshell = groups.some(({ kind }) => kind === 'paren')
@@ -2413,8 +2450,11 @@ function annotateFunctionScopes(logical) {
         (functions.at(-1).bodyKind === 'paren' && parenDepth < functions.at(-1).bodyDepth))
     )
       functions.pop()
-    while (groups.at(-1)?.kind === 'brace' && groups.at(-1).depth > braceDepth) groups.pop()
+    const closedBraceGroups = []
+    while (groups.at(-1)?.kind === 'brace' && groups.at(-1).depth > braceDepth)
+      closedBraceGroups.push(groups.pop())
     while (groups.at(-1)?.kind === 'paren' && groups.at(-1).depth > parenDepth) groups.pop()
+    if (closedBraceGroups.length) line.closedBraceGroups = closedBraceGroups
     const conditional = conditionalOpener(trimmed)
     const closer = conditional?.[1] === 'if' || conditional?.[1] === 'elif' ? 'fi' : 'done'
     const closesInlineConditional =
@@ -2435,7 +2475,7 @@ function annotateFunctionScopes(logical) {
       cases.at(-1).arm += 1
       cases.at(-1).armMatches = null
     }
-    if (closesCase) cases.pop()
+    if (closesCase) line.closedCase = cases.pop()
     if (conditionalBranchDelimiter(trimmed) !== -1 && conditionals.at(-1)?.closer === 'fi') {
       const current = conditionals.at(-1)
       current.branch += 1
@@ -3837,6 +3877,23 @@ const PATTERN_VALUE_OPTIONS_BY_COMMAND = new Map([
 // length is the index just past it and any glob mark at or beyond that index sits in the value.
 const ATTACHED_OPTION_VALUE = /^-{1,2}[A-Za-z0-9][^=]*=/
 
+const PIPELINE_STATUS_HEAD_COMMANDS = new Set([
+  'make',
+  'go',
+  'bazel',
+  'pnpm',
+  'npm',
+  'npx',
+  'yarn',
+  'cargo',
+  'pytest',
+  'golangci-lint',
+  'gofmt',
+  'prettier',
+  'eslint',
+  'tsc',
+])
+
 // See (i): `[UPPER_SNAKE]` is this corpus’s documentation placeholder — a word a reader
 // substitutes by hand, not a bracket glob they are meant to quote. The space-separated form is
 // already exempt from it, because that branch only fires for an option on its command’s
@@ -4055,6 +4112,452 @@ export function findUnquotedOptionGlobs(body) {
     pending = null
   }
   if (pending) analyze(pending.tokens, pending.lineOffset)
+  return findings
+}
+
+function readsPipelineHeadStatus(text) {
+  return /\$\{PIPESTATUS\[0\]\}|\$pipestatus\[1\]/.test(text)
+}
+
+function guardsPipelineHeadStatus(text) {
+  if (!readsPipelineHeadStatus(text)) return false
+  const firstStatusRead = text.search(/\$\{PIPESTATUS\[0\]\}|\$pipestatus\[1\]/)
+  if (
+    scanGuardOperators(text).separators.some(
+      ({ at, operator }) => at < firstStatusRead && operator !== '&&' && operator !== '||',
+    )
+  )
+    return false
+  const status = String.raw`(?:\$\{PIPESTATUS\[0\]\}|\$pipestatus\[1\])`
+  const failureCompare = String.raw`(?:-ne|!=)\s*0`
+  const successCompare = String.raw`(?:-eq|==)\s*0`
+  if (
+    new RegExp(String.raw`${status}[\s\S]*${successCompare}[\s\S]*(?:\|\||or)\s*`).test(text) &&
+    branchReachesExit(text.replace(/^[\s\S]*?(?:\|\||or)\s*/, ''))
+  )
+    return true
+  if (
+    new RegExp(String.raw`${status}[\s\S]*${failureCompare}[\s\S]*(?:&&|and)\s*`).test(text) &&
+    branchReachesExit(text.replace(/^[\s\S]*?(?:&&|and)\s*/, ''))
+  )
+    return true
+  const conditionalAt = embeddedConditionalStart(text)
+  if (conditionalAt === -1) return false
+  const conditional = text.slice(conditionalAt)
+  if (
+    !new RegExp(String.raw`\b(?:if|elif)\b[\s\S]*${status}[\s\S]*${failureCompare}`).test(
+      conditional,
+    )
+  )
+    return false
+  return inlineCompoundParts(conditional).bodies.some(
+    ({ branch, text }) => branch === 'then' && branchReachesExit(text),
+  )
+}
+
+function guardedPipelineAtsInLine(text) {
+  const guarded = new Set()
+  const { separators, pipelines } = scanGuardOperators(text)
+  if (separators.length === 0 || pipelines.length === 0) return guarded
+  let segmentStart = 0
+  for (const separator of separators) {
+    if (separator.operator !== ';') {
+      segmentStart = separator.at + separator.operator.length
+      continue
+    }
+    const guard = text.slice(separator.at + separator.operator.length)
+    if (!guardsPipelineHeadStatus(guard)) {
+      segmentStart = separator.at + separator.operator.length
+      continue
+    }
+    const priorPipelines = pipelines.filter(({ at }) => at >= segmentStart && at < separator.at)
+    const lastPipeline = priorPipelines.at(-1)
+    if (lastPipeline) guarded.add(lastPipeline.at)
+    segmentStart = separator.at + separator.operator.length
+  }
+  return guarded
+}
+
+function guardedPipelineAtByNextLine(current, next) {
+  if (!next || next.lineOffset > current.lineOffset + 1 || !guardsPipelineHeadStatus(next.text))
+    return null
+  const { separators, pipelines } = scanGuardOperators(current.text)
+  const lastPipeline = pipelines.at(-1)
+  if (!lastPipeline) return null
+  return separators.some(({ at }) => at > lastPipeline.at) ? null : lastPipeline.at
+}
+
+function maskedPipelineOptionStateAfter(text, options) {
+  if (isFunctionDeclaration(text)) return options
+  const selectedCaseBody = staticallySelectedInlineCaseBody(text)
+  if (selectedCaseBody !== null) return shellOptionStateAfter(selectedCaseBody, options)
+  const armBody = caseArmCommandBody(text)
+  if (armBody !== null) return shellOptionStateAfter(armBody, options)
+  const conditional = conditionalOpener(text)
+  const subshell = inlineSubshellBody(text)
+  if (subshell !== null) return shellOptionStateAfter(subshell, options)
+  if (!conditional) return shellOptionStateAfter(text, options)
+
+  let next = shellOptionStateAfter(conditionalPredicate(text, conditional), options)
+  const parts = inlineCompoundParts(text)
+  const selectedBody = staticallySelectedConditionalBody(text, conditional, parts.bodies)
+  if (selectedBody !== null && selectedBody !== -1)
+    next = shellOptionStateAfter(parts.bodies[selectedBody].text, next)
+  let trailing = parts.trailing
+  while (trailing) {
+    next = shellOptionStateAfter(trailing, next)
+    trailing = inlineCompoundParts(trailing).trailing
+  }
+  return next
+}
+
+function conditionalPredicateEndsAt(text, conditional) {
+  const keyword = conditional[1]
+  const terminator = keyword === 'if' || keyword === 'elif' ? 'then' : 'do'
+  const keywordAt = conditional.index + conditional[0].lastIndexOf(keyword)
+  const predicateAt = keywordAt + keyword.length
+  const close = new RegExp(`(?:^|[;\\n])\\s*${terminator}\\b`).exec(text.slice(predicateAt))
+  return predicateAt + (close?.index ?? text.length)
+}
+
+function pipelineIsConditionalPredicate(text, pipelineAt) {
+  const conditional = conditionalOpener(text)
+  return Boolean(conditional && pipelineAt < conditionalPredicateEndsAt(text, conditional))
+}
+
+function pipelineHeadCommand(text, pipelineAt) {
+  const before = scanGuardOperators(text.slice(0, pipelineAt))
+  const segmentStart = Math.max(
+    before.pipelines.at(-1)?.at ?? -1,
+    before.separators.at(-1)?.at ?? -1,
+  )
+  const head = text
+    .slice(segmentStart === undefined ? 0 : segmentStart + 1, pipelineAt)
+    .replace(/^\s*(?:[^()\\]|\\.)*\)\s*/, '')
+  const tokens = tokenizeShellLine(head, {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  }).filter((token) => !token.operator)
+  const at = commandWordIndex(tokens)
+  if (at === -1) return ''
+  return removeQuotes(tokens[at].raw).split('/').pop()
+}
+
+function inlineCommandGroups(text) {
+  const groups = []
+  const stack = []
+  let quote = null
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (startsComment(text, i)) break
+    if (ch === '(' || ch === '{') {
+      stack.push({ ch, at: i })
+      continue
+    }
+    const opener = stack.at(-1)
+    if (!opener) continue
+    if ((ch === ')' && opener.ch === '(') || (ch === '}' && opener.ch === '{')) {
+      stack.pop()
+      if (stack.length === 0) groups.push({ kind: opener.ch, at: opener.at, end: i })
+    }
+  }
+  return groups
+}
+
+function pipelineInsideCommandSubstitution(text, pipelineAt) {
+  let quote = null
+  for (let i = 0; i < text.length && i < pipelineAt; i += 1) {
+    const ch = text[i]
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null
+        continue
+      }
+      if (ch === '$' && text[i + 1] === '(') {
+        const end = matchingParen(text, i + 1)
+        if (end !== -1 && pipelineAt > i + 1 && pipelineAt < end) return true
+        if (end !== -1) i = end
+      } else if (ch === '`') {
+        const end = matchingBacktick(text, i)
+        if (end !== -1 && pipelineAt > i && pipelineAt < end) return true
+        if (end !== -1) i = end
+      }
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (startsComment(text, i)) break
+    if (ch === '$' && text[i + 1] === '(') {
+      const end = matchingParen(text, i + 1)
+      if (end !== -1 && pipelineAt > i + 1 && pipelineAt < end) return true
+      if (end !== -1) i = end
+      continue
+    }
+    if (ch === '`') {
+      const end = matchingBacktick(text, i)
+      if (end !== -1 && pipelineAt > i && pipelineAt < end) return true
+      if (end !== -1) i = end
+    }
+  }
+  return false
+}
+
+function maskPipelineCommandSubstitutions(text) {
+  const chars = [...text]
+  let quote = null
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = chars[i]
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null
+        continue
+      }
+      if (ch === '$' && chars[i + 1] === '(') {
+        const end = matchingParen(text, i + 1)
+        if (end !== -1) {
+          for (let j = i + 2; j < end; j += 1) if (chars[j] !== '\n') chars[j] = ' '
+          i = end
+        }
+      } else if (ch === '`') {
+        const end = matchingBacktick(text, i)
+        if (end !== -1) {
+          for (let j = i + 1; j < end; j += 1) if (chars[j] !== '\n') chars[j] = ' '
+          i = end
+        }
+      }
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (startsComment(text, i)) {
+      const end = text.indexOf('\n', i + 1)
+      if (end === -1) break
+      i = end
+      continue
+    }
+    if (ch === '$' && chars[i + 1] === '(') {
+      const end = matchingParen(text, i + 1)
+      if (end !== -1) {
+        for (let j = i + 2; j < end; j += 1) if (chars[j] !== '\n') chars[j] = ' '
+        i = end
+      }
+      continue
+    }
+    if (ch === '`') {
+      const end = matchingBacktick(text, i)
+      if (end !== -1) {
+        for (let j = i + 1; j < end; j += 1) if (chars[j] !== '\n') chars[j] = ' '
+        i = end
+      }
+    }
+  }
+  return chars.join('')
+}
+
+/**
+ * Report build/verify pipelines whose head command status is masked by the pipeline tail.
+ * Returns [{ lineOffset, head, option }], with `lineOffset` relative to `body`.
+ */
+export function findMaskedPipelineStatus(body) {
+  const findings = []
+  const inspect = (source, baseOffset, initialOptions) => {
+    const masked = maskPipelineCommandSubstitutions(
+      maskHeredocBodies(source.split('\n')).join('\n'),
+    )
+    const logical = annotateFunctionScopes(guardLogicalLines(masked))
+    const definitions = functionDefinitions(logical)
+    const lines = annotateFunctionScopes(splitInvokedFunctionLines(logical, definitions))
+    let options = initialOptions
+    const scopedOptions = new Map()
+    const optionState = (next) => {
+      const { subshellDepth, ...state } = next
+      return state
+    }
+    const scopeKey = (functionScope, conditionalScope, caseScope, groupScope) =>
+      `${functionScope ?? ''}|${conditionalScope ?? ''}|${caseScope ?? ''}|${groupScope ?? ''}`
+    const optionsForScope = (functionScope, conditionalScope, caseScope, groupScope) =>
+      scopedOptions.get(scopeKey(functionScope, conditionalScope, caseScope, groupScope))
+        ?.options ?? optionState(options)
+    const updateOptions = (functionScope, conditionalScope, caseScope, groupScope, next) => {
+      const key = scopeKey(functionScope, conditionalScope, caseScope, groupScope)
+      if (key === '|||') options = optionState(next)
+      else scopedOptions.set(key, { options: optionState(next) })
+    }
+
+    const analyze = (text, lineOffset, next, lineOptions) => {
+      for (const group of inlineCommandGroups(text)) {
+        const prefixOptions = shellOptionStateAfter(text.slice(0, group.at), lineOptions)
+        const inner = text.slice(group.at + 1, group.end)
+        inspect(
+          inner,
+          baseOffset + lineOffset + text.slice(0, group.at + 1).split('\n').length - 1,
+          prefixOptions,
+        )
+      }
+      const { pipelines } = scanGuardOperators(text)
+      if (pipelines.length === 0) return
+      const guardedPipelineAts = guardedPipelineAtsInLine(text)
+      const guardedPipelineAt = guardedPipelineAtByNextLine({ text, lineOffset }, next)
+      for (const { at } of pipelines) {
+        if (pipelineInsideCommandSubstitution(text, at)) continue
+        const pipelineOptions = shellOptionStateAfter(text.slice(0, at), lineOptions)
+        if (pipelineOptions.pipefail) continue
+        if (
+          guardedPipelineAts.has(at) ||
+          at === guardedPipelineAt ||
+          pipelineIsConditionalPredicate(text, at)
+        )
+          continue
+        const head = pipelineHeadCommand(text, at)
+        if (!PIPELINE_STATUS_HEAD_COMMANDS.has(head)) continue
+        findings.push({ lineOffset: baseOffset + lineOffset, head, option: 'pipefail' })
+      }
+    }
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const {
+        text,
+        lineOffset,
+        functionScope,
+        conditionalScope,
+        caseScope,
+        groupScope,
+        closedBraceGroups,
+        closedCase,
+        closedConditional,
+      } = lines[index]
+      let lineOptions = optionsForScope(functionScope, conditionalScope, caseScope, groupScope)
+      const subshell = inlineSubshellBody(text)
+      if (functionScope) {
+        // Function bodies execute only at invocation; analyze their pipelines with caller state.
+      } else if (subshell !== null) {
+        inspect(subshell, baseOffset + lineOffset, lineOptions)
+      } else if (conditionalOpener(text)) {
+        let parts = inlineCompoundParts(text)
+        lineOptions = shellOptionStateAfter(
+          conditionalPredicate(text, conditionalOpener(text)),
+          lineOptions,
+        )
+        for (const part of parts.bodies) {
+          analyze(part.text, lineOffset + part.lineOffset, null, lineOptions)
+        }
+        while (parts.trailing) {
+          analyze(parts.trailing, lineOffset, null, lineOptions)
+          parts = inlineCompoundParts(parts.trailing)
+        }
+      } else {
+        analyze(text, lineOffset, lines[index + 1], lineOptions)
+      }
+      for (const { name, pipeline, finalPipelineSegment } of functionCalls(text, definitions)) {
+        if (pipeline && !finalPipelineSegment) continue
+        const definition = definitions.get(name)
+        inspect(definition.body, baseOffset + definition.lineOffset, lineOptions)
+        lineOptions = maskedPipelineOptionStateAfter(definition.body, lineOptions)
+      }
+      updateOptions(
+        functionScope,
+        conditionalScope,
+        caseScope,
+        groupScope,
+        maskedPipelineOptionStateAfter(text, lineOptions),
+      )
+      if (staticallySelectedInlineCaseBody(text) !== null) {
+        const outerCaseScope = caseScope.split('/').filter(Boolean).slice(0, -1).join('/')
+        updateOptions(
+          functionScope,
+          conditionalScope,
+          outerCaseScope,
+          groupScope,
+          maskedPipelineOptionStateAfter(text, lineOptions),
+        )
+      }
+      if (closedConditional?.closer === 'fi' && closedConditional.selectedBranch !== null) {
+        const selectedScope = [
+          ...(conditionalScope ? conditionalScope.split('/') : []),
+          `${closedConditional.id}.${closedConditional.selectedBranch}`,
+        ].join('/')
+        const selected = scopedOptions.get(
+          scopeKey(functionScope, selectedScope, caseScope, groupScope),
+        )
+        if (selected)
+          updateOptions(functionScope, conditionalScope, caseScope, groupScope, selected.options)
+      }
+      if (closedCase?.selectedArm != null) {
+        const selectedScope = [
+          ...(caseScope ? caseScope.split('/') : []),
+          `${closedCase.id}.${closedCase.selectedArm}`,
+        ].join('/')
+        const selected = scopedOptions.get(
+          scopeKey(functionScope, conditionalScope, selectedScope, groupScope),
+        )
+        if (selected)
+          updateOptions(functionScope, conditionalScope, caseScope, groupScope, selected.options)
+      }
+      if (closedBraceGroups?.length) {
+        let innerGroupScope = groupScope
+        for (const group of closedBraceGroups) {
+          const selected = scopedOptions.get(
+            scopeKey(functionScope, conditionalScope, caseScope, innerGroupScope),
+          )
+          if (!selected) continue
+          const nextGroupScope = innerGroupScope
+            .split('/')
+            .filter((scope) => scope && scope !== String(group.id))
+            .join('/')
+          updateOptions(
+            functionScope,
+            conditionalScope,
+            caseScope,
+            nextGroupScope,
+            selected.options,
+          )
+          innerGroupScope = nextGroupScope
+        }
+      }
+    }
+    return options
+  }
+
+  inspect(body, 0, { errexit: false, inheritErrexit: false, pipefail: false })
   return findings
 }
 
@@ -4923,9 +5426,9 @@ function makeBashRunner(tmpDir) {
 
 /**
  * Walk both authoring roots and return [{ file, line, kind, message }]. `kind` is one of
- * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `option-glob` / `inert-guard` /
- * `gh-body-interpolation` / `gh-body-file-interpolation` / `node-eval-interpolation` /
- * `bare-positional`, plus `missing-bash` when the gate fails closed.
+ * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `option-glob` / `pipeline-status` /
+ * `inert-guard` / `gh-body-interpolation` / `gh-body-file-interpolation` /
+ * `node-eval-interpolation` / `bare-positional`, plus `missing-bash` when the gate fails closed.
  */
 export async function checkSkillShellInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -4991,6 +5494,15 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
             line: block.startLine + 1 + optionGlob.lineOffset,
             kind: 'option-glob',
             message: `${optionGlob.option} carries an unquoted glob in its value (${optionGlob.globs.join(' ')}) — the shell expands it before the command runs: the attached \`--opt=<glob>\` form aborts the line under fish (\`No matches for wildcard\`, exit 124) and zsh (\`no matches found\`, exit 1), which reads as zero hits, and the space-separated form expands to real filenames so the command silently filters on the wrong value; quote it, e.g. ${fix}`,
+          })
+        }
+
+        for (const pipeline of findMaskedPipelineStatus(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + pipeline.lineOffset,
+            kind: 'pipeline-status',
+            message: `${pipeline.head} is the head of a pipeline without pipefail, so the shell reports the tail command's status instead; add \`set -o pipefail\` before it, or in fish read \`$pipestatus[1]\` explicitly`,
           })
         }
 

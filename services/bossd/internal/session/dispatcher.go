@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/sessionreason"
+	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -218,7 +219,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 
 	switch event := ev.Event.(type) {
 	case vcs.ChecksPassed:
-		return d.handleChecksPassed(ctx, sm, sess)
+		return d.handleChecksPassed(ctx, sm, sess, event)
 	case vcs.ChecksFailed:
 		return d.handleChecksFailed(ctx, sm, sess, event)
 	case vcs.ConflictDetected:
@@ -287,13 +288,21 @@ func attemptHeadSHAUpdate(sm *machine.Machine, headSHA string) **string {
 	return &headPtr
 }
 
-func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ChecksPassed) error {
 	if err := sm.FireCtx(ctx, machine.ChecksPassed); err != nil {
 		return fmt.Errorf("fire checks_passed: %w", err)
 	}
 
 	newState := int(sm.State())
 	checkState := int(machine.CheckStatePassed)
+	demonstrated := event.Demonstrated || event.HeadSHA == ""
+	if !demonstrated {
+		checkState = int(machine.CheckStateUnspecified)
+	}
+	checkHeadSHA := event.HeadSHA
+	checkHeadSHAPtr := &checkHeadSHA
+	checkObservedAt := sqlutil.TimeNow()
+	checkObservedAtPtr := &checkObservedAt
 	// Reaching green resets the fix-loop budget: the current commit passed CI,
 	// so any prior failed-attempt tally is stale and a genuinely new failure
 	// should start from a clean slate. Clear the last-counted attempt SHA too
@@ -301,10 +310,12 @@ func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine
 	zeroAttempts := 0
 	var clearHeadSHA *string // *nil → set column NULL
 	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
-		State:              &newState,
-		LastCheckState:     &checkState,
-		AttemptCount:       &zeroAttempts,
-		LastAttemptHeadSHA: &clearHeadSHA,
+		State:                 &newState,
+		LastCheckState:        &checkState,
+		LastCheckStateHeadSHA: &checkHeadSHAPtr,
+		LastCheckStateAt:      &checkObservedAtPtr,
+		AttemptCount:          &zeroAttempts,
+		LastAttemptHeadSHA:    &clearHeadSHA,
 	}); err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
@@ -351,12 +362,18 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 
 	newState := int(sm.State())
 	checkState := int(machine.CheckStateFailed)
+	checkHeadSHA := event.HeadSHA
+	checkHeadSHAPtr := &checkHeadSHA
+	checkObservedAt := sqlutil.TimeNow()
+	checkObservedAtPtr := &checkObservedAt
 	attemptCount := sm.Context().AttemptCount
 	update := db.UpdateSessionParams{
-		State:              &newState,
-		LastCheckState:     &checkState,
-		AttemptCount:       &attemptCount,
-		LastAttemptHeadSHA: attemptHeadSHAUpdate(sm, event.HeadSHA),
+		State:                 &newState,
+		LastCheckState:        &checkState,
+		LastCheckStateHeadSHA: &checkHeadSHAPtr,
+		LastCheckStateAt:      &checkObservedAtPtr,
+		AttemptCount:          &attemptCount,
+		LastAttemptHeadSHA:    attemptHeadSHAUpdate(sm, event.HeadSHA),
 	}
 
 	// Reaching Blocked from these handlers means the fix loop exhausted its

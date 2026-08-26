@@ -84,6 +84,49 @@ explain what its amendment guard protects.
 
 ---
 
+## Installed skill drift preflight
+
+Before Phase 1, gate the installed skill tree this run is reading against this checkout's skill
+source. Run this before repair writes, branch mutation, or any push. Resolve the toolbox path inside
+the block because exported variables do not survive between tool calls.
+
+```bash
+if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-repair/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
+fi
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
+  if O="$("$BOSS_BIN" skills check --gate 2>&1)"; then
+    if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
+  else
+    case "$O" in
+      *--gate*) node "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_REPAIR_TOOLBOX" || true ;;
+      *)
+        printf '%s\n' "$O" >&2
+        R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
+        if [ -n "$R" ]; then
+          echo "BLOCKED: installed boss skills differ from checkout source; run: $R" >&2
+        else
+          echo "BLOCKED: installed boss skills differ from checkout source; see gate output above" >&2
+        fi
+        exit 1 ;;
+    esac
+  fi
+elif [ -f "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" ]; then
+  node "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_REPAIR_TOOLBOX" || true
+else
+  echo "boss-toolbox-drift: (drift helper not installed) — this install predates the check; drift is UNKNOWN, not clean." >&2
+fi
+```
+
+The CLI gate is fail-closed only for drifted paths this branch did not edit. The no-CLI helper path
+is warning-only because it can only compare helper files and may itself be stale.
+
+---
+
 ## Boss transport preflight
 
 Before Phase 1, decide **which carrier** this run will use for boss session operations — reading the
@@ -100,10 +143,16 @@ BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolb
 if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
 ```
 
-Enumerate the available boss MCP tool names and `boss` subcommands, then diff both at once with
+Enumerate the available boss MCP tool names and `boss` subcommands from `boss env --json`:
+read `.capabilities.mcp` for MCP tool names and `.capabilities.cli` for fully-qualified CLI
+commands. `boss --help` is not a valid inventory source: its grouped help output has no stable
+`Available Commands:` header and prints only bare top-level names, which cannot prove nested
+commands such as `boss chat send`.
+
+Diff both inventories at once with
 `bossEpicTransportPreflight({availableTools, availableCliCommands})` from
 `$BOSS_REPAIR_TOOLBOX/session/boss.mjs`, which returns `{ ok, transport, missing, degraded,
-partial }`:
+partial, inventoryHint }`:
 
 The CLI is **preferred, not a fallback** — a complete CLI set wins even when the MCP set is also
 complete. That preference is what made it safe to stop wiring the boss MCP server by default, so on
@@ -114,7 +163,7 @@ a managed spawn expect `cli`.
 - `transport: 'mcp'` — the CLI set is incomplete and the tool set is complete. Proceed on the
   richer carrier.
 - `ok: false` — neither is complete. Stop `BLOCKED: no complete boss transport: <comma-separated
-missing>`, naming everything absent from both carriers in one line.
+missing>; <inventoryHint when non-null>`, naming everything absent from both carriers in one line.
 
 **Report the chosen transport in the repair run's opening line** — `transport: <mcp|cli>`, plus
 `degraded: <comma-separated capabilities>` when `degraded` is non-empty, plus
@@ -201,7 +250,7 @@ tool absent, or a higher-priority      -> run the strategy inline (sanctioned)
 dispatch attempted and failed          -> run the strategy inline (sanctioned)
 ```
 
-Dispatch is the normal branch — a session that provisions the subagent tool should use it (`subagent_type: general-purpose`), because the subagent keeps the bulk material out of the orchestrator's context and gives the fix a second voice. Inline is the **sanctioned** path for a session where the tool genuinely is not usable, not a lesser mode to choose by preference: read the permission actually in force rather than assuming. A blanket "do not call the subagent tool unless the user asked for it" instruction is one common instance of the second branch; `BOSS_CRON=true` by itself is **not** one — an unattended run may dispatch. Either way the strategy's steps and its reporting are identical; only the context they run in differs, so running inline is never a reason to skip a step or shorten the summary.
+Dispatch is the normal branch — a session that provisions the subagent tool should use it (`subagent_type: general-purpose`), because the subagent keeps the bulk material out of the orchestrator's context and gives the fix a second voice. The binding is agent-neutral: Claude uses awaited `Task` calls, while Codex uses `spawn_agent` and `wait_agent`. Inline is the **sanctioned** path for a session where the tool genuinely is not usable, not a lesser mode to choose by preference: read the permission actually in force rather than assuming, and record a ledger line naming the tier and reason. A blanket "do not call the subagent tool unless the user asked for it" instruction is one common instance of the second branch; `BOSS_CRON=true` by itself is **not** one — an unattended run may dispatch. Either way the strategy's steps and its reporting are identical; only the context they run in differs, so running inline is never a reason to skip a step or shorten the summary.
 
 Read that blanket instruction against its own condition before routing on it. A managed or cron **dispatch grant** — a session preamble stating that launching the unattended session is the operator's standing request for the protocol-mandated dispatches this skill describes — **satisfies** the "unless the user requested it" condition, so a blanket no-subagent instruction is not an inline-routing trigger in such a session and the first branch of the table applies as normal. Absent a grant, that same blanket instruction still routes to the inline branch.
 
@@ -213,7 +262,7 @@ A dispatch stays on the orchestrator's model (Opus): conflict resolution, failin
 must include the gate runner's **authoritative completion evidence** plus the **verbatim final
 summary line** as printed — the test runner's own summary line, the linter's own summary line, or
 the runner's closest equivalent. For a multi-command gate, the aggregate command's completed exit
-status or status file is the authority; an early subcommand's passing summary is not. A gate figure
+status or status file is the authority; an absent status file is unknown rather than a pass; an early subcommand's passing summary is not. A gate figure
 that is not backed by both the completion evidence and quoted line is **unverified** and must be
 reported as unverified rather than as a result. The reason is mechanical: a restated number and a
 fabricated number have the same shape, so quoting the line byte-for-byte and tying it to the
@@ -562,9 +611,17 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 
    If checks are still pending, do not block only on CI. First probe review threads and mergeability, then poll again as described in Phase 3 or Watch Mode.
 
-   **An exit code is not a finding.** Before treating a red gate as a defect in this branch, read the failing output. A lock-contention warning from a tool that permits only one instance at a time, a signing or memory failure raised by a commit hook, and a failure in a file this change does not touch are infrastructure flakes, not findings — each produces a non-zero exit that says nothing about the branch. Re-run the affected target in isolation to confirm, and consult the repo's own agent instructions for the flake signatures it records. Only once the output names something this branch changed is there a failure to repair.
+   **An exit code is not a finding.** Before treating a red gate as a defect in this branch, read the failing output. A lock-contention warning from a tool that permits only one instance at a time, a signing or memory failure raised by a commit hook, and a failure in a file this change does not touch are infrastructure flakes, not findings; a failure already present on the PR's base is an inherited failure, not a finding — each produces a non-zero exit that says nothing about the branch. Re-run the affected target in isolation to confirm, compare the failure against the base when inheritance is plausible, and consult the repo's own agent instructions for the flake signatures it records. Only once the output names something this branch changed and the same cause is not already present on the base is there a failure to repair.
 
-3. For **test failures**:
+3. Triage failing checks by root cause before choosing a repair branch:
+   - Derive a failure signature from each failing check's **output**, not from the check name.
+   - Group the failing checks into a `cause -> checks it explains` table, and record that table in the Repair Summary.
+   - Route by the number of distinct causes. The cause count drives routing, effort sizing, and whether fixes split into separate commits; the red-check count is only a symptom count and drives none of them.
+   - Confirm each candidate cause against the PR's base before treating it as this branch's finding. Prefer reading the base branch's own recorded CI signal because that path is read-only and does not mutate the session worktree.
+   - If the base has no recorded signal for that gate, reproduce the candidate cause at the merge-base in a bounded throwaway worktree. Never check out the base in the session worktree, and never use `git stash`; a concurrent writer may share this worktree, and stash operations can disturb unrelated work.
+   - A cause confirmed to occur on the base is a **residual** with the confirming evidence recorded. Do not repair it in this pass, do not mint a new terminal outcome, and do not mint a new watch token.
+
+4. For **test failures**:
    - Read test output to identify failing tests
    - Read the test file and implementation
    - Fix the root cause (not just the symptom)
@@ -582,7 +639,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      git push
      ```
 
-4. For **lint/format failures**:
+5. For **lint/format failures**:
    - Run the repo's formatter or lint fixer:
      ```bash
      # Examples only; use the command discovered for this repo
@@ -597,7 +654,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      git push
      ```
 
-5. For **build failures**:
+6. For **build failures**:
    - Read build output to identify error
    - Fix compilation/build issues
    - Verify locally with the repo's build command:
@@ -819,7 +876,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      go test ./...
      cargo test
      ```
-   - **An exit code is not a finding.** Before treating a red gate as a defect in this branch, read the failing output. A lock-contention warning from a tool that permits only one instance at a time, a signing or memory failure raised by a commit hook, and a failure in a file this change does not touch are infrastructure flakes, not findings — each produces a non-zero exit that says nothing about the branch. Re-run the affected target in isolation to confirm, and consult the repo's own agent instructions for the flake signatures it records. Only once the output names something this branch changed is there a failure to repair.
+   - **An exit code is not a finding.** Before treating a red gate as a defect in this branch, read the failing output. A lock-contention warning from a tool that permits only one instance at a time, a signing or memory failure raised by a commit hook, and a failure in a file this change does not touch are infrastructure flakes, not findings; a failure already present on the PR's base is an inherited failure, not a finding — each produces a non-zero exit that says nothing about the branch. Re-run the affected target in isolation to confirm, compare the failure against the base when inheritance is plausible, and consult the repo's own agent instructions for the flake signatures it records. Only once the output names something this branch changed and the same cause is not already present on the base is there a failure to repair.
    - Commit with reference to review feedback:
 
      ```bash
@@ -950,6 +1007,9 @@ Provide a concise summary:
 
 **Gate results**:
 - [Each gate run with authoritative completion evidence plus its quoted final summary line | `unverified` for any gate missing either the completion evidence or quoted line | none]
+
+**Root causes**:
+- [Cause count and `cause -> checks it explains` table for failing-check triage | none]
 
 **Residuals**:
 - [What this pass could not resolve and why the round stopped short | none]

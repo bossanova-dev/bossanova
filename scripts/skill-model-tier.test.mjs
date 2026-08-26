@@ -31,28 +31,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { sectionRegion } from './gate-region-lib.mjs'
+
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TREES = ['.claude/skills', '.codex/skills']
 
 const read = (rel) => fs.readFileSync(path.join(rootDir, rel), 'utf8')
 
-/**
- * Split a SKILL.md on headings of the given level and return the section whose heading text
- * starts with `prefix`. The prefix is matched with its trailing punctuation included (e.g.
- * `'Phase 1.5:'`) so a sibling section like `Phase 1.5b:` cannot be picked up instead.
- *
- * Splitting on `###` alone does NOT stop at a following `##`, so the last `###` of a file
- * would swallow every remaining `##` section (e.g. `bs-sweep-mutation`'s
- * `### 8. Create a Ready Green PR` ran to EOF, ~6.7 KB past its own end). That over-broad body
- * makes the JUDGMENT table's `!includes('sonnet')` a future false red on unrelated tail prose —
- * and this branch adds `tier: sonnet` text to sibling sweeps' red-flags tables, so it is a
- * realistic edit. Truncate at the first heading of the same level or shallower.
- */
 function section(body, { heading, prefix }) {
-  const found = body.split(new RegExp(`\\n${heading} `)).find((s) => s.startsWith(prefix))
-  if (!found) return found
-  const shallower = heading.length > 2 ? found.search(/\n#{2} /) : -1
-  return shallower === -1 ? found : found.slice(0, shallower)
+  const marker = body.split('\n').find((line) => line.startsWith(`${heading} ${prefix}`))
+  if (!marker) return undefined
+  return sectionRegion(body, marker, `${heading} ${prefix}`)
 }
 
 // Every dispatch site that routes to the cheap tier today. `bs-sweep-mutation` §2 and

@@ -17,52 +17,6 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
-func TestAggregateChecks(t *testing.T) {
-	success := vcs.CheckConclusionSuccess
-	failure := vcs.CheckConclusionFailure
-
-	tests := []struct {
-		name   string
-		checks []vcs.CheckResult
-		want   vcs.ChecksOverall
-	}{
-		{
-			name:   "all passed",
-			checks: []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}, {Status: vcs.CheckStatusCompleted, Conclusion: &success}},
-			want:   vcs.ChecksOverallPassed,
-		},
-		{
-			name:   "one failed",
-			checks: []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}, {Status: vcs.CheckStatusCompleted, Conclusion: &failure}},
-			want:   vcs.ChecksOverallFailed,
-		},
-		{
-			name:   "still pending",
-			checks: []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}, {Status: vcs.CheckStatusInProgress}},
-			want:   vcs.ChecksOverallPending,
-		},
-		{
-			name:   "all queued",
-			checks: []vcs.CheckResult{{Status: vcs.CheckStatusQueued}, {Status: vcs.CheckStatusQueued}},
-			want:   vcs.ChecksOverallPending,
-		},
-		{
-			name:   "failure short-circuits pending",
-			checks: []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &failure}, {Status: vcs.CheckStatusInProgress}},
-			want:   vcs.ChecksOverallFailed,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := aggregateChecks(tt.checks)
-			if got != tt.want {
-				t.Errorf("aggregateChecks() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPollerEmitsChecksPassed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -89,7 +43,7 @@ func TestPollerEmitsChecksPassed(t *testing.T) {
 	vp.nextCheckResults = []vcs.CheckResult{
 		{Status: vcs.CheckStatusCompleted, Conclusion: &success},
 	}
-	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "sha-pass"}
 
 	poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
 	ch := poller.Run(ctx)
@@ -100,8 +54,16 @@ func TestPollerEmitsChecksPassed(t *testing.T) {
 		if ev.SessionID != "sess-1" {
 			t.Errorf("session = %q, want sess-1", ev.SessionID)
 		}
-		if _, ok := ev.Event.(vcs.ChecksPassed); !ok {
+		passed, ok := ev.Event.(vcs.ChecksPassed)
+		if !ok {
 			t.Errorf("event type = %T, want ChecksPassed", ev.Event)
+		} else {
+			if passed.HeadSHA != "sha-pass" {
+				t.Errorf("ChecksPassed.HeadSHA = %q, want sha-pass", passed.HeadSHA)
+			}
+			if !passed.Demonstrated {
+				t.Error("ChecksPassed.Demonstrated = false, want true")
+			}
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for event")
@@ -129,10 +91,14 @@ func TestPollerEmitsChecksFailed(t *testing.T) {
 		PRNumber: &prNum,
 	}
 
-	// Configure mock to return a failed check.
+	// Configure mock to return every failing conclusion class.
 	failure := vcs.CheckConclusionFailure
+	cancelled := vcs.CheckConclusionCancelled
+	timedOut := vcs.CheckConclusionTimedOut
 	vp.nextCheckResults = []vcs.CheckResult{
 		{Status: vcs.CheckStatusCompleted, Conclusion: &failure},
+		{Status: vcs.CheckStatusCompleted, Conclusion: &cancelled},
+		{Status: vcs.CheckStatusCompleted, Conclusion: &timedOut},
 	}
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen}
 
@@ -148,8 +114,8 @@ func TestPollerEmitsChecksFailed(t *testing.T) {
 		if !ok {
 			t.Errorf("event type = %T, want ChecksFailed", ev.Event)
 		}
-		if len(failed.FailedChecks) != 1 {
-			t.Errorf("failed checks = %d, want 1", len(failed.FailedChecks))
+		if len(failed.FailedChecks) != 3 {
+			t.Errorf("failed checks = %d, want 3", len(failed.FailedChecks))
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for event")

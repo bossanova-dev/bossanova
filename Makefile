@@ -1,4 +1,4 @@
-.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt skills-check vendor-toolbox vendor-toolbox-check build-drift-check \
+.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt skills-check tidy tidy-check vendor-toolbox vendor-toolbox-check build-drift-check \
 	buf-check-version deps-golangci lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -100,6 +100,14 @@ SERVICE_MODULES := $(filter services/%,$(MODULES))
 PLUGIN_MODULES  := $(filter plugins/%,$(MODULES))
 SERVICE_BINS    := $(notdir $(SERVICE_MODULES))
 PLUGIN_BINS     := $(notdir $(PLUGIN_MODULES))
+
+## tidy: Run go mod tidy across every workspace module and leave go.mod/go.sum fixes in place.
+tidy:
+	bash .github/scripts/tidy-drift-all.sh --fix
+
+## tidy-check: Check every workspace module for go.mod/go.sum drift without modifying the tree.
+tidy-check:
+	bash .github/scripts/tidy-drift-all.sh
 
 # Mutation testing output directory
 MUTATE_DIR := .mutate
@@ -654,16 +662,16 @@ test-affected:
 	@commands="$$(node scripts/select-affected-tests.mjs)" || exit $$?; \
 	if [ -z "$$commands" ]; then \
 		echo "make test-smoke"; \
-		node scripts/gate-cache.mjs run --site "test-smoke" --command "make test-smoke" -- $(MAKE) test-smoke || exit $$?; \
+		node scripts/run-gate.mjs --label "make test-smoke" -- node scripts/gate-cache.mjs run --site "test-smoke" --command "make test-smoke" -- $(MAKE) test-smoke || exit $$?; \
 	else \
 		printf '%s\n' "$$commands" | while IFS= read -r command; do \
 			[ -z "$$command" ] && continue; \
 			echo "$$command"; \
 			if { [ "$$command" = "make test-smoke" ] && ! grep -Eq '^test-smoke:' Makefile; }; then \
 				echo "Pending target fallback: make test-scripts"; \
-				node scripts/gate-cache.mjs run --site "test-scripts" --command "make test-scripts" -- $(MAKE) test-scripts || exit $$?; \
+				node scripts/run-gate.mjs --label "make test-scripts" -- node scripts/gate-cache.mjs run --site "test-scripts" --command "make test-scripts" -- $(MAKE) test-scripts || exit $$?; \
 			else \
-				eval "$$command" || exit $$?; \
+				node scripts/run-gate.mjs --label "$$command" -- sh -c "$$command" || exit $$?; \
 			fi; \
 		done; \
 	fi
@@ -826,20 +834,20 @@ lint-check-version:
 ## (lint-docs-affected). Fast is the
 ## default (BOS-371); the exhaustive whole-tree markdown pass is `make lint-all`.
 lint: buf-check-version lint-check-version $(GEN_STAMP)
-	buf lint
-	$(MAKE) lint-scripts
-	@node scripts/lint-affected.mjs
-	$(MAKE) lint-go-fmt
+	node scripts/run-gate.mjs --label "buf lint" -- buf lint
+	node scripts/run-gate.mjs --label "make lint-scripts" -- $(MAKE) lint-scripts
+	@node scripts/run-gate.mjs --label "lint-affected" -- node scripts/lint-affected.mjs
+	node scripts/run-gate.mjs --label "make lint-go-fmt" -- $(MAKE) lint-go-fmt
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
-		node scripts/lint-web-affected.mjs; \
+		node scripts/run-gate.mjs --label "lint-web-affected" -- node scripts/lint-web-affected.mjs; \
 	fi
 	@if [ -d services/docs ]; then \
 		echo "==> Linting services/docs"; \
-		$(MAKE) -C services/docs lint; \
+		node scripts/run-gate.mjs --label "services/docs lint" -- $(MAKE) -C services/docs lint; \
 	fi
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		echo "==> Checking changed docs markdown formatting"; \
-		node scripts/lint-docs-affected.mjs; \
+		node scripts/run-gate.mjs --label "lint-docs-affected" -- node scripts/lint-docs-affected.mjs; \
 	fi
 
 ## lint-all: Exhaustive lint — the same buf/golangci/gofmt/docs gates as `make lint`,
@@ -1088,7 +1096,8 @@ build-boss:
 ## skills-check: Build boss and fail if installed skill trees, binary embed, or checkout
 ## sources disagree. Fail-closed per-machine/local/handoff gate; cannot run in CI.
 skills-check: build-boss
-	BOSS_TRUST_CHECKOUT_SKILLS=1 ./bin/boss skills check
+	# Read-only checks can select an authenticated checkout without the install/sync write opt-in.
+	./bin/boss skills check
 
 build-bossd:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd

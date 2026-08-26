@@ -75,6 +75,9 @@ lint:
 	@node lint-scripts.mjs
 	@node check-skill-shell.mjs
 	@node check-skill-node-fences.mjs
+	@node check-dispatch-contract.mjs
+	@node check-dispatch-batching.mjs
+	@node check-extension-dispatch-parity.mjs
 	@node check-docs-mcp-props.mjs
 	@node check-docs-tool-counts.mjs
 	@node check-docs-absolute-selflinks.mjs
@@ -88,11 +91,8 @@ lint:
 test:
 	cd .. && node --test scripts/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs
 	cd .. && node --test skills-toolbox/*.test.mjs skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.test.mjs
-	cd .. && node scripts/check-test-command-manifest.mjs
-	cd .. && node scripts/check-skill-symbols.mjs
 # BOS-737: the vacuity scan runs here, not only from the root `test-all`. The suites above
 # exercise the detector against stub fixtures; this runs it against the real tree. `test-all`
 # is not reached by any feature-push job (see .github/workflows/bazel.yml), so wiring the
 # ratchet there alone would let a new offender merge green and only surface post-merge.
-	cd .. && node scripts/check-vacuous-regions.mjs
-	cd .. && node scripts/check-raw-size-ratchets.mjs
+	cd .. && node scripts/run-nontap-gates.mjs scripts/check-test-command-manifest.mjs scripts/check-skill-symbols.mjs scripts/check-vacuous-regions.mjs scripts/check-raw-size-ratchets.mjs

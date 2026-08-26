@@ -1007,6 +1007,7 @@ type ProxyCreateSessionRequest struct {
 	// on the daemon's default model and never fires the unattended prompt.
 	Detach           bool    `protobuf:"varint,15,opt,name=detach,proto3" json:"detach,omitempty"`
 	Model            *string `protobuf:"bytes,16,opt,name=model,proto3,oneof" json:"model,omitempty"`
+	Effort           *string `protobuf:"bytes,21,opt,name=effort,proto3,oneof" json:"effort,omitempty"`
 	IsTmuxUnattended bool    `protobuf:"varint,17,opt,name=is_tmux_unattended,json=isTmuxUnattended,proto3" json:"is_tmux_unattended,omitempty"`
 	AccountId        *string `protobuf:"bytes,18,opt,name=account_id,json=accountId,proto3,oneof" json:"account_id,omitempty"`
 	// Mirror CreateSessionRequest.force_branch so hosted MCP create_session can
@@ -1158,6 +1159,13 @@ func (x *ProxyCreateSessionRequest) GetDetach() bool {
 func (x *ProxyCreateSessionRequest) GetModel() string {
 	if x != nil && x.Model != nil {
 		return *x.Model
+	}
+	return ""
+}
+
+func (x *ProxyCreateSessionRequest) GetEffort() string {
+	if x != nil && x.Effort != nil {
+		return *x.Effort
 	}
 	return ""
 }
@@ -5266,17 +5274,18 @@ func (*ProxyDeleteCronJobResponse) Descriptor() ([]byte, []int) {
 // daemon.proto field sets; target_chat_id is the routing key. Delete carries
 // target_chat_id purely for routing (the daemon addresses the callback by id).
 type ProxyCreateGithubCallbackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GroupId       *string                `protobuf:"bytes,1,opt,name=group_id,json=groupId,proto3,oneof" json:"group_id,omitempty"`
-	TargetChatId  string                 `protobuf:"bytes,2,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"`
-	RepoOwner     string                 `protobuf:"bytes,3,opt,name=repo_owner,json=repoOwner,proto3" json:"repo_owner,omitempty"`
-	RepoName      string                 `protobuf:"bytes,4,opt,name=repo_name,json=repoName,proto3" json:"repo_name,omitempty"`
-	PrNumber      int32                  `protobuf:"varint,5,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
-	Trigger       string                 `protobuf:"bytes,6,opt,name=trigger,proto3" json:"trigger,omitempty"`
-	Message       string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	GroupId                 *string                `protobuf:"bytes,1,opt,name=group_id,json=groupId,proto3,oneof" json:"group_id,omitempty"`
+	TargetChatId            string                 `protobuf:"bytes,2,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"`
+	RepoOwner               string                 `protobuf:"bytes,3,opt,name=repo_owner,json=repoOwner,proto3" json:"repo_owner,omitempty"`
+	RepoName                string                 `protobuf:"bytes,4,opt,name=repo_name,json=repoName,proto3" json:"repo_name,omitempty"`
+	PrNumber                int32                  `protobuf:"varint,5,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
+	Trigger                 string                 `protobuf:"bytes,6,opt,name=trigger,proto3" json:"trigger,omitempty"`
+	Message                 string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
+	ExpiresAt               *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
+	ShouldRequireTransition *bool                  `protobuf:"varint,9,opt,name=should_require_transition,json=shouldRequireTransition,proto3,oneof" json:"should_require_transition,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *ProxyCreateGithubCallbackRequest) Reset() {
@@ -5363,6 +5372,13 @@ func (x *ProxyCreateGithubCallbackRequest) GetExpiresAt() *timestamppb.Timestamp
 		return x.ExpiresAt
 	}
 	return nil
+}
+
+func (x *ProxyCreateGithubCallbackRequest) GetShouldRequireTransition() bool {
+	if x != nil && x.ShouldRequireTransition != nil {
+		return *x.ShouldRequireTransition
+	}
+	return false
 }
 
 type ProxyCreateGithubCallbackResponse struct {
@@ -5538,11 +5554,12 @@ func (x *ProxyListGithubCallbacksResponse) GetGithubCallbacks() []*GithubCallbac
 }
 
 type ProxyDeleteGithubCallbackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TargetChatId  string                 `protobuf:"bytes,1,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"` // routing key (FindDaemonForChat)
-	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	TargetChatId       string                 `protobuf:"bytes,1,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"` // routing key (FindDaemonForChat)
+	Id                 string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	ExpectTargetChatId *string                `protobuf:"bytes,3,opt,name=expect_target_chat_id,json=expectTargetChatId,proto3,oneof" json:"expect_target_chat_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ProxyDeleteGithubCallbackRequest) Reset() {
@@ -5589,8 +5606,16 @@ func (x *ProxyDeleteGithubCallbackRequest) GetId() string {
 	return ""
 }
 
+func (x *ProxyDeleteGithubCallbackRequest) GetExpectTargetChatId() string {
+	if x != nil && x.ExpectTargetChatId != nil {
+		return *x.ExpectTargetChatId
+	}
+	return ""
+}
+
 type ProxyDeleteGithubCallbackResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Outcome       string                 `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"` // deleted
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5623,6 +5648,13 @@ func (x *ProxyDeleteGithubCallbackResponse) ProtoReflect() protoreflect.Message 
 // Deprecated: Use ProxyDeleteGithubCallbackResponse.ProtoReflect.Descriptor instead.
 func (*ProxyDeleteGithubCallbackResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{93}
+}
+
+func (x *ProxyDeleteGithubCallbackResponse) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
 }
 
 // Notes proxy messages (BOS-552). The requests mirror the daemon.proto field
@@ -9541,7 +9573,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"outputLine\x12>\n" +
 	"\fstate_change\x18\x02 \x01(\v2\x19.bossanova.v1.StateChangeH\x00R\vstateChange\x12A\n" +
 	"\rsession_ended\x18\x03 \x01(\v2\x1a.bossanova.v1.SessionEndedH\x00R\fsessionEndedB\a\n" +
-	"\x05event\"\xb7\x06\n" +
+	"\x05event\"\xdf\x06\n" +
 	"\x19ProxyCreateSessionRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -9564,10 +9596,11 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x0etracker_source\x18\r \x01(\tH\x05R\rtrackerSource\x88\x01\x01\x12\x14\n" +
 	"\x05force\x18\x0e \x01(\bR\x05force\x12\x16\n" +
 	"\x06detach\x18\x0f \x01(\bR\x06detach\x12\x19\n" +
-	"\x05model\x18\x10 \x01(\tH\x06R\x05model\x88\x01\x01\x12,\n" +
+	"\x05model\x18\x10 \x01(\tH\x06R\x05model\x88\x01\x01\x12\x1b\n" +
+	"\x06effort\x18\x15 \x01(\tH\aR\x06effort\x88\x01\x01\x12,\n" +
 	"\x12is_tmux_unattended\x18\x11 \x01(\bR\x10isTmuxUnattended\x12\"\n" +
 	"\n" +
-	"account_id\x18\x12 \x01(\tH\aR\taccountId\x88\x01\x01\x12!\n" +
+	"account_id\x18\x12 \x01(\tH\bR\taccountId\x88\x01\x01\x12!\n" +
 	"\fforce_branch\x18\x13 \x01(\bR\vforceBranch\x12\x19\n" +
 	"\bdefer_pr\x18\x14 \x01(\bR\adeferPrB\f\n" +
 	"\n" +
@@ -9577,7 +9610,8 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\f_tracker_urlB\x10\n" +
 	"\x0e_tracker_issueB\x11\n" +
 	"\x0f_tracker_sourceB\b\n" +
-	"\x06_modelB\r\n" +
+	"\x06_modelB\t\n" +
+	"\a_effortB\r\n" +
 	"\v_account_id\"\xc1\x01\n" +
 	"\x1aProxyCreateSessionResponse\x12#\n" +
 	"\fsetup_output\x18\x01 \x01(\tH\x00R\vsetupOutput\x121\n" +
@@ -9876,7 +9910,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x19ProxyDeleteCronJobRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\"\x1c\n" +
-	"\x1aProxyDeleteCronJobResponse\"\xd1\x02\n" +
+	"\x1aProxyDeleteCronJobResponse\"\xb0\x03\n" +
 	" ProxyCreateGithubCallbackRequest\x12\x1e\n" +
 	"\bgroup_id\x18\x01 \x01(\tH\x00R\agroupId\x88\x01\x01\x12$\n" +
 	"\x0etarget_chat_id\x18\x02 \x01(\tR\ftargetChatId\x12\x1d\n" +
@@ -9887,9 +9921,11 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\atrigger\x18\x06 \x01(\tR\atrigger\x12\x18\n" +
 	"\amessage\x18\a \x01(\tR\amessage\x12>\n" +
 	"\n" +
-	"expires_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampH\x01R\texpiresAt\x88\x01\x01B\v\n" +
+	"expires_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampH\x01R\texpiresAt\x88\x01\x01\x12?\n" +
+	"\x19should_require_transition\x18\t \x01(\bH\x02R\x17shouldRequireTransition\x88\x01\x01B\v\n" +
 	"\t_group_idB\r\n" +
-	"\v_expires_at\"j\n" +
+	"\v_expires_atB\x1c\n" +
+	"\x1a_should_require_transition\"j\n" +
 	"!ProxyCreateGithubCallbackResponse\x12E\n" +
 	"\x0fgithub_callback\x18\x01 \x01(\v2\x1c.bossanova.v1.GithubCallbackR\x0egithubCallback\"\xc2\x02\n" +
 	"\x1fProxyListGithubCallbacksRequest\x12)\n" +
@@ -9910,11 +9946,14 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\b_triggerB\b\n" +
 	"\x06_state\"k\n" +
 	" ProxyListGithubCallbacksResponse\x12G\n" +
-	"\x10github_callbacks\x18\x01 \x03(\v2\x1c.bossanova.v1.GithubCallbackR\x0fgithubCallbacks\"X\n" +
+	"\x10github_callbacks\x18\x01 \x03(\v2\x1c.bossanova.v1.GithubCallbackR\x0fgithubCallbacks\"\xaa\x01\n" +
 	" ProxyDeleteGithubCallbackRequest\x12$\n" +
 	"\x0etarget_chat_id\x18\x01 \x01(\tR\ftargetChatId\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\tR\x02id\"#\n" +
-	"!ProxyDeleteGithubCallbackResponse\"\xf8\x01\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x126\n" +
+	"\x15expect_target_chat_id\x18\x03 \x01(\tH\x00R\x12expectTargetChatId\x88\x01\x01B\x18\n" +
+	"\x16_expect_target_chat_id\"=\n" +
+	"!ProxyDeleteGithubCallbackResponse\x12\x18\n" +
+	"\aoutcome\x18\x01 \x01(\tR\aoutcome\"\xf8\x01\n" +
 	"\x16ProxyCreateNoteRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\"\n" +
 	"\n" +
@@ -10773,6 +10812,7 @@ func file_bossanova_v1_orchestrator_proto_init() {
 	file_bossanova_v1_orchestrator_proto_msgTypes[84].OneofWrappers = []any{}
 	file_bossanova_v1_orchestrator_proto_msgTypes[88].OneofWrappers = []any{}
 	file_bossanova_v1_orchestrator_proto_msgTypes[90].OneofWrappers = []any{}
+	file_bossanova_v1_orchestrator_proto_msgTypes[92].OneofWrappers = []any{}
 	file_bossanova_v1_orchestrator_proto_msgTypes[94].OneofWrappers = []any{}
 	file_bossanova_v1_orchestrator_proto_msgTypes[98].OneofWrappers = []any{}
 	file_bossanova_v1_orchestrator_proto_msgTypes[100].OneofWrappers = []any{}

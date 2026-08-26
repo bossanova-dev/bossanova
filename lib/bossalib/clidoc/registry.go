@@ -322,7 +322,7 @@ func newRegistry() map[string]Prose {
 				"(green and not a draft — the merge-eligibility moment). Triggers are " +
 				"evaluated on PR state, not on transitions: a callback armed on a PR " +
 				"that ALREADY satisfies its trigger fires on the next evaluation rather " +
-				"than waiting for a fresh event. Delivery only " +
+				"than waiting for a fresh event unless `--on-transition` is set. Delivery only " +
 				"signals that the event fired — always verify the PR's actual state " +
 				"before acting on it. Callbacks expire after 24h by default and may not " +
 				"outlive 30 days.",
@@ -335,7 +335,7 @@ func newRegistry() map[string]Prose {
 				"`ready_for_review` (the draft→ready flip), or `checks_passed_ready` " +
 				"(green and not a draft — merge-eligible). Triggers match on PR state, " +
 				"not on transitions, so arming one against a PR that already satisfies " +
-				"it fires on the next evaluation. The `--message` " +
+				"it fires on the next evaluation unless `--on-transition` is set. The `--message` " +
 				"prompt is delivered verbatim to the target chat when the callback fires " +
 				"and is treated as a secret — it is never echoed back on any surface. " +
 				"Expiry defaults to 24h and may not exceed 30 days.",
@@ -365,11 +365,16 @@ func newRegistry() map[string]Prose {
 					Command:     `boss callback add 123 checks_passed_ready --message "PR #123 is green and ready to merge"`,
 					Explanation: `"ping me when PR #123 is green and ready to merge"`,
 				},
+				{
+					Command:     `boss callback add 123 checks_failed --on-transition --message "PR #123 became red"`,
+					Explanation: `"tell me if this PR becomes red later, but do not fire for its current red state"`,
+				},
 			},
 		},
 		"boss callback list": {
 			Examples: []Example{
 				{Command: "boss callback list"},
+				{Command: "boss callback list --id cb_abc123"},
 				{Command: "boss callback list --repo acme/widget --trigger merged"},
 				{Command: "boss callback list --json"},
 			},

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -541,9 +542,23 @@ func (b *Backend) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCal
 // DeleteGithubCallback ignores targetChatID: this adapter's own daemon owns
 // every callback in its registry, so the id alone resolves it. The parameter
 // exists for the hosted gateway, which uses it to route the delete.
-func (b *Backend) DeleteGithubCallback(ctx context.Context, _ string, id string) error {
-	_, err := b.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id}))
-	return err
+func (b *Backend) DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
+	resp, err := b.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+		Id:                 id,
+		ExpectTargetChatId: stringPtrIfNotEmpty(targetChatID),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func stringPtrIfNotEmpty(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	out := strings.TrimSpace(s)
+	return &out
 }
 
 // --- Notes ---

@@ -34,12 +34,15 @@ import { relative, resolve } from 'node:path'
 
 import { isMainModule } from './main-module.mjs'
 import {
+  classifyCheckCommand,
   DEFAULT_CONFIG,
   loadSkillConfig,
   parseAcceptanceCriteria,
+  parsePremises,
   planDescriptionSections,
   planSections,
   scanFences,
+  tokenizeSimpleShell,
   validatePlanDescription,
 } from './skill-config.mjs'
 
@@ -259,32 +262,6 @@ function scanCitationSections(config, description) {
     })
 }
 
-function tokenizeSimpleShell(command) {
-  const tokens = []
-  let current = ''
-  let quote = null
-  for (let index = 0; index < String(command ?? '').length; index += 1) {
-    const char = command[index]
-    if (quote) {
-      if (char === quote) quote = null
-      else current += char
-      continue
-    }
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char
-    } else if (/\s/.test(char)) {
-      if (current) {
-        tokens.push(current)
-        current = ''
-      }
-    } else {
-      current += char
-    }
-  }
-  if (current) tokens.push(current)
-  return tokens
-}
-
 function fixedStringNeedle(command) {
   const tokens = tokenizeSimpleShell(command)
   const commandIndex = tokens.findIndex((token) => token === 'rg' || token === 'grep')
@@ -417,6 +394,29 @@ export function checkPrBodyOnlyEvidence(config, description) {
     )
 }
 
+export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
+  const violations = []
+  const checkItem = (kind, item) => {
+    if (!item.check) return
+    const classified = classifyCheckCommand(item.check, opts)
+    for (const finding of classified.blocking) {
+      violations.push(
+        violation(
+          `vacuous-${kind}-command-${finding.code}`,
+          `${kind} "${item.text}" names an unresolvable check command: ${finding.message}`,
+        ),
+      )
+    }
+  }
+  for (const criterion of parseAcceptanceCriteria(config, description)) {
+    checkItem('criterion', criterion)
+  }
+  for (const premise of parsePremises(config, description)) {
+    checkItem('premise', premise)
+  }
+  return violations
+}
+
 /**
  * checkPlanContract({ description, plan, config }) -> { ok, violations, couldNotEvaluate }
  *
@@ -543,6 +543,7 @@ export function checkPlanContract({
   violations.push(...citation.violations)
   couldNotEvaluateResults.push(...citation.couldNotEvaluate)
   violations.push(...checkPrBodyOnlyEvidence(config, description))
+  violations.push(...checkVerifyOnlyCommandVacuity(config, description, { cwd: citationCwd }))
 
   return {
     ok: violations.length === 0 && couldNotEvaluateResults.length === 0,

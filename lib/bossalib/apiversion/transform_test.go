@@ -1268,8 +1268,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260821 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260821)
+	if got := reg.Current(); got != apiversion.V20260825 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260825)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -3416,6 +3416,40 @@ func TestSwitchDeadlineCodeChange_TransformResponseIsANoOp(t *testing.T) {
 	apiversion.SwitchDeadlineCodeChange{}.TransformResponse(switchProcedure, msg)
 	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
 		t.Errorf("TransformResponse mutated the response: %+v", msg)
+	}
+}
+
+func TestStaleCheckStateChange(t *testing.T) {
+	change := apiversion.StaleCheckStateChange{}
+	if got := change.Version(); got != apiversion.V20260825 {
+		t.Fatalf("StaleCheckStateChange.Version() = %q, want %q", got, apiversion.V20260825)
+	}
+
+	msg := &pb.ProxyGetSessionResponse{Session: &pb.Session{
+		Id:                     "sess-1",
+		LastCheckState:         pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED,
+		LastCheckStateObserved: pb.ChecksOverall_CHECKS_OVERALL_FAILED,
+	}}
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	if got := msg.GetSession().GetLastCheckState(); got != pb.ChecksOverall_CHECKS_OVERALL_FAILED {
+		t.Errorf("older client last_check_state = %v, want observed FAILED", got)
+	}
+	if got := msg.GetSession().GetLastCheckStateObserved(); got != pb.ChecksOverall_CHECKS_OVERALL_FAILED {
+		t.Errorf("last_check_state_observed = %v, want FAILED", got)
+	}
+
+	current := &pb.ProxyGetSessionResponse{Session: &pb.Session{
+		Id:                     "sess-2",
+		LastCheckState:         pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED,
+		LastCheckStateObserved: pb.ChecksOverall_CHECKS_OVERALL_PASSED,
+	}}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
+		current,
+		apiversion.V20260825,
+	)
+	if got := current.GetSession().GetLastCheckState(); got != pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED {
+		t.Errorf("current client last_check_state = %v, want evaluated UNSPECIFIED", got)
 	}
 }
 

@@ -667,7 +667,8 @@ test('CLI: --require-verbatim rejects changed leading or trailing whitespace', (
   const rewritten = '## Original notes\n\nindentation is significant\n'
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /Original notes differs at line 1/)
+  assert.match(res.stderr, /Original notes whitespace-only difference at line 1, column 1/)
+  assert.match(res.stderr, /original lines: 1, rewritten lines: 1/)
 })
 
 test('CLI: --require-verbatim rejects an altered non-image Markdown link', () => {
@@ -676,7 +677,7 @@ test('CLI: --require-verbatim rejects an altered non-image Markdown link', () =>
     '# Plan\n\n## Original notes\n\nA [rewritten link](https://example.com/a) and text.\n'
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /Original notes differs at line 1/)
+  assert.match(res.stderr, /Original notes content difference at line 1, column 4/)
   assert.ok(!res.stderr.includes('stable link'))
   assert.ok(!res.stderr.includes('rewritten link'))
 })
@@ -710,7 +711,7 @@ test('CLI: --require-verbatim preserves the exact safe external credential refer
   const rewritten = `## Original notes\n\n![a](${REDACTED_EXTERNAL_IMAGE})\n`
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /Original notes differs at line 1/)
+  assert.match(res.stderr, /Original notes content difference at line 1,/)
 })
 
 test('CLI: --require-verbatim accepts an unchanged safe external credential reference', () => {
@@ -726,8 +727,64 @@ test('CLI: --require-verbatim does not echo rejected note content', () => {
   const rewritten = '## Original notes\n\ndeployment token: live-token-value\n'
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /Original notes differs at line 1/)
+  assert.match(res.stderr, /Original notes content difference at line 1,/)
   assert.ok(!res.stderr.includes('live-token-value'))
+})
+
+test('CLI: --require-verbatim diagnoses one added trailing newline within original line range', () => {
+  const original = 'line one\nline two\nline three'
+  const rewritten = `## Original notes\n\n${original}\n`
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /Original notes trailing newline differs at line 3/)
+  assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
+})
+
+test('CLI: --require-verbatim diagnoses one removed trailing newline as trailing newline drift', () => {
+  const original = 'line one\nline two\nline three\n'
+  const rewritten = '## Original notes\n\nline one\nline two\nline three'
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /Original notes trailing newline differs at line 3/)
+  assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
+})
+
+test('CLI: --require-verbatim diagnoses indentation-only drift after line one', () => {
+  const original = 'line one\nline two\nline three'
+  const rewritten = '## Original notes\n\nline one\n  line two\nline three'
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /Original notes whitespace-only difference at line 2, column 1/)
+  assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
+})
+
+test('CLI: --require-verbatim diagnoses trailing-space-only drift with a column', () => {
+  const original = 'line one\nline two\nline three'
+  const rewritten = '## Original notes\n\nline one\nline two \nline three'
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /Original notes whitespace-only difference at line 2, column 9/)
+  assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
+})
+
+test('CLI: --require-verbatim diagnoses truncated Original notes with both line counts', () => {
+  const original = 'line one\nline two\nline three'
+  const rewritten = '## Original notes\n\nline one\nline two'
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /Original notes content difference at line 3, column 1/)
+  assert.match(res.stderr, /original lines: 3, rewritten lines: 2/)
+})
+
+test('CLI: --require-verbatim never echoes the differing line text', () => {
+  const sentinel = 'distinctive-sentinel-source-line'
+  const original = `line one\n${sentinel}\nline three`
+  const rewritten = '## Original notes\n\nline one\nrewritten secret line\nline three'
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /Original notes content difference at line 2,/)
+  assert.ok(!res.stderr.includes(sentinel))
+  assert.ok(!res.stderr.includes('rewritten secret line'))
 })
 
 test('CLI: --require-verbatim rejects an unredacted external credential query value', () => {
@@ -1374,7 +1431,7 @@ test('CLI: --require-verbatim preserves punctuation after an upload URL', () => 
   const rewritten = `## Original notes\n\nSee ${UPLOAD}\n`
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /Original notes differs at line 1/)
+  assert.match(res.stderr, /Original notes content difference at line 1,/)
 })
 
 test('CLI: --require-verbatim preserves ordinary Markdown backslashes', () => {
@@ -1382,7 +1439,7 @@ test('CLI: --require-verbatim preserves ordinary Markdown backslashes', () => {
   const rewritten = '## Original notes\n\nWindows path: C:temp\n'
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /Original notes differs at line 1/)
+  assert.match(res.stderr, /Original notes content difference at line 1,/)
 })
 
 test('CLI: invoked through a symlinked path -> still fails closed, never a silent exit 0', () => {

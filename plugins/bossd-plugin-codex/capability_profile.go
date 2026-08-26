@@ -25,8 +25,9 @@ const codexOperationRegistrySource = "codex app-server mcpServerStatus/list"
 const codexOperationRegistryWaitDelay = 5 * time.Second
 
 type codexRuntimeTarget struct {
-	Home  string
-	Model string
+	Home   string
+	Model  string
+	Effort string
 	// WorkDir is the directory the profiled codex process runs in. It matters
 	// because codex reads a repo-level `.codex/config.toml` in addition to
 	// `$CODEX_HOME/config.toml`, and it resolves that repo file relative to its
@@ -83,6 +84,9 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 	args := []string{r.binary, "app-server", "--stdio"}
 	if target.Model != "" {
 		args = append(args, "-c", "model="+strconv.Quote(target.Model))
+	}
+	if target.Effort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(target.Effort))
 	}
 	args = loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 	commandFactory := r.commandFactory

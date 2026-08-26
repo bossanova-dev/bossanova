@@ -64,24 +64,26 @@ const (
 // Message holds the registered prompt body. It is a secret payload: it must never
 // be written to logs or copied into last_error/last_event diagnostics.
 type GithubCallback struct {
-	ID              string
-	GroupID         *string // nil = ungrouped (a group of one)
-	TargetChatID    string
-	RepoOwner       string
-	RepoName        string
-	PRNumber        int
-	Trigger         GithubCallbackTrigger
-	State           GithubCallbackState
-	Message         string
-	LeaseOwner      *string
-	LeaseDeadlineAt *time.Time
-	AttemptCount    int
-	NextAttemptAt   *time.Time
-	TriggeredAt     *time.Time
-	DeliveredAt     *time.Time
-	LastError       *string
-	LastEvent       *string
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                      string
+	GroupID                 *string // nil = ungrouped (a group of one)
+	TargetChatID            string
+	RepoOwner               string
+	RepoName                string
+	PRNumber                int
+	Trigger                 GithubCallbackTrigger
+	State                   GithubCallbackState
+	Message                 string
+	ShouldRequireTransition bool
+	HasObservedBaseline     bool
+	LeaseOwner              *string
+	LeaseDeadlineAt         *time.Time
+	AttemptCount            int
+	NextAttemptAt           *time.Time
+	TriggeredAt             *time.Time
+	DeliveredAt             *time.Time
+	LastError               *string
+	LastEvent               *string
+	ExpiresAt               time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }

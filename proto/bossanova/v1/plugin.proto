@@ -572,6 +572,8 @@ message PreflightHeadlessRunRequest {
   // StartAgentRunRequest.work_dir; empty preserves the historical
   // inherit-the-daemon-cwd behaviour for callers that do not set it.
   string work_dir = 4;
+  // Opaque agent reasoning-effort level; "" = plugin default.
+  string effort = 5;
 }
 
 message PreflightHeadlessRunResponse {
@@ -602,6 +604,8 @@ message StartAgentRunRequest {
   // names stay retired.
   reserved 9, 10;
   reserved "managed_mcp_config_path", "is_strict_managed_mcp_config";
+  // Opaque agent reasoning-effort level; "" = plugin default.
+  string effort = 11;
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID
@@ -684,6 +688,8 @@ message BuildInteractiveCommandRequest {
   // use it when they must prepare configuration before the child process starts;
   // it intentionally does not carry the session's secret-bearing environment.
   map<string, string> config_home_env = 13;
+  // Opaque agent reasoning-effort level; "" = plugin default.
+  string effort = 14;
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;

@@ -89,7 +89,7 @@ type Backend interface {
 	// every callback in its registry, so the id alone resolves it).
 	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error)
 	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
-	DeleteGithubCallback(ctx context.Context, targetChatID, id string) error
+	DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error)
 
 	// Notes (durable free-text a run records against a repository so a later
 	// sweep can harvest what was learned). A note is repo-scoped; its session

@@ -848,14 +848,15 @@ func (a *CommandHandlerAdapter) CreateGithubCallback(ctx context.Context, cmd *p
 		return nil, errors.New("create_github_callback: command server not wired")
 	}
 	resp, err := a.Commands.CreateGithubCallback(ctx, connect.NewRequest(&pb.CreateGithubCallbackRequest{
-		GroupId:      cmd.GroupId,
-		TargetChatId: cmd.GetTargetChatId(),
-		RepoOwner:    cmd.GetRepoOwner(),
-		RepoName:     cmd.GetRepoName(),
-		PrNumber:     cmd.GetPrNumber(),
-		Trigger:      cmd.GetTrigger(),
-		Message:      cmd.GetMessage(),
-		ExpiresAt:    cmd.ExpiresAt,
+		GroupId:                 cmd.GroupId,
+		TargetChatId:            cmd.GetTargetChatId(),
+		RepoOwner:               cmd.GetRepoOwner(),
+		RepoName:                cmd.GetRepoName(),
+		PrNumber:                cmd.GetPrNumber(),
+		Trigger:                 cmd.GetTrigger(),
+		Message:                 cmd.GetMessage(),
+		ExpiresAt:               cmd.ExpiresAt,
+		ShouldRequireTransition: cmd.ShouldRequireTransition,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("create github callback: %w", err)
@@ -886,16 +887,27 @@ func (a *CommandHandlerAdapter) ListGithubCallbacks(ctx context.Context, cmd *pb
 }
 
 // DeleteGithubCallback implements SessionCommandHandler.DeleteGithubCallback.
-// The daemon's DeleteGithubCallbackResponse carries no payload, so the response
-// is discarded.
-func (a *CommandHandlerAdapter) DeleteGithubCallback(ctx context.Context, id string) error {
+// The stream command result remains ok-only; daemon-side not_found/not_owned
+// outcomes travel as Connect errors and are preserved for the caller.
+func (a *CommandHandlerAdapter) DeleteGithubCallback(ctx context.Context, id, expectTargetChatID string) error {
 	if a.Commands == nil {
 		return errors.New("delete_github_callback: command server not wired")
 	}
-	if _, err := a.Commands.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id})); err != nil {
+	if _, err := a.Commands.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+		Id:                 id,
+		ExpectTargetChatId: stringPtrIfNotEmpty(expectTargetChatID),
+	})); err != nil {
 		return fmt.Errorf("delete github callback: %w", err)
 	}
 	return nil
+}
+
+func stringPtrIfNotEmpty(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	out := strings.TrimSpace(s)
+	return &out
 }
 
 // CreateNote implements SessionCommandHandler.CreateNote (BOS-552), translating
@@ -1486,6 +1498,7 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 		// create rather than starting interactive on the default model.
 		Detach:           cmd.GetDetach(),
 		Model:            cmd.Model,
+		Effort:           cmd.Effort,
 		IsTmuxUnattended: cmd.GetIsTmuxUnattended(),
 		// Carry defer_pr so the rebuilt request preserves the hosted create's
 		// skip-up-front-draft-PR behavior (PR opened at finalize only if commits

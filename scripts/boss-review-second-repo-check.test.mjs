@@ -17,15 +17,44 @@ test('scaffolds a second repo, discovers the repo-local extension, and passes se
     res.discoveredExtensions.map((e) => e.name),
     ['boss-review-fixturelens'],
   )
+  assert.deepEqual(
+    res.discoveredRounds.map((e) => e.name),
+    ['boss-review-fixtureround'],
+  )
+  assert.deepEqual(
+    res.codexOnlyExtensions.map((e) => e.name),
+    ['boss-review-fixturelens'],
+    'a .codex/skills-only repo-local extension is discoverable',
+  )
+  assert.deepEqual(
+    res.codexOnlyExtensions.map(({ name, role, order }) => ({ name, role, order })),
+    res.discoveredExtensions.map(({ name, role, order }) => ({ name, role, order })),
+    'codex-only discovery matches the canonical root descriptor fields',
+  )
   assert.equal(
     res.envelopeValid,
     true,
-    'the fixture lens result envelope validates for role "lens"',
+    'the fixture lens and round result envelopes validate for their roles',
   )
   assert.equal(
     res.noopWithoutExtension,
     true,
     'discovery returns zero extensions when none installed',
+  )
+  assert.equal(
+    res.noopWithoutRoundExtension,
+    true,
+    'round discovery returns zero extensions when none installed',
+  )
+  assert.equal(
+    res.extensionFreePhaseRFallback,
+    true,
+    'Phase R still exposes lower tiers when no round extensions exist',
+  )
+  assert.equal(
+    res.tier3HeadingNegativeControl,
+    true,
+    'removing the Tier 3 heading makes the fallback proof fail',
   )
 })
 
@@ -44,4 +73,6 @@ test('discovery orders repo-local extensions by (order, name)', async () => {
   }
   assert.equal(ext[0].role, 'lens')
   assert.equal(ext[0].order, 10)
+  assert.equal(res.discoveredRounds[0].role, 'round')
+  assert.equal(res.discoveredRounds[0].order, 20)
 })

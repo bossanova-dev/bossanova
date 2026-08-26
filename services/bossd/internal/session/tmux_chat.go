@@ -426,6 +426,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			spawnAccountID = resumedChat.AccountID
 		}
 	}
+	spawnEffort := EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, spawnAgentName)
 	// Re-select the runner plugin when the chat's provider differs from the
 	// session's — a cross-agent chat spawns its own runner.
 	if spawnAgentName != sess.AgentName {
@@ -480,6 +481,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		WorktreePath:       sess.WorktreePath,
 		AppendSystemPrompt: appendPrompt,
 		Model:              spawnModel,
+		Effort:             spawnEffort,
 		ConfigHomeEnv:      configHomeEnv(tmuxEnv),
 	})
 	if err != nil {
@@ -513,7 +515,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		if !ok {
 			return "", capabilityPreflightError{fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", hookOpts.HeadlessCapabilityProfile, spawnAgentName)}
 		}
-		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(ctx, spawnAgentName, sess.WorktreePath, spawnModel, tmuxEnv, hookOpts.HeadlessCapabilityProfile); err != nil {
+		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(ctx, spawnAgentName, sess.WorktreePath, spawnModel, spawnEffort, tmuxEnv, hookOpts.HeadlessCapabilityProfile); err != nil {
 			return "", capabilityPreflightError{fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", spawnAgentName, hookOpts.HeadlessCapabilityProfile, err)}
 		}
 	}
@@ -728,6 +730,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 		InitialPrompt:  input.Prompt,
 		InitialCommand: input.Command,
 		Model:          sess.Model,
+		Effort:         EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sess.ID, err)
@@ -1417,10 +1420,12 @@ const zeroOutputCronAutonomyDirective = "You are running as an autonomous, sched
 // permission prompt with no human to answer it. That is a permission-layer
 // operator setting, out of scope for this constant.
 //
-// The grant is bounded to what the running skill already mandates, awaited and
-// never backgrounded, so it sanctions the protocol's own dispatch rather than
-// open-ended fan-out. It is prose, not a mechanism: it makes the authority
-// explicit and greppable, and cannot guarantee any model honours it.
+// The grant is bounded to what the running skill already mandates, with
+// awaited-dispatch behaviour defined by the consumer step rather than by
+// foreground execution: a dispatch mechanism that backgrounds every dispatch is
+// not a violation; fire-and-forget is. It is prose, not a mechanism: it makes
+// the authority explicit and greppable, and cannot guarantee any model honours
+// it.
 //
 // The escalation keys on UNDONE WORK, not on a failed dispatch call. Every skill
 // that mandates dispatch also documents an inline fallback for when the dispatch
@@ -1437,9 +1442,12 @@ const unattendedSubagentDirective = "Launching this boss-managed unattended sess
 	"standing request for the subagent dispatches your running skill's protocol mandates. You are " +
 	"authorised to dispatch them without asking, and skipping them is not the conservative choice — " +
 	"it silently downgrades the work you were launched to do. Bound that grant to the protocol: " +
-	"dispatch only what it mandates, and always await every dispatch — never background one " +
-	"(if your dispatch tool backgrounds by default, pass run_in_background: false) — rather than " +
-	"open-ended fan-out or convenience delegation. If a dispatch you cannot make has a documented " +
+	"dispatch only what it mandates. If your dispatch tool backgrounds every dispatch, that is not " +
+	"a violation of this grant; fire-and-forget is. Do not proceed past the step that consumes a " +
+	"dispatch's result without that result in hand, do not assume or fabricate a pending dispatch's " +
+	"outcome, and do not tear down a dispatch's workspace before its stated budget elapses. This " +
+	"bound authorises mandated dispatches rather than open-ended fan-out or convenience delegation. " +
+	"If a dispatch you cannot make has a documented " +
 	"inline fallback, take that fallback: it is the protocol's own recovery, and completing the " +
 	"mandated work inline is a clean result, not a downgrade. Escalate only when the mandated work " +
 	"itself goes undone — the protocol documents no fallback, or the fallback also failed: then do " +
@@ -1492,8 +1500,9 @@ const unattendedSubagentDirective = "Launching this boss-managed unattended sess
 // multi-reviewer agreement, that collapse also makes the agreement signal untrue.
 // The bound, not the exclusion, is what prevents surprise, so the bound is
 // carried over verbatim in substance: only what the protocol mandates, every
-// dispatch awaited and never backgrounded, documented inline fallbacks still a
-// clean result, escalation reserved for mandated work that actually goes undone.
+// awaited-dispatch behaviour defined by the consumer step rather than by
+// foreground execution, documented inline fallbacks still a clean result,
+// escalation reserved for mandated work that actually goes undone.
 //
 // The one clause with no unattended counterpart is the reminder that a human IS
 // present, so anything beyond the mandated dispatches remains theirs to ask for.
@@ -1509,8 +1518,11 @@ const attendedSubagentDirective = "Bossanova ships the subagent-dispatch grant e
 	"mandates — not anything the user has asked for in this chat. You are authorised to dispatch them without " +
 	"asking, and skipping them is not the conservative choice — it silently downgrades the work the skill was " +
 	"invoked to do. Bound that grant to the protocol: dispatch only what it mandates, and always await every " +
-	"dispatch — never background one (if your dispatch tool backgrounds by default, pass " +
-	"run_in_background: false) — rather than open-ended fan-out or convenience delegation. A human is present " +
+	"dispatch. If your dispatch tool backgrounds every dispatch, that is not a violation of this grant; " +
+	"fire-and-forget is. Do not proceed past the step that consumes a dispatch's result without that result " +
+	"in hand, do not assume or fabricate a pending dispatch's outcome, and do not tear down a dispatch's " +
+	"workspace before its stated budget elapses. This bound authorises mandated dispatches rather than " +
+	"open-ended fan-out or convenience delegation. A human is present " +
 	"in this chat, so anything beyond the protocol's mandated dispatches is still theirs to ask for. If a " +
 	"dispatch you cannot make has a documented inline fallback, take that fallback: it is the protocol's own " +
 	"recovery, and completing the mandated work inline is a clean result, not a downgrade. Escalate only when " +

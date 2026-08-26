@@ -398,11 +398,14 @@ func (f *fakeBackend) ListGithubCallbacks(ctx context.Context, req *pb.ListGithu
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) DeleteGithubCallback(ctx context.Context, targetChatID, id string) error {
+func (f *fakeBackend) DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
 	if f.deleteGithubCallback != nil {
-		return f.deleteGithubCallback(ctx, targetChatID, id)
+		if err := f.deleteGithubCallback(ctx, targetChatID, id); err != nil {
+			return nil, err
+		}
+		return &pb.DeleteGithubCallbackResponse{Outcome: "deleted"}, nil
 	}
-	return errNotImpl
+	return nil, errNotImpl
 }
 
 func (f *fakeBackend) CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {

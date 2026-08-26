@@ -19,15 +19,25 @@ function splitRow(line) {
 
 export function auditRows(markdown) {
   const rows = []
+  let header = null
   for (const line of markdown.split(/\r?\n/)) {
     if (!line.startsWith('|')) continue
     const cells = splitRow(line)
-    if (cells.length !== 7) continue
-    if (cells[0] === 'id' || cells[0].startsWith('---')) continue
+    if (cells.every((cell) => /^-+$/.test(cell))) continue
+    if (!header) {
+      if (!cells.includes('id')) continue
+      header = new Map(cells.map((cell, index) => [cell, index]))
+      continue
+    }
+    if (cells.length !== header.size) continue
+    const id = cells[header.get('id')]
+    if (!id || id.startsWith('---')) continue
     rows.push({
-      id: cells[0],
-      file: cells[1].replace(/^`|`$/g, ''),
-      citation: cells[5],
+      id,
+      file: cells[header.get('file')]?.replace(/^`|`$/g, '') ?? '',
+      verdict: cells[header.get('verdict')] ?? '',
+      citation: cells[header.get('await citation')] ?? '',
+      parallelOutPath: cells[header.get('parallel out-path')] ?? '',
     })
   }
   return rows

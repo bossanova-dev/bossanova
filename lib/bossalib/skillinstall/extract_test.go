@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -120,6 +121,85 @@ func TestSourceDrift(t *testing.T) {
 	}
 	if drift, err := SourceDrift(t.TempDir(), srcRoot); err != nil || drift {
 		t.Fatalf("SourceDrift uninstalled tree = (%t, %v), want (false, nil)", drift, err)
+	}
+}
+
+func TestSourceDriftPaths(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), testFS())
+	installed := t.TempDir()
+	if err := Extract(installed, testFS()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := SourceDriftPaths(installed, srcRoot); err != nil || len(got) != 0 {
+		t.Fatalf("SourceDriftPaths matching tree = (%v, %v), want empty, nil", got, err)
+	}
+
+	changes := map[string]string{
+		"boss-test/SKILL.md":                           "changed skill",
+		"boss-repair/scripts/review-feedback-probe.js": "changed script",
+	}
+	for rel, data := range changes {
+		if err := os.WriteFile(filepath.Join(srcRoot, "skills", filepath.FromSlash(rel)), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(filepath.Join(installed, Namespace, "boss-finalize", "add-pr.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, Namespace, "boss-other", "EXTRA.md"), []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(installed, Namespace, "boss-removed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := SourceDriftPaths(installed, srcRoot)
+	if err != nil {
+		t.Fatalf("SourceDriftPaths: %v", err)
+	}
+	want := []string{
+		"boss-finalize/add-pr.sh",
+		"boss-other/EXTRA.md",
+		"boss-removed/",
+		"boss-repair/scripts/review-feedback-probe.js",
+		"boss-test/SKILL.md",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SourceDriftPaths = %#v, want %#v", got, want)
+	}
+}
+
+func TestSourceDriftPathsDetectsExecutableModeDrift(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), testFS())
+	installed := t.TempDir()
+	if err := Extract(installed, testFS()); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(installed, Namespace, "boss-repair", "scripts", "review-feedback-probe.js")
+	if err := os.Chmod(script, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := SourceDriftPaths(installed, srcRoot)
+	if err != nil {
+		t.Fatalf("SourceDriftPaths: %v", err)
+	}
+	want := []string{"boss-repair/scripts/review-feedback-probe.js"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SourceDriftPaths mode drift = %#v, want %#v", got, want)
+	}
+	drift, err := SourceDrift(installed, srcRoot)
+	if err != nil || !drift {
+		t.Fatalf("SourceDrift mode drift = (%t, %v), want true, nil", drift, err)
+	}
+}
+
+func TestSourceDriftPathsUninstalledTree(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), testFS())
+	got, err := SourceDriftPaths(t.TempDir(), srcRoot)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("SourceDriftPaths uninstalled tree = (%v, %v), want empty, nil", got, err)
 	}
 }
 

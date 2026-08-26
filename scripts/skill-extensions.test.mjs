@@ -5,19 +5,37 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
-import { ROLE_SCHEMAS, discoverExtensions, validateResult } from './skill-extensions.mjs'
+import {
+  DEFAULT_EXTENSION_ROOTS,
+  ROLE_SCHEMAS,
+  discoverExtensions,
+  resolveExtensionRoots,
+  validateResult,
+} from './skill-extensions.mjs'
+import {
+  DEFAULT_CONFIG,
+  extensionRootsFor,
+  loadSkillConfig,
+} from '../skills-toolbox/skill-config.mjs'
 
 function scratchRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'skill-ext-'))
 }
 
-function writeSkill(root, name, frontmatterLines) {
-  const dir = path.join(root, '.claude', 'skills', name)
+function writeSkill(root, name, frontmatterLines, skillRoot = '.claude/skills') {
+  const dir = path.join(root, skillRoot, name)
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(
     path.join(dir, 'SKILL.md'),
     ['---', ...frontmatterLines, '---', '', `# ${name}`, ''].join('\n'),
   )
+}
+
+function descriptorSummary(result) {
+  return {
+    extensions: result.extensions.map(({ name, role, order }) => ({ name, role, order })),
+    skipped: result.skipped,
+  }
 }
 
 test('discoverExtensions recognizes a notes extension role', () => {
@@ -35,6 +53,172 @@ test('discoverExtensions recognizes a notes extension role', () => {
     ['boss-build-notes'],
   )
   assert.deepEqual(skipped, [])
+})
+
+test('discoverExtensions scans agent-neutral roots with first-root dedupe by extension name', () => {
+  const cases = [
+    { name: 'claude-only', roots: ['.claude/skills'] },
+    { name: 'codex-only', roots: ['.codex/skills'] },
+    { name: 'both roots', roots: ['.claude/skills', '.codex/skills'] },
+  ]
+
+  for (const scenario of cases) {
+    const root = scratchRoot()
+    for (const skillRoot of scenario.roots) {
+      writeSkill(
+        root,
+        'boss-review-alpha',
+        [
+          'name: boss-review-alpha',
+          'x-boss-extension:',
+          '  extends: boss-review',
+          '  role: round',
+          '  order: 20',
+        ],
+        skillRoot,
+      )
+      writeSkill(
+        root,
+        'boss-review-beta',
+        [
+          'name: boss-review-beta',
+          'x-boss-extension:',
+          '  extends: boss-review',
+          '  role: round',
+          '  order: 10',
+        ],
+        skillRoot,
+      )
+    }
+
+    const result = discoverExtensions({ core: 'boss-review', root, role: 'round' })
+    assert.deepEqual(
+      descriptorSummary(result),
+      {
+        extensions: [
+          { name: 'boss-review-beta', role: 'round', order: 10 },
+          { name: 'boss-review-alpha', role: 'round', order: 20 },
+        ],
+        skipped: [],
+      },
+      scenario.name,
+    )
+    assert.equal(
+      new Set(result.extensions.map((extension) => extension.name)).size,
+      2,
+      scenario.name,
+    )
+    if (scenario.name === 'both roots') {
+      assert.ok(
+        result.extensions.every((extension) =>
+          extension.dir.startsWith(path.join(root, '.claude', 'skills')),
+        ),
+        'both roots should keep the first root descriptor',
+      )
+    }
+  }
+})
+
+test('discoverExtensions accepts a roots override and empty agent-neutral roots are a no-op', () => {
+  const root = scratchRoot()
+  const customRoot = path.join(root, 'custom-skills')
+  writeSkill(
+    root,
+    'boss-build-custom',
+    ['name: boss-build-custom', 'x-boss-extension:', '  extends: boss-build', '  role: notes'],
+    'custom-skills',
+  )
+
+  assert.deepEqual(discoverExtensions({ core: 'boss-build', root, role: 'notes' }), {
+    extensions: [],
+    skipped: [],
+  })
+  assert.deepEqual(
+    discoverExtensions({
+      core: 'boss-build',
+      root,
+      role: 'notes',
+      roots: [customRoot],
+    }).extensions.map((extension) => extension.name),
+    ['boss-build-custom'],
+  )
+})
+
+test('extensionRootsFor exposes a project-agnostic default and config override', () => {
+  const root = scratchRoot()
+  assert.deepEqual(DEFAULT_EXTENSION_ROOTS, ['.claude/skills', '.codex/skills'])
+  assert.deepEqual(extensionRootsFor(DEFAULT_CONFIG), DEFAULT_EXTENSION_ROOTS)
+
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({
+      extensionRoots: ['custom/skills'],
+    }),
+  )
+  assert.deepEqual(extensionRootsFor(loadSkillConfig({ cwd: root })), ['custom/skills'])
+})
+
+test('resolveExtensionRoots returns existing absolute roots in configured order', () => {
+  const root = scratchRoot()
+  fs.mkdirSync(path.join(root, '.codex', 'skills'), { recursive: true })
+  fs.mkdirSync(path.join(root, 'custom', 'skills'), { recursive: true })
+
+  assert.deepEqual(resolveExtensionRoots(root, { extensionRoots: ['missing', '.codex/skills'] }), [
+    path.join(root, '.codex', 'skills'),
+  ])
+  assert.deepEqual(
+    resolveExtensionRoots(root, { extensionRoots: ['custom/skills', '.codex/skills'] }),
+    [path.join(root, 'custom', 'skills'), path.join(root, '.codex', 'skills')],
+  )
+})
+
+test('resolveExtensionRoots rejects configured roots outside the repository', () => {
+  const root = scratchRoot()
+  const outside = scratchRoot()
+  fs.mkdirSync(path.join(outside, 'skills'), { recursive: true })
+
+  assert.throws(
+    () => resolveExtensionRoots(root, { extensionRoots: [path.join(outside, 'skills')] }),
+    /extensionRoots\s+entry\s+escapes\s+repository\s+root/,
+  )
+  assert.throws(
+    () => resolveExtensionRoots(root, { extensionRoots: ['../outside-skills'] }),
+    /extensionRoots\s+entry\s+escapes\s+repository\s+root/,
+  )
+})
+
+test('resolveExtensionRoots rejects roots that symlink outside the repository', () => {
+  const root = scratchRoot()
+  const outside = scratchRoot()
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true })
+  fs.mkdirSync(path.join(outside, 'skills'), { recursive: true })
+  fs.symlinkSync(path.join(outside, 'skills'), path.join(root, '.claude', 'skills'), 'dir')
+
+  assert.throws(
+    () => resolveExtensionRoots(root),
+    /extensionRoots\s+entry\s+escapes\s+repository\s+root/,
+  )
+})
+
+test('discoverExtensions uses configured extensionRoots and treats first matching root as authoritative', () => {
+  const root = scratchRoot()
+  fs.mkdirSync(path.join(root, 'custom', 'skills', 'boss-build-notes'), { recursive: true })
+  writeSkill(
+    root,
+    'boss-build-notes',
+    ['name: boss-build-notes', 'x-boss-extension:', '  extends: boss-build', '  role: notes'],
+    '.codex/skills',
+  )
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({ extensionRoots: ['custom/skills', '.codex/skills'] }),
+  )
+
+  const discovered = discoverExtensions({ core: 'boss-build', root, role: 'notes' })
+  assert.deepEqual(discovered.extensions, [])
+  assert.equal(discovered.skipped.length, 1)
+  assert.equal(discovered.skipped[0].name, 'boss-build-notes')
+  assert.equal(discovered.skipped[0].code, 'no-skill-md')
 })
 
 test('discoverExtensions silently omits notes extensions for established roles', () => {

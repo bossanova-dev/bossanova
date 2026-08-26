@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/recurser/boss/internal/fixtures"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gitremote"
 	"github.com/recurser/bossalib/sessionreason"
 )
@@ -65,6 +66,35 @@ func TestDemoWorldShape(t *testing.T) {
 		if !providers[want] {
 			t.Errorf("want an account with provider %q for the Accounts proof, got providers %v", want, providers)
 		}
+	}
+}
+
+func TestDemoWorldSeedsClaudeEffortSetting(t *testing.T) {
+	w := fixtures.DemoWorld()
+	var effort *pb.UserSetting
+	for _, agent := range w.Agents {
+		if agent.GetName() != "claude" {
+			continue
+		}
+		for _, setting := range agent.GetUserSettings() {
+			if setting.GetKey() == "effort" {
+				effort = setting
+				break
+			}
+		}
+	}
+	if effort == nil {
+		t.Fatal("demo world must seed claude effort setting for General Settings proof")
+	}
+	if effort.GetType() != pb.UserSettingType_USER_SETTING_TYPE_ENUM {
+		t.Fatalf("effort setting type = %v, want ENUM", effort.GetType())
+	}
+	if got := effort.GetDefaultValue(); got != "high" {
+		t.Fatalf("effort default = %q, want high", got)
+	}
+	allowed := effort.GetAllowedValues()
+	if len(allowed) == 0 || allowed[0] != "" {
+		t.Fatalf("effort allowed_values = %v, want empty string first", allowed)
 	}
 }
 

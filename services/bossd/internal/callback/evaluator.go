@@ -17,6 +17,7 @@ import (
 // db.GithubCallbackStore satisfies it.
 type evaluatorStore interface {
 	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
+	ObserveBaseline(ctx context.Context, id string, now time.Time) error
 	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GithubCallback, error)
 }
 
@@ -96,6 +97,31 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 	now := e.now()
 	for _, cb := range cbs {
 		if !satisfied[cb.Trigger] {
+			if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
+				if err := e.store.ObserveBaseline(ctx, cb.ID, now); err != nil {
+					if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+						continue
+					}
+					e.logger.Warn().Err(err).Str("callback_id", cb.ID).
+						Msg("callback evaluator: observe baseline failed")
+					return fmt.Errorf("observe callback baseline %s: %w", cb.ID, err)
+				}
+				e.logger.Info().Str("callback_id", cb.ID).Str("trigger", string(cb.Trigger)).
+					Str("repo", rp).Int("pr", prNumber).Msg("callback evaluator: baseline observed")
+			}
+			continue
+		}
+		if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
+			if err := e.store.ObserveBaseline(ctx, cb.ID, now); err != nil {
+				if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				e.logger.Warn().Err(err).Str("callback_id", cb.ID).
+					Msg("callback evaluator: observe satisfied baseline failed")
+				return fmt.Errorf("observe satisfied callback baseline %s: %w", cb.ID, err)
+			}
+			e.logger.Info().Str("callback_id", cb.ID).Str("trigger", string(cb.Trigger)).
+				Str("repo", rp).Int("pr", prNumber).Msg("callback evaluator: satisfied baseline observed")
 			continue
 		}
 		if _, err := e.store.TriggerGroup(ctx, cb.ID, string(cb.Trigger), now); err != nil {
@@ -148,7 +174,7 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 //
 //   - merged:               PR is merged.
 //   - closed:               PR is closed and NOT merged (PRStateMerged is distinct).
-//   - checks_passed:        at least one check, none pending, none failed.
+//   - checks_passed:        check verdict is green.
 //   - checks_failed:        at least one completed check failed/timed_out/cancelled.
 //   - ready_for_review:     PR is open and not a draft (the draft-to-ready flip).
 //   - checks_passed_ready:  checks_passed AND the PR is open and not a draft.
@@ -172,21 +198,11 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult) map[model
 		}
 	}
 
-	anyPending := false
-	anyFailed := false
-	for _, c := range checks {
-		if c.Status != vcs.CheckStatusCompleted {
-			anyPending = true
-			continue
-		}
-		if c.Conclusion != nil && isFailingConclusion(*c.Conclusion) {
-			anyFailed = true
-		}
-	}
-	if anyFailed {
+	checkVerdict := vcs.EvaluateChecks("", checks, nil)
+	if checkVerdict.State == vcs.CheckVerdictFailing {
 		out[models.GithubCallbackTriggerChecksFailed] = true
 	}
-	checksPassed := len(checks) > 0 && !anyPending && !anyFailed
+	checksPassed := checkVerdict.IsGreen()
 	if checksPassed {
 		out[models.GithubCallbackTriggerChecksPassed] = true
 	}
@@ -199,15 +215,4 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult) map[model
 		out[models.GithubCallbackTriggerChecksPassedReady] = true
 	}
 	return out
-}
-
-// isFailingConclusion reports whether a completed check's conclusion counts as a
-// failure for the checks_failed trigger.
-func isFailingConclusion(c vcs.CheckConclusion) bool {
-	switch c {
-	case vcs.CheckConclusionFailure, vcs.CheckConclusionTimedOut, vcs.CheckConclusionCancelled:
-		return true
-	default:
-		return false
-	}
 }

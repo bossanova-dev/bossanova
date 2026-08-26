@@ -25,6 +25,8 @@ func githubCallbackError(op string, err error) *connect.Error {
 	switch {
 	case errors.Is(err, db.ErrGithubCallbackInvalid):
 		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, db.ErrGithubCallbackNotOwned):
+		return connect.NewError(connect.CodePermissionDenied, err)
 	case errors.Is(err, sql.ErrNoRows):
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, db.ErrGithubCallbackLeaseConflict),
@@ -47,13 +49,14 @@ func (s *Server) CreateGithubCallback(ctx context.Context, req *connect.Request[
 	msg := req.Msg
 
 	params := db.CreateGithubCallbackParams{
-		GroupID:      msg.GroupId,
-		TargetChatID: msg.TargetChatId,
-		RepoOwner:    msg.RepoOwner,
-		RepoName:     msg.RepoName,
-		PRNumber:     int(msg.PrNumber),
-		Trigger:      models.GithubCallbackTrigger(msg.Trigger),
-		Message:      msg.Message,
+		GroupID:                 msg.GroupId,
+		TargetChatID:            msg.TargetChatId,
+		RepoOwner:               msg.RepoOwner,
+		RepoName:                msg.RepoName,
+		PRNumber:                int(msg.PrNumber),
+		Trigger:                 models.GithubCallbackTrigger(msg.Trigger),
+		Message:                 msg.Message,
+		ShouldRequireTransition: msg.GetShouldRequireTransition(),
 	}
 	if msg.ExpiresAt != nil {
 		t := msg.ExpiresAt.AsTime()
@@ -119,9 +122,8 @@ func (s *Server) ListGithubCallbacks(ctx context.Context, req *connect.Request[p
 	return connect.NewResponse(&pb.ListGithubCallbacksResponse{GithubCallbacks: out}), nil
 }
 
-// DeleteGithubCallback removes a callback by id. The store's delete is
-// idempotent, so deleting an already-absent id succeeds — repeated cancel is
-// safe.
+// DeleteGithubCallback removes a callback by id. When expect_target_chat_id is
+// set, the store refuses to delete a row owned by a different target chat.
 func (s *Server) DeleteGithubCallback(ctx context.Context, req *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
 	store := s.GithubCallbacks()
 	if store == nil {
@@ -131,8 +133,12 @@ func (s *Server) DeleteGithubCallback(ctx context.Context, req *connect.Request[
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
-	if err := store.Delete(ctx, id); err != nil {
+	outcome, err := store.Delete(ctx, id, req.Msg.GetExpectTargetChatId())
+	if err != nil {
 		return nil, githubCallbackError("delete github callback", err)
 	}
-	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{}), nil
+	if outcome == db.DeleteGithubCallbackOutcomeNotFound {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("github callback %s not found", id))
+	}
+	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{Outcome: string(outcome)}), nil
 }

@@ -99,6 +99,9 @@ func TestSessionRoundTrip(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/42"
 	blocked := "max attempts reached"
 	archived := time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)
+	lastCheckStateAt := time.Date(2024, 7, 1, 1, 2, 3, 0, time.UTC)
+	stateEnteredAt := time.Date(2024, 7, 1, 2, 3, 4, 0, time.UTC)
+	lastCheckStateHeadSHA := "abc123"
 	lastRepairBlocked := time.Date(2024, 7, 2, 3, 4, 5, 0, time.UTC)
 
 	orig := &Session{
@@ -109,12 +112,17 @@ func TestSessionRoundTrip(t *testing.T) {
 		WorktreePath:                "/tmp/wt/fix-login",
 		BranchName:                  "fix/login-bug",
 		BaseBranch:                  "main",
+		EffectiveModel:              "configured-model",
+		EffectiveEffort:             "high",
 		State:                       machine.Blocked,
 		AgentSessionID:              &agentSessID,
 		AgentName:                   "claude",
 		PRNumber:                    &prNum,
 		PRURL:                       &prURL,
 		LastCheckState:              machine.CheckStateFailed,
+		LastCheckStateHeadSHA:       &lastCheckStateHeadSHA,
+		LastCheckStateAt:            &lastCheckStateAt,
+		StateEnteredAt:              &stateEnteredAt,
 		IsAutomationEnabled:         true,
 		AttemptCount:                3,
 		BlockedReason:               &blocked,
@@ -140,6 +148,15 @@ func TestSessionRoundTrip(t *testing.T) {
 	if back.LastCheckState != orig.LastCheckState {
 		t.Errorf("LastCheckState = %v, want %v", back.LastCheckState, orig.LastCheckState)
 	}
+	if back.LastCheckStateHeadSHA == nil || *back.LastCheckStateHeadSHA != lastCheckStateHeadSHA {
+		t.Errorf("LastCheckStateHeadSHA = %v, want %q", back.LastCheckStateHeadSHA, lastCheckStateHeadSHA)
+	}
+	if back.LastCheckStateAt == nil || !back.LastCheckStateAt.Equal(lastCheckStateAt) {
+		t.Errorf("LastCheckStateAt = %v, want %v", back.LastCheckStateAt, lastCheckStateAt)
+	}
+	if back.StateEnteredAt == nil || !back.StateEnteredAt.Equal(stateEnteredAt) {
+		t.Errorf("StateEnteredAt = %v, want %v", back.StateEnteredAt, stateEnteredAt)
+	}
 	if back.IsAutomationEnabled != orig.IsAutomationEnabled {
 		t.Errorf("IsAutomationEnabled = %v, want %v", back.IsAutomationEnabled, orig.IsAutomationEnabled)
 	}
@@ -160,6 +177,12 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 	if back.AgentName != orig.AgentName {
 		t.Errorf("AgentName = %q, want %q", back.AgentName, orig.AgentName)
+	}
+	if back.EffectiveModel != orig.EffectiveModel {
+		t.Errorf("EffectiveModel = %q, want %q", back.EffectiveModel, orig.EffectiveModel)
+	}
+	if back.EffectiveEffort != orig.EffectiveEffort {
+		t.Errorf("EffectiveEffort = %q, want %q", back.EffectiveEffort, orig.EffectiveEffort)
 	}
 }
 

@@ -294,9 +294,13 @@ mcp="get_session"
 
 `boss show --json` emits `{"session": {...}}`: every field of an `ls` row, plus
 `repo_display_name`, `base_branch`, `worktree_path`, `account_id`,
-`account_label`, `display_status`, `last_check_state`, `archived_at`,
-`setup_error`, and `last_repair` — an object when the repair plugin has run for
-this session, `null` when it never has.
+`account_label`, `display_status`, `last_check_state`,
+`last_check_state_observed`, `last_check_state_head_sha`,
+`last_check_state_at`, `archived_at`, `setup_error`, and `last_repair` — an
+object when the repair plugin has run for this session, `null` when it never
+has. `last_check_state=UNSPECIFIED` means the daemon has no verdict
+demonstrated at the current head; `last_check_state_observed` and its
+observed-at fields show the raw cached latch.
 
 The chats table that `boss show` prints below its header is **not** in the
 envelope. `boss chats` owns that shape, because it has to join in per-chat live

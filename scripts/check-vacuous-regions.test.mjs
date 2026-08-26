@@ -33,6 +33,7 @@ import test from 'node:test'
 import {
   SCANNED_ROOTS,
   SCAN_EXCLUSIONS,
+  UNFALSIFIABLE_PROSE_PIN_FILES,
   findVacuousRegions,
   findVacuousRegionsInRepo,
 } from './check-vacuous-regions.mjs'
@@ -105,6 +106,82 @@ test('detects a one-argument slice and an underscore/dollar receiver', () => {
   assert.equal(findVacuousRegions('const d = $x.slice($x.indexOf(m))').length, 1)
 })
 
+test('raw-section-window detects fixed-distance section slices', () => {
+  const source = [
+    'const start = skill.indexOf("## Step 6")',
+    'const window = skill.slice(start, start + 80)',
+    'const head = body.slice(0, 1200)',
+  ].join('\n')
+
+  const offenders = findVacuousRegions(source).filter((o) => o.rule === 'raw-section-window')
+  assert.deepEqual(
+    offenders.map((o) => ({ line: o.line, receiver: o.receiver })),
+    [
+      { line: 2, receiver: 'skill' },
+      { line: 3, receiver: 'body' },
+    ],
+  )
+})
+
+test('raw-section-window detects hand-rolled next-heading terminators', () => {
+  const source = [
+    'const end = rest.search(/\\n#{1,3} /)',
+    'const alsoEnd = rest.search(/\\n#{2,3}\\s/)',
+    "const next = skill.indexOf('\\n## ', start + 1)",
+    'const backtick = skill.indexOf(`\\n## `, start + 1)',
+  ].join('\n')
+
+  const offenders = findVacuousRegions(source).filter((o) => o.rule === 'raw-section-window')
+  assert.deepEqual(
+    offenders.map((o) => o.line),
+    [1, 2, 3, 4],
+  )
+})
+
+test('unfalsifiable-prose-pin detects whole-document flattened prohibitions', () => {
+  const source = [
+    "const flat = skill.replace(/\\s+/g, ' ')",
+    'assert.doesNotMatch(flat, /git\\s+push/)',
+  ].join('\n')
+
+  const offenders = findVacuousRegions(source).filter((o) => o.rule === 'unfalsifiable-prose-pin')
+  assert.deepEqual(
+    offenders.map((o) => ({ line: o.line, receiver: o.receiver })),
+    [{ line: 2, receiver: 'flat' }],
+  )
+})
+
+test('unfalsifiable-prose-pin detects unbounded whole-file prohibitions', () => {
+  const offenders = findVacuousRegions('assert.doesNotMatch(source, /git\\s+push/)').filter(
+    (o) => o.rule === 'unfalsifiable-prose-pin',
+  )
+  assert.deepEqual(
+    offenders.map((o) => ({ line: o.line, receiver: o.receiver })),
+    [{ line: 1, receiver: 'source' }],
+  )
+})
+
+test('unfalsifiable-prose-pin allows bounded prohibitions and reasoned opt-outs', () => {
+  const bounded = [
+    "const section = sectionRegion(skill, '## Rule')",
+    'assert.doesNotMatch(section, /git\\s+push/)',
+  ].join('\n')
+  const optedOut = [
+    "const flat = skill.replace(/\\s+/g, ' ')",
+    '// gate-region-ok: flattened whole-doc check is a historical corpus audit',
+    'assert.doesNotMatch(flat, /git\\s+push/)',
+  ].join('\n')
+
+  assert.deepEqual(
+    findVacuousRegions(bounded).filter((o) => o.rule === 'unfalsifiable-prose-pin'),
+    [],
+  )
+  assert.deepEqual(
+    findVacuousRegions(optedOut).filter((o) => o.rule === 'unfalsifiable-prose-pin'),
+    [],
+  )
+})
+
 // --- The opt-out grammar ----------------------------------------------------------------
 
 const OFFENCE = "  const p = skill.slice(skill.indexOf('a'), skill.indexOf('b'))"
@@ -112,9 +189,14 @@ const OFFENCE = "  const p = skill.slice(skill.indexOf('a'), skill.indexOf('b'))
 test('an opt-out with a non-empty reason suppresses the offence', () => {
   const sameLine = `${OFFENCE} // gate-region-ok: array slice, not a source region`
   const lineBefore = ['  // gate-region-ok: array slice, not a source region', OFFENCE].join('\n')
+  const sectionWindow = [
+    '  // gate-region-ok: reviewed parser slice, not a section gate',
+    '  const excerpt = body.slice(start, start + 700)',
+  ].join('\n')
 
   assert.equal(findVacuousRegions(sameLine).length, 0)
   assert.equal(findVacuousRegions(lineBefore).length, 0)
+  assert.equal(findVacuousRegions(sectionWindow).length, 0)
 })
 
 test('an opt-out with an empty reason does NOT suppress the offence', () => {
@@ -224,6 +306,7 @@ test('reports zero offenders on converted region(...) source', () => {
     "import { region, regionUntilNext } from './gate-region-lib.mjs'",
     '',
     "const preflight = region(skill, '## Preflight', '## Step 1:')",
+    "const step = sectionRegion(skill, '## Step 6:')",
     "const body = region(prompt, '## Diff')",
     "const returnObject = regionUntilNext(skill, '```json', '```')",
     'const windowed = region(reviewSkill, tier).slice(0, 500)',
@@ -239,8 +322,8 @@ test('reports zero offenders on slices that are not the forbidden shape', () => 
     'const a = head.slice(body.indexOf(m))',
     // An index held in a variable, which the caller is free to have checked.
     'const b = body.slice(start, end)',
-    // A plain numeric window.
-    'const c = body.slice(0, 500)',
+    // A small plain numeric token trim, below the section-window threshold.
+    'const c = body.slice(0, 50)',
     // `indexOf` with no slice at all.
     "const d = body.indexOf('## Diff')",
     // A receiver whose name merely CONTAINS another's — the backreference is exact.
@@ -350,6 +433,10 @@ test('SCAN_EXCLUSIONS holds exactly this test file and nothing else', () => {
   // leave the gate's coverage with no comment anywhere naming it. Pinned by exact value.
   assert.deepEqual(SCAN_EXCLUSIONS, ['scripts/check-vacuous-regions.test.mjs'])
   assert.deepEqual(SCANNED_ROOTS, ['scripts', 'skills-toolbox'])
+  assert.deepEqual(UNFALSIFIABLE_PROSE_PIN_FILES, [
+    'scripts/boss-build-skill.test.mjs',
+    'scripts/boss-review-skill.test.mjs',
+  ])
 })
 
 test('the repo scan honours SCAN_EXCLUSIONS and skips node_modules', () => {
@@ -358,6 +445,8 @@ test('the repo scan honours SCAN_EXCLUSIONS and skips node_modules', () => {
   // `deps.fs` seam `findMjsFiles` does.
   const files = {
     'scripts/real-gate.mjs': OFFENCE,
+    'scripts/gcp-lb-affinity.test.mjs': 'assert.doesNotMatch(source, /x/)',
+    'scripts/boss-build-skill.test.mjs': 'assert.doesNotMatch(source, /x/)',
     'scripts/check-vacuous-regions.test.mjs': OFFENCE,
     'scripts/node_modules/vendored.mjs': OFFENCE,
     'skills-toolbox/helper.mjs': OFFENCE,
@@ -388,5 +477,9 @@ test('the repo scan honours SCAN_EXCLUSIONS and skips node_modules', () => {
   const found = findVacuousRegionsInRepo(repoRoot, { fs: stubFs })
   const relative = found.map((o) => path.relative(repoRoot, o.file).split(path.sep).join('/'))
 
-  assert.deepEqual(relative.sort(), ['scripts/real-gate.mjs', 'skills-toolbox/helper.mjs'])
+  assert.deepEqual(relative.sort(), [
+    'scripts/boss-build-skill.test.mjs',
+    'scripts/real-gate.mjs',
+    'skills-toolbox/helper.mjs',
+  ])
 })

@@ -131,12 +131,12 @@ func (d *Dispatcher) resolve(sessionID string) (AgentRunner, string) {
 }
 
 // Start routes to the resolved agent's Start.
-func (d *Dispatcher) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string) (string, error) {
+func (d *Dispatcher) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string) (string, error) {
 	runner, name := d.resolve(sessionID)
 	if runner == nil {
 		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
 	}
-	return runner.Start(ctx, workDir, plan, resume, sessionID, model, extraEnv)
+	return runner.Start(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv)
 }
 
 // Stop routes to the resolved agent's Stop.
@@ -226,18 +226,18 @@ func (d *Dispatcher) ResolveAgentName(agentName string) string {
 // StartByAgent routes Start to the named agent runner, decoupling routing
 // from the agent-side tracking key. agentSessionID is forwarded as the
 // runner.Start sessionID parameter (empty = plugin generates a fresh ID).
-func (d *Dispatcher) StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error) {
+func (d *Dispatcher) StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string) (string, error) {
 	runner, name := d.resolveByName(agentName)
 	if runner == nil {
 		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
 	}
-	return runner.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
+	return runner.Start(ctx, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 
 // StartByAgentWithHeadlessCapabilityProfile routes an explicit required
 // operation surface only to a runner that supports it. A required profile must
 // never disappear on a provider that cannot enforce it.
-func (d *Dispatcher) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
+func (d *Dispatcher) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
 	runner, name := d.resolveByName(agentName)
 	if runner == nil {
 		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
@@ -246,12 +246,12 @@ func (d *Dispatcher) StartByAgentWithHeadlessCapabilityProfile(ctx context.Conte
 	if !ok {
 		return "", fmt.Errorf("agent %q: %w", name, ErrHeadlessCapabilityProfileUnsupported)
 	}
-	return profiled.StartWithHeadlessCapabilityProfile(ctx, workDir, plan, resume, agentSessionID, model, extraEnv, profile)
+	return profiled.StartWithHeadlessCapabilityProfile(ctx, workDir, plan, resume, agentSessionID, model, effort, extraEnv, profile)
 }
 
 // StartByAgentWithHeadlessLaunchOptions forwards the complete panel-less
 // launch contract to a runner that supports it.
-func (d *Dispatcher) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error) {
+func (d *Dispatcher) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error) {
 	runner, name := d.resolveByName(agentName)
 	if runner == nil {
 		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
@@ -260,13 +260,13 @@ func (d *Dispatcher) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, 
 	if !ok {
 		return "", fmt.Errorf("agent %q: headless launch options unsupported", name)
 	}
-	return launchRunner.StartWithHeadlessLaunchOptions(ctx, workDir, plan, resume, agentSessionID, model, extraEnv, options)
+	return launchRunner.StartWithHeadlessLaunchOptions(ctx, workDir, plan, resume, agentSessionID, model, effort, extraEnv, options)
 }
 
 // PreflightByAgentWithHeadlessCapabilityProfile routes a required capability
 // check to the named runner without starting it. Required profiles fail closed
 // when the selected runner does not implement the narrower preflight seam.
-func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
 	runner, name := d.resolveByName(agentName)
 	if runner == nil {
 		return fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
@@ -275,7 +275,7 @@ func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.C
 	if !ok {
 		return fmt.Errorf("agent %q: %w", name, ErrHeadlessCapabilityProfileUnsupported)
 	}
-	return preflight.PreflightHeadlessCapabilityProfile(ctx, workDir, model, extraEnv, profile)
+	return preflight.PreflightHeadlessCapabilityProfile(ctx, workDir, model, effort, extraEnv, profile)
 }
 
 // StopByAgent routes Stop to the named agent runner, bounded by ctx.

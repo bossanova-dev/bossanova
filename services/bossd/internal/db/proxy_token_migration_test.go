@@ -197,7 +197,20 @@ func TestProxyTokensMigrationUpDownUp(t *testing.T) {
 
 	// The round trip must leave the table usable, not merely present.
 	store := NewProxyTokenStore(db)
-	sess := createProxyTokenTestSession(t, db, "round trip")
+	sess := "session-round-trip"
+	if _, err := db.Exec(
+		`INSERT INTO repos (id, display_name, local_path, origin_url, worktree_base_dir)
+		 VALUES ('repo-round-trip', 'repo', '/tmp/proxy-token-round-trip', 'https://example.com/proxy-token-round-trip.git', '/tmp')`,
+	); err != nil {
+		t.Fatalf("seed repo after up/down/up: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO sessions (id, repo_id, title, worktree_path, branch_name, base_branch)
+		 VALUES (?, 'repo-round-trip', 'round trip', '/tmp/proxy-token-round-trip/session', 'feat/round-trip', 'main')`,
+		sess,
+	); err != nil {
+		t.Fatalf("seed session after up/down/up: %v", err)
+	}
 	if err := store.Upsert(context.Background(), ProxyTokenRecord{
 		TokenSHA256: hexDigest('7'),
 		SessionID:   sess,

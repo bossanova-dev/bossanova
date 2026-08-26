@@ -688,6 +688,7 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	issueTitle := "Do the thing"
 	source := "linear"
 	model := "claude-opus-4-8"
+	effort := "high"
 	accountID := "acct-hosted"
 
 	fake := &fakeStreamCreateSessioner{}
@@ -707,6 +708,7 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 		ForceBranch:      true,
 		Detach:           true,
 		Model:            &model,
+		Effort:           &effort,
 		IsTmuxUnattended: true,
 		DeferPr:          true,
 	}, "cmd-rt")
@@ -762,6 +764,9 @@ func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
 	}
 	if req.GetModel() != model {
 		t.Errorf("Model: got %q, want %q", req.GetModel(), model)
+	}
+	if req.GetEffort() != effort {
+		t.Errorf("Effort: got %q, want %q", req.GetEffort(), effort)
 	}
 }
 

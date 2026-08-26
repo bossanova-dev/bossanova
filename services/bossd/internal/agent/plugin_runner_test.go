@@ -114,7 +114,7 @@ func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 	}
 	pr := NewPluginRunner(fc, tl, logDir, zerolog.Nop())
 
-	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "", nil)
+	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestPluginRunner_Start_TailsRequestLogPathUnderReturnedSessionID(t *testing
 	}
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
 
-	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "", nil)
+	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestPluginRunner_Start_EmptySessionIDUsesDistinctLogPaths(t *testing.T) {
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, err := pr.Start(context.Background(), "/work", "plan", nil, "", "", nil)
+			_, err := pr.Start(context.Background(), "/work", "plan", nil, "", "", "", nil)
 			errs <- err
 		}()
 	}
@@ -215,7 +215,7 @@ func TestPluginRunner_Start_CarriesExtraEnv(t *testing.T) {
 		"PROOF_ANTHROPIC_API_KEY": "secret-value",
 		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
 	}
-	if _, err := pr.Start(context.Background(), "/work", "plan", nil, "sid", "", extra); err != nil {
+	if _, err := pr.Start(context.Background(), "/work", "plan", nil, "sid", "", "", extra); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	got := fc.startReq.Load()
@@ -230,12 +230,28 @@ func TestPluginRunner_Start_CarriesExtraEnv(t *testing.T) {
 	}
 }
 
+func TestPluginRunner_StartCarriesModelAndEffort(t *testing.T) {
+	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+
+	if _, err := pr.Start(context.Background(), "/work", "plan", nil, "sid", "opus", "high", nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	got := fc.startReq.Load()
+	if got == nil {
+		t.Fatal("StartRun req not recorded")
+	}
+	if got.GetModel() != "opus" || got.GetEffort() != "high" {
+		t.Fatalf("target fields = model=%q effort=%q, want opus/high", got.GetModel(), got.GetEffort())
+	}
+}
+
 func TestPluginRunner_StartWithHeadlessCapabilityProfileCarriesProfile(t *testing.T) {
 	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
 
 	if _, err := pr.StartWithHeadlessCapabilityProfile(
-		context.Background(), "/work", "plan", nil, "sid", "model-for-preflight", map[string]string{"CODEX_HOME": "/projected/home"},
+		context.Background(), "/work", "plan", nil, "sid", "model-for-preflight", "medium", map[string]string{"CODEX_HOME": "/projected/home"},
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	); err != nil {
 		t.Fatalf("StartWithHeadlessCapabilityProfile: %v", err)
@@ -247,8 +263,8 @@ func TestPluginRunner_StartWithHeadlessCapabilityProfileCarriesProfile(t *testin
 	if got.GetHeadlessCapabilityProfile() != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
 		t.Fatalf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got.GetHeadlessCapabilityProfile())
 	}
-	if got.GetModel() != "model-for-preflight" || got.GetExtraEnv()["CODEX_HOME"] != "/projected/home" {
-		t.Fatalf("preflight target fields = model=%q env=%v", got.GetModel(), got.GetExtraEnv())
+	if got.GetModel() != "model-for-preflight" || got.GetEffort() != "medium" || got.GetExtraEnv()["CODEX_HOME"] != "/projected/home" {
+		t.Fatalf("preflight target fields = model=%q effort=%q env=%v", got.GetModel(), got.GetEffort(), got.GetExtraEnv())
 	}
 }
 
@@ -260,6 +276,7 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(
 		context.Background(),
 		"/worktrees/gated-run",
 		"model-for-preflight",
+		"medium",
 		map[string]string{"CODEX_HOME": "/projected/home", "ACCOUNT_TOKEN": "secret"},
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	)
@@ -272,6 +289,9 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(
 	}
 	if got.GetModel() != "model-for-preflight" {
 		t.Fatalf("Model = %q, want model-for-preflight", got.GetModel())
+	}
+	if got.GetEffort() != "medium" {
+		t.Fatalf("Effort = %q, want medium", got.GetEffort())
 	}
 	// The gated run's working directory must reach the plugin, or the plugin
 	// profiles a runtime that never loaded the repo's own agent config.
@@ -291,7 +311,7 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfilePropagatesError(t *testi
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
 
 	err := pr.PreflightHeadlessCapabilityProfile(
-		context.Background(), t.TempDir(), "model", nil,
+		context.Background(), t.TempDir(), "model", "", nil,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	)
 	if !errors.Is(err, fc.preflightErr) {
@@ -302,7 +322,7 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfilePropagatesError(t *testi
 func TestPluginRunner_Start_PropagatesError(t *testing.T) {
 	fc := &fakeAgentClient{startErr: errors.New("boom")}
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
-	_, err := pr.Start(context.Background(), "/w", "p", nil, "sid", "", nil)
+	_, err := pr.Start(context.Background(), "/w", "p", nil, "sid", "", "", nil)
 	if err == nil || !errors.Is(err, fc.startErr) && err.Error() != "boom" {
 		t.Errorf("expected wrapped err, got %v", err)
 	}

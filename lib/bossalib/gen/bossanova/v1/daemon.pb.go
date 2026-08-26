@@ -1487,7 +1487,10 @@ type CreateSessionRequest struct {
 	// Opaque agent model id to run this session under (e.g. an Opus id).
 	// Empty → the agent plugin's default model. Mirrors `boss cron add --model`;
 	// set by `boss new --model` and the MCP create_session tool.
-	Model            *string `protobuf:"bytes,15,opt,name=model,proto3,oneof" json:"model,omitempty"`
+	Model *string `protobuf:"bytes,15,opt,name=model,proto3,oneof" json:"model,omitempty"`
+	// Opaque agent reasoning-effort level to run this session under.
+	// Empty → the agent plugin's default effort.
+	Effort           *string `protobuf:"bytes,20,opt,name=effort,proto3,oneof" json:"effort,omitempty"`
 	IsTmuxUnattended bool    `protobuf:"varint,16,opt,name=is_tmux_unattended,json=isTmuxUnattended,proto3" json:"is_tmux_unattended,omitempty"`
 	// If true, bypass the tracker-issue dedup guard and create a second session
 	// for a tracker/PR/branch that already has an active one (BOS-236 escape hatch).
@@ -1639,6 +1642,13 @@ func (x *CreateSessionRequest) GetDetach() bool {
 func (x *CreateSessionRequest) GetModel() string {
 	if x != nil && x.Model != nil {
 		return *x.Model
+	}
+	return ""
+}
+
+func (x *CreateSessionRequest) GetEffort() string {
+	if x != nil && x.Effort != nil {
+		return *x.Effort
 	}
 	return ""
 }
@@ -6489,9 +6499,12 @@ type CreateGithubCallbackRequest struct {
 	Message      string  `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"` // prompt body delivered on fire; stored verbatim
 	// Optional explicit expiry. Unset = server default (24h). Must be in the
 	// future and within 30 days, else InvalidArgument.
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
+	// When true, the first evaluation records the current trigger state as a
+	// baseline and only a later satisfying observation fires the callback.
+	ShouldRequireTransition *bool `protobuf:"varint,9,opt,name=should_require_transition,json=shouldRequireTransition,proto3,oneof" json:"should_require_transition,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *CreateGithubCallbackRequest) Reset() {
@@ -6578,6 +6591,13 @@ func (x *CreateGithubCallbackRequest) GetExpiresAt() *timestamppb.Timestamp {
 		return x.ExpiresAt
 	}
 	return nil
+}
+
+func (x *CreateGithubCallbackRequest) GetShouldRequireTransition() bool {
+	if x != nil && x.ShouldRequireTransition != nil {
+		return *x.ShouldRequireTransition
+	}
+	return false
 }
 
 type CreateGithubCallbackResponse struct {
@@ -6754,10 +6774,13 @@ func (x *ListGithubCallbacksResponse) GetGithubCallbacks() []*GithubCallback {
 }
 
 type DeleteGithubCallbackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Optional ownership guard. When set, the daemon deletes the row only if its
+	// target_chat_id matches this value.
+	ExpectTargetChatId *string `protobuf:"bytes,2,opt,name=expect_target_chat_id,json=expectTargetChatId,proto3,oneof" json:"expect_target_chat_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DeleteGithubCallbackRequest) Reset() {
@@ -6797,8 +6820,16 @@ func (x *DeleteGithubCallbackRequest) GetId() string {
 	return ""
 }
 
+func (x *DeleteGithubCallbackRequest) GetExpectTargetChatId() string {
+	if x != nil && x.ExpectTargetChatId != nil {
+		return *x.ExpectTargetChatId
+	}
+	return ""
+}
+
 type DeleteGithubCallbackResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Outcome       string                 `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"` // deleted | not_found | not_owned
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6831,6 +6862,13 @@ func (x *DeleteGithubCallbackResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use DeleteGithubCallbackResponse.ProtoReflect.Descriptor instead.
 func (*DeleteGithubCallbackResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{112}
+}
+
+func (x *DeleteGithubCallbackResponse) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
 }
 
 // BroadcastSelectorClause is a conjunction: every non-empty dimension must
@@ -10783,7 +10821,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x06source\x18\x03 \x01(\tH\x00R\x06source\x88\x01\x01B\t\n" +
 	"\a_source\"O\n" +
 	"\x19ListTrackerIssuesResponse\x122\n" +
-	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xa9\x06\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xd1\x06\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -10805,11 +10843,12 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\rtracker_issue\x18\f \x01(\v2\x1a.bossanova.v1.TrackerIssueH\x05R\ftrackerIssue\x88\x01\x01\x12*\n" +
 	"\x0etracker_source\x18\r \x01(\tH\x06R\rtrackerSource\x88\x01\x01\x12\x16\n" +
 	"\x06detach\x18\x0e \x01(\bR\x06detach\x12\x19\n" +
-	"\x05model\x18\x0f \x01(\tH\aR\x05model\x88\x01\x01\x12,\n" +
+	"\x05model\x18\x0f \x01(\tH\aR\x05model\x88\x01\x01\x12\x1b\n" +
+	"\x06effort\x18\x14 \x01(\tH\bR\x06effort\x88\x01\x01\x12,\n" +
 	"\x12is_tmux_unattended\x18\x10 \x01(\bR\x10isTmuxUnattended\x12\x14\n" +
 	"\x05force\x18\x11 \x01(\bR\x05force\x12\"\n" +
 	"\n" +
-	"account_id\x18\x12 \x01(\tH\bR\taccountId\x88\x01\x01\x12\x19\n" +
+	"account_id\x18\x12 \x01(\tH\tR\taccountId\x88\x01\x01\x12\x19\n" +
 	"\bdefer_pr\x18\x13 \x01(\bR\adeferPrB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
@@ -10819,7 +10858,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\v_agent_nameB\x10\n" +
 	"\x0e_tracker_issueB\x11\n" +
 	"\x0f_tracker_sourceB\b\n" +
-	"\x06_modelB\r\n" +
+	"\x06_modelB\t\n" +
+	"\a_effortB\r\n" +
 	"\v_account_id\"\xaf\x01\n" +
 	"\x15CreateSessionResponse\x12D\n" +
 	"\fsetup_output\x18\x02 \x01(\v2\x1f.bossanova.v1.SetupScriptOutputH\x00R\vsetupOutput\x12G\n" +
@@ -11167,7 +11207,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionH\x00R\asession\x88\x01\x01\x12%\n" +
 	"\x0eskipped_reason\x18\x02 \x01(\tR\rskippedReasonB\n" +
 	"\n" +
-	"\b_session\"\xcc\x02\n" +
+	"\b_session\"\xab\x03\n" +
 	"\x1bCreateGithubCallbackRequest\x12\x1e\n" +
 	"\bgroup_id\x18\x01 \x01(\tH\x00R\agroupId\x88\x01\x01\x12$\n" +
 	"\x0etarget_chat_id\x18\x02 \x01(\tR\ftargetChatId\x12\x1d\n" +
@@ -11178,9 +11218,11 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\atrigger\x18\x06 \x01(\tR\atrigger\x12\x18\n" +
 	"\amessage\x18\a \x01(\tR\amessage\x12>\n" +
 	"\n" +
-	"expires_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampH\x01R\texpiresAt\x88\x01\x01B\v\n" +
+	"expires_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampH\x01R\texpiresAt\x88\x01\x01\x12?\n" +
+	"\x19should_require_transition\x18\t \x01(\bH\x02R\x17shouldRequireTransition\x88\x01\x01B\v\n" +
 	"\t_group_idB\r\n" +
-	"\v_expires_at\"e\n" +
+	"\v_expires_atB\x1c\n" +
+	"\x1a_should_require_transition\"e\n" +
 	"\x1cCreateGithubCallbackResponse\x12E\n" +
 	"\x0fgithub_callback\x18\x01 \x01(\v2\x1c.bossanova.v1.GithubCallbackR\x0egithubCallback\"\xbd\x02\n" +
 	"\x1aListGithubCallbacksRequest\x12)\n" +
@@ -11201,10 +11243,13 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\b_triggerB\b\n" +
 	"\x06_state\"f\n" +
 	"\x1bListGithubCallbacksResponse\x12G\n" +
-	"\x10github_callbacks\x18\x01 \x03(\v2\x1c.bossanova.v1.GithubCallbackR\x0fgithubCallbacks\"-\n" +
+	"\x10github_callbacks\x18\x01 \x03(\v2\x1c.bossanova.v1.GithubCallbackR\x0fgithubCallbacks\"\x7f\n" +
 	"\x1bDeleteGithubCallbackRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\x1e\n" +
-	"\x1cDeleteGithubCallbackResponse\"\xd1\x01\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x126\n" +
+	"\x15expect_target_chat_id\x18\x02 \x01(\tH\x00R\x12expectTargetChatId\x88\x01\x01B\x18\n" +
+	"\x16_expect_target_chat_id\"8\n" +
+	"\x1cDeleteGithubCallbackResponse\x12\x18\n" +
+	"\aoutcome\x18\x01 \x01(\tR\aoutcome\"\xd1\x01\n" +
 	"\x17BroadcastSelectorClause\x12\x19\n" +
 	"\bchat_ids\x18\x01 \x03(\tR\achatIds\x12\x1f\n" +
 	"\vsession_ids\x18\x02 \x03(\tR\n" +
@@ -12136,6 +12181,7 @@ func file_bossanova_v1_daemon_proto_init() {
 	file_bossanova_v1_daemon_proto_msgTypes[106].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[107].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[109].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[111].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[117].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[119].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[125].OneofWrappers = []any{}

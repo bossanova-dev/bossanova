@@ -180,18 +180,15 @@ FULL_TIER_MINUTES = ($MAX_ROUNDS × 20)   # the bounded loop — it fixes on EVE
 # this sum instead would raise the branch-3 admission threshold for every diff, including the
 # majority that never touch the surface.
 
-STEP_6C_MINUTES = 15                     # Step 6c's ENTIRE allowance: its lens/round passes AND the
-                                         # fix loop they trigger. This is the one line in the formula
-                                         # that is NOT a worst-path price: `boss-review` runs up to
-                                         # $MAX_ROUNDS fix→confirm rounds of its own, so its worst
-                                         # legal path is another 10 + ($MAX_ROUNDS × 20) = 70, which
-                                         # would push the full-tier threshold past a whole run's
-                                         # Preflight budget and make the full tier unreachable — the
-                                         # same asymmetry the reserve is priced under. Step 6c is
-                                         # ADVISORY, so it is BOUNDED instead of budgeted: Step 6c
-                                         # enforces this as a hard deadline. If that enforcement is
-                                         # ever dropped, this line becomes an underestimate and the
-                                         # full tier overruns exactly as the note below warns.
+STEP_6C_INITIAL_LEGS = 3                 # Phase 1 Tier 1, its Tier-2 fallback, and Phase R.
+STEP_6C_MINUTES = ceil(STEP_6C_INITIAL_LEGS × DEADLINE_LEG_SECONDS ÷ 60)
+# default DEADLINE_LEG_SECONDS = 300 → 15 minutes. Step 6c's ENTIRE allowance covers its
+# initial lens/round passes, not its fix loop. `boss-review` can run up to $MAX_ROUNDS fix→confirm
+# rounds in its own capped fix loop, so pricing that worst legal path here would push the
+# full-tier threshold past a whole run's Preflight budget and make the full tier unreachable.
+# Step 6c is ADVISORY, so it is BOUNDED instead of budgeted for every internal round; deriving
+# the bound from `boss-review`'s leg allowance keeps the default 15/150/175 figures unchanged
+# while tracking a raised `BOSS_SKILL_EXTENSION_TIMEOUT_MS` instead of silently starving.
 
 DEGRADED_REVIEWER_MINUTES = 10           # the one whole-branch detection reviewer, which fixes nothing
 DEGRADED_API_CHECK_MINUTES = 5           # conditional API classification; required when triggered
@@ -206,6 +203,15 @@ POST_REVIEW_RESERVE_MINUTES =  5         # Step 7: push, create/reuse the PR, wr
                             + 15         # Step 8: tag-inject, force-push, ONE green CI cycle
                             +  5         # Steps 9-12: ready, settle, proof, stop cleanly
 #                           = 25 minutes
+
+DEGRADED_REPAIR_MIN_ADMISSION_MINUTES = $DEGRADED_REVIEWER_MINUTES
+                                      + 10  # degraded repair fix leg
+                                      + 10  # degraded repair verification leg
+                                      + $DEGRADED_API_CHECK_MINUTES
+                                      + $POST_REVIEW_RESERVE_MINUTES
+# default → 60 minutes. The degraded tier is admitted at 40 minutes, so the 40-59 minute
+# sub-band can detect findings but cannot afford its conditional repair pass; publish that
+# as an unfunded repair, not as an unfixable finding.
 ```
 
 Budget the tier for its **worst** legal path, not its happy one. An underestimate does not fail
@@ -248,7 +254,11 @@ forgot to pass the number would be blocked instead of reviewed.
 3. `REMAINING_MINUTES` **≥ `FULL_TIER_MINUTES + POST_REVIEW_RESERVE_MINUTES`** (default **175**) →
    **full tier**. Run the rest of this reference unchanged.
 4. `REMAINING_MINUTES` **< `FULL_TIER_MINUTES + POST_REVIEW_RESERVE_MINUTES`** and at or above the
-   floor in branch 2 (default **40–174**) → **degraded tier (minimal)**, defined below.
+   floor in branch 2 (default **40–174**) → **degraded tier (minimal)**, defined below. At the
+   shipped defaults this tier has a disclosed sub-band: **40–59** minutes can fund the detection
+   reviewer but cannot fund the conditional repair pass, whose break-even is
+   `DEGRADED_REPAIR_MIN_ADMISSION_MINUTES` = **60**. A must-fix there publishes an unfunded capped
+   route rather than implying the finding was unfixable.
 
 Every parenthesised default above is the value of the **expression** at the shipped defaults, not a
 second constant to compare against. Recompute them whenever an input moves: `$MAX_ROUNDS` and
@@ -532,7 +542,9 @@ floor by 20 minutes, and every run in the gap would get **no tier at all** — n
 rather than a detect-only one, which is strictly worse than the outcome this pass exists to improve.
 The pass is therefore **conditionally affordable**: it is decided by a re-measurement at its own
 dispatch site, in the same shape the reviewer clamp above uses, so a run admitted at the floor simply
-behaves as it does without this pass.
+behaves as it does without this pass. The break-even is named because the degraded tier has two
+practical sub-bands: at 40-59 minutes it can detect findings but cannot fund this repair pass; at 60
+minutes and above it can attempt the pass when the findings are eligible.
 
 **Affordability gate.** Re-measure against `PREFLIGHT_DEADLINE` immediately before the repair pass —
 the tier-selection reading and the detection reviewer's own spend are both already behind you.
@@ -544,9 +556,11 @@ DEGRADED_REPAIR_FIX_MINUTES=10     # the fix leg (see the price above)
 DEGRADED_REPAIR_VERIFY_MINUTES=10  # the fresh independent verification reviewer
 DEGRADED_API_CHECK_MINUTES=5       # the conditional API classification, still owed after both legs
 POST_REVIEW_RESERVE_MINUTES=25     # Steps 7-12; the clamp may never spend into it
+DEGRADED_REPAIR_MIN_ADMISSION_MINUTES=$(( DEGRADED_REPAIR_FIX_MINUTES + DEGRADED_REPAIR_VERIFY_MINUTES + DEGRADED_API_CHECK_MINUTES + POST_REVIEW_RESERVE_MINUTES + 10 ))
 DEGRADED_REPAIR_FIX_SECONDS=$(( DEGRADED_REPAIR_FIX_MINUTES * 60 ))
 DEGRADED_REPAIR_VERIFY_SECONDS=$(( DEGRADED_REPAIR_VERIFY_MINUTES * 60 ))
 preflight="${PREFLIGHT_DEADLINE:-}"
+BOSS_REVIEW_CAP_PAYLOAD_REASON=
 if [ -n "$preflight" ]; then
   now=$(date +%s)
   # The fix leg owes the verification ITS OWN repair makes mandatory, plus the API allowance and the
@@ -556,6 +570,9 @@ if [ -n "$preflight" ]; then
   [ "$spendable" -ge "$DEGRADED_REPAIR_FIX_SECONDS" ] || DEGRADED_REPAIR_FIX_SECONDS=$spendable
   spendable=$(( preflight - now - (DEGRADED_API_CHECK_MINUTES + POST_REVIEW_RESERVE_MINUTES) * 60 ))
   [ "$spendable" -ge "$DEGRADED_REPAIR_VERIFY_SECONDS" ] || DEGRADED_REPAIR_VERIFY_SECONDS=$spendable
+  if [ "$DEGRADED_REPAIR_FIX_SECONDS" -lt $(( DEGRADED_REPAIR_FIX_MINUTES * 60 )) ] || [ "$DEGRADED_REPAIR_VERIFY_SECONDS" -lt $(( DEGRADED_REPAIR_VERIFY_MINUTES * 60 )) ]; then
+    BOSS_REVIEW_CAP_PAYLOAD_REASON=funding-starved
+  fi
 fi
 ```
 
@@ -564,7 +581,10 @@ exit nor a licence for an unbudgeted round: it takes the generated `capped` → 
 described under the clean edge below, exactly as a non-positive reviewer clamp does. Both legs are
 clamped from one reading, so an affordable fix leg whose verification leg is **not** affordable is no
 repair opportunity at all — do not start the fix, because a fix nobody can verify is worth less than
-the detection report it would replace.
+the detection report it would replace. When the affordability gate prevents the pass, publish the
+coverage token with `repair skipped: unfunded` and persist the generated capped sentinel with payload
+`{"reason":"funding-starved"}` so a reader can distinguish an unfunded repair from a repair that ran
+and failed verification.
 
 **Fix leg.** Fix **only** the findings this tier already recorded, at the `file:line` it recorded
 them; commit tagless; run their focused tests. Never broaden the ticket, never defer a required item,
@@ -2134,15 +2154,24 @@ can outlast the entire post-review reserve and strand Steps 7-12. Enforce it ari
 sense that some margin remains is the judgement call the tier ladder replaced, and it bounds nothing.
 
 ```bash
-STEP_6C_MINUTES=15                                          # ASSIGN it — see the note below
+leg_ms=${BOSS_SKILL_EXTENSION_TIMEOUT_MS:-300000}
+case "$leg_ms" in '' | *[!0-9]*) leg_ms=300000 ;; esac
+leg_ms=$(( 10#$leg_ms ))
+[ "$leg_ms" -gt 0 ] || leg_ms=300000
+DEADLINE_LEG_SECONDS=$(( (leg_ms + 999) / 1000 ))
+[ "$DEADLINE_LEG_SECONDS" -ge 300 ] || DEADLINE_LEG_SECONDS=300
+STEP_6C_INITIAL_LEGS=3
+STEP_6C_MINUTES=$(( (STEP_6C_INITIAL_LEGS * DEADLINE_LEG_SECONDS + 59) / 60 ))
 NOW=$(date +%s)
 STEP_6C_DEADLINE=$(( NOW + STEP_6C_MINUTES * 60 ))          # stamp BEFORE invoking boss-review
 ```
 
-That first line is not decoration. `$(( ))` resolves an **unset** bare name to `0` rather than
-failing, so leaving `STEP_6C_MINUTES` to the formula block above would stamp
-`STEP_6C_DEADLINE = NOW`, and `boss-review` would refuse its very first leg on a budget that had
-not been spent — a step that reports nothing on every run, with no error to notice.
+That assignment block is not decoration. `$(( ))` resolves an **unset** bare name to `0` rather than
+failing, so leaving `STEP_6C_MINUTES` to the formula block above would stamp `STEP_6C_DEADLINE =
+NOW`, and `boss-review` would refuse its very first leg on a budget that had not been spent — a step
+that reports nothing on every run, with no error to notice. The block uses the same
+`BOSS_SKILL_EXTENSION_TIMEOUT_MS` normalization as `boss-review`'s own leg gate, so raising the
+timeout raises this advisory allowance in lockstep.
 
 **Clamp the stamp to the run's own deadline.** `STEP_6C_MINUTES` is this step's allowance, not a
 licence to run past the run: stamped from `NOW` alone it is only ever within the Preflight budget
@@ -2157,13 +2186,20 @@ if [ -n "$preflight" ]; then
   LATEST=$(( preflight - POST_REVIEW_RESERVE_MINUTES * 60 ))
   [ "$STEP_6C_DEADLINE" -le "$LATEST" ] || STEP_6C_DEADLINE=$LATEST
 fi
+STEP_6C_ALLOWANCE_SECONDS=$(( STEP_6C_DEADLINE - NOW ))
+if [ "$STEP_6C_ALLOWANCE_SECONDS" -lt "$DEADLINE_LEG_SECONDS" ]; then
+  BOSS_REVIEW_OUTCOME="boss-review: skipped (allowance ${STEP_6C_ALLOWANCE_SECONDS}s cannot fund one ${DEADLINE_LEG_SECONDS}s leg)"
+fi
 ```
 
 - **Entry gate.** Re-measure the remaining clock **now** (not the Step 6 entry value — the loop and
   Step 6b have run since). Enter only if at least `STEP_6C_MINUTES + POST_REVIEW_RESERVE_MINUTES`
   remain against the Preflight deadline — `PREFLIGHT_DEADLINE`, the absolute value bound at Step 6
-  entry, compared in **seconds**; otherwise skip with `boss-review: skipped (budget)` and
-  proceed to Step 7.
+  entry, compared in **seconds**; otherwise skip with `boss-review: skipped (budget)` and proceed to
+  Step 7. After clamping, also require the allowance handed to `boss-review` to fund at least one
+  initial dispatch leg. If it cannot, record
+  `boss-review: skipped (allowance <A>s cannot fund one <L>s leg)` and proceed to Step 7 instead of
+  awaiting a pass whose first gate is guaranteed to refuse.
 - **Hand the deadline to `boss-review` itself, and require it to bound the _whole_ pass.** State
   `STEP_6C_DEADLINE` in the invocation and require the pass to check it before **every** expensive
   awaited leg it runs — its initial specialist and whole-branch passes, and the post-terminal notes
@@ -2184,10 +2220,10 @@ fi
   a review pair costs above; one dispatch batch for an initial pass), compared in **seconds** against
   a `date +%s` clock, and not on the deadline's mere arrival — a leg it has already started cannot be
   preempted either, so `now < deadline` would admit one that overruns by the rest of its cost.
-- **What that arithmetic means at the default, stated rather than discovered.**
-  `STEP_6C_MINUTES` is 15 and `boss-review`'s own initial pass spends ~10 of it (its two dispatch
-  legs, 5 each), so `20` does not fit and **no ordinary fix round** is ever admitted at the default —
-  the 5 minutes left is a quarter of a round. There is exactly one exception, and it is bounded:
+- **What that arithmetic means at the default, computed rather than narrated.**
+  At the shipped default, `DEADLINE_LEG_SECONDS=300`, `STEP_6C_INITIAL_LEGS=3`, and
+  `STEP_6C_MINUTES=15`. The allowance funds those initial legs and **0 ordinary fix rounds** because
+  `FIX_ROUND_SECONDS=1200` does not fit after them. There is exactly one exception, and it is bounded:
   where the pass found a must-fix **it has not yet attempted**, `boss-review` funds a single overrun
   round from its own `MUSTFIX_OVERRUN_ROUNDS` allowance rather than deferring a finding nobody tried
   to fix. That round is charged to the post-review reserve, once per run, and cannot repeat — so it

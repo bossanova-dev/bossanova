@@ -20,6 +20,9 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { regionUntilNext, sectionRegion } from './gate-region-lib.mjs'
+import { assertFalsifiable } from './prose-pin-lib.mjs'
+
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
 // BOS-271 collapsed the published cores onto the boss-repair single-source
@@ -33,41 +36,33 @@ const REVIEW_MIRRORS = [
 
 const read = (relPath) => readFileSync(path.join(rootDir, relPath), 'utf8')
 
-/**
- * Slice `text` from the first occurrence of `startMarker` to the first
- * occurrence of `endMarker` found after it. Both markers MUST be found — a -1
- * index fails loudly (via assert) rather than silently slicing the whole file
- * or returning an empty string.
- */
-function sliceSection(text, startMarker, endMarker) {
-  const start = text.indexOf(startMarker)
-  assert.notEqual(start, -1, `missing section start marker: ${JSON.stringify(startMarker)}`)
-  const from = start + startMarker.length
-  const end = text.indexOf(endMarker, from)
-  assert.notEqual(
-    end,
-    -1,
-    `missing section end marker after ${JSON.stringify(startMarker)}: ${JSON.stringify(endMarker)}`,
-  )
-  return text.slice(from, end)
-}
-
 for (const mirror of REVIEW_MIRRORS) {
   const skill = read(`${mirror}/SKILL.md`)
   const coreMethodology = read(`${mirror}/references/core-methodology.md`)
 
-  const phase5 = sliceSection(skill, '## Phase 5', '## Phase 6')
-  const phase6 = sliceSection(skill, '## Phase 6', '## Phase 7')
-  const phase7 = sliceSection(skill, '## Phase 7', '## Phase 8')
-  const phase0 = sliceSection(skill, '## Phase 0', '## Phase 1')
-  const findingsContract = sliceSection(skill, '## Findings contract', '## Acceptance-criteria')
-  const coreFindingsContract = sliceSection(
+  const phase5 = sectionRegion(skill, '## Phase 5', `${mirror}/SKILL.md`)
+  const phase6 = sectionRegion(skill, '## Phase 6', `${mirror}/SKILL.md`)
+  const phase7 = sectionRegion(skill, '## Phase 7', `${mirror}/SKILL.md`)
+  const phase0 = sectionRegion(skill, '## Phase 0', `${mirror}/SKILL.md`)
+  const phase1 = sectionRegion(skill, '## Phase 1', `${mirror}/SKILL.md`)
+  const phaseR = sectionRegion(skill, '## Phase R', `${mirror}/SKILL.md`)
+  const phaseD = sectionRegion(skill, '## Phase D', `${mirror}/SKILL.md`)
+  const findingsContract = sectionRegion(skill, '## Findings contract', `${mirror}/SKILL.md`)
+  const coreFindingsContract = sectionRegion(
     coreMethodology,
     '## Findings contract',
-    '## Severity policy',
+    `${mirror}/references/core-methodology.md`,
   )
-  const convergenceLoop = sliceSection(coreMethodology, '## Convergence loop', '### Oscillation')
-  const severityPolicy = sliceSection(coreMethodology, '## Severity policy', '## Always-on rounds')
+  const convergenceLoop = sectionRegion(
+    coreMethodology,
+    '## Convergence loop',
+    `${mirror}/references/core-methodology.md`,
+  )
+  const severityPolicy = sectionRegion(
+    coreMethodology,
+    '## Severity policy',
+    `${mirror}/references/core-methodology.md`,
+  )
 
   test(`[${mirror}] findings contract documents patch field and exact repo-root anchor rule`, () => {
     for (const section of [findingsContract, coreFindingsContract]) {
@@ -109,6 +104,59 @@ for (const mirror of REVIEW_MIRRORS) {
     )
   })
 
+  test(`[${mirror}] Phase 0 applies the default-round kill switch before ledger seeding`, () => {
+    assert.match(phase0, /if \[ "\$\{BOSS_REVIEW_DEFAULT_ROUNDS:-1\}" = "0" \]/)
+    assert.match(phase0, /DEFAULT_ROUNDS_JSON='\[\]'/)
+    assert.match(
+      phase0,
+      /--populations[\s\S]{0,260}defaultRounds=JSON\.parse\(process\.env\.DEFAULT_ROUNDS_JSON\)/,
+    )
+  })
+
+  test(`[${mirror}] Phase 0 rejects traversal-shaped run ids before ledger path assembly`, () => {
+    assert.match(phase0, /RUN_ID="\$\{RUN_ID:-\$\(date \+%s\)-\$\$\}"/)
+    assert.match(phase0, /\*\/*\|\*\\\\\*/)
+    assert.match(phase0, /RUN_ID\s+must\s+be\s+one\s+filename\s+component/)
+    assert.match(phase0, /ledger-\$RUN_ID\.json/)
+  })
+
+  test(`[${mirror}] Phase 0 resolves .git ledger dirs through Git for linked worktrees`, () => {
+    assert.match(phase0, /BOSS_REVIEW_LEDGER_CONFIG_DIR=/)
+    assert.match(phase0, /posix\.normalize\(reviewLedgerConfig\(loadSkillConfig\(\)\)\.dir\)/)
+    assert.match(phase0, /\.git\)/)
+    assert.match(phase0, /\.git\/\*/)
+    assert.match(phase0, /git\s+rev-parse\s+--git-path/)
+    assert.match(phase0, /git\s+rev-parse\s+--path-format=absolute\s+--git-dir/)
+  })
+
+  test(`[${mirror}] Phase 0 rejects symlinked ledger dirs before mkdir`, () => {
+    assert.match(phase0, /realpathSync\(existing\)/)
+    assert.match(phase0, /isSymbolicLink\(\)/)
+    assert.match(phase0, /ledger\s+dir\s+must\s+not\s+pass\s+through\s+a\s+symlink/)
+    assert.match(phase0, /isSymbolicLink\(\)[\s\S]{0,260}mkdir -p "\$BOSS_REVIEW_LEDGER_DIR"/)
+  })
+
+  test(`[${mirror}] declared-parallel phases write dispatch batch rosters before Task dispatch`, () => {
+    assert.match(phase0, /dispatch-batches\.json/)
+    for (const section of [phase1, phaseR, phaseD]) {
+      assert.match(section, /dispatch-batches\.json/)
+      assert.match(section, /planBatches/)
+      assert.match(section, /maxWidth/)
+      assert.match(section, /admitted\s+roster\s+size/)
+      assert.match(section, /dispatch\s+batch\s+<n>\/<m>:\s+<ids>/)
+      assert.match(section, /one\s+`Task`\s+call\s+per\s+member\s+of\s+wave\s+1/)
+    }
+  })
+
+  test(`[${mirror}] Phase 5 documents the categorize panel block as verdict sample evidence`, () => {
+    assert.match(phase5, /prints\s+\{mustFix,\s+pool,\s+invalid,\s+panel\}/)
+    assert.match(phase5, /`panel`\s+block\s+naming\s+the\s+distinct\s+reviewers/)
+    assert.match(phase5, /reported\s+findings/)
+    assert.match(phase5, /returned\s+none/)
+    assert.match(phase5, /rostered\s+output\s+that\s+never\s+arrived/)
+    assert.match(phase5, /sample\s+behind\s+a\s+clean\s+verdict/)
+  })
+
   test(`[${mirror}] Phase 5 distinguishes an unread findings file from a malformed item`, () => {
     // The helper's `categorize` verb reports a whole findings file it could not
     // read as an array, not just malformed items. Prose that lumps the two
@@ -121,6 +169,12 @@ for (const mirror of REVIEW_MIRRORS) {
     // clean-exit rule must not read that as a clean round.
     assert.match(phase5, /no\s+`invalid`\s+entry\s+is\s+still\s+unrepaired/)
     assert.match(phase5, /Every\s+unrepaired\s+`invalid` entry\s+blocks\s+a\s+clean\s+verdict/)
+  })
+
+  test(`[${mirror}] Phase 5 clean exit cites the derived verdict owner`, () => {
+    assert.match(phase5, /derived\s+verdict\s+owner/i)
+    assert.match(phase5, /bs-review-caps\.mjs["'`]?\s+verdict\s+--in\s+"\$REPORT_JSON"/)
+    assert.match(phase5, /clean\s+exit\s+is\s+mechanical/i)
   })
 
   test(`[${mirror}] Phase 5 says patch rejections stay invalid but route to the narrative remainder`, () => {
@@ -143,6 +197,18 @@ for (const mirror of REVIEW_MIRRORS) {
     assert.match(phase5, /never\s+occurrences/i)
   })
 
+  test(`[${mirror}] Phase 5 categorizes once per complete review pass over pooled findings`, () => {
+    assert.match(phase5, /once\s+per\s+review\s+pass/)
+    assert.match(phase5, /pooled\s+findings\s+from\s+every\s+reviewer/)
+    assert.match(
+      phase5,
+      /every\s+dispatched\s+reviewer\s+has\s+either\s+returned\s+or\s+been\s+recorded\s+as\s+a\s+ledger\s+skip/,
+    )
+    assert.match(phase5, /Never\s+categorize\s+a\s+partial\s+pass/)
+    assert.match(phase5, /never\s+categorize\s+per\s+reviewer/)
+    assert.match(phase5, /never\s+categorize\s+per\s+round\s+extension/)
+  })
+
   test(`[${mirror}] Phase 6 adjudicates before fixing and requires evidence on a verified disposition`, () => {
     assert.match(phase6, /adjudicate\s+before\s+you\s+fix/i)
     assert.match(phase6, /confirmed\s+or\s+falsified/i)
@@ -151,6 +217,10 @@ for (const mirror of REVIEW_MIRRORS) {
     // clobbers a prior round's evidence"), so it gates nothing. Pin the clause
     // that binds the evidence to the `verified` disposition itself.
     assert.match(phase6, /the\s+`evidence`\s+that\s+settled\s+it/)
+    assert.match(
+      phase6,
+      /`verified`\s+disposition\s+that\s+changes\s+no\s+files\s+records\s+only\s+the\s+ledger\s+entry/,
+    )
   })
 
   test(`[${mirror}] Phase 6 applies patchable findings mechanically before narrative fix dispatch`, () => {
@@ -170,6 +240,29 @@ for (const mirror of REVIEW_MIRRORS) {
     )
   })
 
+  test(`[${mirror}] Phase 6 gates once per fix batch rather than per item or finding`, () => {
+    assert.match(phase6, /one\s+fix\s+batch\s+for\s+the\s+review\s+pass/)
+    assert.match(phase6, /no\s+gate\s+runs\s+per\s+item\s+or\s+per\s+finding/)
+    assert.match(
+      phase6,
+      /run\s+the\s+affected\s+module\s+tests\/lint[\s\S]{0,220}exactly\s+once\s+for\s+the\s+batch/,
+    )
+    assert.match(phase6, /batch-close\s+gate\s+fails/)
+    assert.match(phase6, /fix\s+forward\s+inside\s+the\s+same\s+batch/)
+  })
+
+  test(`[${mirror}] Phase 6 documents the interleaved-fix trigger and one-split cap`, () => {
+    assert.match(phase6, /sole\s+interleaved-fix\s+exception/)
+    assert.match(phase6, /intra-batch\s+ordering\s+dependency/)
+    assert.match(
+      phase6,
+      /changes\s+the\s+file\s+or\s+bytes\s+cited\s+by\s+another\s+must-fix\s+item/,
+    )
+    assert.match(phase6, /split\s+the\s+pass\s+into\s+two\s+dependency-ordered\s+sub-batches/)
+    assert.match(phase6, /cap\s+the\s+exception\s+at\s+one\s+split\s+per\s+pass/)
+    assert.match(phase6, /record\s+the\s+trigger\s+and\s+member\s+sets\s+in\s+the\s+ledger/)
+  })
+
   test(`[${mirror}] core-methodology convergence loop carries the same mechanical patch path`, () => {
     assert.match(
       convergenceLoop,
@@ -185,12 +278,36 @@ for (const mirror of REVIEW_MIRRORS) {
     )
   })
 
+  test(`[${mirror}] core-methodology convergence loop gates once at batch close`, () => {
+    assert.match(convergenceLoop, /one\s+fix\s+batch/)
+    assert.match(convergenceLoop, /no\s+gate\s+runs\s+per\s+item\s+or\s+per\s+finding/)
+    assert.match(convergenceLoop, /configured\s+gate\s+commands\s+once\s+at\s+batch\s+close/)
+    assert.match(convergenceLoop, /intra-batch\s+ordering\s+dependency/)
+    assert.match(convergenceLoop, /at\s+most\s+one\s+split\s+is\s+allowed\s+per\s+pass/)
+  })
+
   test(`[${mirror}] Phase 7 report schema carries the patch summary tally`, () => {
     assert.match(
       phase7,
       /"patchSummary":\s*\{\s*"patchable":\s*P,\s*"narrative":\s*N,\s*"nullWithReason":\s*R\s*\}/,
     )
     assert.match(phase7, /patchable\/narrative\/null-with-reason\s+tally/)
+  })
+
+  test(`[${mirror}] Phase 7 records dispatch batch self-audit without changing outcome`, () => {
+    assert.match(phase7, /bs-dispatch-batch-audit\.mjs/)
+    assert.match(phase7, /--run-tmp\s+"\$RUN_TMP"/)
+    assert.match(phase7, /dispatch\s+batch\s+self-audit/)
+    assert.match(phase7, /report-only/)
+    assert.match(phase7, /never\s+changes\s+the\s+review\s+exit\s+code/)
+  })
+
+  test(`[${mirror}] Phase 7 report schema carries panel and agreement evidence`, () => {
+    assert.match(phase7, /"panel":\s*\{[\s\S]{0,220}"initial"[\s\S]{0,220}"reviewers"/)
+    assert.match(phase7, /"agreement":\s*\{[\s\S]{0,260}"panelSize"[\s\S]{0,260}"vanishedFindings"/)
+    assert.match(phase7, /Build\s+`panel`\s+from\s+each\s+round's\s+`categorize`\s+output/)
+    assert.match(phase7, /initial\s+panel\s+and\s+terminal\s+panel\s+separately/)
+    assert.match(phase7, /renders\s+panel\s+size,\s+initial-vs-terminal\s+panel/)
   })
 
   // BOS-798: `proseWrap: preserve` means prettier does not reflow prose, so a hand-split or
@@ -249,11 +366,57 @@ for (const mirror of REVIEW_MIRRORS) {
     )
     assert.match(phase5, /\$RUN_TMP\/round<N>\/lens-entries\.json/)
     assert.match(phase5, /Do\s+not\s+reuse\s+the\s+initial-round\s+mapping/)
+    assert.match(phase5, /CURRENT_FINDINGS_DIR="\$RUN_TMP"/)
+    assert.match(phase5, /CURRENT_FINDINGS_DIR="\$RUN_TMP\/round<N>"/)
+    assert.match(phase7, /--findings-dir\s+"\$CURRENT_FINDINGS_DIR"/)
+  })
+
+  test(`[${mirror}] Phase 1 records timed-out lens dispatches distinctly`, () => {
+    assert.match(phase1, /timed-out\s+dispatch\s+records\s+`outcome:\s+timed-out`/)
+    assert.match(phase1, /--outcome\s+skipped-or-timed-out/)
+  })
+
+  test(`[${mirror}] Phase R records timed-out round dispatches distinctly`, () => {
+    assert.match(phaseR, /`--outcome\s+timed-out`\s+for\s+timeouts/)
+    assert.match(phaseR, /--outcome\s+"<skipped\|timed-out>"/)
   })
 
   test(`[${mirror}] Phase 6 cannot finish clean with malformed reviewer findings`, () => {
     assert.match(phase6, /zero\s+must-fix\s+\*\*and\s+zero\s+unrepaired\s+`invalid` entries\*\*/)
     assert.match(phase6, /report `capped`, never `clean`/)
+  })
+
+  test(`[${mirror}] Phase 6 documents vanished findings as disagreement evidence`, () => {
+    assert.match(phase6, /Disappearance\s+guard/)
+    assert.match(phase6, /vanishedFindings\(history\)/)
+    assert.match(phase6, /must-fix\s+at\s+round\s+N/)
+    assert.match(phase6, /absent\s+at\s+round\s+N\+1/)
+    assert.match(phase6, /neither\s+`## Fixed`\s+nor\s+`## Leave\s+as-is`/)
+    assert.match(phase6, /reviewer\s+disagreement/)
+    assert.match(phase6, /Agreement\s+section/)
+  })
+
+  test(`[${mirror}] Phase 6 and core-methodology route oscillation through the caps helper`, () => {
+    const oscillationGuard = sectionRegion(
+      coreMethodology,
+      '### Oscillation guard',
+      `${mirror}/references/core-methodology.md`,
+    )
+    assert.match(phase6, /bs-review-caps\.mjs"\s+oscillation\s+--in/)
+    assert.match(
+      phase6,
+      /build\s+`oscillation_json`\s+from\s+the\s+previous\s+and\s+current\s+categorized/,
+    )
+    assert.match(phase6, /intervening\s+ledger\s+`fixed`\/`verified`\s+dispositions/)
+    assert.match(phase6, /write\s+it\s+to\s+`\$RUN_TMP\/round<N>\/oscillation\.json`/)
+    assert.match(phase6, /deterministic\s+JSON\s+tuple\s+identity\s+`\[file,line,title\]`/)
+    assert.match(oscillationGuard, /bs-review-caps\.mjs\s+oscillation\s+--in\s+<payload\.json>/)
+    assert.match(oscillationGuard, /oscillation\s+payload\s+file/)
+    assert.match(
+      oscillationGuard,
+      /deterministic\s+JSON\s+tuple\s+identity\s+`\[file,line,title\]`/,
+    )
+    assert.match(oscillationGuard, /fixed\/verified\s+dispositions/)
   })
 
   test(`[${mirror}] invalid-only rounds repair their owning reviewer before dispatching a fixer`, () => {
@@ -270,13 +433,25 @@ for (const mirror of REVIEW_MIRRORS) {
   })
 
   test(`[${mirror}] Phase 7 makes malformed payloads and verification evidence durable`, () => {
-    const phase7 = sliceSection(skill, '## Phase 7', '## Phase 8')
+    const phase7 = sectionRegion(skill, '## Phase 7', `${mirror}/SKILL.md`)
     // Every space is `\s+`: prettier rewraps this prose at 100 columns, so a
     // literal space here would make the gate fail on a reflow rather than on a
     // dropped guarantee. Both halves are asserted — the payload AND the source
     // that names whose output it was — because retaining one without the other
     // leaves invalid evidence that cannot be routed back to a reviewer.
-    assert.match(phase7, /retained\s+reviewer\/output\s+source,\s+and\s+malformed\s+payload/)
+    const malformedEvidence = /retained\s+reviewer\/output\s+source[\s\S]{0,80}malformed\s+payload/
+    assert.match(phase7, malformedEvidence)
+    assert.match(
+      'retained reviewer/output source, payload parser diagnostics, and malformed payload',
+      malformedEvidence,
+      'the Phase 7 pin must allow a richer wording that keeps the semantic tokens',
+    )
+    assertFalsifiable({
+      source: phase7,
+      pattern: malformedEvidence,
+      mutation: { find: /malformed\s+payload/g, replacement: 'payload' },
+      label: `${mirror}/SKILL.md Phase 7 malformed-payload evidence`,
+    })
     assert.match(
       phase7,
       /\"evidence\": \"<file:line[ ]read[ ]or[ ]command[ ]result[ ]that[ ]settled[ ]it>\"/,
@@ -284,8 +459,28 @@ for (const mirror of REVIEW_MIRRORS) {
     assert.match(phase7, /including\s+each\s+verified\s+finding's\s+evidence/)
   })
 
+  test(`[${mirror}] Phase 7 emits the terminal sentinel through the derived verdict owner`, () => {
+    assert.match(
+      phase7,
+      /node\s+"\$BOSS_REVIEW_TOOLBOX\/bs-review-caps\.mjs"\s+verdict\s+--in\s+"\$REPORT_JSON"/,
+    )
+    assert.match(phase7, /The\s+report's\s+own\s+evidence\s+chooses\s+the\s+sentinel/)
+    assert.match(phase7, /caller-supplied\s+`status`\s+disagrees\s+with\s+the\s+derived\s+verdict/)
+    assert.match(phase7, /classify\s+--in[\s\S]{0,160}missing[\s\S]{0,80}non-clean/i)
+  })
+
+  test(`[${mirror}] Phase 7 derives confidence through the toolbox owner`, () => {
+    assert.match(phase7, /bs-review-caps\.mjs\s+confidence\s+--in\s+"\$REPORT_JSON"/)
+    assert.match(phase7, /displayed\s+Confidence\s+badge\s+is\s+derived/)
+    assert.match(phase7, /panel\/agreement\s+evidence/)
+    assert.match(phase7, /caller-supplied\s+`verdict\.confidence`/)
+    assert.match(phase7, /confidence\s+contradiction\s+notice/)
+    assert.match(phase7, /single-sample\s+panel\s+or\s+vanished\s+finding/)
+    assert.match(phase7, /human\s+should\s+adjudicate/)
+  })
+
   test(`[${mirror}] the Phase 0 ledger template's Leave as-is comment carries rationale: and evidence:`, () => {
-    const leaveAsIsTemplate = sliceSection(phase0, '## Leave as-is', '```')
+    const leaveAsIsTemplate = regionUntilNext(phase0, '## Leave as-is', '```', `${mirror}/SKILL.md`)
     assert.match(leaveAsIsTemplate, /rationale:/)
     assert.match(leaveAsIsTemplate, /evidence:/)
   })
@@ -295,10 +490,25 @@ for (const mirror of REVIEW_MIRRORS) {
     assert.match(severityPolicy, /distinct\s+reviewers/i)
   })
 
+  test(`[${mirror}] core-methodology.md's confidence rubric is panel/agreement-derived`, () => {
+    const confidenceRubric = sectionRegion(
+      coreMethodology,
+      '## Confidence rubric',
+      `${mirror}/references/core-methodology.md`,
+    )
+    assert.match(confidenceRubric, /panel\s+that\s+produced\s+the\s+verdict/)
+    assert.match(confidenceRubric, /terminal\s+panel\s+has\s+fewer\s+than\s+two\s+reviewers/)
+    assert.match(confidenceRubric, /must-fix\s+at\s+round\s+N/)
+    assert.match(confidenceRubric, /terminal\s+panel\s+is\s+smaller\s+than\s+the\s+initial\s+panel/)
+    assert.match(confidenceRubric, /one\s+reviewer\s+alone\s+raised\s+a\s+must-fix/)
+    assert.match(confidenceRubric, /terminal\s+panel\s+has\s+at\s+least\s+two\s+reviewers/)
+  })
+
   test(`[${mirror}] the added Phase 5/6 and severity-policy prose stays project-agnostic`, () => {
     const forbidden = /bossanova|linear|BOS-\d+/i
     assert.doesNotMatch(phase5, forbidden)
     assert.doesNotMatch(phase6, forbidden)
+    assert.doesNotMatch(convergenceLoop, forbidden)
     assert.doesNotMatch(severityPolicy, forbidden)
   })
 }
@@ -335,18 +545,8 @@ const REVIEW_CE_EXTENSION_DIRS = ['.claude/skills/boss-review-ce', '.codex/skill
 
 for (const skillDir of REVIEW_CE_EXTENSION_DIRS) {
   test(`[${skillDir}] the inline fallback covers dispatch failure and skipped CE, not just absence`, () => {
-    // Scoped to the rubric section, not the whole file, so unrelated prose cannot satisfy these.
-    // sliceSection is not usable here: it requires a following marker, and this is the last
-    // section of the document.
     const raw = read(`${skillDir}/SKILL.md`)
-    const start = raw.indexOf('## Inline fallback rubric')
-    assert.notStrictEqual(
-      start,
-      -1,
-      `${skillDir}/SKILL.md must keep the "## Inline fallback rubric" section`,
-    )
-    const nextHeading = raw.indexOf('\n## ', start + 1)
-    const rubric = (nextHeading === -1 ? raw.slice(start) : raw.slice(start, nextHeading)).replace(
+    const rubric = sectionRegion(raw, '## Inline fallback rubric', `${skillDir}/SKILL.md`).replace(
       /\s+/g,
       ' ',
     )

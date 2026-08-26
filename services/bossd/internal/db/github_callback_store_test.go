@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +58,12 @@ func TestGithubCallbackStore_CreateDefaultsAndNormalizes(t *testing.T) {
 	}
 	if cb.AttemptCount != 0 {
 		t.Errorf("attempt_count = %d, want 0", cb.AttemptCount)
+	}
+	if cb.ShouldRequireTransition {
+		t.Error("should_require_transition = true, want false by default")
+	}
+	if cb.HasObservedBaseline {
+		t.Error("has_observed_baseline = true, want false by default")
 	}
 	if cb.GroupID != nil {
 		t.Errorf("group id = %v, want nil", cb.GroupID)
@@ -166,6 +173,50 @@ func TestGithubCallbackStore_AcceptsEveryCanonicalTrigger(t *testing.T) {
 	}
 }
 
+func TestGithubCallbackStore_CreateRejectsCoSatisfiableGroup(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+	group := "release-gate"
+
+	first := newTestCallbackParams()
+	first.GroupID = &group
+	first.Trigger = models.GithubCallbackTriggerChecksPassed
+	if _, err := store.Create(ctx, first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+
+	second := newTestCallbackParams()
+	second.GroupID = &group
+	second.Trigger = models.GithubCallbackTriggerChecksPassedReady
+	_, err := store.Create(ctx, second)
+	if !errors.Is(err, ErrGithubCallbackInvalid) {
+		t.Fatalf("co-satisfiable create err = %v, want ErrGithubCallbackInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "checks_passed") || !strings.Contains(err.Error(), "checks_passed_ready") {
+		t.Fatalf("error %q should name both triggers", err.Error())
+	}
+}
+
+func TestGithubCallbackStore_CreateAcceptsMutuallyExclusiveGroup(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+	group := "closed-or-merged"
+
+	merged := newTestCallbackParams()
+	merged.GroupID = &group
+	merged.Trigger = models.GithubCallbackTriggerMerged
+	if _, err := store.Create(ctx, merged); err != nil {
+		t.Fatalf("create merged: %v", err)
+	}
+
+	closed := newTestCallbackParams()
+	closed.GroupID = &group
+	closed.Trigger = models.GithubCallbackTriggerClosed
+	if _, err := store.Create(ctx, closed); err != nil {
+		t.Fatalf("mutually-exclusive create should succeed: %v", err)
+	}
+}
+
 func TestGithubCallbackStore_GetNotFound(t *testing.T) {
 	store := NewGithubCallbackStore(setupTestDB(t))
 	_, err := store.Get(context.Background(), "nope")
@@ -222,22 +273,48 @@ func TestGithubCallbackStore_ListOrderingAndFilter(t *testing.T) {
 	}
 }
 
-func TestGithubCallbackStore_DeleteIdempotent(t *testing.T) {
+func TestGithubCallbackStore_DeleteOutcomes(t *testing.T) {
 	store := NewGithubCallbackStore(setupTestDB(t))
 	ctx := context.Background()
 	cb, err := store.Create(ctx, newTestCallbackParams())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.Delete(ctx, cb.ID); err != nil {
+	outcome, err := store.Delete(ctx, cb.ID, "other-chat")
+	if !errors.Is(err, ErrGithubCallbackNotOwned) {
+		t.Fatalf("wrong-owner delete err = %v, want ErrGithubCallbackNotOwned", err)
+	}
+	if outcome != DeleteGithubCallbackOutcomeNotOwned {
+		t.Fatalf("wrong-owner outcome = %q, want not_owned", outcome)
+	}
+	stillThere, err := store.Get(ctx, cb.ID)
+	if err != nil {
+		t.Fatalf("row should survive not_owned delete: %v", err)
+	}
+	if stillThere.State != models.GithubCallbackStateActive {
+		t.Fatalf("state after not_owned delete = %q, want active", stillThere.State)
+	}
+
+	outcome, err = store.Delete(ctx, cb.ID, cb.TargetChatID)
+	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	// Second delete of an already-absent row is a nil no-op.
-	if err := store.Delete(ctx, cb.ID); err != nil {
-		t.Fatalf("second delete: %v", err)
+	if outcome != DeleteGithubCallbackOutcomeDeleted {
+		t.Fatalf("delete outcome = %q, want deleted", outcome)
 	}
-	if err := store.Delete(ctx, "never-existed"); err != nil {
-		t.Fatalf("delete absent: %v", err)
+	outcome, err = store.Delete(ctx, cb.ID, cb.TargetChatID)
+	if err != nil {
+		t.Fatalf("second delete should return not_found without store error: %v", err)
+	}
+	if outcome != DeleteGithubCallbackOutcomeNotFound {
+		t.Fatalf("second delete outcome = %q, want not_found", outcome)
+	}
+	outcome, err = store.Delete(ctx, "never-existed", "")
+	if err != nil {
+		t.Fatalf("delete absent should return not_found without store error: %v", err)
+	}
+	if outcome != DeleteGithubCallbackOutcomeNotFound {
+		t.Fatalf("delete absent outcome = %q, want not_found", outcome)
 	}
 }
 
@@ -371,19 +448,15 @@ func TestGithubCallbackStore_TriggerGroupSingleWinnerCancelsSiblings(t *testing.
 
 	group := "race-group"
 	var ids []string
-	for i := range 4 {
+	for i := range 2 {
 		p := newTestCallbackParams()
 		p.GroupID = &group
-		// Distinct triggers so each could match a different webhook event.
+		// Mutually exclusive triggers are allowed to share a one-shot group.
 		switch i {
 		case 0:
 			p.Trigger = models.GithubCallbackTriggerMerged
 		case 1:
 			p.Trigger = models.GithubCallbackTriggerClosed
-		case 2:
-			p.Trigger = models.GithubCallbackTriggerChecksPassed
-		case 3:
-			p.Trigger = models.GithubCallbackTriggerChecksFailed
 		}
 		cb, err := store.Create(ctx, p)
 		if err != nil {
@@ -434,8 +507,8 @@ func TestGithubCallbackStore_TriggerGroupSingleWinnerCancelsSiblings(t *testing.
 			t.Errorf("callback %s in unexpected state %q", cb.ID, cb.State)
 		}
 	}
-	if triggered != 1 || canceled != 3 {
-		t.Fatalf("triggered=%d canceled=%d, want 1 and 3", triggered, canceled)
+	if triggered != 1 || canceled != 1 {
+		t.Fatalf("triggered=%d canceled=%d, want 1 and 1", triggered, canceled)
 	}
 }
 

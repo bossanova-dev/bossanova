@@ -81,6 +81,81 @@ test('CLI categorize derives a bare Tier 2 lens reviewer identity from its dispa
   }
 })
 
+test('CLI categorize prints panel evidence for readable, silent, reporting, and missing reviewers', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
+  try {
+    const expectedPath = join(dir, 'expected.json')
+    writeFileSync(
+      join(dir, 'findings-alpha.json'),
+      JSON.stringify([
+        finding({ lens: 'ignored-alpha', severity: 'Warning', title: 'alpha issue' }),
+      ]),
+    )
+    writeFileSync(join(dir, 'findings-beta.json'), JSON.stringify([]))
+    writeFileSync(
+      expectedPath,
+      JSON.stringify(['findings-alpha.json', 'findings-beta.json', 'findings-gamma.json']),
+    )
+
+    const { stdout, stderr, status } = runCli([
+      'categorize',
+      dir,
+      '--expected-outputs-file',
+      expectedPath,
+    ])
+    assert.equal(status, 0, stderr)
+    const parsed = JSON.parse(stdout)
+    assert.deepEqual(parsed.panel, {
+      reviewers: ['alpha', 'beta'],
+      reporting: ['alpha'],
+      silent: ['beta'],
+      missing: ['gamma'],
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI categorize clean output differs for one-reviewer and five-reviewer panels', () => {
+  const one = mkdtempSync(join(tmpdir(), 'bs-review-triage-one-'))
+  const five = mkdtempSync(join(tmpdir(), 'bs-review-triage-five-'))
+  try {
+    writeFileSync(join(one, 'findings-a.json'), JSON.stringify([]))
+    for (const name of ['a', 'b', 'c', 'd', 'e']) {
+      writeFileSync(join(five, `findings-${name}.json`), JSON.stringify([]))
+    }
+
+    const oneResult = runCli(['categorize', one])
+    const fiveResult = runCli(['categorize', five])
+    assert.equal(oneResult.status, 0, oneResult.stderr)
+    assert.equal(fiveResult.status, 0, fiveResult.stderr)
+    assert.notEqual(oneResult.stdout, fiveResult.stdout)
+    assert.deepEqual(JSON.parse(oneResult.stdout).panel.reviewers, ['a'])
+    assert.deepEqual(JSON.parse(fiveResult.stdout).panel.reviewers, ['a', 'b', 'c', 'd', 'e'])
+  } finally {
+    rmSync(one, { recursive: true, force: true })
+    rmSync(five, { recursive: true, force: true })
+  }
+})
+
+test('CLI categorize output is deterministic over repeated runs on the same panel', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-determinism-'))
+  try {
+    for (const name of ['codex', 'claude', 'gpt']) {
+      writeFileSync(join(dir, `findings-${name}.json`), JSON.stringify([]))
+    }
+    const outputs = []
+    for (let i = 0; i < 10; i += 1) {
+      const { stdout, stderr, status } = runCli(['categorize', dir])
+      assert.equal(status, 0, stderr)
+      outputs.push(stdout)
+    }
+    assert.equal(new Set(outputs).size, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('CLI categorize retains the source reviewer for malformed bare-array items', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
   try {

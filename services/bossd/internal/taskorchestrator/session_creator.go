@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
@@ -47,6 +48,7 @@ type CreateSessionOpts struct {
 	PRURL           *string
 	AgentName       string // Agent plugin name; empty means use the daemon default agent.
 	Model           string // Opaque agent model id; "" = plugin default.
+	Effort          string // Opaque agent reasoning effort; "" = plugin default.
 
 	// PreventDuplicateActiveSession is set for Dependabot repair sessions so
 	// one active PR/branch session covers repeated plugin emissions.
@@ -292,15 +294,17 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 	}
 	if err == nil {
 		params := db.CreateSessionParams{
-			RepoID:     opts.RepoID,
-			Title:      opts.Title,
-			Plan:       opts.Plan,
-			BaseBranch: opts.BaseBranch,
-			PRNumber:   opts.PRNumber,
-			PRURL:      opts.PRURL,
-			AgentName:  agentName,
-			Model:      opts.Model,
-			BranchName: branchName,
+			RepoID:          opts.RepoID,
+			Title:           opts.Title,
+			Plan:            opts.Plan,
+			BaseBranch:      opts.BaseBranch,
+			PRNumber:        opts.PRNumber,
+			PRURL:           opts.PRURL,
+			AgentName:       agentName,
+			Model:           opts.Model,
+			EffectiveModel:  effectiveAgentSetting(agentName, "model", opts.Model),
+			EffectiveEffort: effectiveAgentSetting(agentName, "effort", opts.Effort),
+			BranchName:      branchName,
 		}
 		params.AccountID = c.resolveDefaultAccountID(ctx, agentName)
 		sess, err = c.sessions.Create(ctx, params)
@@ -390,6 +394,33 @@ func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, a
 		return nil
 	}
 	return &id
+}
+
+func effectiveAgentSetting(agentName, key, requested string) string {
+	if requested != "" {
+		return requested
+	}
+	settings, err := config.Load()
+	if err == nil {
+		if value := config.PluginConfigString(&settings, agentName, key); value != "" {
+			return value
+		}
+	}
+	return defaultAgentSetting(agentName, key)
+}
+
+func defaultAgentSetting(agentName, key string) string {
+	if key != "effort" {
+		return ""
+	}
+	switch agentName {
+	case "claude":
+		return "high"
+	case "codex":
+		return "medium"
+	default:
+		return ""
+	}
 }
 
 // isDuplicateSessionAlive backs the duplicate-PR/branch guard: true keeps the

@@ -43,20 +43,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import {
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { textLines, trackedFiles } from './tree-scan-lib.mjs'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -153,47 +145,11 @@ const RETIREMENT_REFS = [
   },
 ]
 
-/** Extensions whose bytes are not prose and would be noise to scan. */
-const BINARY_EXT =
-  /\.(png|jpe?g|gif|webp|ico|icns|pdf|zip|gz|tgz|bz2|xz|woff2?|ttf|otf|eot|mp4|mov|webm|wasm|bin|so|dylib|dll|exe)$/i
-
 /** This file necessarily contains every string it forbids. */
 const SELF = 'scripts/legacy-support-refs.test.mjs'
 
-function trackedFiles() {
-  const out = execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, maxBuffer: 64 << 20 })
-  return out.toString('utf8').split('\0').filter(Boolean)
-}
-
 function isHistorical(path) {
   return HISTORICAL_PREFIXES.some((prefix) => path.startsWith(prefix))
-}
-
-/**
- * `[lineNumber, text]` for every line of `path` matching LEGACY_REF; `[]` for binary/unreadable.
- *
- * `root` exists so the symlink handling below can be exercised on a scratch tree instead of
- * requiring this repository to keep tracking a link with a particular target.
- *
- * Git stores a symlink as a blob whose contents are the TARGET PATH, so that path is what a
- * tree-wide scan must read. `readFileSync` instead follows the link and reads the target file,
- * which fails in both directions: a link INTO a retired directory passes whenever the file it
- * points at happens not to spell the name, and the target — itself tracked, and therefore scanned
- * on its own turn — gets scanned twice. This repository already tracks `AGENTS.md` as a symlink,
- * so the distinction is live, not hypothetical. `lstat` + `readlink` reads what Git stores without
- * spawning a `git cat-file` per file, and works on a dangling link too.
- */
-function textLines(path, root = REPO_ROOT) {
-  if (BINARY_EXT.test(path)) return null
-  const abs = join(root, path)
-  let body
-  try {
-    body = lstatSync(abs).isSymbolicLink() ? readlinkSync(abs) : readFileSync(abs, 'utf8')
-  } catch {
-    return null
-  }
-  if (body.includes('\0')) return null // binary without a telling extension
-  return body.split('\n')
 }
 
 function legacyHits(path, root = REPO_ROOT) {
@@ -244,7 +200,7 @@ function inScope(scope, line) {
 }
 
 test('BOS-815: no active file requires Gstack or Superpowers', () => {
-  const files = trackedFiles()
+  const files = trackedFiles(REPO_ROOT)
   // Guard the guard: a broken enumeration would make every assertion below vacuous.
   assert.ok(files.length >= 500, `expected the whole tracked tree, got ${files.length} files`)
   assert.ok(files.includes('.gitignore'), 'enumeration must reach dotfiles at the repo root')
@@ -359,7 +315,7 @@ test('BOS-815: a tracked symlink is scanned as its target PATH, not the target f
 })
 
 test('BOS-815: every retirement pin is still load-bearing', () => {
-  const tracked = new Set(trackedFiles())
+  const tracked = new Set(trackedFiles(REPO_ROOT))
   const seenPaths = new Set()
   for (const entry of RETIREMENT_REFS) {
     assert.ok(tracked.has(entry.path), `${entry.path} is pinned but no longer tracked`)
@@ -418,7 +374,7 @@ test('BOS-815: every retirement pin is still load-bearing', () => {
 })
 
 test('BOS-815: every allowlist entry is still load-bearing', () => {
-  const tracked = new Set(trackedFiles())
+  const tracked = new Set(trackedFiles(REPO_ROOT))
   for (const entry of ALLOWLIST) {
     assert.ok(tracked.has(entry.path), `${entry.path} is allowlisted but no longer tracked`)
     assert.ok(
@@ -439,7 +395,7 @@ test('BOS-815: every allowlist entry is still load-bearing', () => {
 })
 
 test('BOS-815: historical prefixes are non-empty and really historical', () => {
-  const files = trackedFiles()
+  const files = trackedFiles(REPO_ROOT)
   for (const prefix of HISTORICAL_PREFIXES) {
     const under = files.filter((path) => path.startsWith(prefix))
     assert.ok(under.length > 0, `${prefix} is exempted but matches no tracked file — delete it`)

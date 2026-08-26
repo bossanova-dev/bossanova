@@ -1293,6 +1293,7 @@ func runNew(cmd *cobra.Command) error {
 	prompt, _ := cmd.Flags().GetString("prompt")
 	title, _ := cmd.Flags().GetString("title")
 	model, _ := cmd.Flags().GetString("model")
+	effort, _ := cmd.Flags().GetString("effort")
 	account, _ := cmd.Flags().GetString("account")
 	// Thread flag PRESENCE, not just the value: an explicit `--account=` (even
 	// empty) is an opt-out to account 0, distinct from omitting the flag (the
@@ -1349,6 +1350,7 @@ func runNew(cmd *cobra.Command) error {
 			Title:          title,
 			AgentName:      agentName,
 			Model:          model,
+			Effort:         effort,
 			Account:        accountArg,
 			TmuxUnattended: tmuxUnattended,
 			DeferPR:        deferPR,
@@ -1422,6 +1424,9 @@ func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 	if opts.Model != "" {
 		req.Model = &opts.Model
 	}
+	if opts.Effort != "" {
+		req.Effort = &opts.Effort
+	}
 	if opts.Account != nil {
 		req.AccountId = opts.Account
 	}
@@ -1449,6 +1454,7 @@ type newSessionOpts struct {
 	Title     string
 	AgentName string
 	Model     string
+	Effort    string
 	// Account carries flag PRESENCE: nil = absent, non-nil (even "") = explicit.
 	Account *string
 	// TmuxUnattended requests a durable tmux-hosted pane that survives a daemon
@@ -3092,6 +3098,13 @@ func accountShowLabel(accountID, accountLabel string) string {
 	return accountID
 }
 
+func recordedSessionSettingLabel(value string) string {
+	if value == "" {
+		return "not recorded"
+	}
+	return value
+}
+
 // printSessionShowHeader writes the key-value header block for `boss show` to
 // stdout. Kept separate from runShow so its formatting (including the Account
 // line) is unit-testable without a live daemon client.
@@ -3102,6 +3115,9 @@ func printSessionShowHeader(sess *pb.Session) {
 	fmt.Printf("  Branch:   %s\n", sess.BranchName)
 	fmt.Printf("  State:    %s\n", views.StateLabel(sess.State))
 	fmt.Printf("  Account:  %s\n", accountShowLabel(sess.GetAccountId(), sess.GetAccountLabel()))
+	fmt.Printf("  Agent:    %s\n", recordedSessionSettingLabel(sess.GetAgentName()))
+	fmt.Printf("  Model:    %s\n", recordedSessionSettingLabel(sess.GetEffectiveModel()))
+	fmt.Printf("  Effort:   %s\n", recordedSessionSettingLabel(sess.GetEffectiveEffort()))
 	if sess.PrNumber != nil {
 		fmt.Printf("  PR:       #%d\n", *sess.PrNumber)
 	}

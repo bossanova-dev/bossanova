@@ -162,7 +162,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
 				return s.chatSpawnEnv(ctx, sess, chat, defaultAccountID, "wake chat", recordAccountUse)
 			},
-			Model: chat.Model,
+			Model:                  chat.Model,
+			SessionAgentName:       sess.AgentName,
+			SessionEffectiveEffort: sess.EffectiveEffort,
 		})
 		if err != nil {
 			return nil, err

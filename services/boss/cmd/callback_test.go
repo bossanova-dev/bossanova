@@ -1,16 +1,21 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"charm.land/bubbles/v2/table"
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/githubcallback"
 
@@ -130,6 +135,20 @@ func TestGithubCallbackToJSON_NeverLeaksMessage(t *testing.T) {
 	if out.TriggeredAt != "" || out.DeliveredAt != "" || out.UpdatedAt != "" {
 		t.Fatalf("nil timestamps must render empty, got %+v", out)
 	}
+	if out.ShouldRequireTransition || out.HasObservedBaseline {
+		t.Fatalf("zero bools should map false, got %+v", out)
+	}
+}
+
+func TestGithubCallbackToJSON_TransitionFields(t *testing.T) {
+	out := githubCallbackToJSON(&pb.GithubCallback{
+		Id:                      "cb-1",
+		ShouldRequireTransition: true,
+		HasObservedBaseline:     true,
+	})
+	if !out.ShouldRequireTransition || !out.HasObservedBaseline {
+		t.Fatalf("transition fields not mapped: %+v", out)
+	}
 }
 
 // TestCallbackListColumns_TriggerNeverTruncated is a rendering regression guard:
@@ -174,6 +193,140 @@ func TestCallbackListColumns_TriggerNeverTruncated(t *testing.T) {
 			t.Errorf("trigger %q truncated in rendered table (TRIGGER width %d):\n%s",
 				tr, cols[2].Width, view)
 		}
+	}
+}
+
+type fakeCallbackClient struct {
+	client.BossClient
+	callbacks   []*pb.GithubCallback
+	deletedChat string
+	deletedID   string
+	deleteResp  *pb.DeleteGithubCallbackResponse
+	deleteErr   error
+}
+
+func (f *fakeCallbackClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+	return f.callbacks, nil
+}
+
+func (f *fakeCallbackClient) DeleteGithubCallback(_ context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
+	f.deletedChat = targetChatID
+	f.deletedID = id
+	if f.deleteErr != nil {
+		return nil, f.deleteErr
+	}
+	if f.deleteResp != nil {
+		return f.deleteResp, nil
+	}
+	return &pb.DeleteGithubCallbackResponse{Outcome: "deleted"}, nil
+}
+
+func newCallbackTestCmd() (*cobra.Command, *bytes.Buffer) {
+	cmd := &cobra.Command{Use: "callback-test"}
+	cmd.Flags().String("chat", "", "")
+	cmd.Flags().String("id", "", "")
+	cmd.Flags().Bool("json", false, "")
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	return cmd, &out
+}
+
+func TestRunCallbackListWithClient_TableFooterAndIDFilter(t *testing.T) {
+	cmd, out := newCallbackTestCmd()
+	if err := cmd.Flags().Set("id", "cb-2"); err != nil {
+		t.Fatalf("set id: %v", err)
+	}
+	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+		{Id: "cb-1", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "merged", State: "active", TargetChatId: "chat-1"},
+		{Id: "cb-2", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "closed", State: "active", TargetChatId: "chat-1"},
+	}}
+	if err := runCallbackListWithClient(cmd, fake); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "cb-1") {
+		t.Fatalf("id filter leaked cb-1:\n%s", got)
+	}
+	if !strings.Contains(got, "cb-2") || !strings.Contains(got, "1 callbacks (complete listing)") {
+		t.Fatalf("list missing row/footer:\n%s", got)
+	}
+}
+
+func TestRunCallbackListWithClient_IDNotFoundIsExplicit(t *testing.T) {
+	cmd, out := newCallbackTestCmd()
+	if err := cmd.Flags().Set("id", "missing"); err != nil {
+		t.Fatalf("set id: %v", err)
+	}
+	err := runCallbackListWithClient(cmd, &fakeCallbackClient{callbacks: []*pb.GithubCallback{{Id: "cb-1"}}})
+	if err == nil {
+		t.Fatal("expected missing id error")
+	}
+	if !strings.Contains(out.String(), "Callback missing not found.") {
+		t.Fatalf("missing id output not explicit: %q", out.String())
+	}
+}
+
+func TestRunCallbackRemoveWithClientRejectsMultiIDBlob(t *testing.T) {
+	cmd, _ := newCallbackTestCmd()
+	fake := &fakeCallbackClient{}
+	for _, id := range []string{"id1 id2 id3", "id1,id2,id3"} {
+		t.Run(id, func(t *testing.T) {
+			err := runCallbackRemoveWithClient(cmd, fake, id)
+			if err == nil {
+				t.Fatal("expected multi-id rejection")
+			}
+			if !strings.Contains(err.Error(), "id1") || !strings.Contains(err.Error(), "id2") || !strings.Contains(err.Error(), "id3") {
+				t.Fatalf("error should name parsed ids, got %v", err)
+			}
+			if fake.deletedID != "" {
+				t.Fatalf("delete RPC should not run, deleted %q", fake.deletedID)
+			}
+		})
+	}
+}
+
+func TestRunCallbackRemoveWithClientOutcomes(t *testing.T) {
+	orig := osGetenv
+	t.Cleanup(func() { osGetenv = orig })
+	osGetenv = func(key string) string {
+		if key == "BOSS_AGENT_SESSION_ID" {
+			return "chat-1"
+		}
+		return ""
+	}
+
+	cases := []struct {
+		name      string
+		resp      *pb.DeleteGithubCallbackResponse
+		err       error
+		wantOut   string
+		wantError bool
+	}{
+		{name: "deleted", resp: &pb.DeleteGithubCallbackResponse{Outcome: "deleted"}, wantOut: "Removed callback cb-1.", wantError: false},
+		{name: "not_found response", resp: &pb.DeleteGithubCallbackResponse{Outcome: "not_found"}, wantOut: "Callback cb-1 not found.", wantError: true},
+		{name: "not_owned response", resp: &pb.DeleteGithubCallbackResponse{Outcome: "not_owned"}, wantOut: "Callback cb-1 not owned by chat-1.", wantError: true},
+		{name: "not_found error", err: connect.NewError(connect.CodeNotFound, errors.New("missing")), wantOut: "Callback cb-1 not found.", wantError: true},
+		{name: "not_owned error", err: connect.NewError(connect.CodePermissionDenied, errors.New("wrong chat")), wantOut: "Callback cb-1 not owned by chat-1.", wantError: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, out := newCallbackTestCmd()
+			fake := &fakeCallbackClient{deleteResp: tc.resp, deleteErr: tc.err}
+			err := runCallbackRemoveWithClient(cmd, fake, "cb-1")
+			if tc.wantError && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if fake.deletedChat != "chat-1" || fake.deletedID != "cb-1" {
+				t.Fatalf("delete args = %q/%q, want chat-1/cb-1", fake.deletedChat, fake.deletedID)
+			}
+			if !strings.Contains(out.String(), tc.wantOut) {
+				t.Fatalf("output %q missing %q", out.String(), tc.wantOut)
+			}
+		})
 	}
 }
 

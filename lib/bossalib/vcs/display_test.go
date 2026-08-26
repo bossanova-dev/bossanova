@@ -146,8 +146,23 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusInProgress},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
 			},
-			wantStatus:     DisplayStatusChecking,
-			wantHasFailure: true,
+			wantStatus: DisplayStatusFailing,
+		},
+		{
+			name: "completed nil conclusion is checking",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted},
+			},
+			wantStatus: DisplayStatusChecking,
+		},
+		{
+			name: "unclassified check is checking",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Unclassified: true},
+			},
+			wantStatus: DisplayStatusChecking,
 		},
 		{
 			name: "changes requested (rejected)",
@@ -321,10 +336,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus:              DisplayStatusChecking,
-			wantHasFailure:          true,
-			wantHasChangesRequested: true,
-			wantChangesRequestedBy:  []string{"alice"},
+			wantStatus: DisplayStatusFailing,
 		},
 		{
 			name: "failing checks override review required",
@@ -454,6 +466,14 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSkipped)},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			wantStatus: DisplayStatusPassing,
+		},
+		{
+			name: "all skipped checks are non-blocking",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSkipped)},
 			},
 			wantStatus: DisplayStatusPassing,
 		},

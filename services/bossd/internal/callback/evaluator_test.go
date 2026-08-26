@@ -70,6 +70,31 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			wantTrigger: true,
 		},
 		{
+			name:        "all checks skipped, checks_passed trigger still fires",
+			trigger:     models.GithubCallbackTriggerChecksPassed,
+			status:      prStatus(vcs.PRStateOpen),
+			checks:      []vcs.CheckResult{completedCheck("docs", vcs.CheckConclusionSkipped)},
+			wantTrigger: true,
+		},
+		{
+			name:    "completed nil conclusion, checks_passed trigger -> not satisfied",
+			trigger: models.GithubCallbackTriggerChecksPassed,
+			status:  prStatus(vcs.PRStateOpen),
+			checks: []vcs.CheckResult{
+				{ID: "build", Name: "build", Status: vcs.CheckStatusCompleted},
+			},
+			wantTrigger: false,
+		},
+		{
+			name:    "unclassified check, checks_passed trigger -> not satisfied",
+			trigger: models.GithubCallbackTriggerChecksPassed,
+			status:  prStatus(vcs.PRStateOpen),
+			checks: []vcs.CheckResult{
+				{ID: "build", Name: "build", Status: vcs.CheckStatusCompleted, Unclassified: true},
+			},
+			wantTrigger: false,
+		},
+		{
 			name:        "a failing check, checks_failed trigger",
 			trigger:     models.GithubCallbackTriggerChecksFailed,
 			status:      prStatus(vcs.PRStateOpen),
@@ -243,6 +268,109 @@ func TestEvaluatePR_GroupSiblingsCanceled(t *testing.T) {
 	}
 	if got := getState(t, store, sibling.ID); got != models.GithubCallbackStateCanceled {
 		t.Errorf("sibling state = %q, want canceled", got)
+	}
+}
+
+func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrigger(t *testing.T) {
+	store := newStore(t)
+	group := "transition-group"
+	target := mustCreate(t, store, db.CreateGithubCallbackParams{
+		GroupID:                 &group,
+		TargetChatID:            "chat-1",
+		RepoOwner:               "acme",
+		RepoName:                "widgets",
+		PRNumber:                7,
+		Trigger:                 models.GithubCallbackTriggerChecksPassed,
+		Message:                 "on green",
+		ShouldRequireTransition: true,
+	})
+	sibling := mustCreate(t, store, db.CreateGithubCallbackParams{
+		GroupID:      &group,
+		TargetChatID: "chat-1",
+		RepoOwner:    "acme",
+		RepoName:     "widgets",
+		PRNumber:     7,
+		Trigger:      models.GithubCallbackTriggerChecksFailed,
+		Message:      "on red",
+	})
+
+	prov := &scriptedProvider{}
+	ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)})
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("first EvaluatePR: %v", err)
+	}
+	afterFirst, err := store.Get(context.Background(), target.ID)
+	if err != nil {
+		t.Fatalf("get target: %v", err)
+	}
+	if afterFirst.State != models.GithubCallbackStateActive {
+		t.Fatalf("first state = %q, want active", afterFirst.State)
+	}
+	if !afterFirst.HasObservedBaseline {
+		t.Fatal("first evaluation should mark has_observed_baseline")
+	}
+	if afterFirst.TriggeredAt != nil {
+		t.Fatalf("first triggered_at = %v, want nil", afterFirst.TriggeredAt)
+	}
+	if got := getState(t, store, sibling.ID); got != models.GithubCallbackStateActive {
+		t.Fatalf("sibling state after baseline = %q, want active", got)
+	}
+
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{pendingCheck("build")})
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("second EvaluatePR: %v", err)
+	}
+	if got := getState(t, store, target.ID); got != models.GithubCallbackStateActive {
+		t.Fatalf("second state = %q, want active", got)
+	}
+
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)})
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("third EvaluatePR: %v", err)
+	}
+	if got := getState(t, store, target.ID); got != models.GithubCallbackStateTriggered {
+		t.Fatalf("third state = %q, want triggered", got)
+	}
+	if got := getState(t, store, sibling.ID); got != models.GithubCallbackStateCanceled {
+		t.Fatalf("sibling state after trigger = %q, want canceled", got)
+	}
+}
+
+func TestEvaluatePR_TransitionRequiredInitiallyUnsatisfiedFiresOnFirstSatisfiedObservation(t *testing.T) {
+	store := newStore(t)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID:            "chat-1",
+		RepoOwner:               "acme",
+		RepoName:                "widgets",
+		PRNumber:                7,
+		Trigger:                 models.GithubCallbackTriggerChecksPassed,
+		Message:                 "on green",
+		ShouldRequireTransition: true,
+	})
+
+	prov := &scriptedProvider{}
+	ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{pendingCheck("build")})
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("first EvaluatePR: %v", err)
+	}
+	afterFirst, err := store.Get(context.Background(), cb.ID)
+	if err != nil {
+		t.Fatalf("get callback: %v", err)
+	}
+	if afterFirst.State != models.GithubCallbackStateActive || !afterFirst.HasObservedBaseline {
+		t.Fatalf("first state/baseline = %q/%v, want active/true", afterFirst.State, afterFirst.HasObservedBaseline)
+	}
+
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)})
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("second EvaluatePR: %v", err)
+	}
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateTriggered {
+		t.Fatalf("second state = %q, want triggered", got)
 	}
 }
 

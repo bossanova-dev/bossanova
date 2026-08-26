@@ -473,15 +473,16 @@ func (d *syncDecider) signal() rotation.Signal {
 //
 // probeAccountUsage is the coalescing point, so counting entries to
 // PrepareFailover is too early a signal: a caller can be recorded there while
-// still loading its session, then reach the group after the shared flight has
-// already resolved and start a second probe. The single-flight parks its waiters
-// on an unexported WaitGroup, so there is no counter to read and a whole-process
-// stack dump is the available signal. singleflight.Do runs fn on the winning
-// caller's own goroutine, so the caller executing the probe is counted too.
+// still loading its session. Counting the caller at the top of probeAccountUsage
+// is too early for the same reason: it can be in that function but not yet in
+// singleflight.Do. The single-flight parks its waiters on an unexported
+// WaitGroup, so there is no counter to read and a whole-process stack dump is
+// the available signal. singleflight.Do runs fn on the winning caller's own
+// goroutine, so the caller executing the probe is counted too.
 func waitForCallersInFlight(t *testing.T, want int) {
 	t.Helper()
 
-	const frame = ".probeAccountUsage("
+	const frame = "singleflight.(*Group).Do"
 	deadline := time.Now().Add(5 * time.Second)
 	buf := make([]byte, 64*1024)
 	for {

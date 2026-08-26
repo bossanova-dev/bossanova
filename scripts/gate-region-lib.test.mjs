@@ -18,9 +18,10 @@
 // mutates a real source file.
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { precedes, region, regionUntilNext } from './gate-region-lib.mjs'
+import { mutate, precedes, region, regionUntilNext, sectionRegion } from './gate-region-lib.mjs'
 
 const START = '## Preflight'
 const END = '## Step 1:'
@@ -190,6 +191,171 @@ test('regionUntilNext names the label it was given', () => {
     /^Error: return object: /,
   )
   assert.throws(() => regionUntilNext(FENCED, 'nope', '```'), /^Error: region: /)
+})
+
+// --- sectionRegion: level-aware Markdown section extraction -----------------------------
+
+const SECTION_SOURCE = [
+  '# Skill',
+  '',
+  '## Parent',
+  'lead',
+  '',
+  '### Child',
+  'child body',
+  '',
+  '## Sibling',
+  'tail',
+  '',
+  '#### Deep',
+  'deep body',
+  '',
+  '#### Deep sibling',
+  'sibling body',
+  '',
+  '### Shallower sibling',
+  'done',
+].join('\n')
+
+test('sectionRegion keeps deeper child headings inside a section', () => {
+  const section = sectionRegion(SECTION_SOURCE, '## Parent')
+
+  assert.match(section, /### Child/)
+  assert.match(section, /child body/)
+  assert.doesNotMatch(section, /## Sibling/)
+})
+
+test('sectionRegion terminates at the next same-level sibling', () => {
+  const source = [
+    '## First',
+    'first body',
+    '',
+    '### Child',
+    'child body',
+    '',
+    '## Second',
+    'tail',
+  ].join('\n')
+
+  assert.equal(
+    sectionRegion(source, '## First'),
+    '## First\nfirst body\n\n### Child\nchild body\n\n',
+  )
+})
+
+test('sectionRegion starts at a real heading line outside prose and fences', () => {
+  const source = [
+    'This prose mentions ## Target before the section.',
+    '',
+    '```md',
+    '## Target',
+    'sample only',
+    '```',
+    '',
+    '## Target',
+    'real body',
+    '',
+    '## Next',
+    'tail',
+  ].join('\n')
+
+  assert.equal(sectionRegion(source, '## Target'), '## Target\nreal body\n\n')
+})
+
+test('sectionRegion accepts heading suffixes without matching longer words', () => {
+  const source = [
+    '## Phase 50',
+    'wrong body',
+    '',
+    '## Phase 5 — Categorize',
+    'right body',
+    '',
+    '## Phase 6',
+    'tail',
+  ].join('\n')
+
+  assert.equal(sectionRegion(source, '## Phase 5'), '## Phase 5 — Categorize\nright body\n\n')
+})
+
+test('sectionRegion returns the last section through end-of-source', () => {
+  assert.equal(
+    sectionRegion(SECTION_SOURCE, '### Shallower sibling'),
+    '### Shallower sibling\ndone',
+  )
+})
+
+test('sectionRegion terminates a deep section at same or shallower headings', () => {
+  assert.equal(sectionRegion(SECTION_SOURCE, '#### Deep'), '#### Deep\ndeep body\n\n')
+  assert.equal(
+    sectionRegion(SECTION_SOURCE, '#### Deep sibling'),
+    '#### Deep sibling\nsibling body\n\n',
+  )
+})
+
+test('sectionRegion assertions survive neutral markdown reformatting', () => {
+  const source = [
+    '## Parent',
+    'lead with   collapsed spaces',
+    '',
+    '| A | B |',
+    '| --- | --- |',
+    '| 1   | 2 |',
+    '',
+    '### Child',
+    'child body',
+    '',
+    '## Sibling',
+    'tail',
+    '',
+  ].join('\n')
+
+  const section = sectionRegion(source, '## Parent')
+  assert.match(section, /collapsed spaces/)
+  assert.match(section, /\| 1\s+\| 2 \|/)
+  assert.match(section, /### Child/)
+  assert.doesNotMatch(section, /## Sibling/)
+})
+
+test('sectionRegion throws distinctly on missing, non-heading, and empty sections', () => {
+  assert.throws(() => sectionRegion(SECTION_SOURCE, '## Missing'), /section heading not found/)
+  assert.throws(
+    () => sectionRegion(SECTION_SOURCE, 'Parent'),
+    /section marker is not a Markdown heading/,
+  )
+  assert.throws(() => sectionRegion('## Empty\n\n## Next\nbody', '## Empty'), /empty/)
+})
+
+test('sectionRegion matches a hand-rolled same-level scan on the committed boss skill', () => {
+  const skill = readFileSync(
+    new URL('../services/boss/internal/skillinstall/skills/boss/SKILL.md', import.meta.url),
+    'utf8',
+  )
+  const start = skill.indexOf('## Sessions that change nothing')
+  // gate-region-ok: regression parity intentionally spells the pre-conversion section scan
+  const next = skill.indexOf('\n## ', start + '## Sessions that change nothing'.length)
+  const raw = next === -1 ? skill.slice(start) : skill.slice(start, next + 1)
+
+  assert.equal(sectionRegion(skill, '## Sessions that change nothing'), raw)
+})
+
+// --- mutate: in-memory fail-closed text substitution ------------------------------------
+
+test('mutate substitutes strings and regexes in memory', () => {
+  assert.equal(mutate('alpha beta', ' beta', ''), 'alpha')
+  assert.equal(mutate('alpha beta', /b.t./, 'gamma'), 'alpha gamma')
+})
+
+test('mutate throws when the requested mutation matches nothing', () => {
+  assert.throws(() => mutate('alpha beta', 'missing', '', 'demo'), /^Error: demo: /)
+  assert.throws(() => mutate('alpha beta', /missing/, '', 'demo'), /mutation did not match/)
+})
+
+test('mutate does not write to disk', () => {
+  const before = readFileSync(new URL('./gate-region-lib.mjs', import.meta.url), 'utf8')
+  assert.notEqual(mutate(before, 'regionUntilNext', 'changedInMemory'), before)
+  const after = readFileSync(new URL('./gate-region-lib.mjs', import.meta.url), 'utf8')
+
+  assert.equal(after, before)
 })
 
 // --- precedes: the same vacuity one operator over ----------------------------------------

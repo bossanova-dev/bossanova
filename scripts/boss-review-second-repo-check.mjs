@@ -23,7 +23,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { discoverExtensions, validateResult } from '../skills-toolbox/skill-extensions.mjs'
+import {
+  DEFAULT_EXTENSION_ROOTS,
+  discoverExtensions,
+  validateResult,
+} from '../skills-toolbox/skill-extensions.mjs'
 import { VENDOR_MAP } from './vendor-toolbox.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -33,6 +37,7 @@ const REPO_ROOT = path.resolve(HERE, '..')
 // marker are keyed to it, so `boss-review-*` extensions extend `boss-review`.
 const CORE = 'boss-review'
 const EXT = `${CORE}-fixturelens`
+const ROUND_EXT = `${CORE}-fixtureround`
 
 // The six load-bearing helpers the skill bundles into its toolbox. cross-review-lib
 // is a pure library imported by codex-review/claude-review, so exercising a probe
@@ -47,6 +52,7 @@ const SIX_HELPERS = [
 ]
 
 const PROBE_TOKENS = /^(ready|not_installed|not_authed|error)$/
+const CANONICAL_SKILL_ROOT = DEFAULT_EXTENSION_ROOTS[0]
 
 // The exact files boss-review bundles into its toolbox/, per the vendor manifest —
 // the six load-bearing helpers plus skill-config.mjs (a transitive import). Sourcing
@@ -101,6 +107,23 @@ carries a test. This exists only to exercise repo-local extension discovery.
 `
 }
 
+function roundFixtureSkillMd() {
+  return `---
+name: ${ROUND_EXT}
+description: Fixture review-round extension for the second-repo validation harness.
+x-boss-extension:
+  extends: ${CORE}
+  role: round
+  order: 20
+  capability: fixture-round
+---
+
+# Fixture round
+
+Review the whole branch through a trivial fixture rubric.
+`
+}
+
 function sampleLensEnvelope() {
   // A well-formed role:"lens" result envelope (BOS-193 contract): every item
   // carries the ROLE_SCHEMAS.lens keys and the envelope declares ok/extension/role.
@@ -118,6 +141,24 @@ function sampleLensEnvelope() {
       },
     ],
   }
+}
+
+function sampleRoundEnvelope() {
+  return {
+    ok: true,
+    extension: ROUND_EXT,
+    role: 'round',
+    items: [],
+    notes: 'Fixture round ran.',
+    error: null,
+  }
+}
+
+function phaseRFallbackAvailable(skillText) {
+  return (
+    skillText.includes('### Tier 2 — host-native whole-diff review') &&
+    skillText.includes('### Tier 3 — inline whole-diff rubric')
+  )
 }
 
 function sampleReportInput() {
@@ -197,7 +238,7 @@ export async function runSecondRepoCheck() {
     // The "second repository".
     spawnSync('git', ['init', '-q'], { cwd: repoDir })
 
-    const skillsDir = path.join(repoDir, '.claude', 'skills')
+    const skillsDir = path.join(repoDir, CANONICAL_SKILL_ROOT)
     const toolbox = path.join(skillsDir, CORE, 'toolbox')
     fs.mkdirSync(toolbox, { recursive: true })
 
@@ -213,6 +254,10 @@ export async function runSecondRepoCheck() {
     fs.mkdirSync(extDir, { recursive: true })
     fs.writeFileSync(path.join(extDir, 'SKILL.md'), fixtureSkillMd())
 
+    const roundExtDir = path.join(skillsDir, ROUND_EXT)
+    fs.mkdirSync(roundExtDir, { recursive: true })
+    fs.writeFileSync(path.join(roundExtDir, 'SKILL.md'), roundFixtureSkillMd())
+
     const noRepoScripts = !fs.existsSync(path.join(repoDir, 'scripts'))
 
     // (1) self-containment
@@ -222,22 +267,61 @@ export async function runSecondRepoCheck() {
     // (2) discovery + ordering
     const discovered = discoverExtensions({ core: CORE, root: repoDir, role: 'lens' })
     const discoveredExtensions = discovered.extensions
+    const discoveredRounds = discoverExtensions({
+      core: CORE,
+      root: repoDir,
+      role: 'round',
+    }).extensions
 
     // (3) envelope validation
-    const envelopeValid = validateResult(sampleLensEnvelope(), 'lens').ok === true
+    const envelopeValid =
+      validateResult(sampleLensEnvelope(), 'lens').ok === true &&
+      validateResult(sampleRoundEnvelope(), 'round').ok === true
 
-    // (4) graceful degradation: remove the extension, discovery no-ops
+    // (4) graceful degradation: remove the extensions, discovery no-ops, and the shipped
+    // Phase R prose still exposes lower tiers when no round extensions exist.
     fs.rmSync(extDir, { recursive: true, force: true })
+    fs.rmSync(roundExtDir, { recursive: true, force: true })
     const withoutExt = discoverExtensions({ core: CORE, root: repoDir, role: 'lens' })
+    const withoutRoundExt = discoverExtensions({ core: CORE, root: repoDir, role: 'round' })
+    const skillText = fs.readFileSync(
+      path.join(
+        REPO_ROOT,
+        'services',
+        'boss',
+        'internal',
+        'skillinstall',
+        'skills',
+        CORE,
+        'SKILL.md',
+      ),
+      'utf8',
+    )
+    const extensionFreePhaseRFallback = phaseRFallbackAvailable(skillText)
+    const tier3HeadingNegativeControl = !phaseRFallbackAvailable(
+      skillText.replace('### Tier 3 — inline whole-diff rubric', ''),
+    )
     const noopWithoutExtension = withoutExt.extensions.length === 0
+
+    // (5) codex-only discovery reaches the same descriptor shape without the canonical root.
+    const codexExtDir = path.join(repoDir, DEFAULT_EXTENSION_ROOTS[1], EXT)
+    fs.mkdirSync(codexExtDir, { recursive: true })
+    fs.writeFileSync(path.join(codexExtDir, 'SKILL.md'), fixtureSkillMd())
+    const codexOnlyDiscovered = discoverExtensions({ core: CORE, root: repoDir, role: 'lens' })
+    const codexOnlyExtensions = codexOnlyDiscovered.extensions
 
     return {
       selfContained,
       helpersRun,
       noRepoScripts,
       discoveredExtensions,
+      discoveredRounds,
+      codexOnlyExtensions,
       envelopeValid,
       noopWithoutExtension,
+      noopWithoutRoundExtension: withoutRoundExt.extensions.length === 0,
+      extensionFreePhaseRFallback,
+      tier3HeadingNegativeControl,
     }
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true })
@@ -251,16 +335,28 @@ export async function main() {
     r.helpersRun === SIX_HELPERS.length &&
     r.discoveredExtensions.length === 1 &&
     r.discoveredExtensions[0].name === EXT &&
+    r.discoveredRounds.length === 1 &&
+    r.discoveredRounds[0].name === ROUND_EXT &&
+    r.codexOnlyExtensions.length === 1 &&
+    r.codexOnlyExtensions[0].name === EXT &&
     r.envelopeValid &&
-    r.noopWithoutExtension
+    r.noopWithoutExtension &&
+    r.noopWithoutRoundExtension &&
+    r.extensionFreePhaseRFallback &&
+    r.tier3HeadingNegativeControl
 
   const lines = [
     `self-contained: ${r.selfContained}`,
     `helpers run: ${r.helpersRun}`,
     `repo-root scripts/ absent: ${r.noRepoScripts}`,
     `discovered: ${r.discoveredExtensions.map((e) => e.name).join(', ') || '(none)'}`,
+    `discovered rounds: ${r.discoveredRounds.map((e) => e.name).join(', ') || '(none)'}`,
+    `codex-only discovered: ${r.codexOnlyExtensions.map((e) => e.name).join(', ') || '(none)'}`,
     `envelope valid: ${r.envelopeValid}`,
     `no-op without extension: ${r.noopWithoutExtension}`,
+    `no-op without round extension: ${r.noopWithoutRoundExtension}`,
+    `extension-free Phase R fallback: ${r.extensionFreePhaseRFallback}`,
+    `negative-control Tier 3 removal fails: ${r.tier3HeadingNegativeControl}`,
     `second-repo validation: ${pass ? 'PASS' : 'FAIL'}`,
   ]
   process.stdout.write(lines.join('\n') + '\n')

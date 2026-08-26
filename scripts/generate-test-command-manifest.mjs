@@ -159,6 +159,8 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '',
     '`codex-skills-check` (the `.codex` mirror staleness check) is a prerequisite of `make test-smoke` and `make test-all`, but **not** of `make test` / `make test-affected` — those run only the commands `scripts/select-affected-tests.mjs` picked, and reach `test-smoke` only when the selection is empty. A change that leaves a `.codex` mirror stale can therefore pass `make test`. The per-skill `assertMirrorRegenerated` checks in the `bs-sweep-*` suites close this for those skills by regenerating the mirror in memory and comparing exactly; size is never the discriminator, because the generated header makes a healthy mirror larger than its source.',
     '',
+    '`scripts/select-affected-routing.test.mjs` compares workflow `paths:` filters with the local affected selector and keeps intentional divergences in its `workflowRouteExemptions` ledger. This is the mechanical guard for the false-green class described in `CLAUDE.md` § "Commands whose result lies"; update the ledger when a workflow path is intentionally broader than the local edit loop.',
+    '',
     '### Where `-race` actually runs (BOS-1022)',
     '',
     // Same rule as the BOS-768 block above: this file is byte-for-byte generated, so
@@ -199,10 +201,10 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
   return lines.join('\n')
 }
 
-function buildManifest() {
+export function buildManifest({ root = repoRoot } = {}) {
   return renderManifest({
     rootTargets: defaultRootTargets,
-    modules: discoverModuleTargets(),
+    modules: discoverModuleTargets(root),
   })
 }
 

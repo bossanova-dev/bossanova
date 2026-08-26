@@ -189,10 +189,13 @@ func (pr *PRStatus) ConflictBlockKind(rebaseStrategy bool) ConflictBlockKind {
 
 // CheckResult represents the result of a single CI check.
 type CheckResult struct {
-	ID         string
-	Name       string
-	Status     CheckStatus
-	Conclusion *CheckConclusion
+	ID     string
+	Name   string
+	Status CheckStatus
+	// Unclassified means the provider could not classify the upstream status
+	// string; verdict evaluation treats it as unknown, never as a pass.
+	Unclassified bool
+	Conclusion   *CheckConclusion
 }
 
 // ReviewComment represents a review comment on a PR.

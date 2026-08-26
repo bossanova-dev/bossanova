@@ -772,7 +772,9 @@ func (s *stubRepoClient) CreateGithubCallback(context.Context, *pb.CreateGithubC
 func (s *stubRepoClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) DeleteGithubCallback(context.Context, string, string) error { panic("unused") }
+func (s *stubRepoClient) DeleteGithubCallback(context.Context, string, string) (*pb.DeleteGithubCallbackResponse, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
 	panic("unused")
 }

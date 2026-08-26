@@ -351,6 +351,7 @@ message ProxyCreateSessionRequest {
   // on the daemon's default model and never fires the unattended prompt.
   bool detach = 15;
   optional string model = 16;
+  optional string effort = 21;
   bool is_tmux_unattended = 17;
   optional string account_id = 18;
   // Mirror CreateSessionRequest.force_branch so hosted MCP create_session can
@@ -785,6 +786,7 @@ message ProxyCreateGithubCallbackRequest {
   string trigger           = 6;
   string message           = 7;
   optional google.protobuf.Timestamp expires_at = 8;
+  optional bool should_require_transition = 9;
 }
 message ProxyCreateGithubCallbackResponse { GithubCallback github_callback = 1; }
 
@@ -801,8 +803,11 @@ message ProxyListGithubCallbacksResponse { repeated GithubCallback github_callba
 message ProxyDeleteGithubCallbackRequest {
   string target_chat_id = 1; // routing key (FindDaemonForChat)
   string id             = 2;
+  optional string expect_target_chat_id = 3;
 }
-message ProxyDeleteGithubCallbackResponse {}
+message ProxyDeleteGithubCallbackResponse {
+  string outcome = 1; // deleted
+}
 
 // Notes proxy messages (BOS-552). The requests mirror the daemon.proto field
 // sets; repo_id is the routing key, because a note is repo-scoped. Get/Update/

@@ -15,6 +15,7 @@ import {
   checkPlanCitations,
   checkPlanContract,
   checkPrBodyOnlyEvidence,
+  checkVerifyOnlyCommandVacuity,
   checkSelfFalsifiedLiteralSearch,
   emittedContractHeadings,
   hasUnterminatedFence,
@@ -283,6 +284,58 @@ describe('checkPlanContract — each violation code fires', () => {
     const findings = checkPrBodyOnlyEvidence(DEFAULT_CONFIG, description)
     assert.equal(findings.length, 1)
     assert.equal(findings[0].code, 'pr-body-only-evidence')
+  })
+
+  test('verify-only command vacuity guard covers criteria and premises', () => {
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      [
+        '## Premises',
+        '',
+        '- [ ] (central) premise has a vacuous check — check: `git diff -- skills-toolbox/skill-config.mjs`',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] (verify-only) criterion has a missing binary — check: `this-command-does-not-exist-bos1015`',
+      ].join('\n'),
+    )
+    const findings = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description)
+    assert.deepEqual(
+      findings.map((finding) => finding.code),
+      ['vacuous-criterion-command-command-unresolvable'],
+    )
+  })
+
+  test('verify-only command vacuity guard does not block advisory command risks', () => {
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      [
+        '## Premises',
+        '',
+        '- [ ] (central) premise has an advisory check — check: `git diff -- skills-toolbox/skill-config.mjs`',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] (verify-only) criterion has an advisory pipeline — check: `make test | tee out.log`',
+      ].join('\n'),
+    )
+    assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description), [])
+  })
+
+  test('verify-only command vacuity guard stays silent for sound commands', () => {
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      [
+        '## Premises',
+        '',
+        '- [ ] (central) premise — check: `make test-scripts`',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] (verify-only) criterion — check: `node --test skills-toolbox/skill-config.test.mjs`',
+      ].join('\n'),
+    )
+    assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description), [])
   })
 
   test('citation could-not-evaluate is separate from clean and violation', () => {

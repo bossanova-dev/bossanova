@@ -188,9 +188,13 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// method. The turn-start caveat on send_chat_message and create_session was
 	// funded out of create_session prose that duplicated argument tags already
 	// shown in the same tool definition.
+	//
+	// RE-PINNED DOWN 2026-08-25 (BOS-998): 70 tools / 58,947 bytes, same
+	// method. The get_session stale-check caveat kept the existing re-poll
+	// warning while trimming duplicated state/provenance wording.
 	const (
 		maxToolCount   = 70
-		maxSchemaBytes = 58968
+		maxSchemaBytes = 58867
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

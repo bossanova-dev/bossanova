@@ -1213,13 +1213,14 @@ func (l *Lifecycle) primaryChatForSession(ctx context.Context, sess *models.Sess
 	return chat
 }
 
-// effectiveSpawnSession returns a shallow copy of sess with AgentName, Model, and
-// AccountID overridden from its primary chat (BOS-381), for restart/rotation/
+// effectiveSpawnSession returns a shallow copy of sess with AgentName, Model,
+// EffectiveEffort, and AccountID overridden from its primary chat (BOS-381), for restart/rotation/
 // resume spawn paths that hold only a session. Returns sess unchanged when no
 // primary chat exists yet (first-start seed) so the seed on the session still
-// governs the very first spawn. Only the three authority fields are copied; a
-// chat that never bound its own account (nil AccountID) or model ("") inherits
-// the session's mirrored value, preserving the same-provider common case.
+// governs the very first spawn. A chat that never bound its own account
+// (nil AccountID) or model ("") inherits the session's mirrored value,
+// preserving the same-provider common case. Until chats have their own effort
+// column, cross-agent chats resolve effort from the spawning agent's config.
 func (l *Lifecycle) effectiveSpawnSession(ctx context.Context, sess *models.Session) *models.Session {
 	chat := l.primaryChatForSession(ctx, sess)
 	if chat == nil {
@@ -1232,10 +1233,39 @@ func (l *Lifecycle) effectiveSpawnSession(ctx context.Context, sess *models.Sess
 	if chat.Model != "" {
 		eff.Model = chat.Model
 	}
+	eff.EffectiveEffort = EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, eff.AgentName)
 	if chat.AccountID != nil {
 		eff.AccountID = chat.AccountID
 	}
 	return &eff
+}
+
+// EffectiveEffortForAgent returns the effort to send to the plugin that will
+// actually spawn a run. The original session's write-once effort remains the
+// authority for its own agent; cross-agent chats do not yet carry an effort
+// column, so they resolve from the spawning agent's current per-agent config or
+// built-in default.
+func EffectiveEffortForAgent(sessionAgentName, sessionEffectiveEffort, spawnAgentName string) string {
+	if sessionAgentName == "" || spawnAgentName == "" || spawnAgentName == sessionAgentName {
+		return sessionEffectiveEffort
+	}
+	return configuredDefaultEffort(spawnAgentName)
+}
+
+func configuredDefaultEffort(agentName string) string {
+	if settings, err := config.Load(); err == nil {
+		if value := config.PluginConfigString(&settings, agentName, "effort"); value != "" {
+			return value
+		}
+	}
+	switch agentName {
+	case "claude":
+		return "high"
+	case "codex":
+		return "medium"
+	default:
+		return ""
+	}
 }
 
 // NewLifecycle creates a new session lifecycle orchestrator. cronJobs may be
@@ -1900,7 +1930,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		}
 		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
 		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
-			ctx, session.AgentName, result.WorktreePath, session.Model, preflightEnv, opts.HeadlessCapabilityProfile,
+			ctx, session.AgentName, result.WorktreePath, session.Model, session.EffectiveEffort, preflightEnv, opts.HeadlessCapabilityProfile,
 		); err != nil {
 			return rollbackPreflightFailure(fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", resolvedAgentName, opts.HeadlessCapabilityProfile, err))
 		}
@@ -2043,7 +2073,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if !ok {
 			return fmt.Errorf("headless launch for agent %q requires a launch-options-aware agent dispatcher", resolvedAgentName)
 		}
-		claudeSessionID, err = launchRunner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv, agent.HeadlessLaunchOptions{
+		claudeSessionID, err = launchRunner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, session.EffectiveEffort, headlessEnv, agent.HeadlessLaunchOptions{
 			HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
 		})
 		if err != nil {
@@ -3494,7 +3524,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 	// seed resumes under the right runner, credentials, and model.
 	spawnSess := l.effectiveSpawnSession(ctx, session)
 	resumeEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), session.WorktreePath, repo)
-	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, session.Plan, resume, "", spawnSess.Model, resumeEnv)
+	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, session.Plan, resume, "", spawnSess.Model, spawnSess.EffectiveEffort, resumeEnv)
 	if err != nil {
 		// Undo the un-archive (BOS-924). Without this the session is left live,
 		// agent-less and un-retryable: the guard at the top of this function

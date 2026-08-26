@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-08-21'
+  version: '2026-08-25'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -3575,6 +3575,10 @@ components:
              HOME) from the environment that will launch the interactive agent. Plugins
              use it when they must prepare configuration before the child process starts;
              it intentionally does not carry the session's secret-bearing environment.
+        effort:
+          type: string
+          title: effort
+          description: Opaque agent reasoning-effort level; "" = plugin default.
       title: BuildInteractiveCommandRequest
       additionalProperties: false
     bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntry:
@@ -4865,6 +4869,11 @@ components:
             - $ref: '#/components/schemas/google.protobuf.Timestamp'
             - type: "null"
           title: expires_at
+        shouldRequireTransition:
+          type:
+            - boolean
+            - "null"
+          title: should_require_transition
       title: CreateGithubCallbackCommand
       additionalProperties: false
       description: |-
@@ -4911,6 +4920,14 @@ components:
           description: |-
             Optional explicit expiry. Unset = server default (24h). Must be in the
              future and within 30 days, else InvalidArgument.
+        shouldRequireTransition:
+          type:
+            - boolean
+            - "null"
+          title: should_require_transition
+          description: |-
+            When true, the first evaluation records the current trigger state as a
+             baseline and only a later satisfying observation fires the callback.
       title: CreateGithubCallbackRequest
       additionalProperties: false
     bossanova.v1.CreateGithubCallbackResponse:
@@ -5123,6 +5140,11 @@ components:
             - string
             - "null"
           title: model
+        effort:
+          type:
+            - string
+            - "null"
+          title: effort
         isTmuxUnattended:
           type: boolean
           title: is_tmux_unattended
@@ -5237,6 +5259,14 @@ components:
             Opaque agent model id to run this session under (e.g. an Opus id).
              Empty → the agent plugin's default model. Mirrors `boss cron add --model`;
              set by `boss new --model` and the MCP create_session tool.
+        effort:
+          type:
+            - string
+            - "null"
+          title: effort
+          description: |-
+            Opaque agent reasoning-effort level to run this session under.
+             Empty → the agent plugin's default effort.
         isTmuxUnattended:
           type: boolean
           title: is_tmux_unattended
@@ -5780,6 +5810,11 @@ components:
         id:
           type: string
           title: id
+        expectTargetChatId:
+          type:
+            - string
+            - "null"
+          title: expect_target_chat_id
       title: DeleteGithubCallbackCommand
       additionalProperties: false
       description: |-
@@ -5792,10 +5827,23 @@ components:
         id:
           type: string
           title: id
+        expectTargetChatId:
+          type:
+            - string
+            - "null"
+          title: expect_target_chat_id
+          description: |-
+            Optional ownership guard. When set, the daemon deletes the row only if its
+             target_chat_id matches this value.
       title: DeleteGithubCallbackRequest
       additionalProperties: false
     bossanova.v1.DeleteGithubCallbackResponse:
       type: object
+      properties:
+        outcome:
+          type: string
+          title: outcome
+          description: deleted | not_found | not_owned
       title: DeleteGithubCallbackResponse
       additionalProperties: false
     bossanova.v1.DeleteNoteCommand:
@@ -6835,6 +6883,12 @@ components:
         updatedAt:
           title: updated_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        shouldRequireTransition:
+          type: boolean
+          title: should_require_transition
+        hasObservedBaseline:
+          type: boolean
+          title: has_observed_baseline
       title: GithubCallback
       additionalProperties: false
       description: |-
@@ -9107,6 +9161,10 @@ components:
              repo's own MCP declaration while the run it gates does. Mirrors
              StartAgentRunRequest.work_dir; empty preserves the historical
              inherit-the-daemon-cwd behaviour for callers that do not set it.
+        effort:
+          type: string
+          title: effort
+          description: Opaque agent reasoning-effort level; "" = plugin default.
       title: PreflightHeadlessRunRequest
       additionalProperties: false
     bossanova.v1.PreflightHeadlessRunRequest.ExtraEnvEntry:
@@ -9483,6 +9541,11 @@ components:
             - $ref: '#/components/schemas/google.protobuf.Timestamp'
             - type: "null"
           title: expires_at
+        shouldRequireTransition:
+          type:
+            - boolean
+            - "null"
+          title: should_require_transition
       title: ProxyCreateGithubCallbackRequest
       additionalProperties: false
       description: |-
@@ -9645,6 +9708,11 @@ components:
             - string
             - "null"
           title: model
+        effort:
+          type:
+            - string
+            - "null"
+          title: effort
         isTmuxUnattended:
           type: boolean
           title: is_tmux_unattended
@@ -9755,10 +9823,20 @@ components:
         id:
           type: string
           title: id
+        expectTargetChatId:
+          type:
+            - string
+            - "null"
+          title: expect_target_chat_id
       title: ProxyDeleteGithubCallbackRequest
       additionalProperties: false
     bossanova.v1.ProxyDeleteGithubCallbackResponse:
       type: object
+      properties:
+        outcome:
+          type: string
+          title: outcome
+          description: deleted
       title: ProxyDeleteGithubCallbackResponse
       additionalProperties: false
     bossanova.v1.ProxyDeleteNoteRequest:
@@ -12608,6 +12686,34 @@ components:
         lastCheckState:
           title: last_check_state
           $ref: '#/components/schemas/bossanova.v1.ChecksOverall'
+        lastCheckStateObserved:
+          title: last_check_state_observed
+          description: |-
+            Raw persisted check verdict latch, before the read-time head-SHA freshness
+             gate is applied. last_check_state is promoted from this value only when
+             last_check_state_head_sha matches the display tracker's current head SHA.
+          $ref: '#/components/schemas/bossanova.v1.ChecksOverall'
+        lastCheckStateHeadSha:
+          type:
+            - string
+            - "null"
+          title: last_check_state_head_sha
+        lastCheckStateAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: last_check_state_at
+        stateEnteredAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: state_entered_at
+        effectiveModel:
+          type: string
+          title: effective_model
+        effectiveEffort:
+          type: string
+          title: effective_effort
         isAutomationEnabled:
           type: boolean
           title: is_automation_enabled
@@ -13308,6 +13414,10 @@ components:
             Explicit required runtime operation surface for a headless launch. The
              zero/default profile is legacy-compatible and performs no preflight.
           $ref: '#/components/schemas/bossanova.v1.HeadlessCapabilityProfile'
+        effort:
+          type: string
+          title: effort
+          description: Opaque agent reasoning-effort level; "" = plugin default.
       title: StartAgentRunRequest
       additionalProperties: false
     bossanova.v1.StartAgentRunRequest.ExtraEnvEntry:

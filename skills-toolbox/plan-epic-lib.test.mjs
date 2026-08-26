@@ -1219,6 +1219,65 @@ test('reconcileEpicChildren: an unmarked live child refuses', () => {
   )
 })
 
+test('reconcileEpicChildren: truncated live child description names hydration instead of a missing marker', () => {
+  const spec = { children: [child('alpha')] }
+  const live = [
+    {
+      id: 'id-1',
+      title: 'Truncated child',
+      description: 'summary only … (truncated, use get_issue for full description)',
+    },
+  ]
+  const res = reconcileEpicChildren(spec, live)
+
+  assert.deepEqual(res.missing, [])
+  assert.deepEqual(res.repairs, [])
+  assert.equal(res.ok, false)
+  assert.deepEqual(res.unmarked, [{ id: 'id-1', title: 'Truncated child' }])
+  assert.ok(
+    res.errors.some(
+      (e) =>
+        e.includes('description appears truncated') &&
+        e.includes('get_issue') &&
+        e.includes('not list_issues'),
+    ),
+    'errors must direct the caller to hydrate children with get_issue',
+  )
+  assert.ok(
+    !res.errors.some((e) => e.includes('carries no epic-child marker')),
+    'truncated descriptions must not use the genuinely unmarked diagnostic',
+  )
+})
+
+test('reconcileEpicChildren: hydrated live children with full markers adopt cleanly', () => {
+  const spec = { children: [child('alpha'), child('beta')] }
+  const live = [liveChild('id-1', 'alpha'), liveChild('id-2', 'beta')]
+  const res = reconcileEpicChildren(spec, live)
+
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.adopted, [
+    { key: 'alpha', id: 'id-1' },
+    { key: 'beta', id: 'id-2' },
+  ])
+  assert.deepEqual(res.errors, [])
+})
+
+test('reconcileEpicChildren: genuinely unmarked short descriptions keep the original diagnostic', () => {
+  const spec = { children: [child('alpha')] }
+  const live = [{ id: 'id-1', title: 'No marker child', description: 'plain body, no marker' }]
+  const res = reconcileEpicChildren(spec, live)
+
+  assert.equal(res.ok, false)
+  assert.ok(
+    res.errors.some((e) => e === 'live child "id-1" carries no epic-child marker'),
+    'short unmarked descriptions must keep the original diagnostic',
+  )
+  assert.ok(
+    !res.errors.some((e) => e.includes('description appears truncated')),
+    'short unmarked descriptions must not be classified as truncated',
+  )
+})
+
 test('reconcileEpicChildren: duplicate live marker keys refuse', () => {
   const spec = { children: [child('alpha')] }
   const live = [liveChild('id-1', 'alpha'), liveChild('id-2', 'alpha')]

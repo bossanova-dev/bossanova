@@ -38,7 +38,9 @@ const requiredFiles = [
 // Raised to 177 for BOS-771, which added one "Commands whose result lies" bullet: a clean
 // git rebase exit proves textual mergeability only and must be followed by post-rebase gates.
 // Rebased together, those additive bullets make the measured count 179.
-const CLAUDE_MD_MAX_LINES = 179
+// Raised to 180 for BOS-989, which added one "Commands whose result lies" bullet documenting the
+// run-gate host-environment failure banner and exit code.
+const CLAUDE_MD_MAX_LINES = 180
 
 test('agent guidance points to the generated test command manifest', () => {
   for (const file of requiredFiles) {

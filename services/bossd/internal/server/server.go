@@ -1870,10 +1870,12 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// headless run path passes session.Model straight to StartByAgent, so
 		// this is what makes `create_session {model:…}` / `boss new --model`
 		// run `claude … --model <id>`.
-		Model:      msg.GetModel(),
-		PRNumber:   prNumber,
-		TrackerID:  msg.TrackerId,
-		TrackerURL: msg.TrackerUrl,
+		Model:           msg.GetModel(),
+		EffectiveModel:  effectiveAgentSetting(agentName, "model", msg.GetModel()),
+		EffectiveEffort: effectiveAgentSetting(agentName, "effort", msg.GetEffort()),
+		PRNumber:        prNumber,
+		TrackerID:       msg.TrackerId,
+		TrackerURL:      msg.TrackerUrl,
 	}
 	if prURL != nil {
 		createParams.PRURL = prURL
@@ -4164,7 +4166,9 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 			return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 		},
-		Model: chat.Model,
+		Model:                  chat.Model,
+		SessionAgentName:       sess.AgentName,
+		SessionEffectiveEffort: sess.EffectiveEffort,
 	})
 	if err != nil {
 		return err

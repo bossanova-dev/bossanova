@@ -6,12 +6,21 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 
-import { precedes, region, regionUntilNext } from './gate-region-lib.mjs'
+import { mutate, precedes, region, regionUntilNext, sectionRegion } from './gate-region-lib.mjs'
+import {
+  assertFalsifiable,
+  assertPolarityBounded,
+  assertProhibitionFires,
+} from './prose-pin-lib.mjs'
 // BOS-964 anti-drift join: the `provisional` payload marker is written as a hand-authored
 // literal in the shipped markdown (the classify block already has `jq`, so no second node
 // spawn is added for it). Importing the module's constant gives that literal one definition to
 // be compared against, which is what stops the two prose copies drifting apart.
 import { PROVISIONAL_KEY } from '../skills-toolbox/bs-run-sentinel.mjs'
+import {
+  OPTIONAL_ROUTE_TOKENS,
+  TERMINAL_ROUTES,
+} from '../skills-toolbox/finalize/route-contract.mjs'
 import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
@@ -229,8 +238,9 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // into its existing on-demand-table row, banking the saving behind this ratchet.
   //
   // Baselines, because the two disagree and the wrong one is easy to quote: the BOS-670 plan
-  // records 69433 B, but that number had already rotted by the time this landed — the real
-  // pre-extraction body measured **80817 B**.
+  // records 69433 B, but that number had already rotted by the time this landed. BOS-1002
+  // re-derived the guard upward because the installed-skill drift gate is a resident preflight
+  // check by design, not reference material.
   //
   // TWO-SIDED PIN (BOS-768). This used to claim "zero headroom" while comparing inclusively
   // against a rounded pin, which is not the same thing: the pin sat 8 B above the measured
@@ -239,7 +249,7 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // `assertExactSize` compares for equality, so BOTH directions red and the only way to clear
   // a shrink is to bank it in `RATCHET`. A slack allowance ("measured + N") is precisely the
   // leak this shape exists to close.
-  const PRE_EXTRACTION_BASELINE = 80817
+  const PRE_EXTRACTION_BASELINE = 81364
   // Re-baselined +271 from the post-extraction 69058 for the per-step reference pointers: the
   // Steps 8-12 block carried one preamble link for five summary bullets, so a reader working the
   // bullets could skip the tag injection, the green gate, the deferral gate, proof and the lock
@@ -500,8 +510,15 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // route at all. Only the three-word pointer is resident; the reason it must come back, and the
   // note's own contents, live in the unratcheted references/review-stack.md return contract.
   // `PRE_EXTRACTION_BASELINE` is again NOT raised — 5 bytes of live headroom remain.
-  const RATCHET = 80812 // exact measured resident body, re-measured 2026-08-25 (BOS-1020 follow-up)
-  // Headroom to the pre-extraction baseline is 5 bytes (80817 - 80812, exclusive) — read that as the real
+  // BOS-1013 banks 80812 -> 80811 (-1 B) while naming `boss env --json` as the inventory source and
+  // rejecting `boss --help` for the transport preflight. BOS-1002 re-baselines 80811 -> 81362
+  // (+551 B) for the resident fail-closed installed-skill drift gate. Review repair banks 81362 ->
+  // 81357 (-5 B) while keeping the old-CLI fallback resident: an unsupported `--gate` flag
+  // degrades to the warning helper, but real drift remains BLOCKED. BOS-1016 banks 81357 -> 81301
+  // (-56 B) while replacing Step 12's resident route prose with the route-contract assert.
+  // BOS-1030 banks 81301 -> 81296 (-5 B) while naming Codex's awaited dispatch pair.
+  const RATCHET = 81296 // exact measured resident body, re-measured 2026-08-26 (BOS-1030)
+  // Headroom to the pre-extraction baseline is gone (81357 > 80817) — read that as the real
   // budget before writing ANY resident prose, because this assertion is the only thing standing
   // between the extraction's ~11.8 KB and it being quietly re-spent. When it reds upward, the fix
   // is a trim somewhere in an 80 KB body, not in whatever file you were editing; the cheap move is
@@ -517,10 +534,239 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
       label: 'boss-build resident body',
       measured: measureFile(path.join(rootDir, skillPath)),
       path: skillPath,
+      previous: { value: 81301, delta: -5, label: 'BOS-1030 dispatch wording banks' },
       residual:
         'the references/ files this body points at — content moved out of the resident body ' +
         'leaves this pin entirely, so a trim here is not by itself proof the run got cheaper',
     })
+  }
+})
+
+test('BOS-1016: route-contract executable refuses missing evidence, downgrades on BLOCKED stamps, and accepts full evidence', () => {
+  const routeContract = path.join(
+    rootDir,
+    'services/boss/internal/skillinstall/skills/boss-build/toolbox/finalize/route-contract.mjs',
+  )
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-build-route-contract-'))
+  const receipt = path.join(dir, 'receipt.json')
+  const runId = 'bos-1016'
+  try {
+    let result = spawnSync(
+      process.execPath,
+      [
+        routeContract,
+        'assert',
+        '--outcome',
+        'REVIEW_READY',
+        '--receipt',
+        receipt,
+        '--run-id',
+        runId,
+      ],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 1)
+    assert.equal(result.stdout.trim(), 'ROUTE_UNSATISFIED')
+
+    for (const token of TERMINAL_ROUTES.BLOCKED) {
+      result = spawnSync(
+        process.execPath,
+        [routeContract, 'stamp', '--receipt', receipt, '--token', token, '--run-id', runId],
+        { encoding: 'utf8' },
+      )
+      assert.equal(result.status, 0, result.stderr)
+    }
+    result = spawnSync(
+      process.execPath,
+      [
+        routeContract,
+        'assert',
+        '--outcome',
+        'REVIEW_READY',
+        '--receipt',
+        receipt,
+        '--run-id',
+        runId,
+      ],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 0)
+    assert.equal(result.stdout.trim(), 'BLOCKED')
+
+    fs.rmSync(receipt)
+
+    for (const token of TERMINAL_ROUTES.REVIEW_READY) {
+      result = spawnSync(
+        process.execPath,
+        [routeContract, 'stamp', '--receipt', receipt, '--token', token, '--run-id', runId],
+        { encoding: 'utf8' },
+      )
+      assert.equal(result.status, 0, result.stderr)
+    }
+    result = spawnSync(
+      process.execPath,
+      [
+        routeContract,
+        'assert',
+        '--outcome',
+        'REVIEW_READY',
+        '--receipt',
+        receipt,
+        '--run-id',
+        runId,
+      ],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 0)
+    assert.equal(result.stdout.trim(), 'REVIEW_READY')
+
+    fs.rmSync(receipt)
+    for (const token of [...TERMINAL_ROUTES.REVIEW_READY].reverse()) {
+      result = spawnSync(
+        process.execPath,
+        [routeContract, 'stamp', '--receipt', receipt, '--token', token, '--run-id', runId],
+        { encoding: 'utf8' },
+      )
+      assert.equal(result.status, 0, result.stderr)
+    }
+    result = spawnSync(
+      process.execPath,
+      [
+        routeContract,
+        'assert',
+        '--outcome',
+        'REVIEW_READY',
+        '--receipt',
+        receipt,
+        '--run-id',
+        runId,
+      ],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 1)
+    assert.equal(result.stdout.trim(), 'ROUTE_UNSATISFIED')
+    assert.match(result.stderr, /out\s+of\s+order/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('BOS-1016: route receipts fail closed for absent, empty, partial, unknown, and stale evidence', () => {
+  const routeContract = path.join(
+    rootDir,
+    'services/boss/internal/skillinstall/skills/boss-build/toolbox/finalize/route-contract.mjs',
+  )
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-build-route-contract-'))
+  const receipt = path.join(dir, 'receipt.json')
+  const runId = 'bos-1016'
+  const assertRoute = (outcome) =>
+    spawnSync(
+      process.execPath,
+      [routeContract, 'assert', '--outcome', outcome, '--receipt', receipt, '--run-id', runId],
+      { encoding: 'utf8' },
+    )
+  const assertUnsatisfied = (outcome) => {
+    const result = assertRoute(outcome)
+    assert.equal(result.status, 1)
+    assert.equal(result.stdout.trim(), 'ROUTE_UNSATISFIED')
+    return result
+  }
+  try {
+    assertUnsatisfied('NO_CHANGE')
+    fs.writeFileSync(receipt, '')
+    assertUnsatisfied('BLOCKED')
+    fs.writeFileSync(
+      receipt,
+      JSON.stringify({ runId, stamps: [{ token: TERMINAL_ROUTES.REVIEW_READY[0] }] }),
+    )
+    assertUnsatisfied('REVIEW_READY')
+    fs.writeFileSync(
+      receipt,
+      JSON.stringify({
+        runId,
+        stamps: TERMINAL_ROUTES.BLOCKED.map((token) => ({ token })).concat({ token: 'unknown' }),
+      }),
+    )
+    const unknown = assertRoute('BLOCKED')
+    assert.equal(unknown.status, 1)
+    assert.equal(unknown.stdout.trim(), 'ROUTE_UNSATISFIED')
+    assert.match(unknown.stderr, /unknown/)
+    fs.writeFileSync(
+      receipt,
+      JSON.stringify({
+        runId: 'other-run',
+        stamps: TERMINAL_ROUTES.NO_CHANGE.map((token) => ({ token })),
+      }),
+    )
+    const stale = assertRoute('NO_CHANGE')
+    assert.equal(stale.status, 1)
+    assert.equal(stale.stdout.trim(), 'ROUTE_UNSATISFIED')
+    assert.match(stale.stderr, /absent/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('BOS-1016: route-contract table and finalize stamp sites correspond exactly', () => {
+  const routeTokens = new Set(Object.values(TERMINAL_ROUTES).flat())
+  const knownTokens = new Set([...routeTokens, ...OPTIONAL_ROUTE_TOKENS])
+  assertArtifactSet([...routeTokens], routeTokens.size, 'TERMINAL_ROUTES obligation tokens')
+  assertArtifactSet([...knownTokens], knownTokens.size, 'known route-contract stamp tokens')
+  for (const dir of BUILD_MIRRORS) {
+    const finalizeRef = finalizeAndStop(dir)
+    const stampSites = [
+      ...finalizeRef.matchAll(/route-contract\.mjs"\s+stamp[^\n]*--token\s+([a-z0-9-]+)/g),
+    ].map((match) => match[1])
+    assertArtifactSet(stampSites, knownTokens.size, `${dir}: route-contract stamp sites`)
+    assert.deepEqual(
+      [...new Set(stampSites)].sort(),
+      [...knownTokens].sort(),
+      `${dir}: each known route token must have exactly one stamp site and no extra site`,
+    )
+    for (const token of knownTokens) {
+      assert.equal(
+        stampSites.filter((site) => site === token).length,
+        1,
+        `${dir}: ${token} must have exactly one stamp site`,
+      )
+    }
+    const reviewReadyPositions = TERMINAL_ROUTES.REVIEW_READY.map((token) =>
+      stampSites.indexOf(token),
+    )
+    assert.deepEqual(
+      reviewReadyPositions,
+      [...reviewReadyPositions].sort((a, b) => a - b),
+      `${dir}: REVIEW_READY stamp sites must follow the evidence-before-ready order`,
+    )
+  }
+})
+
+test('BOS-1016: resident Step 12 binds terminal printing to route-contract assert', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    const step12 = regionUntilNext(
+      skill,
+      '- **[Step 12]',
+      'Ambiguous terminal state',
+      `${dir}: Step 12`,
+    )
+    assert.match(step12, /route-contract\.mjs"\s+assert/)
+    assert.ok(
+      precedes(
+        step12,
+        'route-contract.mjs" assert',
+        'print `REVIEW_READY`',
+        `${dir}: route assert before terminal print`,
+      ),
+      `${dir}: route-contract assert must precede terminal printing`,
+    )
+    const terminalPrints = step12.match(/print\s+`REVIEW_READY`/gi) ?? []
+    assert.equal(
+      terminalPrints.length,
+      1,
+      `${dir}: Step 12 must have exactly one guarded terminal-print site`,
+    )
+    assert.match(step12, /ROUTE_UNSATISFIED[\s\S]{0,80}no\s+terminal\s+print/i)
   }
 })
 
@@ -768,11 +1014,34 @@ test('BOS-913: Step 3 passes liveness evidence into claim-verdict (both mirrors)
       /test -n "\$\{BOSS_CLAIM_LIVENESS_JSON:-\}"/,
       `${dir}: claim-verdict must require liveness evidence before arbitration`,
     )
+    const liveClaimVerdictLine =
+      'node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comments "$COMMENTS_JSON" --liveness "$BOSS_CLAIM_LIVENESS_JSON"'
+    const bareClaimVerdict =
+      /^[ \t]*(?!#)(?:node "\$BOSS_BUILD_TOOLBOX\/tracker\/cli\.mjs"\s+)?claim-verdict --me "\$TOKEN" --comments "\$COMMENTS_JSON"\s*(?:\n|$)/m
     assert.doesNotMatch(
       verdictBlock,
-      /claim-verdict --me "\$TOKEN" --comments "\$COMMENTS_JSON"\s*(?:\n|$)/m,
+      bareClaimVerdict,
       `${dir}: claim-verdict must not fall back to first-writer-wins without liveness evidence`,
     )
+    assert.doesNotMatch(
+      mutate(
+        verdictBlock,
+        liveClaimVerdictLine,
+        `# claim-verdict --me "$TOKEN" --comments "$COMMENTS_JSON"\n${liveClaimVerdictLine}`,
+        `${dir}: commented bare claim-verdict`,
+      ),
+      bareClaimVerdict,
+      `${dir}: commented bare claim-verdict examples must not trip the live-shell prohibition`,
+    )
+    assertProhibitionFires({
+      source: verdictBlock,
+      pattern: bareClaimVerdict,
+      violation: {
+        find: liveClaimVerdictLine,
+        replacement: `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comments "$COMMENTS_JSON"\n${liveClaimVerdictLine}`,
+      },
+      label: `${dir}: live bare claim-verdict prohibition`,
+    })
     assert.match(
       ref,
       /malformed\s+evidence\s+is\s+a\s+hard\s+error[\s\S]{0,120}stop\s+the\s+run/i,
@@ -956,7 +1225,12 @@ test('BOS-674: every extracted step names the reference on its OWN resident line
 test('methodology extension dispatches ce-work under the caller-owned boundary in both mirrors', () => {
   for (const skillDir of METHODOLOGY_EXTENSION_DIRS) {
     const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')
-    const flat = skill.replace(/\s+/g, ' ')
+    const callerOwned = sectionRegion(
+      skill,
+      '## Caller-owned mode (the boundary that makes `ce-work` safe here)',
+      `${skillDir}/SKILL.md`,
+    )
+    const flat = callerOwned.replace(/\s+/g, ' ')
 
     assert.match(skill, /role: methodology/, `${skillDir}/SKILL.md must keep role: methodology`)
     assert.match(
@@ -1004,6 +1278,13 @@ test('methodology extension dispatches ce-work under the caller-owned boundary i
         `${skillDir}/SKILL.md's shipping-workflow bullet must forbid ${label} — Boss owns shipping and plan state, not ce-work`,
       )
     }
+    assertPolarityBounded({
+      source: skill,
+      heading: '## Caller-owned mode (the boundary that makes `ce-work` safe here)',
+      rule: /Stop\s+before\s+the\s+shipping\s+workflow/i,
+      polarity: /\bno\s+`?git\s+push`?/i,
+      label: `${skillDir}/SKILL.md caller-owned boundary`,
+    })
     // Boss runs its own review stack at Step 6; a Tier-2 escalation from inside ce-work duplicates
     // it and can mutate the tree outside the core's ownership snapshot.
     assert.match(
@@ -1074,6 +1355,21 @@ test('methodology extension returns the commits the tier-1 gate checks for', () 
       /aggregate\*\*: one `<short\s+SHA> <subject>` entry\s+for\s+every\s+commit\s+this\s+dispatch\s+landed/i,
       `${skillDir}/SKILL.md must state commitsMade aggregates every commit the dispatch landed`,
     )
+    assertFalsifiable({
+      source: sectionRegion(
+        skill,
+        '## Contract (write-capable, awaited, short return)',
+        `${skillDir}/SKILL.md`,
+      ),
+      pattern:
+        /aggregate\*\*: one `<short\s+SHA> <subject>` entry\s+for\s+every\s+commit\s+this\s+dispatch\s+landed/i,
+      mutation: {
+        find: /`commitsMade`\s+is\s+the\s+\*\*aggregate\*\*:\s+one\s+`<short\s+SHA>\s+<subject>`\s+entry\s+for\s+every\s+commit\s+this\s+dispatch\s+landed/,
+        replacement:
+          '`commitsMade` is the **latest task only**: one `<short SHA> <subject>` entry for the final task this dispatch landed',
+      },
+      label: `${skillDir}/SKILL.md commitsMade aggregate pin`,
+    })
     assert.match(
       skill.replace(/\s+/g, ' '),
       /no\s+commit — verification\s+only/i,
@@ -1134,6 +1430,18 @@ test('Step 6c boss-review sentinel is advisory and cannot drive the run-file ver
       /bs-review\s+capped:[\s\S]{0,220}not[\s\S]{0,40}BLOCKED\s+condition/i,
       `${skillDir}/references/review-stack.md must not describe bs-review capped as a competing terminal-state route`,
     )
+  }
+})
+
+test('BOS-1002: installed-skill gate degrades for an old boss CLI (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    assert.match(skill, /skills\s+check\s+--gate/)
+    assert.match(
+      skill,
+      /case "\$O" in[\s\S]{0,120}\*--gate\*\) node "\$BOSS_BUILD_TOOLBOX\/toolbox-drift\.mjs"/,
+    )
+    assert.match(skill, /BLOCKED:\s+installed\s+boss\s+skills\s+differ\s+from\s+checkout\s+source/)
   }
 })
 
@@ -1236,17 +1544,17 @@ test('Step 6c is bounded by a hard deadline, not a 15-minute guess', () => {
     // an assertion that cannot go red is the same false assurance this ticket exists to end.
     const step6c = region(reviewStack, '## Step 6c: Consolidated multi-lens review')
 
-    // (a) The formula must name the constant and say it is a bound, not a price. A bare `+ 15` is
-    // indistinguishable from the underestimate this closes.
+    // (a) The formula must derive the allowance from boss-review's own leg price while preserving
+    // the shipped default. A bare literal goes stale when BOSS_SKILL_EXTENSION_TIMEOUT_MS moves.
     assert.match(
       tierSelection,
-      /STEP_6C_MINUTES\s*=\s*15/,
-      `${dir}: Step 6c's allowance must be a named constant in the tier formula`,
+      /STEP_6C_INITIAL_LEGS\s*=\s*3[\s\S]{0,160}STEP_6C_MINUTES\s*=\s*ceil\(STEP_6C_INITIAL_LEGS\s*×\s*DEADLINE_LEG_SECONDS\s*÷\s*60\)/,
+      `${dir}: Step 6c's allowance must be derived from boss-review's dispatch leg price`,
     )
     assert.match(
       tierSelection,
-      /STEP_6C_MINUTES[\s\S]{0,700}\$MAX_ROUNDS\s+fix→confirm\s+rounds/i,
-      `${dir}: the formula must say WHY 15 is not Step 6c's worst path — boss-review's own capped fix loop`,
+      /default\s+DEADLINE_LEG_SECONDS\s*=\s*300\s*→\s*15\s+minutes[\s\S]{0,700}\$MAX_ROUNDS\s+fix→confirm[\s#]+rounds[\s\S]{0,160}capped\s+fix\s+loop/i,
+      `${dir}: the formula must say WHY the derived default is not Step 6c's worst path — boss-review's own capped fix loop`,
     )
 
     // (b) The bound has to be enforced where it is spent. `\s+` between words, not literal spaces —
@@ -1287,6 +1595,35 @@ test('Step 6c is bounded by a hard deadline, not a 15-minute guess', () => {
     ]) {
       assert.match(step6c, pattern, `${dir}: Step 6c's deadline must be enforceable — ${why}`)
     }
+    const deadlineHandoffPattern =
+      /State\s+`?STEP_6C_DEADLINE`?\s+in\s+the\s+invocation[\s\S]{0,400}before\s+\*\*every\*\*\s+expensive[\s\S]{0,200}fix\s+loop/i
+    assertFalsifiable({
+      source: step6c,
+      pattern: deadlineHandoffPattern,
+      mutation: {
+        find: deadlineHandoffPattern,
+        replacement:
+          'Mention the budget locally, but do not pass it through to the reviewer invocation.',
+      },
+      label: `${dir}: Step 6c deadline handoff pin`,
+    })
+    assert.doesNotMatch(
+      sectionRegion(
+        mutate(
+          reviewStack,
+          deadlineHandoffPattern,
+          '',
+          `${dir}: move Step 6c handoff out of Step 6c`,
+        ).replace(
+          '## Step 6 entry — review tier selection',
+          '## Step 6 entry — review tier selection\n\nState `STEP_6C_DEADLINE` in the invocation before **every** expensive reviewer fix loop.',
+        ),
+        '## Step 6c: Consolidated multi-lens review',
+        `${dir}: relocated Step 6c handoff`,
+      ),
+      deadlineHandoffPattern,
+      `${dir}: a sibling section cannot satisfy the Step 6c deadline handoff pin`,
+    )
 
     // (c) THE RECEIVING HALF of the hand-off. `boss-review` owns the fix loop the deadline has to
     // stop, and it caps that loop on a round count it reads from `bs-review-caps.mjs` — a caller's
@@ -1355,7 +1692,7 @@ test('Step 6c is bounded by a hard deadline, not a 15-minute guess', () => {
     )
     assert.match(
       step6c,
-      /no\*{0,2}\s*ordinary\s+fix\s+round\*{0,2}\s+is\s+ever\s+admitted\s+at\s+the\s+default/i,
+      /funds\s+those\s+initial\s+legs\s+and\s+\*\*0\s+ordinary\s+fix\s+rounds\*\*/i,
       `${dir}: Step 6c must state that 15 minutes funds no ORDINARY fix round, so the advisory-only outcome is deliberate`,
     )
     // ...and that claim is now narrowed rather than absolute, which the prose has to
@@ -1776,6 +2113,36 @@ test('the deadline stamp and the leg gate are RUNNABLE: unset names do not silen
       15 * 60,
       `${dir}: the stamp must be self-contained — with STEP_6C_MINUTES unset it produced a ${offset}s deadline, and 0 means every downstream gate refuses a budget that was never spent`,
     )
+    const offsetAt = (timeoutMs) =>
+      Number(
+        execFileSync('bash', ['-c', `${stamp}\necho $(( STEP_6C_DEADLINE - NOW ))`], {
+          encoding: 'utf8',
+          env: { ...process.env, BOSS_SKILL_EXTENSION_TIMEOUT_MS: String(timeoutMs) },
+        }).trim(),
+      )
+    assert.equal(
+      offsetAt(600000),
+      30 * 60,
+      `${dir}: Step 6c's stamp must track a 600000ms boss-review leg timeout`,
+    )
+    assert.equal(
+      offsetAt(1800000),
+      90 * 60,
+      `${dir}: Step 6c's stamp must track a 1800000ms boss-review leg timeout`,
+    )
+    const squeezed = execFileSync(
+      'bash',
+      [
+        '-c',
+        `${stamp}\npreflight=$(( NOW + 60 ))\nPOST_REVIEW_RESERVE_MINUTES=0\nLATEST=$(( preflight - POST_REVIEW_RESERVE_MINUTES * 60 ))\n[ "$STEP_6C_DEADLINE" -le "$LATEST" ] || STEP_6C_DEADLINE=$LATEST\nSTEP_6C_ALLOWANCE_SECONDS=$(( STEP_6C_DEADLINE - NOW ))\nif [ "$STEP_6C_ALLOWANCE_SECONDS" -lt "$DEADLINE_LEG_SECONDS" ]; then\n  BOSS_REVIEW_OUTCOME="boss-review: skipped (allowance \${STEP_6C_ALLOWANCE_SECONDS}s cannot fund one \${DEADLINE_LEG_SECONDS}s leg)"\nfi\nprintf '%s' "$BOSS_REVIEW_OUTCOME"`,
+      ],
+      { encoding: 'utf8', env: process.env },
+    )
+    assert.match(
+      squeezed,
+      /boss-review:\s+skipped\s+\(allowance\s+\d+s\s+cannot\s+fund\s+one\s+\d+s\s+leg\)/,
+      `${dir}: a clamp that cannot fund one initial leg must publish the explicit skip token`,
+    )
 
     // (b) The leg gate, executed with and without a supplied deadline.
     const reviewSkill = fs.readFileSync(
@@ -1939,9 +2306,7 @@ test('boss-review bounds its INITIAL passes by the caller deadline, not only the
       '### Tier 2 — host-native whole-diff review',
       '### Tier 3 — inline whole-diff rubric',
     ]) {
-      // Fixed 500-char window from the tier heading: `src.slice(i, i + 500)` is exactly
-      // `src.slice(i).slice(0, 500)`, so this is byte-identical with a fail-closed start.
-      const body = region(reviewSkill, tier).slice(0, 500)
+      const body = sectionRegion(reviewSkill, tier, `${dir}: boss-review SKILL.md`)
       assert.match(
         body,
         /Caller\s+deadline\s+gate\s+admits\s+another\s*\n?\s*`DEADLINE_LEG_SECONDS`/i,
@@ -1961,6 +2326,7 @@ test('Step 11 names proof.mjs run as the single proof channel (BOS-138)', () => 
   // only its pointer line. The clause is pinned where the instruction actually is.
   for (const skillPath of RESIDENT_BODY_SKILLS) {
     const skill = fs.readFileSync(path.join(rootDir, skillPath), 'utf8')
+    // gate-region-ok: whole resident-body absence sweep over a shell-source idiom, not a polarity rule
     assert.doesNotMatch(
       skill,
       /set -a; \. \.\/\.env/,
@@ -2162,6 +2528,7 @@ test('methodology extension mirrors carry no vendored implementation methodology
 
   for (const skillDir of METHODOLOGY_EXTENSION_DIRS) {
     const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')
+    // gate-region-ok: whole extension-file absence sweep for a retired path literal
     assert.doesNotMatch(
       skill,
       /\.claude\/skills\/_construct/,
@@ -2359,9 +2726,8 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
       /usually\s+BLOCKED/,
       `${mirror}: wall-clock breaker must not permit REVIEW_READY with an unaddressed required item`,
     )
-    // BOS-674: Steps 9 and 12 moved to references/finalize-and-stop.md, but the invariant is
-    // load-bearing enough that the resident pointer block must restate it — a reader who never
-    // opens the reference still learns that readying and REVIEW_READY are gated on it.
+    // BOS-1016: Step 12 no longer spends resident bytes restating the route table. The resident
+    // block must instead bind terminal printing to the executable route assertion.
     const pointers = region(body, '## Steps 8-12:', '## Cron gate')
     assert.match(
       pointers,
@@ -2370,8 +2736,8 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
     )
     assert.match(
       pointers,
-      /REVIEW_READY\s+only\s+with\s+no\s+deferred\s+required\s+item/,
-      `${mirror}: the resident Steps 8-12 pointer block must keep the Step 12 terminal-state gate`,
+      /route-contract\.mjs"\s+assert/,
+      `${mirror}: the resident Steps 8-12 pointer block must bind Step 12 to the executable route assertion`,
     )
 
     // Enforced at the finalize gate (Step 9) and terminal-state selection (Step 12).
@@ -2562,6 +2928,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     const refDir = path.join(rootDir, dir, 'references')
     for (const ref of fs.readdirSync(refDir).filter((f) => f.endsWith('.md'))) {
       const flat = fs.readFileSync(path.join(refDir, ref), 'utf8').replace(/\s+/g, ' ')
+      // gate-region-ok: per-reference absence sweep for a stale phrase across hand-wrapped markdown
       assert.doesNotMatch(
         flat,
         /Decide-vs-ABORT\s+condition/,
@@ -2597,12 +2964,62 @@ const DISPATCHED_EXTENSION_DIRS = [
   ...KNOWLEDGE_EXTENSION_DIRS.map((skillDir) => ({ skillDir, instructions: 1 })),
 ]
 
+// BOS-1012: this repo's commit-msg hook rejects the published core's portable tagless default once
+// a branch maps to an open PR. The repo-local extensions are the layer allowed to know that, so they
+// must override the inherited tagless clause and tell dispatched subagents to derive the same
+// predicate the hook uses. The count is exact per file: `boss-build-ce` states it twice, while the
+// knowledge extension states it once. A bare token match would stay green if one `boss-build-ce`
+// site regressed or was deleted.
+test('BOS-1012: dispatched extensions derive repo PR-tag commits instead of restating tagless defaults', () => {
+  const derivedRule =
+    /with\s+the\s+PR\s+tag\s+derived\s+the\s+same\s+way\s+the\s+repo\s+hook\s+derives\s+it[\s\S]*?gh\s+pr\s+view\s+--json\s+number\s+--jq\s+\.number[\s\S]*?type\(scope\):\s+\[#N\]\s+subject/
+  const supersession =
+    /This\s+repository-specific\s+predicate\s+supersedes\s+the\s+inherited\s+core\s+instruction\s+that\s+commit\s+messages\s+need\s+no\s+PR\s+tag;\s+do\s+not\s+guess\s+a\s+tag,\s+derive\s+it\./g
+
+  for (const { skillDir, instructions: expected } of DISPATCHED_EXTENSION_DIRS) {
+    const flat = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8').replace(/\s+/g, ' ')
+
+    // gate-region-ok: whole extension-file absence sweep for stale commit-contract wording
+    assert.doesNotMatch(
+      flat,
+      /tagless\s+conventional\s+commits/,
+      `${skillDir}/SKILL.md must not restate the stale tagless-conventional-commits instruction`,
+    )
+    // gate-region-ok: whole extension-file absence sweep for alternate stale commit-contract wording
+    assert.doesNotMatch(
+      flat,
+      /commit\s+tagless\s+work/,
+      `${skillDir}/SKILL.md must not restate the stale commit-tagless-work contract wording`,
+    )
+    const derivedInstructions = flat.match(new RegExp(derivedRule.source, 'g')) ?? []
+    assert.strictEqual(
+      derivedInstructions.length,
+      expected,
+      `${skillDir}/SKILL.md must carry ${expected} derived PR-tag instruction(s), found ${derivedInstructions.length}`,
+    )
+    for (const instruction of derivedInstructions) {
+      assert.doesNotMatch(
+        instruction,
+        /\bClaude\b|CLAUDE\.md/,
+        `${skillDir}/SKILL.md pinned BOS-1012 instruction must avoid mirror-rewritten tokens`,
+      )
+    }
+    const supersessions = flat.match(supersession) ?? []
+    assert.strictEqual(
+      supersessions.length,
+      expected,
+      `${skillDir}/SKILL.md must carry ${expected} supersession sentence(s), found ${supersessions.length}`,
+    )
+  }
+})
+
 test('BOS-841: dispatched extensions name the hard-ABORT list, not the two-list section', () => {
   for (const { skillDir, instructions: expected } of DISPATCHED_EXTENSION_DIRS) {
     // These files are hand-wrapped, so the phrase can straddle a newline. Normalize BEFORE the
     // negative match too: a raw-text `doesNotMatch` would go quietly green on a re-wrap that split
     // `Decide-vs-ABORT` from `condition`, i.e. exactly when the stale phrase is still being read.
     const flat = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8').replace(/\s+/g, ' ')
+    // gate-region-ok: whole extension-file absence sweep for a stale hard-ABORT phrase
     assert.doesNotMatch(
       flat,
       /Decide-vs-ABORT\s+condition/,
@@ -3201,6 +3618,7 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     )
     // The all-failed case must read as an instance of the same per-extension accounting rule, not
     // as the only branch that records anything.
+    // gate-region-ok: whole core-body absence sweep for a superseded branch-specific sentence
     assert.doesNotMatch(
       skill,
       /extension\s+failed\s+to\s+load\s+or\s+returned\s+no\s+valid\s+result, record\s+`extension <name>: skipped \(<reason>\)` for\s+each/i,
@@ -4427,6 +4845,7 @@ test('BOS-742: the pre-change three-value disposition list is no longer the comp
       `${dir}/references/review-stack.md`,
     )
     const flat = step6b.replace(/\s+/g, ' ')
+    // gate-region-ok: bounded section absence sweep for a retired exact list shape
     assert.doesNotMatch(
       flat,
       OLD_THREE_VALUE_LIST,
@@ -4682,11 +5101,22 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
       '## Step 6 entry — review tier selection',
       '### Degraded tier (minimal)',
     )
+    const persistedCappedPattern =
+      /node\s+"\$RUN_SENTINEL"\s+write\s+"\$RUN_DIR"\s+"\$RUN_ID"\s+review[\s\S]{0,160}sentinel\s+capped\s+1/
     assert.match(
       belowFloor,
-      /node\s+"\$RUN_SENTINEL"\s+write\s+"\$RUN_DIR"\s+"\$RUN_ID"\s+review[\s\S]{0,160}sentinel\s+capped\s+1/,
+      persistedCappedPattern,
       `${dir}: the below-floor fallback must PERSIST the generated sentinel through bs-run-sentinel.mjs write, not merely print it`,
     )
+    assertFalsifiable({
+      source: belowFloor,
+      pattern: persistedCappedPattern,
+      mutation: {
+        find: /node\s+"\$RUN_SENTINEL"\s+write\s+"\$RUN_DIR"\s+"\$RUN_ID"\s+review[\s\S]{0,160}sentinel\s+capped\s+1/,
+        replacement: 'node "$CAPS" sentinel capped 1',
+      },
+      label: `${dir}: below-floor persisted sentinel pin`,
+    })
     assert.match(
       belowFloor,
       /requires\s+a\s+\*\*positive\*\*\s+round\s+count/i,
@@ -4712,9 +5142,11 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // a mutant that deletes the whole tier body and replaces it with "an open must-fix is deferred
     // and the run proceeds to REVIEW_READY" still passes every one of them — i.e. the two
     // assertions guarding against exactly that coverage laundering are the ones that cannot fail.
-    const degradedRest = region(reviewStack, '### Degraded tier (minimal)')
-    const degradedEnd = degradedRest.search(/\n## /)
-    const degraded = degradedEnd === -1 ? degradedRest : degradedRest.slice(0, degradedEnd)
+    const degraded = sectionRegion(
+      reviewStack,
+      '### Degraded tier (minimal)',
+      `${dir}: review-stack.md`,
+    )
     assert.match(
       degraded,
       /code-reviewer-template\.md/,
@@ -4884,7 +5316,11 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // `\s+` between the words: prettier reflows this paragraph at 100 columns.
     const noPrIdx = reviewStack.search(/when\s+no\s+PR\s+exists\s+yet/i)
     assert.ok(noPrIdx >= 0, `${dir}: §BLOCKED-route publication must cover the no-PR case`)
-    const noPrClause = reviewStack.slice(noPrIdx, noPrIdx + 700)
+    const noPrClause = sectionRegion(
+      reviewStack,
+      '### BLOCKED-route publication',
+      `${dir}: review-stack.md`,
+    )
     assert.match(
       noPrClause,
       /put\s+\*\*both\*\*\s+tokens\s+verbatim\s+in\s*\n?\s*the\s+BLOCKED\s+blocker\s+comment/i,
@@ -4904,10 +5340,12 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // later step to supply a cross-model outcome (Step 6b lives INSIDE the stack that never ran),
     // so unless this branch names a value the blocker comment silently drops the section — and an
     // absent mandatory section reads as "passed clean", the exact failure it exists to prevent.
-    const thirdRouteIdx = reviewStack.indexOf(
+    const thirdRoute = regionUntilNext(
+      reviewStack,
       '`none: review stack did not run (<reason>)` belongs to neither bullet',
+      'A `capped` run keeps whatever token its tier earned',
+      `${dir}: review-stack.md`,
     )
-    const thirdRoute = reviewStack.slice(thirdRouteIdx, thirdRouteIdx + 900)
     assert.match(
       thirdRoute,
       /`## Cross-model\s+review`\s*=\s*`skipped: <reason>`/,
@@ -5057,6 +5495,42 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
   )
 })
 
+test('BOS-1000: converted section gates fail on deleted, relocated, and missing-section mutants', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = reviewStackFor(dir)
+    const heading = '### Degraded tier (minimal)'
+    const clause = "plan/acceptance-criteria, as the full tier's round 1 does"
+    const section = sectionRegion(reviewStack, heading, `${dir}: review-stack.md`)
+    assert.match(
+      section,
+      /plan\/acceptance-criteria,\s+as\s+the\s+full\s+tier's\s+round\s+1\s+does/,
+    )
+
+    const deleted = mutate(reviewStack, clause, '', `${dir}: deleted degraded-tier clause`)
+    assert.doesNotMatch(
+      sectionRegion(deleted, heading, `${dir}: review-stack.md`),
+      /plan\/acceptance-criteria,\s+as\s+the\s+full\s+tier's\s+round\s+1\s+does/,
+    )
+
+    const relocated = mutate(
+      deleted,
+      '### Reviewed-tip confirmation',
+      `${clause}\n\n### Reviewed-tip confirmation`,
+      `${dir}: relocated degraded-tier clause`,
+    )
+    assert.doesNotMatch(
+      sectionRegion(relocated, heading, `${dir}: review-stack.md`),
+      /plan\/acceptance-criteria,\s+as\s+the\s+full\s+tier's\s+round\s+1\s+does/,
+    )
+
+    const missingHeading = mutate(reviewStack, heading, '### Degraded tier renamed')
+    assert.throws(
+      () => sectionRegion(missingHeading, heading, `${dir}: review-stack.md`),
+      /section\s+heading\s+not\s+found/,
+    )
+  }
+})
+
 // ---------------------------------------------------------------------------
 // BOS-859. The degraded tier used to stop at DETECTION: it located must-fix findings at `file:line`
 // and was then forbidden to fix them, so an otherwise finished run BLOCKED with pushed work
@@ -5075,11 +5549,11 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
 // downstream would satisfy assertions the repair pass itself had lost.
 const degradedRepairOf = (dir) => {
   const reviewStack = reviewStackFor(dir)
-  const at = reviewStack.indexOf('#### Bounded repair pass (conditional)')
-  assert.ok(at >= 0, `${dir}: review-stack.md must carry the bounded repair pass subsection`)
-  const rest = reviewStack.slice(at + 1)
-  const end = rest.search(/\n#{1,3} /)
-  return end === -1 ? rest : rest.slice(0, end)
+  return sectionRegion(
+    reviewStack,
+    '#### Bounded repair pass (conditional)',
+    `${dir}: review-stack.md`,
+  )
 }
 
 // The fix leg as a REGION — `**Fix leg.**` through `**Verification leg.**` — never a single
@@ -5242,6 +5716,15 @@ test('BOS-859: the degraded repair clamp is runnable and refuses a non-positive 
     const verMin = Number(/^DEGRADED_REPAIR_VERIFY_MINUTES=(\d+)/m.exec(clamp)?.[1])
     const api = Number(/^DEGRADED_API_CHECK_MINUTES=(\d+)/m.exec(clamp)?.[1])
     const reserve = Number(/^POST_REVIEW_RESERVE_MINUTES=(\d+)/m.exec(clamp)?.[1])
+    const degradedReviewer = Number(/DEGRADED_REVIEWER_MINUTES\s*=\s*(\d+)/.exec(reviewStack)?.[1])
+    const minAdmission = Number(
+      runBlock(clamp, {}, '$DEGRADED_REPAIR_MIN_ADMISSION_MINUTES').trim(),
+    )
+    assert.equal(
+      minAdmission,
+      60,
+      `${dir}: the degraded repair break-even must be named as 60 minutes at the defaults`,
+    )
     // The clamp's own constants must track the priced ones, not drift from them.
     assert.equal(
       api,
@@ -5254,9 +5737,13 @@ test('BOS-859: the degraded repair clamp is runnable and refuses a non-positive 
       `${dir}: the repair clamp's reserve must equal the priced post-review reserve`,
     )
 
-    const at = (minutes) => String(Math.floor(Date.now() / 1000) + minutes * 60)
+    const at = (minutes, extraSeconds = 0) =>
+      String(Math.floor(Date.now() / 1000) + minutes * 60 + extraSeconds)
+    const afterDetectionAt = (tierEntryMinutes, extraSeconds = 0) =>
+      at(tierEntryMinutes - degradedReviewer, extraSeconds)
     const fixSecs = (env) => Number(runBlock(clamp, env, '$DEGRADED_REPAIR_FIX_SECONDS').trim())
     const verSecs = (env) => Number(runBlock(clamp, env, '$DEGRADED_REPAIR_VERIFY_SECONDS').trim())
+    const payloadReason = (env) => runBlock(clamp, env, '$BOSS_REVIEW_CAP_PAYLOAD_REASON').trim()
 
     // (a) No deadline set → the full priced allowances. Empty means "no cap", never zero.
     assert.equal(fixSecs({}), fixMin * 60, `${dir}: with no deadline the fix leg keeps its price`)
@@ -5300,6 +5787,21 @@ test('BOS-859: the degraded repair clamp is runnable and refuses a non-positive 
       verSecs({ PREFLIGHT_DEADLINE: at(reserve + api) }) <= 0,
       `${dir}: the verify leg must preserve the API allowance as well as the post-review reserve`,
     )
+    assert.equal(
+      payloadReason({ PREFLIGHT_DEADLINE: afterDetectionAt(40) }),
+      'funding-starved',
+      `${dir}: at 40 minutes the degraded repair pass must publish an unfunded cap payload`,
+    )
+    assert.equal(
+      payloadReason({ PREFLIGHT_DEADLINE: afterDetectionAt(59) }),
+      'funding-starved',
+      `${dir}: at 59 minutes the degraded repair pass must still be unfunded`,
+    )
+    assert.equal(
+      payloadReason({ PREFLIGHT_DEADLINE: afterDetectionAt(60, 5) }),
+      '',
+      `${dir}: at 60 minutes the degraded repair pass must become affordable`,
+    )
 
     // …and the prose must say what a non-positive budget means, or the arithmetic above is a number
     // nobody acts on.
@@ -5312,6 +5814,11 @@ test('BOS-859: the degraded repair clamp is runnable and refuses a non-positive 
       repair,
       /non-positive\s+budget\s+is\s+neither\s+a\s+clean\s+exit\s+nor\s+a\s+licence\s+for\s+an\s+unbudgeted\s+round/i,
       `${dir}: a non-positive repair budget must be neither a clean exit nor an unbudgeted round`,
+    )
+    assert.match(
+      repair,
+      /repair\s+skipped:\s*unfunded[\s\S]{0,240}"reason":"funding-starved"/i,
+      `${dir}: an affordability gate-out must be distinguishable from a repair that ran and failed`,
     )
   }
 })
@@ -5387,13 +5894,12 @@ test('BOS-859: the tier lead bullet scopes "exactly one" to detection, not to it
   // failure the rewrite already had to clear five times elsewhere in this subsection.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const at = reviewStack.indexOf('### Degraded tier (minimal)')
-    assert.ok(at >= 0, `${dir}: review-stack.md must carry the degraded tier subsection`)
-    // Slice to the NEXT bullet, not a character window: a distance window starts failing when the
-    // prose it spans grows, which reds for a prose-growth reason rather than a defect one.
-    const afterHeading = reviewStack.slice(at)
-    const nextBullet = afterHeading.search(/\n- \*\*Detection\s+is\s+a\s+single\s+round\.\*\*/)
-    const lead = nextBullet === -1 ? afterHeading.slice(0, 1200) : afterHeading.slice(0, nextBullet)
+    const lead = region(
+      sectionRegion(reviewStack, '### Degraded tier (minimal)', `${dir}: review-stack.md`),
+      '### Degraded tier (minimal)',
+      '- **Detection is a single round.**',
+      `${dir}: review-stack.md`,
+    )
 
     // "Exactly one" must be bound to DETECTION, not left as a bare reviewer count.
     assert.match(
@@ -5671,17 +6177,10 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
     // Bound the window at the section heading so a push mentioned anywhere else cannot satisfy it.
-    const secIdx = reviewStack.indexOf('### BLOCKED-route publication')
-    assert.ok(
-      secIdx >= 0,
-      `${dir}: review-stack.md must carry the BLOCKED-route publication section`,
-    )
-    // Bound at the NEXT heading, not a magic byte count: the section grows as the rule is
-    // hardened, and a fixed window silently starts excluding the clauses it is meant to pin.
-    const secEndRel = reviewStack.slice(secIdx + 1).search(/\n#{2,3} /)
-    const section = reviewStack.slice(
-      secIdx,
-      secEndRel === -1 ? reviewStack.length : secIdx + 1 + secEndRel,
+    const section = sectionRegion(
+      reviewStack,
+      '### BLOCKED-route publication',
+      `${dir}: review-stack.md`,
     )
 
     assert.match(
@@ -5728,6 +6227,15 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
       /git (?:pull --rebase|rebase --no-fork-point)[^\n]*\|\|\s*break/,
       `${dir}: a failed reconcile must not end the push loop after a single attempt`,
     )
+    assertProhibitionFires({
+      source: pushBlock,
+      pattern: /git (?:pull --rebase|rebase --no-fork-point)[^\n]*\|\|\s*break/,
+      violation: {
+        find: /git[ ]rebase --no-fork-point[ ]FETCH_HEAD \|\|\s*git[ ]rebase --abort/,
+        replacement: 'git rebase --no-fork-point FETCH_HEAD || break',
+      },
+      label: `${dir}: push retry reconcile-break prohibition`,
+    })
     assert.match(
       pushBlock,
       /git[ ]rebase --no-fork-point[ ]FETCH_HEAD \|\|\s*git[ ]rebase --abort/,
@@ -5788,12 +6296,13 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     )
 
     // Reader 1: the budget-floor branch in the tier ladder.
-    const floorIdx = reviewStack.indexOf(
-      '**< `DEGRADED_TIER_MINUTES + POST_REVIEW_RESERVE_MINUTES`**',
-    )
-    assert.ok(floorIdx >= 0, `${dir}: review-stack.md must carry the budget-floor branch`)
     assert.match(
-      reviewStack.slice(floorIdx, floorIdx + 900),
+      region(
+        reviewStack,
+        '2. `REMAINING_MINUTES` **< `DEGRADED_TIER_MINUTES + POST_REVIEW_RESERVE_MINUTES`**',
+        '3. `REMAINING_MINUTES` **≥ `FULL_TIER_MINUTES + POST_REVIEW_RESERVE_MINUTES`**',
+        `${dir}: review-stack.md`,
+      ),
       /push\s+the\s+branch\s+first|push\s+the\s+session\s+branch/i,
       `${dir}: the budget-floor branch must tell its reader to push before exiting`,
     )
@@ -5803,7 +6312,7 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     const gateIdx = skill.indexOf('Apply the tier ladder’s budget floor')
     const gateAt = gateIdx >= 0 ? gateIdx : skill.indexOf("Apply the tier ladder's budget floor")
     assert.ok(gateAt >= 0, `${dir}/SKILL.md: Step 6 must carry the budget-floor gate`)
-    const floorGate = skill.slice(gateAt, gateAt + 900)
+    const floorGate = sectionRegion(skill, '## Step 6:', `${dir}/SKILL.md`)
     assert.match(
       floorGate,
       /references\/review-stack\.md[\s\S]{0,160}BLOCKED-route\s+publication[\s\S]{0,220}retry\/rebase\/rescue\s+procedure\s+must\s+yield `PUSHED=yes` before[\s\S]{0,120}`capped\s+1` sentinel/i,
@@ -5877,10 +6386,8 @@ test('BOS-758 P2: untimed fallback dispatches carry an execution bound, not just
       '### Tier 2 — host-native whole-diff review',
       '### Tier 3 — inline whole-diff rubric',
     ]) {
-      const at = reviewSkill.indexOf(tier)
-      assert.ok(at >= 0, `${dir}: boss-review must carry "${tier}"`)
       assert.match(
-        reviewSkill.slice(at, at + 700),
+        sectionRegion(reviewSkill, tier, `${dir}: boss-review SKILL.md`),
         /`LEG_TIMEOUT_SECONDS`/,
         `${dir}: ${tier} is an untimed dispatch and must be bounded by LEG_TIMEOUT_SECONDS`,
       )
@@ -5901,11 +6408,11 @@ test('BOS-758 P1b: the degraded reviewer is bounded on the wall clock, not just 
   // post-review reserve, recreating the mid-review overrun at the tier meant to escape it.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const at = reviewStack.indexOf('### Degraded tier (minimal)')
-    assert.ok(at >= 0, `${dir}: review-stack.md must carry the degraded tier section`)
-    const degradedRest = reviewStack.slice(at)
-    const degradedEnd = degradedRest.search(/\n## /)
-    const section = degradedEnd === -1 ? degradedRest : degradedRest.slice(0, degradedEnd)
+    const section = sectionRegion(
+      reviewStack,
+      '### Degraded tier (minimal)',
+      `${dir}: review-stack.md`,
+    )
     assert.match(
       section,
       /`DEGRADED_REVIEWER_MINUTES`\s*\(10\)/,
@@ -6058,7 +6565,13 @@ test('BOS-758 P2: the tier formula derives Step 6b from the configured cross-rev
       /default\s*→\s*(\d+)\s+minutes;\s*a\s+\d+\s*ms/,
       'the default STEP_6B_MINUTES',
     )
-    const step6c = num(/STEP_6C_MINUTES\s*=\s*(\d+)/, 'STEP_6C_MINUTES')
+    const step6cInitialLegs = num(/STEP_6C_INITIAL_LEGS\s*=\s*(\d+)/, 'STEP_6C_INITIAL_LEGS')
+    const defaultLegSeconds = num(
+      /default\s+DEADLINE_LEG_SECONDS\s*=\s*(\d+)/,
+      'default DEADLINE_LEG_SECONDS',
+    )
+    const step6c = Math.ceil((step6cInitialLegs * defaultLegSeconds) / 60)
+    assert.equal(step6c, 15, `${dir}: derived STEP_6C_MINUTES must stay 15 at the shipped default`)
     const reserve = num(/#\s*=\s*(\d+)\s+minutes/, 'POST_REVIEW_RESERVE_MINUTES')
     const degradedReviewer = num(
       /DEGRADED_REVIEWER_MINUTES\s*=\s*(\d+)/,
@@ -6167,15 +6680,10 @@ test('BOS-758 P2: the BLOCKED handoff reports the rescue branch, not a fixed "un
   // work while telling the next run to go looking for commits that had already left the worktree.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const secIdx = reviewStack.indexOf('### BLOCKED-route publication')
-    assert.ok(
-      secIdx >= 0,
-      `${dir}: review-stack.md must carry the BLOCKED-route publication section`,
-    )
-    const secEndRel = reviewStack.slice(secIdx + 1).search(/\n#{2,3} /)
-    const section = reviewStack.slice(
-      secIdx,
-      secEndRel === -1 ? reviewStack.length : secIdx + 1 + secEndRel,
+    const section = sectionRegion(
+      reviewStack,
+      '### BLOCKED-route publication',
+      `${dir}: review-stack.md`,
     )
     const pushBlock = [...section.matchAll(/```bash\n([\s\S]*?)```/g)]
       .map((m) => m[1])
@@ -6216,6 +6724,31 @@ test('BOS-758 P2: the BLOCKED handoff reports the rescue branch, not a fixed "un
     assert.ok(
       rescueIdx >= 0 && failIdx > rescueIdx,
       `${dir}: the handoff must branch on PUSHED, with the rescue-success case stated before the total-failure case`,
+    )
+    assert.equal(
+      precedes(prose, '- `PUSHED=rescue`', '- `PUSHED=no`', `${dir}: PUSHED handoff arms`),
+      true,
+      `${dir}: PUSHED rescue handoff must be documented before the total-failure handoff`,
+    )
+    const swappedArms = mutate(
+      prose,
+      /^- `PUSHED=rescue`[\s\S]*?(?=^- `PUSHED=no`)/m,
+      '',
+      `${dir}: remove rescue arm before swap`,
+    ).replace(/^- `PUSHED=no`/m, (failureArm) => {
+      const rescueArm = prose.match(/^- `PUSHED=rescue`[\s\S]*?(?=^- `PUSHED=no`)/m)?.[0]
+      assert.ok(rescueArm, `${dir}: rescue arm must be extractable for order falsification`)
+      return `${failureArm}\n${rescueArm}`
+    })
+    assert.equal(
+      precedes(
+        swappedArms,
+        '- `PUSHED=rescue`',
+        '- `PUSHED=no`',
+        `${dir}: swapped PUSHED handoff arms`,
+      ),
+      false,
+      `${dir}: reordered PUSHED handoff arms must falsify the order assertion`,
     )
     const rescueArm = prose.slice(rescueIdx, failIdx)
     assert.match(
@@ -8759,11 +9292,11 @@ test('BOS-758 repair P1: Step 7 confirms the pushed tip is the tip that was revi
 
     // (c) The reference carries the capture/compare, and it fails CLOSED on an unreadable tip.
     const reviewStack = reviewStackFor(dir)
-    const at = reviewStack.indexOf('### Reviewed-tip confirmation')
-    assert.ok(at >= 0, `${dir}: review-stack.md must carry the reviewed-tip confirmation`)
-    const rest = reviewStack.slice(at + 1)
-    const end = rest.search(/\n#{2,3} /)
-    const section = end === -1 ? rest : rest.slice(0, end)
+    const section = sectionRegion(
+      reviewStack,
+      '### Reviewed-tip confirmation',
+      `${dir}: review-stack.md`,
+    )
 
     assert.match(
       section,
@@ -8796,11 +9329,11 @@ test('BOS-758 repair P2e: the degraded reviewer is clamped against the live dead
   // preserve BOTH the API allowance that follows it and the reserve.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const at = reviewStack.indexOf('### Degraded tier (minimal)')
-    assert.ok(at >= 0, `${dir}: review-stack.md must carry the degraded tier section`)
-    const rest = reviewStack.slice(at + 1)
-    const end = rest.search(/\n#{2,3} /)
-    const section = end === -1 ? rest : rest.slice(0, end)
+    const section = sectionRegion(
+      reviewStack,
+      '### Degraded tier (minimal)',
+      `${dir}: review-stack.md`,
+    )
 
     const clamp = bashBlocksOf(section).find((b) => /^\s*DEGRADED_REVIEWER_SECONDS=/m.test(b))
     assert.ok(clamp, `${dir}: the degraded reviewer must ship an executable deadline clamp`)
@@ -9011,26 +9544,12 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
       /any\s+deferred\s+required\s+item/i,
       `${dir}: the carve-out must never be widened to "any deferred required item"`,
     )
-    // BOS-240's Step 12 pointer phrase is unchanged, and PARTIAL is attached as the else-branch
-    // BELOW it — not substituted for it.
+    // BOS-1016: the resident Step 12 pointer delegates the route table to route-contract.mjs.
     const pointers = region(body, '## Steps 8-12:', '## Cron gate', `${dir}/SKILL.md`)
     assert.match(
       pointers,
-      /REVIEW_READY\s+only\s+with\s+no\s+deferred\s+required\s+item/,
-      `${dir}: the Steps 8-12 pointer must still forbid REVIEW_READY with any deferred required item`,
-    )
-    assert.match(
-      pointers,
-      /else\s+`PARTIAL`\s+when\s+every\s*\n?\s*deferred\s+required\s+item\s+is\s+an\s+unsatisfied\s+in-scope\s+criterion[\s\S]{0,48}on\s+a\s+green\s+branch/,
-      `${dir}: the Steps 8-12 pointer must route PARTIAL only on the scoped condition`,
-    )
-    // T1 belongs HERE too, not only on the state bullet and the Hard rules. This pointer is the
-    // resident text an agent reads at the moment it picks the terminal state, and T3 + T2 without
-    // T1 reads as "defer every criterion, stay green, ship PARTIAL" — the 0-of-N soft landing.
-    assert.match(
-      pointers,
-      /≥1\s+lens-certified/,
-      `${dir}: the Steps 8-12 pointer must carry T1's floor — at least one lens-certified criterion`,
+      /route-contract\.mjs"\s+assert[\s\S]{0,260}ROUTE_UNSATISFIED[\s\S]{0,120}no\s+terminal\s+print/,
+      `${dir}: the Steps 8-12 pointer must fail closed through the route-contract assertion`,
     )
     // The Step 9 pointer in the SAME resident block. Its "assert **no required item was deferred**,
     // then ready the PR" predates PARTIAL and contradicts it: on the non-`capped` PARTIAL path the

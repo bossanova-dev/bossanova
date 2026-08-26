@@ -98,6 +98,14 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 					Type:         bossanovav1.UserSettingType_USER_SETTING_TYPE_STRING,
 					DefaultValue: "",
 				},
+				{
+					Key:           "effort",
+					Label:         "Reasoning effort",
+					Description:   "Fallback claude --effort for runs without their own. Defaults to high.",
+					Type:          bossanovav1.UserSettingType_USER_SETTING_TYPE_ENUM,
+					AllowedValues: []string{"", "low", "medium", "high", "xhigh", "max"},
+					DefaultValue:  "high",
+				},
 			},
 		},
 	}, nil
@@ -113,7 +121,7 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	// would propagate to runner.Start's procCtx and SIGTERM the just-started
 	// claude process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths.
-	sid, err := s.runner.StartWithModel(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv())
+	sid, err := s.runner.StartWithModelAndEffort(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), req.GetExtraEnv())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -221,6 +229,13 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	}
 	if model := resolveClaudeModel(req.GetModel(), pluginModel); model != "" {
 		args = append(args, "--model", model)
+	}
+	pluginEffort := ""
+	if s.runner != nil {
+		pluginEffort = s.runner.effort
+	}
+	if effort := resolveClaudeEffort(req.GetEffort(), pluginEffort); effort != "" {
+		args = append(args, "--effort", effort)
 	}
 	// No MCP flags, deliberately. Boss does not own MCP configuration: Claude
 	// Code discovers servers its own native way (project .mcp.json gated by

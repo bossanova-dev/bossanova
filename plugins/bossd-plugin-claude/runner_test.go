@@ -73,7 +73,7 @@ func TestBuildArgvIncludesResume(t *testing.T) {
 	})
 	want := []string{
 		"claude", "--print", "--verbose", "--output-format", "stream-json",
-		"--resume", "abc", "--session-id", "x",
+		"--resume", "abc", "--session-id", "x", "--effort", defaultClaudeEffort,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildArgv = %v, want %v", got, want)
@@ -95,6 +95,8 @@ func TestClaudeBuildArgv_WrapsInLoginShell(t *testing.T) {
 		"--verbose",
 		"--output-format",
 		"stream-json",
+		"--effort",
+		defaultClaudeEffort,
 	}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("wrapped bash argv:\n got=%#v\nwant=%#v", argv, want)
@@ -143,6 +145,46 @@ func TestBuildArgvRequestModelBeatsPluginModel(t *testing.T) {
 	}
 	if strings.Contains(joined, "opus[1m]") {
 		t.Fatalf("buildArgv = %v, plugin default must not also appear", got)
+	}
+}
+
+func TestBuildArgvEffortPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		defaultVal string
+		requestVal string
+		want       string
+	}{
+		{name: "request wins", defaultVal: "high", requestVal: "medium", want: "medium"},
+		{name: "plugin fallback", defaultVal: "high", requestVal: "", want: "high"},
+		{name: "both empty", defaultVal: "", requestVal: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRunner(zerolog.Nop(), WithEffort(tt.defaultVal))
+			got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{"effort": tt.requestVal}})
+			joined := strings.Join(got, "\x00")
+			if tt.want == "" {
+				if strings.Contains(joined, "--effort") {
+					t.Fatalf("buildArgv = %v, want no --effort", got)
+				}
+				return
+			}
+			if !strings.Contains(joined, "--effort\x00"+tt.want) {
+				t.Fatalf("buildArgv = %v, want --effort %s", got, tt.want)
+			}
+			if tt.defaultVal != "" && tt.requestVal != "" && strings.Contains(joined, "\x00"+tt.defaultVal+"\x00") {
+				t.Fatalf("buildArgv = %v, plugin default must not also appear", got)
+			}
+		})
+	}
+}
+
+func TestBuildArgvUsesBuiltInEffortDefault(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{"effort": ""}})
+	if !strings.Contains(strings.Join(got, "\x00"), "--effort\x00"+defaultClaudeEffort) {
+		t.Fatalf("buildArgv = %v, want built-in --effort %s", got, defaultClaudeEffort)
 	}
 }
 

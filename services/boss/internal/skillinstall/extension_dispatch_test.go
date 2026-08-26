@@ -71,6 +71,20 @@ var extensionDispatchRemedy = regexp.MustCompile(`(?i)skillPath`)
 // receive the descriptor directory and resolve relative extension resources from it.
 var extensionDispatchResourceBase = regexp.MustCompile(`(?i)(?:relative\s+extension\s+resources\s+to\s+resolve|resolve\s+relative\s+extension\s+resources)\s+from ` + "`dir`")
 
+func assertDocPinFalsifiable(t *testing.T, source, token, replacement, label string) {
+	t.Helper()
+	if !strings.Contains(source, token) {
+		t.Fatalf("%s: source does not contain pinned token %q", label, token)
+	}
+	mutated := strings.ReplaceAll(source, token, replacement)
+	if mutated == source {
+		t.Fatalf("%s: mutation did not change the source", label)
+	}
+	if strings.Contains(mutated, token) {
+		t.Fatalf("%s: pinned token %q survived its falsifying mutation", label, token)
+	}
+}
+
 // extensionDiscoverySkippedClause marks a passage that tells the reader to record the BROKEN half
 // of a discovery's `skipped` array, keyed on the helper's own `deliberate` classification.
 //
@@ -742,6 +756,20 @@ func TestExtensionContractDocumentsPathLoading(t *testing.T) {
 			t.Errorf("docs/skills/extension-contract.md must document %q — extension authors and core authors both build against this file", want)
 		}
 	}
+	assertDocPinFalsifiable(
+		t,
+		flatContract,
+		"disable-model-invocation: true",
+		"disable-model-invocation: false",
+		"docs/skills/extension-contract.md path-loading model-invocation pin",
+	)
+	assertDocPinFalsifiable(
+		t,
+		flatContract,
+		"relative extension resources",
+		"adjacent extension resources",
+		"docs/skills/extension-contract.md relative-resource pin",
+	)
 
 	// BOS-693: the contract is the source of truth cores are authored against, so the
 	// partial-failure rule has to be stated HERE, not only in the cores that got fixed. Both
@@ -910,6 +938,13 @@ func TestExtensionContractDefinesWorkerBrief(t *testing.T) {
 			t.Errorf("the worker-brief section must contain %q: %s", want.token, want.why)
 		}
 	}
+	assertDocPinFalsifiable(
+		t,
+		flatSection,
+		"passed through unchanged",
+		"rewritten before dispatch",
+		"docs/skills/extension-contract.md worker-brief envelope pin",
+	)
 
 	// The envelope's stable shape is what extension authors build against; the brief must not be
 	// documented as replacing or extending it.
@@ -1133,11 +1168,10 @@ var phaseRRoundDispatchSerial = regexp.MustCompile(`(?i)dispatch(?:es|ing)?\s+(?
 // exempt the bug it contains.
 var phaseRRoundDispatchNegated = regexp.MustCompile(`(?i)\b(?:never|not|no longer|rather than|instead of)\s+(?:sequential(?:ly)?|serial(?:ly)?|one at a time|one-at-a-time|one by one|one-by-one|singly|in turn)\b`)
 
-// phaseRRoundDispatchGoverns requires the parallel instruction to GOVERN the descriptors rather
-// than merely appear in the passage. Without it the gate is satisfied by any nearby mention of
-// parallelism — including a parenthetical that contrasts Phase 1's parallel lenses while telling
-// the reader to take rounds singly, which is the mutant that defeated the token-only form.
-var phaseRRoundDispatchGoverns = regexp.MustCompile(`(?i)dispatch\s+\*\*every\*\*\s+discovered\s+round\s+descriptor\s+\*\*in\s+parallel\*\*`)
+// phaseRRoundDispatchGoverns requires the batch instruction to GOVERN the discovered round roster
+// rather than merely mention parallelism nearby. Without it the gate is satisfied by any loose
+// "parallel" token while the passage still works through the descriptors singly.
+var phaseRRoundDispatchGoverns = regexp.MustCompile("(?i)build one roster node per discovered round descriptor.*one `Task` call per member of wave 1")
 
 // phaseRTier1Passage returns the Tier-1 round-extension section of a `boss-review` payload, with
 // whitespace collapsed so a prose gate pins words rather than the line breaks prettier chose. The
@@ -1177,8 +1211,14 @@ func TestPublishedCoresDispatchRoundExtensionsInParallel(t *testing.T) {
 			passage := phaseRTier1Passage(t, fmt.Sprintf("%s %s", label, path), string(data))
 
 			for _, want := range []struct{ token, why string }{
-				{"in parallel", "the rounds must be dispatched concurrently, as Phase 1 already dispatches its lenses"},
-				{"one message, multiple `Task` calls", "parallel must be spelled out as the Phase 1 mechanism, not left to interpretation"},
+				{"`id` and `outPath`", "each round must have a stable batch id and an isolated artifact path before dispatch"},
+				{"`$RUN_TMP/dispatch-batches.json`", "the declared parallel site must leave an auditable batch roster"},
+				{"`planBatches`", "the roster must be planned through the shared batching helper"},
+				{"admitted roster size as `maxWidth`", "round batches must not silently clamp below the admitted reviewer count"},
+				{"one message containing one `Task` call per member of wave 1", "parallel must be spelled out as same-message Task dispatch, not left to interpretation"},
+				{"terminal artifact is confirmed", "later waves must wait for artifacts, not just launcher return"},
+				{"dispatch batch <n>/<m>: <ids>", "the ledger must record the actual issued wave roster for auditability"},
+				{"Parallel here means several **awaited** `Task` calls issued together", "the prose must distinguish awaited same-message dispatch from backgrounding"},
 				{"after the dispatches return", "the `(order, name)` sort must be scoped to post-return assembly"},
 				{"`(order, name)`", "the deterministic ledger/report ordering must still be named"},
 				// Load-bearing clauses concurrency depends on. Each is counted elsewhere as a
@@ -1202,9 +1242,16 @@ func TestPublishedCoresDispatchRoundExtensionsInParallel(t *testing.T) {
 					t.Errorf("%s %s: Phase R Tier 1 must contain %q: %s", label, path, want.token, want.why)
 				}
 			}
+			assertDocPinFalsifiable(
+				t,
+				passage,
+				"do not merge or write the ledger as they arrive",
+				"merge each ledger entry as it arrives",
+				fmt.Sprintf("%s %s Phase R ordered-merge pin", label, path),
+			)
 
 			if !phaseRRoundDispatchGoverns.MatchString(passage) {
-				t.Errorf("%s %s: Phase R Tier 1 must instruct dispatching **every** discovered round descriptor **in parallel** — the tokens above can all be supplied by prose that merely mentions parallelism while still dispatching the rounds one by one", label, path)
+				t.Errorf("%s %s: Phase R Tier 1 must govern the discovered round roster with a same-message Task batch — the tokens above can all be supplied by prose that merely mentions batching while still dispatching the rounds one by one", label, path)
 			}
 
 			// Drop the sanctioned negated forms before looking for a serial instruction, so

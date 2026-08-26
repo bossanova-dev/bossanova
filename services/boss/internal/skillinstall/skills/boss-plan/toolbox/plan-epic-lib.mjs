@@ -536,6 +536,13 @@ export function parseEpicChildMarker(description) {
   return m ? m[1] : null
 }
 
+function descriptionAppearsTruncated(description) {
+  return (
+    typeof description === 'string' &&
+    description.includes('(truncated, use get_issue for full description)')
+  )
+}
+
 // LEGACY, READ-ONLY. Two inline `boss-plan-epic-spec` markers that earlier
 // builds hid in the epic PARENT's description. NOTHING WRITES EITHER ANY MORE —
 // the spec now lives in its own plain-JSON attachment (see serializeEpicSpec) —
@@ -896,7 +903,12 @@ export function reconcileEpicChildren(spec, liveChildren) {
     const title = live?.title
     const key = parseEpicChildMarker(live?.description)
     if (key == null) {
-      classified.push({ type: 'unmarked', id, title })
+      classified.push({
+        type: 'unmarked',
+        id,
+        title,
+        descriptionTruncated: descriptionAppearsTruncated(live?.description),
+      })
       continue
     }
     if (liveKeyOwners.has(key)) {
@@ -920,8 +932,14 @@ export function reconcileEpicChildren(spec, liveChildren) {
   const adopted = classified.filter((c) => c.type === 'adopted').map(({ key, id }) => ({ key, id }))
 
   const markerErrors = []
-  for (const u of unmarked) {
-    markerErrors.push(`live child "${u.id}" carries no epic-child marker`)
+  for (const u of classified.filter((c) => c.type === 'unmarked')) {
+    if (u.descriptionTruncated) {
+      markerErrors.push(
+        `live child "${u.id}" description appears truncated — reconcile against get_issue payloads, not list_issues`,
+      )
+    } else {
+      markerErrors.push(`live child "${u.id}" carries no epic-child marker`)
+    }
   }
   for (const key of duplicateKeys) {
     markerErrors.push(`multiple live children share epic-child marker key "${key}"`)

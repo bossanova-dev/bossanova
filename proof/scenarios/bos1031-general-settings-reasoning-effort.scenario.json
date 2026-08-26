@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "title": "BOS-1031 General Settings reasoning effort",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "General Settings shows the Claude reasoning effort row",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings menu" },
+        { "key": "g", "caption": "Open General Settings from the Settings menu" },
+        {
+          "waitFor": "Reasoning effort",
+          "timeoutMs": 10000,
+          "caption": "General Settings lists the Claude reasoning effort row"
+        },
+        {
+          "expect": [
+            {
+              "text": "Reasoning effort",
+              "match": "normalized",
+              "label": "reasoning effort setting label"
+            },
+            {
+              "text": "high",
+              "match": "normalized",
+              "label": "claude effort default is visible"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "The reasoning effort row cycles through enum values",
+      "steps": [
+        { "key": "down", "caption": "Move to poll interval" },
+        { "key": "down", "caption": "Move to daemon name" },
+        { "key": "down", "caption": "Move to automatic account rotation" },
+        { "key": "down", "caption": "Move to desktop notifications" },
+        { "key": "down", "caption": "Move to the first agent enabled row" },
+        { "key": "down", "caption": "Move to the Model row" },
+        { "key": "down", "caption": "Select the Reasoning effort row" },
+        {
+          "waitFor": "Reasoning effort: high (default)",
+          "timeoutMs": 10000,
+          "caption": "The enum row can reset to the configured default"
+        },
+        { "key": "enter", "caption": "Cycle to low" },
+        { "key": "enter", "caption": "Cycle to medium" },
+        {
+          "waitFor": "Reasoning effort: medium",
+          "timeoutMs": 10000,
+          "caption": "The enum row cycles through concrete effort levels"
+        },
+        {
+          "expect": [
+            {
+              "text": "Reasoning effort: medium",
+              "match": "normalized",
+              "label": "medium effort selectable level"
+            },
+            {
+              "text": "high (default)",
+              "match": "normalized",
+              "label": "default effort value is visible"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

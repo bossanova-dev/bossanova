@@ -54,7 +54,7 @@ func TestRunnerEndToEndWithFakeCodex(t *testing.T) {
 	}))
 
 	plan := "say hi"
-	sid, err := r.Start(context.Background(), dir, plan, nil, "sess-1", logPath, "", nil)
+	sid, err := r.Start(context.Background(), dir, plan, nil, "sess-1", logPath, "", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestRunnerResumePropagatesArgvAndStdin(t *testing.T) {
 
 	resumeID := "uuid-resume-target"
 	followUp := "now do step two"
-	sid, err := r.Start(context.Background(), dir, followUp, &resumeID, "ignored-hint", logPath, "", nil)
+	sid, err := r.Start(context.Background(), dir, followUp, &resumeID, "ignored-hint", logPath, "", "", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestRunnerResumePropagatesArgvAndStdin(t *testing.T) {
 		t.Fatalf("read argv log: %v", err)
 	}
 	argv := strings.Split(strings.TrimSpace(string(argvBytes)), "\n")
-	wantArgv := []string{"exec", "resume", resumeID, "--json", "--skip-git-repo-check"}
+	wantArgv := []string{"exec", "resume", resumeID, "--json", "--skip-git-repo-check", "-c", "model_reasoning_effort=" + defaultCodexEffort}
 	if !reflect.DeepEqual(argv, wantArgv) {
 		t.Errorf("argv = %v, want %v", argv, wantArgv)
 	}

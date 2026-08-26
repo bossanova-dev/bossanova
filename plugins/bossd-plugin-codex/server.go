@@ -85,6 +85,14 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 					DefaultValue: "",
 				},
 				{
+					Key:           "effort",
+					Label:         "Reasoning effort",
+					Description:   "Codex model_reasoning_effort override. Defaults to medium.",
+					Type:          bossanovav1.UserSettingType_USER_SETTING_TYPE_ENUM,
+					AllowedValues: []string{"", "low", "medium", "high", "xhigh"},
+					DefaultValue:  "medium",
+				},
+				{
 					Key:          "dangerously_bypass_approvals_and_sandbox",
 					Label:        "Bypass approvals & sandbox (dangerous)",
 					Description:  "Pass --dangerously-bypass-approvals-and-sandbox to codex. Overrides sandbox/approval. Use only in trusted worktrees.",
@@ -123,11 +131,12 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 //     repo-level `.codex/config.toml` relative to its working directory, so a
 //     preflight launched without it profiles a runtime that never saw the MCP
 //     servers the repo declares for itself (BOS-865).
-func (s *Server) runtimeTarget(reqModel, workDir string, extraEnv map[string]string) codexRuntimeTarget {
+func (s *Server) runtimeTarget(reqModel, reqEffort, workDir string, extraEnv map[string]string) codexRuntimeTarget {
 	home, _ := codexConfigDirForEnv(extraEnv)
 	return codexRuntimeTarget{
 		Home:     home,
 		Model:    resolveCodexModel(reqModel, s.runner.model),
+		Effort:   resolveCodexEffort(reqEffort, s.runner.effort),
 		WorkDir:  workDir,
 		ExtraEnv: extraEnv,
 	}
@@ -137,7 +146,7 @@ func (s *Server) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.Pref
 	return s.preflightHeadlessCapabilityProfile(
 		ctx,
 		req.GetHeadlessCapabilityProfile(),
-		s.runtimeTarget(req.GetModel(), req.GetWorkDir(), req.GetExtraEnv()),
+		s.runtimeTarget(req.GetModel(), req.GetEffort(), req.GetWorkDir(), req.GetExtraEnv()),
 	)
 }
 
@@ -155,7 +164,7 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 	if _, err := s.preflightHeadlessCapabilityProfile(
 		ctx,
 		req.GetHeadlessCapabilityProfile(),
-		s.runtimeTarget(req.GetModel(), req.GetWorkDir(), extraEnv),
+		s.runtimeTarget(req.GetModel(), req.GetEffort(), req.GetWorkDir(), extraEnv),
 	); err != nil {
 		return nil, err
 	}
@@ -165,7 +174,7 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 	// codex process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths. (Mirrors the claude plugin
 	// fix in services/bossd's host_service.)
-	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), extraEnv)
+	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), extraEnv)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -312,6 +321,9 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		}
 		if model := resolveCodexModel(req.GetModel(), s.runner.model); model != "" {
 			args = append(args, "--model", model)
+		}
+		if effort := resolveCodexEffort(req.GetEffort(), s.runner.effort); effort != "" {
+			args = append(args, "-c", "model_reasoning_effort="+effort)
 		}
 	}
 	initialInput := codexInitialInput(req)

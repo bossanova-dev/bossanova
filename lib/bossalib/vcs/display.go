@@ -73,35 +73,14 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	}
 
 	// Analyze CI checks.
-	hasRunning := false
-	hasFailed := false
-	hasChecks := len(checks) > 0
-
-	for _, c := range checks {
-		if c.Status != CheckStatusCompleted {
-			hasRunning = true
-			continue
-		}
-		if c.Conclusion == nil {
-			continue
-		}
-		// Treat anything that completed but didn't pass cleanly as a
-		// failure for repair-trigger purposes. CANCELLED most commonly
-		// means "the workflow was cancelled because a sibling job failed
-		// first" — GitHub itself flags such PRs as mergeStateStatus
-		// UNSTABLE — and TIMED_OUT is unambiguously a failure to deliver
-		// a green check. NEUTRAL and SKIPPED stay non-failures: they
-		// signal "intentionally not run" and don't block.
-		switch *c.Conclusion {
-		case CheckConclusionFailure, CheckConclusionCancelled, CheckConclusionTimedOut:
-			hasFailed = true
-		case CheckConclusionSuccess, CheckConclusionNeutral, CheckConclusionSkipped:
-			// non-failures — explicit no-op to satisfy exhaustive linter
-		}
-	}
+	checkVerdict := EvaluateChecks(pr.HeadSHA, checks, nil)
+	hasFailed := checkVerdict.State == CheckVerdictFailing
+	checksChecking := checkVerdict.State == CheckVerdictPending ||
+		checkVerdict.Reason == CheckVerdictReasonUnreadable ||
+		checkVerdict.Reason == CheckVerdictReasonUnclassified
 
 	// If all checks are complete and some failed, it's failing.
-	if hasChecks && !hasRunning && hasFailed {
+	if hasFailed {
 		return DisplayInfo{Status: DisplayStatusFailing}
 	}
 
@@ -133,8 +112,8 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	}
 	sort.Strings(changesRequestedBy)
 
-	// If checks are still running, it's checking (with metadata flags for styling).
-	if hasRunning {
+	// If checks are still running or unclassifiable, it's checking (with metadata flags for styling).
+	if checksChecking {
 		return DisplayInfo{Status: DisplayStatusChecking, HasFailures: hasFailed, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy}
 	}
 
@@ -155,7 +134,7 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	}
 
 	// All checks green, no conflicts, no outstanding reviews = passing.
-	if hasChecks && !hasFailed && !mergeableUnknown {
+	if checkVerdict.IsGreen() && !mergeableUnknown {
 		return DisplayInfo{Status: DisplayStatusPassing}
 	}
 

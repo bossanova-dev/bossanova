@@ -25,7 +25,9 @@ import path from 'node:path'
 // tree actually contains the helper instead of hard-wiring the Claude path — a
 // Codex-only install has no .claude tree, so shelling the Claude path would ENOENT
 // before any commit tags are injected. Reachable in a cron worktree; the same helper the
-// cron siblings use.
+// cron siblings use. TAG_INJECT_REL deliberately names the real installed namespace path:
+// this executable resolver checks both candidate files before use, so it is exempt from
+// the Markdown-only published-core namespace-literal gate.
 const TAG_INJECT_REL = 'skills/bossanova/boss-finalize/add-pr-numbers.sh'
 const TAG_INJECT_CANDIDATES = Object.freeze([
   path.join(os.homedir(), '.claude', TAG_INJECT_REL),

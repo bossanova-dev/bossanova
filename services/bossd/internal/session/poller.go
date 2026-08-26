@@ -285,26 +285,24 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 		return
 	}
 
-	if len(checks) > 0 {
-		overall := aggregateChecks(checks)
-		switch overall {
-		case vcs.ChecksOverallPassed:
-			if emitIf(machine.ChecksPassed, vcs.ChecksPassed{PRID: prID}) {
-				return
-			}
-		case vcs.ChecksOverallFailed:
-			var failed []vcs.CheckResult
-			for _, c := range checks {
-				if c.Conclusion != nil && *c.Conclusion == vcs.CheckConclusionFailure {
-					failed = append(failed, c)
-				}
-			}
-			if emitIf(machine.ChecksFailed, vcs.ChecksFailed{PRID: prID, FailedChecks: failed, HeadSHA: prStatus.HeadSHA}) {
-				return
-			}
-		default:
-			// ChecksOverallPending — do nothing, wait for next poll.
+	verdict := vcs.EvaluateChecks(prStatus.HeadSHA, checks, nil)
+	switch verdict.State {
+	case vcs.CheckVerdictGreen:
+		if emitIf(machine.ChecksPassed, vcs.ChecksPassed{PRID: prID, HeadSHA: verdict.HeadSHA, Demonstrated: verdict.DemonstratedPass()}) {
+			return
 		}
+	case vcs.CheckVerdictFailing:
+		var failed []vcs.CheckResult
+		for _, c := range checks {
+			if c.Conclusion != nil && isFailingCheckConclusion(*c.Conclusion) {
+				failed = append(failed, c)
+			}
+		}
+		if emitIf(machine.ChecksFailed, vcs.ChecksFailed{PRID: prID, FailedChecks: failed, HeadSHA: prStatus.HeadSHA}) {
+			return
+		}
+	case vcs.CheckVerdictPending, vcs.CheckVerdictUnknown:
+		// Do nothing, wait for next poll.
 	}
 
 	if reviewSubmittedState(prStatus.LatestReviewState) &&
@@ -339,20 +337,13 @@ func (p *Poller) emit(ctx context.Context, ch chan<- SessionEvent, sessionID str
 	}
 }
 
-// aggregateChecks computes the overall check status from individual results.
-func aggregateChecks(checks []vcs.CheckResult) vcs.ChecksOverall {
-	allCompleted := true
-	for _, c := range checks {
-		if c.Status != vcs.CheckStatusCompleted {
-			allCompleted = false
-			continue
-		}
-		if c.Conclusion != nil && *c.Conclusion == vcs.CheckConclusionFailure {
-			return vcs.ChecksOverallFailed
-		}
+func isFailingCheckConclusion(c vcs.CheckConclusion) bool {
+	switch c {
+	case vcs.CheckConclusionFailure, vcs.CheckConclusionCancelled, vcs.CheckConclusionTimedOut:
+		return true
+	case vcs.CheckConclusionSuccess, vcs.CheckConclusionNeutral, vcs.CheckConclusionSkipped:
+		return false
+	default:
+		return false
 	}
-	if allCompleted {
-		return vcs.ChecksOverallPassed
-	}
-	return vcs.ChecksOverallPending
 }

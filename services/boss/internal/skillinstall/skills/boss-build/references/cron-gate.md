@@ -5,8 +5,8 @@ not part of a run). Register this **gate command** on the job (scheduler UI, `Ga
 PR #870) so the run only fires when there is a candidate, spending **zero** agent tokens otherwise:
 
 ```
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/bossanova/boss-build/toolbox"; fi
+BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
+if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
 node "$BOSS_BUILD_TOOLBOX/cron-gates/boss-build.mjs"
 ```
 

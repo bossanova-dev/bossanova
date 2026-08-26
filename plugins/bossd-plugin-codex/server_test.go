@@ -297,7 +297,7 @@ func TestGetInfoIncludesCodexUserSettings(t *testing.T) {
 		byKey[us.Key] = us
 	}
 
-	for _, key := range []string{"sandbox", "approval", "model", "dangerously_bypass_approvals_and_sandbox"} {
+	for _, key := range []string{"sandbox", "approval", "model", "effort", "dangerously_bypass_approvals_and_sandbox"} {
 		if byKey[key] == nil {
 			t.Errorf("user setting %q missing from GetInfo", key)
 		}
@@ -346,6 +346,21 @@ func TestGetInfoIncludesCodexUserSettings(t *testing.T) {
 		}
 		if len(model.AllowedValues) != 0 {
 			t.Errorf("model.AllowedValues = %v, want empty (string-typed setting)", model.AllowedValues)
+		}
+	}
+
+	// effort: ENUM, "" first, codex reasoning efforts only, and no "max".
+	effort := byKey["effort"]
+	if effort != nil {
+		if effort.Type != bossanovav1.UserSettingType_USER_SETTING_TYPE_ENUM {
+			t.Errorf("effort.Type = %v, want USER_SETTING_TYPE_ENUM", effort.Type)
+		}
+		if effort.DefaultValue != "medium" {
+			t.Errorf("effort.DefaultValue = %q, want medium", effort.DefaultValue)
+		}
+		wantEffort := []string{"", "low", "medium", "high", "xhigh"}
+		if !equalStrings(effort.AllowedValues, wantEffort) {
+			t.Errorf("effort.AllowedValues = %v, want %v", effort.AllowedValues, wantEffort)
 		}
 	}
 }
@@ -406,7 +421,7 @@ func TestBuildInteractiveCommandKeepsTTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand(resume): %v", err)
 	}
-	want := []string{"codex", "resume", "uuid-9"}
+	want := []string{"codex", "resume", "uuid-9", "-c", "model_reasoning_effort=" + defaultCodexEffort}
 	if !equalStrings(respR.Argv, want) {
 		t.Errorf("resume argv = %v, want %v", respR.Argv, want)
 	}
@@ -555,6 +570,46 @@ func TestCodexBuildArgv_RequestModelWins(t *testing.T) {
 	joined := strings.Join(got, "\x00")
 	if !strings.Contains(joined, "--model\x00gpt-5-codex") {
 		t.Fatalf("buildArgv %v should use request model over env default", got)
+	}
+}
+
+func TestCodexBuildInteractiveCommand_EffortPrecedence(t *testing.T) {
+	s := newTestServer(t, WithEffort("high"))
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		Effort:    "medium",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.Argv, "\x00")
+	if !strings.Contains(joined, "-c\x00model_reasoning_effort=medium") {
+		t.Fatalf("argv %v should use request effort over env default", resp.Argv)
+	}
+	if strings.Contains(joined, "model_reasoning_effort=high") {
+		t.Fatalf("argv %v should not contain env default when request effort set", resp.Argv)
+	}
+
+	resp, err = s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(resp.Argv, "\x00")
+	if !strings.Contains(joined, "-c\x00model_reasoning_effort=high") {
+		t.Fatalf("argv %v should fall back to env default effort", resp.Argv)
+	}
+
+	s = newTestServer(t)
+	resp, err = s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(resp.Argv, "\x00"), "-c\x00model_reasoning_effort="+defaultCodexEffort) {
+		t.Fatalf("argv %v want built-in default effort %s", resp.Argv, defaultCodexEffort)
 	}
 }
 

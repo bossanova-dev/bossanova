@@ -341,7 +341,7 @@ function diagnose(run) {
   const parts = []
   if (run.signal) parts.push(`child killed by signal ${run.signal}`)
   const stderr = (run.stderr ?? '').trim()
-  if (stderr) parts.push(`stderr: ${stderr.slice(0, 400)}`)
+  if (stderr) parts.push(`stderr: ${stderr.slice(0, 400)}`) // gate-region-ok: failure-message display truncation, not a section gate
   parts.push(FLOOR_ADVICE)
   return parts.join(' | ')
 }

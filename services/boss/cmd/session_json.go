@@ -35,6 +35,8 @@ type sessionJSON struct {
 	State  string `json:"state"`
 	RepoID string `json:"repo_id"`
 	Agent  string `json:"agent"`
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
 	// PrNumber is null rather than 0 for a session with no PR, so a caller can
 	// tell "no PR yet" from a hypothetical PR #0.
 	PrNumber  *int32  `json:"pr_number"`
@@ -65,11 +67,15 @@ type sessionDetailJSON struct {
 	// vocabulary as the TUI and `boss session checks` ("passing", "failing", …).
 	DisplayStatus string `json:"display_status"`
 	// LastCheckState is the ChecksOverall enum name with its prefix trimmed
-	// ("PENDING" / "PASSED" / "FAILED").
-	LastCheckState string             `json:"last_check_state"`
-	ArchivedAt     string             `json:"archived_at"`
-	SetupError     string             `json:"setup_error"`
-	LastRepair     *sessionRepairJSON `json:"last_repair"`
+	// ("PENDING" / "PASSED" / "FAILED"). UNSPECIFIED means the daemon has no
+	// verdict demonstrated at the current head.
+	LastCheckState         string             `json:"last_check_state"`
+	LastCheckStateObserved string             `json:"last_check_state_observed"`
+	LastCheckStateHeadSHA  string             `json:"last_check_state_head_sha"`
+	LastCheckStateAt       string             `json:"last_check_state_at"`
+	ArchivedAt             string             `json:"archived_at"`
+	SetupError             string             `json:"setup_error"`
+	LastRepair             *sessionRepairJSON `json:"last_repair"`
 }
 
 // sessionRepairJSON mirrors the "Last repair:" line runShow prints. It is nil
@@ -92,6 +98,8 @@ func newSessionRowJSON(s *pb.Session) sessionJSON {
 		State:               strings.TrimPrefix(s.GetState().String(), "SESSION_STATE_"),
 		RepoID:              s.GetRepoId(),
 		Agent:               s.GetAgentName(),
+		Model:               s.GetEffectiveModel(),
+		Effort:              s.GetEffectiveEffort(),
 		PrURL:               s.GetPrUrl(),
 		Branch:              s.GetBranchName(),
 		CreatedAt:           rfc3339OrEmpty(s.GetCreatedAt()),
@@ -111,16 +119,19 @@ func newSessionRowJSON(s *pb.Session) sessionJSON {
 
 func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 	detail := sessionDetailJSON{
-		sessionJSON:     newSessionRowJSON(s),
-		RepoDisplayName: s.GetRepoDisplayName(),
-		BaseBranch:      s.GetBaseBranch(),
-		WorktreePath:    s.GetWorktreePath(),
-		AccountID:       s.GetAccountId(),
-		AccountLabel:    s.GetAccountLabel(),
-		DisplayStatus:   displayStatusName(s.GetDisplayStatus()),
-		LastCheckState:  strings.TrimPrefix(s.GetLastCheckState().String(), "CHECKS_OVERALL_"),
-		ArchivedAt:      rfc3339OrEmpty(s.GetArchivedAt()),
-		SetupError:      s.GetSetupError(),
+		sessionJSON:            newSessionRowJSON(s),
+		RepoDisplayName:        s.GetRepoDisplayName(),
+		BaseBranch:             s.GetBaseBranch(),
+		WorktreePath:           s.GetWorktreePath(),
+		AccountID:              s.GetAccountId(),
+		AccountLabel:           s.GetAccountLabel(),
+		DisplayStatus:          displayStatusName(s.GetDisplayStatus()),
+		LastCheckState:         strings.TrimPrefix(s.GetLastCheckState().String(), "CHECKS_OVERALL_"),
+		LastCheckStateObserved: strings.TrimPrefix(s.GetLastCheckStateObserved().String(), "CHECKS_OVERALL_"),
+		LastCheckStateHeadSHA:  s.GetLastCheckStateHeadSha(),
+		LastCheckStateAt:       rfc3339OrEmpty(s.GetLastCheckStateAt()),
+		ArchivedAt:             rfc3339OrEmpty(s.GetArchivedAt()),
+		SetupError:             s.GetSetupError(),
 	}
 	if s.GetLastRepairStartedAt() != nil || s.GetLastRepairRunnerError() != "" || s.GetLastRepairExitError() != "" {
 		detail.LastRepair = &sessionRepairJSON{

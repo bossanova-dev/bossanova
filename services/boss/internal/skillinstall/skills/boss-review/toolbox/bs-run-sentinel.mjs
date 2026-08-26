@@ -33,6 +33,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 export const STALE_RUN_DIR_TTL_MS = 24 * 60 * 60 * 1000
+export const BOSS_PLAN_RUN_SCRATCH_PREFIXES = ['boss-plan-run.', 'boss-plan-notes.']
 
 // The byte-identical REPAIR_RESULT vocabulary a repair-watch subagent may write.
 // This is the single source of truth the bs-sweep-security SKILL.md documents
@@ -229,7 +230,9 @@ export function reapStaleRunDirs(opts = {}) {
     /* Missing sentinel root is a clean no-op. */
   }
   try {
-    const runScratchNames = readdirSync(base).filter((name) => name.startsWith('boss-plan-run.'))
+    const runScratchNames = readdirSync(base).filter((name) =>
+      BOSS_PLAN_RUN_SCRATCH_PREFIXES.some((prefix) => name.startsWith(prefix)),
+    )
     reapEntries({ base, names: runScratchNames, now, ttlMs, exclude, onReport })
   } catch {
     /* Missing tmp root is a clean no-op. */

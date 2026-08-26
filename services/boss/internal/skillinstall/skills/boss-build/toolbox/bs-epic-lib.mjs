@@ -331,6 +331,180 @@ export function mergeBlockedExternalBlockers(
   return mergeBlockedExternalBlockersPure(ticket, graph, { clearedForMerge, clearedBlockers })
 }
 
+export const CHILD_LIVENESS_VERDICTS = new Set([
+  'alive',
+  'environmental-death',
+  'agent-blocked',
+  'wall-clock-expired',
+  'unknown',
+])
+
+export const CHILD_LIVENESS_ACTIONS = new Set([
+  'hold',
+  'resume',
+  'repair',
+  'fail-isolate',
+  'investigate',
+])
+
+const CHILD_ALIVE_CHAT_STATUSES = new Set(['waiting', 'working', 'question'])
+const CHILD_USAGE_LIMIT_CHAT_STATUSES = new Set(['limited'])
+const CHILD_UNKNOWN_CHAT_STATUSES = new Set(['unspecified'])
+const AGENT_STALLED_ATTENTION_REASONS = new Set(['agent-stalled', 'attention-reason-agent-stalled'])
+
+const CHAT_STATUS_NUMBERS = new Map([
+  [0, 'unspecified'],
+  [1, 'working'],
+  [2, 'idle'],
+  [3, 'stopped'],
+  [4, 'question'],
+  [5, 'limited'],
+  [6, 'waiting'],
+])
+
+const SESSION_STATE_NUMBERS = new Map([[10, 'blocked']])
+
+function normalizeClassifierToken(value) {
+  return typeof value === 'string'
+    ? value
+        .trim()
+        .toLowerCase()
+        .replace(/[_\s]+/g, '-')
+    : null
+}
+
+function normalizeEnumToken(value, { numericMap, prefixes }) {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return numericMap.get(value) ?? null
+  }
+  const token = normalizeClassifierToken(value)
+  if (!token) return null
+  if (/^\d+$/.test(token)) return numericMap.get(Number(token)) ?? null
+  for (const prefix of prefixes) {
+    if (token.startsWith(prefix)) return token.slice(prefix.length)
+  }
+  return token
+}
+
+function normalizeChatStatusToken(value) {
+  return normalizeEnumToken(value, {
+    numericMap: CHAT_STATUS_NUMBERS,
+    prefixes: ['chat-status-'],
+  })
+}
+
+function normalizeSessionStateToken(value) {
+  return normalizeEnumToken(value, {
+    numericMap: SESSION_STATE_NUMBERS,
+    prefixes: ['session-state-'],
+  })
+}
+
+function tokenListHas(values, wanted) {
+  const list = Array.isArray(values)
+    ? values
+    : values === undefined || values === null
+      ? []
+      : [values]
+  return list.some((value) => wanted.has(normalizeClassifierToken(value)))
+}
+
+function childLiveness(verdict, action, reasons) {
+  return { verdict, action, reasons }
+}
+
+/**
+ * Classifies whether a boss-epic child is alive, environmentally dead and
+ * resumable, agent-blocked and repairable, wall-clock expired, or unknown.
+ *
+ * The caller reads the session/chat state and supplies already-classified plain
+ * data. This helper does no I/O, reads no clock, parses no transcript text, and
+ * mutates nothing. Missing evidence fails toward `unknown`/`investigate`, never
+ * toward repair.
+ *
+ * Inputs are intentionally driver-shaped:
+ *   - `chatStatus` — tracked chat status (`WAITING`, `CHAT_STATUS_WAITING`,
+ *     numeric enum `6`, ...)
+ *   - `chatStatusReadable` / `chatStatusUnreadable` — explicit unreadable status
+ *   - `sessionState` — aggregate session state (`BLOCKED`,
+ *     `SESSION_STATE_BLOCKED`, numeric enum `10`, ...)
+ *   - `lastMessageKind` / `lastMessageClass` — caller-classified last message:
+ *     `agent-conclusion`, `usage-limit`, `transient-api-error`, or absent
+ *   - `lastMessageIsAgentConclusion`, `lastMessageIsUsageLimit`,
+ *     `lastMessageIsTransientApiError` — boolean aliases for the same classes
+ *   - `headShaMoved`, `activityStale`, `attentionReasons` — corroborating-only
+ *     liveness proxies used for reasons, never as deciding death evidence
+ *   - `wallClockExceeded` — explicit epic budget expiry
+ *
+ * Rules, in order:
+ *   1. wall-clock expiry                       → wall-clock-expired/fail-isolate
+ *   2. WAITING/WORKING/QUESTION chat           → alive/hold
+ *   3. LIMITED or usage-cap last message       → environmental-death/resume
+ *   4. transient API/5xx last message          → environmental-death/resume
+ *   5. BLOCKED + agent-conclusion last message → agent-blocked/repair
+ *   6. unreadable/UNSPECIFIED/anything else    → unknown/investigate
+ */
+export function classifyChildLiveness({
+  chatStatus,
+  chatStatusReadable = true,
+  chatStatusUnreadable = false,
+  sessionState,
+  lastMessageKind,
+  lastMessageClass,
+  lastMessageIsAgentConclusion = false,
+  lastMessageIsUsageLimit = false,
+  lastMessageIsTransientApiError = false,
+  headShaMoved,
+  activityStale,
+  attentionReasons = [],
+  wallClockExceeded = false,
+} = {}) {
+  const reasons = []
+  const status = normalizeChatStatusToken(chatStatus)
+  const state = normalizeSessionStateToken(sessionState)
+  const messageKinds = [lastMessageKind, lastMessageClass]
+  const messageIsAgentConclusion =
+    lastMessageIsAgentConclusion || tokenListHas(messageKinds, new Set(['agent-conclusion']))
+  const messageIsUsageLimit =
+    lastMessageIsUsageLimit || tokenListHas(messageKinds, new Set(['usage-limit', 'usage-cap']))
+  const messageIsTransientApi =
+    lastMessageIsTransientApiError ||
+    tokenListHas(messageKinds, new Set(['transient-api-error', 'transient-api', 'api-5xx']))
+
+  if (headShaMoved === false) reasons.push('head-sha-unmoved')
+  if (activityStale === true) reasons.push('activity-stale')
+  if (tokenListHas(attentionReasons, AGENT_STALLED_ATTENTION_REASONS)) {
+    reasons.push('attention-agent-stalled')
+  }
+  if (chatStatusUnreadable || chatStatusReadable === false) reasons.push('chat-status-unreadable')
+  if (status) reasons.push(`chat-status:${status}`)
+  if (state) reasons.push(`session-state:${state}`)
+  if (messageIsUsageLimit) reasons.push('last-message:usage-limit')
+  if (messageIsTransientApi) reasons.push('last-message:transient-api-error')
+  if (messageIsAgentConclusion) reasons.push('last-message:agent-conclusion')
+
+  if (wallClockExceeded) {
+    reasons.push('wall-clock-exceeded')
+    return childLiveness('wall-clock-expired', 'fail-isolate', reasons)
+  }
+  if (CHILD_ALIVE_CHAT_STATUSES.has(status)) return childLiveness('alive', 'hold', reasons)
+  if (CHILD_USAGE_LIMIT_CHAT_STATUSES.has(status) || messageIsUsageLimit) {
+    return childLiveness('environmental-death', 'resume', reasons)
+  }
+  if (messageIsTransientApi) return childLiveness('environmental-death', 'resume', reasons)
+  if (state === 'blocked' && messageIsAgentConclusion) {
+    return childLiveness('agent-blocked', 'repair', reasons)
+  }
+  if (
+    CHILD_UNKNOWN_CHAT_STATUSES.has(status) ||
+    chatStatusUnreadable ||
+    chatStatusReadable === false
+  ) {
+    return childLiveness('unknown', 'investigate', reasons)
+  }
+  return childLiveness('unknown', 'investigate', reasons)
+}
+
 /** Default driver-side stall window: the repair lease is presumed dead after
  *  8 minutes of no head-SHA movement AND no repair-chat output. Matches the
  *  daemon-side constant; skew between the two is harmless (whichever trips

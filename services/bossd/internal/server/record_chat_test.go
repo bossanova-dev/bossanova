@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +15,9 @@ import (
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/agenttelemetry"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
@@ -272,6 +276,147 @@ func TestEnsureChatTmuxSession_ResolverErrorKeepsPaneAndRecordsChat(t *testing.T
 	}
 }
 
+func TestEnsureChatTmuxSessionRecordsInteractiveRunStart(t *testing.T) {
+	sess := &models.Session{
+		ID:              "s1",
+		RepoID:          "r1",
+		WorktreePath:    t.TempDir(),
+		AgentName:       "claude",
+		EffectiveModel:  "session-effective-model",
+		EffectiveEffort: "high",
+	}
+	chat := &models.AgentChat{
+		ID:             "c1",
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-interactive",
+		AgentName:      "codex",
+		Model:          "chat-model",
+	}
+	chats := &chatStoreFake{chat: chat}
+	tmuxer := &fakeTmuxClient{available: true}
+	runs := &fakeAgentRunStore{}
+	srv := newEnsureRollbackTestServer(t, chats, sess, tmuxer, nil)
+	srv.agentRuns = runs
+
+	if err := srv.ensureChatTmuxSession(context.Background(), chat, false); err != nil {
+		t.Fatalf("ensureChatTmuxSession: %v", err)
+	}
+	if len(runs.started) != 1 {
+		t.Fatalf("agent run starts = %d, want 1", len(runs.started))
+	}
+	wantOps := []string{"start:agent-interactive"}
+	if strings.Join(runs.ops, ",") != strings.Join(wantOps, ",") {
+		t.Fatalf("agent run ops = %v, want %v", runs.ops, wantOps)
+	}
+	got := runs.started[0]
+	if got.SessionID != sess.ID || got.AgentSessionID != chat.AgentSessionID || got.AgentName != chat.AgentName {
+		t.Fatalf("started run identity = %+v, want session/chat/agent identity", got)
+	}
+	if got.Model != "chat-model" {
+		t.Fatalf("started run model = %q, want chat model", got.Model)
+	}
+	if got.Effort != "medium" {
+		t.Fatalf("started run effort = %q, want medium", got.Effort)
+	}
+	if got.StartedAt.IsZero() {
+		t.Fatal("started run StartedAt is zero")
+	}
+}
+
+func TestRecordInteractiveAgentRunStartDetachesCallerCancellation(t *testing.T) {
+	sess := &models.Session{ID: "s1", AgentName: "codex", Model: "gpt-5"}
+	chat := &models.AgentChat{SessionID: sess.ID, AgentSessionID: "agent-detached", AgentName: "codex"}
+	runs := &fakeAgentRunStore{}
+	srv := &Server{agentRuns: runs, logger: zerolog.Nop()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	srv.recordInteractiveAgentRunStart(ctx, sess, chat, time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC))
+
+	if len(runs.started) != 1 {
+		t.Fatalf("agent run starts = %d, want 1", len(runs.started))
+	}
+	for i, err := range runs.ctxErrs {
+		if err != nil {
+			t.Fatalf("store ctx err[%d] = %v, want nil detached context", i, err)
+		}
+	}
+	for i, deadline := range runs.deadlines {
+		if deadline.IsZero() {
+			t.Fatalf("store deadline[%d] is zero, want bounded detached context", i)
+		}
+	}
+}
+
+func TestRecordInteractiveAgentRunStartTalliesStaleOpenRunBeforeStop(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	providerSessionID := "provider-stale-record"
+	rollout := filepath.Join(home, ".codex", "sessions", "2026", "08", "26", "rollout-2026-08-26T01-00-00-"+providerSessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join([]string{
+		`{"timestamp":"2026-08-26T00:59:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":100,"reasoning_output_tokens":40}}}}`,
+		`{"timestamp":"2026-08-26T01:05:00Z","type":"item.completed","item":{"type":"custom_tool_call","name":"spawn_agent"}}`,
+		`{"timestamp":"2026-08-26T01:05:01Z","type":"item.completed","item":{"type":"custom_tool_call_output"}}`,
+		`{"timestamp":"2026-08-26T01:05:02Z","type":"item.completed","item":{"type":"assistant_message","text":"done"}}`,
+		`{"timestamp":"2026-08-26T01:05:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":112,"reasoning_output_tokens":45}}}}`,
+		`{"timestamp":"2026-08-26T01:11:00Z","type":"item.completed","item":{"type":"assistant_message","text":"replacement"}}`,
+		`{"timestamp":"2026-08-26T01:11:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":130,"reasoning_output_tokens":55}}}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	if err := os.WriteFile(bossalog.AgentLogFile(t.TempDir(), "agent-stale"), []byte("terminal text\n"), 0o600); err != nil {
+		t.Fatalf("write unused log: %v", err)
+	}
+	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
+	sess := &models.Session{ID: "s1", AgentName: "codex", WorktreePath: t.TempDir()}
+	chat := &models.AgentChat{SessionID: sess.ID, AgentSessionID: "agent-stale", ProviderSessionID: &providerSessionID, AgentName: "codex"}
+	originalTimeout := interactiveAgentRunRecordTimeout
+	interactiveAgentRunRecordTimeout = 50 * time.Millisecond
+	defer func() { interactiveAgentRunRecordTimeout = originalTimeout }()
+	runs := &fakeAgentRunStore{runs: []db.AgentRun{{
+		ID:             "old-run",
+		SessionID:      sess.ID,
+		AgentSessionID: chat.AgentSessionID,
+		StartedAt:      started,
+	}}, recordTelemetryHook: func(context.Context) {
+		time.Sleep(75 * time.Millisecond)
+	}}
+	srv := &Server{agentRuns: runs, logger: zerolog.Nop()}
+
+	srv.recordInteractiveAgentRunStart(context.Background(), sess, chat, started.Add(10*time.Minute))
+
+	wantOps := []string{"stoprun:old-run", "start:agent-stale"}
+	if strings.Join(runs.ops, ",") != strings.Join(wantOps, ",") {
+		t.Fatalf("agent run ops = %v, want %v", runs.ops, wantOps)
+	}
+	if len(runs.telemetry) != 1 {
+		t.Fatalf("telemetry writes = %d, want 1", len(runs.telemetry))
+	}
+	got := runs.telemetry[0]
+	if got.runID != "old-run" {
+		t.Fatalf("telemetry runID = %q, want old-run", got.runID)
+	}
+	if got.telemetry.ParentModelCallCount != 2 || got.telemetry.ToolCallCount != 1 || got.telemetry.DirectSubagentCount != 1 {
+		t.Fatalf("telemetry = %#v, want parent/tool/direct counts from stale rollout", got.telemetry)
+	}
+	if got.telemetry.OutputTokenCount == nil || *got.telemetry.OutputTokenCount != 12 {
+		t.Fatalf("output tokens = %v, want stale-window delta 12", got.telemetry.OutputTokenCount)
+	}
+	if got.telemetry.ReasoningTokenCount == nil || *got.telemetry.ReasoningTokenCount != 5 {
+		t.Fatalf("reasoning tokens = %v, want stale-window delta 5", got.telemetry.ReasoningTokenCount)
+	}
+	if gotErr := runs.ctxErrs[len(runs.ctxErrs)-1]; gotErr != nil {
+		t.Fatalf("replacement start ctx err = %v, want fresh context after stale cleanup", gotErr)
+	}
+	if _, err := agenttelemetry.CodexTranscriptPath(providerSessionID); err != nil {
+		t.Fatalf("CodexTranscriptPath(provider) = %v", err)
+	}
+}
+
 // TestEnsureChatTmuxSession_ProviderSessionIDWriteFailureKillsPane covers the
 // row write a "just fix the tmux_session_name write" patch would miss: it runs
 // before the name write, so its failure strands the pane just as thoroughly.
@@ -281,6 +426,8 @@ func TestEnsureChatTmuxSession_ProviderSessionIDWriteFailureKillsPane(t *testing
 	chats := &chatStoreFake{chat: chat, updateProviderErr: errors.New("boom")}
 	tmuxer := &fakeTmuxClient{available: true}
 	srv := newEnsureRollbackTestServer(t, chats, sess, tmuxer, &fakeInteractiveSessionResolver{sessionID: "rollout-1"})
+	runs := &fakeAgentRunStore{}
+	srv.agentRuns = runs
 
 	err := srv.ensureChatTmuxSession(context.Background(), chat, false)
 	if err == nil {
@@ -295,6 +442,9 @@ func TestEnsureChatTmuxSession_ProviderSessionIDWriteFailureKillsPane(t *testing
 	}
 	if tmuxer.hasSession {
 		t.Fatalf("tmux session still live after a failed provider id write — the pane leaked")
+	}
+	if len(runs.started) != 0 || len(runs.stopped) != 0 {
+		t.Fatalf("agent run writes = starts %v stops %v, want none before pane metadata persists", runs.started, runs.stopped)
 	}
 }
 

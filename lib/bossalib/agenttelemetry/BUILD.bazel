@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "agenttelemetry",
+    srcs = ["telemetry.go"],
+    importpath = "github.com/recurser/bossalib/agenttelemetry",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "agenttelemetry_test",
+    srcs = ["telemetry_test.go"],
+    embed = [":agenttelemetry"],
+)

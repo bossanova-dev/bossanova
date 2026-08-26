@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
@@ -87,6 +92,123 @@ func (m *mockVCSProvider) GetPRMergeCommit(_ context.Context, _ string, _ int) (
 }
 func (m *mockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
 	return []string{"merge", "squash", "rebase"}, nil
+}
+
+type fakeRunTelemetryStore struct {
+	mu               sync.Mutex
+	started          []db.AgentRun
+	stopped          []string
+	ops              []string
+	telemetry        db.AgentRunTelemetry
+	runID            string
+	err              error
+	startCtxCanceled bool
+}
+
+func (f *fakeRunTelemetryStore) Start(ctx context.Context, run db.AgentRun) (db.AgentRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startCtxCanceled = ctx.Err() != nil
+	if run.ID == "" {
+		run.ID = "run-1"
+	}
+	f.started = append(f.started, run)
+	f.ops = append(f.ops, "start:"+run.AgentSessionID)
+	return run, nil
+}
+
+func (f *fakeRunTelemetryStore) Stop(_ context.Context, agentSessionID, _ string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, agentSessionID)
+	f.ops = append(f.ops, "stop:"+agentSessionID)
+	return nil
+}
+
+func (f *fakeRunTelemetryStore) StopRun(_ context.Context, runID, _ string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, runID)
+	return nil
+}
+
+func (f *fakeRunTelemetryStore) RecordTelemetry(_ context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runID = runID
+	f.telemetry = telemetry
+	return f.err
+}
+
+func (f *fakeRunTelemetryStore) RecordTelemetryByAgentSessionID(_ context.Context, agentSessionID string, telemetry db.AgentRunTelemetry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runID = "agent:" + agentSessionID
+	f.telemetry = telemetry
+	return nil
+}
+
+func (f *fakeRunTelemetryStore) ReconcileOpen(context.Context, time.Time, []string) (int64, error) {
+	return 0, nil
+}
+
+func (f *fakeRunTelemetryStore) List(context.Context, db.AgentRunFilter) ([]db.AgentRun, error) {
+	return nil, nil
+}
+
+func (f *fakeRunTelemetryStore) Backfill(context.Context, db.AgentRunBackfillParams) (db.AgentRunBackfillSummary, error) {
+	return db.AgentRunBackfillSummary{}, nil
+}
+
+func TestRecordAgentRunStartDetachesCallerCancellation(t *testing.T) {
+	store := &fakeRunTelemetryStore{}
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.SetAgentRunStore(store)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	runID := srv.recordAgentRunStart(ctx, &models.Session{
+		ID:              "sess-1",
+		AgentName:       "codex",
+		EffectiveModel:  "gpt-5",
+		EffectiveEffort: "high",
+	}, "agent-1", time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC))
+	if runID == "" {
+		t.Fatal("recordAgentRunStart returned empty run id")
+	}
+	store.mu.Lock()
+	started := append([]db.AgentRun(nil), store.started...)
+	canceled := store.startCtxCanceled
+	store.mu.Unlock()
+	if canceled {
+		t.Fatal("recordAgentRunStart passed canceled context to store")
+	}
+	if len(started) != 1 || started[0].AgentSessionID != "agent-1" {
+		t.Fatalf("started = %#v, want one row for agent-1", started)
+	}
+}
+
+func TestRecordAgentRunStartClosesStaleOpenRowBeforeStart(t *testing.T) {
+	store := &fakeRunTelemetryStore{}
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.SetAgentRunStore(store)
+
+	runID := srv.recordAgentRunStart(t.Context(), &models.Session{
+		ID:        "sess-1",
+		AgentName: "codex",
+		Model:     "gpt-5",
+	}, "agent-stale", time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC))
+	if runID == "" {
+		t.Fatal("recordAgentRunStart returned empty run id")
+	}
+
+	store.mu.Lock()
+	ops := append([]string(nil), store.ops...)
+	store.mu.Unlock()
+	want := []string{"stop:agent-stale", "start:agent-stale"}
+	if strings.Join(ops, ",") != strings.Join(want, ",") {
+		t.Fatalf("agent run ops = %v, want %v", ops, want)
+	}
 }
 
 func TestHostServiceListOpenPRs(t *testing.T) {
@@ -1423,6 +1545,58 @@ func TestCompleteAgentRun_DuplicatePOSTWrongTokenAfterSignal(t *testing.T) {
 	}
 }
 
+func TestRecordRunTelemetryMapsInvalidChildCounts(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.SetAgentRunStore(&fakeRunTelemetryStore{err: errors.New("record agent run telemetry: child_model_call_count cannot be negative")})
+
+	_, err := srv.RecordRunTelemetry(t.Context(), &bossanovav1.RecordRunTelemetryRequest{
+		AgentRunId: "run-1",
+		Children: []*bossanovav1.AgentRunChildTelemetry{{
+			StartedAt:      timestamppb.New(time.Now()),
+			ModelCallCount: -1,
+		}},
+	})
+	if grpcstatus.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RecordRunTelemetry err = %v (%s), want InvalidArgument", err, grpcstatus.Code(err))
+	}
+}
+
+func TestRecordRunTelemetryMapsInvalidChildSpan(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.SetAgentRunStore(&fakeRunTelemetryStore{err: errors.New("record agent run telemetry: child stopped_at cannot be before started_at")})
+
+	_, err := srv.RecordRunTelemetry(t.Context(), &bossanovav1.RecordRunTelemetryRequest{
+		AgentRunId: "run-1",
+		Children: []*bossanovav1.AgentRunChildTelemetry{{
+			AgentSessionId: "child-1",
+			StartedAt:      timestamppb.New(time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)),
+			StoppedAt:      timestamppb.New(time.Date(2026, 8, 26, 0, 59, 0, 0, time.UTC)),
+		}},
+	})
+	if grpcstatus.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RecordRunTelemetry err = %v (%s), want InvalidArgument", err, grpcstatus.Code(err))
+	}
+}
+
+func TestRecordRunTelemetryRejectsChildMissingStartedAt(t *testing.T) {
+	runs := &fakeRunTelemetryStore{}
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.SetAgentRunStore(runs)
+
+	_, err := srv.RecordRunTelemetry(t.Context(), &bossanovav1.RecordRunTelemetryRequest{
+		AgentRunId: "run-1",
+		Children: []*bossanovav1.AgentRunChildTelemetry{{
+			AgentSessionId: "child-1",
+		}},
+	})
+	if grpcstatus.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RecordRunTelemetry err = %v (%s), want InvalidArgument", err, grpcstatus.Code(err))
+	}
+	if runs.runID != "" {
+		t.Fatalf("telemetry run ID = %q, want no write", runs.runID)
+	}
+}
+
 // TestCompleteAgentRun_ClearsActiveRunsWhenMatchingSession verifies that
 // CompleteAgentRun also clears the activeRuns entry for the originating
 // boss session when the agent_session_id matches the recorded one. Task 4
@@ -1559,7 +1733,7 @@ func TestSignalRunCompleteParksEarlyCompletionForPendingChatRun(t *testing.T) {
 	srv.SignalRunComplete(sessionID, agentSessionID, "early-exit")
 
 	// Registration lands after the signal; it must drain the parked result.
-	ch := srv.registerRunWithCompletionMode(sessionID, agentSessionID, "tok", chatRunCompletionExplicit)
+	ch := srv.registerRunWithCompletionMode(sessionID, agentSessionID, "tok", chatRunCompletionExplicit, "", time.Now())
 
 	select {
 	case res := <-ch:
@@ -2025,8 +2199,15 @@ func newChatRunTestServer(lc *fakeChatLifecycle, sessions ...*models.Session) *H
 }
 
 func TestStartChatRun_HappyPath(t *testing.T) {
-	lc := &fakeChatLifecycle{startResp: "agent-abc"}
+	var startReturningAt time.Time
+	lc := &fakeChatLifecycle{startFunc: func(context.Context, string, session.ChatInput, string, session.HookOpts) (string, error) {
+		time.Sleep(20 * time.Millisecond)
+		startReturningAt = time.Now()
+		return "agent-abc", nil
+	}}
 	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
 
 	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
 		SessionId: "sess-1",
@@ -2049,6 +2230,12 @@ func TestStartChatRun_HappyPath(t *testing.T) {
 	if lc.lastReq.hookOpts.Token == "" {
 		t.Error("expected non-empty HookOpts.Token forwarded to StartTmuxChat")
 	}
+	if len(runs.started) != 1 {
+		t.Fatalf("started runs = %d, want 1", len(runs.started))
+	}
+	if runs.started[0].StartedAt.After(startReturningAt) {
+		t.Fatalf("recorded start = %s, want no later than StartTmuxChat return %s", runs.started[0].StartedAt, startReturningAt)
+	}
 
 	// All five run-state maps were populated under the agent_session_id.
 	srv.runMu.Lock()
@@ -2070,6 +2257,277 @@ func TestStartChatRun_HappyPath(t *testing.T) {
 	}
 	if got := srv.runSessionByID["agent-abc"]; got != "sess-1" {
 		t.Errorf("runSessionByID[agent-abc] = %q, want sess-1", got)
+	}
+}
+
+func TestStartChatRunRecordsRoutedChatAgentRun(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-abc"}
+	runs := &fakeRunTelemetryStore{}
+	srv := newChatRunTestServer(lc, &models.Session{
+		ID:              "sess-1",
+		AgentName:       "codex",
+		EffectiveModel:  "gpt-5",
+		EffectiveEffort: "high",
+		WorktreePath:    "/tmp/wt",
+	})
+	srv.agentClients["codex"] = newFakeAgentClient()
+	srv.agentChats = &fakeAgentChatStore{
+		chatsByAgent: map[string]*models.AgentChat{
+			"agent-abc": {
+				SessionID:      "sess-1",
+				AgentSessionID: "agent-abc",
+				AgentName:      "claude",
+				Model:          "claude-sonnet-4-5",
+			},
+		},
+	}
+	srv.SetAgentRunStore(runs)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:            "sess-1",
+		Command:              "/boss-repair",
+		Title:                "Repair: sess-1",
+		ResumeAgentSessionId: "agent-abc",
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if resp.GetAgentRunId() == "" {
+		t.Fatal("AgentRunId should be returned")
+	}
+
+	runs.mu.Lock()
+	started := append([]db.AgentRun(nil), runs.started...)
+	runs.mu.Unlock()
+	if len(started) != 1 {
+		t.Fatalf("started rows = %d, want 1", len(started))
+	}
+	run := started[0]
+	if run.AgentName != "claude" {
+		t.Fatalf("AgentName = %q, want claude", run.AgentName)
+	}
+	if run.Model != "claude-sonnet-4-5" {
+		t.Fatalf("Model = %q, want claude-sonnet-4-5", run.Model)
+	}
+	if run.Effort != session.EffectiveEffortForAgent("codex", "high", "claude") {
+		t.Fatalf("Effort = %q, want routed chat effort", run.Effort)
+	}
+	srv.runMu.Lock()
+	active := srv.activeRuns["sess-1"]
+	byID := srv.agentSessionByID["agent-abc"]
+	srv.runMu.Unlock()
+	if active.agentName != "claude" {
+		t.Fatalf("activeRuns agentName = %q, want claude", active.agentName)
+	}
+	if byID != "claude" {
+		t.Fatalf("agentSessionByID = %q, want claude", byID)
+	}
+}
+
+func TestWaitChatRunRecordsTelemetryFromTmuxLog(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-abc"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	srv.agentLogsDir = t.TempDir()
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+		Title:     "Repair: sess-1",
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	logPath := bossalog.AgentLogFile(srv.agentLogsDir, resp.GetAgentSessionId())
+	if err := os.WriteFile(logPath, []byte(`{"timestamp":"2026-08-26T01:00:00Z","type":"assistant","message":{"role":"assistant","usage":{"output_tokens":10}}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	childDir := filepath.Join(srv.agentLogsDir, resp.GetAgentSessionId(), "subagents")
+	if err := os.MkdirAll(childDir, 0o700); err != nil {
+		t.Fatalf("mkdir child dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.jsonl"), []byte(`{"timestamp":"2026-08-26T01:01:00Z","type":"assistant","message":{"role":"assistant","usage":{"output_tokens":7}}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write child log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.meta.json"), []byte(`{"parentAgentId":"agent-abc","spawnDepth":1}`), 0o600); err != nil {
+		t.Fatalf("write child meta: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	waitErr := make(chan error, 1)
+	go func() {
+		_, err := srv.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{AgentSessionId: resp.GetAgentSessionId()})
+		waitErr <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	if _, err := srv.CompleteAgentRun(t.Context(), resp.GetAgentSessionId(), lc.lastReq.hookOpts.Token, ""); err != nil {
+		t.Fatalf("CompleteAgentRun: %v", err)
+	}
+	if err := <-waitErr; err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+
+	if runs.runID != resp.GetAgentRunId() {
+		t.Fatalf("telemetry runID = %q, want %q", runs.runID, resp.GetAgentRunId())
+	}
+	if runs.telemetry.ParentModelCallCount != 1 || runs.telemetry.ChildModelCallCount != 1 || runs.telemetry.DirectSubagentCount != 1 {
+		t.Fatalf("telemetry = %#v, want parent/child/direct counts", runs.telemetry)
+	}
+	if len(runs.telemetry.Children) != 1 || runs.telemetry.Children[0].AgentSessionID != "child" {
+		t.Fatalf("children = %#v, want child sidecar", runs.telemetry.Children)
+	}
+}
+
+func TestWaitChatRunRecordsTelemetryFromClaudeTranscriptDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	worktreePath := filepath.Join(home, "wt")
+	lc := &fakeChatLifecycle{startResp: "agent-abc"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: worktreePath})
+	srv.agentLogsDir = t.TempDir()
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+		Title:     "Repair: sess-1",
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	currentParentAt := time.Now().Add(time.Second).UTC().Format(time.RFC3339Nano)
+	currentChildAt := time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
+	oldParentAt := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if err := os.WriteFile(bossalog.AgentLogFile(srv.agentLogsDir, resp.GetAgentSessionId()), []byte(`raw tmux output is not structured telemetry`+"\n"), 0o600); err != nil {
+		t.Fatalf("write daemon log: %v", err)
+	}
+	transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, resp.GetAgentSessionId())
+	if err != nil {
+		t.Fatalf("ClaudeTranscriptPath: %v", err)
+	}
+	childDir := filepath.Join(filepath.Dir(transcript), resp.GetAgentSessionId(), "subagents")
+	if err := os.MkdirAll(childDir, 0o700); err != nil {
+		t.Fatalf("mkdir child dir: %v", err)
+	}
+	if err := os.WriteFile(transcript, []byte(strings.Join([]string{
+		`{"timestamp":` + strconv.Quote(oldParentAt) + `,"type":"assistant","message":{"role":"assistant","usage":{"output_tokens":99}}}`,
+		`{"timestamp":` + strconv.Quote(currentParentAt) + `,"type":"assistant","message":{"role":"assistant","usage":{"output_tokens":10}}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.jsonl"), []byte(`{"timestamp":`+strconv.Quote(currentChildAt)+`,"type":"assistant","message":{"role":"assistant","usage":{"output_tokens":7}}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write child log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.meta.json"), []byte(`{"parentAgentId":"agent-abc","spawnDepth":1}`), 0o600); err != nil {
+		t.Fatalf("write child meta: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	waitErr := make(chan error, 1)
+	go func() {
+		_, err := srv.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{AgentSessionId: resp.GetAgentSessionId()})
+		waitErr <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	if _, err := srv.CompleteAgentRun(t.Context(), resp.GetAgentSessionId(), lc.lastReq.hookOpts.Token, ""); err != nil {
+		t.Fatalf("CompleteAgentRun: %v", err)
+	}
+	if err := <-waitErr; err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if runs.telemetry.ChildModelCallCount != 1 || len(runs.telemetry.Children) != 1 {
+		t.Fatalf("telemetry = %#v, want child sidecar from transcript directory", runs.telemetry)
+	}
+	if runs.telemetry.OutputTokenCount == nil || *runs.telemetry.OutputTokenCount != 17 {
+		t.Fatalf("output tokens = %v, want 17 from live log plus child sidecar", runs.telemetry.OutputTokenCount)
+	}
+}
+
+func TestWaitChatRunRecordsCodexTelemetryFromProviderRollouts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	lc := &fakeChatLifecycle{startResp: "logical-codex"}
+	srv := newChatRunTestServer(lc, &models.Session{
+		ID:           "sess-1",
+		AgentName:    "codex",
+		WorktreePath: filepath.Join(home, "wt"),
+	})
+	srv.agentClients["codex"] = newFakeAgentClient()
+	srv.agentLogsDir = t.TempDir()
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+		Title:     "Repair: sess-1",
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	providerSessionID := "provider-codex"
+	srv.agentChats = &fakeAgentChatStore{chatsByAgent: map[string]*models.AgentChat{
+		resp.GetAgentSessionId(): {
+			SessionID:         "sess-1",
+			AgentSessionID:    resp.GetAgentSessionId(),
+			ProviderSessionID: &providerSessionID,
+			AgentName:         "codex",
+			TmuxSessionName:   nil,
+			StartError:        nil,
+			AccountID:         nil,
+			Model:             "gpt-5",
+		},
+	}}
+	if err := os.WriteFile(bossalog.AgentLogFile(srv.agentLogsDir, resp.GetAgentSessionId()), []byte("raw terminal output\n"), 0o600); err != nil {
+		t.Fatalf("write daemon log: %v", err)
+	}
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "26")
+	if err := os.MkdirAll(rolloutDir, 0o700); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	oldAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	currentAt := time.Now().Add(time.Second).UTC().Format(time.RFC3339Nano)
+	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-2026-08-26T00-00-00-"+providerSessionID+".jsonl"), []byte(strings.Join([]string{
+		`{"timestamp":` + strconv.Quote(oldAt) + `,"type":"item.completed","item":{"type":"assistant_message","text":"old"}}`,
+		`{"timestamp":` + strconv.Quote(oldAt) + `,"type":"turn.completed","usage":{"output_tokens":99,"reasoning_output_tokens":44}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write old rollout: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-2026-08-26T01-00-00-"+providerSessionID+".jsonl"), []byte(strings.Join([]string{
+		`{"timestamp":` + strconv.Quote(currentAt) + `,"type":"item.completed","item":{"type":"custom_tool_call","name":"exec_command"}}`,
+		`{"timestamp":` + strconv.Quote(currentAt) + `,"type":"item.completed","item":{"type":"custom_tool_call_output"}}`,
+		`{"timestamp":` + strconv.Quote(currentAt) + `,"type":"item.completed","item":{"type":"assistant_message","text":"done"}}`,
+		`{"timestamp":` + strconv.Quote(currentAt) + `,"type":"turn.completed","usage":{"output_tokens":12,"reasoning_output_tokens":5}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write current rollout: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	waitErr := make(chan error, 1)
+	go func() {
+		_, err := srv.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{AgentSessionId: resp.GetAgentSessionId()})
+		waitErr <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	if _, err := srv.CompleteAgentRun(t.Context(), resp.GetAgentSessionId(), lc.lastReq.hookOpts.Token, ""); err != nil {
+		t.Fatalf("CompleteAgentRun: %v", err)
+	}
+	if err := <-waitErr; err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if runs.runID != resp.GetAgentRunId() {
+		t.Fatalf("telemetry runID = %q, want %q", runs.runID, resp.GetAgentRunId())
+	}
+	if runs.telemetry.ParentModelCallCount != 2 || runs.telemetry.ToolCallCount != 1 {
+		t.Fatalf("telemetry counts = parent %d tools %d, want current rollout 2/1", runs.telemetry.ParentModelCallCount, runs.telemetry.ToolCallCount)
+	}
+	if runs.telemetry.OutputTokenCount == nil || *runs.telemetry.OutputTokenCount != 12 {
+		t.Fatalf("output tokens = %v, want 12", runs.telemetry.OutputTokenCount)
 	}
 }
 
@@ -3149,13 +3607,14 @@ func TestWaitChatRun_HooklessInteractiveRunReturnsExplicitTimeout(t *testing.T) 
 	}
 }
 
-// TestWaitChatRun_DeadlineExpires verifies that when no Stop hook
-// arrives, the synthetic exit_error fires and all maps are cleaned up
-// so a future StartChatRun on the same session isn't shadowed by stale
-// state.
+// TestWaitChatRun_DeadlineExpires verifies that when no Stop hook arrives, the
+// synthetic exit_error fires without marking a potentially-live tmux process
+// stopped or removing the hook state a later completion needs.
 func TestWaitChatRun_DeadlineExpires(t *testing.T) {
 	srv := newRunCompleteServer()
 	srv.setWaitChatRunDeadline(50 * time.Millisecond)
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
 	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-x"}
 	srv.agentSessionByID["agent-x"] = "claude"
 	srv.registerRun("sess-1", "agent-x", "tok")
@@ -3168,33 +3627,182 @@ func TestWaitChatRun_DeadlineExpires(t *testing.T) {
 	if resp.GetExitError() == "" {
 		t.Error("ExitError should be non-empty on deadline")
 	}
+	if len(runs.stopped) != 0 || runs.runID != "" {
+		t.Fatalf("deadline recorded stop/telemetry: stopped=%#v runID=%q", runs.stopped, runs.runID)
+	}
 
-	// All five maps cleaned up.
 	srv.runMu.Lock()
 	_, hasComp := srv.runCompletion["agent-x"]
+	tok := srv.runHookTokens["agent-x"]
+	sess := srv.runSessionByID["agent-x"]
+	reverse := srv.agentSessionByID["agent-x"]
+	active := srv.activeRuns["sess-1"]
+	srv.runMu.Unlock()
+	if !hasComp || tok != "tok" || sess != "sess-1" || reverse != "claude" || active.agentSessionID != "agent-x" {
+		t.Fatalf("deadline state = comp %v tok %q sess %q reverse %q active %#v, want run still registered", hasComp, tok, sess, reverse, active)
+	}
+
+	if entry := srv.displayTracker.Get("sess-1"); entry == nil || !entry.IsRepairing {
+		t.Error("IsRepairing should remain owned by the live run after WaitChatRun deadline")
+	}
+
+	if _, err := srv.CompleteAgentRun(t.Context(), "agent-x", "tok", ""); err != nil {
+		t.Fatalf("CompleteAgentRun after deadline: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		runs.mu.Lock()
+		stopped := len(runs.stopped)
+		runs.mu.Unlock()
+		if stopped == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runs.mu.Lock()
+	stopped := append([]string(nil), runs.stopped...)
+	runs.mu.Unlock()
+	if len(stopped) != 1 || stopped[0] != "agent-x" {
+		t.Fatalf("delayed completion stopped = %#v, want agent-x", stopped)
+	}
+	srv.runMu.Lock()
+	_, hasComp = srv.runCompletion["agent-x"]
 	_, hasTok := srv.runHookTokens["agent-x"]
 	_, hasSess := srv.runSessionByID["agent-x"]
 	_, hasReverse := srv.agentSessionByID["agent-x"]
 	_, hasActive := srv.activeRuns["sess-1"]
 	srv.runMu.Unlock()
 	if hasComp || hasTok || hasSess || hasReverse || hasActive {
-		t.Errorf("expected all maps cleared after deadline; comp=%v tok=%v sess=%v reverse=%v active=%v",
-			hasComp, hasTok, hasSess, hasReverse, hasActive)
-	}
-
-	// IsRepairing flag cleared too — the synthetic exit_error path is
-	// otherwise a silent leak from the TUI's perspective.
-	if entry := srv.displayTracker.Get("sess-1"); entry != nil && entry.IsRepairing {
-		t.Error("IsRepairing should be cleared after WaitChatRun deadline")
+		t.Fatalf("delayed completion cleanup = comp %v tok %v sess %v reverse %v active %v, want cleared", hasComp, hasTok, hasSess, hasReverse, hasActive)
 	}
 }
 
-// TestWaitChatRun_ContextCancelled verifies that a caller-cancelled
-// context returns the ctx error AND tears down run state, mirroring the
-// deadline cleanup path. Without this, a prematurely-cancelled wait
-// would leave runHookTokens populated and shadow a fresh repair attempt.
+func TestWaitChatRun_DeadlineRetryWaitsOnSingleCompletionFinalizer(t *testing.T) {
+	srv := newRunCompleteServer()
+	srv.setWaitChatRunDeadline(50 * time.Millisecond)
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
+	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-x"}
+	srv.agentSessionByID["agent-x"] = "claude"
+	srv.registerRun("sess-1", "agent-x", "tok")
+
+	first, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
+	if err != nil {
+		t.Fatalf("first WaitChatRun: %v", err)
+	}
+	if !strings.Contains(first.GetExitError(), "did not signal completion") {
+		t.Fatalf("first ExitError = %q, want wait deadline", first.GetExitError())
+	}
+	srv.setWaitChatRunDeadline(time.Second)
+
+	done := make(chan *bossanovav1.WaitChatRunHostResponse, 1)
+	errs := make(chan error, 1)
+	go func() {
+		resp, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- resp
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	if _, err := srv.CompleteAgentRun(t.Context(), "agent-x", "tok", ""); err != nil {
+		t.Fatalf("CompleteAgentRun after deadline: %v", err)
+	}
+
+	select {
+	case err := <-errs:
+		t.Fatalf("retry WaitChatRun: %v", err)
+	case resp := <-done:
+		if resp.GetExitError() != "" {
+			t.Fatalf("retry ExitError = %q, want clean completion", resp.GetExitError())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry WaitChatRun did not return after completion")
+	}
+
+	runs.mu.Lock()
+	stopped := append([]string(nil), runs.stopped...)
+	runs.mu.Unlock()
+	if len(stopped) != 1 || stopped[0] != "agent-x" {
+		t.Fatalf("stopped = %#v, want exactly one stop for agent-x", stopped)
+	}
+}
+
+func TestWaitChatRun_WatchdogReclaimFailureLeavesRunOpen(t *testing.T) {
+	originalPoll := watchdogPollInterval
+	watchdogPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { watchdogPollInterval = originalPoll })
+
+	lc := &fakeChatLifecycle{}
+	lc.reclaimRepairChatFunc = func(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
+		return session.ReclaimRepairChatResult{}, errors.New("tmux reclaim failed")
+	}
+	srv := newRunCompleteServer()
+	srv.lifecycle = lc
+	srv.setWaitChatRunDeadline(time.Second)
+	srv.chatTracker = status.NewTracker()
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
+	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-x"}
+	srv.agentSessionByID["agent-x"] = "claude"
+	srv.registerRun("sess-1", "agent-x", "tok")
+	srv.chatTracker.Update("agent-x", bossanovav1.ChatStatus_CHAT_STATUS_STOPPED, time.Now().Add(-time.Minute))
+
+	resp, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{
+		AgentSessionId:       "agent-x",
+		IdleFailAfterSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if !strings.Contains(resp.GetExitError(), "pane reclaim failed") {
+		t.Fatalf("ExitError = %q, want reclaim failure", resp.GetExitError())
+	}
+	runs.mu.Lock()
+	stoppedBeforeCompletion := len(runs.stopped)
+	runs.mu.Unlock()
+	if stoppedBeforeCompletion != 0 {
+		t.Fatalf("watchdog reclaim failure recorded stop before completion: %d", stoppedBeforeCompletion)
+	}
+
+	srv.runMu.Lock()
+	_, hasComp := srv.runCompletion["agent-x"]
+	_, hasTok := srv.runHookTokens["agent-x"]
+	_, hasActive := srv.activeRuns["sess-1"]
+	srv.runMu.Unlock()
+	if !hasComp || !hasTok || !hasActive {
+		t.Fatalf("watchdog reclaim failure cleared live state; comp=%v tok=%v active=%v", hasComp, hasTok, hasActive)
+	}
+	if _, err := srv.CompleteAgentRun(t.Context(), "agent-x", "tok", ""); err != nil {
+		t.Fatalf("CompleteAgentRun after reclaim failure: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		runs.mu.Lock()
+		stopped := len(runs.stopped)
+		runs.mu.Unlock()
+		if stopped == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runs.mu.Lock()
+	stopped := append([]string(nil), runs.stopped...)
+	runs.mu.Unlock()
+	if len(stopped) != 1 || stopped[0] != "agent-x" {
+		t.Fatalf("delayed completion stopped = %#v, want agent-x", stopped)
+	}
+}
+
+// TestWaitChatRun_ContextCancelled verifies that a caller-cancelled context
+// returns the ctx error without discarding state a still-live process needs to
+// report its eventual completion.
 func TestWaitChatRun_ContextCancelled(t *testing.T) {
 	srv := newRunCompleteServer()
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
 	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-x"}
 	srv.agentSessionByID["agent-x"] = "claude"
 	srv.registerRun("sess-1", "agent-x", "tok")
@@ -3209,14 +3817,84 @@ func TestWaitChatRun_ContextCancelled(t *testing.T) {
 		t.Fatalf("code = %v, want Canceled", grpcstatus.Code(err))
 	}
 
-	// Maps cleared on ctx cancel — the same invariant as the deadline path.
 	srv.runMu.Lock()
 	_, hasComp := srv.runCompletion["agent-x"]
 	_, hasTok := srv.runHookTokens["agent-x"]
 	_, hasActive := srv.activeRuns["sess-1"]
 	srv.runMu.Unlock()
-	if hasComp || hasTok || hasActive {
-		t.Errorf("expected maps cleared after ctx cancel; comp=%v tok=%v active=%v", hasComp, hasTok, hasActive)
+	if !hasComp || !hasTok || !hasActive {
+		t.Fatalf("ctx cancel cleared live state; comp=%v tok=%v active=%v", hasComp, hasTok, hasActive)
+	}
+	runs.mu.Lock()
+	stoppedBeforeCompletion := len(runs.stopped)
+	runs.mu.Unlock()
+	if stoppedBeforeCompletion != 0 {
+		t.Fatalf("ctx cancel recorded stop before completion: %d", stoppedBeforeCompletion)
+	}
+
+	if _, err := srv.CompleteAgentRun(t.Context(), "agent-x", "tok", ""); err != nil {
+		t.Fatalf("CompleteAgentRun after cancel: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		runs.mu.Lock()
+		stopped := len(runs.stopped)
+		runs.mu.Unlock()
+		if stopped == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runs.mu.Lock()
+	stopped := append([]string(nil), runs.stopped...)
+	runs.mu.Unlock()
+	if len(stopped) != 1 || stopped[0] != "agent-x" {
+		t.Fatalf("delayed completion stopped = %#v, want agent-x", stopped)
+	}
+}
+
+func TestWaitChatRun_ContextCancelledStartsSingleCompletionFinalizer(t *testing.T) {
+	srv := newRunCompleteServer()
+	runs := &fakeRunTelemetryStore{}
+	srv.SetAgentRunStore(runs)
+	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-x"}
+	srv.agentSessionByID["agent-x"] = "claude"
+	srv.registerRun("sess-1", "agent-x", "tok")
+
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := srv.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
+		if grpcstatus.Code(err) != codes.Canceled {
+			t.Fatalf("wait %d code = %v, want Canceled", i+1, grpcstatus.Code(err))
+		}
+	}
+
+	srv.runMu.Lock()
+	finalizers := len(srv.chatRunFinalizers)
+	srv.runMu.Unlock()
+	if finalizers != 1 {
+		t.Fatalf("chatRunFinalizers = %d, want 1", finalizers)
+	}
+
+	if _, err := srv.CompleteAgentRun(t.Context(), "agent-x", "tok", ""); err != nil {
+		t.Fatalf("CompleteAgentRun after cancel: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		runs.mu.Lock()
+		stopped := len(runs.stopped)
+		runs.mu.Unlock()
+		if stopped == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runs.mu.Lock()
+	stopped := append([]string(nil), runs.stopped...)
+	runs.mu.Unlock()
+	if len(stopped) != 1 || stopped[0] != "agent-x" {
+		t.Fatalf("delayed completion stopped = %#v, want agent-x", stopped)
 	}
 }
 

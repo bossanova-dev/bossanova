@@ -3,6 +3,7 @@ package status
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/agenttelemetry"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/statusdetect"
@@ -329,7 +331,24 @@ func (m *mockChatStore) UpdateAgentSessionID(_ context.Context, _ string, oldAge
 	m.chats[newAgentSessionID] = c
 	return nil
 }
-func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
+func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, agentSessionID string, name *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.chats[agentSessionID]
+	if !ok {
+		return fmt.Errorf("not found")
+	}
+	c.TmuxSessionName = name
+	return nil
+}
+func (m *mockChatStore) ClearTmuxSessionNameIf(_ context.Context, agentSessionID, tmuxSessionName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.chats[agentSessionID]
+	if !ok || c.TmuxSessionName == nil || *c.TmuxSessionName != tmuxSessionName {
+		return sql.ErrNoRows
+	}
+	c.TmuxSessionName = nil
 	return nil
 }
 func (m *mockChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
@@ -656,21 +675,120 @@ func (f *mockTmuxFactory) wasKilled(sessName string) bool {
 	return f.killed[sessName]
 }
 
+type fakeAgentRunStopStore struct {
+	mu         sync.Mutex
+	stops      []fakeAgentRunStop
+	runs       []db.AgentRun
+	telemetry  []fakeAgentRunTelemetry
+	listErr    error
+	recordErr  error
+	recordKeys []string
+	onStopRun  func(runID string)
+}
+
+type fakeAgentRunStop struct {
+	runID          string
+	agentSessionID string
+	reason         string
+	stoppedAt      time.Time
+}
+
+type fakeAgentRunTelemetry struct {
+	agentSessionID string
+	telemetry      db.AgentRunTelemetry
+}
+
+func (f *fakeAgentRunStopStore) Stop(_ context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stops = append(f.stops, fakeAgentRunStop{
+		agentSessionID: agentSessionID,
+		reason:         reason,
+		stoppedAt:      stoppedAt,
+	})
+	return nil
+}
+
+func (f *fakeAgentRunStopStore) StopRun(_ context.Context, runID, reason string, stoppedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, run := range f.runs {
+		if run.ID != runID {
+			continue
+		}
+		if run.StoppedAt != nil {
+			return sql.ErrNoRows
+		}
+		f.runs[i].StoppedAt = &stoppedAt
+		f.runs[i].StopReason = reason
+		f.stops = append(f.stops, fakeAgentRunStop{
+			runID:          runID,
+			agentSessionID: run.AgentSessionID,
+			reason:         reason,
+			stoppedAt:      stoppedAt,
+		})
+		if f.onStopRun != nil {
+			f.onStopRun(runID)
+		}
+		return nil
+	}
+	return sql.ErrNoRows
+}
+
+func (f *fakeAgentRunStopStore) RecordTelemetry(_ context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordKeys = append(f.recordKeys, runID)
+	if f.recordErr != nil {
+		return f.recordErr
+	}
+	var agentSessionID string
+	for _, run := range f.runs {
+		if run.ID == runID {
+			agentSessionID = run.AgentSessionID
+			break
+		}
+	}
+	f.telemetry = append(f.telemetry, fakeAgentRunTelemetry{
+		agentSessionID: agentSessionID,
+		telemetry:      telemetry,
+	})
+	return nil
+}
+
+func (f *fakeAgentRunStopStore) List(_ context.Context, filter db.AgentRunFilter) ([]db.AgentRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []db.AgentRun
+	for _, run := range f.runs {
+		if filter.SessionID != "" && run.SessionID != filter.SessionID {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out, nil
+}
+
 // TestTmuxStatusPoller_DeadPaneCapturedAndReaped covers the BOS-477 death path:
 // a chat whose pane is pane_dead (remain-on-exit zombie) has its final output
-// captured into the tracker, its tmux session reaped, and its status set to
-// STOPPED — so no zombie survives and the agent's own error is preserved.
+// captured into the tracker, its tmux session reaped, its status set to
+// STOPPED, and its agent_runs row closed as stopped — so no zombie survives and the
+// agent's own error is preserved.
 func TestTmuxStatusPoller_DeadPaneCapturedAndReaped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
 	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-deadchat"
+	sessionID := "sess-dead"
 	agentSessionID := "claude-dead"
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -684,8 +802,15 @@ func TestTmuxStatusPoller_DeadPaneCapturedAndReaped(t *testing.T) {
 		},
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+		ID:             "run-dead",
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		StartedAt:      time.Now().Add(-time.Minute),
+	}}}
 
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.SetAgentRunStore(runs)
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
@@ -701,6 +826,335 @@ func TestTmuxStatusPoller_DeadPaneCapturedAndReaped(t *testing.T) {
 	entry := tracker.Get(agentSessionID)
 	if entry == nil || entry.Status != pb.ChatStatus_CHAT_STATUS_STOPPED {
 		t.Fatalf("expected STOPPED entry after reap, got %v", entry)
+	}
+	runs.mu.Lock()
+	defer runs.mu.Unlock()
+	if len(runs.stops) != 1 {
+		t.Fatalf("agent run stops = %d, want 1", len(runs.stops))
+	}
+	if got := runs.stops[0]; got.agentSessionID != agentSessionID || got.reason != db.AgentRunStopStopped || got.stoppedAt.IsZero() {
+		t.Fatalf("agent run stop = %#v, want stopped for %s", got, agentSessionID)
+	}
+}
+
+func TestTmuxStatusPoller_DeadPaneRecordsClaudeTelemetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	tracker := NewTracker()
+	tmuxName := "boss-test-deadchat-claude-telemetry"
+	sessionID := "sess-claude-telemetry"
+	agentSessionID := "claude-telemetry"
+	startedAt := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
+	worktreePath := filepath.Join(tmpHome, "repo")
+	transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, agentSessionID)
+	if err != nil {
+		t.Fatalf("claude transcript path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatalf("mkdir transcript dir: %v", err)
+	}
+	if err := os.WriteFile(transcript, []byte(strings.Join([]string{
+		`{"timestamp":"2026-08-25T01:00:00Z","type":"assistant","message":{"role":"assistant","usage":{"output_tokens":99}}}`,
+		`{"timestamp":"2026-08-26T01:00:01Z","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}],"usage":{"output_tokens":7}}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	sessionStore := &mockSessionStore{sessions: map[string]*models.Session{
+		sessionID: {ID: sessionID, WorktreePath: worktreePath},
+	}}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		dead:     map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "finished\n"},
+	}
+	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+		ID:             "run-claude-telemetry",
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		StartedAt:      startedAt,
+	}}}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmux.NewClient(tmux.WithCommandFactory(factory.factory)), claudeAgentClients(), zerolog.Nop())
+	poller.SetAgentRunStore(runs)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+	poller.pollOnce(context.Background())
+
+	runs.mu.Lock()
+	defer runs.mu.Unlock()
+	if len(runs.telemetry) != 1 {
+		t.Fatalf("telemetry writes = %d, want 1", len(runs.telemetry))
+	}
+	got := runs.telemetry[0]
+	if got.agentSessionID != agentSessionID {
+		t.Fatalf("telemetry key = %q, want %q", got.agentSessionID, agentSessionID)
+	}
+	if got.telemetry.ParentModelCallCount != 1 || got.telemetry.ToolCallCount != 1 {
+		t.Fatalf("telemetry counts = parent %d tools %d, want 1/1", got.telemetry.ParentModelCallCount, got.telemetry.ToolCallCount)
+	}
+	if got.telemetry.OutputTokenCount == nil || *got.telemetry.OutputTokenCount != 7 {
+		t.Fatalf("output tokens = %v, want 7", got.telemetry.OutputTokenCount)
+	}
+}
+
+func TestTmuxStatusPoller_MissingTmuxSessionStopsAgentRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-missing-chat"
+	sessionID := "sess-missing"
+	agentSessionID := "claude-missing"
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{sessions: map[string]bool{tmuxName: false}}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+		ID:             "run-missing",
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		StartedAt:      time.Now().Add(-time.Minute),
+	}}}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.SetAgentRunStore(runs)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil || entry.Status != pb.ChatStatus_CHAT_STATUS_STOPPED {
+		t.Fatalf("expected STOPPED entry after missing tmux session, got %v", entry)
+	}
+	runs.mu.Lock()
+	defer runs.mu.Unlock()
+	if len(runs.stops) != 1 {
+		t.Fatalf("agent run stops = %d, want 1", len(runs.stops))
+	}
+	if got := runs.stops[0]; got.agentSessionID != agentSessionID || got.reason != db.AgentRunStopStopped || got.stoppedAt.IsZero() {
+		t.Fatalf("agent run stop = %#v, want stopped for %s", got, agentSessionID)
+	}
+}
+
+func TestTmuxStatusPoller_StopUsesRunOpenAtObservedPaneDeath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-dead-race"
+	sessionID := "sess-dead-race"
+	agentSessionID := "claude-dead-race"
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		dead:     map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "finished\n"},
+	}
+	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{
+		{ID: "old-run", SessionID: sessionID, AgentSessionID: agentSessionID, StartedAt: time.Now().Add(-time.Minute)},
+		{ID: "new-run", SessionID: sessionID, AgentSessionID: agentSessionID, StartedAt: time.Now().Add(time.Minute)},
+	}}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmux.NewClient(tmux.WithCommandFactory(factory.factory)), claudeAgentClients(), zerolog.Nop())
+	poller.SetAgentRunStore(runs)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	runs.mu.Lock()
+	defer runs.mu.Unlock()
+	if len(runs.stops) != 1 || runs.stops[0].runID != "old-run" {
+		t.Fatalf("stopped runs = %#v, want only old-run", runs.stops)
+	}
+	for _, run := range runs.runs {
+		if run.ID == "new-run" && run.StoppedAt != nil {
+			t.Fatalf("new run was stopped: %#v", run)
+		}
+	}
+}
+
+func TestTmuxStatusPoller_ClearDeadPaneNameDoesNotClobberWake(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	deadTmuxName := "boss-test-dead-before-wake"
+	wakeTmuxName := "boss-test-new-wake"
+	sessionID := "sess-wake-race"
+	agentSessionID := "claude-wake-race"
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &deadTmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{deadTmuxName: true},
+		dead:     map[string]bool{deadTmuxName: true},
+		captures: map[string]string{deadTmuxName: "finished\n"},
+	}
+	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+		ID:             "run-wake-race",
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		StartedAt:      time.Now().Add(-time.Minute),
+	}}}
+	runs.onStopRun = func(string) {
+		if err := chatStore.UpdateTmuxSessionName(context.Background(), agentSessionID, &wakeTmuxName); err != nil {
+			t.Errorf("wake update tmux name: %v", err)
+		}
+	}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmux.NewClient(tmux.WithCommandFactory(factory.factory)), claudeAgentClients(), zerolog.Nop())
+	poller.SetAgentRunStore(runs)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	chatStore.mu.Lock()
+	defer chatStore.mu.Unlock()
+	got := chatStore.chats[agentSessionID].TmuxSessionName
+	if got == nil || *got != wakeTmuxName {
+		t.Fatalf("tmux_session_name = %v, want wake pane %q preserved", got, wakeTmuxName)
+	}
+}
+
+func TestTmuxStatusPoller_DeadPaneRecordsCodexProviderTelemetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+	tracker := NewTracker()
+	tmuxName := "boss-test-deadchat-codex-telemetry"
+	sessionID := "sess-codex-telemetry"
+	agentSessionID := "logical-codex-chat"
+	providerSessionID := "provider-codex-rollout"
+	worktreePath := filepath.Join(tmpHome, "repo")
+	rollout := filepath.Join(tmpHome, ".codex", "sessions", "2026", "08", "26", "rollout-2026-08-26T01-00-00-"+providerSessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"custom_tool_call","name":"exec_command"}}`,
+		`{"type":"item.completed","item":{"type":"custom_tool_call_output"}}`,
+		`{"type":"item.completed","item":{"type":"assistant_message","text":"done"}}`,
+		`{"type":"turn.completed","usage":{"output_tokens":12,"reasoning_output_tokens":5}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	nextRollout := filepath.Join(tmpHome, ".codex", "sessions", "2026", "08", "26", "rollout-2026-08-26T01-05-00-"+providerSessionID+".jsonl")
+	if err := os.WriteFile(nextRollout, []byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"custom_tool_call","name":"exec_command"}}`,
+		`{"type":"item.completed","item":{"type":"custom_tool_call_output"}}`,
+		`{"type":"item.completed","item":{"type":"assistant_message","text":"done again"}}`,
+		`{"type":"turn.completed","usage":{"output_tokens":7,"reasoning_output_tokens":3}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write next rollout: %v", err)
+	}
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {
+				SessionID:         sessionID,
+				AgentSessionID:    agentSessionID,
+				ProviderSessionID: &providerSessionID,
+				AgentName:         "codex",
+				TmuxSessionName:   &tmuxName,
+			},
+		},
+	}
+	sessionStore := &mockSessionStore{sessions: map[string]*models.Session{
+		sessionID: {ID: sessionID, WorktreePath: worktreePath},
+	}}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		dead:     map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "finished\n"},
+	}
+	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+		ID:             "run-codex-telemetry",
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		StartedAt:      time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC),
+	}}}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmux.NewClient(tmux.WithCommandFactory(factory.factory)), nil, zerolog.Nop())
+	poller.SetAgentRunStore(runs)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+	poller.pollOnce(context.Background())
+
+	runs.mu.Lock()
+	defer runs.mu.Unlock()
+	if len(runs.telemetry) != 1 {
+		t.Fatalf("telemetry writes = %d, want 1", len(runs.telemetry))
+	}
+	got := runs.telemetry[0]
+	if got.agentSessionID != agentSessionID {
+		t.Fatalf("telemetry key = %q, want logical agent session %q", got.agentSessionID, agentSessionID)
+	}
+	if got.telemetry.ParentModelCallCount != 4 || got.telemetry.ToolCallCount != 2 {
+		t.Fatalf("telemetry counts = parent %d tools %d, want 4/2", got.telemetry.ParentModelCallCount, got.telemetry.ToolCallCount)
+	}
+	if got.telemetry.OutputTokenCount == nil || *got.telemetry.OutputTokenCount != 19 {
+		t.Fatalf("output tokens = %v, want 19", got.telemetry.OutputTokenCount)
+	}
+	if got.telemetry.ReasoningTokenCount == nil || *got.telemetry.ReasoningTokenCount != 8 {
+		t.Fatalf("reasoning tokens = %v, want 8", got.telemetry.ReasoningTokenCount)
+	}
+}
+
+func TestTmuxStatusPoller_DeadPaneDoesNotStopFutureReplacementRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-deadchat-replacement"
+	sessionID := "sess-replacement"
+	agentSessionID := "logical-chat-replacement"
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		dead:     map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "old pane exited\n"},
+	}
+	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+		ID:             "replacement-run",
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		StartedAt:      time.Now().Add(time.Hour),
+	}}}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmux.NewClient(tmux.WithCommandFactory(factory.factory)), claudeAgentClients(), zerolog.Nop())
+	poller.SetAgentRunStore(runs)
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	runs.mu.Lock()
+	defer runs.mu.Unlock()
+	if len(runs.stops) != 0 {
+		t.Fatalf("agent run stops = %d, want 0 for replacement run started after observation", len(runs.stops))
+	}
+	if len(runs.telemetry) != 0 {
+		t.Fatalf("telemetry writes = %d, want 0 when no observed run was stopped", len(runs.telemetry))
 	}
 }
 

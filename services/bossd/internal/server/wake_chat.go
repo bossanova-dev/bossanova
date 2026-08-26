@@ -235,6 +235,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 		// The row now names the pane, so cleanup can reach it: disarm.
 		paneNeedsRollback = false
+		if result.Outcome != OutcomeAlreadyLive {
+			s.recordInteractiveAgentRunStart(ctx, sess, chat, result.LaunchedAt)
+		}
 
 		// Register with the poller so the next status snapshot reflects
 		// the revived session immediately rather than waiting for the

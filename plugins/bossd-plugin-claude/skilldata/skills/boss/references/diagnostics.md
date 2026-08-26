@@ -2,6 +2,21 @@
 
 ## Diagnostics
 
+### `boss cost [session-id] [flags]`
+
+Report agent run cost telemetry
+
+**Flags:**
+
+- `--agent` — only include runs for this agent
+- `--include-all` — include daemon_restart and unknown stop reasons
+- `--include-backfilled` — include backfilled rows in aggregate medians
+- `--include-open` — include runs without a recorded stop
+- `--json` — emit JSON
+- `--repo` — only include runs for this repo display name
+- `--since` — only include runs starting at or after this RFC3339 time or YYYY-MM-DD date
+- `--until` — only include runs starting before this RFC3339 time or YYYY-MM-DD date
+
 ### `boss env [flags]`
 
 Report this session's boss context and the full CLI + MCP capability inventory

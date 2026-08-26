@@ -5,12 +5,13 @@
 package bossanovav1connect
 
 import (
-	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	http "net/http"
 	strings "strings"
+
+	connect "connectrpc.com/connect"
+	v1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // This is a compile-time assertion to ensure that this generated file and the connect package are
@@ -72,6 +73,9 @@ const (
 	// HostServiceRecordRepairOutcomeProcedure is the fully-qualified name of the HostService's
 	// RecordRepairOutcome RPC.
 	HostServiceRecordRepairOutcomeProcedure = "/bossanova.v1.HostService/RecordRepairOutcome"
+	// HostServiceRecordRunTelemetryProcedure is the fully-qualified name of the HostService's
+	// RecordRunTelemetry RPC.
+	HostServiceRecordRunTelemetryProcedure = "/bossanova.v1.HostService/RecordRunTelemetry"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -125,6 +129,10 @@ type HostServiceClient interface {
 	// or runner-level failure — leaves a structured trace in SQLite that
 	// outlives the in-memory cooldowns map.
 	RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error)
+	// RecordRunTelemetry updates the daemon-created agent_runs row with counters
+	// parsed by the agent-runner plugin. Row creation belongs to the daemon's
+	// runner boundary, so this RPC never inserts.
+	RecordRunTelemetry(context.Context, *connect.Request[v1.RecordRunTelemetryRequest]) (*connect.Response[v1.RecordRunTelemetryResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -222,6 +230,12 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("RecordRepairOutcome")),
 			connect.WithClientOptions(opts...),
 		),
+		recordRunTelemetry: connect.NewClient[v1.RecordRunTelemetryRequest, v1.RecordRunTelemetryResponse](
+			httpClient,
+			baseURL+HostServiceRecordRunTelemetryProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("RecordRunTelemetry")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -241,6 +255,7 @@ type hostServiceClient struct {
 	waitChatRun         *connect.Client[v1.WaitChatRunHostRequest, v1.WaitChatRunHostResponse]
 	reclaimRepairChat   *connect.Client[v1.ReclaimRepairChatHostRequest, v1.ReclaimRepairChatHostResponse]
 	recordRepairOutcome *connect.Client[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse]
+	recordRunTelemetry  *connect.Client[v1.RecordRunTelemetryRequest, v1.RecordRunTelemetryResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -313,6 +328,11 @@ func (c *hostServiceClient) RecordRepairOutcome(ctx context.Context, req *connec
 	return c.recordRepairOutcome.CallUnary(ctx, req)
 }
 
+// RecordRunTelemetry calls bossanova.v1.HostService.RecordRunTelemetry.
+func (c *hostServiceClient) RecordRunTelemetry(ctx context.Context, req *connect.Request[v1.RecordRunTelemetryRequest]) (*connect.Response[v1.RecordRunTelemetryResponse], error) {
+	return c.recordRunTelemetry.CallUnary(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
 type HostServiceHandler interface {
 	// ListOpenPRs returns all open pull requests for a repository.
@@ -364,6 +384,10 @@ type HostServiceHandler interface {
 	// or runner-level failure — leaves a structured trace in SQLite that
 	// outlives the in-memory cooldowns map.
 	RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error)
+	// RecordRunTelemetry updates the daemon-created agent_runs row with counters
+	// parsed by the agent-runner plugin. Row creation belongs to the daemon's
+	// runner boundary, so this RPC never inserts.
+	RecordRunTelemetry(context.Context, *connect.Request[v1.RecordRunTelemetryRequest]) (*connect.Response[v1.RecordRunTelemetryResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -457,6 +481,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("RecordRepairOutcome")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceRecordRunTelemetryHandler := connect.NewUnaryHandler(
+		HostServiceRecordRunTelemetryProcedure,
+		svc.RecordRunTelemetry,
+		connect.WithSchema(hostServiceMethods.ByName("RecordRunTelemetry")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceListOpenPRsProcedure:
@@ -487,6 +517,8 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceReclaimRepairChatHandler.ServeHTTP(w, r)
 		case HostServiceRecordRepairOutcomeProcedure:
 			hostServiceRecordRepairOutcomeHandler.ServeHTTP(w, r)
+		case HostServiceRecordRunTelemetryProcedure:
+			hostServiceRecordRunTelemetryHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -550,4 +582,8 @@ func (UnimplementedHostServiceHandler) ReclaimRepairChat(context.Context, *conne
 
 func (UnimplementedHostServiceHandler) RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.RecordRepairOutcome is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) RecordRunTelemetry(context.Context, *connect.Request[v1.RecordRunTelemetryRequest]) (*connect.Response[v1.RecordRunTelemetryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.RecordRunTelemetry is not implemented"))
 }

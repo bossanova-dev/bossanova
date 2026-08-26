@@ -146,7 +146,7 @@ func rootCmd() *cobra.Command {
 			// the command tree exists.
 			path := cmd.CommandPath()
 			if path == "boss gen-skill" || path == "boss fix-terminal" ||
-				path == "boss tail" ||
+				path == "boss tail" || path == "boss cost" ||
 				path == "boss skills" || strings.HasPrefix(path, "boss skills ") {
 				return nil
 			}
@@ -200,7 +200,7 @@ func rootCmd() *cobra.Command {
 	// commands that install them.
 	addGrouped("skills", skillsCmd(), initCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
-	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd(), fixTerminalCmd(), tailCmd())
+	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd(), fixTerminalCmd(), tailCmd(), costCmd())
 	// `boss agents` sits in the plugins group rather than getting one of its
 	// own: agent runners ARE loaded plugins, and the command a reader reaches
 	// for next to it is `boss plugin list`.
@@ -233,7 +233,8 @@ var valuedRootFlags = map[string]bool{
 	"--host-socket": true,
 }
 
-// isTailInvocation reports whether argv selects `boss tail`, scanning past the
+// isTailInvocation reports whether argv selects a log/cost diagnostic that must
+// bypass the startup skill installer, scanning past the
 // root flags that may precede the subcommand. The `--flag=value` form needs no
 // special case: it is a single element and is skipped as an option.
 func isTailInvocation(args []string) bool {
@@ -246,7 +247,7 @@ func isTailInvocation(args []string) bool {
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		return arg == "tail"
+		return arg == "tail" || arg == "cost"
 	}
 	return false
 }

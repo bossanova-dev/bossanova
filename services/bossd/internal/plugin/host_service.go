@@ -4,18 +4,23 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -66,6 +71,12 @@ var legacyBackfillProviderIDDiscoveryTimeout = 30 * time.Second
 // a discovery that consumes most of its budget would otherwise hand the persist
 // an already-exhausted deadline and throw away the id it just found.
 var providerSessionIDPersistTimeout = 5 * time.Second
+
+// agentRunStartRecordTimeout bounds the start-row write while detaching it from
+// caller cancellation. Agent processes are launched on background contexts, so
+// their telemetry start row must have the same chance to persist after an RPC
+// caller disconnects.
+var agentRunStartRecordTimeout = 5 * time.Second
 
 // watchdogPollInterval is how often the WaitChatRun idle watchdog samples the
 // chat tracker while a run is armed (idle_fail_after_seconds > 0). Package-level
@@ -124,6 +135,7 @@ type HostServiceServer struct {
 	// agentLogsDir is the bossd-owned directory where the agent plugin
 	// writes per-session NDJSON log files. Forwarded into StartRun.LogPath.
 	agentLogsDir string
+	agentRuns    db.AgentRunStore
 
 	// proofEnv resolves the allowlisted proof env overlay applied to repair
 	// agent runs started here (parity with the lifecycle spawn paths).
@@ -153,6 +165,10 @@ type HostServiceServer struct {
 	// buffered (cap 1) completion channel plus the mode WaitChatRun should
 	// use if no completion signal arrives. Guarded by runMu.
 	//
+	// chatRunFinalizers is keyed by agent_session_id and tracks the single
+	// detached completion watcher, if WaitChatRun timed out or was cancelled
+	// before the run completed. Guarded by runMu.
+	//
 	// runHookTokens is keyed by agent_session_id. Maps to the per-run hook
 	// token registered when StartChatRun installed the run-scoped Stop hook.
 	// The hook endpoint validates the inbound Bearer token against this map
@@ -171,12 +187,13 @@ type HostServiceServer struct {
 	// activeRuns are the per-run state that does get cleared on first
 	// signal — the surviving tombstone is just enough to recognise "still
 	// known, already signalled" without leaking the channel.
-	runMu            sync.Mutex
-	activeRuns       map[string]activeRun
-	agentSessionByID map[string]string
-	runCompletion    map[string]activeChatRun
-	runHookTokens    map[string]string
-	runSessionByID   map[string]string
+	runMu             sync.Mutex
+	activeRuns        map[string]activeRun
+	agentSessionByID  map[string]string
+	runCompletion     map[string]activeChatRun
+	chatRunFinalizers map[string]*chatRunFinalizer
+	runHookTokens     map[string]string
+	runSessionByID    map[string]string
 
 	// headlessHookTokens is keyed by agent_session_id and holds the per-run
 	// bearer token handed to a HEADLESS agent run through its ExtraEnv overlay
@@ -238,6 +255,11 @@ type completionResult struct {
 	exitError string
 }
 
+type chatRunFinalizer struct {
+	done   <-chan struct{}
+	result completionResult
+}
+
 type chatRunCompletionMode string
 
 const (
@@ -248,6 +270,8 @@ const (
 type activeChatRun struct {
 	done           chan completionResult
 	completionMode chatRunCompletionMode
+	agentRunID     string
+	startedAt      time.Time
 }
 
 // activeRun records the agent plugin name and agent session ID for an
@@ -341,6 +365,7 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 		activeRuns:           make(map[string]activeRun),
 		agentSessionByID:     make(map[string]string),
 		runCompletion:        make(map[string]activeChatRun),
+		chatRunFinalizers:    make(map[string]*chatRunFinalizer),
 		runHookTokens:        make(map[string]string),
 		headlessHookTokens:   make(map[string]string),
 		runSessionByID:       make(map[string]string),
@@ -367,13 +392,16 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 // reaching this point; in production the activeRuns mutex prevents two
 // live registrations for the same agent_session_id.
 func (s *HostServiceServer) registerRun(sessionID, agentSessionID, token string) chan completionResult {
-	return s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionHook)
+	return s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionHook, "", time.Now())
 }
 
-func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessionID, token string, mode chatRunCompletionMode) chan completionResult {
+func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessionID, token string, mode chatRunCompletionMode, agentRunID string, startedAt time.Time) chan completionResult {
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
 	ch := make(chan completionResult, 1)
 	s.runMu.Lock()
-	s.runCompletion[agentSessionID] = activeChatRun{done: ch, completionMode: mode}
+	s.runCompletion[agentSessionID] = activeChatRun{done: ch, completionMode: mode, agentRunID: agentRunID, startedAt: startedAt}
 	s.runHookTokens[agentSessionID] = token
 	s.runSessionByID[agentSessionID] = sessionID
 	// Drain any completion that the hookless poll signalled before this
@@ -424,6 +452,10 @@ func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.Sessi
 	s.agentChats = chats
 	s.displayTracker = tracker
 	s.chatTracker = chatTracker
+}
+
+func (s *HostServiceServer) SetAgentRunStore(store db.AgentRunStore) {
+	s.agentRuns = store
 }
 
 // SetRepairLease injects the per-session single-repairer lease manager, shared
@@ -586,6 +618,10 @@ var hostServiceDesc = grpc.ServiceDesc{
 			MethodName: "RecordRepairOutcome",
 			Handler:    hostServiceRecordRepairOutcomeHandler,
 		},
+		{
+			MethodName: "RecordRunTelemetry",
+			Handler:    hostServiceRecordRunTelemetryHandler,
+		},
 	},
 	Metadata: "bossanova/v1/host_service.proto",
 }
@@ -618,6 +654,7 @@ type hostServiceHandler interface {
 	WaitChatRun(context.Context, *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error)
 	ReclaimRepairChat(context.Context, *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error)
 	RecordRepairOutcome(context.Context, *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error)
+	RecordRunTelemetry(context.Context, *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error)
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -1197,12 +1234,14 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 		Model:    sess.Model,
 		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnv(), s.resolveAccountEnv(ctx, sess)), sess.WorktreePath, repo),
 	}
+	startedAt := time.Now()
 	startResp, err := client.StartRun(context.Background(), startReq)
 	if err != nil {
 		s.runMu.Unlock()
 		return nil, grpcstatus.Errorf(codes.Internal, "start agent: %v", err)
 	}
 	resolved := startResp.GetSessionId()
+	agentRunID := s.recordAgentRunStart(ctx, sess, resolved, startedAt)
 	if prev, ok := s.activeRuns[sessionID]; ok {
 		// Drop the reverse-index entry from the previous (now-stale) run so
 		// it doesn't leak when a session is repaired multiple times.
@@ -1212,7 +1251,7 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 	s.agentSessionByID[resolved] = sess.AgentName
 	s.runMu.Unlock()
 
-	return &bossanovav1.StartAgentRunHostResponse{AgentSessionId: resolved}, nil
+	return &bossanovav1.StartAgentRunHostResponse{AgentSessionId: resolved, AgentRunId: agentRunID}, nil
 }
 
 // isAgentRunning reports whether the named agent plugin still has an
@@ -1284,6 +1323,7 @@ func (s *HostServiceServer) WaitAgentRun(ctx context.Context, req *bossanovav1.W
 				}
 				ev.Msg("agent run exited usage/rate limited (record-only)")
 			}
+			s.recordAgentRunStop(ctx, agentSessionID, stopReasonFromExitStatus(es))
 			return &bossanovav1.WaitAgentRunHostResponse{ExitError: es.GetExitError()}, nil
 		}
 		select {
@@ -1291,6 +1331,165 @@ func (s *HostServiceServer) WaitAgentRun(ctx context.Context, req *bossanovav1.W
 			return nil, grpcstatus.FromContextError(ctx.Err()).Err()
 		case <-ticker.C:
 		}
+	}
+}
+
+func (s *HostServiceServer) recordAgentRunStop(ctx context.Context, agentSessionID, reason string) {
+	if s.agentRuns == nil {
+		return
+	}
+	if err := s.agentRuns.Stop(ctx, agentSessionID, reason, time.Now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent run stop failed")
+	}
+}
+
+func (s *HostServiceServer) recordChatRunTelemetry(ctx context.Context, agentSessionID string, run activeChatRun) {
+	if s.agentRuns == nil || s.agentLogsDir == "" || agentSessionID == "" {
+		return
+	}
+	telemetrySessionID := s.chatRunTelemetrySessionID(ctx, agentSessionID)
+	counts, err := tallyAgentLog(ctx, bossalog.AgentLogFile(s.agentLogsDir, agentSessionID), s.chatRunWorktreePath(ctx, agentSessionID), telemetrySessionID, run.startedAt)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("tally chat run telemetry failed")
+		}
+		return
+	}
+	telemetry := telemetryFromAgentCounts(counts)
+	if run.agentRunID != "" {
+		if err := s.agentRuns.RecordTelemetry(ctx, run.agentRunID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record chat run telemetry failed")
+		}
+		return
+	}
+	if err := s.agentRuns.RecordTelemetryByAgentSessionID(ctx, agentSessionID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record chat run telemetry failed")
+	}
+}
+
+func (s *HostServiceServer) chatRunTelemetrySessionID(ctx context.Context, agentSessionID string) string {
+	if s.agentChats == nil || agentSessionID == "" {
+		return agentSessionID
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil || chat.ProviderSessionID == nil || *chat.ProviderSessionID == "" || chat.AgentName != "codex" {
+		return agentSessionID
+	}
+	return *chat.ProviderSessionID
+}
+
+func (s *HostServiceServer) chatRunWorktreePath(ctx context.Context, agentSessionID string) string {
+	if s.sessionStore == nil {
+		return ""
+	}
+	s.runMu.Lock()
+	sessionID := s.runSessionByID[agentSessionID]
+	s.runMu.Unlock()
+	if sessionID == "" {
+		return ""
+	}
+	sess, err := s.sessionStore.Get(ctx, sessionID)
+	if err != nil || sess == nil {
+		return ""
+	}
+	return sess.WorktreePath
+}
+
+func tallyAgentLog(ctx context.Context, path, worktreePath, agentSessionID string, since time.Time) (agenttelemetry.Counts, error) {
+	if err := ctx.Err(); err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if worktreePath != "" && agentSessionID != "" {
+		transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, agentSessionID)
+		if err == nil {
+			if _, statErr := os.Stat(transcript); statErr == nil {
+				counts, err := agenttelemetry.TallyClaudePathWithChildrenSinceContext(ctx, transcript, filepath.Dir(transcript), agentSessionID, since)
+				if err != nil {
+					return agenttelemetry.Counts{}, err
+				}
+				if err := ctx.Err(); err != nil {
+					return agenttelemetry.Counts{}, err
+				}
+				return counts, nil
+			}
+		}
+	}
+	sessionID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), sessionID, "subagents")); err == nil {
+		counts, err := agenttelemetry.TallyClaudePathForSessionContext(ctx, path, sessionID)
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return counts, nil
+	}
+	if agentSessionID != "" {
+		transcripts, err := agenttelemetry.CodexTranscriptPaths(agentSessionID)
+		if err == nil {
+			counts, err := agenttelemetry.TallyCodexPathsSinceContext(ctx, transcripts, since)
+			if err != nil {
+				return agenttelemetry.Counts{}, err
+			}
+			if err := ctx.Err(); err != nil {
+				return agenttelemetry.Counts{}, err
+			}
+			return counts, nil
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	defer func() { _ = f.Close() }()
+	counts, err := agenttelemetry.TallyCodexSinceContext(ctx, f, since)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	return counts, nil
+}
+
+func telemetryFromAgentCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
+	out := db.AgentRunTelemetry{
+		ParentModelCallCount: counts.ParentModelCallCount,
+		ChildModelCallCount:  counts.ChildModelCallCount,
+		ToolCallCount:        counts.ToolCallCount,
+		SubagentCount:        counts.SubagentCount,
+		DirectSubagentCount:  counts.DirectSubagentCount,
+		OutputTokenCount:     counts.OutputTokenCount,
+		ReasoningTokenCount:  counts.ReasoningTokenCount,
+	}
+	for _, child := range counts.Children {
+		out.Children = append(out.Children, db.AgentRunChild{
+			AgentSessionID:      child.AgentSessionID,
+			ParentAgentID:       child.ParentAgentID,
+			SpawnDepth:          child.SpawnDepth,
+			StartedAt:           child.StartedAt,
+			StoppedAt:           child.StoppedAt,
+			ModelCallCount:      child.ModelCallCount,
+			ToolCallCount:       child.ToolCallCount,
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		})
+	}
+	return out
+}
+
+func stopReasonFromExitStatus(es *bossanovav1.AgentExitStatusResponse) string {
+	if es.GetExitError() == "" {
+		return db.AgentRunStopClean
+	}
+	switch es.GetFailureClass() {
+	case agenterr.KindUsageExhausted.String():
+		return db.AgentRunStopUsageExhausted
+	case agenterr.KindRateLimited.String():
+		return db.AgentRunStopRateLimited
+	default:
+		return db.AgentRunStopUnknown
 	}
 }
 
@@ -1351,6 +1550,55 @@ func (s *HostServiceServer) RecordRepairOutcome(ctx context.Context, req *bossan
 		return nil, grpcstatus.Errorf(codes.Internal, "update repair diagnostics: %v", err)
 	}
 	return &bossanovav1.RecordRepairOutcomeResponse{}, nil
+}
+
+func (s *HostServiceServer) RecordRunTelemetry(ctx context.Context, req *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error) {
+	if s.agentRuns == nil {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent run store not configured")
+	}
+	if req.GetAgentRunId() == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_run_id is required")
+	}
+	telemetry := db.AgentRunTelemetry{
+		ParentModelCallCount: req.GetParentModelCallCount(),
+		ChildModelCallCount:  req.GetChildModelCallCount(),
+		ToolCallCount:        req.GetToolCallCount(),
+		SubagentCount:        req.GetSubagentCount(),
+		DirectSubagentCount:  req.GetDirectSubagentCount(),
+		OutputTokenCount:     req.OutputTokenCount,
+		ReasoningTokenCount:  req.ReasoningTokenCount,
+	}
+	for _, child := range req.GetChildren() {
+		if child.GetStartedAt() == nil {
+			return nil, grpcstatus.Error(codes.InvalidArgument, "child started_at is required")
+		}
+		var stoppedAt *time.Time
+		if child.GetStoppedAt() != nil {
+			t := child.GetStoppedAt().AsTime()
+			stoppedAt = &t
+		}
+		telemetry.Children = append(telemetry.Children, db.AgentRunChild{
+			AgentSessionID:      child.GetAgentSessionId(),
+			ParentAgentID:       child.GetParentAgentId(),
+			SpawnDepth:          child.GetSpawnDepth(),
+			StartedAt:           child.GetStartedAt().AsTime(),
+			StoppedAt:           stoppedAt,
+			ModelCallCount:      child.GetModelCallCount(),
+			ToolCallCount:       child.GetToolCallCount(),
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		})
+	}
+	if err := s.agentRuns.RecordTelemetry(ctx, req.GetAgentRunId(), telemetry); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, grpcstatus.Error(codes.NotFound, "agent run not found")
+		}
+		if isInvalidRunTelemetryError(err) {
+			return nil, grpcstatus.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, grpcstatus.Errorf(codes.Internal, "record run telemetry: %v", err)
+	}
+	return &bossanovav1.RecordRunTelemetryResponse{}, nil
 }
 
 // CompleteAgentRun is the host-service entry point for the
@@ -1579,6 +1827,14 @@ func hostServiceRecordRepairOutcomeHandler(srv any, ctx context.Context, dec fun
 	return srv.(hostServiceHandler).RecordRepairOutcome(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
+func hostServiceRecordRunTelemetryHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.RecordRunTelemetryRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).RecordRunTelemetry(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
+}
+
 // newRunHookToken mints a fresh per-run bearer token for the run-keyed
 // Stop hook. We do NOT reuse session.HookToken (which is the cron path's
 // session-keyed token): repair runs are operator-attachable but
@@ -1713,6 +1969,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// wrong name whenever the chat carries its own — exactly the resume path the
 	// repair plugin always takes.
 	hookOpts := session.HookOpts{Token: token, AutonomousRun: true}
+	startedAt := time.Now()
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
 		blockingAgentSessionID := agentSessionID
@@ -1724,6 +1981,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 				return nil, replaceErr
 			}
 			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
+			startedAt = time.Now()
 			agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 		}
 	}
@@ -1748,6 +2006,8 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 		}
 		return nil, grpcstatus.Errorf(codes.Internal, "start tmux chat: %v", err)
 	}
+	runSess := s.effectiveChatSessionForAgentSession(ctx, sess, agentSessionID)
+	agentRunID := s.recordAgentRunStart(ctx, runSess, agentSessionID, startedAt)
 
 	// Register the run state under runMu. Order matters: register first
 	// so a Stop-hook POST that arrives the instant the prompt is pasted
@@ -1761,14 +2021,56 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 		// previous run finished without re-running through this path.
 		delete(s.agentSessionByID, prev.agentSessionID)
 	}
-	s.activeRuns[sessionID] = activeRun{agentName: sess.AgentName, agentSessionID: agentSessionID}
-	s.agentSessionByID[agentSessionID] = sess.AgentName
+	s.activeRuns[sessionID] = activeRun{agentName: runSess.AgentName, agentSessionID: agentSessionID}
+	s.agentSessionByID[agentSessionID] = runSess.AgentName
 	s.runMu.Unlock()
 	// Returned channel is unused here — WaitChatRun looks it up by
 	// agent_session_id when the operator (or repair plugin) calls in.
-	_ = s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionExplicit)
+	_ = s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionExplicit, agentRunID, startedAt)
 
-	return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID}, nil
+	return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID, AgentRunId: agentRunID}, nil
+}
+
+func (s *HostServiceServer) recordAgentRunStart(ctx context.Context, sess *models.Session, agentSessionID string, startedAt time.Time) string {
+	if s.agentRuns == nil || sess == nil || agentSessionID == "" {
+		return ""
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)
+	defer cancel()
+	if err := s.agentRuns.Stop(recordCtx, agentSessionID, db.AgentRunStopStopped, startedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		log.Warn().Err(err).Str("session", sess.ID).Str("agent_session", agentSessionID).Msg("close stale agent run failed")
+	}
+	run, err := s.agentRuns.Start(recordCtx, db.AgentRun{
+		SessionID:      sess.ID,
+		AgentSessionID: agentSessionID,
+		AgentName:      sess.AgentName,
+		Model:          firstNonEmpty(sess.EffectiveModel, sess.Model),
+		Effort:         sess.EffectiveEffort,
+		StartedAt:      startedAt,
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("session", sess.ID).Str("agent_session", agentSessionID).Msg("record agent run start failed")
+		return ""
+	}
+	return run.ID
+}
+
+func isInvalidRunTelemetryError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "cannot be negative") ||
+		strings.Contains(msg, "cannot be before")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // replaceBlockingChatForRepair gates a repair replacement on the chat
@@ -1842,12 +2144,16 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 
 	s.runMu.Lock()
 	run, ok := s.runCompletion[agentSessionID]
+	finalizer := s.chatRunFinalizers[agentSessionID]
 	s.runMu.Unlock()
 	if !ok {
 		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "no active chat run for agent_session_id %s", agentSessionID)
 	}
 	if run.completionMode == "" {
 		run.completionMode = chatRunCompletionHook
+	}
+	if finalizer != nil {
+		return s.waitForChatRunFinalizer(ctx, agentSessionID, run, finalizer)
 	}
 
 	deadline := time.NewTimer(s.waitChatRunDeadline)
@@ -1873,9 +2179,8 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 	for {
 		select {
 		case res := <-run.done:
-			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
-			s.removeRunHookBestEffort(agentSessionID)
-			s.cleanupRun(agentSessionID)
+			providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+			s.finalizeCompletedChatRun(agentSessionID, run, res)
 			return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
 		case <-watchdogTick:
 			// Not displaceable yet (WORKING, young, tracker cold): keep
@@ -1889,9 +2194,8 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 				continue
 			}
 			if res, ok := watchdogCompletionAvailable(run); ok {
-				providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
-				s.removeRunHookBestEffort(agentSessionID)
-				s.cleanupRun(agentSessionID)
+				providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+				s.finalizeCompletedChatRun(agentSessionID, run, res)
 				return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
 			}
 			log.Warn().
@@ -1904,16 +2208,26 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 			if s.lifecycle != nil {
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), watchdogReclaimTimeout)
 				if _, err := s.lifecycle.ReclaimRepairChat(cleanupCtx, sessionID, agentSessionID, "watchdog: agent went idle without completing"); err != nil {
-					// Best-effort: a reclaim error (e.g. non-repair title) is
-					// logged and does NOT change the outcome; the run still
-					// fails and the pane is left for the replace path.
 					log.Warn().Err(err).
 						Str("agent_session", agentSessionID).
-						Msg("WaitChatRun: watchdog pane reclaim failed; failing run anyway")
+						Msg("WaitChatRun: watchdog pane reclaim failed; leaving run open")
+					cancel()
+					providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+					s.finalizeChatRunWhenDone(agentSessionID, run)
+					return &bossanovav1.WaitChatRunHostResponse{
+						ExitError:         fmt.Sprintf("agent went idle without completing and pane reclaim failed (no output for %s; watchdog): %v", idleWindow, err),
+						ProviderSessionId: providerSessionID,
+					}, nil
 				}
 				cancel()
 			}
-			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+			providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.recordAgentRunStop(stopCtx, agentSessionID, db.AgentRunStopUnknown)
+			stopCancel()
+			telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.recordChatRunTelemetry(telemetryCtx, agentSessionID, run)
+			telemetryCancel()
 			s.removeRunHookBestEffort(agentSessionID)
 			s.cleanupRun(agentSessionID)
 			return &bossanovav1.WaitChatRunHostResponse{
@@ -1921,25 +2235,23 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 				ProviderSessionId: providerSessionID,
 			}, nil
 		case <-deadline.C:
-			// Surface the deadline expiry so operators can correlate a
-			// synthesised exit_error with later events (eg. a Stop POST
-			// arriving after cleanup that gets a 404). Without this log the
-			// 404 reads as an unexplained anomaly.
+			// Surface the deadline expiry without tearing down run state. The
+			// tmux-backed process may still be alive, and a later completion
+			// signal must still be able to close the DB row with the real stop
+			// reason and telemetry.
 			log.Warn().
 				Str("agent_session", agentSessionID).
 				Dur("deadline", s.waitChatRunDeadline).
-				Msg("WaitChatRun: agent run did not signal completion within deadline; synthesising exit_error")
+				Msg("WaitChatRun: agent run did not signal completion within deadline; leaving run open")
 			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
-			s.removeRunHookBestEffort(agentSessionID)
-			s.cleanupRun(agentSessionID)
+			s.finalizeChatRunWhenDone(agentSessionID, run)
 			return &bossanovav1.WaitChatRunHostResponse{
 				ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
 				ProviderSessionId: providerSessionID,
 			}, nil
 		case <-ctx.Done():
 			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
-			s.removeRunHookBestEffort(agentSessionID)
-			s.cleanupRun(agentSessionID)
+			s.finalizeChatRunWhenDone(agentSessionID, run)
 			if run.completionMode == chatRunCompletionExplicit {
 				return &bossanovav1.WaitChatRunHostResponse{
 					ExitError:         waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
@@ -1948,6 +2260,76 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 			}
 			return nil, grpcstatus.FromContextError(ctx.Err()).Err()
 		}
+	}
+}
+
+func (s *HostServiceServer) waitForChatRunFinalizer(ctx context.Context, agentSessionID string, run activeChatRun, finalizer *chatRunFinalizer) (*bossanovav1.WaitChatRunHostResponse, error) {
+	deadline := time.NewTimer(s.waitChatRunDeadline)
+	defer deadline.Stop()
+
+	select {
+	case <-finalizer.done:
+		providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+		return &bossanovav1.WaitChatRunHostResponse{ExitError: finalizer.result.exitError, ProviderSessionId: providerSessionID}, nil
+	case <-deadline.C:
+		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+		return &bossanovav1.WaitChatRunHostResponse{
+			ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
+			ProviderSessionId: providerSessionID,
+		}, nil
+	case <-ctx.Done():
+		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+		if run.completionMode == chatRunCompletionExplicit {
+			return &bossanovav1.WaitChatRunHostResponse{
+				ExitError:         waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+				ProviderSessionId: providerSessionID,
+			}, nil
+		}
+		return nil, grpcstatus.FromContextError(ctx.Err()).Err()
+	}
+}
+
+func (s *HostServiceServer) finalizeChatRunWhenDone(agentSessionID string, run activeChatRun) {
+	s.runMu.Lock()
+	if _, ok := s.chatRunFinalizers[agentSessionID]; ok {
+		s.runMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	finalizer := &chatRunFinalizer{done: done}
+	s.chatRunFinalizers[agentSessionID] = finalizer
+	s.runMu.Unlock()
+
+	safego.Go(log.Logger, func() {
+		defer close(done)
+		res := <-run.done
+		finalizer.result = res
+		s.finalizeCompletedChatRun(agentSessionID, run, res)
+	})
+}
+
+func (s *HostServiceServer) finalizeCompletedChatRun(agentSessionID string, run activeChatRun, res completionResult) {
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	s.recordAgentRunStop(stopCtx, agentSessionID, stopReasonFromExitError(res.exitError))
+	stopCancel()
+	telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	s.recordChatRunTelemetry(telemetryCtx, agentSessionID, run)
+	telemetryCancel()
+	s.removeRunHookBestEffort(agentSessionID)
+	s.cleanupRun(agentSessionID)
+}
+
+func stopReasonFromExitError(exitError string) string {
+	if strings.TrimSpace(exitError) == "" {
+		return db.AgentRunStopClean
+	}
+	switch agenterr.Classify(exitError, time.Now()).Kind {
+	case agenterr.KindUsageExhausted:
+		return db.AgentRunStopUsageExhausted
+	case agenterr.KindRateLimited:
+		return db.AgentRunStopRateLimited
+	default:
+		return db.AgentRunStopUnknown
 	}
 }
 
@@ -1970,7 +2352,14 @@ func (s *HostServiceServer) effectiveChatSession(ctx context.Context, sess *mode
 	if sess == nil || s.agentChats == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
 		return sess
 	}
-	chat, err := s.agentChats.GetByAgentSessionID(ctx, *sess.AgentSessionID)
+	return s.effectiveChatSessionForAgentSession(ctx, sess, *sess.AgentSessionID)
+}
+
+func (s *HostServiceServer) effectiveChatSessionForAgentSession(ctx context.Context, sess *models.Session, agentSessionID string) *models.Session {
+	if sess == nil || s.agentChats == nil || agentSessionID == "" {
+		return sess
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil || chat == nil {
 		return sess
 	}
@@ -1980,6 +2369,10 @@ func (s *HostServiceServer) effectiveChatSession(ctx context.Context, sess *mode
 	}
 	if chat.Model != "" {
 		eff.Model = chat.Model
+		eff.EffectiveModel = chat.Model
+	}
+	if chat.AgentName != "" {
+		eff.EffectiveEffort = session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
 	}
 	if chat.AccountID != nil {
 		eff.AccountID = chat.AccountID
@@ -2175,6 +2568,7 @@ func (s *HostServiceServer) cleanupRun(agentSessionID string) {
 	s.runMu.Lock()
 	sessionID := s.runSessionByID[agentSessionID]
 	delete(s.runCompletion, agentSessionID)
+	delete(s.chatRunFinalizers, agentSessionID)
 	delete(s.runHookTokens, agentSessionID)
 	delete(s.runSessionByID, agentSessionID)
 	delete(s.agentSessionByID, agentSessionID)

@@ -66,6 +66,7 @@ go_library(
         "20260825000000_session_state_observed_at.sql",
         "20260825000001_callback_transition_baseline.sql",
         "20260825000002_add_session_effective_model_effort.sql",
+        "20260826000000_agent_runs.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

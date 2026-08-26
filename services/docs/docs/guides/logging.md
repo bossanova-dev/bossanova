@@ -19,6 +19,10 @@ find it in `bossd.log`. `boss tail` reads it too, but you have to ask for it by
 agent-session id. See
 [Agent and chat logs](#agent-and-chat-logs-are-a-different-surface) below.
 
+For run-level timing and cost telemetry, use `boss cost`. `boss tail` answers
+"what did this process log?"; `boss cost` answers "how long did runs take, how
+many model/tool calls happened, and how much direct subagent time was running?".
+
 ## The `boss tail` command
 
 With no arguments, `boss tail` prints the last 10 lines of the daemon log:
@@ -242,6 +246,11 @@ So: to see why a session failed to _start_, read `bossd.log` via `boss tail`. To
 see what the agent _said_, read the chat — attach to the session, or read the
 transcript — or point `boss tail` at the agent-session id, which is the quickest
 route for a headless run that is still in flight.
+
+To inspect the run as telemetry instead of text, use `boss cost <session-id>`.
+That command reads the daemon's agent-run ledger and reports wall-clock,
+parent-only time, parallelism, model-call counts, tool-call counts, and token
+counts when the agent runner provided them.
 
 Attaching to a chat whose headless run is still going is refused, and the
 refusal prints the exact agent-log path to follow instead.

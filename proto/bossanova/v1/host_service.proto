@@ -77,6 +77,11 @@ service HostService {
   // or runner-level failure — leaves a structured trace in SQLite that
   // outlives the in-memory cooldowns map.
   rpc RecordRepairOutcome(RecordRepairOutcomeRequest) returns (RecordRepairOutcomeResponse);
+
+  // RecordRunTelemetry updates the daemon-created agent_runs row with counters
+  // parsed by the agent-runner plugin. Row creation belongs to the daemon's
+  // runner boundary, so this RPC never inserts.
+  rpc RecordRunTelemetry(RecordRunTelemetryRequest) returns (RecordRunTelemetryResponse);
 }
 
 // --- ListOpenPRs ---
@@ -193,6 +198,8 @@ message StartAgentRunHostRequest {
 message StartAgentRunHostResponse {
   // Resolved session ID returned by the loaded AgentRunner plugin.
   string agent_session_id = 1;
+  // Daemon-minted agent_runs.id for plugins that can report counters.
+  string agent_run_id = 2;
 }
 
 // --- WaitAgentRun ---
@@ -246,6 +253,8 @@ message StartChatRunHostRequest {
 message StartChatRunHostResponse {
   // Resolved agent session ID returned by the loaded AgentRunner plugin.
   string agent_session_id = 1;
+  // Daemon-minted agent_runs.id for plugins that can report counters.
+  string agent_run_id = 2;
 }
 
 // --- WaitChatRun ---
@@ -321,3 +330,31 @@ message RecordRepairOutcomeRequest {
 }
 
 message RecordRepairOutcomeResponse {}
+
+// --- RecordRunTelemetry ---
+
+message RecordRunTelemetryRequest {
+  string agent_run_id = 1;
+  int64 parent_model_call_count = 2;
+  int64 child_model_call_count = 3;
+  int64 tool_call_count = 4;
+  int64 subagent_count = 5;
+  int64 direct_subagent_count = 6;
+  optional int64 output_token_count = 7;
+  optional int64 reasoning_token_count = 8;
+  repeated AgentRunChildTelemetry children = 9;
+}
+
+message AgentRunChildTelemetry {
+  string agent_session_id = 1;
+  string parent_agent_id = 2;
+  int32 spawn_depth = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp stopped_at = 5;
+  int64 model_call_count = 6;
+  int64 tool_call_count = 7;
+  optional int64 output_token_count = 8;
+  optional int64 reasoning_token_count = 9;
+}
+
+message RecordRunTelemetryResponse {}

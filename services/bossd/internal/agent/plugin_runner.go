@@ -2,13 +2,22 @@ package agent
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/db"
 )
 
 // AgentRunnerClient is the bossd-side wrapper around the AgentRunnerService
@@ -52,40 +61,63 @@ var (
 	_ ContextualStopper = (*PluginRunner)(nil)
 )
 
+var (
+	agentRunStartRecordTimeout   = 10 * time.Second
+	completedRunStopTimeout      = 10 * time.Second
+	completedRunTelemetryTimeout = 10 * time.Second
+)
+
 // PluginRunner adapts the AgentRunnerClient + Tailer to the existing
 // agent.AgentRunner interface so all in-process call sites in bossd
 // (Lifecycle, fixloop, Server, taskorchestrator) keep working unchanged.
 type PluginRunner struct {
-	client AgentRunnerClient
-	tailer *Tailer
-	logDir string
-	logger zerolog.Logger
+	client    AgentRunnerClient
+	tailer    *Tailer
+	logDir    string
+	logger    zerolog.Logger
+	runs      db.AgentRunStore
+	agentName string
+	logMu     sync.Mutex
+	logPaths  map[string]string
+	runIDs    map[string]string
+	workDirs  map[string]string
+	starts    map[string]time.Time
 }
 
 // NewPluginRunner creates a PluginRunner that forwards Start/Stop/IsRunning/ExitError
 // to client and serves Subscribe/History from tailer. logDir is the bossd-owned
 // directory where per-session log files are written.
 func NewPluginRunner(client AgentRunnerClient, tailer *Tailer, logDir string, logger zerolog.Logger) *PluginRunner {
-	return &PluginRunner{client: client, tailer: tailer, logDir: logDir, logger: logger}
+	return &PluginRunner{client: client, tailer: tailer, logDir: logDir, logger: logger, logPaths: map[string]string{}, runIDs: map[string]string{}, workDirs: map[string]string{}, starts: map[string]time.Time{}}
+}
+
+func (r *PluginRunner) SetAgentName(name string) {
+	r.agentName = name
+}
+
+// SetAgentRunStore enables daemon-owned run-cost telemetry recording. Nil keeps
+// the historical runner behavior for tests and minimal wiring.
+func (r *PluginRunner) SetAgentRunStore(store db.AgentRunStore) {
+	r.runs = store
 }
 
 // Start forwards the request to the agent plugin via gRPC and then opens the
 // tailer on the resolved session ID so that Subscribe / History work immediately.
 func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string) (string, error) {
-	return r.start(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED)
+	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED, sessionID, "")
 }
 
 // StartWithHeadlessCapabilityProfile carries an explicit runtime-operation
 // requirement to the plugin. It is called only by opted-in headless launches;
 // Start above preserves the historical wire request exactly.
 func (r *PluginRunner) StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
-	return r.start(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, profile)
+	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, profile, sessionID, "")
 }
 
 // StartWithHeadlessLaunchOptions forwards every panel-less launch control to
 // the plugin in one request so a capability profile cannot be dropped.
 func (r *PluginRunner) StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error) {
-	return r.start(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, options.HeadlessCapabilityProfile)
+	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, options.HeadlessCapabilityProfile, options.BossSessionID, options.EffectiveModel)
 }
 
 // PreflightHeadlessCapabilityProfile asks the plugin to validate a required
@@ -109,16 +141,20 @@ func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, w
 	return nil
 }
 
-func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
+func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile, bossSessionID, effectiveModel string) (string, error) {
 	logKey := sessionID
 	if logKey == "" {
-		var err error
-		logKey, err = sqlutil.NewID()
-		if err != nil {
-			return "", fmt.Errorf("mint log key: %w", err)
+		logKey = bossSessionID
+		if logKey == "" {
+			var err error
+			logKey, err = sqlutil.NewID()
+			if err != nil {
+				return "", fmt.Errorf("mint log key: %w", err)
+			}
 		}
 	}
 	logPath := r.logPathFor(logKey)
+	startedAt := time.Now()
 	req := &bossanovav1.StartAgentRunRequest{
 		WorkDir:                   workDir,
 		Plan:                      plan,
@@ -134,8 +170,28 @@ func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *
 	if err != nil {
 		return "", fmt.Errorf("plugin StartRun: %w", err)
 	}
+	if r.runs != nil {
+		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)
+		run, err := r.runs.Start(recordCtx, db.AgentRun{
+			SessionID:      bossSessionID,
+			AgentSessionID: resp.SessionId,
+			AgentName:      r.agentName,
+			Model:          firstNonEmpty(effectiveModel, model),
+			Effort:         effort,
+			StartedAt:      startedAt,
+		})
+		cancel()
+		if err != nil {
+			r.logger.Warn().Err(err).Str("session", sessionID).Str("agent_session", resp.SessionId).Msg("record agent run start failed")
+		} else {
+			r.rememberRunID(resp.SessionId, run.ID)
+		}
+	}
 	// Index the tail under the resolved session ID, but open the path the plugin
 	// was asked to write.
+	r.rememberLogPath(resp.SessionId, logPath)
+	r.rememberWorkDir(resp.SessionId, workDir)
+	r.rememberRunStartedAt(resp.SessionId, startedAt)
 	if err := r.tailer.Open(resp.SessionId, logPath); err != nil {
 		// Plugin already started; we can't easily roll back. Log and continue.
 		r.logger.Warn().Err(err).Str("session", resp.SessionId).Msg("tailer.Open failed; AttachSession output will be empty")
@@ -162,8 +218,18 @@ func (r *PluginRunner) StopWithContext(ctx context.Context, sessionID string) er
 	_, err := r.client.StopRun(ctx, &bossanovav1.StopAgentRunRequest{SessionId: sessionID})
 	r.tailer.Close(sessionID)
 	if err != nil {
+		telemetryCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r.recordTelemetryFromLog(telemetryCtx, sessionID)
 		return fmt.Errorf("plugin StopRun: %w", err)
 	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	r.recordStop(stopCtx, sessionID, db.AgentRunStopStopped)
+	stopCancel()
+	telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer telemetryCancel()
+	r.recordTelemetryFromLog(telemetryCtx, sessionID)
+	r.clearRunMemory(sessionID)
 	return nil
 }
 
@@ -187,9 +253,148 @@ func (r *PluginRunner) ExitError(sessionID string) error {
 		return nil
 	}
 	if resp.ExitError == "" {
+		r.recordCompletedRun(sessionID, db.AgentRunStopClean)
+		r.clearRunMemory(sessionID)
 		return nil
 	}
+	r.recordCompletedRun(sessionID, stopReasonForExit(resp.ExitError))
+	r.clearRunMemory(sessionID)
 	return fmt.Errorf("%s", resp.ExitError) //nolint:err113 // error text comes from the plugin over gRPC; no sentinel to wrap
+}
+
+func (r *PluginRunner) recordCompletedRun(sessionID, reason string) {
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), completedRunStopTimeout)
+	r.recordStop(stopCtx, sessionID, reason)
+	stopCancel()
+	telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), completedRunTelemetryTimeout)
+	defer telemetryCancel()
+	r.recordTelemetryFromLog(telemetryCtx, sessionID)
+}
+
+func (r *PluginRunner) recordStop(ctx context.Context, agentSessionID, reason string) {
+	if r.runs == nil {
+		return
+	}
+	if err := r.runs.Stop(ctx, agentSessionID, reason, time.Now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent run stop failed")
+	}
+}
+
+func (r *PluginRunner) recordTelemetryFromLog(ctx context.Context, agentSessionID string) {
+	if r.runs == nil {
+		return
+	}
+	path := r.rememberedLogPath(agentSessionID)
+	counts, err := tallyAgentLog(ctx, path, agentSessionID, r.rememberedWorkDir(agentSessionID), r.rememberedRunStartedAt(agentSessionID))
+	if err != nil {
+		r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("tally agent log telemetry failed")
+		return
+	}
+	telemetry := db.AgentRunTelemetry{
+		ParentModelCallCount: counts.ParentModelCallCount,
+		ChildModelCallCount:  counts.ChildModelCallCount,
+		ToolCallCount:        counts.ToolCallCount,
+		SubagentCount:        counts.SubagentCount,
+		DirectSubagentCount:  counts.DirectSubagentCount,
+		OutputTokenCount:     counts.OutputTokenCount,
+		ReasoningTokenCount:  counts.ReasoningTokenCount,
+	}
+	for _, child := range counts.Children {
+		telemetry.Children = append(telemetry.Children, db.AgentRunChild{
+			AgentSessionID:      child.AgentSessionID,
+			ParentAgentID:       child.ParentAgentID,
+			SpawnDepth:          child.SpawnDepth,
+			StartedAt:           child.StartedAt,
+			StoppedAt:           child.StoppedAt,
+			ModelCallCount:      child.ModelCallCount,
+			ToolCallCount:       child.ToolCallCount,
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		})
+	}
+	if runID := r.rememberedRunID(agentSessionID); runID != "" {
+		if err := r.runs.RecordTelemetry(ctx, runID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent log telemetry failed")
+		}
+		return
+	}
+	if err := r.runs.RecordTelemetryByAgentSessionID(ctx, agentSessionID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent log telemetry failed")
+	}
+}
+
+func tallyAgentLog(ctx context.Context, path, agentSessionID, workDir string, since time.Time) (agenttelemetry.Counts, error) {
+	if err := ctx.Err(); err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if workDir != "" {
+		transcript, err := agenttelemetry.ClaudeTranscriptPath(workDir, agentSessionID)
+		if err == nil {
+			if _, statErr := os.Stat(transcript); statErr == nil {
+				counts, err := agenttelemetry.TallyClaudePathWithChildrenSinceContext(ctx, transcript, filepath.Dir(transcript), agentSessionID, since)
+				if err != nil {
+					return agenttelemetry.Counts{}, err
+				}
+				if err := ctx.Err(); err != nil {
+					return agenttelemetry.Counts{}, err
+				}
+				return counts, nil
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), agentSessionID, "subagents")); err == nil {
+		counts, err := agenttelemetry.TallyClaudePathForSessionContext(ctx, path, agentSessionID)
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return counts, nil
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), "subagents")); err == nil {
+		counts, err := agenttelemetry.TallyClaudePathWithChildrenSinceContext(ctx, path, filepath.Dir(path), strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), time.Time{})
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return counts, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	defer func() { _ = f.Close() }()
+	counts, err := agenttelemetry.TallyCodexSinceContext(ctx, f, since)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	return counts, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stopReasonForExit(exitError string) string {
+	switch agenterr.Classify(exitError, time.Now()).Kind {
+	case agenterr.KindUsageExhausted:
+		return db.AgentRunStopUsageExhausted
+	case agenterr.KindRateLimited:
+		return db.AgentRunStopRateLimited
+	default:
+		return db.AgentRunStopUnknown
+	}
 }
 
 // Subscribe returns a channel of OutputLines served from the local Tailer.
@@ -211,4 +416,73 @@ func (r *PluginRunner) AgentClient() AgentRunnerClient { return r.client }
 // Files live in r.logDir/<sessionID>.log.
 func (r *PluginRunner) logPathFor(sessionID string) string {
 	return filepath.Join(r.logDir, sessionID+".log")
+}
+
+func (r *PluginRunner) rememberLogPath(agentSessionID, path string) {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	r.logPaths[agentSessionID] = path
+}
+
+func (r *PluginRunner) rememberedLogPath(agentSessionID string) string {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	if path := r.logPaths[agentSessionID]; path != "" {
+		return path
+	}
+	return r.logPathFor(agentSessionID)
+}
+
+func (r *PluginRunner) rememberRunID(agentSessionID, runID string) {
+	if agentSessionID == "" || runID == "" {
+		return
+	}
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	r.runIDs[agentSessionID] = runID
+}
+
+func (r *PluginRunner) rememberedRunID(agentSessionID string) string {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	return r.runIDs[agentSessionID]
+}
+
+func (r *PluginRunner) clearRunMemory(agentSessionID string) {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	delete(r.logPaths, agentSessionID)
+	delete(r.runIDs, agentSessionID)
+	delete(r.workDirs, agentSessionID)
+	delete(r.starts, agentSessionID)
+}
+
+func (r *PluginRunner) rememberWorkDir(agentSessionID, workDir string) {
+	if agentSessionID == "" || workDir == "" {
+		return
+	}
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	r.workDirs[agentSessionID] = workDir
+}
+
+func (r *PluginRunner) rememberRunStartedAt(agentSessionID string, startedAt time.Time) {
+	if agentSessionID == "" || startedAt.IsZero() {
+		return
+	}
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	r.starts[agentSessionID] = startedAt
+}
+
+func (r *PluginRunner) rememberedWorkDir(agentSessionID string) string {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	return r.workDirs[agentSessionID]
+}
+
+func (r *PluginRunner) rememberedRunStartedAt(agentSessionID string) time.Time {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	return r.starts[agentSessionID]
 }

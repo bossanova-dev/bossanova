@@ -91,6 +91,10 @@ The underlying file is `$XDG_STATE_HOME/bossanova/logs/bossd.log` if
 (on both macOS and Linux). See the [Logging guide](../guides/logging.md)
 for sources, filters, and JSON output.
 
+`boss tail` is the right tool for the setup-script failure text. It is not a
+cost or timing report: use `boss cost <session-id>` when you need run duration,
+parent-only time, token totals, model/tool calls, or subagent counts.
+
 The setup script runs from the new worktree's directory, so you can usually
 reproduce it manually. This is a multi-line shell recipe rather than a single
 command, so it stays a plain block — the `boss show` inside it reads the
@@ -506,7 +510,8 @@ no-equivalent note. For `boss daemon install` an MCP tool could not have helped
 in any case: every tool is served by the daemon that is not running.
 
 See the [Logging guide](../guides/logging.md) for sources, filters, and
-JSON output, or
+JSON output, or use `boss cost` for run-cost telemetry that raw log text cannot
+summarize reliably. See
 [Setup script exits non-zero](#setup-script-exits-non-zero) above for the
 underlying file path.
 

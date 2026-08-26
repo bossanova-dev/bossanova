@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/recurser/bossalib/agenttelemetry"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
@@ -42,6 +45,7 @@ var (
 	_ db.SessionStore                                    = (*mockSessionStore)(nil)
 	_ db.RepoStore                                       = (*mockRepoStore)(nil)
 	_ db.AgentChatStore                                  = (*mockAgentChatStore)(nil)
+	_ db.AgentRunStore                                   = (*fakeLifecycleAgentRunStore)(nil)
 	_ gitpkg.WorktreeManager                             = (*mockWorktreeManager)(nil)
 	_ agent.AgentRunner                                  = (*mockAgentRunner)(nil)
 	_ agent.AgentDispatcher                              = (*mockAgentRunner)(nil)
@@ -72,6 +76,88 @@ func newTestLifecycle(
 	lc := NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, provider, logger)
 	lc.SetProofEnvResolver(proofenv.NewNoop())
 	return lc
+}
+
+type fakeLifecycleAgentRunStore struct {
+	started          []db.AgentRun
+	stopped          []fakeLifecycleAgentRunStop
+	telemetryByRunID []fakeLifecycleAgentRunTelemetry
+	telemetryByAgent []fakeLifecycleAgentRunTelemetry
+	startCtxErr      error
+	startDeadline    time.Time
+}
+
+type fakeLifecycleAgentRunStop struct {
+	agentSessionID string
+	reason         string
+	stoppedAt      time.Time
+}
+
+type fakeLifecycleAgentRunTelemetry struct {
+	key       string
+	telemetry db.AgentRunTelemetry
+}
+
+func (f *fakeLifecycleAgentRunStore) Start(ctx context.Context, run db.AgentRun) (db.AgentRun, error) {
+	f.startCtxErr = ctx.Err()
+	if deadline, ok := ctx.Deadline(); ok {
+		f.startDeadline = deadline
+	}
+	if err := ctx.Err(); err != nil {
+		return db.AgentRun{}, err
+	}
+	if run.ID == "" {
+		run.ID = fmt.Sprintf("run-%d", len(f.started)+1)
+	}
+	f.started = append(f.started, run)
+	return run, nil
+}
+
+func (f *fakeLifecycleAgentRunStore) Stop(_ context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
+	f.stopped = append(f.stopped, fakeLifecycleAgentRunStop{
+		agentSessionID: agentSessionID,
+		reason:         reason,
+		stoppedAt:      stoppedAt,
+	})
+	return nil
+}
+
+func (f *fakeLifecycleAgentRunStore) StopRun(_ context.Context, runID, reason string, stoppedAt time.Time) error {
+	f.stopped = append(f.stopped, fakeLifecycleAgentRunStop{
+		agentSessionID: runID,
+		reason:         reason,
+		stoppedAt:      stoppedAt,
+	})
+	return nil
+}
+
+func (f *fakeLifecycleAgentRunStore) RecordTelemetry(_ context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+	f.telemetryByRunID = append(f.telemetryByRunID, fakeLifecycleAgentRunTelemetry{key: runID, telemetry: telemetry})
+	return nil
+}
+
+func (f *fakeLifecycleAgentRunStore) RecordTelemetryByAgentSessionID(_ context.Context, agentSessionID string, telemetry db.AgentRunTelemetry) error {
+	f.telemetryByAgent = append(f.telemetryByAgent, fakeLifecycleAgentRunTelemetry{key: agentSessionID, telemetry: telemetry})
+	return nil
+}
+
+func (f *fakeLifecycleAgentRunStore) ReconcileOpen(context.Context, time.Time, []string) (int64, error) {
+	return 0, nil
+}
+
+func (f *fakeLifecycleAgentRunStore) List(_ context.Context, filter db.AgentRunFilter) ([]db.AgentRun, error) {
+	var out []db.AgentRun
+	for _, run := range f.started {
+		if filter.SessionID != "" && run.SessionID != filter.SessionID {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out, nil
+}
+
+func (f *fakeLifecycleAgentRunStore) Backfill(context.Context, db.AgentRunBackfillParams) (db.AgentRunBackfillSummary, error) {
+	return db.AgentRunBackfillSummary{}, nil
 }
 
 // --- Mock SessionStore ---
@@ -1317,13 +1403,15 @@ type mockPreflightCall struct {
 }
 
 type mockStartCall struct {
-	workDir string
-	plan    string
-	resume  *string
-	model   string
-	effort  string
-	env     map[string]string
-	profile pb.HeadlessCapabilityProfile
+	workDir        string
+	plan           string
+	resume         *string
+	model          string
+	effort         string
+	env            map[string]string
+	profile        pb.HeadlessCapabilityProfile
+	bossSessionID  string
+	effectiveModel string
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -1393,7 +1481,17 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.
 }
 
 func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _ string, workDir, plan string, resume *string, _ string, model, effort string, env map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
-	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, effort: effort, env: env, profile: options.HeadlessCapabilityProfile})
+	m.started = append(m.started, mockStartCall{
+		workDir:        workDir,
+		plan:           plan,
+		resume:         resume,
+		model:          model,
+		effort:         effort,
+		env:            env,
+		profile:        options.HeadlessCapabilityProfile,
+		bossSessionID:  options.BossSessionID,
+		effectiveModel: options.EffectiveModel,
+	})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -2394,22 +2492,26 @@ func TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch(t *testin
 				OriginURL:         "owner/repo",
 			}
 			sessions.sessions["sess-1"] = &models.Session{
-				ID:         "sess-1",
-				RepoID:     "repo-1",
-				Title:      "Unattended codex",
-				Plan:       "do work",
-				BaseBranch: "main",
-				AgentName:  "codex",
-				Model:      "gpt-5-codex",
-				State:      machine.CreatingWorktree,
+				ID:              "sess-1",
+				RepoID:          "repo-1",
+				Title:           "Unattended codex",
+				Plan:            "do work",
+				BaseBranch:      "main",
+				AgentName:       "codex",
+				Model:           "gpt-5-codex",
+				EffectiveModel:  "gpt-5-codex-high",
+				EffectiveEffort: "high",
+				State:           machine.CreatingWorktree,
 			}
 
 			client := newFakeAgent()
+			runs := &fakeLifecycleAgentRunStore{}
 			lifecycle := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, worktrees, runner, tx, newMockVCSProvider(), zerolog.Nop())
 			lifecycle.newTmuxChatAgentSessionID = func() string { return "agent-1" }
 			lifecycle.SetHookPort(45678)
 			lifecycle.SetAgents(map[string]agent.AgentRunnerClient{"codex": client})
 			lifecycle.SetAgentLogsDir(t.TempDir())
+			lifecycle.SetAgentRunStore(runs)
 			lifecycle.SetPollArmer(&fakePollArmer{})
 			lifecycle.SetDaemonCtx(ctx)
 
@@ -2437,6 +2539,22 @@ func TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch(t *testin
 			}
 			if got := runner.preflights[1]; got.env["CODEX_HOME"] != filepath.Join(worktreeDir, ".codex") || got.env["HOME"] != filepath.Join(worktreeDir, "home") {
 				t.Errorf("tmux preflight env = %v, want worktree CODEX_HOME and HOME", got.env)
+			}
+			if len(runner.started) != 0 {
+				t.Fatalf("headless starts = %d, want 0 for tmux-hosted launch", len(runner.started))
+			}
+			if len(runs.started) != 1 {
+				t.Fatalf("agent run starts = %d, want 1", len(runs.started))
+			}
+			gotRun := runs.started[0]
+			if gotRun.SessionID != "sess-1" || gotRun.AgentSessionID != "agent-1" || gotRun.AgentName != "codex" {
+				t.Fatalf("agent run start = %#v, want sess-1/agent-1/codex", gotRun)
+			}
+			if gotRun.Model != "gpt-5-codex-high" || gotRun.Effort != "high" {
+				t.Fatalf("agent run model/effort = %q/%q, want effective values", gotRun.Model, gotRun.Effort)
+			}
+			if gotRun.StartedAt.IsZero() {
+				t.Fatal("agent run start time is zero")
 			}
 		})
 	}
@@ -9567,5 +9685,268 @@ func TestSignalSessionRunComplete_ReleasesQuestionHookToken(t *testing.T) {
 
 	if got := reg.releasedIDs(); len(got) != 1 || got[0] != runID {
 		t.Errorf("released = %v, want [%s]", got, runID)
+	}
+}
+
+func TestSignalSessionRunCompleteRecordsLifecycleAgentRunTelemetry(t *testing.T) {
+	logDir := t.TempDir()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: t.TempDir(),
+		State:        machine.Blocked,
+		AgentName:    "codex",
+	}
+	runID := "ses_codex_1"
+	if err := os.WriteFile(bossalog.AgentLogFile(logDir, "sess-1"), []byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"function_call","name":"exec_command"}}`,
+		`{"type":"item.completed","item":{"type":"assistant_message","text":"done"}}`,
+		`{"type":"turn.completed","usage":{"output_tokens":12,"reasoning_output_tokens":5}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write agent log: %v", err)
+	}
+
+	runs := &fakeLifecycleAgentRunStore{}
+	runs.started = append(runs.started, db.AgentRun{SessionID: "sess-1", AgentSessionID: runID, StartedAt: time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)})
+	lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgentLogsDir(logDir)
+	lc.SetAgentRunStore(runs)
+
+	lc.SignalSessionRunComplete("sess-1", runID, "")
+
+	if len(runs.stopped) != 1 {
+		t.Fatalf("agent run stops = %d, want 1", len(runs.stopped))
+	}
+	if got := runs.stopped[0]; got.agentSessionID != runID || got.reason != db.AgentRunStopClean || got.stoppedAt.IsZero() {
+		t.Fatalf("agent run stop = %#v, want clean stop for %s", got, runID)
+	}
+	if len(runs.telemetryByAgent) != 1 {
+		t.Fatalf("telemetry writes = %d, want 1", len(runs.telemetryByAgent))
+	}
+	got := runs.telemetryByAgent[0]
+	if got.key != runID {
+		t.Fatalf("telemetry key = %q, want %q", got.key, runID)
+	}
+	if got.telemetry.ParentModelCallCount != 2 || got.telemetry.ToolCallCount != 1 {
+		t.Fatalf("telemetry counts = parent %d tools %d, want 2/1", got.telemetry.ParentModelCallCount, got.telemetry.ToolCallCount)
+	}
+	if got.telemetry.OutputTokenCount == nil || *got.telemetry.OutputTokenCount != 12 {
+		t.Fatalf("output tokens = %v, want 12", got.telemetry.OutputTokenCount)
+	}
+	if got.telemetry.ReasoningTokenCount == nil || *got.telemetry.ReasoningTokenCount != 5 {
+		t.Fatalf("reasoning tokens = %v, want 5", got.telemetry.ReasoningTokenCount)
+	}
+}
+
+func TestSignalSessionRunCompleteTalliesCodexProviderRollout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	logDir := t.TempDir()
+	providerSessionID := "provider-finalize-codex"
+	rollout := filepath.Join(home, ".codex", "sessions", "2026", "08", "26", "rollout-2026-08-26T01-00-00-"+providerSessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"custom_tool_call","name":"spawn_agent"}}`,
+		`{"type":"item.completed","item":{"type":"custom_tool_call_output"}}`,
+		`{"type":"item.completed","item":{"type":"assistant_message","text":"done"}}`,
+		`{"type":"turn.completed","usage":{"output_tokens":12,"reasoning_output_tokens":5}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main"}
+	agentSessionID := "boss-correlation-codex"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		WorktreePath:   t.TempDir(),
+		State:          machine.Blocked,
+		AgentName:      "codex",
+		AgentSessionID: &agentSessionID,
+	}
+	if err := os.WriteFile(bossalog.AgentLogFile(logDir, agentSessionID), []byte("raw terminal capture, not jsonl\n"), 0o600); err != nil {
+		t.Fatalf("write terminal log: %v", err)
+	}
+
+	runs := &fakeLifecycleAgentRunStore{}
+	runs.started = append(runs.started, db.AgentRun{SessionID: "sess-1", AgentSessionID: agentSessionID, StartedAt: time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)})
+	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+		"sess-1": {{
+			SessionID:         "sess-1",
+			AgentSessionID:    agentSessionID,
+			ProviderSessionID: &providerSessionID,
+			AgentName:         "codex",
+		}},
+	}}
+	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgentLogsDir(logDir)
+	lc.SetAgentRunStore(runs)
+
+	lc.SignalSessionRunComplete("sess-1", agentSessionID, "")
+
+	if len(runs.telemetryByAgent) != 1 {
+		t.Fatalf("telemetry writes = %d, want 1", len(runs.telemetryByAgent))
+	}
+	got := runs.telemetryByAgent[0]
+	if got.key != agentSessionID {
+		t.Fatalf("telemetry key = %q, want %q", got.key, agentSessionID)
+	}
+	if got.telemetry.ParentModelCallCount != 2 || got.telemetry.ToolCallCount != 1 || got.telemetry.DirectSubagentCount != 1 {
+		t.Fatalf("telemetry = %#v, want provider rollout counts", got.telemetry)
+	}
+	if got.telemetry.OutputTokenCount == nil || *got.telemetry.OutputTokenCount != 12 {
+		t.Fatalf("output tokens = %v, want 12", got.telemetry.OutputTokenCount)
+	}
+}
+
+func TestSignalSessionRunCompleteTalliesClaudePrimaryChatWhenSessionAgentIsCodex(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	logDir := t.TempDir()
+	worktreePath := filepath.Join(home, "worktree")
+	agentSessionID := "claude-primary"
+	providerSessionID := "claude-provider-primary"
+	transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, providerSessionID)
+	if err != nil {
+		t.Fatalf("ClaudeTranscriptPath: %v", err)
+	}
+	childDir := filepath.Join(filepath.Dir(transcript), providerSessionID, "subagents")
+	if err := os.MkdirAll(childDir, 0o700); err != nil {
+		t.Fatalf("mkdir child dir: %v", err)
+	}
+	startedAt := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
+	oldParentAt := startedAt.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	currentParentAt := startedAt.Add(time.Second).UTC().Format(time.RFC3339Nano)
+	currentChildAt := startedAt.Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
+	if err := os.WriteFile(transcript, []byte(strings.Join([]string{
+		`{"timestamp":` + strconv.Quote(oldParentAt) + `,"type":"assistant","message":{"role":"assistant","usage":{"output_tokens":99}}}`,
+		`{"timestamp":` + strconv.Quote(currentParentAt) + `,"type":"assistant","message":{"role":"assistant","usage":{"output_tokens":10}}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.jsonl"), []byte(`{"timestamp":`+strconv.Quote(currentChildAt)+`,"type":"assistant","message":{"role":"assistant","usage":{"output_tokens":7}}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write child transcript: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.meta.json"), []byte(`{"parentAgentId":"`+providerSessionID+`","spawnDepth":1}`), 0o600); err != nil {
+		t.Fatalf("write child metadata: %v", err)
+	}
+	if err := os.WriteFile(bossalog.AgentLogFile(logDir, agentSessionID), []byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"function_call","name":"exec_command"}}`,
+		`{"type":"turn.completed","usage":{"output_tokens":1}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write fallback log: %v", err)
+	}
+
+	sessions := newMockSessionStore()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		WorktreePath:   worktreePath,
+		State:          machine.Blocked,
+		AgentName:      "codex",
+		AgentSessionID: &agentSessionID,
+	}
+	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+		"sess-1": {{
+			SessionID:         "sess-1",
+			AgentSessionID:    agentSessionID,
+			ProviderSessionID: &providerSessionID,
+			AgentName:         "claude",
+		}},
+	}}
+	runs := &fakeLifecycleAgentRunStore{}
+	runs.started = append(runs.started, db.AgentRun{SessionID: "sess-1", AgentSessionID: agentSessionID, StartedAt: startedAt})
+	lc := newTestLifecycle(sessions, newMockRepoStore(), chats, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgentLogsDir(logDir)
+	lc.SetAgentRunStore(runs)
+
+	lc.SignalSessionRunComplete("sess-1", agentSessionID, "")
+
+	if len(runs.telemetryByAgent) != 1 {
+		t.Fatalf("telemetry writes = %d, want 1", len(runs.telemetryByAgent))
+	}
+	got := runs.telemetryByAgent[0]
+	if got.telemetry.ChildModelCallCount != 1 || got.telemetry.DirectSubagentCount != 1 {
+		t.Fatalf("telemetry children = child calls %d direct %d, want 1/1", got.telemetry.ChildModelCallCount, got.telemetry.DirectSubagentCount)
+	}
+	if got.telemetry.OutputTokenCount == nil || *got.telemetry.OutputTokenCount != 17 {
+		t.Fatalf("output tokens = %v, want 17 from Claude transcript and sidecar", got.telemetry.OutputTokenCount)
+	}
+	if got.telemetry.ToolCallCount != 0 {
+		t.Fatalf("tool calls = %d, want Claude transcript path instead of Codex fallback log", got.telemetry.ToolCallCount)
+	}
+}
+
+func TestTallyAgentRunLogHonorsCanceledContext(t *testing.T) {
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), nil, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgentLogsDir(t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := lc.tallyAgentRunLog(ctx, "sess-1", "agent-1", time.Time{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("tallyAgentRunLog err = %v, want context.Canceled", err)
+	}
+}
+
+func TestRecordAgentRunStartUsesBoundedContextAfterCallerCancellation(t *testing.T) {
+	runs := &fakeLifecycleAgentRunStore{}
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), nil, nil, nil, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetAgentRunStore(runs)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	lc.recordAgentRunStart(ctx, &models.Session{ID: "sess-1", AgentName: "codex"}, "agent-1", time.Now())
+
+	if len(runs.started) != 1 {
+		t.Fatalf("agent run starts = %d, want 1 after caller cancellation", len(runs.started))
+	}
+	if runs.startCtxErr != nil {
+		t.Fatalf("start context err = %v, want nil detached context", runs.startCtxErr)
+	}
+	if runs.startDeadline.IsZero() {
+		t.Fatal("start context deadline is zero, want bounded detached write")
+	}
+}
+
+func TestStartHeadlessReplacementRunCarriesSessionAttribution(t *testing.T) {
+	runner := newMockAgentRunner()
+	runner.nextID = "agent-replacement"
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), nil, nil, nil, runner, nil, newMockVCSProvider(), zerolog.Nop())
+	session := &models.Session{
+		ID:              "sess-1",
+		AgentName:       "codex",
+		Model:           "",
+		EffectiveModel:  "configured-codex-model",
+		EffectiveEffort: "high",
+	}
+	resume := "agent-prior"
+
+	gotID, err := lc.startHeadlessReplacementRun(context.Background(), session, "/work", "resume work", &resume, map[string]string{"A": "B"})
+	if err != nil {
+		t.Fatalf("startHeadlessReplacementRun: %v", err)
+	}
+	if gotID != "agent-replacement" {
+		t.Fatalf("replacement id = %q, want agent-replacement", gotID)
+	}
+	if len(runner.started) != 1 {
+		t.Fatalf("starts = %d, want 1", len(runner.started))
+	}
+	got := runner.started[0]
+	if got.bossSessionID != "sess-1" || got.effectiveModel != "configured-codex-model" {
+		t.Fatalf("launch attribution = boss %q effective %q, want sess-1/configured-codex-model", got.bossSessionID, got.effectiveModel)
+	}
+	if got.model != "" || got.effort != "high" {
+		t.Fatalf("raw runtime request = model %q effort %q, want empty raw model/high", got.model, got.effort)
+	}
+	if got.resume == nil || *got.resume != "agent-prior" || got.env["A"] != "B" {
+		t.Fatalf("start call = %#v, want resume/env preserved", got)
 	}
 }

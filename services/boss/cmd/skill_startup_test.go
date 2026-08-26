@@ -644,6 +644,30 @@ func TestTailBypassesStartupSkillInstaller(t *testing.T) {
 	}
 }
 
+func TestCostBypassesStartupSkillInstaller(t *testing.T) {
+	setupSkillStartupTest(t)
+	setAvailableSkillAgents(map[string]bool{"claude": true, "codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Error("boss cost must not trigger the startup skill prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return true }
+
+	root := rootCmd()
+	root.SetArgs([]string{"cost"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+
+	var err error
+	stderr := captureStderr(t, func() { err = root.Execute() })
+	if strings.Contains(stderr, "[Y/n]") {
+		t.Errorf("stderr = %q, want no installer prompt", stderr)
+	}
+	if err == nil {
+		t.Fatal("boss cost unexpectedly succeeded without a daemon; test would not prove it reached the command")
+	}
+}
+
 func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")

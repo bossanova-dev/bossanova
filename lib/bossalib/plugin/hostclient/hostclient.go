@@ -152,6 +152,10 @@ type Client interface {
 	// row so the TUI can surface "failing ⚠ repair: claude not in PATH (3×)"
 	// hints. Repair plugin calls this once per attempt in deferred cleanup.
 	RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error)
+
+	// Run telemetry lets agent-runner plugins persist model/tool/subagent
+	// counters against the run ID returned by StartAgentRun or StartChatRun.
+	RecordRunTelemetry(ctx context.Context, req *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error)
 }
 
 // DirectClient wraps a gRPC connection to the daemon's HostService,
@@ -343,6 +347,14 @@ func (c *EagerClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.
 	return client.RecordRepairOutcome(ctx, req)
 }
 
+func (c *EagerClient) RecordRunTelemetry(ctx context.Context, req *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.RecordRunTelemetry(ctx, req)
+}
+
 // --- DirectClient methods (gRPC calls) ---
 
 // invokeUnary applies the client's default RPC timeout and forwards to
@@ -461,6 +473,14 @@ func (c *DirectClient) ReclaimRepairChat(ctx context.Context, req *bossanovav1.R
 func (c *DirectClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
 	resp := &bossanovav1.RecordRepairOutcomeResponse{}
 	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/RecordRepairOutcome", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *DirectClient) RecordRunTelemetry(ctx context.Context, req *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error) {
+	resp := &bossanovav1.RecordRunTelemetryResponse{}
+	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/RecordRunTelemetry", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

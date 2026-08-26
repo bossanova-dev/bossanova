@@ -837,8 +837,10 @@ type StartAgentRunHostResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Resolved session ID returned by the loaded AgentRunner plugin.
 	AgentSessionId string `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Daemon-minted agent_runs.id for plugins that can report counters.
+	AgentRunId    string `protobuf:"bytes,2,opt,name=agent_run_id,json=agentRunId,proto3" json:"agent_run_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartAgentRunHostResponse) Reset() {
@@ -874,6 +876,13 @@ func (*StartAgentRunHostResponse) Descriptor() ([]byte, []int) {
 func (x *StartAgentRunHostResponse) GetAgentSessionId() string {
 	if x != nil {
 		return x.AgentSessionId
+	}
+	return ""
+}
+
+func (x *StartAgentRunHostResponse) GetAgentRunId() string {
+	if x != nil {
+		return x.AgentRunId
 	}
 	return ""
 }
@@ -1091,8 +1100,10 @@ type StartChatRunHostResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Resolved agent session ID returned by the loaded AgentRunner plugin.
 	AgentSessionId string `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Daemon-minted agent_runs.id for plugins that can report counters.
+	AgentRunId    string `protobuf:"bytes,2,opt,name=agent_run_id,json=agentRunId,proto3" json:"agent_run_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartChatRunHostResponse) Reset() {
@@ -1128,6 +1139,13 @@ func (*StartChatRunHostResponse) Descriptor() ([]byte, []int) {
 func (x *StartChatRunHostResponse) GetAgentSessionId() string {
 	if x != nil {
 		return x.AgentSessionId
+	}
+	return ""
+}
+
+func (x *StartChatRunHostResponse) GetAgentRunId() string {
+	if x != nil {
+		return x.AgentRunId
 	}
 	return ""
 }
@@ -1524,6 +1542,258 @@ func (*RecordRepairOutcomeResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{27}
 }
 
+type RecordRunTelemetryRequest struct {
+	state                protoimpl.MessageState    `protogen:"open.v1"`
+	AgentRunId           string                    `protobuf:"bytes,1,opt,name=agent_run_id,json=agentRunId,proto3" json:"agent_run_id,omitempty"`
+	ParentModelCallCount int64                     `protobuf:"varint,2,opt,name=parent_model_call_count,json=parentModelCallCount,proto3" json:"parent_model_call_count,omitempty"`
+	ChildModelCallCount  int64                     `protobuf:"varint,3,opt,name=child_model_call_count,json=childModelCallCount,proto3" json:"child_model_call_count,omitempty"`
+	ToolCallCount        int64                     `protobuf:"varint,4,opt,name=tool_call_count,json=toolCallCount,proto3" json:"tool_call_count,omitempty"`
+	SubagentCount        int64                     `protobuf:"varint,5,opt,name=subagent_count,json=subagentCount,proto3" json:"subagent_count,omitempty"`
+	DirectSubagentCount  int64                     `protobuf:"varint,6,opt,name=direct_subagent_count,json=directSubagentCount,proto3" json:"direct_subagent_count,omitempty"`
+	OutputTokenCount     *int64                    `protobuf:"varint,7,opt,name=output_token_count,json=outputTokenCount,proto3,oneof" json:"output_token_count,omitempty"`
+	ReasoningTokenCount  *int64                    `protobuf:"varint,8,opt,name=reasoning_token_count,json=reasoningTokenCount,proto3,oneof" json:"reasoning_token_count,omitempty"`
+	Children             []*AgentRunChildTelemetry `protobuf:"bytes,9,rep,name=children,proto3" json:"children,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *RecordRunTelemetryRequest) Reset() {
+	*x = RecordRunTelemetryRequest{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordRunTelemetryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordRunTelemetryRequest) ProtoMessage() {}
+
+func (x *RecordRunTelemetryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordRunTelemetryRequest.ProtoReflect.Descriptor instead.
+func (*RecordRunTelemetryRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *RecordRunTelemetryRequest) GetAgentRunId() string {
+	if x != nil {
+		return x.AgentRunId
+	}
+	return ""
+}
+
+func (x *RecordRunTelemetryRequest) GetParentModelCallCount() int64 {
+	if x != nil {
+		return x.ParentModelCallCount
+	}
+	return 0
+}
+
+func (x *RecordRunTelemetryRequest) GetChildModelCallCount() int64 {
+	if x != nil {
+		return x.ChildModelCallCount
+	}
+	return 0
+}
+
+func (x *RecordRunTelemetryRequest) GetToolCallCount() int64 {
+	if x != nil {
+		return x.ToolCallCount
+	}
+	return 0
+}
+
+func (x *RecordRunTelemetryRequest) GetSubagentCount() int64 {
+	if x != nil {
+		return x.SubagentCount
+	}
+	return 0
+}
+
+func (x *RecordRunTelemetryRequest) GetDirectSubagentCount() int64 {
+	if x != nil {
+		return x.DirectSubagentCount
+	}
+	return 0
+}
+
+func (x *RecordRunTelemetryRequest) GetOutputTokenCount() int64 {
+	if x != nil && x.OutputTokenCount != nil {
+		return *x.OutputTokenCount
+	}
+	return 0
+}
+
+func (x *RecordRunTelemetryRequest) GetReasoningTokenCount() int64 {
+	if x != nil && x.ReasoningTokenCount != nil {
+		return *x.ReasoningTokenCount
+	}
+	return 0
+}
+
+func (x *RecordRunTelemetryRequest) GetChildren() []*AgentRunChildTelemetry {
+	if x != nil {
+		return x.Children
+	}
+	return nil
+}
+
+type AgentRunChildTelemetry struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	AgentSessionId      string                 `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
+	ParentAgentId       string                 `protobuf:"bytes,2,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
+	SpawnDepth          int32                  `protobuf:"varint,3,opt,name=spawn_depth,json=spawnDepth,proto3" json:"spawn_depth,omitempty"`
+	StartedAt           *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	StoppedAt           *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=stopped_at,json=stoppedAt,proto3" json:"stopped_at,omitempty"`
+	ModelCallCount      int64                  `protobuf:"varint,6,opt,name=model_call_count,json=modelCallCount,proto3" json:"model_call_count,omitempty"`
+	ToolCallCount       int64                  `protobuf:"varint,7,opt,name=tool_call_count,json=toolCallCount,proto3" json:"tool_call_count,omitempty"`
+	OutputTokenCount    *int64                 `protobuf:"varint,8,opt,name=output_token_count,json=outputTokenCount,proto3,oneof" json:"output_token_count,omitempty"`
+	ReasoningTokenCount *int64                 `protobuf:"varint,9,opt,name=reasoning_token_count,json=reasoningTokenCount,proto3,oneof" json:"reasoning_token_count,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *AgentRunChildTelemetry) Reset() {
+	*x = AgentRunChildTelemetry{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentRunChildTelemetry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentRunChildTelemetry) ProtoMessage() {}
+
+func (x *AgentRunChildTelemetry) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentRunChildTelemetry.ProtoReflect.Descriptor instead.
+func (*AgentRunChildTelemetry) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *AgentRunChildTelemetry) GetAgentSessionId() string {
+	if x != nil {
+		return x.AgentSessionId
+	}
+	return ""
+}
+
+func (x *AgentRunChildTelemetry) GetParentAgentId() string {
+	if x != nil {
+		return x.ParentAgentId
+	}
+	return ""
+}
+
+func (x *AgentRunChildTelemetry) GetSpawnDepth() int32 {
+	if x != nil {
+		return x.SpawnDepth
+	}
+	return 0
+}
+
+func (x *AgentRunChildTelemetry) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
+func (x *AgentRunChildTelemetry) GetStoppedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StoppedAt
+	}
+	return nil
+}
+
+func (x *AgentRunChildTelemetry) GetModelCallCount() int64 {
+	if x != nil {
+		return x.ModelCallCount
+	}
+	return 0
+}
+
+func (x *AgentRunChildTelemetry) GetToolCallCount() int64 {
+	if x != nil {
+		return x.ToolCallCount
+	}
+	return 0
+}
+
+func (x *AgentRunChildTelemetry) GetOutputTokenCount() int64 {
+	if x != nil && x.OutputTokenCount != nil {
+		return *x.OutputTokenCount
+	}
+	return 0
+}
+
+func (x *AgentRunChildTelemetry) GetReasoningTokenCount() int64 {
+	if x != nil && x.ReasoningTokenCount != nil {
+		return *x.ReasoningTokenCount
+	}
+	return 0
+}
+
+type RecordRunTelemetryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecordRunTelemetryResponse) Reset() {
+	*x = RecordRunTelemetryResponse{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordRunTelemetryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordRunTelemetryResponse) ProtoMessage() {}
+
+func (x *RecordRunTelemetryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordRunTelemetryResponse.ProtoReflect.Descriptor instead.
+func (*RecordRunTelemetryResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{30}
+}
+
 var File_bossanova_v1_host_service_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_host_service_proto_rawDesc = "" +
@@ -1570,9 +1840,11 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x18StartAgentRunHostRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
-	"\x06prompt\x18\x02 \x01(\tR\x06prompt\"E\n" +
+	"\x06prompt\x18\x02 \x01(\tR\x06prompt\"g\n" +
 	"\x19StartAgentRunHostResponse\x12(\n" +
-	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"C\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12 \n" +
+	"\fagent_run_id\x18\x02 \x01(\tR\n" +
+	"agentRunId\"C\n" +
 	"\x17WaitAgentRunHostRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"9\n" +
 	"\x18WaitAgentRunHostResponse\x12\x1d\n" +
@@ -1587,9 +1859,11 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x15replace_existing_chat\x18\x05 \x01(\bR\x13replaceExistingChat\x126\n" +
 	"\x17replace_existing_reason\x18\x06 \x01(\tR\x15replaceExistingReason\x12~\n" +
 	"/replace_existing_observed_last_chat_activity_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR)replaceExistingObservedLastChatActivityAt\x125\n" +
-	"\x17resume_agent_session_id\x18\b \x01(\tR\x14resumeAgentSessionId\"D\n" +
+	"\x17resume_agent_session_id\x18\b \x01(\tR\x14resumeAgentSessionId\"f\n" +
 	"\x18StartChatRunHostResponse\x12(\n" +
-	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"y\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12 \n" +
+	"\fagent_run_id\x18\x02 \x01(\tR\n" +
+	"agentRunId\"y\n" +
 	"\x16WaitChatRunHostRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x125\n" +
 	"\x17idle_fail_after_seconds\x18\x02 \x01(\x05R\x14idleFailAfterSeconds\"h\n" +
@@ -1618,8 +1892,36 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x12review_fingerprint\x18\b \x01(\tH\x00R\x11reviewFingerprint\x88\x01\x01\x12%\n" +
 	"\x0eblocked_reason\x18\t \x01(\tR\rblockedReasonB\x15\n" +
 	"\x13_review_fingerprint\"\x1d\n" +
-	"\x1bRecordRepairOutcomeResponse2\xdb\n" +
+	"\x1bRecordRepairOutcomeResponse\"\x8b\x04\n" +
+	"\x19RecordRunTelemetryRequest\x12 \n" +
+	"\fagent_run_id\x18\x01 \x01(\tR\n" +
+	"agentRunId\x125\n" +
+	"\x17parent_model_call_count\x18\x02 \x01(\x03R\x14parentModelCallCount\x123\n" +
+	"\x16child_model_call_count\x18\x03 \x01(\x03R\x13childModelCallCount\x12&\n" +
+	"\x0ftool_call_count\x18\x04 \x01(\x03R\rtoolCallCount\x12%\n" +
+	"\x0esubagent_count\x18\x05 \x01(\x03R\rsubagentCount\x122\n" +
+	"\x15direct_subagent_count\x18\x06 \x01(\x03R\x13directSubagentCount\x121\n" +
+	"\x12output_token_count\x18\a \x01(\x03H\x00R\x10outputTokenCount\x88\x01\x01\x127\n" +
+	"\x15reasoning_token_count\x18\b \x01(\x03H\x01R\x13reasoningTokenCount\x88\x01\x01\x12@\n" +
+	"\bchildren\x18\t \x03(\v2$.bossanova.v1.AgentRunChildTelemetryR\bchildrenB\x15\n" +
+	"\x13_output_token_countB\x18\n" +
+	"\x16_reasoning_token_count\"\xf0\x03\n" +
+	"\x16AgentRunChildTelemetry\x12(\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12&\n" +
+	"\x0fparent_agent_id\x18\x02 \x01(\tR\rparentAgentId\x12\x1f\n" +
+	"\vspawn_depth\x18\x03 \x01(\x05R\n" +
+	"spawnDepth\x129\n" +
 	"\n" +
+	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x129\n" +
+	"\n" +
+	"stopped_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tstoppedAt\x12(\n" +
+	"\x10model_call_count\x18\x06 \x01(\x03R\x0emodelCallCount\x12&\n" +
+	"\x0ftool_call_count\x18\a \x01(\x03R\rtoolCallCount\x121\n" +
+	"\x12output_token_count\x18\b \x01(\x03H\x00R\x10outputTokenCount\x88\x01\x01\x127\n" +
+	"\x15reasoning_token_count\x18\t \x01(\x03H\x01R\x13reasoningTokenCount\x88\x01\x01B\x15\n" +
+	"\x13_output_token_countB\x18\n" +
+	"\x16_reasoning_token_count\"\x1c\n" +
+	"\x1aRecordRunTelemetryResponse2\xc4\v\n" +
 	"\vHostService\x12R\n" +
 	"\vListOpenPRs\x12 .bossanova.v1.ListOpenPRsRequest\x1a!.bossanova.v1.ListOpenPRsResponse\x12^\n" +
 	"\x0fGetCheckResults\x12$.bossanova.v1.GetCheckResultsRequest\x1a%.bossanova.v1.GetCheckResultsResponse\x12R\n" +
@@ -1634,7 +1936,8 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\fStartChatRun\x12%.bossanova.v1.StartChatRunHostRequest\x1a&.bossanova.v1.StartChatRunHostResponse\x12Z\n" +
 	"\vWaitChatRun\x12$.bossanova.v1.WaitChatRunHostRequest\x1a%.bossanova.v1.WaitChatRunHostResponse\x12l\n" +
 	"\x11ReclaimRepairChat\x12*.bossanova.v1.ReclaimRepairChatHostRequest\x1a+.bossanova.v1.ReclaimRepairChatHostResponse\x12j\n" +
-	"\x13RecordRepairOutcome\x12(.bossanova.v1.RecordRepairOutcomeRequest\x1a).bossanova.v1.RecordRepairOutcomeResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x13RecordRepairOutcome\x12(.bossanova.v1.RecordRepairOutcomeRequest\x1a).bossanova.v1.RecordRepairOutcomeResponse\x12g\n" +
+	"\x12RecordRunTelemetry\x12'.bossanova.v1.RecordRunTelemetryRequest\x1a(.bossanova.v1.RecordRunTelemetryResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_host_service_proto_rawDescOnce sync.Once
@@ -1648,7 +1951,7 @@ func file_bossanova_v1_host_service_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_host_service_proto_rawDescData
 }
 
-var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*ListOpenPRsRequest)(nil),              // 0: bossanova.v1.ListOpenPRsRequest
 	(*ListOpenPRsResponse)(nil),             // 1: bossanova.v1.ListOpenPRsResponse
@@ -1678,58 +1981,66 @@ var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*ReclaimRepairChatHostResponse)(nil),   // 25: bossanova.v1.ReclaimRepairChatHostResponse
 	(*RecordRepairOutcomeRequest)(nil),      // 26: bossanova.v1.RecordRepairOutcomeRequest
 	(*RecordRepairOutcomeResponse)(nil),     // 27: bossanova.v1.RecordRepairOutcomeResponse
-	(*PRSummary)(nil),                       // 28: bossanova.v1.PRSummary
-	(*CheckResult)(nil),                     // 29: bossanova.v1.CheckResult
-	(*PRStatus)(nil),                        // 30: bossanova.v1.PRStatus
-	(*Session)(nil),                         // 31: bossanova.v1.Session
-	(*ReviewComment)(nil),                   // 32: bossanova.v1.ReviewComment
-	(SessionEvent)(0),                       // 33: bossanova.v1.SessionEvent
-	(*timestamppb.Timestamp)(nil),           // 34: google.protobuf.Timestamp
-	(DisplayStatus)(0),                      // 35: bossanova.v1.DisplayStatus
+	(*RecordRunTelemetryRequest)(nil),       // 28: bossanova.v1.RecordRunTelemetryRequest
+	(*AgentRunChildTelemetry)(nil),          // 29: bossanova.v1.AgentRunChildTelemetry
+	(*RecordRunTelemetryResponse)(nil),      // 30: bossanova.v1.RecordRunTelemetryResponse
+	(*PRSummary)(nil),                       // 31: bossanova.v1.PRSummary
+	(*CheckResult)(nil),                     // 32: bossanova.v1.CheckResult
+	(*PRStatus)(nil),                        // 33: bossanova.v1.PRStatus
+	(*Session)(nil),                         // 34: bossanova.v1.Session
+	(*ReviewComment)(nil),                   // 35: bossanova.v1.ReviewComment
+	(SessionEvent)(0),                       // 36: bossanova.v1.SessionEvent
+	(*timestamppb.Timestamp)(nil),           // 37: google.protobuf.Timestamp
+	(DisplayStatus)(0),                      // 38: bossanova.v1.DisplayStatus
 }
 var file_bossanova_v1_host_service_proto_depIdxs = []int32{
-	28, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	29, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
-	30, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
-	28, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	31, // 4: bossanova.v1.HostServiceListSessionsResponse.sessions:type_name -> bossanova.v1.Session
-	32, // 5: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
-	33, // 6: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
-	34, // 7: bossanova.v1.StartChatRunHostRequest.replace_existing_observed_last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	35, // 8: bossanova.v1.RecordRepairOutcomeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
-	0,  // 9: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
-	2,  // 10: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
-	4,  // 11: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
-	6,  // 12: bossanova.v1.HostService.ListClosedPRs:input_type -> bossanova.v1.ListClosedPRsRequest
-	8,  // 13: bossanova.v1.HostService.ListSessions:input_type -> bossanova.v1.HostServiceListSessionsRequest
-	10, // 14: bossanova.v1.HostService.GetReviewComments:input_type -> bossanova.v1.GetReviewCommentsRequest
-	12, // 15: bossanova.v1.HostService.FireSessionEvent:input_type -> bossanova.v1.FireSessionEventRequest
-	14, // 16: bossanova.v1.HostService.SetRepairStatus:input_type -> bossanova.v1.SetRepairStatusRequest
-	16, // 17: bossanova.v1.HostService.StartAgentRun:input_type -> bossanova.v1.StartAgentRunHostRequest
-	18, // 18: bossanova.v1.HostService.WaitAgentRun:input_type -> bossanova.v1.WaitAgentRunHostRequest
-	20, // 19: bossanova.v1.HostService.StartChatRun:input_type -> bossanova.v1.StartChatRunHostRequest
-	22, // 20: bossanova.v1.HostService.WaitChatRun:input_type -> bossanova.v1.WaitChatRunHostRequest
-	24, // 21: bossanova.v1.HostService.ReclaimRepairChat:input_type -> bossanova.v1.ReclaimRepairChatHostRequest
-	26, // 22: bossanova.v1.HostService.RecordRepairOutcome:input_type -> bossanova.v1.RecordRepairOutcomeRequest
-	1,  // 23: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
-	3,  // 24: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
-	5,  // 25: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
-	7,  // 26: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
-	9,  // 27: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
-	11, // 28: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
-	13, // 29: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
-	15, // 30: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
-	17, // 31: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
-	19, // 32: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
-	21, // 33: bossanova.v1.HostService.StartChatRun:output_type -> bossanova.v1.StartChatRunHostResponse
-	23, // 34: bossanova.v1.HostService.WaitChatRun:output_type -> bossanova.v1.WaitChatRunHostResponse
-	25, // 35: bossanova.v1.HostService.ReclaimRepairChat:output_type -> bossanova.v1.ReclaimRepairChatHostResponse
-	27, // 36: bossanova.v1.HostService.RecordRepairOutcome:output_type -> bossanova.v1.RecordRepairOutcomeResponse
-	23, // [23:37] is the sub-list for method output_type
-	9,  // [9:23] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	31, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	32, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
+	33, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
+	31, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	34, // 4: bossanova.v1.HostServiceListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	35, // 5: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
+	36, // 6: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
+	37, // 7: bossanova.v1.StartChatRunHostRequest.replace_existing_observed_last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	38, // 8: bossanova.v1.RecordRepairOutcomeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
+	29, // 9: bossanova.v1.RecordRunTelemetryRequest.children:type_name -> bossanova.v1.AgentRunChildTelemetry
+	37, // 10: bossanova.v1.AgentRunChildTelemetry.started_at:type_name -> google.protobuf.Timestamp
+	37, // 11: bossanova.v1.AgentRunChildTelemetry.stopped_at:type_name -> google.protobuf.Timestamp
+	0,  // 12: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
+	2,  // 13: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
+	4,  // 14: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
+	6,  // 15: bossanova.v1.HostService.ListClosedPRs:input_type -> bossanova.v1.ListClosedPRsRequest
+	8,  // 16: bossanova.v1.HostService.ListSessions:input_type -> bossanova.v1.HostServiceListSessionsRequest
+	10, // 17: bossanova.v1.HostService.GetReviewComments:input_type -> bossanova.v1.GetReviewCommentsRequest
+	12, // 18: bossanova.v1.HostService.FireSessionEvent:input_type -> bossanova.v1.FireSessionEventRequest
+	14, // 19: bossanova.v1.HostService.SetRepairStatus:input_type -> bossanova.v1.SetRepairStatusRequest
+	16, // 20: bossanova.v1.HostService.StartAgentRun:input_type -> bossanova.v1.StartAgentRunHostRequest
+	18, // 21: bossanova.v1.HostService.WaitAgentRun:input_type -> bossanova.v1.WaitAgentRunHostRequest
+	20, // 22: bossanova.v1.HostService.StartChatRun:input_type -> bossanova.v1.StartChatRunHostRequest
+	22, // 23: bossanova.v1.HostService.WaitChatRun:input_type -> bossanova.v1.WaitChatRunHostRequest
+	24, // 24: bossanova.v1.HostService.ReclaimRepairChat:input_type -> bossanova.v1.ReclaimRepairChatHostRequest
+	26, // 25: bossanova.v1.HostService.RecordRepairOutcome:input_type -> bossanova.v1.RecordRepairOutcomeRequest
+	28, // 26: bossanova.v1.HostService.RecordRunTelemetry:input_type -> bossanova.v1.RecordRunTelemetryRequest
+	1,  // 27: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
+	3,  // 28: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
+	5,  // 29: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
+	7,  // 30: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
+	9,  // 31: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
+	11, // 32: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
+	13, // 33: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
+	15, // 34: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
+	17, // 35: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
+	19, // 36: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
+	21, // 37: bossanova.v1.HostService.StartChatRun:output_type -> bossanova.v1.StartChatRunHostResponse
+	23, // 38: bossanova.v1.HostService.WaitChatRun:output_type -> bossanova.v1.WaitChatRunHostResponse
+	25, // 39: bossanova.v1.HostService.ReclaimRepairChat:output_type -> bossanova.v1.ReclaimRepairChatHostResponse
+	27, // 40: bossanova.v1.HostService.RecordRepairOutcome:output_type -> bossanova.v1.RecordRepairOutcomeResponse
+	30, // 41: bossanova.v1.HostService.RecordRunTelemetry:output_type -> bossanova.v1.RecordRunTelemetryResponse
+	27, // [27:42] is the sub-list for method output_type
+	12, // [12:27] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_host_service_proto_init() }
@@ -1739,13 +2050,15 @@ func file_bossanova_v1_host_service_proto_init() {
 	}
 	file_bossanova_v1_models_proto_init()
 	file_bossanova_v1_host_service_proto_msgTypes[26].OneofWrappers = []any{}
+	file_bossanova_v1_host_service_proto_msgTypes[28].OneofWrappers = []any{}
+	file_bossanova_v1_host_service_proto_msgTypes[29].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_host_service_proto_rawDesc), len(file_bossanova_v1_host_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   28,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

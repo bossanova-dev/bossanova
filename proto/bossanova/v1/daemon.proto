@@ -298,6 +298,11 @@ service DaemonService {
   // failing?" without re-running `gh pr checks` by hand.
   rpc ListCheckSnapshots(ListCheckSnapshotsRequest) returns (ListCheckSnapshotsResponse);
 
+  // GetRunCost returns daemon-owned agent-run cost telemetry for one session
+  // or an aggregate filter set. Duration and parallelism are computed in the
+  // daemon so the CLI never creates a second timestamp semantic.
+  rpc GetRunCost(GetRunCostRequest) returns (GetRunCostResponse);
+
   // ListAgents returns the names + GetInfo metadata of every agent runner
   // plugin currently loaded. Used by the boss TUI to (a) decide whether to
   // show the onboarding wizard, (b) populate the new-session agent-select
@@ -1789,6 +1794,74 @@ message CheckSnapshot {
 
 message ListCheckSnapshotsResponse {
   repeated CheckSnapshot snapshots = 1;
+}
+
+// --- Run Cost ---
+
+message GetRunCostRequest {
+  string session_id = 1;
+  string agent_name = 2;
+  string repo_display_name = 3;
+  google.protobuf.Timestamp since = 4;
+  google.protobuf.Timestamp until = 5;
+  bool should_include_open = 6;
+  bool should_include_all = 7;
+  bool should_include_backfilled = 8;
+  bool should_backfill = 9;
+}
+
+message AgentRunCost {
+  string id = 1;
+  string session_id = 2;
+  string agent_session_id = 3;
+  string agent_name = 4;
+  string repo_display_name = 5;
+  string model = 6;
+  string effort = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp stopped_at = 9;
+  string stop_reason = 10;
+  bool is_open = 11;
+  bool is_backfilled = 12;
+  int64 wall_clock_ms = 13;
+  int64 parent_only_ms = 14;
+  double parallelism = 15;
+  bool has_parallelism = 16;
+  double child_coverage = 17;
+  bool has_child_coverage = 18;
+  int64 parent_model_call_count = 19;
+  int64 child_model_call_count = 20;
+  int64 tool_call_count = 21;
+  int64 subagent_count = 22;
+  int64 direct_subagent_count = 23;
+  optional int64 output_token_count = 24;
+  optional int64 reasoning_token_count = 25;
+}
+
+message RunCostAggregate {
+  int64 run_count = 1;
+  int64 session_count = 2;
+  int64 backfilled_excluded_count = 3;
+  int64 backfilled_included_count = 4;
+  int64 open_excluded_count = 5;
+  int64 no_effort_count = 6;
+  int64 no_review_round_ledger_count = 7;
+  optional int64 median_run_wall_clock_ms = 8;
+  optional int64 median_session_wall_clock_ms = 9;
+  optional int64 median_run_parent_only_ms = 10;
+  optional int64 median_session_parent_only_ms = 11;
+  optional double median_parallelism = 12;
+}
+
+message RunCostBackfillSummary {
+  int64 inserted_count = 1;
+  int64 skipped_count = 2;
+}
+
+message GetRunCostResponse {
+  repeated AgentRunCost runs = 1;
+  RunCostAggregate aggregate = 2;
+  RunCostBackfillSummary backfill_summary = 3;
 }
 
 // --- Agent Listing ---

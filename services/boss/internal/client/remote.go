@@ -1044,6 +1044,10 @@ func (c *RemoteClient) ListCheckSnapshots(ctx context.Context, sessionID string,
 	return &pb.ListCheckSnapshotsResponse{Snapshots: resp.Msg.GetSnapshots()}, nil
 }
 
+func (c *RemoteClient) GetRunCost(_ context.Context, _ *pb.GetRunCostRequest) (*pb.GetRunCostResponse, error) {
+	return nil, errLocalOnly("run cost telemetry")
+}
+
 // ListAgents proxies the aggregate agent-runner list through the orchestrator,
 // which concatenates each Ready daemon's loaded plugin set, converting each proto
 // AgentInfo into the package-local type views consume.

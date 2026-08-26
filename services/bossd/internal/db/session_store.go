@@ -686,6 +686,12 @@ func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM session_check_snapshots WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete check snapshots: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_run_children WHERE agent_run_id IN (SELECT id FROM agent_runs WHERE session_id = ?)`, id); err != nil {
+		return fmt.Errorf("delete agent run children: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_runs WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete agent runs: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM workflows WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete workflows: %w", err)
 	}

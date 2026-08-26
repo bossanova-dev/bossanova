@@ -233,8 +233,10 @@ func TestIsTailInvocation(t *testing.T) {
 		want bool
 	}{
 		{"bare tail", []string{"tail"}, true},
+		{"bare cost", []string{"cost"}, true},
 		{"remote value skipped", []string{"--remote", "https://x", "tail"}, true},
 		{"host value skipped", []string{"--host", "user@example.test", "tail"}, true},
+		{"host value skipped for cost", []string{"--host", "user@example.test", "cost"}, true},
 		{"host socket value skipped", []string{"--host-socket", "/run/bossd.sock", "tail"}, true},
 		{"equals form", []string{"--host=user@example.test", "tail"}, true},
 		{"host value is not the subcommand", []string{"--host", "tail"}, false},

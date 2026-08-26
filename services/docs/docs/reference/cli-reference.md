@@ -211,6 +211,10 @@ check. Zero loaded agents is a valid answer — `{"agents": []}` with exit `0`,
 not an error. A failure to reach the daemon exits `1` with the same
 `{"error": {...}}` envelope `boss merge --json` uses.
 
+For run-level cost and timing telemetry, see [`boss cost`](#boss-cost) below.
+It answers questions raw logs cannot answer reliably: wall-clock duration,
+parent-only time, model/tool calls, subagent counts, and recorded token totals.
+
 :::note
 Over `--remote` the list is **aggregated across every Ready daemon** the
 orchestrator knows about, and `ProxyListAgentsAggregatedResponse` carries no
@@ -739,6 +743,36 @@ cli="boss tail bossd 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607"
 `--all` stays service-only — the `agent-logs` directory holds one file per agent
 session ever run. An absent `agent-logs` directory prints a notice and exits 0.
 See the [Logging guide](/guides/logging) for the full treatment.
+
+### `boss cost`
+
+Report run-level cost and timing telemetry from daemon-recorded agent-run rows.
+`boss tail` shows raw log text; it cannot reliably answer wall-clock,
+parent-only-time, token, model-call, tool-call, or subagent-count questions.
+
+<CommandTabs
+chat='"show agent run cost for the bossanova repo this week"'
+cli="boss cost --repo bossanova --since 2026-08-20"
+/>
+
+By default, `boss cost` summarizes completed clean/stopped/usage-limited runs and
+excludes open, unknown, daemon-restart, and backfilled rows. Use
+`--include-open`, `--include-all`, or `--include-backfilled` when you
+intentionally want those rows included in aggregate medians. Passing a session id
+prints the runs for that session; omitting it prints aggregate medians across
+matching sessions.
+
+<CommandTabs
+cli="boss cost <session-id> --include-backfilled"
+/>
+
+The hidden `--backfill` mode imports local Claude and Codex transcript archives
+into the daemon's run-cost table for the selected `--since`/`--until` date
+window. It is local-daemon only and intentionally rejects session, agent, repo,
+and include filters until those filters are implemented for import.
+
+`--json` emits the same stable failure envelope as `boss merge --json` and a
+snake_case success payload with RFC3339 timestamps and a non-null `runs` array.
 
 ### `bossd`
 

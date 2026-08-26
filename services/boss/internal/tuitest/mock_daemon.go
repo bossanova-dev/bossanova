@@ -1426,6 +1426,10 @@ func (m *MockDaemon) CloneAndRegisterRepo(context.Context, *connect.Request[pb.C
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+func (m *MockDaemon) GetRunCost(context.Context, *connect.Request[pb.GetRunCostRequest]) (*connect.Response[pb.GetRunCostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
 // RepairDoctor, StartRepairWorkflow and ListPlugins reach the daemon only from
 // the `boss repair …` and `boss plugin list` CLI commands
 // (services/boss/cmd/repair_doctor.go, repair_start.go, handlers.go).

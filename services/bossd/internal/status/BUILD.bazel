@@ -16,6 +16,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/status",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/config",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
@@ -50,6 +51,7 @@ go_test(
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     shard_count = 4,  # keep: 199s serial under --config=race
     deps = [
+        "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/config",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

@@ -19,6 +19,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/chatupload"
 	"github.com/recurser/bossd/internal/server"
@@ -32,6 +33,45 @@ type sendChatMessageStub struct {
 
 func (s sendChatMessageStub) SendChatMessage(context.Context, *connect.Request[bossanovav1.SendChatMessageRequest]) (*connect.Response[bossanovav1.SendChatMessageResponse], error) {
 	return s.response, s.err
+}
+
+type tmuxChatListStub struct {
+	chats []*models.AgentChat
+	err   error
+}
+
+func (s tmuxChatListStub) ListWithTmuxSession(context.Context) ([]*models.AgentChat, error) {
+	return s.chats, s.err
+}
+
+type tmuxStatusStub struct {
+	alive map[string]bool
+	errs  map[string]error
+}
+
+func (s tmuxStatusStub) HasSessionStatus(_ context.Context, sessionName string) (bool, error) {
+	if err := s.errs[sessionName]; err != nil {
+		return false, err
+	}
+	return s.alive[sessionName], nil
+}
+
+func TestLiveTmuxAgentSessionIDsRetainsIndeterminateProbes(t *testing.T) {
+	aliveName := "tmux-live"
+	errorName := "tmux-unknown"
+	deadName := "tmux-dead"
+	got := liveTmuxAgentSessionIDs(context.Background(), tmuxChatListStub{chats: []*models.AgentChat{
+		{AgentSessionID: "agent-live", TmuxSessionName: &aliveName},
+		{AgentSessionID: "agent-unknown", TmuxSessionName: &errorName},
+		{AgentSessionID: "agent-dead", TmuxSessionName: &deadName},
+	}}, tmuxStatusStub{
+		alive: map[string]bool{aliveName: true, deadName: false},
+		errs:  map[string]error{errorName: errors.New("tmux unavailable")},
+	})
+	want := []string{"agent-live", "agent-unknown"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("liveTmuxAgentSessionIDs = %v, want %v", got, want)
+	}
 }
 
 func TestDeliverChatMessageRejectsUndeliveredResponses(t *testing.T) {

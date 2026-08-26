@@ -5,11 +5,13 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -23,9 +25,12 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gitremote"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
@@ -51,6 +56,13 @@ var (
 // fails. The request may already be canceled, but its unrecorded worktree and
 // branch still need to be removed before a retry can safely create them again.
 const preflightRollbackTimeout = 30 * time.Second
+
+var (
+	lifecycleRunStartTimeout     = 10 * time.Second
+	lifecycleRunStopTimeout      = 10 * time.Second
+	lifecycleRunTelemetryTimeout = 10 * time.Second
+	lifecycleRunTallyTimeout     = 10 * time.Second
+)
 
 // settingUpTracker is the narrow slice of *status.DisplayTracker the
 // lifecycle needs to drive the transient "initializing" and "archiving"
@@ -196,6 +208,11 @@ type Lifecycle struct {
 	// (sessions without HookToken still work); the map is read-only after
 	// SetAgents and lookups must not mutate it.
 	agents map[string]agent.AgentRunnerClient
+
+	// agentRuns records per-agent run-cost rows for lifecycle-owned tmux runs
+	// and finalizes lifecycle-owned headless rows on natural completion. Nil
+	// leaves run-cost telemetry disabled without affecting session lifecycle.
+	agentRuns db.AgentRunStore
 
 	// agentLogsDir is the bossd-owned directory where agent plugins tee
 	// their interactive (tmux-hosted) output. Stamped via SetAgentLogsDir
@@ -881,6 +898,7 @@ func (l *Lifecycle) SignalSessionRunComplete(sessionID, agentSessionID, exitErro
 	// authenticating. A no-op for ids that were never armed (tmux chats keep
 	// their tokens in a separate registry, untouched by this call).
 	l.releaseQuestionHookToken(agentSessionID)
+	l.recordAgentRunCompletion(context.Background(), sessionID, agentSessionID, exitError)
 	// Rotation intercept: a usage-limited exit on a live, rotatable plan run is
 	// rotated-and-restarted (or parked) here. When handled, skip the normal
 	// finalize/block fan-out below; the restarted run re-enters via its own
@@ -1167,6 +1185,258 @@ func (l *Lifecycle) armHeadlessPollFallback(sessionID, agentSessionID string, se
 // Concurrency: called exactly once during daemon startup, before serving
 // begins. Not safe for concurrent re-injection alongside in-flight RPCs.
 func (l *Lifecycle) SetAgentLogsDir(dir string) { l.agentLogsDir = dir }
+
+func (l *Lifecycle) SetAgentRunStore(store db.AgentRunStore) { l.agentRuns = store }
+
+func (l *Lifecycle) startHeadlessReplacementRun(ctx context.Context, session *models.Session, worktreePath, plan string, resume *string, extraEnv map[string]string) (string, error) {
+	if l.agentRunner == nil {
+		return "", fmt.Errorf("agent runner not configured")
+	}
+	if session == nil {
+		return "", fmt.Errorf("session required")
+	}
+	if runner, ok := l.agentRunner.(agent.HeadlessLaunchOptionsDispatcher); ok {
+		return runner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv, agent.HeadlessLaunchOptions{
+			BossSessionID:  session.ID,
+			EffectiveModel: session.EffectiveModel,
+		})
+	}
+	return l.agentRunner.StartByAgent(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv)
+}
+
+func (l *Lifecycle) recordAgentRunStart(ctx context.Context, session *models.Session, agentSessionID string, startedAt time.Time) {
+	if l.agentRuns == nil || session == nil || agentSessionID == "" {
+		return
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleRunStartTimeout)
+	defer cancel()
+	if _, err := l.agentRuns.Start(startCtx, db.AgentRun{
+		SessionID:      session.ID,
+		AgentSessionID: agentSessionID,
+		AgentName:      session.AgentName,
+		Model:          firstNonEmpty(session.EffectiveModel, session.Model),
+		Effort:         session.EffectiveEffort,
+		StartedAt:      startedAt,
+	}); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Str("agent_session", agentSessionID).
+			Msg("record lifecycle agent run start failed")
+	}
+}
+
+func (l *Lifecycle) recordAgentRunCompletion(ctx context.Context, sessionID, agentSessionID, exitError string) {
+	if l.agentRuns == nil || agentSessionID == "" {
+		return
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, lifecycleRunStopTimeout)
+	defer cancel()
+	if err := l.agentRuns.Stop(stopCtx, agentSessionID, agentRunStopReasonFromExitError(exitError), time.Now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		l.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record lifecycle agent run stop failed")
+	}
+	startedAt := l.agentRunStartedAt(ctx, sessionID, agentSessionID)
+	tallyCtx, cancelTally := context.WithTimeout(ctx, lifecycleRunTallyTimeout)
+	counts, err := l.tallyAgentRunLog(tallyCtx, sessionID, agentSessionID, startedAt)
+	cancelTally()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			l.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("tally lifecycle agent run telemetry failed")
+		}
+		return
+	}
+	telemetryCtx, cancelTelemetry := context.WithTimeout(ctx, lifecycleRunTelemetryTimeout)
+	defer cancelTelemetry()
+	if err := l.agentRuns.RecordTelemetryByAgentSessionID(telemetryCtx, agentSessionID, agentRunTelemetryFromCounts(counts)); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		l.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record lifecycle agent run telemetry failed")
+	}
+}
+
+func (l *Lifecycle) tallyAgentRunLog(ctx context.Context, sessionID, agentSessionID string, since time.Time) (agenttelemetry.Counts, error) {
+	if err := ctx.Err(); err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if l.agentLogsDir == "" || agentSessionID == "" {
+		return agenttelemetry.Counts{}, os.ErrNotExist
+	}
+	path := bossalog.AgentLogFile(l.agentLogsDir, agentSessionID)
+	var sess *models.Session
+	if sessionID != "" && l.sessions != nil {
+		if session, err := l.sessions.Get(ctx, sessionID); err == nil {
+			sess = session
+		}
+	}
+	if sess != nil && sess.WorktreePath != "" {
+		if lifecycleAgentRunIsClaude(ctx, l.agentChats, sess, agentSessionID) {
+			for _, id := range lifecycleClaudeTranscriptIDs(ctx, l.agentChats, agentSessionID) {
+				transcript, err := agenttelemetry.ClaudeTranscriptPath(sess.WorktreePath, id)
+				if err == nil {
+					if _, statErr := os.Stat(transcript); statErr == nil {
+						return agenttelemetry.TallyClaudePathWithChildrenSinceContext(ctx, transcript, filepath.Dir(transcript), id, since)
+					}
+				}
+			}
+		}
+	}
+	if lifecycleAgentRunIsCodex(ctx, l.agentChats, sess, agentSessionID) {
+		for _, id := range lifecycleCodexTranscriptIDs(ctx, l.agentChats, agentSessionID) {
+			transcripts, err := agenttelemetry.CodexTranscriptPaths(id)
+			if err == nil {
+				return agenttelemetry.TallyCodexPathsSinceContext(ctx, transcripts, since)
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				return agenttelemetry.Counts{}, err
+			}
+		}
+	}
+	if _, err := os.Stat(path); err != nil && sessionID != "" {
+		path = bossalog.AgentLogFile(l.agentLogsDir, sessionID)
+	}
+	sessionName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), sessionName, "subagents")); err == nil {
+		return agenttelemetry.TallyClaudePathForSessionContext(ctx, path, sessionName)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	defer func() { _ = f.Close() }()
+	return agenttelemetry.TallyCodexSinceContext(ctx, f, since)
+}
+
+func lifecycleAgentRunIsCodex(ctx context.Context, chats db.AgentChatStore, sess *models.Session, agentSessionID string) bool {
+	if chats != nil && agentSessionID != "" {
+		if chat, err := chats.GetByAgentSessionID(ctx, agentSessionID); err == nil && chat != nil && chat.AgentName != "" {
+			return chat.AgentName == "codex"
+		}
+	}
+	return sess != nil && sess.AgentName == "codex"
+}
+
+func lifecycleAgentRunIsClaude(ctx context.Context, chats db.AgentChatStore, sess *models.Session, agentSessionID string) bool {
+	if chats != nil && agentSessionID != "" {
+		if chat, err := chats.GetByAgentSessionID(ctx, agentSessionID); err == nil && chat != nil && chat.AgentName != "" {
+			return chat.AgentName == "claude"
+		}
+	}
+	return sess != nil && sess.AgentName == "claude"
+}
+
+func lifecycleClaudeTranscriptIDs(ctx context.Context, chats db.AgentChatStore, agentSessionID string) []string {
+	var ids []string
+	if chats != nil && agentSessionID != "" {
+		if chat, err := chats.GetByAgentSessionID(ctx, agentSessionID); err == nil && chat != nil && chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+			ids = append(ids, *chat.ProviderSessionID)
+		}
+	}
+	if agentSessionID != "" {
+		ids = append(ids, agentSessionID)
+	}
+	return uniqueNonEmpty(ids)
+}
+
+func lifecycleCodexTranscriptIDs(ctx context.Context, chats db.AgentChatStore, agentSessionID string) []string {
+	var ids []string
+	if chats != nil && agentSessionID != "" {
+		if chat, err := chats.GetByAgentSessionID(ctx, agentSessionID); err == nil && chat != nil && chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+			ids = append(ids, *chat.ProviderSessionID)
+		}
+	}
+	if agentSessionID != "" {
+		ids = append(ids, agentSessionID)
+	}
+	return uniqueNonEmpty(ids)
+}
+
+func uniqueNonEmpty(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func (l *Lifecycle) agentRunStartedAt(ctx context.Context, sessionID, agentSessionID string) time.Time {
+	if l.agentRuns == nil || sessionID == "" || agentSessionID == "" {
+		return time.Time{}
+	}
+	runs, err := l.agentRuns.List(ctx, db.AgentRunFilter{
+		SessionID:         sessionID,
+		IncludeOpen:       true,
+		IncludeAllReasons: true,
+		IncludeBackfilled: true,
+	})
+	if err != nil {
+		l.logger.Warn().Err(err).Str("session", sessionID).Str("agent_session", agentSessionID).Msg("lookup lifecycle agent run start failed")
+		return time.Time{}
+	}
+	var startedAt time.Time
+	for _, run := range runs {
+		if run.AgentSessionID != agentSessionID {
+			continue
+		}
+		if startedAt.IsZero() || run.StartedAt.After(startedAt) {
+			startedAt = run.StartedAt
+		}
+	}
+	return startedAt
+}
+
+func agentRunTelemetryFromCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
+	out := db.AgentRunTelemetry{
+		ParentModelCallCount: counts.ParentModelCallCount,
+		ChildModelCallCount:  counts.ChildModelCallCount,
+		ToolCallCount:        counts.ToolCallCount,
+		SubagentCount:        counts.SubagentCount,
+		DirectSubagentCount:  counts.DirectSubagentCount,
+		OutputTokenCount:     counts.OutputTokenCount,
+		ReasoningTokenCount:  counts.ReasoningTokenCount,
+	}
+	for _, child := range counts.Children {
+		out.Children = append(out.Children, db.AgentRunChild{
+			AgentSessionID:      child.AgentSessionID,
+			ParentAgentID:       child.ParentAgentID,
+			SpawnDepth:          child.SpawnDepth,
+			StartedAt:           child.StartedAt,
+			StoppedAt:           child.StoppedAt,
+			ModelCallCount:      child.ModelCallCount,
+			ToolCallCount:       child.ToolCallCount,
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		})
+	}
+	return out
+}
+
+func agentRunStopReasonFromExitError(exitError string) string {
+	if exitError == "" {
+		return db.AgentRunStopClean
+	}
+	switch agenterr.Classify(exitError, time.Now()).Kind {
+	case agenterr.KindUsageExhausted:
+		return db.AgentRunStopUsageExhausted
+	case agenterr.KindRateLimited:
+		return db.AgentRunStopRateLimited
+	default:
+		return db.AgentRunStopUnknown
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
 
 // agentClientFor returns the registered AgentRunnerClient for sess.AgentName.
 // Returns an error wrapping agent.ErrAgentNotLoaded when no client matches —
@@ -2027,6 +2297,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	var questionHookRelease *bool
 	switch {
 	case tmuxHosted:
+		startedAt := time.Now()
 		claudeSessionID, err = l.startTmuxChat(ctx, sessionID, opts, session, result)
 		if err != nil {
 			// startTmuxChat runs the authoritative capability preflight, which
@@ -2041,6 +2312,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			}
 			return fmt.Errorf("start tmux chat: %w", err)
 		}
+		l.recordAgentRunStart(ctx, session, claudeSessionID, startedAt)
 	case !opts.Detach:
 		// Interactive (non-detach) session: left unstarted. For tracker sessions
 		// the plan is pre-filled into the agent's input on first attach (see the
@@ -2075,6 +2347,8 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		}
 		claudeSessionID, err = launchRunner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, session.EffectiveEffort, headlessEnv, agent.HeadlessLaunchOptions{
 			HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
+			BossSessionID:             session.ID,
+			EffectiveModel:            session.EffectiveModel,
 		})
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
@@ -3524,7 +3798,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 	// seed resumes under the right runner, credentials, and model.
 	spawnSess := l.effectiveSpawnSession(ctx, session)
 	resumeEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), session.WorktreePath, repo)
-	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, session.Plan, resume, "", spawnSess.Model, spawnSess.EffectiveEffort, resumeEnv)
+	claudeSessionID, err := l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, session.Plan, resume, resumeEnv)
 	if err != nil {
 		// Undo the un-archive (BOS-924). Without this the session is left live,
 		// agent-less and un-retryable: the guard at the top of this function

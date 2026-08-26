@@ -111,6 +111,9 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
+	if session.AgentSessionID != nil {
+		l.recordAgentRunCompletion(ctx, session.ID, *session.AgentSessionID, "")
+	}
 
 	l.logger.Info().
 		Str("session", sessionID).

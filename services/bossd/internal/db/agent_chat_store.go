@@ -202,6 +202,22 @@ func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentS
 	return nil
 }
 
+func (s *SQLiteAgentChatStore) ClearTmuxSessionNameIf(ctx context.Context, agentSessionID, tmuxSessionName string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE agent_chats SET tmux_session_name = NULL WHERE agent_session_id = ? AND tmux_session_name = ?`,
+		agentSessionID, tmuxSessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("clear agent_chat tmux_session_name if current: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("clear agent_chat tmux_session_name if current rows affected: %w", err)
+	} else if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE agent_chats SET provider_session_id = ? WHERE agent_session_id = ?`,

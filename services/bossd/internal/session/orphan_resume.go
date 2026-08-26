@@ -140,7 +140,7 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	}
 	// BOS-381: dispatch the restart under the primary chat's provider/model (the
 	// runtime authority), not the session's stale seed.
-	newID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, resumedPrompt, resume, "", spawnSess.Model, spawnSess.EffectiveEffort, mergedEnv)
+	newID, err := l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, resumedPrompt, resume, mergedEnv)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", session.ID).
 			Msg("orphan-resume sweep: restart failed; re-parking Orphaned")

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -775,6 +776,51 @@ func TestAgentChatStore_ListWithTmuxSession(t *testing.T) {
 	}
 	if chats[0].TmuxSessionName == nil || *chats[0].TmuxSessionName != tmuxName {
 		t.Errorf("tmux_session_name = %v, want %q", chats[0].TmuxSessionName, tmuxName)
+	}
+}
+
+func TestAgentChatStore_ClearTmuxSessionNameIfRequiresObservedName(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess := createTestSession(t, NewSessionStore(database), repo.ID)
+	chatStore := NewAgentChatStore(database)
+	agentSessionID := "agent-clear-if"
+	originalName := "boss-original-pane"
+	newName := "boss-new-pane"
+
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: agentSessionID,
+		Title:          "conditional clear",
+	}); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	if err := chatStore.UpdateTmuxSessionName(ctx, agentSessionID, &originalName); err != nil {
+		t.Fatalf("set tmux name: %v", err)
+	}
+	if err := chatStore.UpdateTmuxSessionName(ctx, agentSessionID, &newName); err != nil {
+		t.Fatalf("update tmux name: %v", err)
+	}
+	if err := chatStore.ClearTmuxSessionNameIf(ctx, agentSessionID, originalName); err != sql.ErrNoRows {
+		t.Fatalf("clear stale tmux name err = %v, want sql.ErrNoRows", err)
+	}
+	got, err := chatStore.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("get after stale clear: %v", err)
+	}
+	if got.TmuxSessionName == nil || *got.TmuxSessionName != newName {
+		t.Fatalf("tmux_session_name after stale clear = %v, want %q", got.TmuxSessionName, newName)
+	}
+	if err := chatStore.ClearTmuxSessionNameIf(ctx, agentSessionID, newName); err != nil {
+		t.Fatalf("clear current tmux name: %v", err)
+	}
+	got, err = chatStore.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if got.TmuxSessionName != nil {
+		t.Fatalf("tmux_session_name after clear = %q, want nil", *got.TmuxSessionName)
 	}
 }
 

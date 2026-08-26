@@ -895,6 +895,14 @@ func (c *LocalClient) ListCheckSnapshots(ctx context.Context, sessionID string, 
 	return resp.Msg, nil
 }
 
+func (c *LocalClient) GetRunCost(ctx context.Context, req *pb.GetRunCostRequest) (*pb.GetRunCostResponse, error) {
+	resp, err := c.rpc.GetRunCost(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *LocalClient) ListAgents(ctx context.Context) ([]AgentInfo, error) {
 	resp, err := c.rpc.ListAgents(ctx, connect.NewRequest(&pb.ListAgentsRequest{}))
 	if err != nil {

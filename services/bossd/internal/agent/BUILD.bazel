@@ -16,9 +16,11 @@ go_library(
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/agenterr",
+        "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/safego",
         "//lib/bossalib/sqlutil",
+        "//services/bossd/internal/db",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -39,7 +41,9 @@ go_test(
     data = glob(["testdata/**"]),
     embed = [":agent"],
     deps = [
+        "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/bossd/internal/db",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/known/timestamppb",

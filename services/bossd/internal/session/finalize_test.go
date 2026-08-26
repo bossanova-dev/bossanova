@@ -211,6 +211,51 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 }
 
+func TestFinalizeSessionStopsHookBackedAgentRun(t *testing.T) {
+	enableFinalizeTelemetry(t)
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	runs := &fakeLifecycleAgentRunStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+	}
+	cronJobID := "cron-1"
+	agentSessionID := "agent-hooked"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-sess1",
+		State:          machine.ImplementingPlan,
+		CronJobID:      &cronJobID,
+		AgentSessionID: &agentSessionID,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc.SetAgentRunStore(runs)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if len(runs.stopped) != 1 {
+		t.Fatalf("agent run stops = %d, want 1", len(runs.stopped))
+	}
+	if got := runs.stopped[0]; got.agentSessionID != agentSessionID || got.reason != db.AgentRunStopClean {
+		t.Fatalf("stopped run = %+v, want clean stop for %q", got, agentSessionID)
+	}
+}
+
 func TestFinalizeSession_ZeroOutputSkipsCheckoutClassification(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()

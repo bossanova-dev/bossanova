@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -205,6 +206,118 @@ func TestWakeChat_FreshFallback_NoTranscript(t *testing.T) {
 	}
 	if !contains(tmuxer.captured, "--session-id") {
 		t.Fatalf("expected --session-id, got %v", tmuxer.captured)
+	}
+}
+
+func TestWakeChatRecordsInteractiveRunStart(t *testing.T) {
+	chat := &models.AgentChat{
+		ID:             "c1",
+		AgentSessionID: "agent-wake",
+		SessionID:      "s1",
+		AgentName:      "codex",
+		Model:          "chat-model",
+	}
+	sess := &models.Session{
+		ID:              "s1",
+		RepoID:          "r1",
+		WorktreePath:    t.TempDir(),
+		AgentName:       "claude",
+		EffectiveModel:  "session-effective-model",
+		EffectiveEffort: "high",
+	}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	runs := &fakeAgentRunStore{}
+	s := newWakeTestServer(t, chat, sess, tmuxer)
+	s.wakeHook.argv = &fakeArgvBuilder{
+		fresh: map[string][]string{"codex": {"codex"}},
+	}
+	s.agentRuns = runs
+
+	outcome, _, _, err := s.WakeChatInternal(context.Background(), chat.AgentSessionID, false)
+	if err != nil {
+		t.Fatalf("WakeChatInternal: %v", err)
+	}
+	if outcome != OutcomeFreshFallback {
+		t.Fatalf("outcome = %v, want %v", outcome, OutcomeFreshFallback)
+	}
+	if len(runs.started) != 1 {
+		t.Fatalf("agent run starts = %d, want 1", len(runs.started))
+	}
+	wantOps := []string{"start:agent-wake"}
+	if strings.Join(runs.ops, ",") != strings.Join(wantOps, ",") {
+		t.Fatalf("agent run ops = %v, want %v", runs.ops, wantOps)
+	}
+	got := runs.started[0]
+	if got.SessionID != sess.ID || got.AgentSessionID != chat.AgentSessionID || got.AgentName != chat.AgentName {
+		t.Fatalf("started run identity = %+v, want session/chat/agent identity", got)
+	}
+	if got.Model != "chat-model" {
+		t.Fatalf("started run model = %q, want chat model", got.Model)
+	}
+	if got.Effort != "medium" {
+		t.Fatalf("started run effort = %q, want medium", got.Effort)
+	}
+	if got.StartedAt.IsZero() {
+		t.Fatal("started run StartedAt is zero")
+	}
+}
+
+func TestWakeChatTalliesStaleOpenRunBeforeReplacementStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	providerSessionID := "provider-stale-wake"
+	rollout := filepath.Join(home, ".codex", "sessions", "2026", "08", "26", "rollout-2026-08-26T01-00-00-"+providerSessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	if err := os.WriteFile(rollout, []byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"custom_tool_call","name":"spawn_agent"}}`,
+		`{"type":"item.completed","item":{"type":"custom_tool_call_output"}}`,
+		`{"type":"item.completed","item":{"type":"assistant_message","text":"done"}}`,
+		`{"type":"turn.completed","usage":{"output_tokens":12,"reasoning_output_tokens":5}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	chat := &models.AgentChat{
+		ID:                "c1",
+		AgentSessionID:    "agent-wake-stale",
+		ProviderSessionID: &providerSessionID,
+		SessionID:         "s1",
+		AgentName:         "codex",
+	}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
+	runs := &fakeAgentRunStore{runs: []db.AgentRun{{
+		ID:             "old-wake-run",
+		SessionID:      sess.ID,
+		AgentSessionID: chat.AgentSessionID,
+		StartedAt:      started,
+	}}}
+	s := newWakeTestServer(t, chat, sess, tmuxer)
+	s.wakeHook.argv = &fakeArgvBuilder{
+		fresh: map[string][]string{"codex": {"codex"}},
+	}
+	s.agentRuns = runs
+
+	if _, _, _, err := s.WakeChatInternal(context.Background(), chat.AgentSessionID, false); err != nil {
+		t.Fatalf("WakeChatInternal: %v", err)
+	}
+
+	wantOps := []string{"stoprun:old-wake-run", "start:agent-wake-stale"}
+	if strings.Join(runs.ops, ",") != strings.Join(wantOps, ",") {
+		t.Fatalf("agent run ops = %v, want %v", runs.ops, wantOps)
+	}
+	if len(runs.telemetry) != 1 {
+		t.Fatalf("telemetry writes = %d, want 1", len(runs.telemetry))
+	}
+	got := runs.telemetry[0]
+	if got.runID != "old-wake-run" {
+		t.Fatalf("telemetry runID = %q, want old-wake-run", got.runID)
+	}
+	if got.telemetry.ParentModelCallCount != 2 || got.telemetry.ToolCallCount != 1 || got.telemetry.DirectSubagentCount != 1 {
+		t.Fatalf("telemetry = %#v, want parent/tool/direct counts from stale rollout", got.telemetry)
 	}
 }
 
@@ -1138,6 +1251,8 @@ func TestWakeChat_ChatRowWriteFailureKillsFreshPane(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	s := newWakeTestServer(t, chat, sess, tmuxer)
 	s.agentChats = &chatStoreFake{chat: chat, updateNameErr: errors.New("boom")}
+	runs := &fakeAgentRunStore{}
+	s.agentRuns = runs
 
 	_, _, _, err := s.WakeChatInternal(context.Background(), "agent-1", false)
 	if err == nil {
@@ -1152,6 +1267,9 @@ func TestWakeChat_ChatRowWriteFailureKillsFreshPane(t *testing.T) {
 	}
 	if tmuxer.hasSession {
 		t.Fatalf("tmux session still live after a failed row write — the pane leaked")
+	}
+	if len(runs.started) != 0 || len(runs.stopped) != 0 {
+		t.Fatalf("agent run writes = starts %v stops %v, want none before pane metadata persists", runs.started, runs.stopped)
 	}
 }
 

@@ -2917,6 +2917,164 @@ components:
          leaves it doing, so the daemon can pick a threshold that fits. A bare "the
          transcript has not grown in N minutes" signal false-positives on every long
          tool call; the last record's type disambiguates precisely.
+    bossanova.v1.AgentRunChildTelemetry:
+      type: object
+      properties:
+        agentSessionId:
+          type: string
+          title: agent_session_id
+        parentAgentId:
+          type: string
+          title: parent_agent_id
+        spawnDepth:
+          type: integer
+          title: spawn_depth
+          format: int32
+        startedAt:
+          title: started_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        stoppedAt:
+          title: stopped_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        modelCallCount:
+          type:
+            - integer
+            - string
+          title: model_call_count
+          format: int64
+        toolCallCount:
+          type:
+            - integer
+            - string
+          title: tool_call_count
+          format: int64
+        outputTokenCount:
+          type:
+            - integer
+            - string
+            - "null"
+          title: output_token_count
+          format: int64
+        reasoningTokenCount:
+          type:
+            - integer
+            - string
+            - "null"
+          title: reasoning_token_count
+          format: int64
+      title: AgentRunChildTelemetry
+      additionalProperties: false
+    bossanova.v1.AgentRunCost:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        sessionId:
+          type: string
+          title: session_id
+        agentSessionId:
+          type: string
+          title: agent_session_id
+        agentName:
+          type: string
+          title: agent_name
+        repoDisplayName:
+          type: string
+          title: repo_display_name
+        model:
+          type: string
+          title: model
+        effort:
+          type: string
+          title: effort
+        startedAt:
+          title: started_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        stoppedAt:
+          title: stopped_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        stopReason:
+          type: string
+          title: stop_reason
+        isOpen:
+          type: boolean
+          title: is_open
+        isBackfilled:
+          type: boolean
+          title: is_backfilled
+        wallClockMs:
+          type:
+            - integer
+            - string
+          title: wall_clock_ms
+          format: int64
+        parentOnlyMs:
+          type:
+            - integer
+            - string
+          title: parent_only_ms
+          format: int64
+        parallelism:
+          type: number
+          title: parallelism
+          format: double
+        hasParallelism:
+          type: boolean
+          title: has_parallelism
+        childCoverage:
+          type: number
+          title: child_coverage
+          format: double
+        hasChildCoverage:
+          type: boolean
+          title: has_child_coverage
+        parentModelCallCount:
+          type:
+            - integer
+            - string
+          title: parent_model_call_count
+          format: int64
+        childModelCallCount:
+          type:
+            - integer
+            - string
+          title: child_model_call_count
+          format: int64
+        toolCallCount:
+          type:
+            - integer
+            - string
+          title: tool_call_count
+          format: int64
+        subagentCount:
+          type:
+            - integer
+            - string
+          title: subagent_count
+          format: int64
+        directSubagentCount:
+          type:
+            - integer
+            - string
+          title: direct_subagent_count
+          format: int64
+        outputTokenCount:
+          type:
+            - integer
+            - string
+            - "null"
+          title: output_token_count
+          format: int64
+        reasoningTokenCount:
+          type:
+            - integer
+            - string
+            - "null"
+          title: reasoning_token_count
+          format: int64
+      title: AgentRunCost
+      additionalProperties: false
     bossanova.v1.AgentRunnerServiceGetInfoRequest:
       type: object
       title: AgentRunnerServiceGetInfoRequest
@@ -6665,6 +6823,54 @@ components:
             $ref: '#/components/schemas/bossanova.v1.ReviewComment'
           title: comments
       title: GetReviewCommentsResponse
+      additionalProperties: false
+    bossanova.v1.GetRunCostRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        agentName:
+          type: string
+          title: agent_name
+        repoDisplayName:
+          type: string
+          title: repo_display_name
+        since:
+          title: since
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        until:
+          title: until
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        shouldIncludeOpen:
+          type: boolean
+          title: should_include_open
+        shouldIncludeAll:
+          type: boolean
+          title: should_include_all
+        shouldIncludeBackfilled:
+          type: boolean
+          title: should_include_backfilled
+        shouldBackfill:
+          type: boolean
+          title: should_backfill
+      title: GetRunCostRequest
+      additionalProperties: false
+    bossanova.v1.GetRunCostResponse:
+      type: object
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentRunCost'
+          title: runs
+        aggregate:
+          title: aggregate
+          $ref: '#/components/schemas/bossanova.v1.RunCostAggregate'
+        backfillSummary:
+          title: backfill_summary
+          $ref: '#/components/schemas/bossanova.v1.RunCostBackfillSummary'
+      title: GetRunCostResponse
       additionalProperties: false
     bossanova.v1.GetScheduleRequest:
       type: object
@@ -11428,6 +11634,67 @@ components:
       type: object
       title: RecordRepairOutcomeResponse
       additionalProperties: false
+    bossanova.v1.RecordRunTelemetryRequest:
+      type: object
+      properties:
+        agentRunId:
+          type: string
+          title: agent_run_id
+        parentModelCallCount:
+          type:
+            - integer
+            - string
+          title: parent_model_call_count
+          format: int64
+        childModelCallCount:
+          type:
+            - integer
+            - string
+          title: child_model_call_count
+          format: int64
+        toolCallCount:
+          type:
+            - integer
+            - string
+          title: tool_call_count
+          format: int64
+        subagentCount:
+          type:
+            - integer
+            - string
+          title: subagent_count
+          format: int64
+        directSubagentCount:
+          type:
+            - integer
+            - string
+          title: direct_subagent_count
+          format: int64
+        outputTokenCount:
+          type:
+            - integer
+            - string
+            - "null"
+          title: output_token_count
+          format: int64
+        reasoningTokenCount:
+          type:
+            - integer
+            - string
+            - "null"
+          title: reasoning_token_count
+          format: int64
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentRunChildTelemetry'
+          title: children
+      title: RecordRunTelemetryRequest
+      additionalProperties: false
+    bossanova.v1.RecordRunTelemetryResponse:
+      type: object
+      title: RecordRunTelemetryResponse
+      additionalProperties: false
     bossanova.v1.RefreshAccountCommand:
       type: object
       properties:
@@ -12333,6 +12600,104 @@ components:
         - ROTATION_TRIGGER_AUTH_INVALIDATED
         - ROTATION_TRIGGER_MANUAL
       description: RotationTrigger says why a rotation decision was evaluated. (BOS-176)
+    bossanova.v1.RunCostAggregate:
+      type: object
+      properties:
+        runCount:
+          type:
+            - integer
+            - string
+          title: run_count
+          format: int64
+        sessionCount:
+          type:
+            - integer
+            - string
+          title: session_count
+          format: int64
+        backfilledExcludedCount:
+          type:
+            - integer
+            - string
+          title: backfilled_excluded_count
+          format: int64
+        backfilledIncludedCount:
+          type:
+            - integer
+            - string
+          title: backfilled_included_count
+          format: int64
+        openExcludedCount:
+          type:
+            - integer
+            - string
+          title: open_excluded_count
+          format: int64
+        noEffortCount:
+          type:
+            - integer
+            - string
+          title: no_effort_count
+          format: int64
+        noReviewRoundLedgerCount:
+          type:
+            - integer
+            - string
+          title: no_review_round_ledger_count
+          format: int64
+        medianRunWallClockMs:
+          type:
+            - integer
+            - string
+            - "null"
+          title: median_run_wall_clock_ms
+          format: int64
+        medianSessionWallClockMs:
+          type:
+            - integer
+            - string
+            - "null"
+          title: median_session_wall_clock_ms
+          format: int64
+        medianRunParentOnlyMs:
+          type:
+            - integer
+            - string
+            - "null"
+          title: median_run_parent_only_ms
+          format: int64
+        medianSessionParentOnlyMs:
+          type:
+            - integer
+            - string
+            - "null"
+          title: median_session_parent_only_ms
+          format: int64
+        medianParallelism:
+          type:
+            - number
+            - "null"
+          title: median_parallelism
+          format: double
+      title: RunCostAggregate
+      additionalProperties: false
+    bossanova.v1.RunCostBackfillSummary:
+      type: object
+      properties:
+        insertedCount:
+          type:
+            - integer
+            - string
+          title: inserted_count
+          format: int64
+        skippedCount:
+          type:
+            - integer
+            - string
+          title: skipped_count
+          format: int64
+      title: RunCostBackfillSummary
+      additionalProperties: false
     bossanova.v1.RunCronJobNowCommand:
       type: object
       properties:
@@ -13368,6 +13733,10 @@ components:
           type: string
           title: agent_session_id
           description: Resolved session ID returned by the loaded AgentRunner plugin.
+        agentRunId:
+          type: string
+          title: agent_run_id
+          description: Daemon-minted agent_runs.id for plugins that can report counters.
       title: StartAgentRunHostResponse
       additionalProperties: false
     bossanova.v1.StartAgentRunRequest:
@@ -13501,6 +13870,10 @@ components:
           type: string
           title: agent_session_id
           description: Resolved agent session ID returned by the loaded AgentRunner plugin.
+        agentRunId:
+          type: string
+          title: agent_run_id
+          description: Daemon-minted agent_runs.id for plugins that can report counters.
       title: StartChatRunHostResponse
       additionalProperties: false
     bossanova.v1.StartRepairWorkflowRequest:

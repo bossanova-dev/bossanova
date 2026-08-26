@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
 	"github.com/recurser/bossalib/errortrack"
@@ -132,6 +133,7 @@ type Server struct {
 	// did before the capability existed.
 	accountMaterializations AccountMaterializations
 	checkSnapshots          db.CheckSnapshotStore
+	agentRuns               db.AgentRunStore
 	rotationEvents          db.RotationEventStore
 	cronScheduler           *cron.Scheduler
 	// cronActivity is the agent-liveness seam used to derive cron STATUS
@@ -288,6 +290,7 @@ var (
 	// silently — leaving every later attach to repeat the whole scan.
 	providerSessionIDBackfillPersistTimeout = 5 * time.Second
 	listSessionsPRAssociationTimeout        = 10 * time.Second
+	interactiveAgentRunRecordTimeout        = 10 * time.Second
 )
 
 // Config holds all dependencies for creating a new Server.
@@ -363,6 +366,7 @@ type Config struct {
 	// leaves the materialized tree alone, exactly as it did before.
 	AccountMaterializations AccountMaterializations
 	CheckSnapshots          db.CheckSnapshotStore
+	AgentRuns               db.AgentRunStore
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents db.RotationEventStore
@@ -657,6 +661,7 @@ func New(cfg Config) *Server {
 		accountMaterializations: cfg.AccountMaterializations,
 
 		checkSnapshots:  cfg.CheckSnapshots,
+		agentRuns:       cfg.AgentRuns,
 		rotationEvents:  cfg.RotationEvents,
 		cronScheduler:   cfg.CronScheduler,
 		cronActivity:    cfg.CronActivity,
@@ -828,28 +833,31 @@ func (s *Server) Listen(socketPath string) error {
 	return nil
 }
 
-// setupStreamingProcedures are the DaemonService procedures that stream a
-// repo's setup-script output and therefore legitimately outlive the daemon's
-// non-streaming write timeout. Both run gitpkg.SetupScriptTimeout (5 minutes)
-// of user-supplied script inside one response, which the 120s WriteTimeout
-// would otherwise cut off mid-stream.
+// writeDeadlineExemptProcedures are the DaemonService procedures that
+// legitimately outlive the daemon's generic non-streaming write timeout.
+// CreateSession and ResurrectSession stream repo setup-script output. GetRunCost
+// can backfill transcript archives inside one long unary response. The 120s
+// WriteTimeout would otherwise cut each healthy response off before its
+// operation-level deadline.
 //
 // AttachSession is streaming too and is deliberately NOT here: it is not on
 // this failure path, it has never had the exemption, and granting it one is a
 // behaviour change this ticket does not own.
 //
 // Keying on the generated constants makes a rename a build failure. Adding a
-// third streaming setup RPC without adding it here reproduces exactly the
-// BOS-984 defect — a healthy daemon reporting deadline_exceeded — so the set,
-// not a per-procedure branch, is the thing to extend.
-var setupStreamingProcedures = map[string]struct{}{
+// long-running response RPC without adding it here reproduces the same defect:
+// a healthy daemon reporting deadline_exceeded because the transport write
+// ceiling fired first. The set, not a per-procedure branch, is the thing to
+// extend.
+var writeDeadlineExemptProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceCreateSessionProcedure:    {},
 	bossanovav1connect.DaemonServiceResurrectSessionProcedure: {},
+	bossanovav1connect.DaemonServiceGetRunCostProcedure:       {},
 }
 
 func withStreamingWriteDeadlineOverride(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := setupStreamingProcedures[r.URL.Path]; ok {
+		if _, ok := writeDeadlineExemptProcedures[r.URL.Path]; ok {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		}
 		next.ServeHTTP(w, r)
@@ -3519,7 +3527,7 @@ func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.R
 // response could not outlast the daemon's own 120s http.Server WriteTimeout,
 // while the setup script it is waiting on is allowed five minutes. The write
 // deadline for this procedure is cleared in Listen (see
-// setupStreamingProcedures) — without that, streaming alone would not help.
+// writeDeadlineExemptProcedures) — without that, streaming alone would not help.
 func (s *Server) StreamResurrectSession(ctx context.Context, msg *pb.ResurrectSessionRequest, emit func(*pb.ResurrectSessionResponse) error) error {
 	if msg.GetId() == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
@@ -4225,7 +4233,167 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 	}
 	// The row now names the pane, so cleanup can reach it: disarm.
 	paneNeedsRollback = false
+	if result.Outcome != OutcomeAlreadyLive {
+		s.recordInteractiveAgentRunStart(ctx, sess, chat, result.LaunchedAt)
+	}
 	return nil
+}
+
+func (s *Server) recordInteractiveAgentRunStart(ctx context.Context, sess *models.Session, chat *models.AgentChat, startedAt time.Time) {
+	if s.agentRuns == nil || sess == nil || chat == nil || chat.AgentSessionID == "" {
+		return
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), interactiveAgentRunRecordTimeout)
+	s.recordStaleInteractiveAgentRunStopped(cleanupCtx, sess, chat, startedAt)
+	cleanupCancel()
+
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), interactiveAgentRunRecordTimeout)
+	defer cancel()
+	model := chat.Model
+	if model == "" {
+		model = sess.EffectiveModel
+	}
+	if model == "" {
+		model = sess.Model
+	}
+	effort := session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
+	if _, err := s.agentRuns.Start(recordCtx, db.AgentRun{
+		SessionID:      sess.ID,
+		AgentSessionID: chat.AgentSessionID,
+		AgentName:      chat.AgentName,
+		Model:          model,
+		Effort:         effort,
+		StartedAt:      startedAt,
+	}); err != nil {
+		s.logger.Warn().Err(err).
+			Str("session", sess.ID).
+			Str("agent_session", chat.AgentSessionID).
+			Str("agent", chat.AgentName).
+			Msg("record interactive agent run start failed")
+	}
+}
+
+func (s *Server) recordStaleInteractiveAgentRunStopped(ctx context.Context, sess *models.Session, chat *models.AgentChat, stoppedAt time.Time) {
+	run, ok := s.openInteractiveAgentRunAt(ctx, sess.ID, chat.AgentSessionID, stoppedAt)
+	if !ok {
+		return
+	}
+	s.recordInteractiveAgentRunTelemetry(ctx, sess, chat, run, stoppedAt)
+	if err := s.agentRuns.StopRun(ctx, run.ID, db.AgentRunStopStopped, stoppedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		s.logger.Warn().Err(err).
+			Str("session", sess.ID).
+			Str("agent_session", chat.AgentSessionID).
+			Str("agent", chat.AgentName).
+			Str("run", run.ID).
+			Msg("close stale interactive agent run failed")
+	}
+}
+
+func (s *Server) openInteractiveAgentRunAt(ctx context.Context, sessionID, agentSessionID string, observedAt time.Time) (db.AgentRun, bool) {
+	runs, err := s.agentRuns.List(ctx, db.AgentRunFilter{
+		SessionID:         sessionID,
+		IncludeOpen:       true,
+		IncludeAllReasons: true,
+		IncludeBackfilled: true,
+	})
+	if err != nil {
+		s.logger.Warn().Err(err).Str("session", sessionID).Str("agent_session", agentSessionID).Msg("lookup stale interactive agent run failed")
+		return db.AgentRun{}, false
+	}
+	var selected db.AgentRun
+	for _, run := range runs {
+		if run.AgentSessionID != agentSessionID || run.StoppedAt != nil {
+			continue
+		}
+		if !observedAt.IsZero() && run.StartedAt.After(observedAt) {
+			continue
+		}
+		if selected.ID == "" || run.StartedAt.After(selected.StartedAt) {
+			selected = run
+		}
+	}
+	return selected, selected.ID != ""
+}
+
+func (s *Server) recordInteractiveAgentRunTelemetry(ctx context.Context, sess *models.Session, chat *models.AgentChat, run db.AgentRun, until time.Time) {
+	counts, err := tallyInteractiveAgentRunForServer(ctx, sess.WorktreePath, chat, run.StartedAt, until)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			s.logger.Warn().Err(err).
+				Str("session", sess.ID).
+				Str("agent_session", chat.AgentSessionID).
+				Str("agent", chat.AgentName).
+				Str("run", run.ID).
+				Msg("tally stale interactive agent run telemetry failed")
+		}
+		return
+	}
+	if err := s.agentRuns.RecordTelemetry(ctx, run.ID, interactiveTelemetryFromAgentCounts(counts)); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		s.logger.Warn().Err(err).
+			Str("session", sess.ID).
+			Str("agent_session", chat.AgentSessionID).
+			Str("agent", chat.AgentName).
+			Str("run", run.ID).
+			Msg("record stale interactive agent run telemetry failed")
+	}
+}
+
+func tallyInteractiveAgentRunForServer(ctx context.Context, worktreePath string, chat *models.AgentChat, since, until time.Time) (agenttelemetry.Counts, error) {
+	if chat == nil || chat.AgentSessionID == "" {
+		return agenttelemetry.Counts{}, os.ErrNotExist
+	}
+	switch chat.AgentName {
+	case "claude":
+		transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, chatResumeSessionIDForServer(chat))
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return agenttelemetry.TallyClaudePathWithChildrenWindowContext(ctx, transcript, filepath.Dir(transcript), chatResumeSessionIDForServer(chat), since, until)
+	case "codex":
+		transcripts, err := agenttelemetry.CodexTranscriptPaths(chatResumeSessionIDForServer(chat))
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return agenttelemetry.TallyCodexPathsWindowContext(ctx, transcripts, since, until)
+	default:
+		return agenttelemetry.Counts{}, os.ErrNotExist
+	}
+}
+
+func chatResumeSessionIDForServer(chat *models.AgentChat) string {
+	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+		return *chat.ProviderSessionID
+	}
+	return chat.AgentSessionID
+}
+
+func interactiveTelemetryFromAgentCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
+	out := db.AgentRunTelemetry{
+		ParentModelCallCount: counts.ParentModelCallCount,
+		ChildModelCallCount:  counts.ChildModelCallCount,
+		ToolCallCount:        counts.ToolCallCount,
+		SubagentCount:        counts.SubagentCount,
+		DirectSubagentCount:  counts.DirectSubagentCount,
+		OutputTokenCount:     counts.OutputTokenCount,
+		ReasoningTokenCount:  counts.ReasoningTokenCount,
+	}
+	for _, child := range counts.Children {
+		out.Children = append(out.Children, db.AgentRunChild{
+			AgentSessionID:      child.AgentSessionID,
+			ParentAgentID:       child.ParentAgentID,
+			SpawnDepth:          child.SpawnDepth,
+			StartedAt:           child.StartedAt,
+			StoppedAt:           child.StoppedAt,
+			ModelCallCount:      child.ModelCallCount,
+			ToolCallCount:       child.ToolCallCount,
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		})
+	}
+	return out
 }
 
 func (s *Server) backfillCodexProviderSessionID(ctx context.Context, chat *models.AgentChat, worktreePath string, resolver interactiveSessionResolver) (bool, string, error) {

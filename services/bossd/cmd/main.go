@@ -787,6 +787,41 @@ func main() {
 	}
 }
 
+type tmuxSessionStatusChecker interface {
+	HasSessionStatus(ctx context.Context, sessionName string) (bool, error)
+}
+
+type tmuxAgentChatLister interface {
+	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
+}
+
+func liveTmuxAgentSessionIDs(ctx context.Context, chats tmuxAgentChatLister, checker tmuxSessionStatusChecker) []string {
+	if chats == nil || checker == nil {
+		return nil
+	}
+	rows, err := chats.ListWithTmuxSession(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("failed to list tmux-backed agent chats before run reconciliation")
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, chat := range rows {
+		if chat == nil || chat.AgentSessionID == "" || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+			continue
+		}
+		alive, err := checker.HasSessionStatus(ctx, *chat.TmuxSessionName)
+		if err != nil {
+			log.Warn().Err(err).Str("tmux_session", *chat.TmuxSessionName).Str("agent_session", chat.AgentSessionID).Msg("failed to probe tmux run before reconciliation")
+			out = append(out, chat.AgentSessionID)
+			continue
+		}
+		if alive {
+			out = append(out, chat.AgentSessionID)
+		}
+	}
+	return out
+}
+
 // runOpts carries optional overrides for run. All fields are optional;
 // zero values produce the production daemon defaults. Tests use this to
 // inject a synthetic stop signal, isolate paths, and observe readiness.
@@ -1818,12 +1853,19 @@ func run(opts runOpts) error {
 	// one instance.
 	checkSnapshots := db.NewCheckSnapshotStore(database)
 	displayPoller.SetSnapshotStore(checkSnapshots)
+	agentRuns := db.NewAgentRunStore(database)
+	if reconciled, err := agentRuns.ReconcileOpen(context.Background(), time.Now(), liveTmuxAgentSessionIDs(context.Background(), agentChats, tmuxClient)); err != nil {
+		log.Warn().Err(err).Msg("failed to reconcile open agent runs")
+	} else if reconciled > 0 {
+		log.Info().Int64("count", reconciled).Msg("reconciled open agent runs after daemon restart")
+	}
 
 	// --- Plugin Host ---
 
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
 	pluginHost.SetSessionDeps(repos, sessions, agentChats, displayTracker, chatStatusTracker)
+	pluginHost.SetAgentRunStore(agentRuns)
 	pluginHost.SetRepairLease(repairLease)
 	// The plugin host's HostServiceServer defaults to a hermetic no-op proof env
 	// resolver (keeps unit tests off the OS keyring); the daemon injects the real
@@ -2027,7 +2069,10 @@ func run(opts runOpts) error {
 				continue
 			}
 			agentClients[name] = client
-			pluginRunners[name] = agent.NewPluginRunner(client, tailer, agentLogsDir, log.Logger)
+			runner := agent.NewPluginRunner(client, tailer, agentLogsDir, log.Logger)
+			runner.SetAgentName(name)
+			runner.SetAgentRunStore(agentRuns)
+			pluginRunners[name] = runner
 		}
 		pluginHost.SetAgentClients(agentClients)
 		pluginHost.SetAgentLogsDir(agentLogsDir)
@@ -2101,6 +2146,7 @@ func run(opts runOpts) error {
 	// can pass a deterministic log path to BuildInteractiveCommand. Without
 	// this, the extracted method would fail-closed with FailedPrecondition.
 	lifecycle.SetAgentLogsDir(agentLogsDir)
+	lifecycle.SetAgentRunStore(agentRuns)
 	lifecycle.SetChatStatus(chatStatusTracker)
 	// Manual account switch (BOS-171): the registry validates the target
 	// account, the transcript probe drives resume-vs-fresh via the agent
@@ -2688,6 +2734,7 @@ func run(opts runOpts) error {
 
 	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, agentClients, log.Logger)
 	tmuxStatusPoller.SetQuestionSignals(questionSignals)
+	tmuxStatusPoller.SetAgentRunStore(agentRuns)
 	// BOS-667: per-phase stall thresholds come from settings.json so an operator
 	// with an unusually slow tool step can widen them without a rebuild. Zero /
 	// absent values fall back to the built-in defaults inside SetStallThresholds
@@ -3422,6 +3469,7 @@ func run(opts runOpts) error {
 		UsageProbe:              accountUsageProbe,
 		AccountMaterializations: accountMaterializations,
 		CheckSnapshots:          checkSnapshots,
+		AgentRuns:               agentRuns,
 		RotationEvents:          rotationEvents,
 		CronScheduler:           cronScheduler,
 		CronActivity:            cronActivity,

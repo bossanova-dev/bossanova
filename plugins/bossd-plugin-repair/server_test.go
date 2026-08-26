@@ -142,6 +142,10 @@ func (m *mockHostClient) RecordRepairOutcome(_ context.Context, req *bossanovav1
 	return &bossanovav1.RecordRepairOutcomeResponse{}, nil
 }
 
+func (m *mockHostClient) RecordRunTelemetry(_ context.Context, _ *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error) {
+	return &bossanovav1.RecordRunTelemetryResponse{}, nil
+}
+
 // StartAgentRun / WaitAgentRun remain on the hostClient interface (other
 // callers may still use them) but the repair plugin switched to the chat
 // variants in Task 5. The unused stubs fail loudly so any accidental

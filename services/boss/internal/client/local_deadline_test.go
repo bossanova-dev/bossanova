@@ -501,6 +501,7 @@ func TestSlowProcedures_KeysAreGeneratedProcedureConstants(t *testing.T) {
 		bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: true,
 		bossanovav1connect.DaemonServiceMergeSessionProcedure:         true,
 		bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     true,
+		bossanovav1connect.DaemonServiceGetRunCostProcedure:           true,
 		bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    true,
 		bossanovav1connect.DaemonServiceListRepoPRsProcedure:          true,
 		bossanovav1connect.DaemonServiceListAccountsProcedure:         true,
@@ -570,9 +571,10 @@ func TestSlowProcedures_CoverTheAttachPath(t *testing.T) {
 		// ResurrectSession is deliberately absent (BOS-984): it is
 		// server-streaming now, and this unary-only interceptor never bounds it.
 		bossanovav1connect.DaemonServiceArchiveSessionProcedure,
+		bossanovav1connect.DaemonServiceGetRunCostProcedure,
 	} {
 		if got := deadlineFor(procedure); got != slowRPCDeadline {
-			t.Errorf("deadlineFor(%q) = %v, want slowRPCDeadline (%v): this handler spawns tmux or moves a worktree and cannot answer within the default", procedure, got, slowRPCDeadline)
+			t.Errorf("deadlineFor(%q) = %v, want slowRPCDeadline (%v): this handler can legitimately exceed the default unary deadline", procedure, got, slowRPCDeadline)
 		}
 	}
 }

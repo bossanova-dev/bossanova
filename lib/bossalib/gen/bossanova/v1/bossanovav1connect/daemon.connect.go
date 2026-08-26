@@ -245,6 +245,9 @@ const (
 	// DaemonServiceListCheckSnapshotsProcedure is the fully-qualified name of the DaemonService's
 	// ListCheckSnapshots RPC.
 	DaemonServiceListCheckSnapshotsProcedure = "/bossanova.v1.DaemonService/ListCheckSnapshots"
+	// DaemonServiceGetRunCostProcedure is the fully-qualified name of the DaemonService's GetRunCost
+	// RPC.
+	DaemonServiceGetRunCostProcedure = "/bossanova.v1.DaemonService/GetRunCost"
 	// DaemonServiceListAgentsProcedure is the fully-qualified name of the DaemonService's ListAgents
 	// RPC.
 	DaemonServiceListAgentsProcedure = "/bossanova.v1.DaemonService/ListAgents"
@@ -488,6 +491,10 @@ type DaemonServiceClient interface {
 	// "why does the TUI think this PR is passing when GitHub says
 	// failing?" without re-running `gh pr checks` by hand.
 	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
+	// GetRunCost returns daemon-owned agent-run cost telemetry for one session
+	// or an aggregate filter set. Duration and parallelism are computed in the
+	// daemon so the CLI never creates a second timestamp semantic.
+	GetRunCost(context.Context, *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error)
 	// ListAgents returns the names + GetInfo metadata of every agent runner
 	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
 	// show the onboarding wizard, (b) populate the new-session agent-select
@@ -952,6 +959,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
 			connect.WithClientOptions(opts...),
 		),
+		getRunCost: connect.NewClient[v1.GetRunCostRequest, v1.GetRunCostResponse](
+			httpClient,
+			baseURL+DaemonServiceGetRunCostProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetRunCost")),
+			connect.WithClientOptions(opts...),
+		),
 		listAgents: connect.NewClient[v1.ListAgentsRequest, v1.ListAgentsResponse](
 			httpClient,
 			baseURL+DaemonServiceListAgentsProcedure,
@@ -1053,6 +1066,7 @@ type daemonServiceClient struct {
 	repairDoctor                *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
 	startRepairWorkflow         *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
 	listCheckSnapshots          *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
+	getRunCost                  *connect.Client[v1.GetRunCostRequest, v1.GetRunCostResponse]
 	listAgents                  *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
 	listPlugins                 *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
 	getSettings                 *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
@@ -1419,6 +1433,11 @@ func (c *daemonServiceClient) ListCheckSnapshots(ctx context.Context, req *conne
 	return c.listCheckSnapshots.CallUnary(ctx, req)
 }
 
+// GetRunCost calls bossanova.v1.DaemonService.GetRunCost.
+func (c *daemonServiceClient) GetRunCost(ctx context.Context, req *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error) {
+	return c.getRunCost.CallUnary(ctx, req)
+}
+
 // ListAgents calls bossanova.v1.DaemonService.ListAgents.
 func (c *daemonServiceClient) ListAgents(ctx context.Context, req *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {
 	return c.listAgents.CallUnary(ctx, req)
@@ -1668,6 +1687,10 @@ type DaemonServiceHandler interface {
 	// "why does the TUI think this PR is passing when GitHub says
 	// failing?" without re-running `gh pr checks` by hand.
 	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
+	// GetRunCost returns daemon-owned agent-run cost telemetry for one session
+	// or an aggregate filter set. Duration and parallelism are computed in the
+	// daemon so the CLI never creates a second timestamp semantic.
+	GetRunCost(context.Context, *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error)
 	// ListAgents returns the names + GetInfo metadata of every agent runner
 	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
 	// show the onboarding wizard, (b) populate the new-session agent-select
@@ -2128,6 +2151,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetRunCostHandler := connect.NewUnaryHandler(
+		DaemonServiceGetRunCostProcedure,
+		svc.GetRunCost,
+		connect.WithSchema(daemonServiceMethods.ByName("GetRunCost")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceListAgentsHandler := connect.NewUnaryHandler(
 		DaemonServiceListAgentsProcedure,
 		svc.ListAgents,
@@ -2298,6 +2327,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceStartRepairWorkflowHandler.ServeHTTP(w, r)
 		case DaemonServiceListCheckSnapshotsProcedure:
 			daemonServiceListCheckSnapshotsHandler.ServeHTTP(w, r)
+		case DaemonServiceGetRunCostProcedure:
+			daemonServiceGetRunCostHandler.ServeHTTP(w, r)
 		case DaemonServiceListAgentsProcedure:
 			daemonServiceListAgentsHandler.ServeHTTP(w, r)
 		case DaemonServiceListPluginsProcedure:
@@ -2601,6 +2632,10 @@ func (UnimplementedDaemonServiceHandler) StartRepairWorkflow(context.Context, *c
 
 func (UnimplementedDaemonServiceHandler) ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListCheckSnapshots is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetRunCost(context.Context, *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetRunCost is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {

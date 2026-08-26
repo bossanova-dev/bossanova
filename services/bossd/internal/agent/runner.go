@@ -92,6 +92,8 @@ type HeadlessCapabilityProfileRunner interface {
 // launch must forward to its plugin as one atomic request.
 type HeadlessLaunchOptions struct {
 	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
+	BossSessionID             string
+	EffectiveModel            string
 }
 
 // HeadlessLaunchOptionsRunner is implemented by runners that preserve the

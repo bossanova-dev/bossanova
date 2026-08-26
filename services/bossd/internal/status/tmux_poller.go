@@ -2,10 +2,15 @@ package status
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -34,6 +39,8 @@ type TmuxStatusPoller struct {
 	// wiring and tests are unaffected until SetQuestionSignals injects a store.
 	questionSignals *questionsignal.Store
 
+	agentRuns agentRunStopStore
+
 	// Per-phase stall thresholds (BOS-667). They differ by an order of
 	// magnitude on purpose: a model round-trip that has owed a response for
 	// minutes is already anomalous, whereas a tool call legitimately runs for
@@ -61,6 +68,17 @@ type TmuxStatusPoller struct {
 // nothing.
 type progressLivenessProber interface {
 	ProbeProgressLiveness(context.Context, *pb.ProbeProgressLivenessRequest) (*pb.ProbeProgressLivenessResponse, error)
+}
+
+type agentRunStopStore interface {
+	Stop(ctx context.Context, agentSessionID, reason string, stoppedAt time.Time) error
+	StopRun(ctx context.Context, runID, reason string, stoppedAt time.Time) error
+	RecordTelemetry(ctx context.Context, runID string, telemetry db.AgentRunTelemetry) error
+	List(ctx context.Context, filter db.AgentRunFilter) ([]db.AgentRun, error)
+}
+
+type tmuxSessionNameConditionalClearer interface {
+	ClearTmuxSessionNameIf(ctx context.Context, agentSessionID, tmuxSessionName string) error
 }
 
 type captureEntry struct {
@@ -142,6 +160,12 @@ func (p *TmuxStatusPoller) SetQuestionSignals(store *questionsignal.Store) {
 	p.questionSignals = store
 }
 
+// SetAgentRunStore injects the run lifecycle store used to close tmux-hosted
+// interactive runs when the poller observes their pane has exited.
+func (p *TmuxStatusPoller) SetAgentRunStore(store agentRunStopStore) {
+	p.agentRuns = store
+}
+
 // PollInterval is the interval between tmux status polls.
 const PollInterval = 3 * time.Second
 
@@ -214,13 +238,17 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+			p.recordAgentRunStopped(ctx, chat, db.AgentRunStopStopped, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
 			p.tracker.SetStalled(chat.AgentSessionID, false)
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
+			tmuxName := *chat.TmuxSessionName
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+			p.recordAgentRunStopped(ctx, chat, db.AgentRunStopStopped, now)
+			p.clearObservedTmuxSessionName(ctx, chat.AgentSessionID, tmuxName)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
 			p.tracker.SetStalled(chat.AgentSessionID, false)
@@ -232,11 +260,14 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		// can't linger, and report STOPPED. The KillSession runs unconditionally
 		// (even if capture failed) so a dead pane never survives as a zombie.
 		if dead, _ := p.tmux.PaneDead(ctx, *chat.TmuxSessionName); dead {
+			tmuxName := *chat.TmuxSessionName
 			if tail, err := p.tmux.CapturePane(ctx, *chat.TmuxSessionName); err == nil {
 				p.tracker.SetCapturedOutput(chat.AgentSessionID, boundedTail(tail, capturedTailMaxBytes))
 			}
-			_ = p.tmux.KillSession(ctx, *chat.TmuxSessionName)
+			_ = p.tmux.KillSession(ctx, tmuxName)
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+			p.recordAgentRunStopped(ctx, chat, db.AgentRunStopStopped, now)
+			p.clearObservedTmuxSessionName(ctx, chat.AgentSessionID, tmuxName)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
 			p.tracker.SetStalled(chat.AgentSessionID, false)
@@ -427,6 +458,136 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			p.tracker.Update(agentSessionID, status, lastOutputAt)
 		}
 	}
+}
+
+func (p *TmuxStatusPoller) recordAgentRunStopped(ctx context.Context, chat *models.AgentChat, reason string, stoppedAt time.Time) {
+	if p.agentRuns == nil || chat == nil || chat.AgentSessionID == "" {
+		return
+	}
+	run, ok := p.openAgentRunAt(ctx, chat.SessionID, chat.AgentSessionID, stoppedAt)
+	if !ok {
+		return
+	}
+	if err := p.agentRuns.StopRun(ctx, run.ID, reason, stoppedAt); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			p.logger.Warn().Err(err).Str("agent_session", chat.AgentSessionID).Str("agent_run", run.ID).Str("reason", reason).Msg("pollOnce: failed to record agent run stop")
+		}
+		return
+	}
+	p.recordAgentRunTelemetry(ctx, chat, run)
+}
+
+func (p *TmuxStatusPoller) clearObservedTmuxSessionName(ctx context.Context, agentSessionID, tmuxSessionName string) {
+	if agentSessionID == "" || tmuxSessionName == "" {
+		return
+	}
+	clearer, ok := p.chats.(tmuxSessionNameConditionalClearer)
+	if !ok {
+		return
+	}
+	if err := clearer.ClearTmuxSessionNameIf(ctx, agentSessionID, tmuxSessionName); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		p.logger.Warn().Err(err).Str("agent_session", agentSessionID).Str("tmux_session", tmuxSessionName).Msg("pollOnce: failed to clear stopped tmux session name")
+	}
+}
+
+func (p *TmuxStatusPoller) recordAgentRunTelemetry(ctx context.Context, chat *models.AgentChat, run db.AgentRun) {
+	if p.agentRuns == nil || p.sessions == nil || chat == nil || chat.AgentSessionID == "" || chat.SessionID == "" {
+		return
+	}
+	if run.ID == "" {
+		return
+	}
+	sess, err := p.sessions.Get(ctx, chat.SessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" {
+		return
+	}
+	counts, err := tallyInteractiveAgentRun(sess.WorktreePath, chat, run.StartedAt)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			p.logger.Warn().Err(err).Str("agent_session", chat.AgentSessionID).Msg("pollOnce: failed to tally interactive agent run telemetry")
+		}
+		return
+	}
+	if err := p.agentRuns.RecordTelemetry(ctx, run.ID, telemetryFromAgentCounts(counts)); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		p.logger.Warn().Err(err).Str("agent_session", chat.AgentSessionID).Str("agent_run", run.ID).Msg("pollOnce: failed to record interactive agent run telemetry")
+	}
+}
+
+func (p *TmuxStatusPoller) openAgentRunAt(ctx context.Context, sessionID, agentSessionID string, observedAt time.Time) (db.AgentRun, bool) {
+	if p.agentRuns == nil || sessionID == "" || agentSessionID == "" {
+		return db.AgentRun{}, false
+	}
+	runs, err := p.agentRuns.List(ctx, db.AgentRunFilter{
+		SessionID:         sessionID,
+		IncludeOpen:       true,
+		IncludeAllReasons: true,
+		IncludeBackfilled: true,
+	})
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Str("agent_session", agentSessionID).Msg("pollOnce: failed to lookup agent run start")
+		return db.AgentRun{}, false
+	}
+	var selected db.AgentRun
+	for _, run := range runs {
+		if run.AgentSessionID != agentSessionID || run.StoppedAt != nil {
+			continue
+		}
+		if !observedAt.IsZero() && run.StartedAt.After(observedAt) {
+			continue
+		}
+		if selected.ID == "" || run.StartedAt.After(selected.StartedAt) {
+			selected = run
+		}
+	}
+	return selected, selected.ID != ""
+}
+
+func tallyInteractiveAgentRun(worktreePath string, chat *models.AgentChat, since time.Time) (agenttelemetry.Counts, error) {
+	if chat == nil || chat.AgentSessionID == "" {
+		return agenttelemetry.Counts{}, os.ErrNotExist
+	}
+	switch chat.AgentName {
+	case "claude":
+		transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, chatResumeSessionID(chat))
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return agenttelemetry.TallyClaudePathWithChildrenSince(transcript, filepath.Dir(transcript), chatResumeSessionID(chat), since)
+	case "codex":
+		transcripts, err := agenttelemetry.CodexTranscriptPaths(chatResumeSessionID(chat))
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return agenttelemetry.TallyCodexPathsSince(transcripts, since)
+	default:
+		return agenttelemetry.Counts{}, os.ErrNotExist
+	}
+}
+
+func telemetryFromAgentCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
+	out := db.AgentRunTelemetry{
+		ParentModelCallCount: counts.ParentModelCallCount,
+		ChildModelCallCount:  counts.ChildModelCallCount,
+		ToolCallCount:        counts.ToolCallCount,
+		SubagentCount:        counts.SubagentCount,
+		DirectSubagentCount:  counts.DirectSubagentCount,
+		OutputTokenCount:     counts.OutputTokenCount,
+		ReasoningTokenCount:  counts.ReasoningTokenCount,
+	}
+	for _, child := range counts.Children {
+		out.Children = append(out.Children, db.AgentRunChild{
+			AgentSessionID:      child.AgentSessionID,
+			ParentAgentID:       child.ParentAgentID,
+			SpawnDepth:          child.SpawnDepth,
+			StartedAt:           child.StartedAt,
+			StoppedAt:           child.StoppedAt,
+			ModelCallCount:      child.ModelCallCount,
+			ToolCallCount:       child.ToolCallCount,
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		})
+	}
+	return out
 }
 
 // refreshChatTitle asks the chat's AgentRunner plugin to extract a chat title

@@ -93,6 +93,29 @@ func TestCreateSessionHandlerClearsWriteDeadline(t *testing.T) {
 	}
 }
 
+func TestGetRunCostHandlerClearsWriteDeadline(t *testing.T) {
+	t.Parallel()
+
+	rw := &deadlineCaptureResponseWriter{header: http.Header{}}
+	handlerCalled := false
+	handler := withStreamingWriteDeadlineOverride(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		handlerCalled = true
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, bossanovav1connect.DaemonServiceGetRunCostProcedure, nil)
+	handler.ServeHTTP(rw, req)
+
+	if !handlerCalled {
+		t.Fatal("wrapped handler was not called")
+	}
+	if !rw.writeDeadlineSet {
+		t.Fatal("write deadline was not cleared")
+	}
+	if !rw.writeDeadline.IsZero() {
+		t.Fatalf("write deadline = %v, want zero", rw.writeDeadline)
+	}
+}
+
 type deadlineCaptureResponseWriter struct {
 	header           http.Header
 	writeDeadline    time.Time

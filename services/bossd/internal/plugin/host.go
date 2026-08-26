@@ -785,6 +785,12 @@ func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chat
 	}
 }
 
+func (h *Host) SetAgentRunStore(store db.AgentRunStore) {
+	if h.hostService != nil {
+		h.hostService.SetAgentRunStore(store)
+	}
+}
+
 // SetRepairLease injects the per-session single-repairer lease manager, shared
 // with the API server so repair_active reads and lease enforcement agree.
 func (h *Host) SetRepairLease(m *status.RepairLeaseManager) {

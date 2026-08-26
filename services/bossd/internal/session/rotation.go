@@ -381,7 +381,7 @@ func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Sessio
 	// runtime authority), not the session's stale seed. The account overlay is
 	// already the rotation-selected `next` account, materialized above.
 	spawnSess := l.effectiveSpawnSession(ctx, session)
-	newID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, resumedPrompt, resume, "", spawnSess.Model, spawnSess.EffectiveEffort, mergedEnv)
+	newID, err := l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, resumedPrompt, resume, mergedEnv)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", session.ID).
 			Msg("usage-limit rotation: restart failed")

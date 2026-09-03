@@ -13,8 +13,9 @@ func TestOSCNotificationSequence(t *testing.T) {
 		wantOK bool
 	}{
 		{
-			name:   "ghostty direct uses OSC 777 title+body",
-			env:    notifyEnv{ghosttyResource: "/Applications/Ghostty.app/.../ghostty"},
+			name: "ghostty direct uses OSC 777 title+body",
+			// A path abbreviated in the middle; the character would make it a different path.
+			env:    notifyEnv{ghosttyResource: "/Applications/Ghostty.app/.../ghostty"}, // ellipsis: literal-dots ok
 			req:    req,
 			want:   "\x1b]777;notify;Bossanova;MV Plans needs your input\a",
 			wantOK: true,

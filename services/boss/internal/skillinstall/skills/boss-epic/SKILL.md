@@ -166,6 +166,20 @@ export BOSS_EPIC_PLANNED_STATE BOSS_EPIC_REVIEW_STATE
 # its adapter never self-disables, and a repo with neither never spawns sessions for
 # unplanned work. classifyTickets also throws on an empty state as a library-level backstop.
 test -n "$BOSS_EPIC_PLANNED_STATE" || { echo "BLOCKED: no planned state resolved — tracker adapter states capability returned none and .boss-skills.json trackerConfig.<tracker>.states.planned is empty"; exit 1; }
+# The per-child wall clock is a config knob, not a constant: resolve it through the
+# skill-config seam, never a hardcoded number and never a raw .boss-skills.json read. Going
+# through `epicChildWallClockMinutes` is what makes an absent `epicDefaults` block resolve
+# the built-in default; 3c states what an unresolved budget does to expiry.
+BOSS_EPIC_CHILD_WALL_CLOCK_MIN="$(node --input-type=module -e '
+  import { pathToFileURL } from "node:url"
+  const { loadSkillConfig, epicChildWallClockMinutes } = await import(
+    pathToFileURL(process.env.BOSS_EPIC_TOOLBOX + "/skill-config.mjs").href)
+  process.stdout.write(String(epicChildWallClockMinutes(loadSkillConfig({ cwd: process.cwd() }))))
+')"
+export BOSS_EPIC_CHILD_WALL_CLOCK_MIN
+# A throwing load yields "" from the substitution above, and `elapsed > ` never fires — the
+# same never-expires child the accessor exists to prevent. Fail closed instead.
+test -n "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN" || { echo "BLOCKED: child wall clock unresolved — skill-config.mjs missing from BOSS_EPIC_TOOLBOX (stale payload: run boss skills install), .boss-skills.json failed to load, or epicDefaults is malformed"; exit 1; }
 echo "$TICKETS_JSON" | node --input-type=module -e '
   const { classifyTickets, normalizeTicket } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
   const raw = JSON.parse(await new Promise((r) => {
@@ -333,12 +347,19 @@ assumeCleared, assumeClearedAndMerge}`.
    - `ok: false` — neither transport is complete. Stop
      `BLOCKED: no complete boss transport: <comma-separated missing>; <inventoryHint when non-null>`.
 
-   Report `transport: <mcp|cli>`, plus `degraded: <capabilities>` and
-   `partial: <capability>(<missing fields>)` when non-empty, in the opening line.
+   Report `transport: <mcp|cli>`, plus `cli-only mode (expected): <capabilities>`
+   and `partial: <capability>(<missing fields>)` when non-empty, in the opening
+   line.
 
-   `degraded` = no CLI equivalent at all: `resolveContext`,
-   `getSessionStatuses`, `createPlanningChat` (three, not two — `boss new` has
-   no `--quick-chat`). Substitute their documented fallbacks, do not guess.
+   The helper's array is still named `degraded` and that field name does not
+   change, but what it holds has no CLI equivalent **and never will**:
+   `resolveContext`, `getSessionStatuses`, `createPlanningChat` (three, not two
+   — `boss new` has no `--quick-chat`). Report them as
+   `cli-only mode (expected): resolveContext, getSessionStatuses, createPlanningChat`
+   and substitute their documented fallbacks, do not guess. That is the expected
+   steady state of a CLI run, not a fault. Save the word `degraded:` for a
+   capability missing from **both** transports — a real loss, which today is
+   exactly the `ok: false` stop above.
 
    `partial` = a working transport missing response fields, so deliberately not
    degraded. Today `getSession`: `boss show --json` carries the lifecycle state
@@ -476,7 +497,8 @@ adopts rather than duplicates:
 
 Repeat until the ready set is empty **and** the in-flight table is empty. State
 carried across cycles as plain data: the ticket JSON, and the id lists `merged`,
-`failed`, `inFlight`, `externallyCleared`, `greens`, plus per-ticket
+`failed`, `inFlight`, `externallyCleared`, `greens`, plus the run-wide resolved
+`$BOSS_EPIC_CHILD_WALL_CLOCK_MIN` budget, plus per-ticket
 `session_id` / `chat_id`, wall-clock start, repair-round counters, and — for the
 3c frozen-lease escape — `prevLastRepairHeadSha` (the previous poll's
 `last_repair_head_sha`) and `repairStallSince` (when the lease first classified
@@ -536,7 +558,10 @@ Repair (3c) follows the same bare-command rule.
 The `create_session` **response carries the primary `chat_id` (agent_session_id)
 directly** — record `session_id` + `chat_id` from it (no sqlite read, no
 `list_chats` round-trip needed). Add the id to `inFlight` and start its
-per-ticket wall clock.
+per-ticket wall clock, whose budget is `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`, never a
+fixed number. Each block is a fresh shell, so that export is not live here:
+carry it in the Phase 3 state above, or re-resolve it with the guarded snippet in
+3c — never by re-running the whole canonical invocation block.
 
 ### 3b. Poll
 
@@ -703,10 +728,44 @@ IDLE/STOPPED + passing.
   dying mid-work. Diagnosis cheat sheet:
   [`references/merge-recovery.md`](references/merge-recovery.md).
 
-- **Wall clock exceeded** (default **90 min**) → `classifyChildLiveness` returns
-  `wall-clock-expired/fail-isolate`. Do **not** `stop_session` — leave the
-  session open for a human. Wall-clock expiry is a budget fact, not death
-  evidence, and can never route to repair.
+- **Wall clock exceeded** → `classifyChildLiveness` returns
+  `wall-clock-expired/fail-isolate`. The budget is a config knob, not a constant
+  in the driver's behaviour: compare elapsed time against
+  `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`, which the canonical invocation block resolves via
+  `epicChildWallClockMinutes(config)` (`toolbox/skill-config.mjs`, config key
+  `epicDefaults.childWallClockMinutes`) — the accessor rather than a raw
+  `.boss-skills.json` read, so an absent `epicDefaults` block resolves the
+  built-in default instead of `undefined` (`elapsed > undefined` is always
+  false: a child that can never expire). The canonical invocation block resolved
+  it, but this is a fresh shell where that export is dead, and an empty value
+  makes `elapsed > ` never fire — the same bug. So carry the integer in the
+  Phase 3 state, or re-resolve it here with its own fail-closed guard. Do not
+  re-run the whole canonical invocation block for it: that block also resolves the
+  tracker state roles and classifies the entire ticket list, and carries BLOCKED
+  exits of its own. `$BOSS_EPIC_TOOLBOX` is dead in this shell for the
+  same reason the budget is, so the snippet re-resolves that first — without it
+  the import path is `undefined/skill-config.mjs` and the guard below fires on
+  every cycle.
+
+  ```bash
+  BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+  if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+  BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
+  BOSS_EPIC_CHILD_WALL_CLOCK_MIN="$(node --input-type=module -e '
+    import { pathToFileURL } from "node:url"
+    const { loadSkillConfig, epicChildWallClockMinutes } = await import(
+      pathToFileURL(process.env.BOSS_EPIC_TOOLBOX + "/skill-config.mjs").href)
+    process.stdout.write(String(epicChildWallClockMinutes(loadSkillConfig({ cwd: process.cwd() }))))
+  ')"
+  test -n "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN" || { echo "BLOCKED: child wall clock unresolved at 3c — BOSS_EPIC_TOOLBOX unresolved or skill-config.mjs missing from it (stale payload: run boss skills install), .boss-skills.json failed to load, or epicDefaults is malformed"; exit 1; }
+  ```
+
+  That built-in default is **360 min**;
+  a repo may override it. It is long on purpose — children routinely run 2-4 h,
+  so a short clock expires on healthy work. Do **not** `stop_session` — leave
+  the session open for a human.
+  Wall-clock expiry is a budget fact, not death evidence, and can never route to
+  repair.
 
 A BLOCKED run gets a capped repair round only after the classifier returns
 `agent-blocked/repair`, or it is fail-isolated — never a nudge into the original
@@ -782,6 +841,14 @@ cascade of now-unreachable dependents via `transitiveDependents(graph,
 failed)`, mark each as skipped with the failed ancestor named in the reason, and
 update the progress comment.
 
+Isolation is **per-ticket, and never a stop**: one ticket failing — a spent wall
+clock included — must not end the run, `stop_session` a sibling, or tear down
+shared scheduling state such as the cron/callback watches other in-flight
+children depend on. The loop continues into its next cycle and keeps launching
+every other ready child. The only further tickets touched are the graph
+dependents skipped above, which are unreachable by dependency rather than by
+association.
+
 ### 3f. Report every transition
 
 After **every** state change (launch, green, merged, repair kickoff, failed,
@@ -807,6 +874,27 @@ parent's state.
 
 ### Post-terminal notes extensions (repo opt-in)
 
+**Caller suppression — check this before anything else.** A run another boss core dispatched as
+part of its own larger run must not take its own notes: that caller already owns the single
+post-terminal notes dispatch for the whole top-level run, so a nested phase here is exactly the
+duplicate this gate exists to remove. A caller signals that ownership by setting
+`BOSS_NOTES_SUPPRESSED=1` in the dispatched worker's environment. The marker **defaults to not
+suppressed** — unset, empty, or any other value means this run owns its own notes, so a standalone
+invocation still takes them.
+
+A dispatched worker does not inherit that environment, so the caller also states the marker **in the
+invocation**: bind it into the shell that runs the gate below (`BOSS_NOTES_SUPPRESSED=1`) before
+reading it. Left unbound the gate reads a name nothing assigned, takes the not-suppressed branch,
+and ships the duplicate this section exists to remove with both halves still reading as satisfied.
+
+```bash
+if [ "${BOSS_NOTES_SUPPRESSED:-}" = "1" ]; then
+  echo "notes: suppressed (caller owns notes)"   # end the phase here: no discovery, no scratch, no dispatch
+fi
+```
+
+Skipping is all that is due: suppression is never fatal and never changes the terminal outcome.
+
 After final summary and outcome, resolve and run:
 
 ```bash
@@ -821,7 +909,33 @@ Record every `NOTES_JSON.skipped` entry whose `deliberate` is `false` as
 core — a markerless helper, or one extending another core — and is never reported. Recording is all
 that is due: a skip is never fatal and changes no control flow.
 
-Empty means silent no-op/no scratch. Otherwise:
+Empty means silent no-op/no scratch.
+
+**Sampling roll — one per run, shared by every reporting phase.** `notesDefaults.sampleRate` (a
+number in `[0,1]`, default `1.0`; `0.33` is the recommended production setting) is the probability
+that a run reports at all. Roll it **once per run** and carry the pair forward — a phase that
+re-rolls turns one configured rate into two independent ones, so a run could pay for one reporting
+phase and skip another. If an earlier phase in this run already rolled, reuse its values verbatim
+and re-export them into this shell rather than rolling again:
+
+```bash
+if [ -z "${NOTES_SAMPLED:-}" ]; then
+  NOTES_SAMPLE_RATE=$(export BOSS_EPIC_TOOLBOX; node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, notesSampleRate } = await import(pathToFileURL(process.env.BOSS_EPIC_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(String(notesSampleRate(loadSkillConfig())))')
+  NOTES_SAMPLED=$(awk -v r="${NOTES_SAMPLE_RATE:-1}" -v s="$$" 'BEGIN{srand(s);print (rand()<r)?"yes":"no"}')
+  export NOTES_SAMPLE_RATE NOTES_SAMPLED
+fi
+if [ "$NOTES_SAMPLED" != "yes" ]; then
+  echo "notes: sampled out (rate ${NOTES_SAMPLE_RATE:-1})"   # end the phase here: no scratch, no dispatch
+fi
+```
+
+An unreadable or malformed rate resolves to `1.0` at both ends — the accessor's own fallback and
+the `${NOTES_SAMPLE_RATE:-1}` default — so a broken config costs a few extra dispatches and never
+silently switches reporting off. Seeding `srand` from the shell PID rather than the clock alone
+keeps two runs that start in the same second from rolling identically. This gate sits **after** the
+empty-`extensions` check, so a repo that never opted in still prints nothing at all.
+
+Once both gates pass, create the terminal-only handoff:
 
 ```bash
 NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-epic-notes.XXXXXX")
@@ -893,10 +1007,10 @@ State and honor these explicitly:
   (4) the linked ticket sits in the tracker's **review** state (resolved from
   the `inReview` role adapter-first by the same `resolveStateRole` as the
   planned state — the adapter's `states` capability, else the configured
-  `states.inReview` — and exported by Phase 0 as `$BOSS_EPIC_REVIEW_STATE`;
-  never a baked-in state name. **Empty ⇒ condition 4 cannot hold: never
-  merge, never compare against `""`.** Phase 0 does not BLOCK on an empty
-  review state — only `planned` is preflight-critical — so this gate is where
+  `states.inReview` — and exported by the canonical invocation block as
+  `$BOSS_EPIC_REVIEW_STATE`; never a baked-in state name. **Empty ⇒ condition 4
+  cannot hold: never merge, never compare against `""`.** That block does not
+  BLOCK on an empty review state — only `planned` is preflight-critical — so this gate is where
   it fails closed);
   (5) the PR title/body carries **no** partial-slice or `do not merge` marker.
   A child build run that ended `PARTIAL` is that marker's first producer: its body

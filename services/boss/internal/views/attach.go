@@ -25,7 +25,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// minLaunchingDisplay is the floor on how long the "Launching... Press
+// minLaunchingDisplay is the floor on how long the "Launching… Press
 // Ctrl+X to detach" message stays on screen before we hand off to tmux.
 // Tuned so users actually see the detach shortcut even on a warm daemon.
 const minLaunchingDisplay = 1500 * time.Millisecond
@@ -1021,7 +1021,7 @@ func (m AttachModel) View() tea.View {
 			title = m.session.Title
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			fmt.Sprintf("Launching %s for %s...  Press Ctrl+X to detach", agentDisplayName(m.displayAgentName()), title)))
+			fmt.Sprintf("Launching %s for %s…  Press Ctrl+X to detach", agentDisplayName(m.displayAgentName()), title)))
 		return tea.NewView(b.String())
 	}
 

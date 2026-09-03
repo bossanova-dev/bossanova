@@ -179,7 +179,8 @@ func TestAccountUsageAgeCell(t *testing.T) {
 }
 
 func TestAccountUsageAgeDetail(t *testing.T) {
-	t.Run("populated shows fetched ... ago", func(t *testing.T) {
+	// A subtest name, not rendered copy; the gap stands for the age the case supplies.
+	t.Run("populated shows fetched ... ago", func(t *testing.T) { // ellipsis: literal-dots ok
 		u := &pb.UsageSnapshot{Status: "active", FetchedAt: timestamppb.New(time.Now().Add(-4 * time.Minute))}
 		got := accountUsageAgeDetail(u)
 		if !strings.HasPrefix(got, "fetched ") || !strings.Contains(got, "ago") {

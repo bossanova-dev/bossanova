@@ -392,6 +392,61 @@ hardcoded default.
 | `BOSSD_DAEMON_ID`        | stable identifier this daemon registers under (defaults to machine hostname); each value creates a separate daemon record, so change carefully |
 | `BOSSD_USER_JWT`         | bypass the keychain and pass a WorkOS JWT directly; used in CI                                                                                 |
 
+### `bosso` (server)
+
+| Variable               | Notes                                                                                                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BOSSO_DB_DRIVER`      | **Required — there is no default.** The only accepted value is `postgres`. bosso refuses to start and exits non-zero when it is unset, empty, or whitespace-only, and on any other value — including `sqlite`, which was accepted until the SQLite server-side path was deleted. |
+| `BOSSO_DATABASE_URL`   | Postgres connection string; **required** — it is the only way to give bosso a database                                                                                                                                                                                           |
+| `BOSSO_MULTI_INSTANCE` | `true` runs bosso as more than one replica                                                                                                                                                                                                                                       |
+| `BOSSO_ADDR`           | Listen address (default `:8080`)                                                                                                                                                                                                                                                 |
+| `BOSSO_INSTANCE_ID`    | Distinct stable identity per bosso process; set from the pod name on Kubernetes, must be set manually for local multi-instance runs                                                                                                                                              |
+
+#### Local development database
+
+The repository ships a `docker-compose.yml` at its root with a single
+`bosso-postgres` service, so a working local database needs no manual setup:
+
+```bash
+# 1. Start Postgres (postgres:16, published on host port 5433).
+docker compose up -d bosso-postgres
+
+# 2. Point bosso at it. Both variables are required for the postgres driver.
+export BOSSO_DB_DRIVER=postgres
+export BOSSO_DATABASE_URL=postgres://bosso:bosso@localhost:5433/bosso_dev?sslmode=disable
+
+# 3. Build and run bosso; it applies its migrations on startup.
+make bin/bosso
+./bin/bosso
+```
+
+`make -C services/bosso dev` runs the same server straight from source. It
+inherits the two variables from step 2, so export them in that shell too —
+without them bosso exits immediately with the `BOSSO_DB_DRIVER is required`
+error.
+
+Whichever way you start it, also `export BOSS_ENV=development`. `BOSS_ENV`
+defaults to `production` and `BOSSO_SENTRY_DSN` defaults to the hard-coded
+**production** Sentry DSN, so a bare `./bin/bosso` reports local errors into
+production error triage.
+
+Note what `BOSS_ENV=development` does and does not do: it only retags those
+events, which are still transmitted to the same Sentry project, under the
+`development` environment. Setting `BOSSO_SENTRY_DSN=` does not stop them
+either — `config.EnvOr` treats an empty value as unset and falls back to the
+built-in DSN. To send nothing at all, set `BOSSO_SENTRY_DSN` to a non-empty
+invalid value, which makes `sentry.Init` fail and bosso log
+`errortrack disabled`.
+
+Stop it with `docker compose stop bosso-postgres`. `docker compose down` also
+removes the container, but the named volume keeps the data.
+Add `-v` to discard it.
+
+The host port is **5433**, not 5432, on purpose: the Makefile's throwaway test
+container (`bossanova-test-postgres`, database `bosso_test`) already publishes
+5432, so the split lets `make test-bosso-postgres` run while a development
+database stays up.
+
 ### XDG and path variables
 
 | Variable          | What it affects                                                                                                     |

@@ -5,11 +5,11 @@ ENVIRONMENT="${ENVIRONMENT:-production}"
 case "${ENVIRONMENT}" in
   staging)
     NAMESPACE="${NAMESPACE:-bs-staging}"
-    BASE_URL="${BASE_URL:-https://orchestrator-k8s-staging.bossanova.dev}"
+    BASE_URL="${BASE_URL:-https://orchestrator-staging.bossanova.dev}"
     ;;
   production)
     NAMESPACE="${NAMESPACE:-bs-production}"
-    BASE_URL="${BASE_URL:-https://orchestrator-k8s.bossanova.dev}"
+    BASE_URL="${BASE_URL:-https://orchestrator.bossanova.dev}"
     ;;
   *)
     echo "ENVIRONMENT must be staging or production" >&2
@@ -43,6 +43,8 @@ REQUIRED_BOSSO_SECRET_KEYS=(
   BOSSO_GITHUB_APP_CLIENT_ID
   BOSSO_GITHUB_APP_CLIENT_SECRET
   BOSSO_SENTRY_DSN
+  BOSSO_POSTHOG_PROJECT_TOKEN
+  BOSSO_POSTHOG_HOST
 )
 
 PLACEHOLDER_SENTINELS=(

@@ -29,6 +29,10 @@ var (
 
 const cursorChevron = "❯"
 
+// ellipsis is the house truncation/progress marker (U+2026). One cell and
+// one rune wide, so a cell or rune budget reserves exactly one for it.
+const ellipsis = "…"
+
 // --- Layout ---
 
 const (
@@ -579,23 +583,29 @@ func writeCLITableRow(b *strings.Builder, cols []table.Column, cells table.Row) 
 	}
 }
 
+// truncateDisplay caps a SINGLE-LINE s at maxWidth display cells, appending the
+// ellipsis marker when it has to cut. ansi.Truncate measures in cells and
+// subtracts the marker's own width itself, so maxWidth is the whole budget:
+// there is no separate reservation to keep in sync, and it never byte-slices a
+// styled string into mojibake or a stranded SGR escape.
+//
+// The single-line precondition is load bearing, because the two width functions
+// in this file disagree about newlines: ansi.StringWidth (what ansi.Truncate
+// measures with) SUMS across lines, while lipgloss.Width (what
+// writeCLITableRow's padding measures with) returns the WIDEST line. So on
+// multi-line input this budgets the total rather than the visual width —
+// truncateDisplay("aaaa\nbbbb", 6) is "aaaa\nb…", not the untouched input a
+// widest-line reading would give — and the padding below would then disagree
+// with the cut. Every caller today satisfies the precondition: maskTestError
+// collapses whitespace runs to single spaces before calling
+// (account_health.go), accountLastTestCell truncates that same masked value
+// (accounts_list.go), and writeCLITableRow feeds one table cell at a time.
+// Keep it that way, or measure in one unit rather than two.
 func truncateDisplay(s string, maxWidth int) string {
-	if maxWidth <= 0 || lipgloss.Width(s) <= maxWidth {
+	if maxWidth <= 0 {
 		return s
 	}
-	if maxWidth <= 3 {
-		return strings.Repeat(".", maxWidth)
-	}
-	var b strings.Builder
-	for _, r := range s {
-		next := b.String() + string(r)
-		if lipgloss.Width(next) > maxWidth-3 {
-			break
-		}
-		b.WriteRune(r)
-	}
-	b.WriteString("...")
-	return b.String()
+	return ansi.Truncate(s, maxWidth, ellipsis)
 }
 
 // MaxColWidth is the exported version of maxColWidth for use by cmd/ package.

@@ -2,8 +2,7 @@
 
 Read this when the Preflight probe set `BOSSD_MANAGED=0` — i.e. no bossd daemon provisioned this
 session. The skill then degrades to a **plain scheduled runner**: it owns branch, PR, and env
-fallbacks itself instead of adopting bossd's bootstrap handshake. The body carries the mechanics; this
-reference is the full narrative for the four daemon-coupled points.
+fallbacks itself instead of adopting bossd's bootstrap handshake.
 
 ## The signal
 
@@ -49,14 +48,13 @@ PR apply to `BOSSD_MANAGED=1` only. Standalone has neither, and collapses to exa
   (Step 7's `gh pr edit` branch, reachable only on this resume).
 
 The `foreign` guard (a branch carrying real work matching no ownership signal ⇒ `NO_CHANGE`) is
-unchanged and applies in both modes. No PR command semantics change: an empty `PR_NUMBER` already
-routes to `gh pr create`, so the create-if-absent default needs no new code.
+unchanged and applies in both modes.
 
 ## Step 3 — guard the session link on env presence
 
 `update_session` links the boss session to the ticket for the TUI `[l]inear` shortcut. It is called
 only when `BOSS_SESSION_ID` is set (`BOSSD_MANAGED=1`). Under `BOSSD_MANAGED=0` there is no bossd
-session to link, so the call is skipped — expected standalone degradation, not an error. It was always
+session to link, so the call is skipped — expected standalone degradation, not an error. It is
 best-effort and non-fatal.
 
 ## Step 11 — proof env fallback
@@ -64,8 +62,7 @@ best-effort and non-fatal.
 The proof upload env (`PROOF_ANTHROPIC_API_KEY`, etc.) is daemon-injected. Under `BOSSD_MANAGED=0` it
 is not injected, so `node scripts/proof.mjs run` legitimately posts its honest `env-unavailable` note
 (doctor output embedded). That is the intended non-fatal standalone degradation — capture-only and
-never a terminal-state change — not a failure to fix. No proof code changes; `proof.mjs` already gates
-on the key.
+never a terminal-state change — not a failure to fix.
 
 ## Step 12 — Stop-hook removal is an inherent no-op
 

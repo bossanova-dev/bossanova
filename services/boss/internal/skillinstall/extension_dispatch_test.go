@@ -345,10 +345,15 @@ var extensionDispatchAllowlist = []string{
 	// there is no `skillPath` it could name. Present in both payload copies of `boss-review/SKILL.md`
 	// and, reworded, in `docs/skills/boss-review.md`.
 	"Invoked via the `Skill` tool there is usually no",
-	// `boss-build` Step 6c entering the `boss-review` CORE. The paragraph goes on to describe the
+	// `boss-build` Step 6 entering the `boss-review` CORE. The paragraph goes on to describe the
 	// `lensMap`, which exempts the window, so the sentence is reached by the directive pass. Present
-	// in both payload copies of `boss-build/references/review-stack.md`.
-	"Invoke it via the `Skill` tool (`boss-review`, no args",
+	// in both payload copies of `boss-build/references/review-stack.md`. Keyed on the invocation
+	// clause alone, deliberately stopping before the base-ref wording: this sentence names the base
+	// the pass must review from, and pinning that argument here would make an ordinary edit to it
+	// read as a dispatch-mechanism regression. The exemption is still one sentence entering one
+	// named core, which is what makes it legitimate — there is no `skillPath` a core entry could
+	// name.
+	"Invoke it via the `Skill` tool (`boss-review`",
 }
 
 // extensionDispatchAllowed reports whether text is one of the documented legitimate passages above.
@@ -1260,6 +1265,357 @@ func TestPublishedCoresDispatchRoundExtensionsInParallel(t *testing.T) {
 			if hit := phaseRRoundDispatchSerial.FindString(asserted); hit != "" {
 				t.Errorf("%s %s: Phase R Tier 1 still instructs serial round dispatch (%q) — N read-only rounds must cost the slowest, not the sum", label, path, hit)
 			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Post-terminal reporting cadence (BOS-1099)
+//
+// Three properties are pinned here, and all three are cadence, not shape: the extension contract's
+// discovery, worker brief, invocation envelope and result envelope are untouched by this ticket.
+//
+//  1. Every core that runs a post-terminal `notes` phase honours a caller-suppression marker, so a
+//     nested run does not report the same outcome its caller is already reporting — and the marker
+//     defaults to NOT suppressed, so a standalone run is unaffected.
+//  2. Every such core takes ONE sampling roll per run and reuses it, so one configured rate cannot
+//     become two independent ones across a run's reporting phases.
+//  3. `boss-build` dispatches the whole notes phase in one combined worker rather than one worker
+//     per descriptor, and its pre-PR `knowledge` phase shares the same single roll.
+//
+// The prose pins below are whitespace-tolerant by construction: the section is flattened first and
+// every inter-word gap is `\s+`, so a reflow of the paragraph cannot red them. Code shapes keep
+// their literal spaces — `\s+` also matches a newline, and a shell line that wrapped would no
+// longer be the command the core runs.
+// ---------------------------------------------------------------------------
+
+const notesPhaseHeading = "### Post-terminal notes extensions (repo opt-in)"
+
+// notesTakingCores is every published core that runs a post-terminal `notes` phase, paired with the
+// toolbox variable its own section binds. Kept as an ordered slice rather than a map so subtest
+// names are stable across runs.
+var notesTakingCores = []struct{ core, toolbox string }{
+	{"boss-build", "BOSS_BUILD_TOOLBOX"},
+	{"boss-epic", "BOSS_EPIC_TOOLBOX"},
+	{"boss-plan", "BOSS_PLAN_TOOLBOX"},
+	{"boss-repair", "BOSS_REPAIR_TOOLBOX"},
+	{"boss-review", "BOSS_REVIEW_TOOLBOX"},
+}
+
+// notesPhaseSection returns the core's post-terminal notes section, raw and whitespace-collapsed.
+// It reads whichever spine file carries the heading, because boss-build's phase lives in an
+// extracted reference rather than in SKILL.md.
+func notesPhaseSection(t *testing.T, fsys fs.FS, core string) (raw, flat string) {
+	t.Helper()
+	for _, rel := range bodyFilesFor(core) {
+		data, err := fs.ReadFile(fsys, "skills/"+core+"/"+rel)
+		if err != nil {
+			t.Fatalf("read skills/%s/%s: %v", core, rel, err)
+		}
+		_, section, found := strings.Cut(string(data), notesPhaseHeading)
+		if !found {
+			continue
+		}
+		return section, whitespaceRun.ReplaceAllString(section, " ")
+	}
+	t.Fatalf("%s carries no %q section in any spine file", core, notesPhaseHeading)
+	return "", ""
+}
+
+// assertProsePinFalsifiable is the regexp analogue of assertDocPinFalsifiable. A pin nobody has
+// watched fail proves nothing, so every prose pin added here is mutated in-test with an equally
+// whitespace-tolerant substitution and required to stop matching.
+func assertProsePinFalsifiable(t *testing.T, source string, pin, mutate *regexp.Regexp, replacement, label string) {
+	t.Helper()
+	if !pin.MatchString(source) {
+		t.Fatalf("%s: source does not satisfy the pin %s", label, pin)
+	}
+	mutated := mutate.ReplaceAllString(source, replacement)
+	if mutated == source {
+		t.Fatalf("%s: falsifying mutation %s changed nothing", label, mutate)
+	}
+	if pin.MatchString(mutated) {
+		t.Fatalf("%s: pin %s survived its falsifying mutation", label, pin)
+	}
+}
+
+var (
+	notesSuppressionDefault = regexp.MustCompile(`(?i)\*\*defaults\s+to\s+not\s+suppressed\*\*`)
+	notesSuppressionOwner   = regexp.MustCompile(`(?i)caller\s+already\s+owns\s+the\s+single\s+post-terminal\s+notes\s+dispatch`)
+	notesSamplingOnce       = regexp.MustCompile(`(?i)roll\s+it\s+\*\*once\s+per\s+run\*\*`)
+	notesSamplingKnob       = regexp.MustCompile("`notesDefaults\\.sampleRate`")
+	notesSamplingRecommend  = regexp.MustCompile("`0\\.33`\\s+is\\s+the\\s+recommended\\s+production\\s+setting")
+)
+
+// TestPublishedNotesPhasesHonourCallerSuppression pins property (1). Without it, a boss-build run
+// that dispatched boss-review reports one outcome twice — the exact duplication the combined
+// dispatch in boss-build would otherwise only half-solve.
+func TestPublishedNotesPhasesHonourCallerSuppression(t *testing.T) {
+	for label, fsys := range shippedPayloads(t) {
+		for _, core := range notesTakingCores {
+			t.Run(label+"/"+core.core, func(t *testing.T) {
+				raw, flat := notesPhaseSection(t, fsys, core.core)
+
+				// Code shape: literal spaces. A reflow here would change the command.
+				for _, shape := range []string{
+					`if [ "${BOSS_NOTES_SUPPRESSED:-}" = "1" ]; then`,
+					`echo "notes: suppressed (caller owns notes)"`,
+				} {
+					if !strings.Contains(raw, shape) {
+						t.Errorf("%s notes phase must carry the suppression check %q verbatim", core.core, shape)
+					}
+				}
+
+				assertProsePinFalsifiable(t, flat, notesSuppressionDefault,
+					regexp.MustCompile(`(?i)\*\*defaults\s+to\s+not\s+suppressed\*\*`),
+					"**defaults to suppressed**",
+					core.core+" notes suppression default")
+				assertProsePinFalsifiable(t, flat, notesSuppressionOwner,
+					regexp.MustCompile(`(?i)caller\s+already\s+owns\s+the\s+single\s+post-terminal\s+notes\s+dispatch`),
+					"caller takes no notes of its own",
+					core.core+" notes suppression rationale")
+
+				// The marker travels in the INVOCATION, not in an inherited environment: a caller
+				// cannot write into a dispatched worker's shell, so a section that describes only
+				// the env channel leaves the gate reading a name nothing assigned. That branch is
+				// the not-suppressed one — the duplicate this section exists to remove, shipped
+				// with the caller pin and the callee pin both reading as satisfied. This is the
+				// same failure the STEP_6C_DEADLINE hand-off names, and the same cure.
+				bindMarker := regexp.MustCompile(`(?i)bind\s+it\s+into\s+the\s+shell\s+that\s+runs\s+the\s+gate\s+below`)
+				assertProsePinFalsifiable(t, flat, bindMarker, bindMarker,
+					"read it straight from the environment this worker inherited",
+					core.core+" notes suppression marker binding")
+			})
+		}
+	}
+}
+
+// TestPublishedNotesPhasesAreSampledOncePerRun pins property (2). The reuse guard is the load-bearing
+// half: a phase that re-rolls turns one configured rate into two independent ones, so a run could pay
+// for one reporting phase and skip another — neither the old behaviour nor the configured rate.
+func TestPublishedNotesPhasesAreSampledOncePerRun(t *testing.T) {
+	for label, fsys := range shippedPayloads(t) {
+		for _, core := range notesTakingCores {
+			t.Run(label+"/"+core.core, func(t *testing.T) {
+				raw, flat := notesPhaseSection(t, fsys, core.core)
+
+				for _, shape := range []string{
+					`if [ -z "${NOTES_SAMPLED:-}" ]; then`,
+					`export NOTES_SAMPLE_RATE NOTES_SAMPLED`,
+					`echo "notes: sampled out (rate ${NOTES_SAMPLE_RATE:-1})"`,
+					`"/skill-config.mjs").href); process.stdout.write(String(notesSampleRate(loadSkillConfig())))`,
+				} {
+					if !strings.Contains(raw, shape) {
+						t.Errorf("%s notes phase must carry the sampling shape %q verbatim", core.core, shape)
+					}
+				}
+				// The roll must read the knob through this core's OWN toolbox: a core cannot reach
+				// into another core's installed copy, which may not be installed at all.
+				if !strings.Contains(raw, `process.env.`+core.toolbox+` + "/skill-config.mjs"`) {
+					t.Errorf("%s notes phase must read skill-config.mjs from $%s", core.core, core.toolbox)
+				}
+
+				for _, pin := range []struct {
+					pin    *regexp.Regexp
+					mutate *regexp.Regexp
+					with   string
+					label  string
+				}{
+					{notesSamplingOnce, regexp.MustCompile(`(?i)roll\s+it\s+\*\*once\s+per\s+run\*\*`), "roll it before each phase", "one roll per run"},
+					{notesSamplingKnob, regexp.MustCompile("`notesDefaults\\.sampleRate`"), "`notesDefaults.rate`", "sampleRate knob name"},
+					{notesSamplingRecommend, regexp.MustCompile("`0\\.33`\\s+is\\s+the\\s+recommended\\s+production\\s+setting"), "`0.9` is the recommended production setting", "recommended rate"},
+				} {
+					assertProsePinFalsifiable(t, flat, pin.pin, pin.mutate, pin.with, core.core+" "+pin.label)
+				}
+			})
+		}
+	}
+}
+
+// TestPublishedBossBuildCombinesItsNotesDispatch pins the first half of property (3). One dispatch
+// per descriptor is what made a top-level run pay N times for one outcome; the per-extension share
+// is what keeps serializing them from letting a single hung extension eat its siblings' allowance.
+func TestPublishedBossBuildCombinesItsNotesDispatch(t *testing.T) {
+	combined := regexp.MustCompile(`(?i)dispatch\s+\*\*one\s+combined\s+subagent\s+for\s+the\s+whole\s+phase\*\*`)
+	notPerDescriptor := regexp.MustCompile(`(?i)not\s+one\s+per\s+descriptor`)
+	atMostOne := regexp.MustCompile(`(?i)at\s+most\s+one\s+post-terminal\s+notes\s+dispatch`)
+	perExtension := regexp.MustCompile("`BOSS_SKILL_EXTENSION_TIMEOUT_MS`\\s+\\(default\\s+`300000`\\s+ms\\)\\s+\\*\\*per\\s+extension\\*\\*")
+
+	for label, fsys := range shippedPayloads(t) {
+		t.Run(label, func(t *testing.T) {
+			_, flat := notesPhaseSection(t, fsys, "boss-build")
+			for _, pin := range []struct {
+				pin   *regexp.Regexp
+				with  string
+				label string
+			}{
+				{combined, "dispatch one subagent per descriptor", "combined dispatch"},
+				{notPerDescriptor, "one per descriptor", "explicit non-per-descriptor rule"},
+				{atMostOne, "at least one post-terminal notes dispatch", "at-most-one guarantee"},
+				{perExtension, "`BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms) **for the phase**", "per-extension timeout share"},
+			} {
+				assertProsePinFalsifiable(t, flat, pin.pin, pin.pin, pin.with, "boss-build "+pin.label)
+			}
+			// The combined worker still owes each descriptor its own unchanged envelope: this is a
+			// cadence change, not a contract change.
+			if !strings.Contains(flat, "one invocation envelope per descriptor, each unchanged") {
+				t.Error("boss-build's combined notes dispatch must still give each descriptor its own unchanged invocation envelope")
+			}
+		})
+	}
+}
+
+// TestPublishedBossBuildKnowledgePhaseSharesTheSamplingRoll pins the second half of property (3).
+// The knowledge phase stays pre-PR because its artifacts commit to the branch; only its cadence
+// joins the notes phase, via the one roll both read.
+func TestPublishedBossBuildKnowledgePhaseSharesTheSamplingRoll(t *testing.T) {
+	sharedRoll := regexp.MustCompile(`(?i)\*\*one\s+roll\s+governs\s+both\s+reporting\s+phases\s+of\s+the\s+run\*\*`)
+	beforeDiscovery := regexp.MustCompile(`(?i)checked\s+\*\*before\*\*\s+discovery`)
+	// The two phases are in different shells many tool calls apart. `export` does not cross that
+	// boundary, so the roll is handed over through a file or it is not handed over at all — and a
+	// Step 12 that reads an unassigned NOTES_SAMPLED silently takes a SECOND independent draw,
+	// which is the two-rates failure the shared-roll prose above promises this branch does not have.
+	// Pinning only the prose would leave that promise green over an inert mechanism.
+	fileHandover := regexp.MustCompile(`(?i)hand\s+it\s+forward\s+\*\*through\s+a\s+file\*\*`)
+	consumeOnce := regexp.MustCompile(`(?i)Reading\s+it\s+is\s+a\s+\*\*consume\*\*`)
+	// The gate fires BEFORE discovery, so it cannot know whether this repo configures a knowledge
+	// extension at all — and most configure none. A per-phase skip claim there would tell a repo
+	// that never opted in that something of its own was dropped, contradicting the resident body's
+	// "No extensions -> do nothing, print nothing". The line has to stay run-level.
+	runLevelLine := regexp.MustCompile(`(?i)run-level\s+rather\s+than\s+a\s+.knowledge\s+phase:\s+skipped.\s+claim`)
+	rollFileLine := `NOTES_ROLL_FILE="$(git rev-parse --git-dir 2>/dev/null || echo .)/boss-build-notes-roll"`
+
+	for label, fsys := range shippedPayloads(t) {
+		t.Run(label, func(t *testing.T) {
+			data, err := fs.ReadFile(fsys, "skills/boss-build/references/knowledge-extensions.md")
+			if err != nil {
+				t.Fatalf("read knowledge-extensions.md: %v", err)
+			}
+			raw := string(data)
+			flat := whitespaceRun.ReplaceAllString(raw, " ")
+
+			for _, shape := range []string{
+				`if [ -z "${NOTES_SAMPLED:-}" ]; then`,
+				`export NOTES_SAMPLE_RATE NOTES_SAMPLED`,
+				"`reporting: sampled out (rate <r>)`",
+			} {
+				if !strings.Contains(raw, shape) {
+					t.Errorf("the pre-PR knowledge phase must carry the shared sampling shape %q verbatim", shape)
+				}
+			}
+			assertProsePinFalsifiable(t, flat, sharedRoll, sharedRoll,
+				"**each phase rolls for itself**", "knowledge shared sampling roll")
+			assertProsePinFalsifiable(t, flat, beforeDiscovery, beforeDiscovery,
+				"checked after discovery", "knowledge sampling gate ordering")
+			// Sampling must never become a terminal state: this phase's whole promise is that it
+			// cannot produce BLOCKED.
+			if !strings.Contains(flat, "the sampling gate is a skip line and never a terminal state") {
+				t.Error("the knowledge sampling gate must be stated as a skip line, never a terminal state")
+			}
+
+			// Writer end: the roll is persisted on BOTH branches (a sampled-out run's `no` is
+			// exactly the value Step 12 must reuse), which is why the printf sits outside the if.
+			for _, shape := range []string{
+				rollFileLine,
+				`printf '%s %s\n' "${NOTES_SAMPLE_RATE:-1}" "$NOTES_SAMPLED" > "$NOTES_ROLL_FILE"`,
+			} {
+				if !strings.Contains(raw, shape) {
+					t.Errorf("the knowledge phase must persist the shared roll with %q verbatim", shape)
+				}
+			}
+			assertProsePinFalsifiable(t, flat, fileHandover, fileHandover,
+				"hand it forward through the environment", "knowledge roll file handover")
+			assertProsePinFalsifiable(t, flat, runLevelLine, runLevelLine,
+				"a per-phase claim naming the knowledge phase", "knowledge sampled-out line is run-level")
+			if strings.Contains(raw, "knowledge phase: skipped (sampled out") {
+				t.Error("the pre-discovery sampling gate must not append a knowledge-phase skip claim")
+			}
+
+			// Reader end: Step 12 reads the file back before it would roll, and consumes it so the
+			// next run in this worktree is not stuck with this run's verdict forever.
+			finalize, err := fs.ReadFile(fsys, "skills/boss-build/references/finalize-and-stop.md")
+			if err != nil {
+				t.Fatalf("read finalize-and-stop.md: %v", err)
+			}
+			finalizeRaw := string(finalize)
+			for _, shape := range []string{
+				rollFileLine,
+				`read -r NOTES_SAMPLE_RATE NOTES_SAMPLED < "$NOTES_ROLL_FILE"`,
+				`rm -f "$NOTES_ROLL_FILE"`,
+			} {
+				if !strings.Contains(finalizeRaw, shape) {
+					t.Errorf("the notes phase must read the shared roll back with %q verbatim", shape)
+				}
+			}
+			assertProsePinFalsifiable(t, whitespaceRun.ReplaceAllString(finalizeRaw, " "),
+				consumeOnce, consumeOnce, "Reading it leaves the line in place",
+				"notes roll file consume-once")
+		})
+	}
+}
+
+// TestPublishedBossBuildSuppressesNestedNotesPhases pins the other end of the suppression handshake.
+// A marker every core honours and no core ever sets would leave the duplication exactly where it was
+// while every honouring core still reads as fixed.
+func TestPublishedBossBuildSuppressesNestedNotesPhases(t *testing.T) {
+	setsMarker := regexp.MustCompile("set\\s+`BOSS_NOTES_SUPPRESSED=1`\\s+in\\s+the\\s+environment\\s+the\\s+nested\\s+pass\\s+runs\\s+under")
+	everyCore := regexp.MustCompile(`(?i)every\s+other\s+boss\s+core\s+this\s+run\s+dispatches\s+gets\s+the\s+same\s+marker`)
+
+	for label, fsys := range shippedPayloads(t) {
+		t.Run(label, func(t *testing.T) {
+			data, err := fs.ReadFile(fsys, "skills/boss-build/references/review-stack.md")
+			if err != nil {
+				t.Fatalf("read review-stack.md: %v", err)
+			}
+			flat := whitespaceRun.ReplaceAllString(string(data), " ")
+			assertProsePinFalsifiable(t, flat, setsMarker, setsMarker,
+				"leave `BOSS_NOTES_SUPPRESSED` unset for the nested pass", "boss-build sets the suppression marker")
+			assertProsePinFalsifiable(t, flat, everyCore, everyCore,
+				"only the review pass gets the marker", "suppression applies to every dispatched core")
+
+			// review-stack.md is the review pass only. boss-build's other nested core is the Step 8
+			// repair pass, and its "every other core gets the marker" promise is worth exactly the
+			// second dispatch site honouring it: a repair pass runs on every red run, which is
+			// precisely the run whose notes would otherwise be written twice.
+			finalize, err := fs.ReadFile(fsys, "skills/boss-build/references/finalize-and-stop.md")
+			if err != nil {
+				t.Fatalf("read finalize-and-stop.md: %v", err)
+			}
+			repairFlat := whitespaceRun.ReplaceAllString(string(finalize), " ")
+			repairMarker := regexp.MustCompile("Set\\s+`BOSS_NOTES_SUPPRESSED=1`\\s+in\\s+the\\s+environment\\s+each\\s+repair\\s+pass\\s+runs\\s+under")
+			assertProsePinFalsifiable(t, repairFlat, repairMarker, repairMarker,
+				"leave `BOSS_NOTES_SUPPRESSED` unset for the repair pass",
+				"boss-build sets the suppression marker on its nested repair pass")
+		})
+	}
+}
+
+// TestSkillConfigDocumentsNotesSampleRate pins the operator-facing half of the knob. A rate nobody
+// can find in the config reference is a rate nobody turns down, which is the whole point of the
+// ticket.
+func TestSkillConfigDocumentsNotesSampleRate(t *testing.T) {
+	path := filepath.Join(findRepoRoot(t), "docs", "skills", "skill-config.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read skill-config.md: %v", err)
+	}
+	flat := whitespaceRun.ReplaceAllString(string(data), " ")
+
+	recommended := regexp.MustCompile("\\*\\*`0\\.33`\\s+is\\s+the\\s+recommended\\s+production\\s+setting\\*\\*")
+	defaultOne := regexp.MustCompile("\\*\\*default\\s+`1\\.0`\\*\\*")
+	for _, pin := range []struct {
+		pin   *regexp.Regexp
+		with  string
+		label string
+	}{
+		{recommended, "**`0.9` is the recommended production setting**", "recommended rate"},
+		{defaultOne, "**default `0.33`**", "documented default"},
+	} {
+		assertProsePinFalsifiable(t, flat, pin.pin, pin.pin, pin.with, "skill-config.md "+pin.label)
+	}
+	for _, want := range []string{"`notesDefaults.sampleRate`", "`notesSampleRate`", "`notes: sampled out (rate <r>)`"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("docs/skills/skill-config.md must document %s", want)
 		}
 	}
 }

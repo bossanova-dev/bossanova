@@ -13,6 +13,10 @@ import (
 
 const duplicateSessionPlanSummaryLimit = 80
 
+// ellipsis is the house truncation marker (U+2026). It is appended past
+// the rune limit above rather than inside it, so the limit is unchanged.
+const ellipsis = "…"
+
 type activeSessionMatch struct {
 	id   string
 	plan string
@@ -158,7 +162,7 @@ func summarizeDuplicateSessionPlan(plan string) string {
 	if len(runes) <= duplicateSessionPlanSummaryLimit {
 		return firstLine
 	}
-	return string(runes[:duplicateSessionPlanSummaryLimit]) + "..."
+	return string(runes[:duplicateSessionPlanSummaryLimit]) + ellipsis
 }
 
 // activeSessionKeysForRepo loads the active sessions for a repo and indexes

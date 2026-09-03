@@ -90,7 +90,11 @@ func SeedFirstRunSettings(home, socketPath string) error {
 // deterministic upgrade-banner state (e.g. the rate-limit line) without draining
 // a real GitHub quota. Values only flip on-screen text, never behavior a user
 // cares about, so forwarding them from an agent-authored scenario is safe.
-var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_PROOF_UPGRADE_"}
+// BOSS_ORG_E2E_* (BOS-1061) is the organization / repo-organization-mapping
+// family: it seeds the caller's organization list, the mapping in force, and a
+// membership refusal, none of which the harness can reach for real because it
+// never signs in to bosso.
+var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_ORG_E2E_", "BOSS_PROOF_UPGRADE_"}
 
 // ProofEnvAllowedKeys are exact proof-only env keys whose behavior is narrow
 // enough to expose to agent-authored scenarios without admitting a whole family.
@@ -190,6 +194,13 @@ func BaseHarnessEnv(environ []string) []string {
 			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALLED_REPOS=") ||
 			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS=") ||
 			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_URL=") ||
+			// BOS-1061: the organization list, the mapping in force, and the
+			// membership refusal. Stripped like every other E2E family so an
+			// ambient developer value can never map an unrelated run's repo to
+			// an organization, or stage a refusal no scenario asked for.
+			strings.HasPrefix(e, "BOSS_ORG_E2E_ORGANIZATIONS=") ||
+			strings.HasPrefix(e, "BOSS_ORG_E2E_MAPPING=") ||
+			strings.HasPrefix(e, "BOSS_ORG_E2E_SET_ERROR=") ||
 			strings.HasPrefix(e, "BOSS_PROOF_SETTINGS_") ||
 			strings.HasPrefix(e, "HOME=") ||
 			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {

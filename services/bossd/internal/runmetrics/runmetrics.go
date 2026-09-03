@@ -128,3 +128,43 @@ func sortDurations(values []time.Duration) {
 		}
 	}
 }
+
+// MedianInt64 returns the median of values and whether one exists. An even-sized
+// sample takes the truncated mean of the two middle values, matching
+// MedianDuration — a "median reviewer dispatches" of 2 rather than 2.5 is the
+// honest resolution for a whole-count metric.
+func MedianInt64(values []int64) (int64, bool) {
+	if len(values) == 0 {
+		return 0, false
+	}
+	cp := append([]int64(nil), values...)
+	sortInt64s(cp)
+	mid := len(cp) / 2
+	if len(cp)%2 == 1 {
+		return cp[mid], true
+	}
+	return (cp[mid-1] + cp[mid]) / 2, true
+}
+
+func sortInt64s(values []int64) {
+	for i := 1; i < len(values); i++ {
+		for j := i; j > 0 && values[j] < values[j-1]; j-- {
+			values[j], values[j-1] = values[j-1], values[j]
+		}
+	}
+}
+
+// TerminalStateMix counts how many runs ended in each terminal state. The empty
+// token means "not recorded" (a run that printed no terminal state, or a runner
+// whose transcript is not parsed) and is counted under its own key so a caller
+// can tell "no boss-build runs in this window" from "every run blocked".
+func TerminalStateMix(states []string) map[string]int64 {
+	if len(states) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(states))
+	for _, state := range states {
+		out[state]++
+	}
+	return out
+}

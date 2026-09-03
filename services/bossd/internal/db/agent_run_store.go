@@ -22,6 +22,17 @@ const (
 	AgentRunStopUnknown        = "unknown"
 )
 
+// Terminal states a boss-build run can end in. The empty string is the recorded
+// value for every run that is not a boss-build run (or whose transcript carried
+// no terminal-state line) — "not recorded", never "failed".
+const (
+	AgentRunTerminalReviewReady = "REVIEW_READY"
+	AgentRunTerminalPartial     = "PARTIAL"
+	AgentRunTerminalBlocked     = "BLOCKED"
+	AgentRunTerminalNoChange    = "NO_CHANGE"
+	AgentRunTerminalUnrecorded  = ""
+)
+
 // AgentRun is one daemon-observed AgentRunner.StartRun lifecycle.
 type AgentRun struct {
 	ID                   string
@@ -40,9 +51,14 @@ type AgentRun struct {
 	DirectSubagentCount  int64
 	OutputTokenCount     *int64
 	ReasoningTokenCount  *int64
-	IsBackfilled         bool
-	RepoDisplayName      string
-	Children             []AgentRunChild
+	// ReviewerDispatchCount is how many reviewer subagents the run dispatched —
+	// worker prompts leading with the `[bs-reviewer-dispatch]` marker.
+	ReviewerDispatchCount int64
+	// TerminalState is the boss-build terminal state the run ended in, or "".
+	TerminalState   string
+	IsBackfilled    bool
+	RepoDisplayName string
+	Children        []AgentRunChild
 }
 
 // AgentRunChild is one child span attributed to an agent run.
@@ -61,14 +77,16 @@ type AgentRunChild struct {
 }
 
 type AgentRunTelemetry struct {
-	ParentModelCallCount int64
-	ChildModelCallCount  int64
-	ToolCallCount        int64
-	SubagentCount        int64
-	DirectSubagentCount  int64
-	OutputTokenCount     *int64
-	ReasoningTokenCount  *int64
-	Children             []AgentRunChild
+	ParentModelCallCount  int64
+	ChildModelCallCount   int64
+	ToolCallCount         int64
+	SubagentCount         int64
+	DirectSubagentCount   int64
+	OutputTokenCount      *int64
+	ReasoningTokenCount   *int64
+	ReviewerDispatchCount int64
+	TerminalState         string
+	Children              []AgentRunChild
 }
 
 type AgentRunFilter struct {
@@ -123,19 +141,20 @@ func (s *SQLiteAgentRunStore) Start(ctx context.Context, run AgentRun) (AgentRun
 		run.StartedAt = time.Now()
 	}
 	run.StopReason = normalizeAgentRunStopReason(run.StopReason)
+	run.TerminalState = NormalizeAgentRunTerminalState(run.TerminalState)
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO agent_runs
 		   (id, session_id, agent_session_id, agent_name, model, effort, started_at, stopped_at,
 		    stop_reason, parent_model_call_count, child_model_call_count, tool_call_count,
 		    subagent_count, direct_subagent_count, output_token_count, reasoning_token_count,
-		    is_backfilled, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    reviewer_dispatch_count, terminal_state, is_backfilled, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID, run.SessionID, run.AgentSessionID, run.AgentName, run.Model, run.Effort,
 		sqlutil.FormatTime(run.StartedAt), optionalTimeString(run.StoppedAt), run.StopReason,
 		run.ParentModelCallCount, run.ChildModelCallCount, run.ToolCallCount,
 		run.SubagentCount, run.DirectSubagentCount, optionalInt(run.OutputTokenCount),
-		optionalInt(run.ReasoningTokenCount), sqlutil.BoolToInt(run.IsBackfilled),
-		sqlutil.TimeNow())
+		optionalInt(run.ReasoningTokenCount), run.ReviewerDispatchCount, run.TerminalState,
+		sqlutil.BoolToInt(run.IsBackfilled), sqlutil.TimeNow())
 	if err != nil {
 		return AgentRun{}, fmt.Errorf("insert agent run: %w", err)
 	}
@@ -215,11 +234,26 @@ func (s *SQLiteAgentRunStore) recordTelemetry(ctx context.Context, keyColumn, ke
 		`UPDATE agent_runs
 		 SET parent_model_call_count = ?, child_model_call_count = ?, tool_call_count = ?,
 		     subagent_count = ?, direct_subagent_count = ?, output_token_count = ?,
-		     reasoning_token_count = ?, updated_at = ?
+		     reasoning_token_count = ?,
+		     -- Review telemetry is written by whichever recorder saw the transcript, but
+		     -- some recorders cannot carry it at all: the RecordRunTelemetry gRPC request
+		     -- has no field for either column, so its handler necessarily passes the zero
+		     -- values. Assigning those unconditionally let a later telemetry write erase a
+		     -- reviewer count and terminal state an earlier one had already recorded. A
+		     -- zero-valued write therefore leaves the stored value alone; a real value
+		     -- still overwrites. No caller resets a recorded count back to zero -- the
+		     -- extractor always writes the run's full total -- so nothing needs the
+		     -- clobbering behaviour this replaces.
+		     reviewer_dispatch_count = CASE WHEN ? = 0 THEN reviewer_dispatch_count ELSE ? END,
+		     terminal_state = CASE WHEN ? = '' THEN terminal_state ELSE ? END,
+		     updated_at = ?
 		 WHERE `+keyColumn+` = ?`,
 		telemetry.ParentModelCallCount, telemetry.ChildModelCallCount, telemetry.ToolCallCount,
 		telemetry.SubagentCount, telemetry.DirectSubagentCount, optionalInt(telemetry.OutputTokenCount),
-		optionalInt(telemetry.ReasoningTokenCount), sqlutil.TimeNow(), key)
+		optionalInt(telemetry.ReasoningTokenCount),
+		telemetry.ReviewerDispatchCount, telemetry.ReviewerDispatchCount,
+		NormalizeAgentRunTerminalState(telemetry.TerminalState),
+		NormalizeAgentRunTerminalState(telemetry.TerminalState), sqlutil.TimeNow(), key)
 	if err != nil {
 		return fmt.Errorf("update agent run telemetry: %w", err)
 	}
@@ -344,6 +378,7 @@ func (s *SQLiteAgentRunStore) List(ctx context.Context, filter AgentRunFilter) (
 		        ar.started_at, ar.stopped_at, ar.stop_reason, ar.parent_model_call_count,
 		        ar.child_model_call_count, ar.tool_call_count, ar.subagent_count,
 		        ar.direct_subagent_count, ar.output_token_count, ar.reasoning_token_count,
+		        ar.reviewer_dispatch_count, ar.terminal_state,
 		        ar.is_backfilled, COALESCE(r.display_name, '')
 		 FROM agent_runs ar
 		 JOIN sessions s ON s.id = ar.session_id
@@ -462,7 +497,8 @@ func scanAgentRun(rows *sql.Rows) (AgentRun, error) {
 	if err := rows.Scan(&run.ID, &run.SessionID, &run.AgentSessionID, &run.AgentName, &run.Model,
 		&run.Effort, &startedAt, &stoppedAt, &run.StopReason, &run.ParentModelCallCount,
 		&run.ChildModelCallCount, &run.ToolCallCount, &run.SubagentCount, &run.DirectSubagentCount,
-		&outputTokens, &reasoningTokens, &isBackfilled, &run.RepoDisplayName); err != nil {
+		&outputTokens, &reasoningTokens, &run.ReviewerDispatchCount, &run.TerminalState,
+		&isBackfilled, &run.RepoDisplayName); err != nil {
 		return AgentRun{}, fmt.Errorf("scan agent run: %w", err)
 	}
 	run.StartedAt = sqlutil.ParseTime(startedAt)
@@ -498,6 +534,9 @@ func validateTelemetryCounts(t AgentRunTelemetry) error {
 		if err := checkNonNegative("reasoning_token_count", *t.ReasoningTokenCount); err != nil {
 			return err
 		}
+	}
+	if err := checkNonNegative("reviewer_dispatch_count", t.ReviewerDispatchCount); err != nil {
+		return err
 	}
 	for _, child := range t.Children {
 		if child.StartedAt.IsZero() {
@@ -555,6 +594,9 @@ func validateAgentRunCounts(run AgentRun) error {
 			return err
 		}
 	}
+	if err := checkNonNegative("reviewer_dispatch_count", run.ReviewerDispatchCount); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -574,6 +616,22 @@ func normalizeAgentRunStopReason(reason string) string {
 	default:
 		log.Warn().Str("stop_reason", reason).Msg("normalizing unrecognized agent run stop reason")
 		return AgentRunStopUnknown
+	}
+}
+
+// NormalizeAgentRunTerminalState keeps an unrecognized token out of the column
+// rather than letting it fail the migration's CHECK at write time. The SQL CHECK
+// is the backstop; this is the same belt-and-braces shape stop_reason uses, and
+// it is what makes an unexpected token a warned-and-dropped value instead of a
+// lost telemetry write.
+func NormalizeAgentRunTerminalState(state string) string {
+	switch state {
+	case AgentRunTerminalReviewReady, AgentRunTerminalPartial, AgentRunTerminalBlocked,
+		AgentRunTerminalNoChange, AgentRunTerminalUnrecorded:
+		return state
+	default:
+		log.Warn().Str("terminal_state", state).Msg("normalizing unrecognized agent run terminal state")
+		return AgentRunTerminalUnrecorded
 	}
 }
 

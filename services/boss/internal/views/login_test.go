@@ -27,10 +27,10 @@ func TestLoginModelPollingUsesSingleSpinnerGap(t *testing.T) {
 	view := m.View().Content
 	spinner := m.spinner.View()
 
-	if strings.Contains(view, spinner+" Waiting for authentication...") {
+	if strings.Contains(view, spinner+" Waiting for authentication…") {
 		t.Fatalf("polling view adds an extra space after spinner:\n%q", view)
 	}
-	if !strings.Contains(view, spinner+"Waiting for authentication...") {
+	if !strings.Contains(view, spinner+"Waiting for authentication…") {
 		t.Fatalf("polling view missing spinner and waiting text with one gap:\n%q", view)
 	}
 }

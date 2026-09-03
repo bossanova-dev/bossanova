@@ -248,7 +248,7 @@ func (h HomeModel) renderDaemonError() string {
 }
 
 func (h HomeModel) renderLoading() string {
-	return lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions...")
+	return lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions…")
 }
 
 // renderEmptyState draws the no-sessions screen: either the first-run repo

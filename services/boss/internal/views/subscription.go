@@ -267,7 +267,7 @@ func (m LoginModel) updateSubscriptionCheckout(msg subscriptionCheckoutMsg) (Log
 		return m, nil
 	}
 	if msg.err != nil {
-		if checkoutActivationPending(msg.err) {
+		if checkoutRefusedByAccountState(msg.err) {
 			m.subscription.phase = subscriptionPhaseWaiting
 			m.subscription.err = nil
 			m.subscription.checkoutStarted = true
@@ -313,7 +313,7 @@ func (m LoginModel) subscriptionView() string {
 	var body string
 	switch m.subscription.phase {
 	case subscriptionPhaseSuccess:
-		body = "Bossanova Cloud is ready. Returning home..."
+		body = "Bossanova Cloud is ready. Returning home…"
 	case subscriptionPhaseTimedOut:
 		body = "Subscription activation is taking longer than expected.\nPress enter to check again or reopen checkout."
 	case subscriptionPhaseError:
@@ -326,9 +326,9 @@ func (m LoginModel) subscriptionView() string {
 		}
 	default:
 		if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutStarted && m.subscription.checkoutURL == "" {
-			body = m.spinner.View() + "Activating your subscription. This can take a few minutes..."
+			body = m.spinner.View() + "Activating your subscription. This can take a few minutes…"
 		} else {
-			body = m.spinner.View() + "Loading your account..."
+			body = m.spinner.View() + "Loading your account…"
 		}
 		if m.subscription.err != nil && m.subscription.checkoutURL != "" {
 			body += "\nOpen this billing URL: " + m.subscription.checkoutURL

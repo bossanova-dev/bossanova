@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/bossalib/config"
 )
 
@@ -232,5 +233,55 @@ func TestCloudGuestOfferVisible(t *testing.T) {
 				t.Fatalf("want %v, got %v", tc.want, got)
 			}
 		})
+	}
+}
+
+// The settings promo renders the same "14-day free trial" line as Home's guest
+// offer, so it inherits the same suppression: a retained re-login state reports
+// LoggedIn=false, but that user is a signed-out account holder rather than a
+// guest, and may well have used their trial already. See guestCloudOfferVisible
+// in home_view.go, which is where this policy was first decided.
+func TestShouldShowCloudSettings(t *testing.T) {
+	cases := []struct {
+		name   string
+		tokens *auth.Tokens
+		want   bool
+	}{
+		{name: "never logged in", tokens: nil, want: true},
+		{
+			name: "signed-out account holder needing re-login",
+			tokens: &auth.Tokens{
+				Email:         "dev@example.test",
+				NeedsRelogin:  true,
+				ReloginReason: auth.ReloginReasonRefreshTokenRejected,
+			},
+			want: false,
+		},
+		{
+			name: "logged in",
+			tokens: &auth.Tokens{
+				AccessToken:  "access",
+				RefreshToken: "refresh",
+				Email:        "dev@example.test",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := auth.NewManager(&repoAddTokenStore{tokens: tc.tokens}, auth.Config{})
+			if got := shouldShowCloudSettings(mgr); got != tc.want {
+				t.Fatalf("shouldShowCloudSettings = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	if shouldShowCloudSettings() {
+		t.Fatal("shouldShowCloudSettings() with no manager = true, want false")
+	}
+	if shouldShowCloudSettings(nil) {
+		t.Fatal("shouldShowCloudSettings(nil) = true, want false")
 	}
 }

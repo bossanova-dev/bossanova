@@ -169,3 +169,50 @@ func parseOriginURLParts(originURL string) (host string, parts []string) {
 	}
 	return parts[0], parts[1:]
 }
+
+// MaxCanonicalRepoURLPasses bounds CanonicalRepoURL's iteration. It is exported
+// so a caller that reports its own refusal message can name the same bound.
+const MaxCanonicalRepoURLPasses = 8
+
+// CanonicalRepoURL iterates NormalizeRepoURL to its fixed point and returns
+// that canonical form, or "" when the input has no one.
+//
+// One pass of NormalizeRepoURL is not a canonical form. It strips ".git"
+// before the trailing slash, so it is not idempotent on inputs it accepts:
+// ".../alpha.git/" settles on ".../alpha.git", which normalizes again to
+// ".../alpha". A caller that stops after one pass produces a value this
+// function does not reproduce, so two spellings of one repository become two
+// distinct keys -- which is how a globally unique index stops separating two
+// organizations from one repository.
+//
+// The iteration is bounded rather than trusted to converge. Today it does:
+// after the first pass the value is already in https://host/slug form, so
+// every later pass only removes a ".git" or one trailing slash and the string
+// strictly shrinks. The bound is what keeps that a property of this loop
+// rather than a property borrowed from parsing code that nothing stops from
+// changing. An input that has not settled within it, and one whose own
+// normalization collapses to unparseable (".../.git" does), reports "": both
+// would otherwise be used in a spelling this function does not reproduce. Real
+// spellings settle in at most two extra passes.
+//
+// This is the single definition of that fixed point. Two callers derived it
+// independently once and disagreed -- bosso wrote the fixed point into
+// repo_organization_mappings while bossd published a single pass on the same
+// origin -- so any join between those two string spaces has to re-canonicalize
+// through here rather than assume the agreement already exists.
+func CanonicalRepoURL(originURL string) string {
+	canonical := NormalizeRepoURL(strings.TrimSpace(originURL))
+	if canonical == "" {
+		return ""
+	}
+	for pass := 0; ; pass++ {
+		next := NormalizeRepoURL(canonical)
+		if next == canonical {
+			return canonical
+		}
+		if next == "" || pass >= MaxCanonicalRepoURLPasses {
+			return ""
+		}
+		canonical = next
+	}
+}

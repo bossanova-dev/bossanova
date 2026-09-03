@@ -724,6 +724,169 @@ func TestHomeCloudCheckoutActivationPendingKeepsPolling(t *testing.T) {
 	}
 }
 
+// A caller that loses one of CreateCheckoutSession's compare-and-swap claims to a
+// concurrent caller is refused with copy that shares no phrase with the two
+// refusals below (server const cloudCheckoutContendedMessage). That is
+// load-bearing, not cosmetic: this account sits in checkout_started with a live
+// session the winner just created, and both prose-matched branches start polling
+// the cloud access status — the poll that promotes a checkout_started account
+// into the stuck entitlement_pending state BOS-1076 exists to keep it out of. The
+// loser must fall through to the plain error path, from which a retry resumes the
+// winner's session.
+func TestHomeCloudCheckoutContentionDoesNotPoll(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	abandoned := &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		CheckoutStarted:   true,
+		CanCreateCheckout: true,
+	}
+	h.cloudStatus = abandoned
+
+	updated, _ := h.Update(homeCloudCheckoutMsg{
+		err: connect.NewError(connect.CodeFailedPrecondition, errors.New("bossanova cloud checkout is already being created; retry to resume it")),
+	})
+	h = updated.(HomeModel)
+
+	if h.cloudCheckoutPolling {
+		t.Fatal("a contended checkout claim must not start polling: the poll is what re-poisons this account")
+	}
+	if h.cloudStatus.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH {
+		t.Fatal("a contended checkout claim must not restate the account as pending entitlement")
+	}
+	if h.cloudStatus != abandoned {
+		t.Fatalf("contended checkout claim replaced the status: %v", h.cloudStatus)
+	}
+}
+
+// An abandoned checkout now reads as needs-subscription, so this user can reach
+// the checkout action again — and the server answers a paying account with
+// "already active" rather than a session URL. That refusal must re-read status,
+// not tell a paying customer that cloud checkout is unavailable.
+func TestHomeCloudCheckoutAlreadyActiveKeepsPolling(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State:           pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		CheckoutStarted: true,
+	}
+
+	updated, cmd := h.Update(homeCloudCheckoutMsg{
+		err: connect.NewError(connect.CodeFailedPrecondition, errors.New("bossanova cloud is already active")),
+	})
+	h = updated.(HomeModel)
+
+	content := h.View().Content
+	if strings.Contains(content, "Cloud checkout unavailable") {
+		t.Fatalf("an already-active refusal should not render checkout unavailable: %q", content)
+	}
+	// A paying customer must not be told their setup has not completed. Home
+	// renders no Message field, so the reassurance has to reach a line it does
+	// render, and the pending gate copy must not stand alongside it.
+	if !strings.Contains(content, statusCloudAlreadyActive) {
+		t.Fatalf("an already-active refusal should reassure the caller: %q", content)
+	}
+	if strings.Contains(content, "setup has not completed yet") {
+		t.Fatalf("an already-active refusal should not render the pending gate line: %q", content)
+	}
+	if !h.cloudCheckoutPolling {
+		t.Fatal("an already-active refusal should keep polling")
+	}
+	if cmd == nil {
+		t.Fatal("an already-active refusal should re-read the cloud access status")
+	}
+}
+
+// The provisioning failure shares the refusal code but is not a state the
+// account can poll its way out of, so it must still reach the error path.
+func TestHomeCloudCheckoutStripeCustomerRequiredStaysAnError(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudStatus = &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION}
+
+	updated, _ := h.Update(homeCloudCheckoutMsg{
+		err: connect.NewError(connect.CodeFailedPrecondition, errors.New("stripe customer is required")),
+	})
+	h = updated.(HomeModel)
+
+	if h.cloudCheckoutPolling {
+		t.Fatal("a provisioning failure should not start polling")
+	}
+	if h.cloudCheckoutStatus != "Cloud checkout unavailable. Local sessions are still available." {
+		t.Fatalf("cloudCheckoutStatus = %q, want the checkout-unavailable line", h.cloudCheckoutStatus)
+	}
+}
+
+// Home is the surface the reported account was staring at, so the abandoned /
+// activating split has to be visible here and not only in the subscription
+// flow. The pair is the only thing that carries it: NEEDS_SUBSCRIPTION alone
+// cannot tell an unfinished checkout from one that was never started.
+func TestHomeCloudGateAbandonedCheckoutOffersResume(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		upgradeAvailable bool
+		want             string
+		notWant          string
+	}{
+		{name: "resume", want: statusCloudResumeCheckout, notWant: statusCloudNeedsSubscription},
+		{name: "resume with upgrade", upgradeAvailable: true, want: statusCloudResumeCheckoutUpgrade, notWant: statusCloudNeedsSubscriptionUpgrade},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+			h.loading = false
+			h.loggedIn = true
+			h.repoCount = 1
+			h.width = 200
+			h.upgradeAvailable = tc.upgradeAvailable
+			h.cloudStatus = &pb.CloudAccessStatus{
+				State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+				CheckoutStarted:   true,
+				CanCreateCheckout: true,
+			}
+
+			line := reflowStatusBlock(h.cloudGateLine())
+			if line != tc.want {
+				t.Fatalf("cloudGateLine() = %q, want %q", line, tc.want)
+			}
+			if line == tc.notWant {
+				t.Fatalf("abandoned checkout rendered the never-started copy: %q", line)
+			}
+		})
+	}
+}
+
+// The other half of the pair: checkout_started with can_create_checkout false
+// means the user came back from Stripe and the entitlement is landing. That is
+// a genuine wait, and it must keep the subscribe copy rather than inviting a
+// resume the server would refuse.
+func TestHomeCloudGateLandingEntitlementKeepsSubscribeCopy(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.width = 200
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		CheckoutStarted:   true,
+		CanCreateCheckout: false,
+	}
+
+	if line := reflowStatusBlock(h.cloudGateLine()); line != statusCloudNeedsSubscription {
+		t.Fatalf("cloudGateLine() = %q, want %q", line, statusCloudNeedsSubscription)
+	}
+}
+
 func TestHomeCloudCheckoutStatusClearsWhenLoggedOut(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
@@ -3536,6 +3699,9 @@ func TestHomeFixedStatusCopyStaysReadableAtFloor(t *testing.T) {
 		statusCloudChecking,
 		statusCloudNeedsSubscriptionUpgrade,
 		statusCloudNeedsSubscription,
+		statusCloudResumeCheckoutUpgrade,
+		statusCloudResumeCheckout,
+		statusCloudAlreadyActive,
 		statusCloudPendingUpgrade,
 		statusCloudPending,
 		statusUpgrading,
@@ -3998,6 +4164,8 @@ func TestRenderSessionTablePadsByHomeTableBlockPadding(t *testing.T) {
 				got = max(got, lipgloss.Width(line))
 			}
 			if got != want {
+				// `Padding(0, ...)` is Go call notation naming the argument list this assertion is
+				// about, so it stays spelled the way the source reads: ellipsis: literal-dots ok
 				t.Errorf("renderSessionTable drew the table block %d columns wide at a %d-column terminal, want %d — the view's Padding(0, ...) no longer matches homeTableBlockPadding (%d), so tableAvailWidth is budgeting against the wrong number",
 					got, width, want, homeTableBlockPadding)
 			}

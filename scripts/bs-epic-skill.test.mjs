@@ -215,7 +215,26 @@ test('size ratchet', () => {
   // names the usage-limit resume lane, and forbids unknown/wall-clock repair. The
   // expanded diagnosis stays in merge-recovery.md.
   // BOS-1030 banks 59107 → 59038 while naming Codex's fresh awaited notes-extension dispatch pair.
-  const RATCHET = 59038
+  // BOS-1098 re-baselines 59038 → 63351: the resident body now resolves the per-child wall clock
+  // through the config seam with a fail-closed guard, carries the resolved budget in the Phase 3
+  // state and re-resolves it (toolbox prelude included) under its own guard at the comparing
+  // site, and states the strict per-child fail-isolation guarantee.
+  // BOS-1099 re-baselines 63351 → 65965 for the two resident gates the notes phase must clear
+  // before it does anything: the caller-suppression check (a nested run must not duplicate the
+  // notes its dispatcher already owns) and the once-per-run sampling roll shared with every
+  // other reporting phase. Both are read-before-acting rails, not situational detail, so a
+  // reference would be read too late to stop the dispatch they exist to prevent. Measured after
+  // rebasing onto BOS-1098, so the delta is this ticket's alone. Re-measured 2026-09-02.
+  // Review round 2 adds +396 B on top of that: the suppression gate now also binds
+  // `BOSS_NOTES_SUPPRESSED` into the dispatched invocation, because a worker inherits none of its
+  // caller's environment and an unbound name reads as not-suppressed.
+  // BOS-1105 re-baselines 66361 -> 66808 (+447 B). The preflight capability report is a
+  // resident contract: it changes what every run PRINTS about transport state, replacing a
+  // permanent `degraded:` line for three capabilities that have no CLI equivalent with
+  // `cli-only mode (expected):`, and reserving the word "degraded" for a capability absent on
+  // BOTH transports. The wording has to sit at the report site in the body -- a reference would
+  // be read after the line it governs has already been printed.
+  const RATCHET = 66808
 
   // Eight separate gates in this file iterate EPIC_MIRRORS. A list that silently shortened
   // would leave every one of them asserting against a single mirror with nothing going red

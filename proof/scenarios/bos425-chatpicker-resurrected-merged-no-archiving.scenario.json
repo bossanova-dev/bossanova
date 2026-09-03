@@ -52,7 +52,7 @@
               "label": "normal action bar advertises [n]ew chat — present iff the detail is NOT showing the Archiving spinner"
             }
           ],
-          "caption": "archive_pending=false: the detail shows the normal action bar and NO 'Archiving session...' spinner (the BOS-425 regression is fixed)"
+          "caption": "archive_pending=false: the detail shows the normal action bar and NO 'Archiving session…' spinner (the BOS-425 regression is fixed)"
         }
       ]
     }

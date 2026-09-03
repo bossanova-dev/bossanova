@@ -359,6 +359,47 @@ export function selectTargets(files) {
       continue
     }
 
+    // docs/email-course/ is the reviewable source for the trial onboarding sequence, and
+    // scripts/check-email-course.mjs gates its arc, word bands, banned register, skill
+    // names, links, and price/trial claims. A prose-only edit to an email body touches no
+    // scripts/** path, so without this rule the exact change class that gate exists to
+    // catch would select only test-smoke and the gate would never run locally.
+    if (file.startsWith('docs/email-course/')) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+      continue
+    }
+
+    // PRODUCT.md is one of the three surfaces scripts/check-price-parity.mjs compares, and
+    // it is prose owned by no module: a price edit there touches no scripts/** path, so
+    // without this rule the exact change class that gate exists to catch would select only
+    // test-smoke and the gate would never run locally. Terminal for the same reason the
+    // docs/build-and-ci.md rule above is — it trades the whole-repo test-smoke fallback for
+    // the gate that actually reads it.
+    if (file === 'PRODUCT.md') {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+      continue
+    }
+
+    // The other two surfaces that gate compares. Deliberately NOT terminal: these trees are
+    // the web and marketing apps, whose own module targets must still be selected — the
+    // price gate is an ADDITIONAL consequence of touching them, never a replacement for
+    // their unit tests.
+    //
+    // `gen/` is excluded to mirror check-price-parity.mjs's own SKIP_DIRS: generated
+    // protobuf output is not a displayed-price surface, the gate never reads it, and a
+    // price appearing there would need fixing in the .proto anyway. Routing it here would
+    // also make test-proto.yml's `services/web/src/gen/**` exemption stale on behalf of a
+    // scan that cannot see those files.
+    if (
+      (file.startsWith('services/web/src/') || file.startsWith('services/marketing/src/')) &&
+      !file.includes('/gen/')
+    ) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+    }
+
     // docs/build-and-ci.md carries the build-system reference lifted out of CLAUDE.md. It
     // cites real Make targets and is scanned by scripts/check-doc-make-targets.mjs, so an
     // edit must run the script tests rather than falling through to test-smoke.
@@ -409,6 +450,15 @@ export function selectTargets(files) {
       file.startsWith('lib/bossalib/bossmcp/') ||
       file.startsWith('lib/bossalib/config/') ||
       file.startsWith('services/bossd/internal/tmux/') ||
+      // scripts/check-ellipsis-consistency.mjs reads the Boss TUI's four rendered-copy trees to
+      // keep the ellipsis character from splitting back into a run of three full stops. A view
+      // gaining a hand-typed label touches no scripts/** path, so nothing else here would select
+      // the target that runs the gate. No `continue`: the moduleRules lookup below still adds
+      // test-boss, which owns these trees' own tests.
+      file.startsWith('services/boss/internal/views/') ||
+      file.startsWith('services/boss/internal/accountflow/') ||
+      file.startsWith('services/boss/internal/auth/') ||
+      file.startsWith('services/boss/cmd/') ||
       file === 'services/boss/internal/tuidriver/keybytes.go' ||
       file === 'services/boss/internal/tuidriver/testdata/key-vocab.json' ||
       file === 'docs/testing/test-command-manifest.md'
@@ -452,6 +502,35 @@ export function selectTargets(files) {
       file.startsWith('services/boss/internal/skillinstall/skills/') &&
       (file.endsWith('.md') || file.endsWith('.sh'))
     ) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+    }
+
+    // scripts/check-email-course.mjs PARSES its published-skill allowlist out of this
+    // file's `want` slice rather than copying it, so the manifest test is an input to a
+    // script gate as well as a Go test. Dropping a core from the publish set is exactly
+    // the edit that can turn the email course red — the course would go on naming a
+    // skill trial users no longer receive, which is the boss-proof failure the gate was
+    // written for — and it touches neither docs/email-course/ nor scripts/, so nothing
+    // else here selects test-scripts for it. Note the path: the rule above matches
+    // `skillinstall/skills/`, one directory DOWN from where this file lives, so it does
+    // not cover it. No `continue`, for the same reason as the rule above.
+    if (file === 'services/boss/internal/skillinstall/skills_manifest_test.go') {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+    }
+
+    // Same shape, second source of truth: scripts/check-email-course.mjs PARSES the
+    // trial-enrolment event name out of this file's `stripeTrialStartedEvent` constant
+    // and fails when docs/email-course/README.md disagrees. Renaming the constant is
+    // therefore a script-gate input, and the Go compiler is happy either way -- the
+    // course would go on documenting an event the application no longer emits, which is
+    // invisible from the application side because Loops keeps returning 200 for an
+    // event no Loop is listening for. The file is neither under scripts/ nor under
+    // docs/email-course/, so nothing else here selects test-scripts for it. No
+    // `continue`: test-bosso owns this file's own tests, including the wire contract
+    // test the guide cites.
+    if (file === 'services/bosso/cmd/trial_enrollment.go') {
       selectWholeTarget(selections, 'test-scripts')
       selectedPrimaryTarget = true
     }

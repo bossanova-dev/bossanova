@@ -103,7 +103,10 @@ func (s *SQLiteAgentRunStore) Backfill(ctx context.Context, params AgentRunBackf
 			DirectSubagentCount:  candidate.Counts.DirectSubagentCount,
 			OutputTokenCount:     candidate.Counts.OutputTokenCount,
 			ReasoningTokenCount:  candidate.Counts.ReasoningTokenCount,
-			IsBackfilled:         true,
+
+			ReviewerDispatchCount: candidate.Counts.ReviewerDispatchCount,
+			TerminalState:         candidate.Counts.TerminalState,
+			IsBackfilled:          true,
 		}, telemetryFromCounts(candidate.Counts)); err != nil {
 			return summary, err
 		}
@@ -125,6 +128,7 @@ func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentR
 	if err := validateTelemetryCounts(telemetry); err != nil {
 		return AgentRun{}, err
 	}
+	run.TerminalState = NormalizeAgentRunTerminalState(run.TerminalState)
 	if run.ID == "" {
 		id, err := sqlutil.NewID()
 		if err != nil {
@@ -148,14 +152,14 @@ func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentR
 		   (id, session_id, agent_session_id, agent_name, model, effort, started_at, stopped_at,
 		    stop_reason, parent_model_call_count, child_model_call_count, tool_call_count,
 		    subagent_count, direct_subagent_count, output_token_count, reasoning_token_count,
-		    is_backfilled, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    reviewer_dispatch_count, terminal_state, is_backfilled, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID, run.SessionID, run.AgentSessionID, run.AgentName, run.Model, run.Effort,
 		sqlutil.FormatTime(run.StartedAt), optionalTimeString(run.StoppedAt), run.StopReason,
 		run.ParentModelCallCount, run.ChildModelCallCount, run.ToolCallCount,
 		run.SubagentCount, run.DirectSubagentCount, optionalInt(run.OutputTokenCount),
-		optionalInt(run.ReasoningTokenCount), sqlutil.BoolToInt(run.IsBackfilled),
-		sqlutil.TimeNow()); err != nil {
+		optionalInt(run.ReasoningTokenCount), run.ReviewerDispatchCount, run.TerminalState,
+		sqlutil.BoolToInt(run.IsBackfilled), sqlutil.TimeNow()); err != nil {
 		return AgentRun{}, fmt.Errorf("insert backfilled agent run: %w", err)
 	}
 	if err := insertAgentRunChildren(ctx, tx, run.ID, telemetry.Children); err != nil {
@@ -412,6 +416,13 @@ func mergeBackfillCandidate(dst *backfillCandidate, src backfillCandidate) {
 	dst.Counts.ToolCallCount += src.Counts.ToolCallCount
 	dst.Counts.SubagentCount += src.Counts.SubagentCount
 	dst.Counts.DirectSubagentCount += src.Counts.DirectSubagentCount
+	dst.Counts.ReviewerDispatchCount += src.Counts.ReviewerDispatchCount
+	// Grouped codex segments are one logical run replayed across several transcript
+	// files, so the run's terminal state is whichever segment last printed one. A
+	// later segment that printed none must not erase an earlier segment's state.
+	if src.Counts.TerminalState != "" {
+		dst.Counts.TerminalState = src.Counts.TerminalState
+	}
 	if src.Counts.OutputTokenCount != nil {
 		addIntPtr(&dst.Counts.OutputTokenCount, *src.Counts.OutputTokenCount)
 	}
@@ -612,6 +623,9 @@ func telemetryFromCounts(counts agenttelemetry.Counts) AgentRunTelemetry {
 		DirectSubagentCount:  counts.DirectSubagentCount,
 		OutputTokenCount:     counts.OutputTokenCount,
 		ReasoningTokenCount:  counts.ReasoningTokenCount,
+
+		ReviewerDispatchCount: counts.ReviewerDispatchCount,
+		TerminalState:         counts.TerminalState,
 	}
 	for _, child := range counts.Children {
 		out.Children = append(out.Children, AgentRunChild{

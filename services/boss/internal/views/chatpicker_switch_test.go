@@ -354,17 +354,22 @@ func TestChatPicker_SwitchAccount_ErrorSurfaced(t *testing.T) {
 	}
 }
 
-// TestChatPicker_SwitchAccount_ActionBarEntry verifies the action bar advertises
-// the swit[c]h account action when a chat is selected.
-func TestChatPicker_SwitchAccount_ActionBarEntry(t *testing.T) {
+// TestChatPicker_SwitchAccount_ActionBarEntryHidden pins BOS-1063: swit[c]h
+// account is a hidden action. The bar must not advertise it even with a chat
+// selected — the other tests in this file cover the key still working.
+func TestChatPicker_SwitchAccount_ActionBarEntryHidden(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(ChatPickerModel)
 
 	rendered := stripANSI(m.View().Content)
-	if !strings.Contains(rendered, "swit[c]h account") {
-		t.Errorf("action bar missing swit[c]h account entry:\n%s", rendered)
+	if strings.Contains(rendered, "swit[c]h account") {
+		t.Errorf("action bar advertises the hidden swit[c]h account entry:\n%s", rendered)
+	}
+	// The bar still renders — this is a hidden action, not a missing bar.
+	if !strings.Contains(rendered, "[enter] select") {
+		t.Errorf("action bar missing its per-chat actions:\n%s", rendered)
 	}
 }
 

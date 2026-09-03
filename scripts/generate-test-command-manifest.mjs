@@ -40,13 +40,16 @@ const defaultWebTargets = [
     command: 'pnpm run test:e2e',
     description:
       'Playwright Tier-1 faked suite (all specs under `tests/e2e/specs/` + `coverage.spec.ts`)',
-    ci: 'yes',
+    // Release-tier, not a feature-PR gate: test-web.yml's `web-e2e` job is
+    // gated on `pull_request` into staging/production, same as the real-stack
+    // suite below. The prose under this table already said so.
+    ci: 'release',
   },
   {
     command: 'pnpm run test:e2e:real',
     description:
-      'Playwright Tier-2 real-stack smoke (local only; requires Go toolchain + `BOSS_E2E_TEST_AUTH`; tests are `test.fixme` pending repo-seeding — see docs/plans/BOS-33)',
-    ci: 'no',
+      'Playwright Tier-2 real-stack smoke — boots a real bossd + bosso + stub-runner stack. Needs the Go toolchain and an exported `BOSSO_TEST_DATABASE_URL`: BOS-1083 deleted bosso\u2019s SQLite path, and the run migrates and seeds whatever database it is handed, so it refuses to start rather than fall back to `BOSSO_DATABASE_URL`',
+    ci: 'release',
   },
 ]
 
@@ -188,13 +191,28 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '',
     ...renderTable(['Command', 'Description', 'CI?'], webRows),
     '',
-    'Run from `services/web/`. `test:e2e:real` requires `E2E_REAL=1` and a running bossd+bosso stack; it is never set in CI.',
+    'Run from `services/web/`. `test:e2e:real` requires `E2E_REAL=1` (the pnpm script sets it) and boots its own bossd+bosso stack; locally it also needs `BOSSO_TEST_DATABASE_URL` exported \u2014 `make postgres-test-up` starts the throwaway container, and there is no make wrapper that exports it for you. In CI it is release-tier and merge-blocking there, not on feature PRs: `.github/workflows/test-web-real-stack.yml` runs it only on `pull_request` into `staging`/`production`, against its own `postgres:16` service.',
     '',
     "The repo-root `make test-web-e2e` target delegates to this module's Tier-1 `pnpm run test:e2e` (the Playwright faked suite, including the `smoke.spec.ts` harness-boot spec). It first does a best-effort `playwright install chromium-headless-shell` (non-fatal; fallback: `pnpm run test:e2e:install`), then runs `make -C services/web test-e2e`. It is opt-in / release-tier — NOT a per-feature-PR gate and NOT part of the default `make test` graph (the release-only `web-e2e` CI job invokes Playwright directly).",
     '',
     '## Go Module Targets',
     '',
     ...renderTable(['Module', 'Target'], moduleRows),
+    '',
+    '### The bosso Postgres suites (BOS-1081)',
+    '',
+    // Same rule as the BOS-768 block above: this file is byte-for-byte generated, so
+    // prose belongs here and nowhere else.
+    'Most of `services/bosso` now tests against a real Postgres and nothing else: BOS-1083 deleted the SQLite server-side path, so `internal/db`, `internal/dbtest`, `internal/billing`, `internal/webhook`, `internal/loadtest`, `cmd`, and every `internal/server` suite built on `internal/testharness` need a database. Without one they **skip** — they no longer fall back to an in-process dialect. Two environment variables decide, read by `services/bosso/internal/dbtest`:',
+    '',
+    '- `BOSSO_TEST_DATABASE_URL` — a Postgres connection string for a server the run may freely create and drop schemas on (each test gets its own throwaway schema). Set: the Postgres legs run. Unset: they **skip**.',
+    '- `BOSSO_REQUIRE_POSTGRES_TESTS` — fail-closed switch. When it is set to anything other than an explicit off value (`0`, `false`, `no`, `off`, or empty) **and** `BOSSO_TEST_DATABASE_URL` is empty, the Postgres legs **fail** instead of skipping. A typo therefore still means "required", which is the direction that fails loudly.',
+    '',
+    "The skip is the whole risk here: a suite that skips its way to green is indistinguishable from one that proved something. So CI sets **both** — `bazel.yml`'s `go-test` job (every feature-branch push) and `bazel-linux-smoke.yml`'s `smoke` matrix (the release tier, which runs `//...`) each own a `postgres:16` service container and set the two variables at JOB level. Never set `BOSSO_REQUIRE_POSTGRES_TESTS` at workflow level: a job without a Postgres service container would inherit it and go red on a database it never had.",
+    '',
+    'Bazel injects no environment into tests, so both names are passed through by `--test_env` lines in `.bazelrc`. Without those the suites would skip under every `bazel test`, CI included.',
+    '',
+    'Locally, `make test-bosso` alone skips every suite listed above, which since BOS-1083 is the bulk of the module rather than a side leg. `make test-bosso-postgres` re-invokes `make test-bosso` with both variables set, and `make test-bosso-scale` does the same for the `internal/loadtest` scale smoke. It starts (or reuses) a throwaway `postgres:16` docker container via `make postgres-test-up` and waits for `pg_isready` **only when `BOSSO_TEST_DATABASE_URL` is not already supplied**; `make postgres-test-down` removes the container. Point it at a server you already run with `make test-bosso-postgres BOSSO_TEST_DATABASE_URL=postgres://...` and no container is started at all, so that invocation works on a machine without Docker. Override `BOSSO_TEST_PG_PORT` if 5432 is taken. Both variables are passed as sub-make overrides on purpose: `MAKEOVERRIDES` is part of the gate-cache fingerprint, so a Postgres run can never read a cache stamp recorded by a `make test-bosso` that skipped them.',
     '',
   ]
 

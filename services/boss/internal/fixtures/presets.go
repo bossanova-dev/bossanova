@@ -168,6 +168,18 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// repo-organization: the demo board with a git origin URL on every repo,
+		// for the BOS-1061 repo-settings organization proof. Separate from demo
+		// rather than folded into it because an origin URL also switches on the
+		// GitHub App status line, and demo is the shared baseline every other
+		// scenario captures against. Carries the same cloud-access e2e pin as
+		// demo so boss lands on the home session list; the organizations
+		// themselves come from the scenario's BOSS_ORG_E2E_* env.
+		"repo-organization": {
+			World:      RepoOrganizationWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		"busy": {
 			World:      BusyWorld,
 			SeedKind:   SeedAcknowledged,
@@ -448,4 +460,34 @@ func busySessions() []*pb.Session {
 		})
 	}
 	return sessions
+}
+
+// repoOrganizationOrigins pins a git origin URL per demo repo id for
+// RepoOrganizationWorld. Kept beside the world it feeds so the two cannot drift.
+var repoOrganizationOrigins = map[string]string{
+	"repo-1": "https://github.com/acme/my-app",
+	"repo-2": "https://github.com/acme/my-api",
+	"repo-3": "https://github.com/acme/my-web",
+	"repo-4": "https://github.com/acme/mobile-app",
+	"repo-5": "https://github.com/acme/design-system",
+}
+
+// RepoOrganizationWorld is the demo board with a git origin URL on every repo,
+// for the BOS-1061 repo-settings organization proof.
+//
+// The origins are the whole point. A repo-organization mapping is keyed by repo
+// origin URL, so the repo settings view hides the organization row entirely for
+// a repo that has none — there is no key to look the mapping up by, and a picker
+// holding only the Personal row it already displays is the empty picker the
+// field is shaped to avoid. The demo repos carry no OriginUrl at all, so against
+// demo the field would simply not be on screen. Seeding real origins is what
+// makes the row exist and ListOrganizations/GetRepoOrganization run.
+func RepoOrganizationWorld() World {
+	w := DemoWorld()
+	for _, repo := range w.Repos {
+		if origin, ok := repoOrganizationOrigins[repo.GetId()]; ok {
+			repo.OriginUrl = origin
+		}
+	}
+	return w
 }

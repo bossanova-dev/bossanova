@@ -148,6 +148,15 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    if validation runs again _after_ the copy. On failure, fall back to a single-ticket plan. Run the
    secret + image-parity gates on every child plan **before the first Linear write**
    (validate-before-write: a gate failure aborts with zero Linear writes).
+
+   **The interactive path may reuse this step wholesale.** Its Phase 4 "Batch child drafting"
+   (`references/interactive-mode.md`) briefs one batch worker against **this** step and Steps 5–7
+   below, rather than restating them — this brief stays the single normative source for the plan
+   body and the per-child drafting rules. The one difference is ownership of the writes: there a
+   human has approved only the epic _shape_, so the batch worker writes plans, descriptions and one
+   bounded metadata file into the run scratch and the orchestrator does every tracker write in step 3
+   below. Headless has no such approval, which is why the subagent does them here.
+
 3. **Create + wire (parent repurpose LAST — the write-atomicity guard).** These tracker writes run
    here in the drafting subagent, so make them crash-safe by ordering. **First** persist the FULL spec
    durably — the spec is a **native attachment carrying plain JSON**, so what was one atomic
@@ -819,14 +828,7 @@ snapshot. Then confirm every image URL in that safe source (inline `![](…)`, `
 block, because this Bash call inherits nothing:
 
 ```bash
-if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-  done
-fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 # Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
 node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$DESCRIPTION_SNAPSHOT_PATH" \
   --rewritten <safe-orig.md> --require-safe-source
@@ -849,19 +851,12 @@ Fix any drop before writing the `ok` sentinel — the orchestrator's mechanical 
 abort the whole run.
 
 **Also self-verify the plan contract**, in a block of its own immediately after that one and before
-the `ok` sentinel — it re-derives `BOSS_PLAN_TOOLBOX` because blocks inherit nothing, so do not
+the `ok` sentinel — it sources the toolbox preamble again because blocks inherit nothing, so do not
 merge it into the block above. Write the composed `descriptionSummary` to a scratch file and run the
 contract guard over it and the plan file:
 
 ```bash
-if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-  done
-fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <new.md> --plan "$PLAN_PATH"
 ```
 

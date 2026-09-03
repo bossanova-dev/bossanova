@@ -433,8 +433,9 @@ func (m *CronListModel) rebuildTable() {
 		//     OR server-derived LastRunStatus == RUNNING (after polls catch up).
 		//   - Failed:  server-derived LastRunStatus == FAILED.
 		//   - Idle:    everything else (UNSPECIFIED / IDLE / never run).
-		// spinner.View() already emits a trailing space — see home.go:570
-		// where it's appended directly to "Archiving...".
+		// spinner.View() already emits a trailing space — see
+		// renderArchivingStatus in status.go, where it's appended directly
+		// to "archiving".
 		switch {
 		case m.deleting[job.Id]:
 			statuses[i] = renderRowPendingStatus(m.spinner, "deleting")

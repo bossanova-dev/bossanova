@@ -109,6 +109,7 @@ func requireLocalRegistration(cmd *cobra.Command, pastedToken bool) error {
 		// but drops the destination, so an operator who copies it registers the
 		// pasted credential on their *local* daemon — the wrong-machine outcome
 		// this guard exists to prevent (BOS-847).
+		// The elision is inside a shell command in a code span, not prose: ellipsis: literal-dots ok
 		return fmt.Errorf("boss account add runs the agent CLI on this machine and cannot target a remote (--host %s) daemon; run `ssh %s boss account add ...` on that host instead, or register claude with `boss --host %s account add claude --token-stdin`", host, host, host)
 	}
 	return nil
@@ -134,6 +135,7 @@ func requireLocalDaemonTarget(cmd *cobra.Command) error {
 	if host == "" {
 		return nil
 	}
+	// The elision is inside a shell command in a code span, not prose: ellipsis: literal-dots ok
 	return fmt.Errorf("boss daemon commands manage the local bossd and cannot target a remote (--host %s) daemon; run `ssh %s boss daemon ...` on that host instead", host, host)
 }
 
@@ -3362,6 +3364,10 @@ func newChatsJSON(chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntr
 	return out
 }
 
+// ellipsis is the house truncation marker (U+2026). One rune wide, so a
+// rune budget reserves exactly one for it.
+const ellipsis = "…"
+
 // chatStatusCellMax bounds the STATUS cell. A WAITING chat appends its
 // waiting_reason inline, and reasons are free text from the daemon, so the same
 // bound is applied to the cell text and to the column width — otherwise one long
@@ -3439,13 +3445,18 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat, statuses map[st
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
 }
 
-// truncateString truncates a string to maxRunes runes, appending "..." if truncated.
+// truncateString truncates a string to maxRunes runes, appending the ellipsis
+// marker if truncated. The marker is one rune, so the budget reserves one rune
+// for it and the result is exactly maxRunes runes wide.
 func truncateString(s string, maxRunes int) string {
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
 		return s
 	}
-	return string(runes[:maxRunes-3]) + "..."
+	if maxRunes <= 0 {
+		return ""
+	}
+	return string(runes[:maxRunes-1]) + ellipsis
 }
 
 // parseDuration parses a human-friendly duration like "30d", "2w", "1h".

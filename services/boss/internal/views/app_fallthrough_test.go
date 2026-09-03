@@ -331,7 +331,7 @@ func TestAppUpdateArchiveResultMsgFallsThroughToChatPicker(t *testing.T) {
 			"App.Update's archiveResultMsg arm must NOT return: it reconciles Home's " +
 			"optimistic archive state and then falls through to the per-view delegation so " +
 			"the still-active chatpicker clears its own archiving flag. An early return " +
-			"leaves the picker stuck on \"Archiving session...\", swallowing every key but Esc.")
+			"leaves the picker stuck on \"Archiving session…\", swallowing every key but Esc.")
 	}
 	if !strings.Contains(got.chatPicker.statusMsg, "Couldn't archive session") {
 		t.Fatalf("chat picker statusMsg = %q, want it to report the archive failure. Only "+

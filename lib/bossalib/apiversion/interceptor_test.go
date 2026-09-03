@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -206,6 +207,78 @@ func TestInterceptor_UnaryFutureVersion_ResolvesToCurrent(t *testing.T) {
 	}
 	if got := resp.Header().Get(apiversion.HeaderName); got != reg.Current().String() {
 		t.Errorf("response header = %q, want %q", got, reg.Current())
+	}
+}
+
+func TestInterceptor_OrgScopedVisibilitySkew(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, apiversion.ProductionChanges())
+	handler := connect.NewUnaryHandler[pb.ListDaemonsRequest, pb.ListDaemonsResponse](
+		bossanovav1connect.OrchestratorServiceListDaemonsProcedure,
+		func(ctx context.Context, _ *connect.Request[pb.ListDaemonsRequest]) (*connect.Response[pb.ListDaemonsResponse], error) {
+			label := "legacy-user-scope"
+			if apiversion.IsOrgScopedVisibility(ctx) {
+				label = "org-scope"
+			}
+			return connect.NewResponse(&pb.ListDaemonsResponse{
+				Daemons: []*pb.DaemonInfo{{DaemonId: label}},
+			}), nil
+		},
+		connect.WithInterceptors(interceptor),
+	)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	client := connect.NewClient[pb.ListDaemonsRequest, pb.ListDaemonsResponse](
+		server.Client(),
+		server.URL+bossanovav1connect.OrchestratorServiceListDaemonsProcedure,
+	)
+
+	cases := []struct {
+		name       string
+		header     string
+		wantID     string
+		wantEchoed apiversion.Version
+	}{
+		{
+			name:       "no header resolves to default legacy branch",
+			wantID:     "legacy-user-scope",
+			wantEchoed: reg.Default(),
+		},
+		{
+			name:       "one version back resolves to legacy branch",
+			header:     apiversion.V20260825.String(),
+			wantID:     "legacy-user-scope",
+			wantEchoed: apiversion.V20260825,
+		},
+		{
+			name:       "current resolves to org branch",
+			header:     apiversion.V20260902.String(),
+			wantID:     "org-scope",
+			wantEchoed: apiversion.V20260902,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := connect.NewRequest(&pb.ListDaemonsRequest{})
+			if tc.header != "" {
+				req.Header().Set(apiversion.HeaderName, tc.header)
+			}
+			resp, err := client.CallUnary(context.Background(), req)
+			if err != nil {
+				t.Fatalf("CallUnary: %v", err)
+			}
+			daemons := resp.Msg.GetDaemons()
+			if len(daemons) != 1 {
+				t.Fatalf("len(daemons) = %d, want 1", len(daemons))
+			}
+			if got := daemons[0].GetDaemonId(); got != tc.wantID {
+				t.Errorf("daemon_id = %q, want %q", got, tc.wantID)
+			}
+			if got := resp.Header().Get(apiversion.HeaderName); got != tc.wantEchoed.String() {
+				t.Errorf("response header %q = %q, want %q", apiversion.HeaderName, got, tc.wantEchoed)
+			}
+		})
 	}
 }
 

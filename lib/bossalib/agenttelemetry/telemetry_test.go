@@ -551,3 +551,53 @@ func TestTallyCodexUnwrapsHeadlessRunnerTextLines(t *testing.T) {
 		t.Fatalf("parent model calls = %d, want 1", counts.ParentModelCallCount)
 	}
 }
+
+// TestTallyClaudePathWithChildrenSumsReviewerDispatches pins the fan-out the
+// review-stack reference claims is verifiable from `boss cost`. On the primary
+// path the parent dispatches exactly one marked subagent, which then dispatches
+// boss-review and every lens and round -- so counting only the parent transcript
+// records 1 regardless of how wide the review actually fanned out, and the bound
+// it exists to verify becomes uncheckable.
+//
+// The child's terminal state deliberately does not roll up the same way: a
+// reviewer subagent reporting BLOCKED is not the parent run's terminal state.
+func TestTallyClaudePathWithChildrenSumsReviewerDispatches(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "parent.jsonl")
+	childDir := filepath.Join(dir, "parent", "subagents")
+	if err := os.MkdirAll(childDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// The parent dispatches one marked reviewer subagent.
+	if err := os.WriteFile(parent, []byte(strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:00:00Z","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"prompt":"[bs-reviewer-dispatch]\nreview the branch"}}]}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+
+	// That subagent fans out to three more marked reviewers.
+	child := filepath.Join(childDir, "child.jsonl")
+	if err := os.WriteFile(child, []byte(strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:01:00Z","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"prompt":"[bs-reviewer-dispatch]\ngo lens"}}]}}`,
+		`{"timestamp":"2026-08-26T01:02:00Z","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"prompt":"[bs-reviewer-dispatch]\ndb lens"}}]}}`,
+		`{"timestamp":"2026-08-26T01:03:00Z","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"BLOCKED because the lens failed"}]}}`,
+		`{"timestamp":"2026-08-26T01:04:00Z","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"prompt":"[bs-reviewer-dispatch]\napi lens"}}]}}`,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "child.meta.json"), []byte(`{"parentAgentId":"parent","spawnDepth":1}`), 0o600); err != nil {
+		t.Fatalf("write child meta: %v", err)
+	}
+
+	counts, err := TallyClaudePathWithChildren(parent, dir, "parent")
+	if err != nil {
+		t.Fatalf("TallyClaudePathWithChildren: %v", err)
+	}
+	if counts.ReviewerDispatchCount != 4 {
+		t.Errorf("ReviewerDispatchCount = %d, want 4 (1 parent + 3 fanned out); counting the parent transcript alone records 1 whatever the fan-out", counts.ReviewerDispatchCount)
+	}
+	if counts.TerminalState != "" {
+		t.Errorf("TerminalState = %q, want empty: a reviewer subagent's own BLOCKED must not become the parent's terminal state", counts.TerminalState)
+	}
+}

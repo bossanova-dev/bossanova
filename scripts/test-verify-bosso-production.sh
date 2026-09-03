@@ -89,7 +89,7 @@ if [[ "$*" == *"get secret bs-bosso-secret"* ]]; then
       exit 0
     fi
     case "${key}" in
-      BOSSO_DB_DRIVER|BOSSO_DATABASE_URL|BOSSO_MULTI_INSTANCE|BOSSO_REDIS_URL|BOSSO_INTERNAL_ROUTING_TOKEN|BOSSO_ATTACH_SIGNING_KEY|BOSSO_WEBHOOK_ROUTING_URL|BOSSO_ROUTING_PROVIDER|BOSSO_WORKOS_API_KEY|BOSSO_STRIPE_SECRET_KEY|BOSSO_STRIPE_WEBHOOK_SECRET|BOSSO_STRIPE_CLOUD_PRICE_ID|BOSSO_GITHUB_APP_ID|BOSSO_GITHUB_APP_SLUG|BOSSO_GITHUB_APP_PRIVATE_KEY|BOSSO_GITHUB_APP_WEBHOOK_SECRET|BOSSO_GITHUB_APP_CALLBACK_URL|BOSSO_GITHUB_APP_CLIENT_ID|BOSSO_GITHUB_APP_CLIENT_SECRET|BOSSO_SENTRY_DSN)
+      BOSSO_DB_DRIVER|BOSSO_DATABASE_URL|BOSSO_MULTI_INSTANCE|BOSSO_REDIS_URL|BOSSO_INTERNAL_ROUTING_TOKEN|BOSSO_ATTACH_SIGNING_KEY|BOSSO_WEBHOOK_ROUTING_URL|BOSSO_ROUTING_PROVIDER|BOSSO_WORKOS_API_KEY|BOSSO_STRIPE_SECRET_KEY|BOSSO_STRIPE_WEBHOOK_SECRET|BOSSO_STRIPE_CLOUD_PRICE_ID|BOSSO_GITHUB_APP_ID|BOSSO_GITHUB_APP_SLUG|BOSSO_GITHUB_APP_PRIVATE_KEY|BOSSO_GITHUB_APP_WEBHOOK_SECRET|BOSSO_GITHUB_APP_CALLBACK_URL|BOSSO_GITHUB_APP_CLIENT_ID|BOSSO_GITHUB_APP_CLIENT_SECRET|BOSSO_SENTRY_DSN|BOSSO_POSTHOG_PROJECT_TOKEN|BOSSO_POSTHOG_HOST)
         echo "${key}" >>"${SECRET_KEY_LOG}"
         echo "eA=="
         exit 0
@@ -153,7 +153,7 @@ echo "go $*" >>"${GO_LOG}"
 
 if [ "$#" -eq 4 ] && [ "$1" = "run" ] && [ "$2" = "./cmd/streamprobe" ] && [ "$3" = "-url" ]; then
   case "$4" in
-    https://orchestrator-k8s.bossanova.dev|https://orchestrator-k8s-staging.bossanova.dev)
+    https://orchestrator.bossanova.dev|https://orchestrator-staging.bossanova.dev)
       echo "PASS: streamprobe full-duplex transport healthy for $4"
       exit 0
       ;;
@@ -162,7 +162,7 @@ fi
 
 if [ "$#" -eq 4 ] && [ "$1" = "run" ] && [ "$2" = "./cmd/apiversioncheck" ] && [ "$3" = "-url" ]; then
   case "$4" in
-    https://orchestrator-k8s.bossanova.dev|https://orchestrator-k8s-staging.bossanova.dev)
+    https://orchestrator.bossanova.dev|https://orchestrator-staging.bossanova.dev)
       if [ -n "${APIVERSION_TRAILING:-}" ]; then
         # Simulate a live server whose supported-max trails the built client
         # version (the BOS-241 skew): the probe must fail the verification.
@@ -213,11 +213,11 @@ OUTPUT="$("${ROOT_DIR}/scripts/verify-bosso-production.sh" 2>&1)" || fail "verif
 
 grep -Fq "statefulset/bs-bosso" "${KUBECTL_LOG}" || fail "kubectl log missing statefulset/bs-bosso"
 grep -Fq "secret bs-bosso-secret" "${KUBECTL_LOG}" || fail "kubectl log missing secret bs-bosso-secret"
-grep -Fq "https://orchestrator-k8s.bossanova.dev/healthz" "${CURL_LOG}" \
-  || fail "curl log missing production canary health URL"
-grep -Fq "go run ./cmd/streamprobe -url https://orchestrator-k8s.bossanova.dev" "${GO_LOG}" \
+grep -Fq "https://orchestrator.bossanova.dev/healthz" "${CURL_LOG}" \
+  || fail "curl log missing production health URL"
+grep -Fq "go run ./cmd/streamprobe -url https://orchestrator.bossanova.dev" "${GO_LOG}" \
   || fail "go log missing production streamprobe URL"
-grep -Fq "go run ./cmd/apiversioncheck -url https://orchestrator-k8s.bossanova.dev" "${GO_LOG}" \
+grep -Fq "go run ./cmd/apiversioncheck -url https://orchestrator.bossanova.dev" "${GO_LOG}" \
   || fail "go log missing production apiversioncheck URL (deploy-ordering gate must run)"
 grep -Fq "gcloud compute network-endpoint-groups describe bs-bosso-neg-production" "${GCLOUD_LOG}" \
   || fail "gcloud log missing production NEG describe"
@@ -227,9 +227,9 @@ export EXPECTED_IMAGE_REF="${DEPLOYED_IMAGE_REF}"
 export MANUAL_CHECKS_CONFIRMED=true
 OUTPUT="$(ENVIRONMENT=staging NAMESPACE=bs-staging "${ROOT_DIR}/scripts/verify-bosso-k8s.sh" 2>&1)" \
   || fail "verify-bosso-k8s staging failed unexpectedly: ${OUTPUT}"
-grep -Fq "https://orchestrator-k8s-staging.bossanova.dev/healthz" "${CURL_LOG}" \
-  || fail "curl log missing staging canary health URL"
-grep -Fq "go run ./cmd/streamprobe -url https://orchestrator-k8s-staging.bossanova.dev" "${GO_LOG}" \
+grep -Fq "https://orchestrator-staging.bossanova.dev/healthz" "${CURL_LOG}" \
+  || fail "curl log missing staging health URL"
+grep -Fq "go run ./cmd/streamprobe -url https://orchestrator-staging.bossanova.dev" "${GO_LOG}" \
   || fail "go log missing staging streamprobe URL"
 grep -Fq "gcloud compute network-endpoint-groups describe bs-bosso-neg-staging" "${GCLOUD_LOG}" \
   || fail "gcloud log missing staging NEG describe"

@@ -276,6 +276,9 @@ message Session {
   optional google.protobuf.Timestamp state_entered_at = 68;
   string effective_model = 69;
   string effective_effort = 70;
+  string organization_id = 71;
+  string owner_user_id = 72;
+  string owner_display_name = 73;
   bool is_automation_enabled = 13;
   int32 attempt_count = 14;
   optional string blocked_reason = 15;
@@ -717,6 +720,7 @@ message ClaudeChat {
   // (failed to start) badge instead of silently swallowing the
   // attempt.
   string start_error = 10;
+  string owner_user_id = 11;
 }
 
 // CronJobStatus is the derived run-status for a cron job, computed from

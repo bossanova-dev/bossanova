@@ -40,7 +40,7 @@ const (
 const bugReportSuccessDuration = 3 * time.Second
 
 // bugReportSubmitTimeout caps the end-to-end submit pipeline (context
-// collection + RPC) so the modal never wedges in "Submitting..." when bosso
+// collection + RPC) so the modal never wedges in "Submitting…" when bosso
 // is unreachable. The submitting phase swallows all key input so there is
 // no user escape hatch without this.
 const bugReportSubmitTimeout = 30 * time.Second
@@ -333,7 +333,7 @@ func (m BugReportModel) View() tea.View {
 	switch m.phase { //nolint:exhaustive // editing handled below so the form can render
 	case bugReportPhaseSubmitting:
 		return tea.NewView(
-			padding.Foreground(colorInfo).Render(m.spinner.View() + " Submitting report..."),
+			padding.Foreground(colorInfo).Render(m.spinner.View() + " Submitting report…"),
 		)
 
 	case bugReportPhaseSuccess:

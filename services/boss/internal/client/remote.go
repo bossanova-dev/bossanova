@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/apiversion"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/vcs"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -70,6 +71,16 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 // errLocalOnly is returned for operations that only work on a local daemon.
 func errLocalOnly(op string) error {
 	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("%s is only available on a local daemon", op))
+}
+
+// errCloudOnly is the mirror of errLocalOnly for operations a local daemon can
+// never serve because the data lives in bosso: organizations and the
+// repo-to-organization mapping. It is deliberately not errLocalOnly — that
+// helper's message says the operation "is only available on a local daemon",
+// which is exactly backwards when a LocalClient is the one refusing, and would
+// tell a signed-out user to do the thing they are already doing.
+func errCloudOnly(op string) error {
+	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("%s is only available when signed in to Bossanova Cloud", op))
 }
 
 // errBroadcastLocalOnly is returned for the broadcast RPCs, which have no
@@ -691,6 +702,107 @@ func (c *RemoteClient) ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppR
 		return nil, err
 	}
 	return resp.Msg.GetRepos(), nil
+}
+
+// --- Organizations and repo-organization mapping (cloud only) ---
+//
+// These live on RemoteClient (and, as a defined refusal, on LocalClient) but
+// deliberately not on the BossClient interface: the mapping is bosso-owned and
+// only ever reached through the authenticated cloud client, exactly like the
+// cloud-billing and GitHub App methods above. Keeping them off the interface
+// keeps every BossClient fake in the tree compiling unchanged.
+
+// ListOrganizations returns the organizations the authenticated caller belongs
+// to. The server scopes the list to the caller, so this is already "exactly the
+// caller's organizations" with no client-side filtering.
+func (c *RemoteClient) ListOrganizations(ctx context.Context) ([]*pb.Organization, error) {
+	resp, err := c.rpc.ListOrganizations(ctx, connect.NewRequest(&pb.ListOrganizationsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetOrganizations(), nil
+}
+
+// GetRepoOrganization returns the organization mapping for a repo origin, or a
+// nil mapping when the origin is unmapped. An unmapped origin is a miss, not an
+// error: the server answers an unset mapping and so does this.
+func (c *RemoteClient) GetRepoOrganization(ctx context.Context, repoOriginURL string) (*pb.RepoOrganizationMapping, error) {
+	resp, err := c.rpc.GetRepoOrganization(ctx, connect.NewRequest(&pb.GetRepoOrganizationRequest{
+		RepoOriginUrl: canonicalRepoOriginURL(repoOriginURL),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetMapping(), nil
+}
+
+// SetRepoOrganization maps a repo origin to an organization. The server fails
+// closed when the caller is not an active member of organizationID, so a
+// non-member attempt surfaces here as a PermissionDenied error rather than a
+// silent write.
+func (c *RemoteClient) SetRepoOrganization(ctx context.Context, repoOriginURL, organizationID string) (*pb.RepoOrganizationMapping, error) {
+	resp, err := c.rpc.SetRepoOrganization(ctx, connect.NewRequest(&pb.SetRepoOrganizationRequest{
+		RepoOriginUrl:  canonicalRepoOriginURL(repoOriginURL),
+		OrganizationId: organizationID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetMapping(), nil
+}
+
+// ClearRepoOrganization releases organizationID's claim on a repo origin,
+// returning the repo to the unmapped ("Personal") state. Deleting a row that is
+// already gone is success, not NotFound.
+func (c *RemoteClient) ClearRepoOrganization(ctx context.Context, repoOriginURL, organizationID string) error {
+	_, err := c.rpc.ClearRepoOrganization(ctx, connect.NewRequest(&pb.ClearRepoOrganizationRequest{
+		RepoOriginUrl:  canonicalRepoOriginURL(repoOriginURL),
+		OrganizationId: organizationID,
+	}))
+	return err
+}
+
+// canonicalRepoOriginURLPasses bounds the canonicalization loop below, matching
+// the bound bosso's validateRepoOriginURL uses. The loop exists because
+// vcs.NormalizeRepoURL is not idempotent on every input: ".../alpha.git/"
+// settles on ".../alpha.git", which normalizes again to ".../alpha", because
+// the parser strips ".git" before the trailing slash. One pass is therefore
+// "closer to canonical", not canonical.
+const canonicalRepoOriginURLPasses = 8
+
+// canonicalRepoOriginURL puts a repo origin into the same canonical
+// https://<host>/<owner>/<repo> spelling bosso stores mappings under, so the
+// TUI keys a mapping the same way the server does rather than sending whatever
+// raw origin (ssh shorthand, trailing ".git") the repo happens to carry.
+//
+// It iterates to the normalization fixed point rather than normalizing once,
+// because the fixed point is what validateRepoOriginURL stores and compares
+// against; stopping one pass short would send a spelling the server accepts but
+// rewrites, which is the same key by luck rather than by construction.
+//
+// An origin that cannot be parsed, or that does not settle within the bound, is
+// passed through untouched so the server's own InvalidArgument is what the user
+// sees, rather than this turning it into an empty-origin error of our invention.
+func canonicalRepoOriginURL(originURL string) string {
+	canonical := vcs.NormalizeRepoURL(strings.TrimSpace(originURL))
+	if canonical == "" {
+		return originURL
+	}
+	// Same control flow as validateRepoOriginURL, so "the same bound" is the
+	// same number of passes and not just the same constant: the limit is tested
+	// after next is computed, which allows one more pass than a loop condition
+	// would. Only the outcome differs — an origin that does not settle is
+	// passed through for the server to refuse rather than refused here.
+	for pass := 0; ; pass++ {
+		next := vcs.NormalizeRepoURL(canonical)
+		if next == canonical {
+			return canonical
+		}
+		if next == "" || pass >= canonicalRepoOriginURLPasses {
+			return originURL
+		}
+		canonical = next
+	}
 }
 
 // --- Cron Jobs (local only) ---

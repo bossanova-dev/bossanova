@@ -1,7 +1,10 @@
 package apiversion_test
 
 import (
+	"context"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	"github.com/recurser/bossalib/apiversion"
 )
@@ -183,21 +186,22 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry has fourteen versions ordered oldest→newest:
+	// Production registry has seventeen versions ordered oldest→newest:
 	// Baseline, V20260704, V20260705, V20260706, V20260711, V20260718,
 	// V20260723, V20260803, V20260804, V20260812, V20260816, V20260820 and
-	// V20260821 and V20260825. Current is V20260825 (newest behavior) while
+	// V20260821, V20260825, V20260902, V20260903, and V20260904. Current is
+	// V20260904 (newest behavior) while
 	// Default stays Baseline (header-less callers pin to the oldest version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20260825 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260825)
+	if reg.Current() != apiversion.V20260904 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260904)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 14 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 14", len(all))
+	if len(all) != 17 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 17", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -240,6 +244,12 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 	if !reg.IsSupported(apiversion.V20260825) {
 		t.Errorf("DefaultRegistry().IsSupported(V20260825) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260902) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260902) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260903) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260903) = false, want true")
 	}
 	// V20260701 is an exported example const but must not be in the production registry.
 	if reg.IsSupported(apiversion.V20260701) {
@@ -286,6 +296,12 @@ func TestConstants(t *testing.T) {
 	if apiversion.V20260706.String() != "2026-07-06" {
 		t.Errorf("V20260706 = %q, want 2026-07-06", apiversion.V20260706)
 	}
+	if apiversion.V20260902.String() != "2026-09-02" {
+		t.Errorf("V20260902 = %q, want 2026-09-02", apiversion.V20260902)
+	}
+	if apiversion.V20260903.String() != "2026-09-03" {
+		t.Errorf("V20260903 = %q, want 2026-09-03", apiversion.V20260903)
+	}
 }
 
 // TestDefaultRegistry_CurrentIsNewestReleasedLiteral pins Current to the RAW
@@ -296,7 +312,7 @@ func TestConstants(t *testing.T) {
 // version is therefore a deliberate two-line edit — the registry and this
 // literal — not an accident.
 func TestDefaultRegistry_CurrentIsNewestReleasedLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-08-25")
+	const wantCurrent = apiversion.Version("2026-09-04")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}
@@ -306,5 +322,43 @@ func TestDefaultRegistry_CurrentIsNewestReleasedLiteral(t *testing.T) {
 	}
 	if got := released[len(released)-1]; got != wantCurrent {
 		t.Errorf("newest ReleasedVersions entry = %q, want %q — Current and the golden ledger must be appended in lockstep", got, wantCurrent)
+	}
+}
+
+func TestIsOrgScopedVisibility(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	assertResolved := func(t *testing.T, header string) bool {
+		t.Helper()
+		req := connect.NewRequest(&struct{}{})
+		if header != "" {
+			req.Header().Set(apiversion.HeaderName, header)
+		}
+		var got bool
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			got = apiversion.IsOrgScopedVisibility(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", header, err)
+		}
+		return got
+	}
+
+	if got := apiversion.IsOrgScopedVisibility(context.Background()); got {
+		t.Errorf("IsOrgScopedVisibility(background) = true, want false")
+	}
+	for _, version := range reg.All() {
+		want := !reg.Newer(apiversion.V20260902, version)
+		if got := assertResolved(t, version.String()); got != want {
+			t.Errorf("IsOrgScopedVisibility(%s) = %v, want %v", version, got, want)
+		}
+	}
+	if got := assertResolved(t, ""); got {
+		t.Errorf("IsOrgScopedVisibility(no header) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260825.String()); got {
+		t.Errorf("IsOrgScopedVisibility(V20260825) = true, want false")
 	}
 }

@@ -1942,6 +1942,9 @@ type Session struct {
 	StateEnteredAt         *timestamppb.Timestamp `protobuf:"bytes,68,opt,name=state_entered_at,json=stateEnteredAt,proto3,oneof" json:"state_entered_at,omitempty"`
 	EffectiveModel         string                 `protobuf:"bytes,69,opt,name=effective_model,json=effectiveModel,proto3" json:"effective_model,omitempty"`
 	EffectiveEffort        string                 `protobuf:"bytes,70,opt,name=effective_effort,json=effectiveEffort,proto3" json:"effective_effort,omitempty"`
+	OrganizationId         string                 `protobuf:"bytes,71,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	OwnerUserId            string                 `protobuf:"bytes,72,opt,name=owner_user_id,json=ownerUserId,proto3" json:"owner_user_id,omitempty"`
+	OwnerDisplayName       string                 `protobuf:"bytes,73,opt,name=owner_display_name,json=ownerDisplayName,proto3" json:"owner_display_name,omitempty"`
 	IsAutomationEnabled    bool                   `protobuf:"varint,13,opt,name=is_automation_enabled,json=isAutomationEnabled,proto3" json:"is_automation_enabled,omitempty"`
 	AttemptCount           int32                  `protobuf:"varint,14,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
 	BlockedReason          *string                `protobuf:"bytes,15,opt,name=blocked_reason,json=blockedReason,proto3,oneof" json:"blocked_reason,omitempty"`
@@ -2261,6 +2264,27 @@ func (x *Session) GetEffectiveModel() string {
 func (x *Session) GetEffectiveEffort() string {
 	if x != nil {
 		return x.EffectiveEffort
+	}
+	return ""
+}
+
+func (x *Session) GetOrganizationId() string {
+	if x != nil {
+		return x.OrganizationId
+	}
+	return ""
+}
+
+func (x *Session) GetOwnerUserId() string {
+	if x != nil {
+		return x.OwnerUserId
+	}
+	return ""
+}
+
+func (x *Session) GetOwnerDisplayName() string {
+	if x != nil {
+		return x.OwnerDisplayName
 	}
 	return ""
 }
@@ -3849,6 +3873,7 @@ type ClaudeChat struct {
 	// (failed to start) badge instead of silently swallowing the
 	// attempt.
 	StartError    string `protobuf:"bytes,10,opt,name=start_error,json=startError,proto3" json:"start_error,omitempty"`
+	OwnerUserId   string `protobuf:"bytes,11,opt,name=owner_user_id,json=ownerUserId,proto3" json:"owner_user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3949,6 +3974,13 @@ func (x *ClaudeChat) GetProviderSessionId() string {
 func (x *ClaudeChat) GetStartError() string {
 	if x != nil {
 		return x.StartError
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetOwnerUserId() string {
+	if x != nil {
+		return x.OwnerUserId
 	}
 	return ""
 }
@@ -4781,7 +4813,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHttpEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\x90 \n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\x8b!\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -4803,7 +4835,10 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13last_check_state_at\x18C \x01(\v2\x1a.google.protobuf.TimestampH\x04R\x10lastCheckStateAt\x88\x01\x01\x12I\n" +
 	"\x10state_entered_at\x18D \x01(\v2\x1a.google.protobuf.TimestampH\x05R\x0estateEnteredAt\x88\x01\x01\x12'\n" +
 	"\x0feffective_model\x18E \x01(\tR\x0eeffectiveModel\x12)\n" +
-	"\x10effective_effort\x18F \x01(\tR\x0feffectiveEffort\x122\n" +
+	"\x10effective_effort\x18F \x01(\tR\x0feffectiveEffort\x12'\n" +
+	"\x0forganization_id\x18G \x01(\tR\x0eorganizationId\x12\"\n" +
+	"\rowner_user_id\x18H \x01(\tR\vownerUserId\x12,\n" +
+	"\x12owner_display_name\x18I \x01(\tR\x10ownerDisplayName\x122\n" +
 	"\x15is_automation_enabled\x18\r \x01(\bR\x13isAutomationEnabled\x12#\n" +
 	"\rattempt_count\x18\x0e \x01(\x05R\fattemptCount\x12*\n" +
 	"\x0eblocked_reason\x18\x0f \x01(\tH\x06R\rblockedReason\x88\x01\x01\x12@\n" +
@@ -4997,7 +5032,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\rGATE_CONFLICT\x10\x05\x12\x12\n" +
 	"\x0eGATE_BASE_SYNC\x10\x06\x12\x0e\n" +
 	"\n" +
-	"GATE_DRAFT\x10\a\"\xef\x02\n" +
+	"GATE_DRAFT\x10\a\"\x93\x03\n" +
 	"\n" +
 	"ClaudeChat\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -5014,7 +5049,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\x12\x1f\n" +
 	"\vstart_error\x18\n" +
 	" \x01(\tR\n" +
-	"startError\"\xa7\x06\n" +
+	"startError\x12\"\n" +
+	"\rowner_user_id\x18\v \x01(\tR\vownerUserId\"\xa7\x06\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +

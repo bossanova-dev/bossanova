@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -156,6 +157,8 @@ func renderSingleRunCosts(cmd *cobra.Command, runs []*pb.AgentRunCost) {
 		_, _ = fmt.Fprintf(out, "  model calls: parent %d, child %d  tools: %d  subagents: %d direct / %d total\n",
 			run.GetParentModelCallCount(), run.GetChildModelCallCount(), run.GetToolCallCount(), run.GetDirectSubagentCount(), run.GetSubagentCount())
 		_, _ = fmt.Fprintf(out, "  tokens: output %s, reasoning %s\n", optionalIntString(run.OutputTokenCount), optionalIntString(run.ReasoningTokenCount))
+		_, _ = fmt.Fprintf(out, "  reviewer dispatches: %s  terminal state: %s\n",
+			reviewerDispatchString(run), notRecorded(run.GetTerminalState(), "no terminal state printed"))
 		if run.GetHasParallelism() {
 			_, _ = fmt.Fprintf(out, "  parallelism: %.2fx with %.0f%% child coverage  parent-only: %s\n",
 				run.GetParallelism(), run.GetChildCoverage()*100, runCostDuration(run.GetParentOnlyMs()))
@@ -178,6 +181,8 @@ func renderAggregateRunCost(cmd *cobra.Command, agg *pb.RunCostAggregate) {
 	_, _ = fmt.Fprintf(out, "Median parent-only per session: %s\n", optionalDurationString(agg.MedianSessionParentOnlyMs))
 	_, _ = fmt.Fprintf(out, "Median parent-only per agent run: %s\n", optionalDurationString(agg.MedianRunParentOnlyMs))
 	_, _ = fmt.Fprintf(out, "Median parallelism: %s\n", optionalFloatString(agg.MedianParallelism))
+	_, _ = fmt.Fprintf(out, "Median reviewer dispatches per run: %s\n", optionalIntString(agg.MedianReviewerDispatchCount))
+	_, _ = fmt.Fprintf(out, "Terminal states: %s\n", terminalStateMixString(agg.GetTerminalStateMix()))
 	_, _ = fmt.Fprintf(out, "Backfilled rows included: %d; excluded by default unless --include-backfilled: %d\n",
 		agg.GetBackfilledIncludedCount(), agg.GetBackfilledExcludedCount())
 	_, _ = fmt.Fprintf(out, "Open rows excluded by default unless --include-open: %d\n", agg.GetOpenExcludedCount())
@@ -234,6 +239,9 @@ type agentRunCostJSON struct {
 	DirectSubagentCount  int64    `json:"direct_subagent_count"`
 	OutputTokenCount     *int64   `json:"output_token_count"`
 	ReasoningTokenCount  *int64   `json:"reasoning_token_count"`
+
+	ReviewerDispatchCount int64  `json:"reviewer_dispatch_count"`
+	TerminalState         string `json:"terminal_state"`
 }
 
 type runCostAggregateJSON struct {
@@ -249,6 +257,9 @@ type runCostAggregateJSON struct {
 	MedianSessionParentOnlyMs *int64   `json:"median_session_parent_only_ms"`
 	MedianRunParentOnlyMs     *int64   `json:"median_run_parent_only_ms"`
 	MedianParallelism         *float64 `json:"median_parallelism"`
+
+	TerminalStateMix            map[string]int64 `json:"terminal_state_mix"`
+	MedianReviewerDispatchCount *int64           `json:"median_reviewer_dispatch_count"`
 }
 
 type runCostBackfillSummaryJS struct {
@@ -290,6 +301,9 @@ func agentRunCostToJSON(run *pb.AgentRunCost) agentRunCostJSON {
 		DirectSubagentCount:  run.GetDirectSubagentCount(),
 		OutputTokenCount:     run.OutputTokenCount,
 		ReasoningTokenCount:  run.ReasoningTokenCount,
+
+		ReviewerDispatchCount: run.GetReviewerDispatchCount(),
+		TerminalState:         run.GetTerminalState(),
 	}
 	if run.GetStoppedAt() != nil {
 		stopped := protoTimestampString(run.GetStoppedAt())
@@ -320,6 +334,9 @@ func runCostAggregateToJSON(agg *pb.RunCostAggregate) runCostAggregateJSON {
 		MedianSessionParentOnlyMs: agg.MedianSessionParentOnlyMs,
 		MedianRunParentOnlyMs:     agg.MedianRunParentOnlyMs,
 		MedianParallelism:         agg.MedianParallelism,
+
+		TerminalStateMix:            agg.GetTerminalStateMix(),
+		MedianReviewerDispatchCount: agg.MedianReviewerDispatchCount,
 	}
 }
 
@@ -372,6 +389,42 @@ func optionalDurationString(v *int64) string {
 	return runCostDuration(*v)
 }
 
+// terminalStateMixString renders the mix in a fixed order so two runs of the
+// command are diffable. The empty token is a real bucket ("not recorded"), not a
+// missing one, so it is named rather than dropped.
+func terminalStateMixString(mix map[string]int64) string {
+	if len(mix) == 0 {
+		return "n/a"
+	}
+	order := []string{"REVIEW_READY", "PARTIAL", "BLOCKED", "NO_CHANGE", ""}
+	seen := map[string]bool{}
+	parts := make([]string, 0, len(mix))
+	for _, state := range order {
+		seen[state] = true
+		if count, ok := mix[state]; ok {
+			parts = append(parts, fmt.Sprintf("%s %d", terminalStateLabel(state), count))
+		}
+	}
+	extra := make([]string, 0, len(mix))
+	for state := range mix {
+		if !seen[state] {
+			extra = append(extra, state)
+		}
+	}
+	sort.Strings(extra)
+	for _, state := range extra {
+		parts = append(parts, fmt.Sprintf("%s %d", terminalStateLabel(state), mix[state]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func terminalStateLabel(state string) string {
+	if state == "" {
+		return "not recorded"
+	}
+	return state
+}
+
 func optionalIntString(v *int64) string {
 	if v == nil {
 		return "n/a"
@@ -384,6 +437,22 @@ func optionalFloatString(v *float64) string {
 		return "n/a"
 	}
 	return fmt.Sprintf("%.2fx", *v)
+}
+
+// reviewerDispatchString keeps `boss cost` from printing a confident 0 for a run
+// that carries no review telemetry at all. reviewer_dispatch_count is a plain
+// int64 on the wire with no not-recorded sentinel of its own, so a row written
+// before this telemetry landed reads back as 0 -- indistinguishable, from the
+// count alone, from a run that genuinely dispatched no reviewers. Its paired
+// terminal_state does carry a sentinel (""), so the pair resolves what neither
+// field can alone: both zero-valued means the run never reached the telemetry
+// path, and "not recorded" is the honest rendering. A 0 beside a recorded
+// terminal state came from a run that did reach it, and is trustworthy.
+func reviewerDispatchString(run *pb.AgentRunCost) string {
+	if run.GetReviewerDispatchCount() == 0 && run.GetTerminalState() == "" {
+		return "not recorded (no review telemetry for this run)"
+	}
+	return fmt.Sprintf("%d", run.GetReviewerDispatchCount())
 }
 
 func notRecorded(value, reason string) string {

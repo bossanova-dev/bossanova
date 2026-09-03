@@ -176,14 +176,14 @@ func TestTransientPRFailureWorldSeedsBothForms(t *testing.T) {
 
 	// One chat per session is not enough — two chats pointing at the SAME session
 	// would satisfy a count check while the other row's picker still read
-	// "Loading chats...". Pin the coverage instead.
+	// "Loading chats…". Pin the coverage instead.
 	covered := map[string]bool{}
 	for _, c := range w.Chats {
 		covered[c.SessionId] = true
 	}
 	for _, s := range w.Sessions {
 		if !covered[s.Id] {
-			t.Errorf("session %q has no chat; its chat picker would render \"Loading chats...\" instead of a populated list", s.Id)
+			t.Errorf("session %q has no chat; its chat picker would render \"Loading chats…\" instead of a populated list", s.Id)
 		}
 	}
 }

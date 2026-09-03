@@ -108,11 +108,11 @@ if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
         printf '%s\n' "$O" >&2
         R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
         if [ -n "$R" ]; then
-          echo "BLOCKED: installed boss skills differ from checkout source; run: $R" >&2
+          echo "warning: installed boss skills drift from checkout source; run: $R — bookkeeping only, work state unaffected" >&2
         else
-          echo "BLOCKED: installed boss skills differ from checkout source; see gate output above" >&2
+          echo "warning: installed boss skills drift from checkout source; see gate output above — bookkeeping only, work state unaffected" >&2
         fi
-        exit 1 ;;
+        ;;
     esac
   fi
 elif [ -f "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" ]; then
@@ -122,8 +122,10 @@ else
 fi
 ```
 
-The CLI gate is fail-closed only for drifted paths this branch did not edit. The no-CLI helper path
-is warning-only because it can only compare helper files and may itself be stale.
+Drift is **bookkeeping**: both the CLI gate and the no-CLI helper path report it and neither is
+terminal, because a drifted-but-present tree still repairs correctly and the helper can only compare
+helper files and may itself be stale. A drift report never decides a terminal state; only the repair
+work does.
 
 ---
 
@@ -166,15 +168,19 @@ a managed spawn expect `cli`.
 missing>; <inventoryHint when non-null>`, naming everything absent from both carriers in one line.
 
 **Report the chosen transport in the repair run's opening line** — `transport: <mcp|cli>`, plus
-`degraded: <comma-separated capabilities>` when `degraded` is non-empty, plus
-`partial: <capability>(<missing fields>)` for each entry in `partial`. The degraded names are
-capabilities with no CLI equivalent at all — `resolveContext`, `getSessionStatuses` and
-`createPlanningChat` (three, not two: `boss new` has no `--quick-chat` flag) — so a CLI-mode run
-must use their documented fallbacks rather than guessing; saying so out loud is what stops a later
-reader believing the run consulted them.
+`cli-only mode (expected): <comma-separated capabilities>` when the helper's `degraded` array is
+non-empty, plus `partial: <capability>(<missing fields>)` for each entry in `partial`. The array
+keeps the field name `degraded` in the return shape, but what it names are capabilities with no CLI
+equivalent at all **and never will have one** — `resolveContext`, `getSessionStatuses` and
+`createPlanningChat` (three, not two: `boss new` has no `--quick-chat` flag). Print them as
+`cli-only mode (expected): resolveContext, getSessionStatuses, createPlanningChat`, and use their
+documented fallbacks rather than guessing; saying so out loud is what stops a later reader believing
+the run consulted them. That set is the expected steady state of a CLI run, not a fault, so save the
+word `degraded:` for a capability missing from **both** transports — which today is exactly the
+`ok: false` stop above.
 
-A capability the CLI covers only _partially_ still has a transport and is **not** degraded, which is
-why `partial` is a separate list rather than an extension of that one. Today it holds `getSession`:
+A capability the CLI covers only _partially_ still has a transport, so it is neither `cli-only` nor
+degraded, which is why `partial` is a separate list rather than an extension of that one. Today it holds `getSession`:
 `boss show --json` carries the lifecycle state and `last_agent_activity_at`, but lacks
 `repair_active`, `attention_status.reason`, `pr_mergeable` or `merge_block`. Where a `partial` entry
 names a routing signal the CLI cannot supply, treat that signal as **not settled**, never as a pass
@@ -713,6 +719,23 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      successful observation. Do not treat reviews as clean.
 
 2. Group the unresolved threads by the file each thread anchors to, then triage every thread in each group. A thread with no file anchor goes into a single `no file` group, so the rule is total. When the Phase 2 dispatch branch is available, dispatch one worker per file group for **verdict-only** analysis; that worker returns a **separate verdict per thread** in its group, using the four categories below, and may propose a patch shape but must not edit, commit, push, reply, or resolve. When the documented inline branch is active because the awaited subagent tool is absent or dispatch failed, the orchestrator triages each group itself using the same four categories and still records a separate verdict per thread. The orchestrator serializes all repository-mutating work after verdicts are known: apply any fixes, run gates, commit, push, reply, and resolve threads from one owner. The file is the first conflict unit, but shared helpers, generated artifacts, lockfiles, the Git index, and the branch tip are repository-wide; verdict-only workers keep parallel triage from becoming concurrent writers while still letting the orchestrator resolve or decline each thread independently.
+
+   **Partition the threads by author before triaging — the source decides whether a repair cycle
+   opens at all.** Identify an automated reviewer generically from the review author, never from a
+   list of product names: the GraphQL author's `isBot` field, the REST author's `"type": "Bot"`
+   value, or a login ending in the `[bot]` suffix. Any one signal is sufficient. When the
+   originating build run recorded `REVIEW_VERDICT=clean` — read it from
+   `$(git rev-parse --git-dir)/boss-build-review-verdict`, the run note that build wrote in this
+   worktree — a bot-authored review is advisory. It gets exactly one grouped response comment per
+   bot review, posted within the bot's own threads, carrying a per-finding reason for every finding
+   it raised — never a blanket dismissal, and never silence. Answer the bot threads once and resolve
+   what that response settles; do not open a repair cycle over a diff that run's own review already
+   passed. Advisory is not ignored: a bot finding that names a real defect is still fixed — advisory
+   means it does not mechanically open a fix cycle, not that the finding is dropped. Human
+   changes-requested threads and red CI are unchanged: they triage and repair exactly as below. Read
+   CI from `gh pr checks` — a PR that flips to `UNSTABLE` after being readied is not red CI. The
+   shortcut is verdict-gated: only a verdict positively recorded as `clean` unlocks it; `capped`,
+   `none`, or an absent record means bot feedback is triaged exactly as today.
 
    For each thread, triage into one of four categories. The triage turns on two axes, in this order: the **premise** — is the finding factually true against the tree? — and then the **remedy** — must the suggested change be applied as written? A true premise does **not** by itself license implementing the suggestion, and grading only the premise is what leaves a correct finding with an unbuildable remedy homeless.
 
@@ -1331,7 +1354,7 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    `repair_status=clean` paragraph in step 8 already establishes for review probes, applied to the
    rest of the pass's premises.
 
-2. Poll all repair signals before every sleep:
+2. Poll all repair signals before every wait:
 
    ```bash
    gh pr checks --json bucket
@@ -1347,11 +1370,47 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    - **Review threads:** `${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js` — trust `repair_status` (`clean`, `parked`, `needs_repair`, `unknown`, `not_evaluated`) using the same interpretation rules as Strategy C above.
    - **Conflicts:** `gh pr view --json mergeable -q .mergeable` — `CONFLICTING` means a merge conflict appeared.
 
-4. **Review work first:** if `repair_status=needs_repair`, repair every printed unresolved thread immediately. For each valid comment, fix it, reply with what changed, resolve the parent review thread, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll. For each invalid, stale, or already-handled comment, reply explaining why it is declined, resolve the parent review thread, push if the reply changed local state, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll. Only true clarification requests may remain unresolved. If `repair_status=parked`, no action is due until a reviewer replies. If `repair_status=unknown` or `repair_status=not_evaluated`, do not treat reviews as clean; report the unreadable state or route true repository/PR unreadability as a true stop.
+4. **Review work first:** if `repair_status=needs_repair`, repair every printed unresolved thread immediately. Partition those threads by author first, exactly as Strategy C's partition describes: after a build run that recorded `REVIEW_VERDICT=clean`, bot-authored threads are advisory — answer them once, resolve what that answer settles, and open no repair cycle — while human changes-requested threads repair as described here. For each valid comment, fix it, reply with what changed, resolve the parent review thread, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll. For each invalid, stale, or already-handled comment, reply explaining why it is declined, resolve the parent review thread, push if the reply changed local state, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll. Only true clarification requests may remain unresolved. If `repair_status=parked`, no action is due until a reviewer replies. If `repair_status=unknown` or `repair_status=not_evaluated`, do not treat reviews as clean; report the unreadable state or route true repository/PR unreadability as a true stop.
 
 5. **Conflicts next:** if mergeable is `CONFLICTING`, repair the conflict, commit, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll.
 
-6. **Pending checks:** if checks are pending, sleep 30–60 seconds, then poll checks, review threads, and mergeability again. Do not wait on checks without probing reviews and mergeability first.
+6. **Pending checks:** if checks are pending, **wait on a callback, not on a clock**. Never spend a
+   fixed `sleep` of 60 seconds or longer waiting for CI to move: a guessed duration is not a reading,
+   it wakes this loop on a schedule that has nothing to do with the checks, and it reports the same
+   whether CI resolved, stalled, or never reported at all. Arm the one-shot watches for this PR when
+   the callback gate is true, and fall back to a bounded poll only when it is not:
+
+   ```bash
+   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   BOSS_REPAIR_CALLBACK="$BOSS_REPAIR_TOOLBOX/callback/adapter.mjs"
+   node --input-type=module -e '
+     import{pathToFileURL as u}from"node:url"
+     const {resolveCallbackAdapter,callbacksAvailable}=await import(u(process.env.BOSS_REPAIR_CALLBACK).href)
+     const gate=callbacksAvailable(process.env)
+     if(!gate.available){
+       process.stdout.write("callbacks-unavailable: "+gate.reason+"\n")
+     }else{
+       const a=resolveCallbackAdapter(process.env)
+       process.stdout.write(JSON.stringify({triggers:a.policy.watchTriggers,expiresIn:a.policy.defaultExpiresIn})+"\n")
+     }
+   '
+   ```
+
+   When the gate is **true**, `registerWatch` one watch per `policy.watchTriggers` entry — read the
+   trigger list from the adapter's policy, never retype it here — each non-exclusive trigger under
+   its own group, resolving the CLI through the adapter rather than a bare binary name. On every wake
+   **reconcile against real state before acting**: re-read checks, review threads, and mergeability
+   exactly as steps 2 and 3 describe, dedup by callback id, and re-arm any trigger whose reconcile
+   still reads false. When the gate is **false**, log its `reason` — an unavailable gate is a clean
+   degrade, never a failed wait — and drive the wait from the bounded poll alone.
+
+   Either way the poll is what bounds the wait: a fixed number of reads at a fixed interval, with a
+   cap on the reads rather than on wall time, routing an exhausted cap and an unresolvable rollup
+   **identically** and never as green. The short interval between two reads of that bounded loop is
+   pacing inside a wait that is already running, not a stand-in for the wait, and stays well under a
+   minute. Do not wait on checks without probing reviews and mergeability first. Remove the live watches
+   once this loop reaches its terminal state in step 8.
 
 7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll.
 
@@ -1441,6 +1500,27 @@ Do not treat pending checks as final success. In **default mode**, pending check
 
 ### Post-terminal notes extensions (repo opt-in)
 
+**Caller suppression — check this before anything else.** A run another boss core dispatched as
+part of its own larger run must not take its own notes: that caller already owns the single
+post-terminal notes dispatch for the whole top-level run, so a nested phase here is exactly the
+duplicate this gate exists to remove. A caller signals that ownership by setting
+`BOSS_NOTES_SUPPRESSED=1` in the dispatched worker's environment. The marker **defaults to not
+suppressed** — unset, empty, or any other value means this run owns its own notes, so a standalone
+invocation still takes them.
+
+A dispatched worker does not inherit that environment, so the caller also states the marker **in the
+invocation**: bind it into the shell that runs the gate below (`BOSS_NOTES_SUPPRESSED=1`) before
+reading it. Left unbound the gate reads a name nothing assigned, takes the not-suppressed branch,
+and ships the duplicate this section exists to remove with both halves still reading as satisfied.
+
+```bash
+if [ "${BOSS_NOTES_SUPPRESSED:-}" = "1" ]; then
+  echo "notes: suppressed (caller owns notes)"   # end the phase here: no discovery, no scratch, no dispatch
+fi
+```
+
+Skipping is all that is due: suppression is never fatal and never changes the terminal outcome.
+
 After the terminal outcome is decided, resolve the extension helper and run:
 
 ```bash
@@ -1457,7 +1537,33 @@ and is never reported. Recording is all that is due: a discovery skip is never f
 changes control flow; the phase still degrades exactly as documented below.
 
 If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
-extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
+extension has not opted in. Create no scratch in that case.
+
+**Sampling roll — one per run, shared by every reporting phase.** `notesDefaults.sampleRate` (a
+number in `[0,1]`, default `1.0`; `0.33` is the recommended production setting) is the probability
+that a run reports at all. Roll it **once per run** and carry the pair forward — a phase that
+re-rolls turns one configured rate into two independent ones, so a run could pay for one reporting
+phase and skip another. If an earlier phase in this run already rolled, reuse its values verbatim
+and re-export them into this shell rather than rolling again:
+
+```bash
+if [ -z "${NOTES_SAMPLED:-}" ]; then
+  NOTES_SAMPLE_RATE=$(export BOSS_REPAIR_TOOLBOX; node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, notesSampleRate } = await import(pathToFileURL(process.env.BOSS_REPAIR_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(String(notesSampleRate(loadSkillConfig())))')
+  NOTES_SAMPLED=$(awk -v r="${NOTES_SAMPLE_RATE:-1}" -v s="$$" 'BEGIN{srand(s);print (rand()<r)?"yes":"no"}')
+  export NOTES_SAMPLE_RATE NOTES_SAMPLED
+fi
+if [ "$NOTES_SAMPLED" != "yes" ]; then
+  echo "notes: sampled out (rate ${NOTES_SAMPLE_RATE:-1})"   # end the phase here: no scratch, no dispatch
+fi
+```
+
+An unreadable or malformed rate resolves to `1.0` at both ends — the accessor's own fallback and
+the `${NOTES_SAMPLE_RATE:-1}` default — so a broken config costs a few extra dispatches and never
+silently switches reporting off. Seeding `srand` from the shell PID rather than the clock alone
+keeps two runs that start in the same second from rolling identically. This gate sits **after** the
+empty-`extensions` check, so a repo that never opted in still prints nothing at all.
+
+Once both gates pass, create the terminal-only handoff:
 
 ```bash
 NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-repair-notes.XXXXXX")

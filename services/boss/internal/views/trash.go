@@ -609,7 +609,7 @@ func (m TrashModel) View() tea.View {
 	}
 
 	if m.loading {
-		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading archived sessions..."))
+		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading archived sessions…"))
 	}
 
 	var b strings.Builder
@@ -647,7 +647,7 @@ func (m TrashModel) View() tea.View {
 
 	if m.deleting {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
-			m.spinner.View() + "Deleting..."))
+			m.spinner.View() + "Deleting…"))
 	} else if m.deletingAll {
 		// deleteDone+1 (capped at the total) reads as "currently deleting item
 		// N of M" while the Nth RemoveSession is in flight.
@@ -658,9 +658,9 @@ func (m TrashModel) View() tea.View {
 		// hung restore. Before BOS-984 this spinner was all the user ever saw,
 		// right up until the client deadline turned a healthy restore into
 		// deadline_exceeded.
-		label := "Restoring..."
+		label := "Restoring…"
 		if m.restoreLine != "" {
-			label = "Restoring... " + m.restoreLine
+			label = "Restoring… " + m.restoreLine
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + truncateRestoreLabel(label, m.width)))

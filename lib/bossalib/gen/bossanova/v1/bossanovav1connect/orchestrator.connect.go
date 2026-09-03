@@ -52,6 +52,9 @@ const (
 	// OrchestratorServiceProxyListSessionsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListSessions RPC.
 	OrchestratorServiceProxyListSessionsProcedure = "/bossanova.v1.OrchestratorService/ProxyListSessions"
+	// OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure is the fully-qualified name of
+	// the OrchestratorService's ProxyListSessionsAcrossOrganizations RPC.
+	OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure = "/bossanova.v1.OrchestratorService/ProxyListSessionsAcrossOrganizations"
 	// OrchestratorServiceProxyGetSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyGetSession RPC.
 	OrchestratorServiceProxyGetSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyGetSession"
@@ -268,6 +271,45 @@ const (
 	// OrchestratorServiceRefreshCloudEntitlementsProcedure is the fully-qualified name of the
 	// OrchestratorService's RefreshCloudEntitlements RPC.
 	OrchestratorServiceRefreshCloudEntitlementsProcedure = "/bossanova.v1.OrchestratorService/RefreshCloudEntitlements"
+	// OrchestratorServiceListOrganizationsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListOrganizations RPC.
+	OrchestratorServiceListOrganizationsProcedure = "/bossanova.v1.OrchestratorService/ListOrganizations"
+	// OrchestratorServiceGetOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's GetOrganization RPC.
+	OrchestratorServiceGetOrganizationProcedure = "/bossanova.v1.OrchestratorService/GetOrganization"
+	// OrchestratorServiceCreateOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateOrganization RPC.
+	OrchestratorServiceCreateOrganizationProcedure = "/bossanova.v1.OrchestratorService/CreateOrganization"
+	// OrchestratorServiceRenameOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's RenameOrganization RPC.
+	OrchestratorServiceRenameOrganizationProcedure = "/bossanova.v1.OrchestratorService/RenameOrganization"
+	// OrchestratorServiceListOrganizationMembersProcedure is the fully-qualified name of the
+	// OrchestratorService's ListOrganizationMembers RPC.
+	OrchestratorServiceListOrganizationMembersProcedure = "/bossanova.v1.OrchestratorService/ListOrganizationMembers"
+	// OrchestratorServiceInviteOrganizationMemberProcedure is the fully-qualified name of the
+	// OrchestratorService's InviteOrganizationMember RPC.
+	OrchestratorServiceInviteOrganizationMemberProcedure = "/bossanova.v1.OrchestratorService/InviteOrganizationMember"
+	// OrchestratorServiceRemoveOrganizationMemberProcedure is the fully-qualified name of the
+	// OrchestratorService's RemoveOrganizationMember RPC.
+	OrchestratorServiceRemoveOrganizationMemberProcedure = "/bossanova.v1.OrchestratorService/RemoveOrganizationMember"
+	// OrchestratorServiceSetOrganizationMemberRoleProcedure is the fully-qualified name of the
+	// OrchestratorService's SetOrganizationMemberRole RPC.
+	OrchestratorServiceSetOrganizationMemberRoleProcedure = "/bossanova.v1.OrchestratorService/SetOrganizationMemberRole"
+	// OrchestratorServiceSwitchActiveOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's SwitchActiveOrganization RPC.
+	OrchestratorServiceSwitchActiveOrganizationProcedure = "/bossanova.v1.OrchestratorService/SwitchActiveOrganization"
+	// OrchestratorServiceSetRepoOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's SetRepoOrganization RPC.
+	OrchestratorServiceSetRepoOrganizationProcedure = "/bossanova.v1.OrchestratorService/SetRepoOrganization"
+	// OrchestratorServiceGetRepoOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's GetRepoOrganization RPC.
+	OrchestratorServiceGetRepoOrganizationProcedure = "/bossanova.v1.OrchestratorService/GetRepoOrganization"
+	// OrchestratorServiceClearRepoOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's ClearRepoOrganization RPC.
+	OrchestratorServiceClearRepoOrganizationProcedure = "/bossanova.v1.OrchestratorService/ClearRepoOrganization"
+	// OrchestratorServiceListRepoOrganizationsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListRepoOrganizations RPC.
+	OrchestratorServiceListRepoOrganizationsProcedure = "/bossanova.v1.OrchestratorService/ListRepoOrganizations"
 	// OrchestratorServiceReportBugProcedure is the fully-qualified name of the OrchestratorService's
 	// ReportBug RPC.
 	OrchestratorServiceReportBugProcedure = "/bossanova.v1.OrchestratorService/ReportBug"
@@ -292,6 +334,12 @@ type OrchestratorServiceClient interface {
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
 	ProxyListSessions(context.Context, *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error)
+	// Union of sessions across EVERY organization the caller is a member of.
+	// A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
+	// keep failing when the caller's scope resolves to no single organization,
+	// because that error is how a caller learns to claim one. This read must
+	// succeed exactly then.
+	ProxyListSessionsAcrossOrganizations(context.Context, *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest]) (*connect.ServerStreamForClient[v1.ProxyAttachSessionResponse], error)
 	// Creates a new session on a chosen daemon, streaming setup output as it
@@ -470,6 +518,27 @@ type OrchestratorServiceClient interface {
 	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
 	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
 	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
+	// Organizations. User-authenticated.
+	ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error)
+	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
+	CreateOrganization(context.Context, *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error)
+	RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error)
+	ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error)
+	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
+	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
+	SetOrganizationMemberRole(context.Context, *connect.Request[v1.SetOrganizationMemberRoleRequest]) (*connect.Response[v1.SetOrganizationMemberRoleResponse], error)
+	// Deprecated: use AuthKit switchToOrganization instead. This RPC is
+	// deprecated rather than deleted because buf breaking: use: FILE blocks
+	// deleting it from bossanova.v1; true removal requires bossanova.v2.
+	//
+	// Deprecated: do not use.
+	SwitchActiveOrganization(context.Context, *connect.Request[v1.SwitchActiveOrganizationRequest]) (*connect.Response[v1.SwitchActiveOrganizationResponse], error)
+	// Repo-to-organization ownership mapping, keyed by canonical repo origin URL.
+	// User-authenticated; the caller must be a member of the target organization.
+	SetRepoOrganization(context.Context, *connect.Request[v1.SetRepoOrganizationRequest]) (*connect.Response[v1.SetRepoOrganizationResponse], error)
+	GetRepoOrganization(context.Context, *connect.Request[v1.GetRepoOrganizationRequest]) (*connect.Response[v1.GetRepoOrganizationResponse], error)
+	ClearRepoOrganization(context.Context, *connect.Request[v1.ClearRepoOrganizationRequest]) (*connect.Response[v1.ClearRepoOrganizationResponse], error)
+	ListRepoOrganizations(context.Context, *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error)
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -520,6 +589,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceProxyListSessionsProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListSessions")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListSessionsAcrossOrganizations: connect.NewClient[v1.ProxyListSessionsAcrossOrganizationsRequest, v1.ProxyListSessionsAcrossOrganizationsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListSessionsAcrossOrganizations")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyGetSession: connect.NewClient[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse](
@@ -954,6 +1029,84 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("RefreshCloudEntitlements")),
 			connect.WithClientOptions(opts...),
 		),
+		listOrganizations: connect.NewClient[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListOrganizationsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListOrganizations")),
+			connect.WithClientOptions(opts...),
+		),
+		getOrganization: connect.NewClient[v1.GetOrganizationRequest, v1.GetOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		createOrganization: connect.NewClient[v1.CreateOrganizationRequest, v1.CreateOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		renameOrganization: connect.NewClient[v1.RenameOrganizationRequest, v1.RenameOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRenameOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RenameOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		listOrganizationMembers: connect.NewClient[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListOrganizationMembersProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListOrganizationMembers")),
+			connect.WithClientOptions(opts...),
+		),
+		inviteOrganizationMember: connect.NewClient[v1.InviteOrganizationMemberRequest, v1.InviteOrganizationMemberResponse](
+			httpClient,
+			baseURL+OrchestratorServiceInviteOrganizationMemberProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("InviteOrganizationMember")),
+			connect.WithClientOptions(opts...),
+		),
+		removeOrganizationMember: connect.NewClient[v1.RemoveOrganizationMemberRequest, v1.RemoveOrganizationMemberResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRemoveOrganizationMemberProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RemoveOrganizationMember")),
+			connect.WithClientOptions(opts...),
+		),
+		setOrganizationMemberRole: connect.NewClient[v1.SetOrganizationMemberRoleRequest, v1.SetOrganizationMemberRoleResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSetOrganizationMemberRoleProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationMemberRole")),
+			connect.WithClientOptions(opts...),
+		),
+		switchActiveOrganization: connect.NewClient[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSwitchActiveOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SwitchActiveOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		setRepoOrganization: connect.NewClient[v1.SetRepoOrganizationRequest, v1.SetRepoOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSetRepoOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SetRepoOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		getRepoOrganization: connect.NewClient[v1.GetRepoOrganizationRequest, v1.GetRepoOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetRepoOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetRepoOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		clearRepoOrganization: connect.NewClient[v1.ClearRepoOrganizationRequest, v1.ClearRepoOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceClearRepoOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ClearRepoOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		listRepoOrganizations: connect.NewClient[v1.ListRepoOrganizationsRequest, v1.ListRepoOrganizationsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListRepoOrganizationsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListRepoOrganizations")),
+			connect.WithClientOptions(opts...),
+		),
 		reportBug: connect.NewClient[v1.ReportBugRequest, v1.ReportBugResponse](
 			httpClient,
 			baseURL+OrchestratorServiceReportBugProcedure,
@@ -965,85 +1118,99 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 
 // orchestratorServiceClient implements OrchestratorServiceClient.
 type orchestratorServiceClient struct {
-	registerDaemon             *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
-	publishDaemonSnapshot      *connect.Client[v1.PublishDaemonSnapshotRequest, v1.PublishDaemonSnapshotResponse]
-	daemonStream               *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
-	listDaemons                *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
-	transferSession            *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
-	proxyListSessions          *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
-	proxyGetSession            *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
-	proxyAttachSession         *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
-	proxyCreateSession         *connect.Client[v1.ProxyCreateSessionRequest, v1.ProxyCreateSessionResponse]
-	proxyStopSession           *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
-	proxyPauseSession          *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
-	proxyResumeSession         *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
-	proxyWakeChat              *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
-	proxyMergeSession          *connect.Client[v1.ProxyMergeSessionRequest, v1.ProxyMergeSessionResponse]
-	proxyArchiveSession        *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
-	proxyRecordChat            *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
-	proxyDeleteChat            *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
-	proxySwitchSessionAccount  *connect.Client[v1.ProxySwitchSessionAccountRequest, v1.ProxySwitchSessionAccountResponse]
-	proxyListAccounts          *connect.Client[v1.ProxyListAccountsRequest, v1.ProxyListAccountsResponse]
-	proxyGetChatTranscript     *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
-	proxySendChatMessage       *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
-	proxyListReposAggregated   *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
-	proxyListAgents            *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
-	proxyListRepoPRs           *connect.Client[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse]
-	proxyListTrackerIssues     *connect.Client[v1.ProxyListTrackerIssuesRequest, v1.ProxyListTrackerIssuesResponse]
-	proxyGetRepo               *connect.Client[v1.ProxyGetRepoRequest, v1.ProxyGetRepoResponse]
-	proxyUpdateRepo            *connect.Client[v1.ProxyUpdateRepoRequest, v1.ProxyUpdateRepoResponse]
-	proxyRemoveRepo            *connect.Client[v1.ProxyRemoveRepoRequest, v1.ProxyRemoveRepoResponse]
-	proxyListCronJobs          *connect.Client[v1.ProxyListCronJobsRequest, v1.ProxyListCronJobsResponse]
-	proxyCreateCronJob         *connect.Client[v1.ProxyCreateCronJobRequest, v1.ProxyCreateCronJobResponse]
-	proxyUpdateCronJob         *connect.Client[v1.ProxyUpdateCronJobRequest, v1.ProxyUpdateCronJobResponse]
-	proxyDeleteCronJob         *connect.Client[v1.ProxyDeleteCronJobRequest, v1.ProxyDeleteCronJobResponse]
-	proxyRunCronJobNow         *connect.Client[v1.ProxyRunCronJobNowRequest, v1.ProxyRunCronJobNowResponse]
-	proxyManageListAccounts    *connect.Client[v1.ProxyManageListAccountsRequest, v1.ProxyManageListAccountsResponse]
-	proxyAddAccount            *connect.Client[v1.ProxyAddAccountRequest, v1.ProxyAddAccountResponse]
-	proxyRefreshAccount        *connect.Client[v1.ProxyRefreshAccountRequest, v1.ProxyRefreshAccountResponse]
-	proxyUpdateAccount         *connect.Client[v1.ProxyUpdateAccountRequest, v1.ProxyUpdateAccountResponse]
-	proxyRemoveAccount         *connect.Client[v1.ProxyRemoveAccountRequest, v1.ProxyRemoveAccountResponse]
-	proxyTestAccount           *connect.Client[v1.ProxyTestAccountRequest, v1.ProxyTestAccountResponse]
-	proxyListChats             *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
-	proxyGetChatStatuses       *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
-	proxyGetSessionStatuses    *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
-	proxyListCheckSnapshots    *connect.Client[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse]
-	proxyListAgentsAggregated  *connect.Client[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse]
-	proxyListPlugins           *connect.Client[v1.ProxyListPluginsRequest, v1.ProxyListPluginsResponse]
-	proxyGetCronJob            *connect.Client[v1.ProxyGetCronJobRequest, v1.ProxyGetCronJobResponse]
-	proxyRepairDoctor          *connect.Client[v1.ProxyRepairDoctorRequest, v1.ProxyRepairDoctorResponse]
-	proxyCloseSession          *connect.Client[v1.ProxyCloseSessionRequest, v1.ProxyCloseSessionResponse]
-	proxyResurrectSession      *connect.Client[v1.ProxyResurrectSessionRequest, v1.ProxyResurrectSessionResponse]
-	proxyRemoveSession         *connect.Client[v1.ProxyRemoveSessionRequest, v1.ProxyRemoveSessionResponse]
-	proxyEmptyTrash            *connect.Client[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse]
-	proxyRetrySession          *connect.Client[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse]
-	proxyUpdateSession         *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
-	proxyLinkSessionPR         *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
-	proxyUpdateChatTitle       *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
-	proxyReportChatStatus      *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
-	proxyCreateGithubCallback  *connect.Client[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse]
-	proxyListGithubCallbacks   *connect.Client[v1.ProxyListGithubCallbacksRequest, v1.ProxyListGithubCallbacksResponse]
-	proxyDeleteGithubCallback  *connect.Client[v1.ProxyDeleteGithubCallbackRequest, v1.ProxyDeleteGithubCallbackResponse]
-	proxyCreateNote            *connect.Client[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse]
-	proxyGetNote               *connect.Client[v1.ProxyGetNoteRequest, v1.ProxyGetNoteResponse]
-	proxyListNotes             *connect.Client[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse]
-	proxyUpdateNote            *connect.Client[v1.ProxyUpdateNoteRequest, v1.ProxyUpdateNoteResponse]
-	proxyDeleteNote            *connect.Client[v1.ProxyDeleteNoteRequest, v1.ProxyDeleteNoteResponse]
-	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
-	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
-	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
-	createWebhookConfig        *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
-	listWebhookConfigs         *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
-	deleteWebhookConfig        *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
-	getGitHubAppInstallURL     *connect.Client[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse]
-	completeGitHubAppSetup     *connect.Client[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse]
-	listGitHubAppRepos         *connect.Client[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse]
-	disconnectGitHubAppRepo    *connect.Client[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse]
-	getCloudAccessStatus       *connect.Client[v1.GetCloudAccessStatusRequest, v1.GetCloudAccessStatusResponse]
-	createCheckoutSession      *connect.Client[v1.CreateCheckoutSessionRequest, v1.CreateCheckoutSessionResponse]
-	createBillingPortalSession *connect.Client[v1.CreateBillingPortalSessionRequest, v1.CreateBillingPortalSessionResponse]
-	refreshCloudEntitlements   *connect.Client[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse]
-	reportBug                  *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
+	registerDaemon                       *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
+	publishDaemonSnapshot                *connect.Client[v1.PublishDaemonSnapshotRequest, v1.PublishDaemonSnapshotResponse]
+	daemonStream                         *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
+	listDaemons                          *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
+	transferSession                      *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
+	proxyListSessions                    *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
+	proxyListSessionsAcrossOrganizations *connect.Client[v1.ProxyListSessionsAcrossOrganizationsRequest, v1.ProxyListSessionsAcrossOrganizationsResponse]
+	proxyGetSession                      *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
+	proxyAttachSession                   *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
+	proxyCreateSession                   *connect.Client[v1.ProxyCreateSessionRequest, v1.ProxyCreateSessionResponse]
+	proxyStopSession                     *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
+	proxyPauseSession                    *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
+	proxyResumeSession                   *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
+	proxyWakeChat                        *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
+	proxyMergeSession                    *connect.Client[v1.ProxyMergeSessionRequest, v1.ProxyMergeSessionResponse]
+	proxyArchiveSession                  *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
+	proxyRecordChat                      *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
+	proxyDeleteChat                      *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
+	proxySwitchSessionAccount            *connect.Client[v1.ProxySwitchSessionAccountRequest, v1.ProxySwitchSessionAccountResponse]
+	proxyListAccounts                    *connect.Client[v1.ProxyListAccountsRequest, v1.ProxyListAccountsResponse]
+	proxyGetChatTranscript               *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
+	proxySendChatMessage                 *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
+	proxyListReposAggregated             *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
+	proxyListAgents                      *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
+	proxyListRepoPRs                     *connect.Client[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse]
+	proxyListTrackerIssues               *connect.Client[v1.ProxyListTrackerIssuesRequest, v1.ProxyListTrackerIssuesResponse]
+	proxyGetRepo                         *connect.Client[v1.ProxyGetRepoRequest, v1.ProxyGetRepoResponse]
+	proxyUpdateRepo                      *connect.Client[v1.ProxyUpdateRepoRequest, v1.ProxyUpdateRepoResponse]
+	proxyRemoveRepo                      *connect.Client[v1.ProxyRemoveRepoRequest, v1.ProxyRemoveRepoResponse]
+	proxyListCronJobs                    *connect.Client[v1.ProxyListCronJobsRequest, v1.ProxyListCronJobsResponse]
+	proxyCreateCronJob                   *connect.Client[v1.ProxyCreateCronJobRequest, v1.ProxyCreateCronJobResponse]
+	proxyUpdateCronJob                   *connect.Client[v1.ProxyUpdateCronJobRequest, v1.ProxyUpdateCronJobResponse]
+	proxyDeleteCronJob                   *connect.Client[v1.ProxyDeleteCronJobRequest, v1.ProxyDeleteCronJobResponse]
+	proxyRunCronJobNow                   *connect.Client[v1.ProxyRunCronJobNowRequest, v1.ProxyRunCronJobNowResponse]
+	proxyManageListAccounts              *connect.Client[v1.ProxyManageListAccountsRequest, v1.ProxyManageListAccountsResponse]
+	proxyAddAccount                      *connect.Client[v1.ProxyAddAccountRequest, v1.ProxyAddAccountResponse]
+	proxyRefreshAccount                  *connect.Client[v1.ProxyRefreshAccountRequest, v1.ProxyRefreshAccountResponse]
+	proxyUpdateAccount                   *connect.Client[v1.ProxyUpdateAccountRequest, v1.ProxyUpdateAccountResponse]
+	proxyRemoveAccount                   *connect.Client[v1.ProxyRemoveAccountRequest, v1.ProxyRemoveAccountResponse]
+	proxyTestAccount                     *connect.Client[v1.ProxyTestAccountRequest, v1.ProxyTestAccountResponse]
+	proxyListChats                       *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
+	proxyGetChatStatuses                 *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
+	proxyGetSessionStatuses              *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
+	proxyListCheckSnapshots              *connect.Client[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse]
+	proxyListAgentsAggregated            *connect.Client[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse]
+	proxyListPlugins                     *connect.Client[v1.ProxyListPluginsRequest, v1.ProxyListPluginsResponse]
+	proxyGetCronJob                      *connect.Client[v1.ProxyGetCronJobRequest, v1.ProxyGetCronJobResponse]
+	proxyRepairDoctor                    *connect.Client[v1.ProxyRepairDoctorRequest, v1.ProxyRepairDoctorResponse]
+	proxyCloseSession                    *connect.Client[v1.ProxyCloseSessionRequest, v1.ProxyCloseSessionResponse]
+	proxyResurrectSession                *connect.Client[v1.ProxyResurrectSessionRequest, v1.ProxyResurrectSessionResponse]
+	proxyRemoveSession                   *connect.Client[v1.ProxyRemoveSessionRequest, v1.ProxyRemoveSessionResponse]
+	proxyEmptyTrash                      *connect.Client[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse]
+	proxyRetrySession                    *connect.Client[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse]
+	proxyUpdateSession                   *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
+	proxyLinkSessionPR                   *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
+	proxyUpdateChatTitle                 *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
+	proxyReportChatStatus                *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
+	proxyCreateGithubCallback            *connect.Client[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse]
+	proxyListGithubCallbacks             *connect.Client[v1.ProxyListGithubCallbacksRequest, v1.ProxyListGithubCallbacksResponse]
+	proxyDeleteGithubCallback            *connect.Client[v1.ProxyDeleteGithubCallbackRequest, v1.ProxyDeleteGithubCallbackResponse]
+	proxyCreateNote                      *connect.Client[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse]
+	proxyGetNote                         *connect.Client[v1.ProxyGetNoteRequest, v1.ProxyGetNoteResponse]
+	proxyListNotes                       *connect.Client[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse]
+	proxyUpdateNote                      *connect.Client[v1.ProxyUpdateNoteRequest, v1.ProxyUpdateNoteResponse]
+	proxyDeleteNote                      *connect.Client[v1.ProxyDeleteNoteRequest, v1.ProxyDeleteNoteResponse]
+	proxyStreamChats                     *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
+	issueAttachToken                     *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
+	terminalStream                       *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
+	createWebhookConfig                  *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
+	listWebhookConfigs                   *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
+	deleteWebhookConfig                  *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
+	getGitHubAppInstallURL               *connect.Client[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse]
+	completeGitHubAppSetup               *connect.Client[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse]
+	listGitHubAppRepos                   *connect.Client[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse]
+	disconnectGitHubAppRepo              *connect.Client[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse]
+	getCloudAccessStatus                 *connect.Client[v1.GetCloudAccessStatusRequest, v1.GetCloudAccessStatusResponse]
+	createCheckoutSession                *connect.Client[v1.CreateCheckoutSessionRequest, v1.CreateCheckoutSessionResponse]
+	createBillingPortalSession           *connect.Client[v1.CreateBillingPortalSessionRequest, v1.CreateBillingPortalSessionResponse]
+	refreshCloudEntitlements             *connect.Client[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse]
+	listOrganizations                    *connect.Client[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse]
+	getOrganization                      *connect.Client[v1.GetOrganizationRequest, v1.GetOrganizationResponse]
+	createOrganization                   *connect.Client[v1.CreateOrganizationRequest, v1.CreateOrganizationResponse]
+	renameOrganization                   *connect.Client[v1.RenameOrganizationRequest, v1.RenameOrganizationResponse]
+	listOrganizationMembers              *connect.Client[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse]
+	inviteOrganizationMember             *connect.Client[v1.InviteOrganizationMemberRequest, v1.InviteOrganizationMemberResponse]
+	removeOrganizationMember             *connect.Client[v1.RemoveOrganizationMemberRequest, v1.RemoveOrganizationMemberResponse]
+	setOrganizationMemberRole            *connect.Client[v1.SetOrganizationMemberRoleRequest, v1.SetOrganizationMemberRoleResponse]
+	switchActiveOrganization             *connect.Client[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse]
+	setRepoOrganization                  *connect.Client[v1.SetRepoOrganizationRequest, v1.SetRepoOrganizationResponse]
+	getRepoOrganization                  *connect.Client[v1.GetRepoOrganizationRequest, v1.GetRepoOrganizationResponse]
+	clearRepoOrganization                *connect.Client[v1.ClearRepoOrganizationRequest, v1.ClearRepoOrganizationResponse]
+	listRepoOrganizations                *connect.Client[v1.ListRepoOrganizationsRequest, v1.ListRepoOrganizationsResponse]
+	reportBug                            *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
 }
 
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
@@ -1074,6 +1241,12 @@ func (c *orchestratorServiceClient) TransferSession(ctx context.Context, req *co
 // ProxyListSessions calls bossanova.v1.OrchestratorService.ProxyListSessions.
 func (c *orchestratorServiceClient) ProxyListSessions(ctx context.Context, req *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error) {
 	return c.proxyListSessions.CallUnary(ctx, req)
+}
+
+// ProxyListSessionsAcrossOrganizations calls
+// bossanova.v1.OrchestratorService.ProxyListSessionsAcrossOrganizations.
+func (c *orchestratorServiceClient) ProxyListSessionsAcrossOrganizations(ctx context.Context, req *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error) {
+	return c.proxyListSessionsAcrossOrganizations.CallUnary(ctx, req)
 }
 
 // ProxyGetSession calls bossanova.v1.OrchestratorService.ProxyGetSession.
@@ -1436,6 +1609,73 @@ func (c *orchestratorServiceClient) RefreshCloudEntitlements(ctx context.Context
 	return c.refreshCloudEntitlements.CallUnary(ctx, req)
 }
 
+// ListOrganizations calls bossanova.v1.OrchestratorService.ListOrganizations.
+func (c *orchestratorServiceClient) ListOrganizations(ctx context.Context, req *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error) {
+	return c.listOrganizations.CallUnary(ctx, req)
+}
+
+// GetOrganization calls bossanova.v1.OrchestratorService.GetOrganization.
+func (c *orchestratorServiceClient) GetOrganization(ctx context.Context, req *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error) {
+	return c.getOrganization.CallUnary(ctx, req)
+}
+
+// CreateOrganization calls bossanova.v1.OrchestratorService.CreateOrganization.
+func (c *orchestratorServiceClient) CreateOrganization(ctx context.Context, req *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error) {
+	return c.createOrganization.CallUnary(ctx, req)
+}
+
+// RenameOrganization calls bossanova.v1.OrchestratorService.RenameOrganization.
+func (c *orchestratorServiceClient) RenameOrganization(ctx context.Context, req *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error) {
+	return c.renameOrganization.CallUnary(ctx, req)
+}
+
+// ListOrganizationMembers calls bossanova.v1.OrchestratorService.ListOrganizationMembers.
+func (c *orchestratorServiceClient) ListOrganizationMembers(ctx context.Context, req *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error) {
+	return c.listOrganizationMembers.CallUnary(ctx, req)
+}
+
+// InviteOrganizationMember calls bossanova.v1.OrchestratorService.InviteOrganizationMember.
+func (c *orchestratorServiceClient) InviteOrganizationMember(ctx context.Context, req *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error) {
+	return c.inviteOrganizationMember.CallUnary(ctx, req)
+}
+
+// RemoveOrganizationMember calls bossanova.v1.OrchestratorService.RemoveOrganizationMember.
+func (c *orchestratorServiceClient) RemoveOrganizationMember(ctx context.Context, req *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error) {
+	return c.removeOrganizationMember.CallUnary(ctx, req)
+}
+
+// SetOrganizationMemberRole calls bossanova.v1.OrchestratorService.SetOrganizationMemberRole.
+func (c *orchestratorServiceClient) SetOrganizationMemberRole(ctx context.Context, req *connect.Request[v1.SetOrganizationMemberRoleRequest]) (*connect.Response[v1.SetOrganizationMemberRoleResponse], error) {
+	return c.setOrganizationMemberRole.CallUnary(ctx, req)
+}
+
+// SwitchActiveOrganization calls bossanova.v1.OrchestratorService.SwitchActiveOrganization.
+//
+// Deprecated: do not use.
+func (c *orchestratorServiceClient) SwitchActiveOrganization(ctx context.Context, req *connect.Request[v1.SwitchActiveOrganizationRequest]) (*connect.Response[v1.SwitchActiveOrganizationResponse], error) {
+	return c.switchActiveOrganization.CallUnary(ctx, req)
+}
+
+// SetRepoOrganization calls bossanova.v1.OrchestratorService.SetRepoOrganization.
+func (c *orchestratorServiceClient) SetRepoOrganization(ctx context.Context, req *connect.Request[v1.SetRepoOrganizationRequest]) (*connect.Response[v1.SetRepoOrganizationResponse], error) {
+	return c.setRepoOrganization.CallUnary(ctx, req)
+}
+
+// GetRepoOrganization calls bossanova.v1.OrchestratorService.GetRepoOrganization.
+func (c *orchestratorServiceClient) GetRepoOrganization(ctx context.Context, req *connect.Request[v1.GetRepoOrganizationRequest]) (*connect.Response[v1.GetRepoOrganizationResponse], error) {
+	return c.getRepoOrganization.CallUnary(ctx, req)
+}
+
+// ClearRepoOrganization calls bossanova.v1.OrchestratorService.ClearRepoOrganization.
+func (c *orchestratorServiceClient) ClearRepoOrganization(ctx context.Context, req *connect.Request[v1.ClearRepoOrganizationRequest]) (*connect.Response[v1.ClearRepoOrganizationResponse], error) {
+	return c.clearRepoOrganization.CallUnary(ctx, req)
+}
+
+// ListRepoOrganizations calls bossanova.v1.OrchestratorService.ListRepoOrganizations.
+func (c *orchestratorServiceClient) ListRepoOrganizations(ctx context.Context, req *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error) {
+	return c.listRepoOrganizations.CallUnary(ctx, req)
+}
+
 // ReportBug calls bossanova.v1.OrchestratorService.ReportBug.
 func (c *orchestratorServiceClient) ReportBug(ctx context.Context, req *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {
 	return c.reportBug.CallUnary(ctx, req)
@@ -1460,6 +1700,12 @@ type OrchestratorServiceHandler interface {
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
 	ProxyListSessions(context.Context, *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error)
+	// Union of sessions across EVERY organization the caller is a member of.
+	// A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
+	// keep failing when the caller's scope resolves to no single organization,
+	// because that error is how a caller learns to claim one. This read must
+	// succeed exactly then.
+	ProxyListSessionsAcrossOrganizations(context.Context, *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest], *connect.ServerStream[v1.ProxyAttachSessionResponse]) error
 	// Creates a new session on a chosen daemon, streaming setup output as it
@@ -1638,6 +1884,27 @@ type OrchestratorServiceHandler interface {
 	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
 	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
 	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
+	// Organizations. User-authenticated.
+	ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error)
+	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
+	CreateOrganization(context.Context, *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error)
+	RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error)
+	ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error)
+	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
+	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
+	SetOrganizationMemberRole(context.Context, *connect.Request[v1.SetOrganizationMemberRoleRequest]) (*connect.Response[v1.SetOrganizationMemberRoleResponse], error)
+	// Deprecated: use AuthKit switchToOrganization instead. This RPC is
+	// deprecated rather than deleted because buf breaking: use: FILE blocks
+	// deleting it from bossanova.v1; true removal requires bossanova.v2.
+	//
+	// Deprecated: do not use.
+	SwitchActiveOrganization(context.Context, *connect.Request[v1.SwitchActiveOrganizationRequest]) (*connect.Response[v1.SwitchActiveOrganizationResponse], error)
+	// Repo-to-organization ownership mapping, keyed by canonical repo origin URL.
+	// User-authenticated; the caller must be a member of the target organization.
+	SetRepoOrganization(context.Context, *connect.Request[v1.SetRepoOrganizationRequest]) (*connect.Response[v1.SetRepoOrganizationResponse], error)
+	GetRepoOrganization(context.Context, *connect.Request[v1.GetRepoOrganizationRequest]) (*connect.Response[v1.GetRepoOrganizationResponse], error)
+	ClearRepoOrganization(context.Context, *connect.Request[v1.ClearRepoOrganizationRequest]) (*connect.Response[v1.ClearRepoOrganizationResponse], error)
+	ListRepoOrganizations(context.Context, *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error)
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -1684,6 +1951,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceProxyListSessionsProcedure,
 		svc.ProxyListSessions,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListSessions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListSessionsAcrossOrganizationsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
+		svc.ProxyListSessionsAcrossOrganizations,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListSessionsAcrossOrganizations")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyGetSessionHandler := connect.NewUnaryHandler(
@@ -2118,6 +2391,84 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("RefreshCloudEntitlements")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceListOrganizationsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListOrganizationsProcedure,
+		svc.ListOrganizations,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListOrganizations")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetOrganizationProcedure,
+		svc.GetOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceCreateOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateOrganizationProcedure,
+		svc.CreateOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRenameOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRenameOrganizationProcedure,
+		svc.RenameOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RenameOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListOrganizationMembersHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListOrganizationMembersProcedure,
+		svc.ListOrganizationMembers,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListOrganizationMembers")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceInviteOrganizationMemberHandler := connect.NewUnaryHandler(
+		OrchestratorServiceInviteOrganizationMemberProcedure,
+		svc.InviteOrganizationMember,
+		connect.WithSchema(orchestratorServiceMethods.ByName("InviteOrganizationMember")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRemoveOrganizationMemberHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRemoveOrganizationMemberProcedure,
+		svc.RemoveOrganizationMember,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RemoveOrganizationMember")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSetOrganizationMemberRoleHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSetOrganizationMemberRoleProcedure,
+		svc.SetOrganizationMemberRole,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationMemberRole")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSwitchActiveOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSwitchActiveOrganizationProcedure,
+		svc.SwitchActiveOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SwitchActiveOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSetRepoOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSetRepoOrganizationProcedure,
+		svc.SetRepoOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SetRepoOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetRepoOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetRepoOrganizationProcedure,
+		svc.GetRepoOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetRepoOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceClearRepoOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceClearRepoOrganizationProcedure,
+		svc.ClearRepoOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ClearRepoOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListRepoOrganizationsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListRepoOrganizationsProcedure,
+		svc.ListRepoOrganizations,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListRepoOrganizations")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceReportBugHandler := connect.NewUnaryHandler(
 		OrchestratorServiceReportBugProcedure,
 		svc.ReportBug,
@@ -2138,6 +2489,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceTransferSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListSessionsProcedure:
 			orchestratorServiceProxyListSessionsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure:
+			orchestratorServiceProxyListSessionsAcrossOrganizationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetSessionProcedure:
 			orchestratorServiceProxyGetSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyAttachSessionProcedure:
@@ -2282,6 +2635,32 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceCreateBillingPortalSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceRefreshCloudEntitlementsProcedure:
 			orchestratorServiceRefreshCloudEntitlementsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListOrganizationsProcedure:
+			orchestratorServiceListOrganizationsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetOrganizationProcedure:
+			orchestratorServiceGetOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateOrganizationProcedure:
+			orchestratorServiceCreateOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRenameOrganizationProcedure:
+			orchestratorServiceRenameOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListOrganizationMembersProcedure:
+			orchestratorServiceListOrganizationMembersHandler.ServeHTTP(w, r)
+		case OrchestratorServiceInviteOrganizationMemberProcedure:
+			orchestratorServiceInviteOrganizationMemberHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRemoveOrganizationMemberProcedure:
+			orchestratorServiceRemoveOrganizationMemberHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSetOrganizationMemberRoleProcedure:
+			orchestratorServiceSetOrganizationMemberRoleHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSwitchActiveOrganizationProcedure:
+			orchestratorServiceSwitchActiveOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSetRepoOrganizationProcedure:
+			orchestratorServiceSetRepoOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetRepoOrganizationProcedure:
+			orchestratorServiceGetRepoOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceClearRepoOrganizationProcedure:
+			orchestratorServiceClearRepoOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListRepoOrganizationsProcedure:
+			orchestratorServiceListRepoOrganizationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceReportBugProcedure:
 			orchestratorServiceReportBugHandler.ServeHTTP(w, r)
 		default:
@@ -2315,6 +2694,10 @@ func (UnimplementedOrchestratorServiceHandler) TransferSession(context.Context, 
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListSessions(context.Context, *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListSessions is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListSessionsAcrossOrganizations(context.Context, *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListSessionsAcrossOrganizations is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error) {
@@ -2603,6 +2986,58 @@ func (UnimplementedOrchestratorServiceHandler) CreateBillingPortalSession(contex
 
 func (UnimplementedOrchestratorServiceHandler) RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RefreshCloudEntitlements is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListOrganizations is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CreateOrganization(context.Context, *connect.Request[v1.CreateOrganizationRequest]) (*connect.Response[v1.CreateOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RenameOrganization(context.Context, *connect.Request[v1.RenameOrganizationRequest]) (*connect.Response[v1.RenameOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RenameOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListOrganizationMembers(context.Context, *connect.Request[v1.ListOrganizationMembersRequest]) (*connect.Response[v1.ListOrganizationMembersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListOrganizationMembers is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.InviteOrganizationMember is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RemoveOrganizationMember is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SetOrganizationMemberRole(context.Context, *connect.Request[v1.SetOrganizationMemberRoleRequest]) (*connect.Response[v1.SetOrganizationMemberRoleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SetOrganizationMemberRole is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SwitchActiveOrganization(context.Context, *connect.Request[v1.SwitchActiveOrganizationRequest]) (*connect.Response[v1.SwitchActiveOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SwitchActiveOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SetRepoOrganization(context.Context, *connect.Request[v1.SetRepoOrganizationRequest]) (*connect.Response[v1.SetRepoOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SetRepoOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetRepoOrganization(context.Context, *connect.Request[v1.GetRepoOrganizationRequest]) (*connect.Response[v1.GetRepoOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetRepoOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ClearRepoOrganization(context.Context, *connect.Request[v1.ClearRepoOrganizationRequest]) (*connect.Response[v1.ClearRepoOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ClearRepoOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListRepoOrganizations(context.Context, *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListRepoOrganizations is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {

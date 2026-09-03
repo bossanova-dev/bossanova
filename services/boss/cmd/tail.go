@@ -26,6 +26,7 @@ func tailCmd() *cobra.Command {
 	var lines int
 	var filter logtail.Filter
 	cmd := &cobra.Command{
+		// A cobra usage grammar, not a sentence: ellipsis: literal-dots ok
 		Use: "tail [source...]", Short: "Tail daemon and agent logs",
 		// Two surfaces, one command. Reaching for `boss tail` to debug an agent
 		// run and getting bossd records back reads as "the agent went silent"

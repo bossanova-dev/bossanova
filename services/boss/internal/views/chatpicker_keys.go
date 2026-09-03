@@ -206,12 +206,12 @@ func (m ChatPickerModel) keyWake() (tea.Model, tea.Cmd) {
 	// Only fire WakeChat for chats whose daemon-reported status is
 	// "stopped". For any other status (working, idle, question, or
 	// unknown) the wake call would be a no-op (OUTCOME_ALREADY_LIVE)
-	// but firing it is misleading UX — a transient "Waking..." flash
+	// but firing it is misleading UX — a transient "Waking…" flash
 	// for a chat that's already healthy.
 	if m.daemonStatuses[chat.AgentSessionId] != statusStopped {
 		return m, nil
 	}
-	m.statusMsg = "Waking..."
+	m.statusMsg = "Waking…"
 	sessionID := m.sessionID
 	agentSessionID := chat.AgentSessionId
 	c := m.client

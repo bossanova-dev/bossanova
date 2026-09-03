@@ -1836,6 +1836,12 @@ message AgentRunCost {
   int64 direct_subagent_count = 23;
   optional int64 output_token_count = 24;
   optional int64 reasoning_token_count = 25;
+  // How many reviewer subagents this run dispatched (0 when it dispatched none,
+  // and for runners whose transcripts are not parsed).
+  int64 reviewer_dispatch_count = 26;
+  // Terminal state the run ended in: REVIEW_READY, PARTIAL, BLOCKED, NO_CHANGE,
+  // or "" when the run recorded none.
+  string terminal_state = 27;
 }
 
 message RunCostAggregate {
@@ -1851,6 +1857,10 @@ message RunCostAggregate {
   optional int64 median_run_parent_only_ms = 10;
   optional int64 median_session_parent_only_ms = 11;
   optional double median_parallelism = 12;
+  // Runs per terminal state, keyed by the same tokens as
+  // AgentRunCost.terminal_state ("" means not recorded).
+  map<string, int64> terminal_state_mix = 13;
+  optional int64 median_reviewer_dispatch_count = 14;
 }
 
 message RunCostBackfillSummary {

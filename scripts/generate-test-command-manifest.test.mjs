@@ -16,14 +16,20 @@ test('manifest includes the Web Targets section heading', () => {
   assert.match(manifest, /## Web Targets \(`services\/web`\)/)
 })
 
-test('manifest includes pnpm run test:e2e:real row and BOS-33 reference', () => {
+// BOS-1083 retired the BOS-33 pointer this used to assert. That reference said
+// the real-stack specs were `test.fixme` pending repo-seeding, which stopped
+// being true at BOS-374; the row's live prerequisite is now the database, and
+// that is what a reader who skips the prose most needs to see.
+test('manifest includes pnpm run test:e2e:real row and its database prerequisite', () => {
   const manifest = renderManifest({
     rootTargets: ['test-smoke'],
     modules: [{ path: 'services/bosso', target: 'test-bosso' }],
   })
 
-  assert.match(manifest, /`pnpm run test:e2e:real`/)
-  assert.match(manifest, /docs\/plans\/BOS-33/)
+  // Anchored to the ROW, not just the document: the trailing prose also names
+  // the variable, so a bare /BOSSO_TEST_DATABASE_URL/ stays green even if the
+  // row loses its prerequisite entirely.
+  assert.match(manifest, /\|\s*`pnpm run test:e2e:real`\s*\|[^|]*BOSSO_TEST_DATABASE_URL[^|]*\|/)
 })
 
 test('manifest includes trailing prose line for Web Targets', () => {

@@ -40,7 +40,7 @@
       "id": "web-sessions-filters",
       "surface": "web",
       "title": "Web Sessions Filters",
-      "description": "Sessions breadcrumb row at desktop width in the default unfiltered state: a daemon drop-down reading 'All daemons' and a repository drop-down reading 'All repositories' sit to the LEFT of the '+' New session button, on the same row as the 'Sessions' crumb.",
+      "description": "Sessions breadcrumb row at desktop width in the default unfiltered state: THREE drop-downs sit to the LEFT of the '+' New session button, on the same row as the 'Sessions' crumb — broadest scope first, an organization drop-down reading 'All organizations', then a daemon drop-down reading 'All daemons', then a repository drop-down reading 'All repositories'.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/",
@@ -51,7 +51,7 @@
       "id": "web-sessions-filters-mobile",
       "surface": "web",
       "title": "Web Sessions Filters (mobile)",
-      "description": "Sessions breadcrumb row at 390px: the 'Sessions' crumb, both filter drop-downs, and the '+' New session button share one line, every control fully on screen and none overlapping. The drop-down labels ellipsize to yield the width, so 'All daemons' / 'All repositories' may read truncated. (Absence of horizontal overflow is asserted by mobile-layout.spec.ts, not by this crop.)",
+      "description": "Sessions breadcrumb row at 390px: the 'Sessions' crumb, all THREE filter drop-downs (organization, daemon, repository), and the '+' New session button share one line, every control fully on screen and none overlapping. The drop-down labels ellipsize to yield the width, so 'All organizations' / 'All daemons' / 'All repositories' may read truncated. (Absence of horizontal overflow is asserted by mobile-layout.spec.ts, not by this crop.)",
       "privacy": "fixture",
       "capture": "still",
       "route": "/",
@@ -134,6 +134,54 @@
       ]
     },
     {
+      "id": "web-sessions-org-filter-flow",
+      "surface": "web",
+      "title": "Web Sessions Organization Filter Flow",
+      "description": "Choosing an organization in the sessions-list organization filter narrows the table across every daemon and repository: 'Proof session' is listed before the selection and gone after it, leaving only Globex's 'Proof quick chat' row while 'Globex' shows as the selected value.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/",
+          "label": "Open home",
+          "caption": "Open the sessions list"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap",
+          "label": "Sessions list",
+          "caption": "All sessions across every organization"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"sessions-org-filter\"]",
+          "value": "org-proof-globex",
+          "label": "Choose an organization",
+          "caption": "Filter the list down to Globex"
+        },
+        {
+          "action": "wait",
+          "timeoutMs": 800,
+          "label": "Narrowed list",
+          "caption": "Only that organization's sessions remain"
+        }
+      ]
+    },
+    {
+      "id": "web-sessions-org-filter-row-attribution",
+      "surface": "web",
+      "title": "Web Sessions Organization Row Attribution",
+      "description": "Sessions table for a caller who belongs to two organizations with 'All organizations' selected: each row carries the owning organization's name as a muted second line under the repository name in the Repository cell — 'Acme' on the Proof daemon's rows and 'Globex' on the 'Proof quick chat' row — so a cross-organization list is never ambiguous about which organization a session belongs to.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "cropToSelector": ".data-table-wrap",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-notification-permission-modal",
       "surface": "web",
       "title": "Web Notification Permission Modal",
@@ -151,7 +199,7 @@
       "description": "Appearance settings showing the notifications on/off toggle beside the theme control, plus the browser-blocked note (permission forced denied).",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/appearance",
+      "route": "/org-e2e/settings/appearance",
       "cropToSelector": ".settings-card",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -161,7 +209,7 @@
       "title": "Web Account Settings",
       "description": "Product web account settings page in the ACTIVE subscription state, showing the Manage subscription button.",
       "privacy": "fixture",
-      "route": "/settings/account",
+      "route": "/org-e2e/settings/account",
       "cropToSelector": ".account-billing",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -169,7 +217,18 @@
       "id": "web-subscribe",
       "surface": "web",
       "title": "Web Cloud Subscribe",
-      "description": "Signed-in Subscribe page CTA showing the 14-day Cloud free trial and the $7/month cancellation terms.",
+      "description": "Signed-in Subscribe page CTA showing the 14-day Cloud free trial and the monthly price with cancellation terms.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/subscribe",
+      "selector": ".subscribe-actions",
+      "viewport": { "width": 1024, "height": 768 }
+    },
+    {
+      "id": "web-subscribe-trial-used",
+      "surface": "web",
+      "title": "Web Cloud Subscribe After Trial",
+      "description": "Signed-in Subscribe page for an account whose free trial is already spent: the CTA reads Subscribe now and the terms above it promise no trial anywhere.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/subscribe",
@@ -460,7 +519,7 @@
       "description": "Repositories settings page at desktop width: the Settings / Repositories sub-header carries a drop-down reading 'All daemons', and below it one unified, heading-less list of registered repos with a per-row edit icon and no separate 'GitHub App' section. Rows are alphabetical — 'Proof repository' (Proof daemon) before 'Proof web repository' (Standby daemon) — and each names its serving daemon in the Daemon column.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/repos",
+      "route": "/org-e2e/settings/repos",
       "cropToSelector": "[data-testid='repositories-section']",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -476,7 +535,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/repos",
+          "route": "/org-e2e/settings/repos",
           "label": "Open repository settings",
           "caption": "Open repository settings"
         },
@@ -526,7 +585,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/repos",
+          "route": "/org-e2e/settings/repos",
           "label": "Open repository settings",
           "caption": "Open repository settings"
         },
@@ -568,7 +627,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/repos",
+          "route": "/org-e2e/settings/repos",
           "label": "Open repository settings",
           "caption": "Open repository settings"
         },
@@ -611,7 +670,7 @@
       "description": "Cron Jobs settings page (/settings/cron): the table with Name, Repo, Daemon, and Status column headers and no run-timing columns, populated with fixture jobs from two daemons sorted ascending by name, including an enabled Running job and a failed job.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/cron",
+      "route": "/org-e2e/settings/cron",
       "cropToSelector": "[data-testid='cron-jobs-section']",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -622,7 +681,7 @@
       "description": "Cron Jobs at 390px: the job name and its four action buttons share the top row, the owning daemon and the right-aligned status badge form the second row, and Repo is hidden.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/cron",
+      "route": "/org-e2e/settings/cron",
       "cropToSelector": "[data-testid='cron-jobs-section']",
       "viewport": { "width": 390, "height": 844 }
     },
@@ -638,7 +697,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/cron",
+          "route": "/org-e2e/settings/cron",
           "label": "Open cron jobs",
           "caption": "Open the Cron Jobs settings page"
         },
@@ -675,7 +734,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/cron",
+          "route": "/org-e2e/settings/cron",
           "label": "Open cron jobs",
           "caption": "Open the Cron Jobs settings page"
         },
@@ -706,7 +765,7 @@
       "description": "Accounts settings page (/settings/accounts): the rotation-accounts table with Provider, Label, Daemon, Health, and Usage columns plus the per-row action group. The Daemon column names the daemon each account is registered on, so accounts aggregated from more than one daemon stay attributable. Disabled rows use the shared dormant treatment; no Active/Disabled status column is rendered. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/accounts",
+      "route": "/org-e2e/settings/accounts",
       "cropToSelector": "[data-testid='accounts-section']",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -717,7 +776,7 @@
       "description": "Accounts at 390px: the account label and its four action buttons share the top row, with provider and usage stacked as one meta block below and the health pill flush right. The Daemon column is hidden at this width — it is still a real desktop column and the header filter still narrows by daemon here, unlike Priority and Last used, which no longer exist in the table at any width. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/accounts",
+      "route": "/org-e2e/settings/accounts",
       "cropToSelector": "[data-testid='accounts-section']",
       "viewport": { "width": 390, "height": 844 }
     },
@@ -733,7 +792,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/accounts",
+          "route": "/org-e2e/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -770,7 +829,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/accounts",
+          "route": "/org-e2e/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -795,14 +854,143 @@
       ]
     },
     {
+      "id": "web-accounts-cold-start-probe-failure",
+      "surface": "web",
+      "title": "Web Accounts Usage Probe Failure",
+      "description": "A usage-refresh probe that fails against an older bosso, while the first accounts read is still in flight: the header's 'Refresh account usage' control reports 'server does not support account usage refresh; update bosso and try again' as an inline notice with its own Try again action, and the page keeps showing the 'Loading accounts' spinner underneath. The probe's failure never becomes the whole page — the full-page give-up panel is reserved for the accounts read itself failing.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/org-e2e/settings/accounts",
+      "cropToSelector": ".settings-content",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-accounts-refresh-interrupted",
+      "surface": "web",
+      "title": "Web Accounts Usage Refresh Survives A Cut-Short Daemon",
+      "description": "Using the header's icon-only 'Refresh account usage' control on /settings/accounts when ONE of the two online daemons cancels its usage probe mid-flight: the answering daemon's work is kept instead of being thrown away, so the 'work@anthropic.com' row and its Usage column stay on screen, a trailing recovery read brings the cut-short daemon's rows back, and no 'the usage refresh was interrupted' notice is shown.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/accounts",
+          "label": "Open accounts",
+          "caption": "Open the Accounts settings page"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"accounts-section\"]",
+          "label": "Accounts list",
+          "caption": "Registered accounts across both online daemons, with their cached Usage column"
+        },
+        {
+          "action": "click",
+          "selector": "button[aria-label=\"Refresh account usage\"]",
+          "label": "Refresh usage",
+          "caption": "Ask every online daemon for a fresh usage probe; the standby daemon cancels its leg"
+        },
+        {
+          "action": "wait",
+          "timeoutMs": 1200,
+          "label": "Recovered list",
+          "caption": "The answering daemon's rows survive, the recovery read restores the rest, and no interruption notice appears"
+        }
+      ]
+    },
+    {
+      "id": "web-accounts-give-up-retry",
+      "surface": "web",
+      "title": "Web Accounts Give-up Retry",
+      "description": "The give-up notice on /settings/accounts keeps its own escape hatch usable (BOS-1090). With the daemon read staged to start failing only after the page has loaded, the usage refresh gives up and the danger notice appears above the still-readable table, carrying a 'Try again' control. Pressing it does not take the control away: it stays in place showing its spinner instead of vanishing or emptying out. The retry fails the same way, and the notice is still there afterwards with its control live again. Only the visible half of the fix is filmable: that the pressed control also keeps its place in the tab order, rather than blurring the user to the document body the way the natively disabled version did, is not something a video can show.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/accounts",
+          "label": "Open accounts",
+          "caption": "Open the Accounts settings page"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"accounts-section\"]",
+          "label": "Accounts list",
+          "caption": "The accounts table loads normally"
+        },
+        {
+          "action": "wait",
+          "timeoutMs": 3000,
+          "label": "Connection drops",
+          "caption": "The daemon read starts failing behind the loaded table"
+        },
+        {
+          "action": "click",
+          "selector": "button[aria-label=\"Refresh account usage\"]",
+          "label": "Refresh usage",
+          "caption": "Ask every online daemon for a fresh usage probe"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"alert\"]",
+          "label": "Give-up notice",
+          "caption": "The probe gives up, and the notice offers Try again"
+        },
+        {
+          "action": "click",
+          "selector": "[role=\"alert\"] button",
+          "label": "Press try again",
+          "caption": "The pressed control stays on screen, spinner and all"
+        },
+        {
+          "action": "wait",
+          "timeoutMs": 3000,
+          "label": "Retry fails",
+          "caption": "The retry comes back failing, above the still-readable table"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"alert\"]",
+          "label": "Notice persists",
+          "caption": "The notice is still up, and its Try again control is live again"
+        }
+      ]
+    },
+    {
       "id": "web-repositories-mobile",
       "surface": "web",
       "title": "Web Repositories (mobile)",
       "description": "Repositories at 390px: each card stacks the repository name with its edit action on the first line, the serving daemon name beneath it, and the GitHub connection state ('Connected' / 'Not connected') on the last line — no daemon information is dropped on phones and nothing clips horizontally.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/repos",
+      "route": "/org-e2e/settings/repos",
       "cropToSelector": "[data-testid='repositories-section']",
+      "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-organization-members",
+      "surface": "web",
+      "title": "Web Organization Members",
+      "description": "Organization settings members list at desktop width: no 'Members' heading sits above the table, and the list uses the standard bordered, rounded settings-table card with Member, Role and Status column headers plus a blank trailing actions column — the same chrome as the repositories list, not the old unstyled scroll box.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/org-e2e/settings/organization",
+      "cropToSelector": "[data-testid='organization-members-section']",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-organization-members-mobile",
+      "surface": "web",
+      "title": "Web Organization Members (mobile)",
+      "description": "Organization members at 390px: the table has collapsed into stacked cards with no visible column headers, and every column survives the collapse — each card shows the member name with its remove action flush to the card edge on the first line, and the role beside a right-aligned status on the second. One card names a membership that resolved neither a display name nor an email as the literal text 'Unknown member'. Nothing is dropped and nothing clips horizontally.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/org-e2e/settings/organization",
+      "cropToSelector": "[data-testid='organization-members-section']",
       "viewport": { "width": 390, "height": 844 }
     },
     {
@@ -812,8 +1000,47 @@
       "description": "Daemons at 390px under the Settings layout, retained as the existing tidy mobile list reference.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/daemons",
+      "route": "/org-e2e/settings/daemons",
       "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-session-expired",
+      "surface": "web",
+      "title": "Web Session Expired",
+      "description": "The mid-session re-authentication state after AuthKit reports a token refresh that cannot be retried: an alert reading 'Session expired' with a 'Sign in' button has replaced the whole application. The app header, the sessions table and any 'No sessions could be loaded' network-error copy are all absent from the frame.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "web-sessions-daemons-give-up",
+      "surface": "web",
+      "title": "Web Sessions Daemon Give-Up",
+      "description": "The sessions list with the daemon-options poll staged to fail terminally while the sessions read stays healthy. The page's single connection notice carries the daemon poll's own error and a 'Try again' control, and the sessions table is still rendered beneath it — a secondary poller giving up reports itself without replacing the page. Uncropped so the notice and the table are in the same frame.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "web-sessions-reconnecting-dark",
+      "surface": "web",
+      "title": "Web Sessions Reconnecting Pill",
+      "description": "The sessions list in the dark theme with the sessions read staged to hang after its first answer, so the retry ladder is still running behind a table it has already painted. The connection notice shows its reconnecting pill — a spinner, 'Reconnecting…', and a 'Showing data from …' clause naming how old the rows are — in full body text rather than the dimmed variant, which does not meet WCAG 1.4.3's 4.5:1 at this size. This is the ladder still working, not the give-up state: no error and no 'Try again' control. Uncropped so the pill and the table it qualifies are in the same frame.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      }
     },
     {
       "id": "web-header-menu",
@@ -853,6 +1080,206 @@
       ]
     },
     {
+      "id": "web-org-create-modal",
+      "surface": "web",
+      "title": "Web New Organization Modal",
+      "description": "The New organization modal opened from the organization settings page: the 'Organization name' label sits above a text input that spans the modal's whole 520px form column, ending flush with the right edge of the 'Create organization' button in the Cancel / Create organization row beneath it. The input is NOT the browser's narrow ~20-character default control. Captured as a flow because the modal is opened by a click, not reachable as a static route.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "cropToSelector": ".org-create-form",
+      "viewport": { "width": 1024, "height": 900 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open the organization settings page"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-settings-section",
+          "label": "Settings loaded",
+          "caption": "Organization settings page loads"
+        },
+        {
+          "action": "click",
+          "selector": "button:has-text('New organization')",
+          "label": "New organization",
+          "caption": "Choose New organization"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-create-form",
+          "label": "Modal open",
+          "caption": "Organization name input spans the form column, flush with Create organization"
+        }
+      ]
+    },
+    {
+      "id": "web-org-settings",
+      "surface": "web",
+      "title": "Web Organization Settings",
+      "description": "Organization settings page for an owner in its resting display state, reached at the organization-scoped URL /org-e2e/settings/organization. The caller belongs to ONE organization, so there is NO organization picker in the page header -- it carries only the New organization and Invite member buttons. The organization name is rendered as a single click-to-edit control carrying a small pencil glyph to the right of the text. There is NO 'Organization name' form label, no text input, and no 'Save name' button anywhere on the page. Below it the Members table lists the organization's members with their roles.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/org-e2e/settings/organization",
+      "viewport": { "width": 1024, "height": 768 }
+    },
+    {
+      "id": "web-org-name-edit-flow",
+      "surface": "web",
+      "title": "Web Organization Name Rename Flow",
+      "description": "An owner renames the organization in place. The name starts as a plain click-to-edit control reading 'E2E Organization'; clicking it swaps in a focused text input pre-filled with that same name and NO buttons and no 'Organization name' label beside it; replacing the text with 'Acme Robotics' and pressing Enter commits the rename, and the page returns to the display control now reading 'Acme Robotics'.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1024, "height": 768 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open organization settings"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-name-edit-trigger",
+          "label": "Display mode",
+          "caption": "The name is shown as plain text, not a form"
+        },
+        {
+          "action": "click",
+          "selector": ".org-name-edit-trigger",
+          "label": "Click the name",
+          "caption": "Click the name to edit it"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-rename-form .input",
+          "label": "Editor open",
+          "caption": "The input opens focused and pre-filled"
+        },
+        {
+          "action": "press",
+          "key": "ControlOrMeta+a",
+          "label": "Select the current name",
+          "caption": "Select the pre-filled name"
+        },
+        {
+          "action": "type",
+          "selector": ".org-rename-form .input",
+          "value": "Acme Robotics",
+          "label": "Type the new name",
+          "caption": "Type the new organization name"
+        },
+        {
+          "action": "press",
+          "key": "Enter",
+          "label": "Commit with Enter",
+          "caption": "Enter commits the rename"
+        },
+        {
+          "action": "wait",
+          "selector": "text=\"Acme Robotics\"",
+          "label": "Renamed",
+          "caption": "The renamed organization is shown as plain text again"
+        }
+      ]
+    },
+    {
+      "id": "web-org-name-edit-escape",
+      "surface": "web",
+      "title": "Web Organization Name Edit Cancelled",
+      "description": "Abandoning an organization rename discards it. The owner clicks the name 'E2E Organization', replaces the text with 'Discarded', then presses Escape; the editor closes and the displayed name is 'E2E Organization' again, with 'Discarded' nowhere on the page and no rename saved.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1024, "height": 768 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open organization settings"
+        },
+        {
+          "action": "click",
+          "selector": ".org-name-edit-trigger",
+          "label": "Click the name",
+          "caption": "Click the name to edit it"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-rename-form .input",
+          "label": "Editor open",
+          "caption": "The input opens focused and pre-filled"
+        },
+        {
+          "action": "press",
+          "key": "ControlOrMeta+a",
+          "label": "Select the current name",
+          "caption": "Select the pre-filled name"
+        },
+        {
+          "action": "type",
+          "selector": ".org-rename-form .input",
+          "value": "Discarded",
+          "label": "Type a replacement",
+          "caption": "Type a name the owner then thinks better of"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Press Escape",
+          "caption": "Escape abandons the edit"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-name-edit-trigger",
+          "label": "Reverted",
+          "caption": "The original name is back and nothing was saved"
+        }
+      ]
+    },
+    {
+      "id": "web-org-picker-switch",
+      "surface": "web",
+      "title": "Web Organization Picker Switch",
+      "description": "Switching organizations from the settings page. The organization picker sits in the Organization settings header beside the owner's New organization and Invite member buttons \u2014 not in the app header \u2014 and reads 'E2E Organization'. It is a native drop-down listing both of the caller's organizations; choosing 'Beta Robotics' moves the browser to that organization's own settings URL (/org-proof-beta/settings/organization) and the page re-renders for it. Captured as a flow because the switch is a selection, not reachable as a static route.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open organization settings, scoped to the organization"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='org-picker']",
+          "label": "Picker in the page header",
+          "caption": "The organization picker lives on the settings page"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid='org-picker']",
+          "value": "org-proof-beta",
+          "label": "Choose the other organization",
+          "caption": "Choose the other organization from the picker"
+        },
+        {
+          "action": "wait",
+          "selector": "text=\"Beta Robotics\"",
+          "label": "Switched",
+          "caption": "The URL and the page both move to the chosen organization"
+        }
+      ]
+    },
+    {
       "id": "web-account-add-form",
       "surface": "web",
       "title": "Web Add Account Form",
@@ -864,7 +1291,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/accounts",
+          "route": "/org-e2e/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -900,7 +1327,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/settings/accounts",
+          "route": "/org-e2e/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -931,7 +1358,7 @@
       "description": "Settings sidebar navigation with the Cron Jobs entry active alongside Appearance, Billing, and Repositories.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/settings/cron",
+      "route": "/org-e2e/settings/cron",
       "cropToSelector": "nav[aria-label=\"Settings\"]",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -1665,6 +2092,8 @@
         "web-sessions-filters-mobile",
         "web-sessions-filter-flow",
         "web-sessions-filter-persist",
+        "web-sessions-org-filter-flow",
+        "web-sessions-org-filter-row-attribution",
         "web-session-detail",
         "web-session-detail-no-pr",
         "web-session-detail-rotation",
@@ -1676,6 +2105,8 @@
         "web-repositories",
         "web-repositories-daemon-filter-flow",
         "web-repositories-mobile",
+        "web-organization-members",
+        "web-organization-members-mobile",
         "web-repository-edit",
         "web-repository-removal",
         "web-cron-list",
@@ -1687,12 +2118,24 @@
         "web-accounts-list-mobile",
         "web-accounts-filter-flow",
         "web-accounts-refresh-flow",
+        "web-accounts-cold-start-probe-failure",
+        "web-accounts-refresh-interrupted",
+        "web-accounts-give-up-retry",
         "web-daemons-mobile",
+        "web-session-expired",
+        "web-sessions-daemons-give-up",
+        "web-sessions-reconnecting-dark",
         "web-header-menu",
+        "web-org-create-modal",
+        "web-org-settings",
+        "web-org-name-edit-flow",
+        "web-org-name-edit-escape",
+        "web-org-picker-switch",
         "web-account-add-form",
         "web-account-remove",
         "web-account",
         "web-subscribe",
+        "web-subscribe-trial-used",
         "web-subscribe-no-notification-prompt",
         "web-chat-terminal",
         "web-chat-terminal-reconnecting",

@@ -5,7 +5,7 @@
 	debt-knip \
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
-	test-native-ledger test-native-ledger-affected test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
+	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
@@ -191,11 +191,11 @@ BOSS_SKILL_FILES := $(shell find $(SKILLS_SRC_DIR) -type f 2>/dev/null)
 BOSS_SKILL_DIRS := $(SKILLS_SRC_DIR) $(shell find $(SKILLS_SRC_DIR) -type d 2>/dev/null)
 BOSSD_MIGRATION_FILES := $(shell find services/bossd/migrations -type f -name '*.sql' 2>/dev/null)
 BOSSD_MIGRATION_DIRS := services/bossd/migrations
-BOSSO_MIGRATION_FILES := $(shell find services/bosso/migrations services/bosso/migrations_postgres -type f -name '*.sql' 2>/dev/null)
+BOSSO_MIGRATION_FILES := $(shell find services/bosso/migrations_postgres -type f -name '*.sql' 2>/dev/null)
 # Named, not wildcarded, for the same reason. Safe in the public mirror, where
 # services/bosso is stripped: this list is only ever consumed inside the existing
 # `ifneq ($(wildcard services/bosso/go.mod),)` guard.
-BOSSO_MIGRATION_DIRS := services/bosso/migrations services/bosso/migrations_postgres
+BOSSO_MIGRATION_DIRS := services/bosso/migrations_postgres
 # A single known file, so it is named rather than discovered. No directory entry
 # is needed: `go:embed bossd-question.js` names one file, so deleting it fails the
 # compile loudly instead of silently shipping a stale embed.
@@ -731,15 +731,123 @@ test-integration-bossd:
 	cd services/bossd && go test -tags=integration -race ./internal/server/... ./internal/testharness/... -count=1
 
 ifneq ($(wildcard services/bosso/go.mod),)
+
+# BOS-1083: say out loud, at point of use, that a bare `make test-bosso` no
+# longer covers the database suites. Before this ticket they ran against an
+# in-memory SQLite database and needed no setup, so this target really did cover
+# services/bosso/internal/db; now they need a Postgres server and t.Skip without
+# one -- and a skip is indistinguishable from a pass in the target's own output.
+# The narrowing is invisible precisely where someone would rely on it: locally,
+# on a developer machine with no server running.
+#
+# `origin` is the right test rather than the value: test-bosso-postgres passes
+# BOSSO_REQUIRE_POSTGRES_TESTS=1 as a sub-make override (origin `command line`)
+# and CI exports it (origin `environment`), so `undefined` isolates exactly the
+# bare invocation. The notice goes to stderr and the recipe is otherwise
+# unchanged -- CI is already fail-closed on this (bazel.yml and
+# bazel-linux-smoke.yml both set the variable, and .bazelrc forwards it), so
+# this is a local-visibility fix, not a gate.
+ifeq ($(origin BOSSO_REQUIRE_POSTGRES_TESTS),undefined)
+BOSSO_PG_SKIP_NOTICE := printf '%s\n' \
+	'test-bosso: NOTE - the Postgres-backed suites will SKIP, not run.' \
+	'  BOSSO_REQUIRE_POSTGRES_TESTS is unset, and since BOS-1083 deleted the SQLite path those' \
+	'  suites need a real server. Run `make test-bosso-postgres` (starts a throwaway container)' \
+	'  for the full suite. CI always sets it, so this narrowing is local only.' >&2
+else
+BOSSO_PG_SKIP_NOTICE := :
+endif
+
 test-bosso:
+	@$(BOSSO_PG_SKIP_NOTICE)
 ifeq ($(BAZEL_USABLE),1)
 	@node scripts/gate-cache.mjs run --site test-bosso --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
 	@node scripts/gate-cache.mjs run --site test-bosso --command '$(MAKE) -C services/bosso test-all' -- $(MAKE) -C services/bosso test-all
 endif
 
-test-bosso-scale:
-	cd services/bosso && go test ./internal/loadtest -run TestOrchestratorScaleSmoke -count=1
+# BOS-1081: local Postgres for the bosso apply-time migration suites. Both are
+# overridable, so a developer who already runs a server can skip the container
+# entirely: `make test-bosso-postgres BOSSO_TEST_DATABASE_URL=postgres://...`.
+# The image matches the `postgres:16` service container the CI jobs pin.
+BOSSO_TEST_PG_CONTAINER ?= bossanova-test-postgres
+BOSSO_TEST_PG_PORT ?= 5432
+# Bound the readiness wait so a dead Docker or a container that crashes on boot
+# fails the target instead of hanging a developer's terminal forever.
+BOSSO_TEST_PG_WAIT_SECONDS ?= 60
+BOSSO_TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:$(BOSSO_TEST_PG_PORT)/bosso_test?sslmode=disable
+
+# Boot the throwaway container ONLY when the URL above is this file's own
+# default. `?=` leaves an inherited value alone, so `origin` separates the two
+# cases exactly: `file` means nobody supplied a server and one has to be
+# started; `environment` or `command line` means the developer already runs one.
+# Without this split the documented "point it at your own server" invocation --
+# `make test-bosso-postgres BOSSO_TEST_DATABASE_URL=postgres://...`, advertised
+# by this target's own help text and by docs/testing/test-command-manifest.md --
+# still shells out to docker and fails outright on a machine that has none.
+ifeq ($(origin BOSSO_TEST_DATABASE_URL),file)
+BOSSO_TEST_PG_PREREQS := postgres-test-up
+else
+BOSSO_TEST_PG_PREREQS :=
+endif
+
+## test-bosso-postgres: Run the bosso suite against a local Postgres (starts a
+## throwaway docker container unless BOSSO_TEST_DATABASE_URL already points at one).
+## Without BOSSO_TEST_DATABASE_URL the Postgres legs SKIP; this passes it together
+## with BOSSO_REQUIRE_POSTGRES_TESTS=1 so an unreachable database FAILS instead of
+## skipping to a green that proved nothing. Both are passed as sub-make overrides on
+## purpose: MAKEOVERRIDES is part of the gate-cache fingerprint, so a Postgres run
+## can never read a stamp recorded by a `make test-bosso` that skipped them.
+test-bosso-postgres: $(BOSSO_TEST_PG_PREREQS)
+	$(MAKE) test-bosso BOSSO_TEST_DATABASE_URL='$(BOSSO_TEST_DATABASE_URL)' BOSSO_REQUIRE_POSTGRES_TESTS=1
+
+## test-bosso-scale: Run the orchestrator scale smoke against a local Postgres
+## (starts the same throwaway container as test-bosso-postgres unless
+## BOSSO_TEST_DATABASE_URL already points at one). BOS-1083 moved
+## internal/loadtest off its hand-rolled SQLite schema onto the real migration
+## tree, so this suite now needs a database. It is defined below
+## BOSSO_TEST_PG_PREREQS on purpose: make expands a prerequisite list when the
+## rule is read, so a target placed above that assignment would silently get an
+## empty prerequisite. BOSSO_REQUIRE_POSTGRES_TESTS=1 is what keeps the target
+## honest -- without it an absent database makes the suite t.Skip and `go test`
+## exit 0 having executed nothing, which is a green from the one target whose
+## entire purpose is to run this smoke.
+##
+## The `-run TestOrchestratorScaleSmoke` filter this carried since BOS-382 is
+## gone for the same reason. It selected the only test the package has, so it
+## narrowed nothing -- but a rename or a move of that one test would have turned
+## it into a zero-match, and `go test -run <no match>` exits 0 after executing
+## nothing, printing only a `testing: warning: no tests to run` line to stdout
+## that make does not read. That is the identical vacuous green the
+## BOSSO_REQUIRE_POSTGRES_TESTS pin above closes on the other route, so closing
+## one and leaving the other would make this recipe's guarantee half true.
+## Running the package unfiltered cannot be vacuous: an empty package is a build
+## error, not a pass.
+test-bosso-scale: $(BOSSO_TEST_PG_PREREQS)
+	cd services/bosso && BOSSO_TEST_DATABASE_URL='$(BOSSO_TEST_DATABASE_URL)' \
+		BOSSO_REQUIRE_POSTGRES_TESTS=1 \
+		go test ./internal/loadtest -count=1
+
+## postgres-test-up: Start (idempotently) the throwaway Postgres container the bosso
+## Postgres suites use, and wait until it accepts connections.
+postgres-test-up:
+	@docker start $(BOSSO_TEST_PG_CONTAINER) >/dev/null 2>&1 || \
+		docker run -d --name $(BOSSO_TEST_PG_CONTAINER) \
+			-e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=bosso_test \
+			-p $(BOSSO_TEST_PG_PORT):5432 postgres:16 >/dev/null
+	@attempt=0; \
+	until docker exec $(BOSSO_TEST_PG_CONTAINER) pg_isready -U postgres -d bosso_test >/dev/null 2>&1; do \
+		attempt=$$((attempt + 1)); \
+		if [ $$attempt -ge $(BOSSO_TEST_PG_WAIT_SECONDS) ]; then \
+			echo "postgres-test-up: $(BOSSO_TEST_PG_CONTAINER) did not accept connections within $(BOSSO_TEST_PG_WAIT_SECONDS)s" >&2; \
+			docker logs --tail 20 $(BOSSO_TEST_PG_CONTAINER) >&2 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
+
+## postgres-test-down: Remove the throwaway Postgres container started above.
+postgres-test-down:
+	@docker rm -f $(BOSSO_TEST_PG_CONTAINER) >/dev/null 2>&1 || true
 endif
 
 # Auto-generate per-plugin test targets from detected modules. Same bazel-facade

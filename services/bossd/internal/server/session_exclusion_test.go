@@ -286,7 +286,7 @@ func TestDuplicateSessionAlreadyExistsErrorIncludesBoundedFirstLinePlan(t *testi
 		t.Run(tt.name, func(t *testing.T) {
 			err := duplicateSessionAlreadyExistsError("sess-1", tt.plan, "tracker issue", "repo-1")
 
-			wantPlan := strings.Repeat("a", duplicateSessionPlanSummaryLimit) + "..."
+			wantPlan := strings.Repeat("a", duplicateSessionPlanSummaryLimit) + ellipsis
 			want := "active session sess-1 (plan: " + wantPlan + ") already exists for this tracker issue in repo repo-1; pass force to create another"
 			if got := err.Error(); got != want {
 				t.Fatalf("error = %q, want %q", got, want)

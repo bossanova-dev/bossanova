@@ -1268,8 +1268,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260825 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260825)
+	if got := reg.Current(); got != apiversion.V20260904 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260904)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -1545,6 +1545,13 @@ func waitingResponseCases() []struct {
 		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
 			func() any { return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{waitingSession()}} },
 			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
+		{"ProxyListSessionsAcrossOrganizations", bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
+			func() any {
+				return &pb.ProxyListSessionsAcrossOrganizationsResponse{Sessions: []*pb.Session{waitingSession()}}
+			},
+			func(m any) *pb.Session {
+				return m.(*pb.ProxyListSessionsAcrossOrganizationsResponse).GetSessions()[0]
+			}},
 		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
 			func() any { return &pb.ProxyGetSessionResponse{Session: waitingSession()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyGetSessionResponse).GetSession() }},
@@ -2376,6 +2383,13 @@ func stalledResponseCases() []struct {
 		{"ProxyListSessions", bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
 			func() any { return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{stalledSession()}} },
 			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
+		{"ProxyListSessionsAcrossOrganizations", bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
+			func() any {
+				return &pb.ProxyListSessionsAcrossOrganizationsResponse{Sessions: []*pb.Session{stalledSession()}}
+			},
+			func(m any) *pb.Session {
+				return m.(*pb.ProxyListSessionsAcrossOrganizationsResponse).GetSessions()[0]
+			}},
 		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
 			func() any { return &pb.ProxyGetSessionResponse{Session: stalledSession()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyGetSessionResponse).GetSession() }},
@@ -3756,6 +3770,145 @@ func TestProductionChanges_ErrorPathCanceledDeadlineAndCeilingDoNotCrossTalk(t *
 	}
 }
 
+// --- SwitchActiveOrganizationRetiredMessageChange (V20260903, BOS-1049) ---
+
+const (
+	switchActiveOrganizationProcedure    = bossanovav1connect.OrchestratorServiceSwitchActiveOrganizationProcedure
+	currentSwitchActiveOrganizationError = "SwitchActiveOrganization is retired; switch organizations with AuthKit switchToOrganization"
+	legacySwitchActiveOrganizationError  = "organization management is not implemented"
+)
+
+func retiredSwitchActiveOrganizationError(msg string) error {
+	return apiversion.MarkRetiredProcedure(
+		connect.NewError(connect.CodeUnimplemented, errors.New(msg)),
+	)
+}
+
+func TestSwitchActiveOrganizationRetiredMessageChange_Version(t *testing.T) {
+	if got := (apiversion.SwitchActiveOrganizationRetiredMessageChange{}).Version(); got != apiversion.V20260903 {
+		t.Errorf("SwitchActiveOrganizationRetiredMessageChange.Version() = %q, want %q", got, apiversion.V20260903)
+	}
+}
+
+func TestSwitchActiveOrganizationRetiredMessageChange_DownConvertsForBaseline(t *testing.T) {
+	got := apiversion.ProductionChanges().ApplyError(
+		switchActiveOrganizationProcedure,
+		retiredSwitchActiveOrganizationError(currentSwitchActiveOrganizationError),
+		apiversion.Baseline,
+	)
+	if code := connect.CodeOf(got); code != connect.CodeUnimplemented {
+		t.Errorf("code = %v, want CodeUnimplemented", code)
+	}
+	if !strings.Contains(got.Error(), legacySwitchActiveOrganizationError) {
+		t.Errorf("error = %q, want legacy message %q", got.Error(), legacySwitchActiveOrganizationError)
+	}
+	if strings.Contains(got.Error(), "AuthKit switchToOrganization") {
+		t.Errorf("error = %q, want current retirement guidance hidden from Baseline", got.Error())
+	}
+	if apiversion.IsRetiredProcedure(got) {
+		t.Error("down-converted error still carries the retired-procedure marker")
+	}
+}
+
+func TestSwitchActiveOrganizationRetiredMessageChange_NoOpAtCurrent(t *testing.T) {
+	got := apiversion.ProductionChanges().ApplyError(
+		switchActiveOrganizationProcedure,
+		retiredSwitchActiveOrganizationError(currentSwitchActiveOrganizationError),
+		apiversion.DefaultRegistry().Current(),
+	)
+	if code := connect.CodeOf(got); code != connect.CodeUnimplemented {
+		t.Errorf("code = %v, want CodeUnimplemented", code)
+	}
+	if !strings.Contains(got.Error(), currentSwitchActiveOrganizationError) {
+		t.Errorf("error = %q, want current retirement message %q", got.Error(), currentSwitchActiveOrganizationError)
+	}
+	if !apiversion.IsRetiredProcedure(got) {
+		t.Error("Current error lost the retired-procedure marker")
+	}
+}
+
+func TestSwitchActiveOrganizationRetiredMessageChange_DoesNotWiden(t *testing.T) {
+	ch := apiversion.SwitchActiveOrganizationRetiredMessageChange{}
+	for _, tc := range []struct {
+		name   string
+		method string
+		err    error
+		want   string
+	}{
+		{
+			name:   "marked error on a different procedure",
+			method: bossanovav1connect.OrchestratorServiceListOrganizationsProcedure,
+			err:    retiredSwitchActiveOrganizationError(currentSwitchActiveOrganizationError),
+			want:   currentSwitchActiveOrganizationError,
+		},
+		{
+			name:   "unmarked error on the same procedure",
+			method: switchActiveOrganizationProcedure,
+			err:    connect.NewError(connect.CodeUnimplemented, errors.New(currentSwitchActiveOrganizationError)),
+			want:   currentSwitchActiveOrganizationError,
+		},
+		{
+			name:   "different code on same procedure",
+			method: switchActiveOrganizationProcedure,
+			err: apiversion.MarkRetiredProcedure(
+				connect.NewError(connect.CodeUnavailable, errors.New(currentSwitchActiveOrganizationError)),
+			),
+			want: currentSwitchActiveOrganizationError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ch.TransformError(tc.method, tc.err)
+			if !strings.Contains(got.Error(), tc.want) {
+				t.Errorf("error = %q, want unchanged text containing %q", got.Error(), tc.want)
+			}
+			if strings.Contains(got.Error(), legacySwitchActiveOrganizationError) {
+				t.Errorf("transform widened to legacy text: %q", got.Error())
+			}
+		})
+	}
+}
+
+func TestSwitchActiveOrganizationRetiredMessageChange_NilErrorIsUntouched(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	if got := changes.ApplyError(switchActiveOrganizationProcedure, nil, apiversion.Baseline); got != nil {
+		t.Errorf("ApplyError(nil) = %v, want nil", got)
+	}
+	if got := (apiversion.SwitchActiveOrganizationRetiredMessageChange{}).TransformError(switchActiveOrganizationProcedure, nil); got != nil {
+		t.Errorf("TransformError(nil) = %v, want nil", got)
+	}
+}
+
+func TestRetiredProcedure_MarkerIsTransparent(t *testing.T) {
+	if got := apiversion.MarkRetiredProcedure(nil); got != nil {
+		t.Errorf("MarkRetiredProcedure(nil) = %v, want nil", got)
+	}
+	if apiversion.IsRetiredProcedure(nil) {
+		t.Error("IsRetiredProcedure(nil) = true, want false")
+	}
+	plain := connect.NewError(connect.CodeUnimplemented, errors.New(currentSwitchActiveOrganizationError))
+	marked := apiversion.MarkRetiredProcedure(plain)
+	if !apiversion.IsRetiredProcedure(marked) {
+		t.Fatal("marked error does not read as retired")
+	}
+	if got := connect.CodeOf(marked); got != connect.CodeUnimplemented {
+		t.Errorf("marked code = %v, want Unimplemented", got)
+	}
+	if marked.Error() != plain.Error() {
+		t.Errorf("marked message = %q, want wrapped message %q", marked.Error(), plain.Error())
+	}
+	if !apiversion.IsRetiredProcedure(fmt.Errorf("handler: %w", marked)) {
+		t.Error("the marker did not survive an fmt.Errorf %w wrap")
+	}
+}
+
+func TestSwitchActiveOrganizationRetiredMessageChange_TransformResponseIsANoOp(t *testing.T) {
+	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	apiversion.SwitchActiveOrganizationRetiredMessageChange{}.TransformResponse(switchActiveOrganizationProcedure, msg)
+	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
+		t.Errorf("TransformResponse mutated the response: %+v", msg)
+	}
+}
+
 // errOnlyChange implements VersionChange plus the optional ErrorTransform.
 // respOnlyChange implements VersionChange alone. Together they prove ApplyError
 // and Apply each consult only the capability they are about.
@@ -3890,4 +4043,233 @@ func TestApplyError_RespectsResolvedVersionAndOrder(t *testing.T) {
 	if oldCalls != 0 || newCalls != 0 {
 		t.Errorf("calls at V20260812 = (old %d, new %d), want (0, 0)", oldCalls, newCalls)
 	}
+}
+
+// --- AbandonedCheckoutStatusChange (V20260904, BOS-1076) -------------------
+
+// abandonedCheckoutStatusResponses returns one case per unary procedure that
+// carries a CloudAccessStatus, built from the descriptors so a fourth carrier
+// added later is exercised here without editing this list.
+func abandonedCheckoutStatusResponses() []struct {
+	name   string
+	method string
+	build  func(*pb.CloudAccessStatus) any
+	status func(any) *pb.CloudAccessStatus
+} {
+	type responseCase = struct {
+		name   string
+		method string
+		build  func(*pb.CloudAccessStatus) any
+		status func(any) *pb.CloudAccessStatus
+	}
+	var cases []responseCase
+	for _, procedure := range apiversion.UnaryProceduresContainingCarrier(
+		(&pb.CloudAccessStatus{}).ProtoReflect().Descriptor().FullName(),
+		"OrchestratorService",
+	) {
+		switch procedure {
+		case bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure:
+			cases = append(cases, responseCase{
+				name:   "GetCloudAccessStatus",
+				method: procedure,
+				build: func(st *pb.CloudAccessStatus) any {
+					return &pb.GetCloudAccessStatusResponse{Status: st}
+				},
+				status: func(msg any) *pb.CloudAccessStatus {
+					return msg.(*pb.GetCloudAccessStatusResponse).GetStatus()
+				},
+			})
+		case bossanovav1connect.OrchestratorServiceCreateCheckoutSessionProcedure:
+			cases = append(cases, responseCase{
+				name:   "CreateCheckoutSession",
+				method: procedure,
+				build: func(st *pb.CloudAccessStatus) any {
+					return &pb.CreateCheckoutSessionResponse{Url: "https://checkout.stripe.test/c/sess_1", Status: st}
+				},
+				status: func(msg any) *pb.CloudAccessStatus {
+					return msg.(*pb.CreateCheckoutSessionResponse).GetStatus()
+				},
+			})
+		case bossanovav1connect.OrchestratorServiceRefreshCloudEntitlementsProcedure:
+			cases = append(cases, responseCase{
+				name:   "RefreshCloudEntitlements",
+				method: procedure,
+				build: func(st *pb.CloudAccessStatus) any {
+					return &pb.RefreshCloudEntitlementsResponse{Status: st}
+				},
+				status: func(msg any) *pb.CloudAccessStatus {
+					return msg.(*pb.RefreshCloudEntitlementsResponse).GetStatus()
+				},
+			})
+		default:
+			panic("unhandled CloudAccessStatus carrier procedure " + procedure)
+		}
+	}
+	return cases
+}
+
+// abandonedCheckoutWireStatus is the V20260904 shape bosso serves for a Stripe
+// Checkout session that was created and never completed.
+func abandonedCheckoutWireStatus() *pb.CloudAccessStatus {
+	return &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		Message:           "Checkout has not been completed. Resume checkout to activate Bossanova Cloud.",
+		CanCreateCheckout: true,
+		CheckoutStarted:   true,
+		DenialReason:      "subscription_required",
+	}
+}
+
+// cloudStatusFields renders the CloudAccessStatus fields this transform can
+// touch, so a comparison failure names the field that moved. It avoids pulling
+// go-cmp/protocmp into this package's test deps for one assertion shape.
+func cloudStatusFields(st *pb.CloudAccessStatus) string {
+	if st == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("state=%v message=%q can_create_checkout=%t checkout_started=%t denial_reason=%q",
+		st.GetState(), st.GetMessage(), st.GetCanCreateCheckout(), st.GetCheckoutStarted(), st.GetDenialReason())
+}
+
+func TestAbandonedCheckoutStatusChange_Version(t *testing.T) {
+	if got := (apiversion.AbandonedCheckoutStatusChange{}).Version(); got != apiversion.V20260904 {
+		t.Errorf("AbandonedCheckoutStatusChange.Version() = %q, want %q", got, apiversion.V20260904)
+	}
+}
+
+// TestAbandonedCheckoutStatusChange_DownConvertsForOlderClients is the contract:
+// a client pinned below V20260904 sees exactly what the pre-BOS-1076 server
+// served for an account in the CheckoutStarted setup state — the activating
+// shape, with no checkout affordance.
+func TestAbandonedCheckoutStatusChange_DownConvertsForOlderClients(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	for _, older := range []apiversion.Version{apiversion.Baseline, apiversion.V20260825, apiversion.V20260903} {
+		for _, tc := range abandonedCheckoutStatusResponses() {
+			t.Run(string(older)+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build(abandonedCheckoutWireStatus())
+				changes.Apply(tc.method, msg, older)
+				got := tc.status(msg)
+				if got.GetState() != pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH {
+					t.Errorf("state = %v, want CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH", got.GetState())
+				}
+				if got.GetMessage() != "Your subscription is being activated." {
+					t.Errorf("message = %q, want the pre-BOS-1076 activating message", got.GetMessage())
+				}
+				if got.GetCanCreateCheckout() {
+					t.Error("can_create_checkout = true, want false: the old shape offered no checkout affordance here")
+				}
+				if !got.GetCheckoutStarted() {
+					t.Error("checkout_started = false, want true")
+				}
+				if got.GetDenialReason() != "pending_entitlement_refresh" {
+					t.Errorf("denial_reason = %q, want pending_entitlement_refresh", got.GetDenialReason())
+				}
+			})
+		}
+	}
+}
+
+func TestAbandonedCheckoutStatusChange_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes := apiversion.ProductionChanges()
+	for _, tc := range abandonedCheckoutStatusResponses() {
+		t.Run(tc.name, func(t *testing.T) {
+			want := cloudStatusFields(abandonedCheckoutWireStatus())
+			msg := tc.build(abandonedCheckoutWireStatus())
+			changes.Apply(tc.method, msg, reg.Current())
+			if got := cloudStatusFields(tc.status(msg)); got != want {
+				t.Errorf("status changed at Current:\n got %s\nwant %s", got, want)
+			}
+		})
+	}
+}
+
+// TestAbandonedCheckoutStatusChange_LeavesOtherStatusesUntouched guards the
+// halves that must NOT move. Only the combination the pre-V20260904 server could
+// never emit is a down-convert trigger; every other cloud-access shape — an
+// active subscription, a real pending entitlement, a never-started
+// needs-subscription — already meant the same thing to an older client.
+func TestAbandonedCheckoutStatusChange_LeavesOtherStatusesUntouched(t *testing.T) {
+	ac := apiversion.AbandonedCheckoutStatusChange{}
+	for _, tc := range []struct {
+		name   string
+		status *pb.CloudAccessStatus
+	}{
+		{"active", &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE}},
+		{"needs_subscription_never_started", &pb.CloudAccessStatus{
+			State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			Message:           "Bossanova Cloud requires an active subscription.",
+			CanCreateCheckout: true,
+			DenialReason:      "subscription_required",
+		}},
+		{"pending_entitlement_refresh", &pb.CloudAccessStatus{
+			State:           pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+			Message:         "Your subscription is being activated.",
+			CheckoutStarted: true,
+			DenialReason:    "pending_entitlement_refresh",
+		}},
+		{"past_due", &pb.CloudAccessStatus{
+			State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_PAST_DUE,
+			CanCreateCheckout: true,
+			DenialReason:      "past_due",
+		}},
+		{"canceled", &pb.CloudAccessStatus{
+			State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_CANCELED,
+			CanCreateCheckout: true,
+			DenialReason:      "subscription_canceled",
+		}},
+		{"billing_unavailable", &pb.CloudAccessStatus{
+			State:        pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE,
+			Message:      "Cloud billing unavailable.",
+			DenialReason: "billing_unavailable",
+		}},
+		{"nil_status", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := cloudStatusFields(tc.status)
+			msg := &pb.GetCloudAccessStatusResponse{Status: tc.status}
+			ac.TransformResponse(bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure, msg)
+			if got := cloudStatusFields(msg.GetStatus()); got != want {
+				t.Errorf("status changed:\n got %s\nwant %s", got, want)
+			}
+		})
+	}
+}
+
+// TestAbandonedCheckoutStatusChange_DoesNotMutateSharedStatus pins that the
+// transform clones: bosso may hand the same *pb.CloudAccessStatus to more than
+// one response, and the interceptor runs per request.
+func TestAbandonedCheckoutStatusChange_DoesNotMutateSharedStatus(t *testing.T) {
+	shared := abandonedCheckoutWireStatus()
+	msg := &pb.GetCloudAccessStatusResponse{Status: shared}
+	(apiversion.AbandonedCheckoutStatusChange{}).TransformResponse(
+		bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure, msg)
+	if got, want := cloudStatusFields(shared), cloudStatusFields(abandonedCheckoutWireStatus()); got != want {
+		t.Errorf("shared status was mutated in place:\n got %s\nwant %s", got, want)
+	}
+	if msg.GetStatus() == shared {
+		t.Error("response still points at the shared status; the transform must swap in a clone")
+	}
+}
+
+// TestAbandonedCheckoutStatusChange_NoOpForUnrelatedMethods keeps the transform
+// scoped: it must not touch a procedure it does not target, and must not panic
+// on a payload type it does not expect.
+func TestAbandonedCheckoutStatusChange_NoOpForUnrelatedMethods(t *testing.T) {
+	ac := apiversion.AbandonedCheckoutStatusChange{}
+	for _, method := range []string{
+		bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+		bossanovav1connect.OrchestratorServiceCreateBillingPortalSessionProcedure,
+		"/bossanova.v1.OrchestratorService/NotAProcedure",
+	} {
+		msg := &pb.GetCloudAccessStatusResponse{Status: abandonedCheckoutWireStatus()}
+		ac.TransformResponse(method, msg)
+		if msg.GetStatus().GetState() != pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION {
+			t.Errorf("%s: transform fired on an untargeted method", method)
+		}
+	}
+	// A wrong payload type on a targeted procedure must be a guarded no-op.
+	other := &pb.ProxyListSessionsResponse{}
+	ac.TransformResponse(bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure, other)
+	ac.TransformResponse(bossanovav1connect.OrchestratorServiceCreateCheckoutSessionProcedure, nil)
 }

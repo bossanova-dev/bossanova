@@ -984,7 +984,7 @@ func (m RepoAddModel) View() tea.View {
 	if m.validating {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).Render(
-				fmt.Sprintf("Validating %s...", m.fd.localPath)),
+				fmt.Sprintf("Validating %s…", m.fd.localPath)),
 		)
 	}
 
@@ -998,7 +998,7 @@ func (m RepoAddModel) View() tea.View {
 	if m.cloning {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).Render(
-				fmt.Sprintf("Cloning %s...", m.fd.gitURL)),
+				fmt.Sprintf("Cloning %s…", m.fd.gitURL)),
 		)
 	}
 
@@ -1123,9 +1123,9 @@ func (m RepoAddModel) githubAppInstallView() string {
 			styleActionBar.Render("[enter] keep checking  [esc] skip")
 	}
 
-	body := m.spinner.View() + "Waiting for GitHub App installation on " + repoLabel + "..."
+	body := m.spinner.View() + "Waiting for GitHub App installation on " + repoLabel + "…"
 	if !m.githubAppInstallOpen {
-		body = m.spinner.View() + "Opening GitHub App installation page..."
+		body = m.spinner.View() + "Opening GitHub App installation page…"
 	}
 	if m.githubAppInstallErr != nil && m.githubAppInstallURL != "" {
 		body += "\nOpen this GitHub App URL: " + m.githubAppInstallURL

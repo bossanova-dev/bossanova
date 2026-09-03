@@ -116,6 +116,9 @@ func runCostToProto(run db.AgentRun) *bossanovav1.AgentRunCost {
 		DirectSubagentCount:  run.DirectSubagentCount,
 		OutputTokenCount:     run.OutputTokenCount,
 		ReasoningTokenCount:  run.ReasoningTokenCount,
+
+		ReviewerDispatchCount: run.ReviewerDispatchCount,
+		TerminalState:         run.TerminalState,
 	}
 	if run.StoppedAt != nil {
 		out.StoppedAt = timestamppb.New(*run.StoppedAt)
@@ -156,6 +159,8 @@ func aggregateRunCosts(runs []db.AgentRun, exclusions runCostExclusions) *bossan
 	runDurations := make([]time.Duration, 0, len(runs))
 	parentOnlyDurations := make([]time.Duration, 0, len(runs))
 	parallelisms := make([]time.Duration, 0, len(runs))
+	terminalStates := make([]string, 0, len(runs))
+	reviewerDispatches := make([]int64, 0, len(runs))
 	for _, run := range runs {
 		if run.IsBackfilled {
 			agg.BackfilledIncludedCount++
@@ -166,6 +171,24 @@ func aggregateRunCosts(runs []db.AgentRun, exclusions runCostExclusions) *bossan
 		if _, ok := seenSessions[run.SessionID]; !ok {
 			agg.SessionCount++
 			seenSessions[run.SessionID] = struct{}{}
+		}
+		// Terminal state and reviewer dispatches are recorded telemetry, not
+		// derived from a stop time, so an open run still contributes — the mix
+		// would otherwise silently drop every run still in flight.
+		//
+		// The two are appended on different terms. The mix keeps every run: "" is
+		// one of its named buckets and renders as "not recorded", so an unrecorded
+		// run stays visible as itself. A median has no such bucket -- it is a
+		// single number, and an unrecorded run folded into it reads as a measured
+		// zero, dragging the median toward 0 on the strength of runs that were
+		// never observed. reviewer_dispatch_count carries no not-recorded sentinel
+		// of its own, so pair it with terminal_state exactly as `boss cost` does
+		// per run (reviewerDispatchString): both zero-valued means the run never
+		// reached the telemetry path. A 0 beside a recorded terminal state is a
+		// real measurement and is kept.
+		terminalStates = append(terminalStates, run.TerminalState)
+		if run.ReviewerDispatchCount != 0 || run.TerminalState != db.AgentRunTerminalUnrecorded {
+			reviewerDispatches = append(reviewerDispatches, run.ReviewerDispatchCount)
 		}
 		if run.StoppedAt == nil {
 			continue
@@ -191,6 +214,8 @@ func aggregateRunCosts(runs []db.AgentRun, exclusions runCostExclusions) *bossan
 		v := float64(median) / 1000
 		agg.MedianParallelism = &v
 	}
+	agg.TerminalStateMix = runmetrics.TerminalStateMix(terminalStates)
+	setMedianInt64(&agg.MedianReviewerDispatchCount, reviewerDispatches)
 	return agg
 }
 
@@ -215,6 +240,13 @@ func mapDurations(values map[string]time.Duration) []time.Duration {
 		out = append(out, value)
 	}
 	return out
+}
+
+func setMedianInt64(dst **int64, values []int64) {
+	if median, ok := runmetrics.MedianInt64(values); ok {
+		v := median
+		*dst = &v
+	}
 }
 
 func setMedianDuration(dst **int64, values []time.Duration) {

@@ -46,6 +46,24 @@ const DEFAULT_VIDEO_SLOWMO_MS = 350
 // the capture with "Cannot access '<name>' before initialization" rather than
 // anything that names the recipe.
 
+// The subscribe CTA is disabled until the cloud-access status RPC answers, and
+// its label and terms paragraph both branch on that answer. .subscribe-actions
+// is visible the moment the route renders, so an unwaited capture can show a
+// faded button above copy the verdict is about to replace. Waiting for the
+// button to become enabled is exactly waiting for eligibility to resolve.
+//
+// That makes these ids mutually exclusive with the fake's `holdCloudAccessStatus`,
+// which pins the status RPC in `loading` by returning a promise that never
+// resolves. The button never becomes enabled under it, so a recipe listed here
+// that also staged it would fail the wait above rather than capture anything. No
+// proof recipe stages it today -- it is reached only from the e2e specs -- so
+// this is a caution for whoever adds the first one, not a live conflict.
+const SUBSCRIBE_CTA_RECIPE_IDS = new Set([
+  'web-subscribe',
+  'web-subscribe-trial-used',
+  'web-subscribe-no-notification-prompt',
+])
+
 // BOS-658 evidence line for the web-chat-terminal capture: a status mark, a
 // continuation arrow, and a box-drawing rule — the glyph classes that degraded
 // on mobile Safari. Without this the capture is an empty terminal pane, because
@@ -72,6 +90,17 @@ const CHAT_TERMINAL_DATA_REPLAY_IDS = new Set([
 // the ack window draining. The name is what the completion banner echoes.
 const CHAT_UPLOAD_FILENAME = 'agent-brief.txt'
 const CHAT_UPLOAD_CONTENT = 'Fixture upload for the BOS-661 chat file upload proof.\n'
+
+// True when any route the recipe visits is organization-scoped
+// (`/<orgId>/settings/...`, BOS-1073). Those routes mount OrgScopedSettings,
+// which reconciles the URL's organization against useAuth().organizationId --
+// with none staged it fires a switch and renders "Switching to ..." until the
+// fake's claim catches up, so a capture can land on the spinner rather than the
+// page. Staging the claim up front makes the capture deterministic.
+//
+// Deliberately shape-based rather than a fixture-id match: a recipe that coins
+// its own organization id still needs the claim staged.
+const ORG_SCOPED_ROUTE = /^\/[^/]+\/settings(?:\/|$)/
 
 // Only drive Playwright when invoked directly; importing this module (e.g. from
 // the unit tests, to exercise buildSpec/validateRecipe) must not start a run.
@@ -345,6 +374,17 @@ function buildVideoSpec({ recipe, outputDir, surface, defaultCrop, stageEnv }) {
   const cropToSelector = jsString(recipe.cropToSelector ?? defaultCropToSelector)
 
   const stageWeb = stageEnv ? webStageScript(recipe) : ''
+  // Same readiness gate as buildSpec, gated the same way on stageEnv: without
+  // it a video capture can record (and still-capture) the pre-eligibility frame
+  // the stills gate exists to prevent. Load-bearing as of BOS-1090:
+  // `web-accounts-give-up-retry` is the first SHIPPED capture "video" recipe
+  // with a `captureReadyScript` arm, and that arm is what keeps the video from
+  // stepping before the accounts table has loaded. Every other armed id
+  // (web-subscribe*, web-session-expired, web-sessions-daemons-give-up,
+  // web-accounts-cold-start-probe-failure, web-chat-terminal) is capture
+  // "still", so this branch also remains what lets one of those be promoted to
+  // video without quietly losing its gate.
+  const captureReady = stageEnv ? captureReadyScript(recipe) : ''
   const testTitle = JSON.stringify(`proof video: ${recipe.id}`)
   const slowMo = Number(recipe.slowMo ?? DEFAULT_VIDEO_SLOWMO_MS)
 
@@ -359,13 +399,16 @@ function buildVideoSpec({ recipe, outputDir, surface, defaultCrop, stageEnv }) {
       const fileNameJson = jsString(fileName)
       const labelJson = jsString(label)
       const action = renderVideoStep(step)
+      // Only a navigation can land on a page whose evidence has not arrived
+      // yet, so the gate rides the goto steps rather than every step.
+      const ready = step.action === 'goto' ? captureReady : ''
       const stillBlock = `  {
     const __h = await captureStill(page, ${outPath}, ${cropToSelector}, ${viewport});
     __stills.push({ fileName: ${fileNameJson}, label: ${labelJson} });
     if (__h === null) __disableCrop = true;
     else if (!__disableCrop) __cropHeight = Math.max(__cropHeight ?? 0, __h);
   }`
-      return `${action}\n${stillBlock}`
+      return `${action}${ready}\n${stillBlock}`
     })
     .join('\n')
 
@@ -1045,7 +1088,522 @@ function webStageScript(recipe) {
   });
 ${attachStageScript(recipe)}
 ${notificationStageScript(recipe)}
+${organizationStageScript(recipe)}
+${sessionOrganizationStageScript(recipe)}
+${subscribeStageScript(recipe)}
+${accountsProbeStageScript(recipe)}
+${sessionExpiredStageScript(recipe)}
+${sessionsDaemonFailureStageScript(recipe)}
+${sessionsReconnectingStageScript(recipe)}
+${accountsColdStartStageScript(recipe)}
+${accountsGiveUpStageScript(recipe)}
 `
+}
+
+// Recipes whose subject is the sessions-list ORGANIZATION filter (BOS-1070).
+//
+// TWO organizations, and the fixture's sessions attributed across them, for the
+// same reason the shared fixture seeds TWO daemons and TWO repositories: a
+// filter only has something to narrow when the fixture spans more than one, and
+// FilterSelect renders NOTHING at all for a caller with fewer than two
+// organizations -- so a single-organization fixture would silently drop the
+// third drop-down and every still promising it would capture the two-drop-down
+// row instead, with its own toBeVisible() gate satisfied by the wrong element.
+// The row-level attribution line (.cell-repo-org) has the same two-organization
+// precondition, plus "All organizations" selected.
+//
+// Recipe-SCOPED rather than folded into the shared fixture above, on purpose:
+//   - attribution renders an extra line in every sessions row, which the
+//     web-sessions / web-sessions-mobile descriptions do not promise, and
+//   - the shared web fixture is asserted to carry no `organizationId` for any
+//     recipe that has not opted in (proof-playwright-runner.test.mjs pins that
+//     the auth-organization opt-in below stays recipe-scoped, and a substring
+//     check cannot tell the two same-named fields apart).
+// Declared as a function for the same temporal-dead-zone reason as
+// organizationStageScript below.
+//
+// Deliberately writes only `window.bossanovaE2e`, unlike organizationStageScript
+// below, which mirrors into `window.__BOSSANOVA_E2E__` as well. The api fake
+// resolves `__BOSSANOVA_E2E__ ?? bossanovaE2e`, so mirroring only THIS staging
+// would be worse than not mirroring: the fake would resolve the mirror and find
+// organizations but none of the daemons, repositories, or sessions the shared
+// web fixture above wrote to `bossanovaE2e` alone. This staging is exactly as
+// visible as the fixture it extends, which is the correct coupling.
+//
+// The organization ids here are Bossanova organization ids (Session.organization_id),
+// NOT the WorkOS id organizationStageScript seeds -- these recipes need no
+// signed-in organization, only a caller with two memberships.
+function sessionOrganizationStageScript(recipe) {
+  const stagedRecipeIds = [
+    // Both .sub-header crops promise three drop-downs.
+    'web-sessions-filters',
+    'web-sessions-filters-mobile',
+    // The organization filter's own flow and its row-attribution still.
+    'web-sessions-org-filter-flow',
+    'web-sessions-org-filter-row-attribution',
+  ]
+  if (!stagedRecipeIds.includes(recipe?.id)) return ''
+  return `
+  await page.addInitScript(() => {
+    // Attribution mirrors the daemon split, so the organization filter narrows
+    // to exactly the row the daemon filter narrows to: everything on the Proof
+    // daemon belongs to Acme, and the Standby daemon's session to Globex.
+    const orgBySessionId = { 'sess-e2e-quick': 'org-proof-globex' };
+    const fixture = window.bossanovaE2e ?? {};
+    window.bossanovaE2e = {
+      ...fixture,
+      organizations: [
+        { id: 'org-proof-acme', workosOrgId: 'workos-proof-acme', name: 'Acme', memberCount: 2 },
+        { id: 'org-proof-globex', workosOrgId: 'workos-proof-globex', name: 'Globex', memberCount: 2 },
+      ],
+      sessions: (fixture.sessions ?? []).map((session) => ({
+        ...session,
+        organizationId: orgBySessionId[session.id] ?? 'org-proof-acme',
+      })),
+    };
+  });`
+}
+
+// subscribeStageScript stages the two fixture fields the subscribe CTA copy
+// branches on. They are only meaningful together, and staging the second one
+// alone is the trap this function exists to close.
+//
+// The server resolves trial eligibility only for the states whose CTA copy can
+// branch on it (services/bosso/internal/server/billing.go), and the fake
+// mirrors that gate: every other state leaves the field UNSPECIFIED. The shared
+// web fixture leaves cloudAccessState unset, which the fake resolves to ACTIVE
+// -- a state that shows no checkout CTA -- so an unstaged subscribe recipe is
+// answered UNSPECIFIED no matter which eligibility it asked for. isTrialEligible()
+// requires an affirmative ELIGIBLE, so the eligible and the ineligible recipe
+// then render the SAME non-trial copy: two proofs, byte-identical, one of them
+// showing the opposite of what its own description promises.
+//
+// So every subscribe CTA recipe stages needs_subscription -- the state a real
+// visitor to /subscribe is in -- and only then does the ineligible opt-in below
+// reach the branch that consults it.
+function subscribeStageScript(recipe) {
+  if (!SUBSCRIBE_CTA_RECIPE_IDS.has(recipe?.id)) return ''
+  // Only the recipe whose whole subject IS a spent trial asks for ineligible.
+  // The others ask for eligible explicitly rather than leaning on the fake's
+  // default, so a change to that default cannot silently retitle their
+  // evidence -- these two strings are what the captures are proof OF.
+  const eligibility = recipe.id === 'web-subscribe-trial-used' ? 'ineligible' : 'eligible'
+  // The app fakes resolve their fixture as `window.__BOSSANOVA_E2E__ ?? window.bossanovaE2e`
+  // (services/web/tests/e2e/fakes/api.ts). Because that is `??` and not a merge, a
+  // bossanovaE2e-only write is invisible to any page where the other global is
+  // already installed -- so mirror both, as organizationStageScript does.
+  return `
+  await page.addInitScript(() => {
+    const staged = { cloudAccessState: 'needs_subscription', cloudTrialEligibility: '${eligibility}' };
+    window.bossanovaE2e = { ...window.bossanovaE2e, ...staged };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ...staged };
+    }
+  });`
+}
+
+// accountsProbeStageScript cuts ONE daemon out of the accounts page live usage
+// probe (BOS-1088). The page fans the probe out over every online daemon; before
+// the fix a single cancelled leg threw away every other daemon's completed work,
+// stopped the spinner, and surfaced an interruption notice over stale numbers.
+//
+// The shared web fixture seeds TWO online daemons, and only the standby one is
+// staged to fail, so the capture shows the recovering shape: the daemon-proof
+// rows -- 'work@anthropic.com' and its Usage column -- survive the fan-out and
+// the interrupted notice never appears. Failing BOTH would prove the opposite
+// case and is what the unit tests pin; the video is proof of the recovery.
+//
+// Recipe-SCOPED: a cancelled probe leg in the shared fixture would degrade every
+// other web recipe's accounts view for no reason.
+//
+// The app fakes resolve their fixture as `window.__BOSSANOVA_E2E__ ?? window.bossanovaE2e`
+// (services/web/tests/e2e/fakes/api.ts). Because that is `??` and not a merge, a
+// bossanovaE2e-only write is invisible to any page where the other global is
+// already installed -- so mirror both, as subscribeStageScript and
+// organizationStageScript do.
+function accountsProbeStageScript(recipe) {
+  // Declared INSIDE the function: run() executes at module top level, so a const
+  // hoisted to module scope below this call site would be in its temporal dead
+  // zone. A Set rather than an object literal so a recipe id like `constructor`
+  // cannot reach Object.prototype.
+  const stagedRecipeIds = new Set(['web-accounts-refresh-interrupted'])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return `
+  await page.addInitScript(() => {
+    const staged = { accountsProbeErrors: { 'daemon-proof-standby': { code: 1, message: 'This operation was aborted' } } };
+    window.bossanovaE2e = { ...window.bossanovaE2e, ...staged };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ...staged };
+    }
+  });`
+}
+
+// sessionExpiredStageScript stages the mid-session re-authentication state
+// (BOS-1085). The real trigger is AuthKitProvider's `onRefreshFailure`, which
+// fires only for a refresh that begins AFTER initialization -- something the
+// VITE_E2E fake never does, since it reports a signed-in user unconditionally
+// and hands out a fixed token. So the fake provider fires the callback once on
+// mount when this flag is staged (services/web/tests/e2e/fakes/authkit-react.tsx),
+// which latches src/lib/sessionExpiry.ts and makes Layout render the notice in
+// place of the whole app.
+//
+// Recipe-SCOPED, and it has to be: the flag replaces the entire app with the
+// notice, so staging it in the shared web fixture above would blank out every
+// other web recipe's subject.
+//
+// The app fakes resolve their fixture as `window.__BOSSANOVA_E2E__ ?? window.bossanovaE2e`
+// (services/web/tests/e2e/fakes/api.ts). Because that is `??` and not a merge, a
+// bossanovaE2e-only write is invisible to any page where the other global is
+// already installed -- so mirror both, as subscribeStageScript and
+// organizationStageScript do. The proof runner never sets `__BOSSANOVA_E2E__`
+// today: every write to it in this module is already guarded on it existing, and
+// nothing else on this path creates it. So the mirror is latent here rather than
+// load-bearing, and it is written anyway to keep that from becoming a silently
+// unstaged capture if a future caller ever does install it. Were that to happen,
+// this recipe's arm of captureReadyScript below is what would make the failure
+// loud: it waits for the notice itself before the screenshot, so an unstaged run
+// fails the spec instead of photographing a healthy signed-in app.
+//
+// Declared inside the function rather than as a module-level const, for the
+// temporal-dead-zone reason documented at the top of this module.
+function sessionExpiredStageScript(recipe) {
+  const stagedRecipeIds = new Set(['web-session-expired'])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return `
+  await page.addInitScript(() => {
+    const staged = { authRefreshFailed: true };
+    window.bossanovaE2e = { ...window.bossanovaE2e, ...staged };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ...staged };
+    }
+  });`
+}
+
+// sessionsDaemonFailureStageScript fails the sessions page's DAEMON-options
+// poll, which is the only way to photograph BOS-1091's subject: the page mounts
+// two pollers and renders one connection notice, and the give-up state is what
+// puts the notice's error text and its `Try again` control on screen. The
+// sessions read itself stays healthy, because the whole point of the still is
+// that the table survives underneath.
+//
+// The fake API consults `errors[method]` before answering (see
+// services/web/tests/e2e/fakes/api.ts), and its listDaemons arm is wired to
+// that check, so staging the failure is all this needs.
+//
+// Code 13 (INTERNAL) rather than a transient code, deliberately: the page's
+// retry ladder only gives up on a NON-transient failure (see
+// services/web/src/lib/connectRetry.ts), and a transient one would leave the
+// capture racing ~15s of backoff to photograph a notice that says
+// "Reconnecting…" instead of the error this recipe is evidence of.
+//
+// Recipe-SCOPED by id, like every other stage script here: staging it in the
+// shared web fixture would empty the daemon filter on every other web recipe.
+//
+// Mirrors both fixture globals for the reason documented on
+// sessionExpiredStageScript, and is declared inside the function for the same
+// temporal-dead-zone reason.
+function sessionsDaemonFailureStageScript(recipe) {
+  const stagedRecipeIds = new Set(['web-sessions-daemons-give-up'])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return `
+  await page.addInitScript(() => {
+    const staged = {
+      errors: { listDaemons: { message: 'Daemon list unavailable', code: 13 } },
+    };
+    window.bossanovaE2e = { ...window.bossanovaE2e, ...staged };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ...staged };
+    }
+  });`
+}
+
+// sessionsReconnectingStageScript stages the RECONNECTING pill on the sessions
+// list (BOS-1093) -- the state the daemon give-up recipe above is the other
+// half of. There the poll has given up; here the ladder is still running.
+//
+// `hangSessionsReadAfter: 1` lets the first read answer and leaves every later
+// one unanswered. Both halves matter. The first answer is what paints the table
+// and sets `lastSuccessAt`, without which `combineIndicators` folds the age to
+// null (it is null when EITHER poller's is) and the pill loses its "Showing data
+// from ..." clause -- half the subject. And leaving the read HUNG rather than
+// rejecting it is what makes the state hold still: see the budget below.
+//
+// Only the sessions read is staged. The daemon poll keeps answering, so the
+// fold's `lastSuccessAt` stays pinned to the sessions read's one success, which
+// is the older of the two and the honest thing for the clause to report.
+//
+// BUDGET. The state is stable but not permanent, and the arithmetic is
+// auditable rather than approximate. POLL_INTERVAL (5s) to the first hung
+// attempt, then ATTEMPT_TIMEOUT_MS (10s) before it fails its deadline -- so the
+// pill appears at ~15s. From there usePolledResource walks MAX_RETRY_ATTEMPTS
+// (4) more rungs, each burning another 10s deadline, separated by
+// computeBackoffMs sleeps of 1s, 2s, 4s and 8s at +/-25% jitter: ~55s more
+// before it gives up and the pill is replaced by the give-up alert. The
+// captureReadyScript gate below waits out the first 15s, which leaves ~50s of
+// slack for the capture. If this recipe ever starts photographing a give-up
+// alert, that ladder running to completion is the first thing to check.
+//
+// The dark theme is pinned rather than inherited. `DEFAULT_THEME` in
+// src/lib/theme.ts is 'dark' today, so an unpinned capture would look right by
+// accident -- and would silently retitle itself the day that default changes,
+// which is exactly what this still is proof about. Written to localStorage
+// because index.html's pre-paint script reads it there before first paint;
+// `emulateMedia` covers the media-query half in case the attribute is ever
+// dropped.
+//
+// Mirrors both fixture globals for the reason documented on
+// sessionExpiredStageScript, and is declared inside the function for the same
+// temporal-dead-zone reason.
+function sessionsReconnectingStageScript(recipe) {
+  const stagedRecipeIds = new Set(['web-sessions-reconnecting-dark'])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return `
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.addInitScript(() => {
+    try { localStorage.setItem('bossanova.theme', 'dark'); } catch { /* storage disabled */ }
+    const staged = { hangSessionsReadAfter: 1 };
+    window.bossanovaE2e = { ...window.bossanovaE2e, ...staged };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ...staged };
+    }
+  });`
+}
+
+// accountsColdStartStageScript stages the accounts page's cold start together
+// with a usage probe that fails on it (BOS-1089).
+//
+// TWO fields, and neither is optional. `hangPassiveAccountsRead` keeps the
+// PASSIVE read unanswered, which is what "cold start" means on this page --
+// nothing has ever loaded, so there is no snapshot behind an error and the
+// full-page branch is live. `accountsUsageRefreshUnsupported` makes the probe's
+// own leg answer the way a bosso too old to honour should_refresh does, so the
+// page raises its compatibility rejection. Stage only the first and the capture
+// is a plain spinner; only the second and the page has a table on screen, which
+// is the non-cold-start path this recipe is not about.
+//
+// The shared `errors` map cannot express this: it keys failure injection on the
+// method name alone, so it would fail the passive read and the probe together.
+// That is the gap noted in services/web/tests/e2e/fakes/api.ts.
+//
+// The app fakes resolve their fixture as `window.__BOSSANOVA_E2E__ ?? window.bossanovaE2e`
+// (services/web/tests/e2e/fakes/api.ts). Because that is `??` and not a merge, a
+// bossanovaE2e-only write is invisible to any page where the other global is
+// already installed -- so mirror both, as sessionExpiredStageScript and
+// subscribeStageScript do.
+//
+// Recipe-SCOPED: the hang leaves the accounts table permanently unloaded, so
+// staging it in the shared web fixture would replace every accounts capture's
+// subject with a spinner.
+//
+// Declared inside the function rather than as a module-level const, for the
+// temporal-dead-zone reason documented at the top of this module.
+function accountsColdStartStageScript(recipe) {
+  const stagedRecipeIds = new Set(['web-accounts-cold-start-probe-failure'])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return `
+  await page.addInitScript(() => {
+    const staged = { hangPassiveAccountsRead: true, accountsUsageRefreshUnsupported: true };
+    window.bossanovaE2e = { ...window.bossanovaE2e, ...staged };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ...staged };
+    }
+  });`
+}
+
+// accountsGiveUpStageScript makes the accounts page's give-up notice reachable
+// (BOS-1090). The notice is what `usePolledResource` renders once a read has
+// stopped answering, so the capture needs a daemon read that SUCCEEDS first --
+// a table has to be on screen for the notice to sit above -- and then fails.
+// `errors[method]` in the fake is read fresh on every call
+// (services/web/tests/e2e/fakes/api.ts), so an accessor property on that object
+// is enough to change the answer mid-recipe without touching the fake.
+//
+// The arming condition is a call count AND an elapsed time, but the two halves
+// are NOT symmetric, and which one is load-bearing is the thing to know before
+// touching either:
+//
+//   - the ELAPSED half carries the guard. `firstReadAt` is seeded from the
+//     page's own first read (below), so the clock measures time since that
+//     read rather than since boot. That is what holds off React StrictMode's
+//     double-invoked effect: in a development build the mount can spend TWO
+//     reads back to back, and the second already satisfies `reads >= 2` while
+//     the recipe has clicked nothing -- only the elapsed check still answers
+//     it. Delete this half and the capture opens on a page that has already
+//     given up: no healthy table, no transition, and the video still exits
+//     green.
+//   - the COUNT half is belt-and-braces, not an independent guard. Because
+//     `firstReadAt` is seeded INSIDE the getter, immediately before the
+//     comparison, read #1 always measures an elapsed of 0 and is always
+//     answered however slow the boot -- so `reads < 2` blocks only a read the
+//     elapsed half has already blocked. It is kept as a floor that does not
+//     depend on a wall clock (`Date.now()` can jump) and that survives someone
+//     lowering ARM_AFTER_MS, not because it covers a case of its own today.
+//
+// What the pair exists to prevent is the page's FIRST read failing: that fails
+// the initial LOAD, which lands on the cold-start branch -- an EmptyState with
+// its own retry, a different component from the ConnectionNotice this recipe is
+// proof of. `captureReadyScript` gates on a fixture ROW for exactly that
+// substitution.
+//
+// TIMING COUPLING, and it runs both ways: ARM_AFTER_MS (2000) has to stay
+// BELOW the dwell `web-accounts-give-up-retry` spends on the loaded table
+// before it clicks refresh -- the `"action": "wait", "timeoutMs": 3000`
+// "Connection drops" step in proof/recipes/default.json. Trim that dwell under
+// 2s and the refresh click's read is still answered, so the notice never
+// appears and the step waiting for it times out on a healthy page. The recipe
+// schema is `unevaluatedProperties: false` (proof/recipes/schema.json), so the
+// coupling cannot be written into the JSON beside the number it constrains;
+// the test "the accounts give-up arming delay stays under the recipe's own
+// dwell" in proof-playwright-runner.test.mjs pins the two against each other
+// instead, and that is what a maintainer trimming the dwell will actually hit.
+//
+// `listDaemons` is the read to fail because it is the one call that propagates:
+// `fetchAccountsSnapshot` runs the per-daemon account reads through
+// `Promise.allSettled` and folds a rejection into an empty row set, so failing
+// those would produce an empty table rather than a notice. It is read once per
+// `fetchAccountsSnapshot` and every entry point runs one -- the initial load,
+// the 30s passive poll, the refresh probe, and the Try-again reload -- which is
+// what makes a read COUNT a usable arming input at all: the mount spends read
+// #1 (and read #2 as well, under StrictMode), and the step-4 refresh click is
+// the read that arms.
+//
+// The failure this stages is TERMINAL, not retryable, and that is a property of
+// the route rather than of the code below. `fetchAccountsSnapshot` catches every
+// rejection and re-throws `errorMessage(err)` as a plain STRING
+// (AccountsSettings.tsx), so the wire code is gone before `isTransient`
+// (src/lib/connectRetry.ts) ever sees it: `ConnectError.from(aString)` is
+// `Code.Unknown` with a non-TypeError cause, which that predicate rejects. No
+// ladder is armed and no "Reconnecting…" pill is raised on this route -- which
+// is why the recipe films the notice PERSISTING across a failed retry rather
+// than leaving and returning. `web-chat-terminal-reconnecting` is the recipe
+// that films the pill. Code 14 is kept because it is the honest wire code for a
+// dropped daemon connection and it is what the notice's own message is derived
+// from; it is not load-bearing for the retry classification.
+//
+// Mirrors both fixture globals for the reason documented on
+// sessionExpiredStageScript above.
+function accountsGiveUpStageScript(recipe) {
+  const stagedRecipeIds = new Set(['web-accounts-give-up-retry'])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return `
+  await page.addInitScript(() => {
+    const ARM_AFTER_MS = 2000;
+    let reads = 0;
+    let firstReadAt = 0;
+    const errors = {};
+    Object.defineProperty(errors, 'listDaemons', {
+      enumerable: true,
+      get() {
+        reads += 1;
+        if (firstReadAt === 0) firstReadAt = Date.now();
+        if (reads < 2 || Date.now() - firstReadAt < ARM_AFTER_MS) return undefined;
+        return { code: 14, message: 'daemon connection lost' };
+      },
+    });
+    const staged = { errors };
+    window.bossanovaE2e = { ...window.bossanovaE2e, ...staged };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ...staged };
+    }
+  });`
+}
+
+// organizationStageScript stages a signed-in WorkOS organization so the pages
+// and controls that only exist once useAuth() reports one have something to
+// render from. /settings/organization early-returns its "No active organization"
+// empty state without one, and the shared web fixture deliberately leaves
+// organizationId unset. A recipe that needs an organization therefore says so by
+// entering on an organization-scoped route; one that forgets photographs the
+// empty state instead of its subject.
+//
+// There is no longer an id-based opt-in beside that route test. It existed for
+// the two recipes that needed an organization while entering at `/` -- both of
+// them subjects of the header organization switcher, which no longer exists. Its
+// last user, web-org-create-modal, now enters at the settings page that owns the
+// New organization button, so the route test covers it.
+//
+// The fake's defaultOrganizations() derives its workosOrgId from whatever is
+// staged, so organizationId is the only field that has to be staged here.
+//
+// Membership is the only load-bearing part; which id is staged is not. The
+// fake derives workosOrgId from whatever is staged, so the switcher's label
+// reads the same for any non-empty id -- hence one shared constant rather than
+// a per-recipe value. `workos-e2e` merely echoes the fake's own fallback.
+//
+// A Set of ids rather than an object literal keyed by id, so the lookup cannot
+// reach Object.prototype -- an id like `constructor` satisfies
+// validRecipeIdPattern and would otherwise resolve.
+//
+// Both are declared inside the function rather than as module-level consts:
+// `run()` executes at module top level (see the `if (invokedDirectly)` block
+// above), so a const declared down here is still in its temporal dead zone when
+// the first recipe is staged by a direct CLI invocation.
+//
+// The list only has to name recipes that need an organization WITHOUT visiting
+// an org-scoped route; every `/<org>/settings/...` recipe is detected from its
+// own steps by usesOrgScopedRoute below. Since BOS-1073 that is most of the
+// settings surface, and an allowlist there would be a standing invitation to
+// add a recipe and photograph the guard's "Switching to ..." spinner instead of
+// the page.
+//
+// Every entry names a live recipe.
+// ORG_SCOPED_ROUTE is declared with the other staging payloads at the top of the
+// module, above the direct-invocation block, for the temporal-dead-zone reason
+// documented there. This function is a declaration, so it hoists on its own.
+function usesOrgScopedRoute(recipe) {
+  // Surface-gated because the shape is not unique to the app: the docs site has
+  // a `/reference/settings` page that matches the same pattern and has no
+  // organization to stage.
+  if (recipe?.surface !== 'web') return false
+  const routes = [recipe?.route, ...(recipe?.steps ?? []).map((step) => step?.route)]
+  return routes.some((route) => typeof route === 'string' && ORG_SCOPED_ROUTE.test(route))
+}
+
+function organizationStageScript(recipe) {
+  const stagedOrganizationId = 'workos-e2e'
+  if (!usesOrgScopedRoute(recipe)) return ''
+  const organizationId = stagedOrganizationId
+  // One recipe needs the caller to belong to TWO organizations: a picker with a
+  // single entry photographs nothing worth photographing, and its promised
+  // switch has nowhere to go. Every other staged recipe keeps the fake's
+  // single-organization default, whose ids this list has to repeat because
+  // staging `organizations` replaces that default rather than extending it --
+  // `org-e2e` and the workosOrgId staged above are what the fake derives, and
+  // what every scoped `/org-e2e/settings/...` route in the recipes resolves.
+  const organizations =
+    recipe.id === 'web-org-picker-switch'
+      ? [
+          {
+            id: 'org-e2e',
+            workosOrgId: organizationId,
+            name: 'E2E Organization',
+            callerRole: 1,
+            memberCount: 2,
+          },
+          {
+            id: 'org-proof-beta',
+            workosOrgId: 'workos-proof-beta',
+            name: 'Beta Robotics',
+            callerRole: 1,
+            memberCount: 2,
+          },
+        ]
+      : null
+  // The app fakes resolve their fixture as `window.__BOSSANOVA_E2E__ ?? window.bossanovaE2e`
+  // (services/web/tests/e2e/fakes/authkit-react.tsx, fakes/api.ts). Because that is `??`
+  // and not a merge, a bossanovaE2e-only write is invisible to any page where the other
+  // global is already installed. The proof runner never sets it today; mirroring keeps
+  // that from turning into a silently unstaged capture if it ever does.
+  const staged = organizations
+    ? `organizationId: '${organizationId}', organizations: ${JSON.stringify(organizations)}`
+    : `organizationId: '${organizationId}'`
+  return `
+  await page.addInitScript(() => {
+    window.bossanovaE2e = { ...window.bossanovaE2e, ${staged} };
+    if (window.__BOSSANOVA_E2E__) {
+      window.__BOSSANOVA_E2E__ = { ...window.__BOSSANOVA_E2E__, ${staged} };
+    }
+  });`
 }
 
 // captureReadyScript emits an extra readiness gate for recipes whose promised
@@ -1058,9 +1616,170 @@ ${notificationStageScript(recipe)}
 // glyphs its recipe description promises. Wait for the row text itself, the
 // same way services/web/tests/e2e/specs/chat-terminal.spec.ts does.
 //
+// The subscribe recipes are the same shape: .subscribe-actions renders
+// immediately, but the CTA stays disabled and its copy stays fail-closed until
+// the cloud-access status RPC answers, so an unwaited still can carry a faded
+// button above copy the verdict is about to replace.
+//
+// web-session-expired is the same shape once more, and its subject arrives from
+// an EFFECT rather than from the first render — as does the DAEMON give-up
+// notice gated further below, which cannot appear until a poll has failed. (The
+// accounts give-up gate below it is the exception that proves the rule: its
+// subject also arrives from an effect, but its gate deliberately waits for the
+// HEALTHY pre-state instead, for the reason written on that clause.) The fake
+// provider fires `onRefreshFailure` in a mount effect, which latches
+// src/lib/sessionExpiry.ts and only then re-renders Layout into the notice.
+// `page.goto` resolves at `load`, a commit earlier, and this recipe declares
+// neither `selector` nor `cropToSelector` — so without an explicit wait the
+// generated spec carries no visibility assertion at all and screenshots
+// whatever happened to be painted. Both failure modes are silent in the same
+// direction: a lost race, or staging that stopped landing, captures a healthy
+// signed-in app and still exits green, proving the opposite of what the recipe
+// description claims.
+//
 // Only meaningful when the web fixture is staged (the glyph line comes from
-// attachStageScript), so callers gate this on stageEnv.
+// attachStageScript, the eligibility answer from the fixture API), so callers
+// gate this on stageEnv.
 function captureReadyScript(recipe) {
+  if (SUBSCRIBE_CTA_RECIPE_IDS.has(recipe?.id)) {
+    return `
+  await expect(page.locator('.subscribe-cta')).toBeEnabled({ timeout: 10000 });`
+  }
+  if (recipe?.id === 'web-session-expired') {
+    return `
+  await expect(page.getByText('Session expired')).toBeVisible({ timeout: 10000 });`
+  }
+  // The give-up notice arrives from a poll that has to fail first, so without
+  // this gate the screenshot races it and photographs a healthy page.
+  if (recipe?.id === 'web-sessions-daemons-give-up') {
+    return `
+  await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible({ timeout: 10000 });`
+  }
+
+  // The reconnecting pill is the opposite race to the give-up gate above: it
+  // arrives only after a poll has been left hanging AND its 10s deadline has
+  // expired, ~15s in, so the timeout has to clear that -- the 10s used above
+  // would expire on a still-healthy-looking page every single run.
+  //
+  // Asserted as TEXT INSIDE the live region, not as the region's visibility:
+  // ConnectionNotice renders `[data-testid="connection-status"]` unconditionally
+  // and empty, so `toBeVisible` on it is satisfied at first paint and would
+  // photograph the healthy list -- green, proving the opposite of what the
+  // recipe description claims.
+  //
+  // Both clauses are asserted because they fail independently. "Reconnecting…"
+  // says the ladder is running; "Showing data from" says the pill actually grew
+  // its staleness clause, which is the half that dies silently.
+  //
+  // A first-call hang is NOT what that second clause catches. With no successful
+  // read behind it, Sessions returns its loading view instead of the notice
+  // (`lastSuccessAt === null && read.status === 'reconnecting'`), so no pill is
+  // rendered at all and BOTH locators time out -- the recipe fails loudly on the
+  // first clause. What the second clause catches is a reconnecting pill whose
+  // clause never arrives: exactly the shape a regression in `useEpisodeStartedAt`
+  // produces, where a null episode clock renders "Reconnecting…" by itself.
+  if (recipe?.id === 'web-sessions-reconnecting-dark') {
+    return `
+  const pill = page.locator('[data-testid="connection-status"]');
+  await expect(pill).toContainText('Reconnecting…', { timeout: 25000 });
+  await expect(pill).toContainText('Showing data from', { timeout: 25000 });`
+  }
+
+  // The subject only exists after a CLICK, and a still spec has no steps -- the
+  // step list is a video-recipe affordance (buildVideoSpec). So the interaction
+  // lives here, in the one hook the still path gives between the navigation and
+  // the screenshot, bracketed by the two waits that keep it from racing: the
+  // spinner must be up before the click (the control is in the page header and
+  // is clickable while the body is still loading, so clicking early probes a
+  // page whose fixture has not been installed), and the compatibility notice
+  // must be painted before the capture.
+  //
+  // The trailing wait is also what makes an unstaged run LOUD. Without it a
+  // fixture that stopped landing would photograph a healthy accounts table and
+  // the spec would still pass; with it, the spec fails instead.
+  //
+  // The state it photographs is stable but not permanent. The passive read is
+  // hung, not answered, so usePolledResource walks its retry ladder and
+  // eventually gives up -- at which point the read owns the error and the page
+  // legitimately becomes a full-page panel. The budget is auditable rather than
+  // approximate: MAX_RETRY_ATTEMPTS (4) retries after the first attempt, each
+  // bounded by ATTEMPT_TIMEOUT_MS (10s), separated by computeBackoffMs sleeps of
+  // 1s, 2s, 4s and 8s at +/-25% jitter -- 5*10 + 15 = ~65s end to end, ~61-69s
+  // once the jitter is taken at its extremes. Take ~61s as the budget, since
+  // the low end is the one that bites.
+  //
+  // On the happy path the screenshot lands seconds in, but that is not the
+  // margin to plan against: the gates below are allowed to burn their timeouts
+  // and still pass. Worst case the two explicit `{ timeout: 10000 }` waits take
+  // 10s each, the two added assertions take Playwright's default 5s expect
+  // timeout each, and the click awaits the probe RPC on top -- ~30s plus the
+  // click before the capture. So the slack that is actually GUARANTEED is
+  // ~30s, not most of a minute. Still ample; not so ample that a loaded runner
+  // can be ignored. If this recipe ever starts capturing a danger panel, that
+  // ladder running to completion before the capture is the first thing to
+  // check -- and the durable fix is to make the fake suppress the passive
+  // read's terminal give-up too, so no wall-clock race exists at all.
+  //
+  // What holds the notice up across that window is the page's own probeError,
+  // not the poll's: each rung of the ladder dispatches `reconnecting`, which
+  // NULLS the poll error, so a capture keyed on the poll's error rather than on
+  // the notice text would be racing the first rung instead of the last.
+  if (recipe?.id === 'web-accounts-cold-start-probe-failure') {
+    // The last two assertions are the ones that make this a REGRESSION gate
+    // rather than a screenshot. Waiting for the compat notice alone cannot tell
+    // the fixed page from the broken one: under BOS-1089 the cold-start branch
+    // titled its full-page danger panel with the folded error, which for an
+    // unsuperseded probe failure is that same "update bosso and try again"
+    // string — and `getByText` with a plain string is a SUBSTRING match, so it
+    // matches that title just as happily. The `Loading accounts` wait above the
+    // click cannot cover it either: it is sequenced BEFORE the click, so it
+    // says nothing about what survives the probe.
+    //
+    // So assert the two things the recipe's own description promises and the
+    // regressed page cannot satisfy: the spinner is still up AFTER the notice
+    // paints (the panel replaces the <AccountsView> subtree that owns it), and
+    // the notice arrived through the INLINE route rather than the full-page
+    // panel.
+    //
+    // An alert census used to be the second discriminator, on the reasoning
+    // that EmptyState sets `role="alert"` when `intent="danger"` while this
+    // page's inline notice stayed at `role="status"`. BOS-1090 retired that:
+    // the give-up notice now takes `role="alert"` on EVERY page, because it
+    // mounts already populated and a polite region is generally not announced
+    // for its initial content. `pageOwnsStatusRole` hands only the
+    // RECONNECTING PILL back to the page's convention, so both the fixed and
+    // the regressed page now carry exactly one `.settings-content
+    // [role="alert"]` and counting them proves nothing.
+    //
+    // The live region is the discriminator that survives it: ConnectionNotice
+    // renders `[data-testid="connection-status"]` unconditionally, and the
+    // cold-start branch renders no ConnectionNotice at all — it is the whole
+    // subtree the danger panel replaces. Scoped to `.settings-content` so
+    // nothing in the surrounding chrome can make the gate flap.
+    return `
+  await expect(page.getByText('Loading accounts')).toBeVisible({ timeout: 10000 });
+  await page.locator('button[aria-label="Refresh account usage"]').click();
+  await expect(page.getByText('update bosso and try again')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText('Loading accounts')).toBeVisible();
+  await expect(page.locator('.settings-content [data-testid="connection-status"]')).toHaveCount(1);`
+  }
+
+  if (recipe?.id === 'web-accounts-give-up-retry') {
+    // The gate here waits for the HEALTHY pre-state, not for the give-up notice
+    // the recipe is about: this clause rides the goto, and at that point the
+    // notice does not exist yet -- it only appears after the refresh click,
+    // several steps later, where the recipe's own `wait` step asserts it.
+    //
+    // What it is guarding is the half of accountsGiveUpStageScript that fails
+    // silently. If the arming condition ever let the page's FIRST read fail,
+    // the route would render the cold-start EmptyState instead of a table, and
+    // every later step would still find a `[role="alert"]` and a "Try again" to
+    // click -- a green video of the wrong component. Naming a fixture row makes
+    // that substitution loud, because the cold-start branch renders no rows at
+    // all.
+    return `
+  await expect(page.getByText('work@anthropic.com').first()).toBeVisible({ timeout: 10000 });`
+  }
   if (recipe?.id !== 'web-chat-terminal') return ''
   return `
   await expect(page.locator('.xterm-rows').first()).toContainText(new RegExp(${JSON.stringify(

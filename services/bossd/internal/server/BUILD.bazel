@@ -174,6 +174,7 @@ go_test(
         "server_sentry_test.go",
         "server_tracker_test.go",
         "session_endpoints_test.go",
+        "session_exclusion_summary_test.go",
         "session_exclusion_test.go",
         "session_lifecycle_test.go",
         "settings_test.go",

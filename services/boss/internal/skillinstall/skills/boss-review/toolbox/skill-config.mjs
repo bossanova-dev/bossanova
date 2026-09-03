@@ -121,6 +121,35 @@ export const DEFAULT_CONFIG = Object.freeze({
     // round sequencing state. Only boolean true enables it; every other value resolves false.
     forceFull: false,
   },
+  // Epic scheduling budgets. Only the per-child wall clock lives here today: the epic driver reads
+  // it once and hands the expired/not-expired bit to `classifyChildLiveness`, which short-circuits
+  // to `wall-clock-expired/fail-isolate` ahead of every liveness read.
+  epicDefaults: {
+    // Minutes a single child may run before the epic driver treats its budget as spent. Six hours,
+    // not the ninety minutes this once hardcoded: children on a repo of this class routinely
+    // measure 2-4 h, so a short clock expires on healthy work and fail-isolates a child that was
+    // still making progress. Expiry is a budget fact, not death evidence — a genuinely dead child
+    // is caught far earlier by the liveness and frozen-repair-lease classifiers, so the cost of a
+    // long clock is only that a hung child holds its DAG slot longer, never a missed death. Must
+    // be a POSITIVE integer: zero or negative would expire every child at launch.
+    childWallClockMinutes: 360,
+  },
+  // Cadence of the post-terminal `notes` phase (and, in a core that also runs a pre-PR
+  // `knowledge` phase, of that phase's shared per-run sampling roll).
+  //
+  // `sampleRate` is the probability that a top-level run performs its reporting dispatches at
+  // all: 1.0 runs them every time, 0.33 roughly one run in three, 0 never. It DEFAULTS TO 1.0 on
+  // purpose — the knob exists to let a busy operator pay less for reporting, and a repo that
+  // never set it must keep the behaviour it already had. 0.33 is the recommended production
+  // setting (see docs/skills/skill-config.md): a corpus fed by every core in the fleet saturates
+  // long before every single run is sampled, and each unsampled run gives its whole post-terminal
+  // dispatch budget back.
+  //
+  // ONE roll governs BOTH phases of a run. Rolling per phase would let a run pay for knowledge
+  // and skip notes (or the reverse), which is neither the old behaviour nor the configured rate.
+  notesDefaults: {
+    sampleRate: 1,
+  },
   env: {
     headlessSignals: [
       { var: 'BOSS_CRON', equals: 'true' },
@@ -217,6 +246,10 @@ export const REVIEW_DEFAULT_ROUND_KINDS = new Set(['cross-agent', 'skill'])
 export const REVIEW_DEFAULT_DELTA_FILE_THRESHOLD = DEFAULT_CONFIG.reviewDefaults.deltaFileThreshold
 export const REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS =
   DEFAULT_CONFIG.reviewDefaults.maxDispatchedRounds
+
+export const EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES =
+  DEFAULT_CONFIG.epicDefaults.childWallClockMinutes
+export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
 
 // The `required` classifications a planContract section may carry. `optional` means RECOGNISED but
 // never required: the section may appear without tripping unknown-heading detection, and
@@ -341,6 +374,64 @@ export function validateConfig(config, source) {
     }
     if (config.reviewDefaults.forceFull !== true) {
       config.reviewDefaults.forceFull = false
+    }
+  }
+  // epicDefaults: the epic scheduling budgets. Optional as a whole (a config predating the block,
+  // or one that merged it away, resolves to no block and the accessor returns the default), but a
+  // PRESENT block must be an object — `epicDefaults: 360` or `epicDefaults: []` is a repo trying to
+  // set the budget and silently setting nothing, which is worse than an error. A malformed *key*
+  // inside a well-shaped block warns and coerces instead, exactly as reviewDefaults' numeric keys
+  // do: a bad wall clock must never leave the driver comparing against NaN, where every child would
+  // read as never-expired.
+  if (config.epicDefaults !== undefined) {
+    if (
+      !config.epicDefaults ||
+      typeof config.epicDefaults !== 'object' ||
+      Array.isArray(config.epicDefaults)
+    ) {
+      fail('epicDefaults must be an object when present')
+    }
+    // Note the `< 1`: unlike reviewDefaults.deltaFileThreshold, zero is NOT valid here. A
+    // zero-minute clock expires every child the instant it launches, fail-isolating the whole
+    // epic's work; the key is a positive integer or it is the default.
+    if (
+      config.epicDefaults.childWallClockMinutes === undefined ||
+      !Number.isInteger(config.epicDefaults.childWallClockMinutes) ||
+      config.epicDefaults.childWallClockMinutes < 1
+    ) {
+      console.warn(
+        `skill-config: ${source}: epicDefaults.childWallClockMinutes must be a positive integer; using ${EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES}`,
+      )
+      config.epicDefaults.childWallClockMinutes = EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES
+    }
+  }
+  // notesDefaults: cadence of the post-terminal reporting phases. Optional as a whole, exactly
+  // like reviewDefaults, but a PRESENT block must be an object — every accessor below would
+  // otherwise dereference a string or an array.
+  //
+  // The split between the two failure modes is deliberate and mirrors reviewDefaults: a
+  // malformed BLOCK is a config error and is rejected, while a malformed SCALAR warns and falls
+  // back to the documented default. Falling back to 1.0 is the fail-safe direction — a typo in
+  // the rate costs a few extra dispatches, where a coerced 0 would silently switch a repo's
+  // reporting off and look exactly like an operator who meant to.
+  if (config.notesDefaults !== undefined) {
+    if (
+      !config.notesDefaults ||
+      typeof config.notesDefaults !== 'object' ||
+      Array.isArray(config.notesDefaults)
+    ) {
+      fail('notesDefaults must be an object when present')
+    }
+    if (
+      typeof config.notesDefaults.sampleRate !== 'number' ||
+      !Number.isFinite(config.notesDefaults.sampleRate) ||
+      config.notesDefaults.sampleRate < 0 ||
+      config.notesDefaults.sampleRate > 1
+    ) {
+      console.warn(
+        `skill-config: ${source}: notesDefaults.sampleRate must be a number in [0, 1]; using ${NOTES_DEFAULT_SAMPLE_RATE}`,
+      )
+      config.notesDefaults.sampleRate = NOTES_DEFAULT_SAMPLE_RATE
     }
   }
   // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
@@ -849,6 +940,33 @@ export function reviewMaxDispatchedRoundDefault(config) {
   return Number.isInteger(value) && value >= 1 && value <= REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
     ? value
     : REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
+}
+
+/**
+ * Minutes a single epic child may run before its budget is spent — the default when this repo
+ * configures none. Returning the default rather than throwing is what lets a config predating the
+ * block resolve a usable clock; a caller must never have to reach into the raw block, because a
+ * missing key there reads as `undefined` and every `elapsed > undefined` comparison is false, i.e.
+ * a child that can never expire.
+ * @returns {number} a positive integer
+ */
+export function epicChildWallClockMinutes(config) {
+  const value = config?.epicDefaults?.childWallClockMinutes
+  return Number.isInteger(value) && value >= 1 ? value : EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES
+}
+
+// notesSampleRate resolves the per-run reporting cadence for a core's post-terminal `notes`
+// phase and, where a core also runs one, its pre-PR `knowledge` phase.
+//
+// Self-defending, like reviewMaxDispatchedRoundDefault: callers include hand-built configs and
+// merged objects that never passed through validateConfig, so anything that is not a finite
+// number in [0, 1] resolves to the documented default rather than reaching an `awk` roll as
+// `undefined` — which would compare false and silently disable reporting forever.
+export function notesSampleRate(config) {
+  const value = config?.notesDefaults?.sampleRate
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : NOTES_DEFAULT_SAMPLE_RATE
 }
 
 export function reviewLedgerConfig(config) {

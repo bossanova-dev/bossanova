@@ -25,7 +25,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
@@ -98,13 +100,21 @@ const PHASE_4_SECTION = sectionBetween(
   '## Phase 4 — Finalize the plan attachment and write back to the tracker',
   '\n## Phase 5',
 )
-const TOOLBOX_PREAMBLE = [
-  'if [ -z "${BOSS_SKILLS_HOME:-}" ]; then',
-  'for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do',
-  'if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi',
-  'test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }',
-  'BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"',
-]
+// BOS-1102: the eight-line inline probe collapsed to ONE sourced line. The resolution it used
+// to spell out now lives in the shipped helper this line sources, so the payload docs must
+// contain the line verbatim and no BOSS_PLAN_TOOLBOX assignment of their own. The locate tests
+// `[ -f ]` rather than letting `.` fail: `.` is a POSIX special built-in, so under sh/dash a
+// missing file exits the shell outright and a `. a || . b || { echo …; exit 1; }` chain would
+// silently skip every remaining candidate along with its own BLOCKED message. ~/.claude is named
+// twice on purpose: `${BOSS_SKILLS_HOME:-…}` defaults only when the variable is UNSET, so without
+// the explicit second candidate a pre-set value drops ~/.claude out of the search entirely.
+const TOOLBOX_PREAMBLE_LINE =
+  'BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; ' +
+  '[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; ' +
+  '[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; ' +
+  '[ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run \'boss skills install\'"; exit 1; }; ' +
+  '. "$BOSS_PLAN_ENV"'
+const TOOLBOX_ENV_HELPER = read(`${CORE}/toolbox/boss-plan-env.sh`)
 
 function fencedBashBlocks(body) {
   return [...body.matchAll(/```bash\n([\s\S]*?)\n```/g)].map((match) => match[1])
@@ -121,14 +131,66 @@ function normalizeShell(body) {
 // Toolbox path contract — every shell block resolves the same installed helper.
 // ---------------------------------------------------------------------------
 
+// AC2's second clause — "the helper fails loudly when the tree is absent" — is a runtime
+// property, so it is pinned by RUNNING the shipped payload rather than by reading it. A shape
+// assertion cannot tell a loud failure from a silent one: the whole reason the locate uses
+// `[ -f ]` is that the cheaper `. a || . b` spelling exited sh/dash before its own error line
+// ever ran, which every text pin in this file would still have called green.
+const BLOCKED_MESSAGE =
+  "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"
+
+// Both loud paths, because they fail in different places: the locate line gives up before it
+// finds anything to source, and the helper gives up after being sourced from a tree that turned
+// out to carry nothing. Under `sh` as well as `bash` — `.` is a POSIX special built-in, so a
+// bash-only run cannot see a message that an early shell exit has already skipped.
+for (const shell of ['bash', 'sh']) {
+  test(`boss-plan toolbox resolution fails loudly under ${shell} when no tree is installed`, () => {
+    const emptyHome = mkdtempSync(join(tmpdir(), 'boss-plan-no-skills-'))
+    const env = { PATH: process.env.PATH ?? '', HOME: emptyHome }
+
+    for (const [label, script] of [
+      ['locate line', TOOLBOX_PREAMBLE_LINE],
+      ['sourced helper', `. ${JSON.stringify(abs(`${CORE}/toolbox/boss-plan-env.sh`))}`],
+    ]) {
+      const run = spawnSync(shell, ['-c', `${script}\nprintf '%s' "$BOSS_PLAN_TOOLBOX"`], {
+        encoding: 'utf8',
+        env,
+      })
+      assert.equal(run.error, undefined, `${label} failed to spawn under ${shell}`)
+      assert.notEqual(
+        run.status,
+        0,
+        `${label} exited 0 under ${shell} with no install tree; a silent success here ships an unset $BOSS_PLAN_TOOLBOX into every later command`,
+      )
+      assert.ok(
+        `${run.stdout}${run.stderr}`.includes(BLOCKED_MESSAGE),
+        `${label} under ${shell} exited non-zero without printing the BLOCKED remedy`,
+      )
+      assert.equal(
+        run.stdout.includes(emptyHome),
+        false,
+        `${label} under ${shell} printed a resolved toolbox path despite having no install tree`,
+      )
+    }
+  })
+}
+
 test('boss-plan resolves BOSS_PLAN_TOOLBOX through one canonical preamble', () => {
-  const assignments = [...PAYLOAD_TEXT.matchAll(/BOSS_PLAN_TOOLBOX="([^"]*)"/g)].map(
-    (match) => match[1],
+  // The only assignment left anywhere in the payload is the helper's own. An assignment in a
+  // doc means some block re-derived the path by hand, which is the drift this pin exists for.
+  assert.deepEqual(
+    [...PAYLOAD_TEXT.matchAll(/BOSS_PLAN_TOOLBOX="([^"]*)"/g)].map((match) => match[1]),
+    [],
+    'payload docs must source the toolbox helper, never assign BOSS_PLAN_TOOLBOX inline',
   )
   assert.deepEqual(
-    [...new Set(assignments)].sort(),
+    [...TOOLBOX_ENV_HELPER.matchAll(/BOSS_PLAN_TOOLBOX="([^"]*)"/g)].map((match) => match[1]),
     ['$BOSS_SKILLS_HOME/boss-plan/toolbox'],
-    'every BOSS_PLAN_TOOLBOX assignment in the payload must be byte-identical',
+    'the sourced helper must carry exactly one canonical BOSS_PLAN_TOOLBOX assignment',
+  )
+  assert.ok(
+    TOOLBOX_ENV_HELPER.includes('export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX'),
+    'the helper must export what it resolves; a sourced value that is not exported dies with the block',
   )
 
   for (const staleRoot of ['.claude/skills/bossanova', '.codex/skills/bossanova']) {
@@ -138,20 +200,17 @@ test('boss-plan resolves BOSS_PLAN_TOOLBOX through one canonical preamble', () =
   for (const [name, body] of PAYLOAD_REFERENCES) {
     for (const [index, block] of fencedBashBlocks(body).entries()) {
       if (!block.includes('$BOSS_PLAN_TOOLBOX')) continue
-      if (!block.includes('BOSS_PLAN_TOOLBOX=') && !block.includes('"${BOSS_PLAN_TOOLBOX:?}"')) {
+      if (!block.includes('"${BOSS_PLAN_TOOLBOX:?}"') && !block.includes('boss-plan-env.sh')) {
         continue
       }
-      const normalized = normalizeShell(block)
-      for (const line of TOOLBOX_PREAMBLE) {
-        assert.ok(
-          normalized.includes(line),
-          `${name} fenced bash block ${index + 1} uses $BOSS_PLAN_TOOLBOX without the canonical preamble line: ${line}`,
-        )
-      }
+      assert.ok(
+        normalizeShell(block).includes(TOOLBOX_PREAMBLE_LINE),
+        `${name} fenced bash block ${index + 1} uses $BOSS_PLAN_TOOLBOX without the canonical sourced preamble line`,
+      )
     }
   }
 
-  assert.match(SKILL, /This\s+block\s+is\s+the\s+\*\*toolbox\s+preamble\*\*/)
+  assert.match(SKILL, /That\s+first\s+`\.`\s+line\s+is\s+the\s+\*\*toolbox\s+preamble\*\*/)
   assert.match(SKILL, /\(drift\s+helper\s+not\s+installed\)/)
   assert.match(SKILL, /boss\s+skills\s+check\s+--gate/)
   assert.match(SKILL, /self-edited/)
@@ -2415,7 +2474,9 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // together, which is the failure the exact pin below cannot see. It is passed as `below`, so
   // a violation now names both readings — pin raised toward the baseline, or baseline overdue
   // for re-derivation — instead of prescribing one cause.
-  const PRE_SPLIT_BASELINE = 104520
+  // On a rebase this constant conflicts too; see the REBASE HAZARD note at RATCHET below for
+  // how to resolve BOTH — this one is re-baselined above the new measurement, never set to it.
+  const PRE_SPLIT_BASELINE = 109101
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -2552,7 +2613,53 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // BOS-996 re-baselines 104149 -> 104519 (+370 B): Phase 4 now names the adapter-specific
   // workflow-state/status contract, stateRolesFor(config), and same-epic skip path.
   // BOS-1030 banks 104519 -> 104483 (-36 B) while naming Codex's awaited dispatch pair.
-  const RATCHET = 104483 // exact measured resident body, re-measured 2026-08-26 (BOS-1030)
+  // BOS-1099 re-baselines 104483 -> 107066 (+2583 B), carrying PRE_SPLIT_BASELINE with it to keep
+  // the 37-byte guard margin. The notes phase gained two gates it must clear before it does
+  // anything: the caller-suppression check (a nested run must not duplicate the notes its
+  // dispatcher already owns) and the once-per-run sampling roll shared with every other
+  // reporting phase. Both are read-before-acting rails, not situational detail — routing them
+  // to a reference would have them read after the dispatch they exist to prevent.
+  // Review round 2 re-baselines 107066 -> 107462 (+396 B), carrying PRE_SPLIT_BASELINE with it to
+  // keep the 37-byte guard margin. A dispatched worker inherits none of its caller's environment,
+  // so the suppression gate needed the caller to bind `BOSS_NOTES_SUPPRESSED` into the invocation
+  // as well as name it: without that the gate reads an unassigned name, takes the not-suppressed
+  // branch, and ships the duplicate it exists to remove with both pins still green. Carrying the
+  // baseline up is what this constant is for — unlike boss-build's PRE_EXTRACTION_BASELINE (a
+  // fixed literal that must never rise), this one is documented above as a rolling bound whose job
+  // is to force exactly this justification, not to forbid the growth.
+  // BOS-1102 re-baselines 107462 -> 108459 (+997 B), carrying PRE_SPLIT_BASELINE with it to keep
+  // the 37-byte guard margin. Collapsing each resident toolbox preamble from an eight-line inline
+  // probe to one line that sources the shipped `toolbox/boss-plan-env.sh` banked -371 B; review
+  // then spent that saving twice over on two defects the collapse had shipped, and the pin records
+  // the net rather than the flattering half.
+  //   +1000 B, the third locate candidate at each of the ten resident sites. `${…:-default}`
+  //   substitutes only when the variable is UNSET, so the two-candidate line searched
+  //   {pre-set, ~/.codex} and dropped ~/.claude entirely the moment anything pre-set
+  //   BOSS_SKILLS_HOME — a healthy Claude install BLOCKing with a remedy that cannot fix it.
+  //   Naming ~/.claude explicitly is the only spelling that survives a pre-set value.
+  //   +368 B, the paragraph describing the helper, which had said it tests for the
+  //   `boss-plan/toolbox` DIRECTORY (it tests for the helper file — the distinction the helper's
+  //   own comment exists to defend) and called the fallback "the second `.`" when there is only
+  //   ever one `.` in the line.
+  // Correctness over bytes, as with the earlier `. a || . b` locate that this same line replaced:
+  // `.` is a POSIX special built-in, so a missing file exits sh/dash before the fallback or the
+  // BLOCKED message can run. Bytes that buy a loud failure on a real install are not overhead.
+  // REBASE HAZARD: RATCHET is a MEASUREMENT of the resident body at this branch's base, never a
+  // value to merge. Any concurrent branch that touches the body re-measures it too, so this file
+  // conflicts by construction — and resolving that conflict by picking a side banks a number
+  // nothing measured, which reds the gate or quietly moves the pin UP. Re-run this test after the
+  // rebase, bank the size it reports here, and keep every prior re-baseline entry above: the
+  // history is why the pin is allowed to move only down. PRE_SPLIT_BASELINE is NOT the same kind
+  // of number and must not be set to that measurement — it is the rolling upper bound described at
+  // its own declaration, so re-baseline it ABOVE the new RATCHET with the existing margin intact.
+  // Collapsing that margin disables the one check that catches both numbers sliding up together.
+  // BOS-1105 re-baselines 108459 -> 109064 (+605 B), carrying PRE_SPLIT_BASELINE 108496 ->
+  // 109101 to keep the existing 37-byte guard margin. Bookkeeping became advisory: the skills-
+  // drift gate now warns instead of exiting BLOCKED, the step-2 heading says "report" rather
+  // than "gate", and a failed ledger write warns and continues. All three are rails read at the
+  // moment they fire, so they stay resident -- a reference would be consulted after the run had
+  // already stopped on the failure the new prose exists to prevent.
+  const RATCHET = 109064 // exact measured resident body, re-measured 2026-09-03 (BOS-1105)
   assertExactSize({
     below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
     constFile: 'scripts/bs-plan-skill.test.mjs',
@@ -2634,7 +2741,16 @@ test('BOS-1002: installed-skill gate degrades for an old boss CLI', () => {
       /case "\$O" in[\s\S]{0,120}\*--gate\*\) node "\$BOSS_PLAN_TOOLBOX\/toolbox-drift\.mjs"/,
       copy.name,
     )
+    // BOS-1105 flipped skills drift from BLOCKING to advisory: drift is bookkeeping, so the gate
+    // reports it and the run continues. A totally missing install still blocks (asserted
+    // separately); only the drift arm warns.
     assert.match(
+      copy.skill,
+      /warning:\s+installed\s+boss\s+skills\s+drift\s+from\s+checkout\s+source/,
+      copy.name,
+    )
+    assert.match(copy.skill, /bookkeeping\s+only,\s+work\s+state\s+unaffected/, copy.name)
+    assert.doesNotMatch(
       copy.skill,
       /BLOCKED:\s+installed\s+boss\s+skills\s+differ\s+from\s+checkout\s+source/,
       copy.name,

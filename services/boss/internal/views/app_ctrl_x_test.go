@@ -866,7 +866,7 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 				a.activeView = ViewCronForm
 				m := NewCronFormModel(nil, a.ctx)
 				// Production only ever builds the form behind these two flags,
-				// and View short-circuits to "Loading..." without them — so an
+				// and View short-circuits to "Loading…" without them — so an
 				// unset pair would render a different screen than this row names.
 				m.reposReady = true
 				m.agentsReady = true

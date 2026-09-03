@@ -231,8 +231,8 @@ var claudeRelayMilestones = []struct {
 	prefix    string
 	milestone string
 }{
-	{key: "welcome", prefix: "welcome to claude code", milestone: "Starting Claude sign-in..."},
-	{key: "opening-browser", prefix: "opening browser to sign in", milestone: "Opening browser for Claude sign-in..."},
+	{key: "welcome", prefix: "welcome to claude code", milestone: "Starting Claude sign-in…"},
+	{key: "opening-browser", prefix: "opening browser to sign in", milestone: "Opening browser for Claude sign-in…"},
 }
 
 func (f *claudeRelayFilter) push(line string) (string, bool) {

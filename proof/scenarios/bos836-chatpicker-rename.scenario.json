@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "title": "BOS-836 chat picker — the advertised [r]ename action opens an inline prompt that writes the new title through to the chat list",
+  "title": "BOS-836/BOS-1063 chat picker — the hidden [r]ename key opens an inline prompt that writes the new title through to the chat list",
   "fixture": { "preset": "demo" },
   "scenes": [
     {
       "id": "scene-01",
-      "title": "the chat picker advertises [r]ename beside the action it sits next to",
+      "title": "the chat picker keeps its per-chat actions while [r]ename stays hidden (BOS-1063)",
       "steps": [
         {
           "waitFor": {
@@ -37,17 +37,12 @@
               "label": "the selected chat still carries its fixture title — the before state the rename is measured against"
             },
             {
-              "text": "[r]ename",
-              "match": "normalized",
-              "label": "BOS-836: rename is advertised in the action bar, so the key is discoverable rather than hidden"
-            },
-            {
               "text": "[d]elete",
               "match": "normalized",
-              "label": "the pre-existing per-chat actions are intact — [r]ename was added beside them, not in place of them"
+              "label": "the per-chat actions the bar still advertises are intact — BOS-1063 hid [r]ename, it did not empty the bar"
             }
           ],
-          "caption": "BOS-836: the action bar now offers [r]ename next to the chat actions that were already there."
+          "caption": "BOS-1063: the action bar carries only the advertised chat actions; [r]ename is hidden, and scene 2 proves its key still works."
         }
       ]
     },
@@ -55,7 +50,10 @@
       "id": "scene-02",
       "title": "pressing r opens an inline prompt, prefilled and editable, in place of the action bar",
       "steps": [
-        { "key": "r", "caption": "Press the advertised [r]ename key on the selected chat." },
+        {
+          "key": "r",
+          "caption": "Press the hidden [r]ename key on the selected chat — unadvertised since BOS-1063, still live."
+        },
         {
           "waitFor": {
             "text": "Rename:",
@@ -126,9 +124,9 @@
               "label": "BOS-836: the renamed row carries the new title in the table, and survives the picker's next poll because the daemon accepted the write"
             },
             {
-              "text": "[r]ename",
+              "text": "[d]elete",
               "match": "normalized",
-              "label": "the action bar is fully restored, rename included — the prompt was transient, not a mode the list gets stuck in"
+              "label": "the action bar is fully restored — the prompt was transient, not a mode the list gets stuck in"
             }
           ],
           "caption": "BOS-836: the new title is settled in the chat table with the action bar restored."

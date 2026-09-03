@@ -48,6 +48,11 @@ tier and reason. The Bossanova-specific operational rules on top of that core:
   record the decision in the ledger, and proceed. Fixes follow this discipline: verify before
   implementing, handle one item at a time, and push back with a recorded rationale when a
   finding is wrong for this codebase.
+- **Mark every reviewer dispatch.** The first line of every reviewer worker prompt — lens or
+  round, every tier, envelope or prose — is exactly `[bs-reviewer-dispatch]` on a line of its own.
+  It is an inert marker, not an instruction: the run-cost telemetry counts reviewer subagents by
+  matching it at the head of a dispatched prompt, so a dispatch that omits it is invisible to
+  `boss cost` and undercounts the run.
 - **Commit discipline.** Commit fixes tagless with `git commit --no-verify` (the husky hooks
   crash in dependency-free worktrees; bossd's finalize injects the `[#PR]` tag). Stage only
   the paths a fix touched — never a blanket `git add -A`.
@@ -81,7 +86,7 @@ this skill authors, and the identical claims when it reviews them in a diff:
 
 ## Caller deadline (wall-clock cap)
 
-A caller may supply a **wall-clock deadline** with the invocation (`boss-build` Step 6c does, as
+A caller may supply a **wall-clock deadline** with the invocation (`boss-build` Step 6 does, as
 `STEP_6C_DEADLINE`). It bounds this **whole** skill, not only the Phase 6 fix loop. A caller that
 **awaits** this Skill call cannot preempt it, so its budget is only enforceable here — and a
 deadline first consulted in Phase 6 has already let Phases 1 and R spend it, which is the advertised
@@ -97,7 +102,7 @@ _20 seconds_ remain, a factor-of-60 inversion of the guarantee this cap exists t
 ```
 DEADLINE_LEG_MINUTES =  5   # one awaited dispatch leg: a batch of parallel read-only subagents
 DEADLINE_LEG_SECONDS = DEADLINE_LEG_MINUTES * 60    # = 300  — the unit the comparison uses
-STEP_6C_INITIAL_LEGS = 3   # boss-build prices Step 6c as this many initial dispatch legs
+STEP_6C_INITIAL_LEGS = 3   # boss-build prices its review step as this many initial dispatch legs
 
 FIX_ROUND_MINUTES = 10   # step 1: the fix subagent — fix + its module tests/lint
                   + 10   # step 2: the confirming Phase R pass over the newly-changed files
@@ -115,7 +120,7 @@ MUSTFIX_OVERRUN_SECONDS = MUSTFIX_OVERRUN_ROUNDS * FIX_ROUND_SECONDS
 bounded by round count, so a second seconds-valued budget would be a second thing to get wrong for
 no added guarantee. It is named here because the caller needs the number, and the caller needs it
 because the money is **borrowed, not spare**: `1200` comes out of the 25-minute (`1500` s)
-post-review reserve `boss-build` holds back after Step 6c, and that reserve is priced as the
+post-review reserve `boss-build` holds back after its review step, and that reserve is priced as the
 _shortest honest post-review path_ (Steps 7-12), never as slack. So the override spends up to 20 of
 those 25 minutes, **once per run**, and the bound that makes this safe is the round count — not a
 second absolute deadline threaded across the skill boundary, which is why none is defined here.
@@ -135,8 +140,8 @@ first gate:
 
 ```bash
 leg_ms=${BOSS_SKILL_EXTENSION_TIMEOUT_MS:-300000}
-# Normalize in the SAME three steps, in the SAME order, that boss-build's Step 6b timeout gate uses
-# (its review-stack reference) — one idiom, two readers. Reject the SHAPE first (empty, signed,
+# Normalize in the SAME three steps, in the SAME order, that a caller's review-pass deadline gate
+# uses (the review-stack reference of the boss-build core) — one idiom, two readers. Reject the SHAPE first (empty, signed,
 # exponent, lettered), because `10#` on a non-digit string is itself an arithmetic error. Then
 # convert with an EXPLICIT base-10 radix: a bare $(( )) reads a leading zero as OCTAL, so a
 # zero-padded `0600000` would derive 196608 ms — about 197 s, floored back to 300 — while the
@@ -163,7 +168,8 @@ refuse every leg on a budget that was never spent, turning a standalone review i
 dispatches nothing and still reports.
 
 **Bind the caller's name — nothing assigns `deadline` for you.** The value arrives under the
-**caller's** name: `boss-build` Step 6c states it as `STEP_6C_DEADLINE`, and that is the one name a
+**caller's** name: `boss-build` Step 6 states it as `STEP_6C_DEADLINE` (a name kept for interface
+stability, not a step number), and that is the one name a
 caller supplies. Every gate below does its arithmetic on `deadline`, so that binding is the whole
 hand-off. Omit it and `${deadline:-}` is empty on every leg, each gate takes the "no deadline
 supplied" return above, and the advertised cap is **inert** while every other instruction here still
@@ -713,7 +719,12 @@ Each dispatch is a fresh `general-purpose` subagent, read-only, **awaited** — 
 Expiry is one of the skip reasons routed below, so a hung extension degrades that lens to Tier 2
 instead of stalling the phase; awaiting an unbounded dispatch would block the whole review. It
 receives the standard extension invocation envelope, including `falsificationReference` =
-`<FALSIFICATION_REFERENCE>`, the resolved absolute installed recipe path. Its `changedFiles` is
+`<FALSIFICATION_REFERENCE>`, the resolved absolute installed recipe path. The worker prompt
+leads with `[bs-reviewer-dispatch]` on a line of its own, per
+§Operating rules. The envelope is JSON and does not carry the marker, so a Tier-1 dispatch
+that omits it is invisible to `boss cost` — and Tier 1 is the tier that suppresses the
+others, so it is the one whose omission undercounts most.
+Its `changedFiles` is
 **this lens's matched subset**, not the whole branch:
 
 When a Tier-1 extension finding depends on whether an assertion is load-bearing, the extension
@@ -814,10 +825,14 @@ instead (Tier 1 above).
 
 Use this exact reviewer prompt template (one per matched lens; substitute `<entry-index>`,
 `<LENS_SKILL>`, `<LENS_FALLBACK>`, `<MERGE_BASE>`, `<FILE_SUBSET>`, `<RUN_TMP>`,
-`<LEG_TIMEOUT_SECONDS>`, `<FALSIFICATION_REFERENCE>`):
+`<LEG_TIMEOUT_SECONDS>`, `<FALSIFICATION_REFERENCE>`). The first line names the dispatch
+(`subagent_type`, awaited, read-only) and is **not** part of the worker prompt; the prompt is
+the indented body, so `[bs-reviewer-dispatch]` is its first line and the marker match holds:
 
 ```
 Subagent (general-purpose), AWAITED, read-only:
+  [bs-reviewer-dispatch]
+
   HARD TIME BUDGET: <LEG_TIMEOUT_SECONDS> seconds. Returning late is a failure, not thoroughness:
   the caller cannot preempt you, so an overrun is spent directly from its post-review reserve.
   When the budget is nearly gone, write the findings you already have — `[]` if none — and return.
@@ -907,7 +922,11 @@ never by its bare descriptor `name` through the Skill tool, which refuses a skil
 `disable-model-invocation: true`.
 Each dispatch is a fresh `general-purpose` subagent, read-only, **awaited** — never
 `run_in_background` — and bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms), with
-expiry routed through the same skip path, and receives the standard extension invocation envelope:
+expiry routed through the same skip path, and receives the standard extension invocation envelope.
+The worker prompt leads with `[bs-reviewer-dispatch]` on a line of its own, per
+§Operating rules. The envelope is JSON and does not carry the marker, so a Tier-1 dispatch
+that omits it is invisible to `boss cost` — and Tier 1 is the tier that suppresses the
+others, so it is the one whose omission undercounts most.
 The envelope includes `falsificationReference` = `<FALSIFICATION_REFERENCE>`, the resolved
 absolute installed recipe path, because a successful Tier-1 extension suppresses both lower tiers.
 When a Tier-1 extension finding depends on whether an assertion is load-bearing, the extension
@@ -1058,6 +1077,8 @@ node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" record \
 ```
 
 ```
+[bs-reviewer-dispatch]
+
 You are a code reviewer for one boss-review round. Review only the diff in <ROUND_SCOPE_BASE>..HEAD
 and the carried claims listed below. Round mode: <ROUND_SCOPE_MODE>.
 
@@ -1189,7 +1210,8 @@ Walk the entries in registry order and resolve each one:
    next wave. Record `dispatch batch <n>/<m>: <ids>` in the ledger as each wave is issued. Parallel
    means several **awaited** calls issued together; `run_in_background` stays forbidden. Each worker
    is a fresh `general-purpose` subagent, read-only — it MUST NOT mutate the worktree, index, or HEAD — and writes exactly one envelope to
-   `<RUN_TMP>/findings-round-default-<capability>.json`. Exactly six placeholders in this step are
+   `<RUN_TMP>/findings-round-default-<capability>.json`. Per §Operating rules its brief leads with
+   `[bs-reviewer-dispatch]` on a line of its own. Exactly six placeholders in this step are
    substituted by **this phase** before the brief is handed over — `<RUN_TMP>`, `<capability>`,
    `<TOOLBOX>`, `<SECOND_VOICE>`, `<MERGE_BASE>`, `<FALSIFICATION_REFERENCE>` — the way Phase R
    substitutes its reviewer template, because a worker inherits no shell variable from here. The
@@ -1719,7 +1741,7 @@ node "$BOSS_REVIEW_TOOLBOX/bs-review-report.mjs" --in "$REPORT_JSON"
 ```
 
 Print that rendered markdown verbatim — it is the boss-review report. The caller
-(`boss-build` Step 6c) captures it and posts it as the single, upserted `<!-- bs-review -->`
+(`boss-build` Step 6) captures it and posts it as the single, upserted `<!-- bs-review -->`
 PR comment.
 
 End with **exactly one** sentinel line on its own. The report's own evidence chooses the sentinel:
@@ -1743,12 +1765,65 @@ For whole captured output, `classify --in <captured-output>` returns `missing` w
 exists; `missing` is non-clean. A `missing` or `ambiguous` classification is a broken review
 artifact, not a clean pass.
 
+`capped` is a **shippable** outcome, not a blocking one: it reports coverage a caller should publish
+alongside its work — the open findings and their per-finding dispositions above — and callers are
+expected to route it onward with those findings attached rather than to withhold the work over it.
+
+### Caller sentinel contract (when `RUN_DIR` / `RUN_ID` are supplied)
+
+A caller that routes on a run file hands this pass `RUN_DIR` and `RUN_ID` alongside the review
+inputs. When both are set, that file — not the returned prose — is the verdict the caller reads, so
+**write the terminal sentinel into it yourself, the moment the verdict is determined**, and
+re-affirm it as the last action of the run. Do not leave the write to the caller: a pass that
+returns a report but never writes the file classifies as `dispatch-failure`, and the caller's
+pre-dispatch provisional seed is then all the routing evidence that survives.
+
+The sentinel **line format is unchanged** — the same `bs-review clean:` / `bs-review capped: … after
+N rounds.` bytes the verdict verb above emits. Generate it through the helper; a hand-written
+literal is unmatchable:
+
+```bash
+# $VERDICT_ARGS is `clean`, or `capped <N>` with N = the rounds Phase 6 actually ran
+node "$BOSS_REVIEW_TOOLBOX/bs-run-sentinel.mjs" write "$RUN_DIR" "$RUN_ID" review \
+  "$(node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" sentinel $VERDICT_ARGS)" '{"provisional":false}'
+```
+
+- Phase 7's report is clean — zero open must-fix and zero unrepaired `invalid` entries → `sentinel clean`.
+- Phase 6's fix loop capped with open must-fix or unrepaired `invalid` evidence → `sentinel capped <N>`,
+  N = the rounds actually run. Never `0`: the helper rejects a non-positive round count.
+- The `'{"provisional":false}'` payload marks the verdict as earned, so the caller can tell it apart
+  from its own provisional seed.
+
+Writing the run file changes nothing else: the report, the exit code, and the single printed
+sentinel line are exactly as specified above, and the run file carries the same verdict as stdout.
+
 ## Phase 8 — Cleanup
 
 Before removing `$RUN_TMP`, run the optional notes phase only after the terminal outcome is decided;
 it cannot change the outcome, exit code, or any tracker or PR write.
 
 ### Post-terminal notes extensions (repo opt-in)
+
+**Caller suppression — check this before anything else.** A run another boss core dispatched as
+part of its own larger run must not take its own notes: that caller already owns the single
+post-terminal notes dispatch for the whole top-level run, so a nested phase here is exactly the
+duplicate this gate exists to remove. A caller signals that ownership by setting
+`BOSS_NOTES_SUPPRESSED=1` in the dispatched worker's environment. The marker **defaults to not
+suppressed** — unset, empty, or any other value means this run owns its own notes, so a standalone
+invocation still takes them.
+
+A dispatched worker does not inherit that environment, so the caller also states the marker **in the
+invocation**: bind it into the shell that runs the gate below (`BOSS_NOTES_SUPPRESSED=1`) before
+reading it. Left unbound the gate reads a name nothing assigned, takes the not-suppressed branch,
+and ships the duplicate this section exists to remove with both halves still reading as satisfied.
+
+```bash
+if [ "${BOSS_NOTES_SUPPRESSED:-}" = "1" ]; then
+  echo "notes: suppressed (caller owns notes)"   # end the phase here: no discovery, no scratch, no dispatch
+fi
+```
+
+Skipping is all that is due: suppression is never fatal and never changes the terminal outcome.
 
 ```bash
 BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
@@ -1764,7 +1839,33 @@ and is never reported. Recording is all that is due: a discovery skip is never f
 changes control flow; the phase still degrades exactly as documented below.
 
 If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
-extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
+extension has not opted in. Create no scratch in that case.
+
+**Sampling roll — one per run, shared by every reporting phase.** `notesDefaults.sampleRate` (a
+number in `[0,1]`, default `1.0`; `0.33` is the recommended production setting) is the probability
+that a run reports at all. Roll it **once per run** and carry the pair forward — a phase that
+re-rolls turns one configured rate into two independent ones, so a run could pay for one reporting
+phase and skip another. If an earlier phase in this run already rolled, reuse its values verbatim
+and re-export them into this shell rather than rolling again:
+
+```bash
+if [ -z "${NOTES_SAMPLED:-}" ]; then
+  NOTES_SAMPLE_RATE=$(export BOSS_REVIEW_TOOLBOX; node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, notesSampleRate } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(String(notesSampleRate(loadSkillConfig())))')
+  NOTES_SAMPLED=$(awk -v r="${NOTES_SAMPLE_RATE:-1}" -v s="$$" 'BEGIN{srand(s);print (rand()<r)?"yes":"no"}')
+  export NOTES_SAMPLE_RATE NOTES_SAMPLED
+fi
+if [ "$NOTES_SAMPLED" != "yes" ]; then
+  echo "notes: sampled out (rate ${NOTES_SAMPLE_RATE:-1})"   # end the phase here: no scratch, no dispatch
+fi
+```
+
+An unreadable or malformed rate resolves to `1.0` at both ends — the accessor's own fallback and
+the `${NOTES_SAMPLE_RATE:-1}` default — so a broken config costs a few extra dispatches and never
+silently switches reporting off. Seeding `srand` from the shell PID rather than the clock alone
+keeps two runs that start in the same second from rolling identically. This gate sits **after** the
+empty-`extensions` check, so a repo that never opted in still prints nothing at all.
+
+Once both gates pass, create the terminal-only handoff:
 
 ```bash
 NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-review-notes.XXXXXX")

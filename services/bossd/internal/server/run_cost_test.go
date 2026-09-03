@@ -251,3 +251,183 @@ func TestGetRunCostBackfillRejectsUnsupportedFilters(t *testing.T) {
 		t.Fatal("Backfill was called after invalid request")
 	}
 }
+
+func TestGetRunCostMapsReviewTelemetryPerRun(t *testing.T) {
+	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
+	stopped := started.Add(time.Minute)
+	store := &fakeAgentRunStore{runs: []db.AgentRun{
+		{
+			ID: "recorded", SessionID: "sess-1", AgentSessionID: "agent-1",
+			StartedAt: started, StoppedAt: &stopped, StopReason: db.AgentRunStopClean,
+			ReviewerDispatchCount: 4,
+			TerminalState:         db.AgentRunTerminalReviewReady,
+		},
+		{
+			// A run from a runner whose transcript is not parsed reads as
+			// "not recorded", not as a zero-dispatch REVIEW_READY.
+			ID: "unrecorded", SessionID: "sess-1", AgentSessionID: "agent-2",
+			StartedAt: started, StoppedAt: &stopped, StopReason: db.AgentRunStopClean,
+		},
+	}}
+	srv := &Server{agentRuns: store}
+
+	resp, err := srv.GetRunCost(context.Background(), connect.NewRequest(&bossanovav1.GetRunCostRequest{}))
+	if err != nil {
+		t.Fatalf("GetRunCost: %v", err)
+	}
+	runs := resp.Msg.GetRuns()
+	if len(runs) != 2 {
+		t.Fatalf("runs len = %d, want 2", len(runs))
+	}
+	if got := runs[0].GetReviewerDispatchCount(); got != 4 {
+		t.Errorf("recorded reviewer dispatch count = %d, want 4", got)
+	}
+	if got := runs[0].GetTerminalState(); got != db.AgentRunTerminalReviewReady {
+		t.Errorf("recorded terminal state = %q, want %q", got, db.AgentRunTerminalReviewReady)
+	}
+	if got := runs[1].GetReviewerDispatchCount(); got != 0 {
+		t.Errorf("unrecorded reviewer dispatch count = %d, want 0", got)
+	}
+	if got := runs[1].GetTerminalState(); got != "" {
+		t.Errorf("unrecorded terminal state = %q, want empty", got)
+	}
+}
+
+func TestGetRunCostAggregatesTerminalStateMixAndMedianDispatches(t *testing.T) {
+	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
+	stopped := started.Add(time.Minute)
+	store := &fakeAgentRunStore{runs: []db.AgentRun{
+		{ID: "r1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 2, TerminalState: db.AgentRunTerminalReviewReady},
+		{ID: "r2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 4, TerminalState: db.AgentRunTerminalReviewReady},
+		{ID: "r3", SessionID: "s1", AgentSessionID: "a3", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 6, TerminalState: db.AgentRunTerminalBlocked},
+		// Open runs still carry recorded telemetry, so the mix must count them
+		// even though they contribute no duration median.
+		{ID: "r4", SessionID: "s1", AgentSessionID: "a4", StartedAt: started, ReviewerDispatchCount: 8, TerminalState: db.AgentRunTerminalPartial},
+	}}
+	srv := &Server{agentRuns: store}
+
+	resp, err := srv.GetRunCost(context.Background(), connect.NewRequest(&bossanovav1.GetRunCostRequest{ShouldIncludeOpen: true, ShouldIncludeAll: true}))
+	if err != nil {
+		t.Fatalf("GetRunCost: %v", err)
+	}
+	agg := resp.Msg.GetAggregate()
+	mix := agg.GetTerminalStateMix()
+	want := map[string]int64{
+		db.AgentRunTerminalReviewReady: 2,
+		db.AgentRunTerminalBlocked:     1,
+		db.AgentRunTerminalPartial:     1,
+	}
+	if len(mix) != len(want) {
+		t.Fatalf("terminal state mix = %v, want %v", mix, want)
+	}
+	for state, count := range want {
+		if mix[state] != count {
+			t.Errorf("terminal state mix[%q] = %d, want %d", state, mix[state], count)
+		}
+	}
+	if agg.MedianReviewerDispatchCount == nil {
+		t.Fatal("median reviewer dispatch count is nil, want a median over four runs")
+	}
+	if got := agg.GetMedianReviewerDispatchCount(); got != 5 {
+		t.Errorf("median reviewer dispatch count = %d, want 5", got)
+	}
+}
+
+func TestGetRunCostExcludesUnrecordedRunsFromMedianDispatches(t *testing.T) {
+	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
+	stopped := started.Add(time.Minute)
+	// Pre-migration rows, unsupported runners and ordinary non-boss-build runs
+	// all read back as (0, ""). Folding them in would sink the median to 0 on
+	// the strength of runs that carry no dispatch observation at all -- and
+	// since List cannot filter to boss-build runs, they normally outnumber the
+	// recorded ones.
+	store := &fakeAgentRunStore{runs: []db.AgentRun{
+		{ID: "r1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 2, TerminalState: db.AgentRunTerminalReviewReady},
+		{ID: "r2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 4, TerminalState: db.AgentRunTerminalReviewReady},
+		{ID: "r3", SessionID: "s1", AgentSessionID: "a3", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 6, TerminalState: db.AgentRunTerminalBlocked},
+		{ID: "u1", SessionID: "s1", AgentSessionID: "b1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
+		{ID: "u2", SessionID: "s1", AgentSessionID: "b2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
+		{ID: "u3", SessionID: "s1", AgentSessionID: "b3", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
+		{ID: "u4", SessionID: "s1", AgentSessionID: "b4", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
+	}}
+	srv := &Server{agentRuns: store}
+
+	resp, err := srv.GetRunCost(context.Background(), connect.NewRequest(&bossanovav1.GetRunCostRequest{ShouldIncludeAll: true}))
+	if err != nil {
+		t.Fatalf("GetRunCost: %v", err)
+	}
+	agg := resp.Msg.GetAggregate()
+	if agg.MedianReviewerDispatchCount == nil {
+		t.Fatal("median reviewer dispatch count is nil, want a median over the three recorded runs")
+	}
+	if got := agg.GetMedianReviewerDispatchCount(); got != 4 {
+		t.Errorf("median reviewer dispatch count = %d, want 4 (median of 2,4,6 with the unrecorded rows excluded)", got)
+	}
+	// The mix keeps them: "" is a named bucket that renders as "not recorded",
+	// so an unrecorded run stays visible there rather than being absorbed.
+	if got := agg.GetTerminalStateMix()[db.AgentRunTerminalUnrecorded]; got != 4 {
+		t.Errorf("terminal state mix[unrecorded] = %d, want 4", got)
+	}
+}
+
+func TestGetRunCostKeepsGenuineZeroDispatchesInMedian(t *testing.T) {
+	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
+	stopped := started.Add(time.Minute)
+	// A recorded run that dispatched no reviewers is a real measurement, not an
+	// absence: it is the (0, recorded) half of the pair, and it must survive.
+	store := &fakeAgentRunStore{runs: []db.AgentRun{
+		{ID: "z1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalNoChange},
+		{ID: "z2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalNoChange},
+		{ID: "z3", SessionID: "s1", AgentSessionID: "a3", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 4, TerminalState: db.AgentRunTerminalReviewReady},
+	}}
+	srv := &Server{agentRuns: store}
+
+	resp, err := srv.GetRunCost(context.Background(), connect.NewRequest(&bossanovav1.GetRunCostRequest{ShouldIncludeAll: true}))
+	if err != nil {
+		t.Fatalf("GetRunCost: %v", err)
+	}
+	agg := resp.Msg.GetAggregate()
+	if agg.MedianReviewerDispatchCount == nil {
+		t.Fatal("median reviewer dispatch count is nil, want recorded zeros to count")
+	}
+	if got := agg.GetMedianReviewerDispatchCount(); got != 0 {
+		t.Errorf("median reviewer dispatch count = %d, want 0 (median of 0,0,4 -- recorded zeros are measurements)", got)
+	}
+}
+
+func TestGetRunCostOmitsMedianDispatchesWhenEveryRunIsUnrecorded(t *testing.T) {
+	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
+	stopped := started.Add(time.Minute)
+	store := &fakeAgentRunStore{runs: []db.AgentRun{
+		{ID: "u1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
+		{ID: "u2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
+	}}
+	srv := &Server{agentRuns: store}
+
+	resp, err := srv.GetRunCost(context.Background(), connect.NewRequest(&bossanovav1.GetRunCostRequest{ShouldIncludeAll: true}))
+	if err != nil {
+		t.Fatalf("GetRunCost: %v", err)
+	}
+	agg := resp.Msg.GetAggregate()
+	// Nothing was observed, so the honest rendering is `n/a`, not a confident 0.
+	if agg.MedianReviewerDispatchCount != nil {
+		t.Errorf("median reviewer dispatch count = %d, want unset when no run carries review telemetry", agg.GetMedianReviewerDispatchCount())
+	}
+}
+
+func TestGetRunCostOmitsReviewMediansWithoutRuns(t *testing.T) {
+	store := &fakeAgentRunStore{}
+	srv := &Server{agentRuns: store}
+
+	resp, err := srv.GetRunCost(context.Background(), connect.NewRequest(&bossanovav1.GetRunCostRequest{}))
+	if err != nil {
+		t.Fatalf("GetRunCost: %v", err)
+	}
+	agg := resp.Msg.GetAggregate()
+	if agg.MedianReviewerDispatchCount != nil {
+		t.Errorf("median reviewer dispatch count = %d, want unset with no runs", agg.GetMedianReviewerDispatchCount())
+	}
+	if len(agg.GetTerminalStateMix()) != 0 {
+		t.Errorf("terminal state mix = %v, want empty with no runs", agg.GetTerminalStateMix())
+	}
+}

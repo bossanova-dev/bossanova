@@ -135,7 +135,7 @@ func (a *App) enterChatPicker(msg switchViewMsg) tea.Cmd {
 	// override lingers on the still-present row for rendering, but no
 	// archiveResultMsg is outstanding for a freshly created picker, so
 	// seeding archiving=true here would leave it stuck on "Archiving
-	// session..." swallowing every key but Esc.
+	// session…" swallowing every key but Esc.
 	if a.home.archiveInFlight(msg.sessionID) {
 		a.chatPicker.archiving = true
 	}
@@ -158,6 +158,21 @@ func (a *App) enterRepoSettings(msg switchViewMsg) tea.Cmd {
 	a.repoSettings = NewRepoSettingsModel(a.client, a.ctx, msg.sessionID)
 	if githubAppClient, ok := a.cloudAccess.(GitHubAppClient); ok {
 		a.repoSettings.SetGitHubAppInstall(githubAppClient)
+	}
+	// The organization mapping lives in bosso, so the field only exists for a
+	// user who can actually reach it. a.home.loggedIn is the cached auth state
+	// the rest of the app already routes on — reading it costs nothing, whereas
+	// asking the auth manager here would put a keyring read on a keystroke.
+	//
+	// A local-only or signed-out user therefore never grows an organization
+	// field at all, rather than growing a row that can only ever report "not
+	// logged in". Sign-in is the only condition applied here; a signed-in user
+	// who belongs to no organization still gets the field, for the reason
+	// organizationRowVisible spells out.
+	if a.home.loggedIn {
+		if orgClient, ok := a.cloudAccess.(RepoOrganizationClient); ok {
+			a.repoSettings.SetRepoOrganizationClient(orgClient)
+		}
 	}
 	a.repoSettings.width = a.width
 	return a.repoSettings.Init()

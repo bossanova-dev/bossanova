@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "title": "BOS-1061 Repo settings → set a repo's organization",
+  "fixture": {
+    "preset": "repo-organization",
+    "env": {
+      "BOSS_AUTH_E2E_EMAIL": "proof@example.com",
+      "BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active",
+      "BOSS_ORG_E2E_ORGANIZATIONS": "org-acme=Acme Corp,org-recurse=Recurse Center"
+    }
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "unmapped-default",
+      "title": "the organization field defaults to Personal for an unmapped repo",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": {
+            "anyOf": [
+              { "text": "design-system", "match": "normalized" },
+              { "text": "[enter] settings", "match": "normalized" }
+            ],
+            "label": "Repository list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Repository list settled"
+        },
+        {
+          "key": "enter",
+          "caption": "Press [enter] to open the selected repo's settings"
+        },
+        {
+          "waitFor": "Organization:",
+          "timeoutMs": 10000,
+          "caption": "Repository settings visible with the new Organization field"
+        },
+        {
+          "expect": [
+            {
+              "text": "Organization: None",
+              "match": "normalized",
+              "label": "the field exists and reads as Personal, not as an empty value"
+            },
+            {
+              "text": "Merge strategy:",
+              "match": "normalized",
+              "label": "the settings view rendered its other rows, so this is not an empty screen"
+            }
+          ],
+          "caption": "A repo with no mapping reads as 'None' \u2014 a real, default choice rather than an empty state. Its sessions follow the serving daemon's own organization."
+        }
+      ]
+    },
+    {
+      "id": "organization-picker",
+      "title": "the picker lists exactly the caller's organizations",
+      "steps": [
+        { "key": "down", "caption": "Move down off Name" },
+        { "key": "down", "caption": "Move down onto the Organization row" },
+        { "key": "enter", "caption": "Press [enter] to open the organization picker" },
+        {
+          "waitFor": "[enter] select",
+          "timeoutMs": 10000,
+          "caption": "The organization picker is open"
+        },
+        {
+          "expect": [
+            {
+              "text": "Organization",
+              "match": "normalized",
+              "label": "the picker names the setting it is editing"
+            },
+            {
+              "text": "None",
+              "match": "normalized",
+              "label": "Personal is offered as a real choice, and is current"
+            },
+            {
+              "text": "Acme Corp",
+              "match": "normalized",
+              "label": "the caller's first organization, from ListOrganizations"
+            },
+            {
+              "text": "Recurse Center",
+              "match": "normalized",
+              "label": "the caller's second organization, from ListOrganizations"
+            }
+          ],
+          "caption": "The choices are Personal plus exactly the organizations ListOrganizations returned for this caller — nothing invented, nothing dropped."
+        }
+      ]
+    },
+    {
+      "id": "after-selection",
+      "title": "selecting an organization writes the mapping and the field reflects it",
+      "steps": [
+        { "key": "down", "caption": "Move down off Personal onto Acme Corp" },
+        { "key": "enter", "caption": "Press [enter] to select Acme Corp" },
+        {
+          "waitFor": "Organization: Acme Corp",
+          "timeoutMs": 10000,
+          "caption": "SetRepoOrganization has returned and the field shows the new mapping"
+        },
+        {
+          "expect": [
+            {
+              "text": "Organization: Acme Corp",
+              "match": "normalized",
+              "label": "the field reflects the organization the user just chose"
+            },
+            {
+              "text": "^(?![\\s\\S]*Unmapped \\(Personal\\))[\\s\\S]*$",
+              "match": "regex",
+              "label": "the Personal default is gone: the write landed rather than silently no-opping"
+            }
+          ],
+          "caption": "Confirming a choice calls SetRepoOrganization from a returned command — Update itself does no blocking work — and the settled field shows the mapping now in force."
+        }
+      ]
+    }
+  ]
+}

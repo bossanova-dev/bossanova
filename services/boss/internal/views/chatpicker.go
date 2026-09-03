@@ -228,7 +228,7 @@ func (m ChatPickerModel) canOpenTracker() bool {
 func (m ChatPickerModel) canMerge() bool {
 	// A merge already in flight hides the [m]erge affordance: m.merging is set
 	// when the user confirms a merge and cleared when the mergeResultMsg lands,
-	// so the "Merging PR #N..." feedback line stands in until the RPC resolves.
+	// so the "Merging PR #N…" feedback line stands in until the RPC resolves.
 	if m.merging {
 		return false
 	}

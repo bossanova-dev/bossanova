@@ -11,18 +11,18 @@ tool (
 require (
 	connectrpc.com/connect v1.20.0
 	github.com/99designs/keyring v1.2.2
-	github.com/getsentry/sentry-go v0.48.0
-	github.com/gofrs/flock v0.13.0
+	github.com/getsentry/sentry-go v0.49.0
+	github.com/gofrs/flock v0.13.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/posthog/posthog-go v1.23.1
+	github.com/posthog/posthog-go v1.24.3
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/qmuntal/stateless v1.8.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.35.1
 	go.uber.org/goleak v1.3.0
-	google.golang.org/grpc v1.83.1
+	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )

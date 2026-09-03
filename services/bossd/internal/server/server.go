@@ -4379,6 +4379,9 @@ func interactiveTelemetryFromAgentCounts(counts agenttelemetry.Counts) db.AgentR
 		DirectSubagentCount:  counts.DirectSubagentCount,
 		OutputTokenCount:     counts.OutputTokenCount,
 		ReasoningTokenCount:  counts.ReasoningTokenCount,
+
+		ReviewerDispatchCount: counts.ReviewerDispatchCount,
+		TerminalState:         counts.TerminalState,
 	}
 	for _, child := range counts.Children {
 		out.Children = append(out.Children, db.AgentRunChild{

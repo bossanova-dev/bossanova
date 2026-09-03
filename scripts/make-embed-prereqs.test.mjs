@@ -52,10 +52,7 @@ const embedTargets = [
   },
   {
     target: 'bin/bosso',
-    payloads: [
-      { dir: 'services/bosso/migrations', filter: isSQL },
-      { dir: 'services/bosso/migrations_postgres', filter: isSQL },
-    ],
+    payloads: [{ dir: 'services/bosso/migrations_postgres', filter: isSQL }],
     requiresBosso: true,
   },
   {
@@ -268,7 +265,6 @@ const embedSites = [
   'plugins/bossd-plugin-opencode :: bossd-question.js',
   'services/boss/internal/skillinstall :: all:skills',
   'services/bossd/migrations :: *.sql',
-  'services/bosso/migrations :: *.sql',
   'services/bosso/migrations_postgres :: *.sql',
 ]
 

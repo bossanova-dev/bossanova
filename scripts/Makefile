@@ -71,6 +71,48 @@ format:
 # sites that capture stdout/stderr into non-*os.File writers. It is unstamped because the
 # inputs are Go files outside scripts/, and it intentionally fails closed on command
 # variables it cannot locally resolve.
+# check-email-course.mjs gates the trial onboarding course under docs/email-course/ —
+# send count and offsets, README/subject agreement, word bands, one runnable block per
+# teaching send, the banned register, published skill names, live docs links, and the
+# absent price. Like the gates above it is unstamped, and for the same load-bearing
+# reason: every input it reads lives OUTSIDE scripts/ (the course itself, the docs tree,
+# and skills_manifest_test.go), so a stamp keyed on script-file content would be warm on
+# exactly the prose-only edits it exists to catch. docs/email-course/** is therefore also
+# listed in test-scripts.yml's two path filters, or an email-only edit would never reach
+# this target in CI. Cheap (~30ms, node built-ins only, no network).
+# check-price-parity.mjs gates the DISPLAYED Bossanova Cloud price across three build
+# surfaces that cannot import from one another: services/web, services/marketing, and
+# PRODUCT.md (prose, which can import nothing at all). It enforces both halves — the
+# surfaces that render a price import it from that app's declaration module rather than
+# re-typing it, and every price-shaped literal left anywhere in those trees states an
+# amount the declarations declare or derive, so a drifting comment fails too. Unstamped
+# for the same load-bearing reason as the gates above: every input lives OUTSIDE scripts/,
+# so a lint-scripts.mjs stamp keyed on script-file content would be warm on exactly the
+# app-and-prose edits that produce the drift. services/web/src/**, services/marketing/src/**
+# and PRODUCT.md are therefore also listed in test-scripts.yml's two path filters, or a
+# price edit would never reach this target in CI. It gates the displayed price only: the
+# charged amount lives in Stripe and is not readable at build time. Cheap (~0.1s CPU, node
+# built-ins only, no network).
+# check-ellipsis-consistency.mjs keeps BOS-1087 converged: user-facing copy elides with the
+# ellipsis character U+2026, never with a run of three full stops. It reads STRING LITERALS only —
+# Go interpreted and raw literals, TypeScript quoted and template strings, JSX attribute values and
+# JSX text nodes — across the five trees where rendered copy actually lives (the TUI's views, the
+# accountflow and auth flows and the cmd package that print CLI progress lines of their own, plus
+# services/web/src). Trees that merely PRODUCE a string a human later sees — internal/agent,
+# bossd/internal/server, the two plugins — are deliberately outside that boundary; the measurement
+# behind the line is recorded on SCAN_TREES. Comments are deliberately not scanned: what remains
+# in this repo's comments is elision inside quoted prose and shape description, none of it a
+# rendering surface, and scanning it would grow the exception list past the point where anyone
+# audits it. Language syntax that shares the spelling — JS spread, Go variadics — is excluded
+# structurally rather than by pattern, because a literal-only scanner never sees it. What survives
+# inside a literal is enumerated, never matched: an inline `ellipsis: literal-dots ok` marker at the
+# site, or an EXEMPTIONS entry that ratchets, so a converted survivor cannot leave its licence
+# behind. Unstamped for the same load-bearing reason as the gates above: every input lives OUTSIDE
+# scripts/, so a lint-scripts.mjs stamp keyed on script-file content would be warm on exactly the
+# Go-and-TSX copy edits that reopen the split. The four services/boss trees are therefore
+# also listed in test-scripts.yml's two path filters (services/web/src/** is already there for the
+# price gate), or a copy edit would never reach this target in CI. Cheap (~0.5s, node built-ins
+# only, ~493 files read).
 lint:
 	@node lint-scripts.mjs
 	@node check-skill-shell.mjs
@@ -86,6 +128,9 @@ lint:
 	@node check-prose-pin-whitespace.mjs
 	@node check-settings-readiness-figure.mjs
 	@node check-exec-waitdelay.mjs
+	@node check-email-course.mjs
+	@node check-price-parity.mjs
+	@node check-ellipsis-consistency.mjs
 
 ## test: Run script tests
 test:

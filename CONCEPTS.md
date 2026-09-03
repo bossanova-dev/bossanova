@@ -26,6 +26,181 @@ Delivery is not queued, at either end. Terminal input sent while an Attach is no
 
 Attaching to a chat whose stored pane pointer has been cleared is a revival, not an error: a cleared pointer means the chat was torn down, not that it is dead, so the attach wakes the chat and the wake re-persists the pointer. Both the TUI and web terminal take that path, so "attach to a torn-down chat" means the same thing on either surface. A wake may succeed while still losing the prior conversation — a fresh-fallback resume — and that degradation is told to the user in the terminal's own output stream, since an empty pane with no explanation is indistinguishable from a bug.
 
+## Web reconnect
+
+### Poll status
+
+Where a polled resource in the web UI sits in its connection lifecycle: **live** — the last completed
+attempt answered, or none has run yet; **reconnecting** — an attempt failed transiently and a bounded
+retry ladder is armed; **exhausted** — the ladder gave up on the current failure.
+
+The state carries a display contract, and it is the reason the three are named rather than collapsed
+into an error flag. While reconnecting, the last successful data stays on screen under a
+non-destructive indicator and no error is set — a transient blip must never blank a view. An error is
+set when the ladder gives up — but the slot does not name its writer. A poll that also carries a
+secondary request, as the accounts poll carries the Usage probe, has one dispatch path for any give-up,
+and an unsuperseded probe failure can drive the poll into exhausted without the read itself having
+given up. So "an error is set" (or "status is exhausted") is not the same fact as "the read gave up",
+and only the read's own give-up entitles a view replacement. A resource returns to live on the next
+successful attempt, from either state.
+
+### Connection indicator
+
+The single answer a page owes the viewer about "the connection", folded from every polled source that page mounts — one indicator however many pollers sit behind it, because two competing reports of what a person experiences as one connection is noise.
+
+Being one surface over several sources is what sets its rules. Every field it displays and every action it offers must fold across all of them; a partial fold under-reports silently rather than failing loudly, and the field that gets folded tends to be whichever one some unrelated contract already carried. Connection health therefore travels on its own seam — routing it through a contract about something else limits the indicator to whatever that contract chose to re-export. The fold is a set of per-field decisions rather than one rule: the transient reconnecting state is a disjunction; the give-up message prefers the page's primary subject, with a secondary source's message surfacing once the primary recovers; and the staleness age is the oldest contributor's, absent entirely when any source has never answered, since an age that cannot be claimed for everything on screen is worse than no age at all. Per source, reconnecting and a give-up are mutually exclusive states; folded they are not, because they can arrive from different sources, so both are told at once.
+
+The fold governs the annotation only. Whole-page takeover — the cold-start, empty, and error states entitled to replace the view — stays keyed on the page's primary read alone: a secondary source that cannot load is not grounds to take the page away.
+
+### Reconnect episode
+
+One continuous stretch of a page being unable to reach a source, from the moment the connection is first reported lost until it is reported healthy again — the unit that transient connection facts are stated about and announcements are counted against.
+
+An episode's identity belongs to the surface that displays it rather than to any producer value: it opens on the rising edge of the lost-connection signal and is discarded on the falling edge, and a surface that outlives an episode must perform that discard or the next one inherits the previous episode's start and reports an age that never happened. Anything the viewer is told about elapsed time is measured from the captured start rather than from a running clock, so the sentence is a fixed fact about the episode instead of an approximation that drifts silently between unrelated renders. Where an indicator folds several sources, the episode is their union: it opens when the first source drops and closes only when the last recovers, so a handover between sources reads as one long episode rather than two short ones, and the elapsed reading clamps rather than running backwards — understating the age in preference to inventing one.
+
+### Give-up notice
+
+The notice a page raises for a failure it has stopped working on by itself: the failure message plus
+the "try again" action, presented assertively so it is read out at the moment it appears rather than
+whenever the reader next arrives at it. What raises it is a message being there to show — the
+**folded error** — not the poll reaching exhausted. On a page whose poll also carries a secondary
+request, the notice can stand on that request's one-shot give-up alone, with the read itself still
+live and the poll never exhausted; see **Read give-up**.
+
+It is the one place where the connection story stops being an annotation and becomes an interruption,
+and that makes its rules unusually strict. It is mounted already carrying its text, so it must stay
+assertive on every page — a polite region is generally not read out for the content it is born with,
+and a notice nobody hears is worse than no notice. Its retry control has to survive its own press:
+the control must remain focusable and present to assistive technology while the attempt is in flight,
+and the attempt must not clear the state that renders the notice until it settles, or the person who
+pressed it loses both their place and the affordance. And because such a region is read out when its
+text _changes_, not when it re-renders, a retry that fails identically says nothing at all unless the
+notice carries something that differs per settled attempt — the case the control exists for is
+precisely the one that would otherwise be silent.
+
+### Loadedness
+
+A polled resource's report that **the most recent completed attempt succeeded**. Distinct from "no
+error is currently being displayed", which is also true throughout reconnecting, and distinct from
+"the result is non-empty", since an empty result can be the truth.
+
+Only a committed attempt counts: an attempt that answered but was superseded before it could
+commit leaves loadedness exactly as it was, so "the last attempt I started finished" and "the
+resource is loaded" are different statements.
+
+Loadedness is reported by the resource, never derived by a consumer from the absence of an error.
+That rule exists because it is the gate on destructive follow-up work — pruning a persisted
+selection that no longer matches the fetched options — and a derived flag silently changes meaning at
+every consumer the moment the producer gains a new state.
+
+### Read give-up
+
+The fact that **the polled read itself** exhausted its ladder, as distinct from an error merely being
+present in the poll's error slot. The two coincide only while the slot has a single writer.
+
+It is the discriminator a destructive branch must ask for. Because a secondary request commits its
+failure by the same path a read's give-up takes, a gate written as "an error is present" is satisfied
+by a recoverable background failure and will hand it a primary failure's UI — worst on a cold start,
+where there is no snapshot behind the error to fall back on. A consumer subtracts the secondary
+owner's message rather than testing the slot for emptiness, and latches the read's own message, since
+a later failure overwrites the single slot and destroys the string rather than mislabelling it.
+
+### Folded error
+
+A display value that prefers one failure over another, such as the accounts page's
+`probeError ?? error`. Folding is legitimate only on a surface that deliberately describes both — an
+inline notice that means "something is wrong here" — and never as the value a branch renders when
+that branch gated on one arm alone: the panel's existence and its text then describe different
+failures. The condition and the thing it renders must read the same slot.
+
+### Supersession
+
+A polled resource's rule that **only the newest attempt may commit**: every attempt takes the next
+value of a monotonic request id, and an attempt whose id is no longer the current one is discarded
+on arrival, whether it succeeded or failed.
+
+The rule belongs to the resource, and a caller cannot reconstruct it by counting its own calls. Poll
+ticks, the resume signal, an online nudge, and any other caller all start attempts and all advance
+the id, so a caller's private count is a strict subset of the real one and every attempt outside
+that subset is a supersession the caller cannot see. Discarding is silent by design — from the
+caller's side a discarded attempt is indistinguishable from a completed one — so a caller that needs
+to know must ask the resource for the current request id rather than infer it. That id is published
+as a **call-time read**, never as a per-render value: its only use is comparing before and after an
+awaited call, and a value sampled once per render cannot bracket one. The read is taken _after_ the
+attempt starts, since starting an attempt is what claims the new id.
+
+### Resume signal
+
+The application's own single "the user came back" event, raised once per genuine restore and fanned
+out to every subscriber from one place.
+
+It is deliberately not a raw browser visibility event. It is **delayed** rather than immediate,
+because a request issued the instant a page becomes visible can hang on a mobile engine that has not
+finished re-establishing its networking — the delay is load-bearing, not politeness. It is
+**deduplicated**, because one user-visible restore can emit two distinct browser signals. It is
+**app-level**, because a page with several pollers would otherwise refetch once per poller on a tab
+that has only just woken. A page going hidden ends the current resume lifecycle: any armed fan-out is
+dropped and the dedupe window is cleared, so a re-backgrounded tab does not resume in the background
+and a later genuine restore is never swallowed.
+
+### Session expiry
+
+The identity provider's own report that the signed-in session can no longer be renewed — a push
+signal from the auth client, not a verdict inferred from failing requests.
+
+It is deliberately distinct from a poll status of exhausted. Exhausted means retrying did not work
+this time; session expiry means retrying cannot work at all, because the credential the retries would
+use is dead. The two want opposite affordances: exhausted offers "try again", expiry offers "sign
+in".
+
+The application's response to it is asymmetric by design, and the asymmetry is the concept rather
+than an inconsistency to tidy away. An anonymous visitor arriving cold is redirected straight to the
+identity provider, because there is nothing on screen to lose. A session that expires **mid-session**
+gets an explicit, actionable state instead. What that state preserves is not the work on screen —
+whatever the person was holding, a half-filled wizard or a chat they were reading, is unmounted by
+the state as surely as a bounce would have discarded it — but the **URL and the timing**: they are
+told what happened, and they leave for the identity provider when they choose rather than being
+navigated away mid-keystroke by something they never asked for. The signal is held in memory only: a reload re-runs the auth client's own initialization, which
+either recovers the session or lands on the cold-load redirect, so a persisted flag could only
+outlive the condition it describes.
+
+## Web announcement contracts
+
+### Inert control
+
+A control that is refusing activation because it is busy with the action it was just given, while
+staying focusable and present in the accessibility tree — distinct from a control that is disabled
+because it is not usable yet.
+
+The distinction is not cosmetic: a natively disabled control cannot hold focus, so a control that
+disables itself in its own handler throws the pressing user back to the top of the document and
+vanishes from assistive technology at the moment it is doing the work being announced. A control made
+busy by its own press must therefore be inert rather than disabled. Inertness is only _declared_, so
+the refusal has to be implemented as well — every event that would otherwise activate the control is
+swallowed, while focus movement is deliberately left alone, since trapping it would invert the point.
+The two states look identical to a sighted user by sharing one appearance rule rather than
+duplicating it. When both conditions hold at once the not-usable-yet one wins and keeps native
+behaviour; that precedence is not licence to derive the disabled condition from the in-flight flag,
+which reinstates the focus loss in full.
+
+### Status role ownership
+
+The rule that a page exposes exactly one region designated as its transient-status announcer, so a
+shared indicator mounted onto a page that already owns such a region yields the designation rather
+than adding a second one.
+
+A permanently mounted second status region leaves "is a notice up?" answered yes forever, which is why
+the designation is treated as owned rather than claimed. Yielding costs the reader nothing: the
+region still announces politely and atomically, which is exactly what the designation means, so only
+the label moves. Ownership applies to the transient status annotation alone and never to the give-up
+notice, which stays assertive on every page regardless of what else the page owns.
+
+### Announcement budget
+
+The number of times a live region is allowed to speak during one episode — the scarce resource that governs how transient status text is derived, in place of the usual assumption that re-rendering is cheap.
+
+Every mutation of an atomic region re-reads that region in full, so each re-render inside one is a message spoken aloud to someone who did not ask for it, and the operative question is how many times a notice may speak rather than how often it may update. The budget is normally one per episode, and two consequences follow. A value that would otherwise change on a timer is pinned to an event instead, because a ticking counter spends the budget again on every tick for the life of the episode; and where a fact necessarily arrives on a later commit than the notice carrying it, that second commit is flushed before the browser paints so the pair collapses into a single announcement. Coarse wording is preferred to precise wording for the same reason — a phrasing that changes less often speaks less often. Exceeding the budget is a deliberate choice reserved for facts the viewer needs told again, never a side effect of how a value happened to be computed.
+
 ## Repo automation flags
 
 Per-repo booleans on the `Repo` model that gate what the daemon does
@@ -69,6 +244,24 @@ The placeholder may carry stale PR-number tags from earlier tooling, but those t
 ### PR tag
 
 A pull-request number marker embedded in a commit subject so repository automation and humans can associate branch commits with their review surface. It belongs on non-empty work commits; scaffolding commits that carry no work are exempt even when the branch as a whole needs tagged commits.
+
+## Repo identity
+
+### Canonical repo origin
+
+The one spelling of a repository's git origin that every surface uses as that repository's identity — an https form with the transport scheme, any user prefix, the `.git` suffix and any trailing slash removed — so the several ways a person or a git provider may write a single origin all reduce to one string.
+
+Canonicalization means reaching a fixed point, not running the reduction once. The reduction removes optional parts in a fixed order, so an origin carrying two of them in the opposite order is still not canonical after one pass. Any boundary that stores a canonical repo origin under a uniqueness constraint must therefore iterate to the fixed point, and must refuse an origin that will not settle or that cannot be parsed at all: a value stored in a spelling the canonicalizer does not itself reproduce defeats the constraint silently, and is only recoverable by a data migration plus a policy for the collisions that migration exposes. Boundaries are free to differ in how many passes they apply, so a consumer receiving an origin from another boundary must canonicalize it rather than assume it arrived canonical.
+
+A separate, weaker reduction exists for stream deduplication; it discards the scheme and belongs to a different key space. The two are never substitutes for one another.
+
+### Repo origin ownership
+
+The rule that a canonical repo origin is held by at most one organization across the whole installation, rather than once per organization. Ownership is enforced as a uniqueness invariant over the stored origin, so it survives any application path that forgets to check it — which is what makes the canonical form load-bearing rather than cosmetic. Re-asserting an ownership one already holds is the same claim, not a second one; asserting one another organization holds is refused.
+
+Ownership is deliberately asymmetric between reading and claiming. Asking who holds an origin one does not hold answers exactly as an unheld origin does, so the holder's identity is never disclosed by a read; attempting to claim such an origin is refused as already held. Occupancy is therefore discoverable through the claim and not through the read, which is why a caller cannot decide from a read alone whether an origin is free — and why the refusal a user sees is raised where the claim is made rather than where the mapping is loaded.
+
+Ownership is a claim, not a proof of control. Nothing in the write path demonstrates that the claiming organization has any relationship to the repository the origin names, so the first claimant of an origin holds it whether or not the repository is theirs. A reader that routes on these rows must therefore authorize independently rather than treat the row as authority: the accepted route is to serve a mapped organization only to a party that is a member of it, and to refuse otherwise. That gate removes the confidentiality harm — nobody is handed another organization's data — and leaves an availability one in its place, in that an origin claimed by a stranger stops that repository being served at all until the claim is released. The trade is deliberate: silently falling back to the default scope when the mapping does not authorize would route data somewhere the mapping says it does not belong, and do it invisibly.
 
 ## Authentication state
 
@@ -411,6 +604,30 @@ there was no eligible work it could safely own, such as no candidate, a lost cla
 diagnostic breadcrumb and restore only state that the run itself produced, so a later run can tell a
 healthy yield from an untouched ticket without clobbering a third-party owner.
 
+### Run bookkeeping
+
+Every surface on which a `boss-build`, `boss-plan`, or `boss-repair` run **records what it did**, as
+opposed to the work itself: the route receipt and its stamps, the run-note and findings ledgers, and
+the installed-skills drift report. None of it is work state, so none of it is one of `BLOCKED`'s four
+causes — a failure in any of it emits one uniform, greppable
+`warning: <what failed> — bookkeeping only, work state unaffected` line and the run continues to the
+terminal state its work earned. The uniform wording is what keeps an accounting gap auditable in a
+transcript after it has stopped being terminal.
+
+The axis that decides whether a check may be demoted this way is **recording versus capability**. A
+check that records is advisory: a drift report only says which payload this run read, and a
+stale-but-present tree still runs. A check that establishes a _capability_ is not — a missing install,
+a missing toolbox directory, or a helper that produces no verdict on stdout means nothing downstream
+can execute at all, so those stay hard stops. Relaxing the first kind while accidentally relaxing the
+second is the characteristic defect of that change, because the blocking version never had to tell the
+two causes apart.
+
+Advisory governs the receipt **as a record**, not the side effects its stamps attest to. Stamps such
+as `lock-released` mark mutations of _shared_ state, so a missing one still obliges the run to perform
+or re-attempt the cleanup it names; what the missing stamp alone may not do is change the terminal
+state. Compare **Gate outcome**, which draws the same "ran and said no" versus "could not be
+evaluated at all" line on the fail-closed side.
+
 ## Scheduled sessions (cron)
 
 ### Cron gate
@@ -472,12 +689,32 @@ A bossd session the driver creates for one epic ticket (prompt
 `/boss-build BOS-NN`, tracker fields set, `claude` agent by default —
 codex-exec sessions have no chat row for mid-run delivery).
 
+### Child wall clock
+
+The per-child time budget after which the driver stops waiting on that child
+and disposes of it as a permanent failure. It is measured per child from that
+child's own start, never against the epic as a whole, so a long-running child
+expires on its own schedule rather than being cut short by elapsed epic time.
+
+The budget is operator-configurable with a built-in default, and is resolved
+through the skill-config seam rather than read as a literal, so an absent
+configuration block yields the default rather than an unset value — an unset
+budget would make the expiry comparison always false and produce a child that
+can never expire. Every phase that compares against it resolves it in its own
+shell and fails closed if it cannot, because the resolution is not carried
+across phases.
+
 ### Isolate
 
 The permanent-failure disposition for a child: leave the session and its
 work open for a human, mark the ticket failed inside the run, and skip its
 transitive dependents. Isolation never stops or deletes the session —
 evidence is preserved.
+
+Isolation is strictly scoped to the one child it names. Siblings already
+running continue untouched, and only that child's transitive dependents are
+skipped; a child expiring its **Child wall clock** therefore removes that
+child from the run and nothing else.
 
 ### Push oracle
 
@@ -674,7 +911,7 @@ The status of an account (or a whole session, when every account for its provide
 
 ### Usage probe
 
-The daemon's periodic read-only check of how much of an account's provider quota remains, reported as one Utilization window per quota period, which keeps rotation's eligibility decisions current. Where the provider exposes a dedicated usage endpoint the probe is free; where it does not, or where the credential lacks the scope to read it, the fallback path issues a real metered call — so a probe that silently takes the fallback is an ongoing cost, not a cosmetic defect.
+A read-only check of how much of an account's provider quota remains, reported as one Utilization window per quota period, which keeps rotation's eligibility decisions current. It runs periodically on the daemon and on demand when a user asks for it in the web UI — one request shape carrying a refresh flag, so the same probe failure can arrive either in the background or in direct response to a tap. Where the provider exposes a dedicated usage endpoint the probe is free; where it does not, or where the credential lacks the scope to read it, the fallback path issues a real metered call — so a probe that silently takes the fallback is an ongoing cost, not a cosmetic defect.
 
 ### Utilization window
 
@@ -733,6 +970,94 @@ Finite daemon commands resolve a global owner and use one dispatcher: local owne
 ### Raw stream routing
 
 Long-lived transports (`DaemonStream`, `TerminalStream`, attach/create/chat streams, attach-token issuance, and WebSocket attach) are proxied directly to the current owner. Load-balancer affinity is never a correctness mechanism; an exhaustive RPC catalog and source-level boundary test enforce the distinction between raw streams and distributed finite commands.
+
+## Cloud billing
+
+### Cloud account
+
+A billing identity that ties a Bossanova user or organization to the external customer record used
+for Cloud subscription access.
+
+For organization billing, the Cloud account is the bridge between an organization and its
+subscription provider customer. Work that starts from a subscription event resolves through that
+bridge before it can know which organization to reconcile.
+
+### Checkout claim
+
+The single-winner admission a caller must take before a hosted subscription checkout may be created
+for a Cloud account, granted by a compare-and-swap on the account's setup state so that exactly one
+concurrent caller proceeds.
+
+A caller that loses the claim is refused, not queued: the winner is holding a live checkout for the
+same account, so the honest instruction to a loser is to retry, which resumes the winner's session
+rather than minting a second one. The claim is deliberately _not_ released when the payment provider
+errors — releasing it would return the account to a state outside the double-charge guard, and the
+next attempt would mint a second completable session. Because an unreleased claim leaves the account
+holding an abandoned checkout, keeping the claim is only safe in a system where an abandoned checkout
+is resumable.
+
+### Abandoned checkout
+
+A Cloud account holding a checkout session that was created but never returned from — the tab was
+closed, the caller crashed, or a claim was kept after a provider error.
+
+An abandoned checkout is not a subscription in flight. The account keeps its existing access decision
+and its ability to start a checkout; the only thing it additionally reports is that a session was
+already started, so a client can offer to _resume_ rather than restart. That distinction is carried
+on the wire as a pair of booleans — checkout started, and checkout still creatable — and the two read
+together: both true means abandoned, whereas a started checkout that may no longer be recreated means
+an entitlement is genuinely landing. Confusing the two is what strands an account: treating an
+abandoned checkout as an activation in progress puts the client into a poll loop that promotes the
+account into a pending entitlement it will never reach.
+
+### Pending entitlement
+
+The state of a Cloud account that is understood to be returning from checkout but whose subscription
+entitlement has not yet been observed, so access is withheld pending a refresh.
+
+It is the one Cloud billing state a client is right to _wait out_ — polling resolves it — which is
+exactly why it must not be entered speculatively. An account promoted here without a real payment
+behind it has no event coming to release it, and no checkout affordance to escape through, and the
+promotion is sticky. The promotion is also, today, inferred rather than observed: any entitlement
+poll that arrives while a checkout is started looks the same as a genuine return, so a client that
+polls eagerly after opening checkout can strand its own account. Distinguishing the two needs an
+explicit returning-from-checkout signal; narrowing the inference alone is not the fix, because during
+the provider's propagation window it would tell a user who has just paid that their checkout is
+unfinished.
+
+### Organization membership
+
+The project-specific relationship that grants a user access inside an organization and carries the
+role used by organization-scoped authorization.
+
+Membership changes are access changes first. Adding a membership can require billing capacity before
+the access grant; removing one must revoke access even when billing reconciliation is temporarily
+unavailable.
+
+### Trial eligibility
+
+Whether a Cloud account may be granted an introductory free trial on its next
+subscription checkout, decided server-side from the subscription provider's own record
+of that account's prior subscriptions rather than inferred from local state.
+
+Eligibility has three answers, not two: eligible, ineligible, and undetermined — the
+provider could not be asked. The distinction is load-bearing because the same question
+is asked twice on one journey, once to render the offer and once to create the
+checkout. An undetermined answer fails the checkout rather than quietly withdrawing the
+trial the offer may have just promised, while a determined ineligibility proceeds
+without one; the offer copy correspondingly withholds the promise instead of asserting
+its negative. Eligibility is scoped to the Cloud account, and a Cloud account is minted
+per organization rather than per person, so the same human can reach a fresh trial
+through a new organization.
+
+### Seat reconciliation
+
+The Cloud billing process that sets billed subscription quantity from the authoritative organization
+membership count instead of applying relative increments or decrements.
+
+Seat reconciliation treats membership mutations and subscription webhooks as repair opportunities:
+when the observed billed quantity already matches the desired membership count, it writes nothing;
+when they differ, it sets the billed quantity to the desired count.
 
 ## Chat coordination
 
@@ -814,7 +1139,7 @@ because it reports a duration for work this run did not do.
 
 A content-hash gate over a step's inputs: the step is skipped when the hash is unchanged. Used for cached lint/gen layers (e.g. `GEN_STAMP`, the cached-lint stamp) so unchanged inputs don't re-trigger expensive work.
 
-A stamped step is a caching decision, not an enforcement point. A correctness check mounted on one inherits the skip, and it inherits it precisely for changes outside the hashed input set — so a check that reads a tree the key does not cover goes silently non-gating on exactly the change class it exists to police. The same reasoning governs a CI path filter and a Make prerequisite: whatever triggers a check must be keyed on everything the check reads, not on where it lives.
+A stamped step is a caching decision, not an enforcement point. A correctness check mounted on one inherits the skip, and it inherits it precisely for changes outside the hashed input set — so a check that reads a tree the key does not cover goes silently non-gating on exactly the change class it exists to police. The same reasoning governs a CI path filter, a Make prerequisite, and the local affected-test selector: whatever triggers a check must be keyed on everything the check reads, not on where it lives. These are separate routing tables, not mirrors of one another — a path added to one does not follow into the others, and an input can be covered on one surface and absent from the next.
 
 ### Disk cache
 
@@ -850,6 +1175,11 @@ The condition where an installed copy of a toolbox helper is older than the sour
 Drift is reported as a warning at skill preflight rather than enforced as a gate, on the reasoning
 that a stale helper degrades rather than fails — which holds only for helpers that do not hard-reject
 what they do not recognise.
+
+The same reasoning governs the whole installed **skill tree**: a `boss skills check --gate`
+discrepancy warns rather than blocks, because the report only says which payload this run read. Its
+limit is the one drawn under **Run bookkeeping** — drift is a recording discrepancy, but an installed
+tree that is _absent_ rather than stale is an absent capability, and still blocks.
 
 ### Byte ratchet
 
@@ -983,7 +1313,10 @@ while still reading as assurance. It is worse than an absent gate rather than eq
 absent gate leaves a risk everyone downstream still treats as unchecked, while a vacuous one converts
 that risk into a false assurance every consumer spends.
 
-A gate can become vacuous at any of six layers, and each has been observed independently: its
+A gate can become vacuous at any of nine layers, and each has been observed independently: its
+**trigger reach**, when the routing tables that decide whether it runs are keyed on where it lives
+rather than on everything it reads, so it never executes on the change class it exists for — and a
+green check is then indistinguishable from a real pass; its
 **scan surface**, when the region it reads does not coincide with the corpus its criterion
 quantifies over — narrower, so a defect that is really there is never seen, or wider than the
 artifact it certifies, so a subject that artifact never carried is counted as shown;
@@ -994,7 +1327,15 @@ the fact rather than being it — a declared version range, a configured default
 — so two subjects satisfy the comparison identically and still resolve to different behaviour; its own regression test, when that test borrows the definition
 it was supposed to check independently — normalising the very bytes it exists to pin, or measuring a
 bound in the same unit the guarded code counts in, so it can only ever confirm that the code agrees
-with itself; and its input discovery, when the set of subjects it scans comes back empty and that
+with itself; its **observation environment**, when the check runs in a substitute runtime that does
+not compute the property the assertion reads, so the reading is a constant no subject can move — the
+assertion then holds identically for a correct subject, a broken one, and one where the property was
+never defined at all, and it is worst when that constant happens to equal the value the requirement
+wanted; its **observation moment**, when the check reads a subject that has not arrived yet, so the
+artifact it certifies predates the state it claims about — the runtime is real and the property is
+genuinely computed, merely at a time when the answer is not yet the one under test, which is why
+this layer resolves as a race whose two outcomes are a correct pass and a silently wrong pass but
+never a failure; and its input discovery, when the set of subjects it scans comes back empty and that
 emptiness is reported as a pass rather than as an inability to evaluate. The failure is silent by
 construction, because a gate's job is to be quiet when nothing is wrong.
 
@@ -1005,10 +1346,11 @@ One unchanged check is then sound under the runner an author invokes by hand and
 runner that gates the merge — so which runner produced a green is part of the verdict, and a green
 from the convenient one is not evidence about the deciding one.
 
-The first and last layers are the two a **Falsification** usually cannot reach, and so the ones that
-most need checking by hand: the other, mis-answering layers each mis-answer a value that arrives at
-the check, while a reach gap means no value ever arrives, and no adversarial input you can construct will demonstrate
-it. The widened surface is the exception that fixes the rule's shape — there the offending value
+The first two layers and the last are the three a **Falsification** usually cannot reach, and so the
+ones that most need checking by hand: the other, mis-answering layers each mis-answer a value that
+arrives at the check, while a reach gap means no value ever arrives, and no adversarial input you can construct will demonstrate
+it. Trigger reach is the purest case — the check does not execute, so there is no run to feed. The
+widened surface is the exception that fixes the rule's shape — there the offending value
 does arrive and the check wrongly accepts it, so one constructed input settles it. The operand layer
 is settled the same way, by a pair of subjects that agree on the declaration and disagree on the
 resolution. Direction decides
@@ -1040,11 +1382,58 @@ unenrolled subject cannot be written, and to add a gate that reds on a declarati
 registration path. A floor on the count found is the weaker cousin: it catches a set that came back
 empty, not a non-empty set that is the wrong set.
 
-All six are properties of the check. The mirror case is a property of the **defect**: a check that is
+All nine are properties of the check. The mirror case is a property of the **defect**: a check that is
 sound at every one of these layers, answering correctly the question it was built to answer, over a
 corpus that does contain the damaged artifact — and still green, because the defect does not violate
 the property that check tests. That is a **Laundered defect**, not a vacuous gate, and the two want
 opposite responses: one is repaired, the other needs a new detector.
+
+### String-space consumer
+
+A reference to a removable thing — a backend, a driver, a dialect, a mode, a directory — that names it
+as text rather than as a symbol, so removing the thing leaves the reference intact and no compiler,
+type checker or link step reports it. Environment variables and their defaults, configuration and
+workflow files, harness and fixture setup, hand-written schema or seed data, build and task targets,
+suppression comments naming a rule or a path, generated instruction mirrors, and ordinary prose are
+all string space; call sites, imports, constructors and enum symbols are symbol space.
+
+The distinction matters because the two spaces are enumerated by different tools and finish at
+different times. Symbol space is enumerated exhaustively and for free: it is done when the build is
+green, which is why a deletion feels complete long before it is. String space has no enumerator at
+all — only a text search whose spelling the searcher chooses — so its consumers are found by
+deliberately listing the surfaces that select a thing by name, and are otherwise found by whoever
+next runs the surface that still names the removed value. Their failures land far from the deletion
+and out of order: a startup that rejects a value that used to be legal, a job that runs against a
+dependency nothing provisions, a target that exits successfully having executed nothing, a document
+that confidently describes a path that no longer exists. A review scoped to the deletion's own diff
+cannot see any of them, because string-space consumers live in the files the diff never touched —
+its green is a statement about the hunks, not about the consumers the deletion orphaned. Keeping a
+removed name gone once its consumers are cleaned is a **Retirement ratchet**; the enumeration that
+finds them in the first place is upstream of that, and is the half with no gate.
+
+### Retirement ratchet
+
+A standing assertion that a name already removed from the codebase — a hostname, provider, resource,
+environment variable, label — stays removed, so the removal is enforced by a check rather than by
+whoever remembers it. It is the durable half of a retirement: the edit that removes the last
+reference is cheap and the ratchet is what makes it stick.
+
+A retirement ratchet is structurally self-obstructing, because it has to name the very string it
+forbids, and a retirement is usually accompanied by a sweep asserting that string appears nowhere —
+so the guard answers its own sweep. Two remedies exist and they are not interchangeable: where the
+text is code the team owns, the forbidden name is assembled at runtime from fragments that no literal
+search matches, and nothing has to be excluded; where the text is prose that must quote the name, the
+sweep is scoped to skip it, at the cost of an exclusion list that grows with every later mention.
+Prose explaining a retirement is therefore the sweep's most likely future false positive, and is
+written in the assembled form for the same reason the guard is.
+
+Coverage is the other recurring failure. A ratchet is named after the concept retired, not after the
+first file that happened to reference it, because the surfaces a retirement touches outlive any one
+of them; and each guarded path needs an existence assertion of its own, since an absence check over a
+path that does not exist is a **Vacuous gate** — it passes on a renamed or deleted file exactly as it
+passes on a clean one. Where part of a retirement is deferred — an infrastructure teardown a human
+must apply — the ratchet cannot yet assert the absence, and the obligation belongs beside the check
+whose coverage the teardown restores rather than only in the planning record.
 
 ### Laundered defect
 
@@ -1077,11 +1466,13 @@ whether that ordering is enforced by a gate or merely by convention is worth est
 ### Unsatisfiable criterion
 
 An acceptance criterion no artifact can ever evidence, so ticking it reports something other than
-what was verified. Two causes produce it, and both are properties of the criterion rather than gaps
+what was verified. Three causes produce it, and all are properties of the criterion rather than gaps
 in the work: the signal it measures does not exist yet, because the distinction it asks to split on
 is precisely the distinction the change introduces and no historical data was ever told about it;
 or the change itself closes the only window in which the measurement could be taken, so merging is
-what makes the criterion permanently unmeetable.
+what makes the criterion permanently unmeetable; or it demands provenance from a corpus that never
+existed, as when a **Pure relocation** is asked to show its new assertions were lifted unchanged
+from earlier ones while nothing was reachable to lift from until the move itself made it so.
 
 It is not a **Vacuous gate**. A vacuous gate answers a satisfiable criterion wrongly — the criterion
 is true on the day it is ticked and the check simply does not establish it. An unsatisfiable
@@ -1099,6 +1490,26 @@ from being silently reclassified as done. The same three questions — does the 
 anything destroy it, what artifact enforces it — apply unchanged to any prose asserting a guarantee;
 an unenforced rule labelled as discipline is durable, while a structural claim the code does not
 provide is worse than silence.
+
+### Unreachable evidence
+
+A criterion that is genuinely true or false in the world, but whose deciding agent sits outside the
+system under test, so no harness the project runs can observe the outcome either way. The claim is
+worth keeping; only its proof is out of reach.
+
+It is neither a **Vacuous gate** nor an **Unsatisfiable criterion**, and the difference decides the
+repair. A vacuous gate is a check that could have discriminated and does not, so the repair is to the
+check. An unsatisfiable criterion could never be true at all, so the repair is upstream, in the prose.
+Evidence is unreachable when the criterion is sound and the check is honest and no better runner
+exists to promote it — choosing a different harness relocates the assertion without strengthening it.
+
+The repair is downstream and has two halves. Scope the assertion to the part the harness genuinely
+observes — typically what the code emits, rather than what the external agent does with it — and name
+the test after that emission rather than after the outcome, because a test name is quoted as a
+coverage claim far more often than its body is read. Then record the boundary beside the assertion as
+a permanent accepted gap rather than a deferred one, since no future ticket closes it. The hazard worth
+recording is that the external contract can change with no change here at all, so the emission check
+stays green while the behaviour it was written for regresses unobserved.
 
 ### Falsification
 
@@ -1260,7 +1671,11 @@ not established that way, because it hides in a pass rather than in a silence; c
 the artifact does not carry and watch the gate accept it. Where a reach gap is real and a
 second parser is not worth building, the standard cover is a whole-file assertion that imports the
 rule's own pattern rather than restating it, and that pins how many files it read before asserting it
-found nothing.
+found nothing. A surface can also be widened by the gate's own pipeline rather than by
+its walker, which is a **Self-erasing scope**, or by a later edit to the artifact it reads, which is
+a **Borrowed bound**. A surface that is correct in region, granularity and width can
+still miss on **multiplicity**, when the value it binds is stated many times and the binding covers
+one of them; that is a **Rename detector**.
 
 Width is not the only way a surface can miss: it can also be too **coarse**, reading at a larger unit
 than the one its invariant is stated over. A guard whose invariant is per-fixture but whose surface is
@@ -1273,6 +1688,139 @@ idiom protects many constructs from one shared helper, a finer window rejects co
 trade is not is invisible. A guard that reads at the wrong granularity records that limit in the
 artifact itself, in the terms a green run may be read in — every _file_ contains a disable, never
 every fixture — because the reader who over-trusts it is the one who added the next fixture.
+
+### Self-erasing scope
+
+A guard's structural boundary that is destroyed by the guard's own normalising step, because the
+markers delimiting it belong to the class that step deletes. Goose's migration legs are the standard
+instance: `-- +goose Up` and `-- +goose Down` are SQL comments, so a text assertion that strips
+comments before matching has already deleted the only thing that told it which leg it was reading,
+and every assertion built on the stripped text answers "does this token appear anywhere in the file"
+rather than "does the forward migration run it". The result is a **Scan surface** too wide for a
+reason no inspection of the glob or the walker will reveal, because the widening happens inside the
+guard one line before the assertion.
+
+Its distinguishing property is that both transforms are load-bearing, so the repair is not to drop
+one of them. Stripping is mandatory wherever the artifact's own prose quotes the predicate the
+assertion searches for, since the explanation then satisfies a raw match by itself and a deleted
+conjunct goes unnoticed; bounding is mandatory because without it the section identity is gone. The
+rule is therefore an ordering rather than a choice: a transform that consumes structure encoded in
+what another transform deletes runs first — bound to the section against raw text, then normalise
+the slice. The collision recurs wherever a delimiter shares its syntax with the noise, as `#region`
+markers, YAML document splits, and fenced-block boundaries all do with their respective strippers.
+
+Absent markers must then fail loudly rather than yield an empty region, or the repair reintroduces
+the defect one level down: an empty slice contains no forbidden token and no required one, so two
+empty slices compare equal and a parity check passes on nothing. A self-erasing scope is also
+invisible at review altitude, since the assertion reads exactly like a correct one, and a
+**Falsification** aimed at some other property of the same file passes straight through it — a
+mutation that any assertion catches certifies the file, not the assertion.
+
+### Blind clobber
+
+A write that assigns a field it carries no opinion about, so a writer structurally unable to supply
+that field erases what a better-informed writer already recorded. Nothing fails: the write succeeds,
+and the field simply reads back at its type's zero value. The loss is intermittent by construction —
+it appears only on records that more than one writer touches, so a record written once looks
+perfectly correct and the gap reads as the recorder having missed that case.
+
+Adding a field to a persisted record creates one blind clobber per existing constructor of that
+record, which makes enumerating the constructors — rather than reading the writer that motivated the
+change — the audit. Completing them is necessary and never sufficient, because some writers cannot be
+completed at all: a converter whose source is a wire message with no such field must pass the zero
+value forever, and the tell is that the source is an external shape rather than a local computation.
+The write itself must therefore distinguish "no opinion" from "zero", which is sound only while no
+writer legitimately records a zero — a precondition to state rather than assume, since where zero is
+a meaningful value the same sentinel makes clearing the field silently unperformable. Both directions
+need pinning, and neither test is optional: one that proves only preservation passes equally on a
+sink that ignores the field outright, and one that writes a single time cannot observe the defect at
+any level of effort, because the first write is always correct.
+
+### Borrowed bound
+
+A gate's window boundary taken from the artifact under test — a quoted sentence or phrase the
+document itself carries — so the region read is a function of that document's own layout rather than
+of the gate. It differs from a **Self-erasing scope**, where the widening happens inside the guard's
+own pipeline: here the guard is untouched and still correct, and the artifact moves beneath it.
+
+Its two directions are asymmetric, and the silent one is the one that ships. Deleting the borrowed
+phrase is loud — the lookup finds nothing and a fail-closed helper refuses — so that direction is
+already covered by ordinary discipline. Inserting matter before it is silent: the region grows,
+every positive assertion still finds the phrase it names somewhere inside the enlarged span, and the
+run is green. Nothing counts what was read, nothing marks the change, and the gate's own file shows
+no diff at all, so review has no surface to notice it on. A helper that refuses absent or
+out-of-order markers does not reach it either, because both markers are present and in order; the
+slice is byte-correct and merely means something else. The result is a claim about one unit demoted
+to a claim about a neighbourhood — and a widened region admits the very next edit that widens it
+further, so the fault accumulates where a deletion fault would have self-limited at first contact.
+
+The remedy is to bound the region by something the document cannot reflow past — the end of the unit
+the invariant is actually stated over, or a structural boundary at that same granularity — or, where
+a borrowed phrase is the only handle available, to state the region's upper bound as its own
+assertion: that the span does not contain a marker belonging outside it, or that its extent has not
+grown. A structural boundary is a remedy only when the structure matches the invariant's
+granularity; one that spans far more than the unit is sound and useless. Where adjacency is what the
+prose itself depends on — a bare deictic that resolves by position — adjacency is the thing to
+assert, rather than a window relied on to imply it.
+
+### Rename detector
+
+A drift gate that binds a repeated value at one occurrence, so it reports a rename once rather than
+enforcing a sync. It is the multiplicity failure of a **Scan surface**: the walker reads the right
+region at the right granularity and the rule judges correctly, but the comparison is quantified over
+one member of a set. The distinguishing behaviour is that the gate goes green on the repair a human
+performs first — it reddens the canonical line, the fixer edits that line, and every other copy of the
+old value ships under a clean report. Where a **Vacuous gate** checked nothing, a rename detector
+checked exactly one thing, and one-of-thirteen is byte-identical in output and exit code to
+thirteen-of-thirteen.
+
+The same defect written in a matcher is an **instance-pinned pattern**: a regex naming a literal member
+of the class the rule is about — one ticket id, one hostname, one version — rather than the class. The
+tell is a pattern that could not have been written before the first occurrence existed. It does not
+decay loudly; it keeps running, keeps costing CI time, and keeps reporting clean while a later member
+of the same class ships past it, which makes its escapes retroactive and invisible in review, since
+the pattern is an unchanged constant and the violation is an unremarkable line in someone else's diff.
+
+Neither half is reachable by **Falsification**: hand the bound line the stale value and it reddens
+every time, because the rule is right and is pointed at one of many things. What settles it is a count
+taken from the corpus rather than from the rule — grep the value, count the sites, compare against what
+the comparison quantifies over — and a widening that follows: quantify over the class and name the
+genuine exceptions in an exported allowlist rather than narrowing the pattern to dodge them. Widening a
+pattern usually forces the surface the other way, since a wider match now reaches teaching examples the
+narrow one never did; the two dials moving in opposite directions in one edit is the expected shape,
+not a contradiction.
+
+### Class skip
+
+An exclusion inside a gate that is written as a predicate matching an open set rather than as an
+enumeration of entries, so the excluded set is unbounded, unreviewable, and grows on its own. It is
+the per-item counterpart to a narrowed **Scan surface**: the corpus is discovered correctly and the
+counts are non-zero, but individual members leave it with no counter and no message, which is why a
+bounded-corpus check — would the gate speak if its inputs vanished? — passes cleanly over one. It is
+not a **Self-erasing scope**, which widens the surface rather than puncturing it: there the boundary
+is destroyed wholesale by a normalising step and every item is then read against the wrong region,
+while here the region is right and named items fall out of it one at a time.
+
+Every branch in a gate that reaches an input it does not recognise is one of these in waiting, and
+they recur in a small set of shapes: a filename filter keyed to a naming convention, an allowlist
+that cannot report what it omitted, a parser that returns its "nothing to assert here" value for
+text it merely failed to read, and a rule written against one representation of a value while the
+surface carries another. The distinguishing property is that the skip is indistinguishable from a
+real pass at the call site, so the gate is cited in review as evidence for exactly the cases it
+stopped checking.
+
+The repair is a **named exclusion**: replace the predicate with a list of entries a reviewer can
+read in a diff, so a silent class becomes one reviewable line, and pair it with a ratchet requiring
+every input actually encountered to be classified as scanned or ignored — an unclassified one fails
+and names itself. A named exclusion is maintained by review rather than by the gate unless it is
+itself ratcheted, and that trade is stated where the list is written rather than left for a reader
+to infer. Fail-closed here means the _unknown_ fails, not everything: a rule that reds on legitimate
+input is switched off by the first person it blocks unfairly, so the qualifiers that keep it from
+firing on ordinary content are part of the pattern, not exceptions to it.
+
+A comment can carry the same defect. One claiming more coverage than the code delivers is a class
+skip relocated into the reader's head — they stop checking the case the comment said was handled —
+so a claim about what a check catches is verified against the check before it is written.
 
 ### Silently-empty stub
 
@@ -1366,6 +1914,65 @@ by the layer whose state it describes, which is what keeps nested retry ladders 
 other's failures — but that disjointness bounds recursion only, never the product of their attempt
 counts, which nothing but the caller's own deadline bounds.
 
+### Pure relocation
+
+A claim that a diff moves existing code from one place to another without altering it, so the
+review question is not whether the code is correct — that was settled where it came from — but only
+whether the move was faithful.
+
+The claim is mechanical and so is its evidence: reconstruct the moved blocks from the pre-change
+revision in the order the new unit lays them out, strip only the keywords the extraction itself
+added, and diff that reconstruction against the new unit. Empty is the whole proof. A reviewer
+reading the same lines is asserting something weaker and unfalsifiable — that nothing _looked_
+changed across a diff the tool renders as one large deletion beside one large insertion with no
+line-level correspondence — which is exactly the shape an opportunistic fix, a dropped comment or a
+narrowed type rides in under, attributed forever to a commit whose message says it changed nothing.
+
+The proof is fragile in two directions and both are the author's to protect. It depends on source
+order surviving the move, so reordering or reformatting in the same commit destroys the cheapest
+evidence available and belongs in a follow-up. And it is a claim about the moved bytes only: it says
+nothing about the call sites, which is why leaving the caller's suites unmodified — demonstrably,
+from the diff, not from intent — is the complementary proof rather than an optional extra. Whatever
+in the commit is not a faithful move is named in full beside the claim, because a pure-relocation
+claim is credible in proportion to how completely its impure parts are listed.
+
+Which code moves is decided by data flow, not by span: a symbol belongs in the extracted unit when
+it consumes only values its caller already holds and reads none of the caller's rendering state. The
+symbol that fails that test is the seam, and it stays — a decision worth stating where it stays,
+because the next reader will otherwise take it for an oversight. Line numbers are not the coordinate
+system for any of this. A plan that deliberately sequences itself behind its own dependencies has
+guaranteed its line references will be stale by the time it runs, and its symbol list may be
+incomplete as well; a symbol list degrades gracefully where a range does not, because the plan's
+discriminator can be applied to a symbol the plan never knew about.
+
+### Review verdict
+
+A build run's own record of how its whole-branch review settled — passed, ran but was capped short of
+a full pass, or produced no usable verdict at all — written down so a later step or a separately
+dispatched repair pass can route on it without re-running the review.
+
+The verdict is **run-scoped, not diff-scoped**: it says this run's review passed, not that any
+particular head was reviewed, and it is deliberately not re-pinned when the settle loop or a repair
+pass commits on top. Absent or unreadable reads as the no-verdict value, so a review that never
+settled can never be read downstream as passed. Because one of its readers runs in a different
+session — one that executes neither the preflight that clears the verdict nor the step that consumes
+it — the verdict can be read back against a head no review examined; what bounds that reader is its
+own acknowledge-once contract rather than the freshness of the verdict.
+
+### Advisory review
+
+A pull-request review that is answered but does not open a fix cycle: it earns one grouped in-thread
+response carrying a per-finding reason, and consumes none of the run's fix-cycle budget.
+
+A review becomes advisory only when it is bot-authored **and** this run's review verdict says the
+branch already passed its own review. Bot authorship is decided generically from the forge's own
+account-type signal, never from a roster of bot names, so a newly installed bot is classified
+correctly on first contact. A human changes-requested review, or a red check, still opens a real fix
+cycle regardless of the verdict. The advisory path is bounded rather than open-ended — capped rounds
+per run, at most one grouped response round per head — and a fix that is nonetheless taken from an
+advisory finding gets the same finalize re-verification a fix-cycle repair would, so the
+reviewed-tip claim is re-established rather than inherited.
+
 ## Proof capture
 
 ### Proof run
@@ -1401,6 +2008,10 @@ question with no signal about which is authoritative.
 
 ## Flagged ambiguities
 
+- "Normalized origin URL" carries two senses that are not interchangeable. A **Canonical repo
+  origin** is a repository's identity and keeps its scheme; the stream deduplication form drops the
+  scheme and keys a different space. Substituting one for the other silently changes what a
+  uniqueness constraint compares.
 - "Capability" carries two unrelated senses. A **Tracker capability** is an adapter behavior a skill
   calls as code; the sense in **Capability preflight** and **Headless capability profile** is an
   operation a coding-agent runtime must support before a gated run may start. Neither gates the
@@ -1415,6 +2026,10 @@ question with no signal about which is authoritative.
   the daemon may do to a repo; a declaration gate (see **Tracker adapter**) admits an adapter; a
   **Stamp** gates a build step on an input hash; a **Delivery gate** decides whether a pane is safe
   to type into. Only the cron sense has a recorded **Gate outcome**.
+- "Stamp" carries two unrelated senses. A **Stamp** in the build-caching sense is a content hash over
+  a step's inputs that decides whether the step is skipped; a route-receipt stamp (see **Run
+  bookkeeping**) is a token a run emits to attest that it performed an act. The first gates work, the
+  second records it — and only the second is advisory.
 - "Rate limited" had been used for both a **Limited** account, which has exhausted its own usage
   cap, and a **Probe throttle**, which is the usage endpoint refusing our polling rate — these are
   distinct, and only the former justifies a **Cooldown**.

@@ -200,6 +200,11 @@ export const VENDOR_MAP = {
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
     // (the install is a copy, not a link), so the skill compares the two at startup.
     'toolbox-drift.mjs',
+    // boss-plan-env.sh (BOS-1102) is the toolbox preamble itself: every Bash block in the
+    // skill sources it to resolve BOSS_SKILLS_HOME/BOSS_PLAN_TOOLBOX instead of repeating an
+    // eight-line probe. It is sourced rather than executed, so it stays 0644, and it must
+    // ship inside the toolbox it resolves — the source line names its path directly.
+    'boss-plan-env.sh',
   ],
   // session/boss.mjs backs the transport preflight boss-repair runs before Phase 1; like
   // boss-build's copy it ships here because a published core must resolve its own helpers,
@@ -212,9 +217,26 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
     'skill-extensions.mjs',
+    // skill-config.mjs exposes notesSampleRate, which the post-terminal notes phase reads to
+    // take its per-run sampling roll. boss-repair installs into user repos that have no
+    // repo-root skills-toolbox/, and it cannot reach into another core's copy — that core may
+    // not be installed at all — so the helper ships in its own toolbox. It is the last of the
+    // five notes-taking cores to need it; the other four already vendor it for other callers.
+    'skill-config.mjs',
     // Preflight drift probe used only when no boss CLI is available for the
     // fail-closed `boss skills check --gate` path.
     'toolbox-drift.mjs',
+    // BOS-1106: the Phase-3 monitoring loop waits on pending checks. That wait is
+    // callback-first — arm the one-shot watches when callbacksAvailable(env) is true and
+    // fall back to a bounded poll when it is not — so the callback seam and its transitive
+    // deps must resolve inside an installed boss-repair toolbox. boss-repair installs into
+    // user repos with no repo-root skills-toolbox/ and cannot reach into boss-build's copy,
+    // which may not be installed at all. adapter.mjs imports boss-binary.mjs directly and
+    // boss.mjs reads bossd presence, so all four ship together or none of them resolve.
+    'callback/adapter.mjs',
+    'callback/boss.mjs',
+    'bossd-present.mjs',
+    'boss-binary.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
   ],

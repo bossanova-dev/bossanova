@@ -793,6 +793,7 @@ func mergeCmd() *cobra.Command {
 
 func renameCmd() *cobra.Command {
 	return &cobra.Command{
+		// A cobra usage grammar, not a sentence: ellipsis: literal-dots ok
 		Use:   "rename <session-id> <new-title...>",
 		Short: "Rename a session (updates its title; syncs the linked PR title if any)",
 		Args:  cobra.MinimumNArgs(2),

@@ -28,6 +28,21 @@ func setupSkillStartupTest(t *testing.T) string {
 	// make them order-dependent. t.Setenv restores the default afterward.
 	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(home, "settings.json"))
 	t.Setenv("BOSS_SKIP_SKILLS", "")
+	// Point every one of these tests at a socket that cannot exist.
+	//
+	// BOSS_SOCKET outranks the isolated HOME in client.DefaultSocketPath, so
+	// without this the tests inherit whichever daemon the developer's shell is
+	// pointing at -- and a bossanova-managed session or `make dev` exports one.
+	// TestCostBypassesStartupSkillInstaller then reaches a REAL daemon, `boss
+	// cost` succeeds, and its non-vacuity guard ("the command must have been
+	// reached") fires as a failure on a perfectly good tree. CI has no daemon,
+	// so it passed there and failed only for the people running one.
+	//
+	// Setting it rather than clearing it is deliberate: an empty BOSS_SOCKET
+	// sends handlers.go down the daemonEnsureRunning path, which tries to START
+	// a daemon. A unit test must not spawn one, and the dead path here refuses
+	// the dial without ever getting there.
+	t.Setenv("BOSS_SOCKET", filepath.Join(home, "no-such-bossd.sock"))
 
 	origAgents := skillInstallAgents
 	origLookPath := skillInstallLookPath
@@ -664,7 +679,7 @@ func TestCostBypassesStartupSkillInstaller(t *testing.T) {
 		t.Errorf("stderr = %q, want no installer prompt", stderr)
 	}
 	if err == nil {
-		t.Fatal("boss cost unexpectedly succeeded without a daemon; test would not prove it reached the command")
+		t.Fatal("boss cost succeeded against the test's dead socket; it cannot have dialled, so the no-prompt assertion above proves nothing")
 	}
 }
 

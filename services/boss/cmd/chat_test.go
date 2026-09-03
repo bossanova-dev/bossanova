@@ -360,6 +360,7 @@ func TestChatRenameArgWiring(t *testing.T) {
 	t.Run("usage advertises both target forms and a trailing title", func(t *testing.T) {
 		t.Parallel()
 		rename := chatRenameSubcommand(t)
+		// Pins the cobra usage grammar above verbatim: ellipsis: literal-dots ok
 		if rename.Use != "rename <session-id|chat-id> <new-title...>" {
 			t.Fatalf("Use = %q, want the session-or-chat target and a trailing title", rename.Use)
 		}

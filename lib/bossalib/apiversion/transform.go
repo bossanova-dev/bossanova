@@ -256,6 +256,31 @@ func (e *switchResultCeilingExceeded) Error() string { return e.err.Error() }
 
 func (e *switchResultCeilingExceeded) Unwrap() error { return e.err }
 
+// retiredProcedure marks an error from a procedure that still exists on the
+// bossanova.v1 wire surface for compatibility, but whose current behavior is
+// intentionally retired.
+type retiredProcedure struct{ err error }
+
+// MarkRetiredProcedure wraps err in the retired-procedure marker. Returns nil
+// for a nil err so callers can wrap unconditionally.
+func MarkRetiredProcedure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &retiredProcedure{err: err}
+}
+
+// IsRetiredProcedure reports whether err carries the retired-procedure marker
+// anywhere in its chain.
+func IsRetiredProcedure(err error) bool {
+	var marker *retiredProcedure
+	return errors.As(err, &marker)
+}
+
+func (e *retiredProcedure) Error() string { return e.err.Error() }
+
+func (e *retiredProcedure) Unwrap() error { return e.err }
+
 // relayedDaemonCanceled marks a connect error as the RELAYED daemon
 // cancellation — a ProxySwitchSessionAccount whose CommandResult came back
 // carrying CommandResult_ERROR_CODE_CANCELED because the caller cancelled the
@@ -353,8 +378,15 @@ type RefMsg struct {
 // StaleCheckStateChange (introduced at V20260825), which restores
 // Session.last_check_state from last_check_state_observed for clients pinned
 // before the field began serving only head-current demonstrated verdicts.
+// SwitchActiveOrganizationRetiredMessageChange (introduced at V20260903), which
+// restores the legacy organization-management-unimplemented message for older
+// clients after SwitchActiveOrganization was retired in favor of AuthKit
+// switchToOrganization.
+// AbandonedCheckoutStatusChange (introduced at V20260904), which restores the
+// pre-BOS-1076 activating-subscription shape on CloudAccessStatus for a Stripe
+// Checkout session that was created but never completed.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260825 (Current) runs zero transforms.
+// request resolved to V20260904 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -363,11 +395,121 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
 	return c
+}
+
+// AbandonedCheckoutStatusChange is the production VersionChange introduced at
+// V20260904.
+//
+// At V20260904 the OrchestratorService began distinguishing an ABANDONED Stripe
+// Checkout from a genuinely activating subscription on CloudAccessStatus
+// (BOS-1076). An account that merely reached the CheckoutStarted setup state — a
+// Checkout session was created, nothing was paid — used to be decorated exactly
+// like an account whose user had returned from Stripe: state
+// CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH, message "Your subscription is
+// being activated.", can_create_checkout false, checkout_started true. A user who
+// opened Checkout and closed the tab watched that spinner forever.
+//
+// Such an account now keeps CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION and its
+// checkout affordance, and reports checkout_started only so the client can offer
+// to RESUME. No field or enum member was added: the behavior change is in the
+// VALUES served, carried by the combination
+//
+//	NEEDS_SUBSCRIPTION && checkout_started && can_create_checkout
+//
+// which the server could not emit before this version (decorateCloudAccessStatus
+// forced checkout_started false on every NEEDS_SUBSCRIPTION status). That makes
+// it an exact, self-contained discriminator readable from the response alone,
+// which is all TransformResponse is given. A client pinned to an older version
+// was built when that combination was impossible, so this change restores the
+// prior shape: PENDING_ENTITLEMENT_REFRESH, the activating message,
+// can_create_checkout false, checkout_started true, and the matching
+// "pending_entitlement_refresh" denial_reason.
+//
+// It targets the three unary procedures that carry a CloudAccessStatus —
+// GetCloudAccessStatus, CreateCheckoutSession and RefreshCloudEntitlements. All
+// other methods and message types are no-ops.
+type AbandonedCheckoutStatusChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260904, so
+// it is applied to any request resolved to a strictly older version.
+func (AbandonedCheckoutStatusChange) Version() Version { return V20260904 }
+
+// Wire values involved in AbandonedCheckoutStatusChange (V20260904). They are
+// raw literals rather than an import of the bosso billing package for the same
+// reason the cron outcome strings above are: this package pins the exact strings
+// older clients were built to receive, so a later reword on the producer side
+// cannot silently change what they get.
+const (
+	// cloudActivatingMessage is the message a pre-V20260904 client saw for an
+	// account in the CheckoutStarted setup state. It mirrors bosso's
+	// cloudActivatingMessage.
+	cloudActivatingMessage = "Your subscription is being activated."
+	// cloudPendingEntitlementDenialReason is the denial_reason bosso derives from
+	// CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH. It mirrors bosso's
+	// cloudAccessDenialReason for that state.
+	cloudPendingEntitlementDenialReason = "pending_entitlement_refresh"
+)
+
+// downconvertAbandonedCheckoutStatus returns the CloudAccessStatus to place in
+// the response for a pre-V20260904 client. A status that does not carry the
+// abandoned-checkout combination is returned unchanged, keeping every other
+// cloud-access shape — ACTIVE, PAST_DUE, CANCELED, BILLING_UNAVAILABLE, a plain
+// never-started NEEDS_SUBSCRIPTION, and a real PENDING_ENTITLEMENT_REFRESH —
+// clone-free and untouched. Cloning matters for the same reason it does on the
+// Session transforms: the response may hold a pointer that is also cached or
+// shared, so the down-convert must never mutate in place.
+func downconvertAbandonedCheckoutStatus(st *pb.CloudAccessStatus) *pb.CloudAccessStatus {
+	if st == nil {
+		return st
+	}
+	if st.GetState() != pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION {
+		return st
+	}
+	// The value triple this keys on is the wire form of the abandoned-checkout
+	// signal, and bosso's decorateCloudAccessStatus is its only producer. That
+	// producer is pinned exhaustively by
+	// TestDecorateCloudAccessStatus_ResumeAffordanceIsExhaustivelyPinned
+	// (services/bosso/internal/server/billing_test.go): if a state ever starts
+	// emitting the pair somewhere new, that test fails before this transform can
+	// silently start rewriting it.
+	if !st.GetCheckoutStarted() || !st.GetCanCreateCheckout() {
+		return st
+	}
+	clone, ok := proto.Clone(st).(*pb.CloudAccessStatus)
+	if !ok {
+		return st
+	}
+	clone.State = pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH
+	clone.Message = cloudActivatingMessage
+	clone.CanCreateCheckout = false
+	clone.CheckoutStarted = true
+	clone.DenialReason = cloudPendingEntitlementDenialReason
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores the pre-BOS-1076
+// activating shape on every OrchestratorService response that can carry a
+// CloudAccessStatus. It is a no-op for any other method or payload type.
+func (AbandonedCheckoutStatusChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure:
+		if m, ok := msg.(*pb.GetCloudAccessStatusResponse); ok {
+			m.Status = downconvertAbandonedCheckoutStatus(m.GetStatus())
+		}
+	case bossanovav1connect.OrchestratorServiceCreateCheckoutSessionProcedure:
+		if m, ok := msg.(*pb.CreateCheckoutSessionResponse); ok {
+			m.Status = downconvertAbandonedCheckoutStatus(m.GetStatus())
+		}
+	case bossanovav1connect.OrchestratorServiceRefreshCloudEntitlementsProcedure:
+		if m, ok := msg.(*pb.RefreshCloudEntitlementsResponse); ok {
+			m.Status = downconvertAbandonedCheckoutStatus(m.GetStatus())
+		}
+	}
 }
 
 // StaleCheckStateChange is the production VersionChange introduced at
@@ -446,6 +588,12 @@ func transformUnarySessionResponse(method string, msg any, transform func(*pb.Se
 	switch method {
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
 		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			for i := range m.Sessions {
+				m.Sessions[i] = transform(m.Sessions[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsAcrossOrganizationsResponse); ok {
 			for i := range m.Sessions {
 				m.Sessions[i] = transform(m.Sessions[i])
 			}
@@ -1745,4 +1893,46 @@ func (SwitchCanceledCodeChange) TransformError(method string, err error) error {
 		return err
 	}
 	return connect.NewError(connect.CodeAborted, errors.New(connectErr.Message()))
+}
+
+const legacySwitchActiveOrganizationMessage = "organization management is not implemented"
+
+// SwitchActiveOrganizationRetiredMessageChange is the production VersionChange
+// introduced at V20260903.
+//
+// SwitchActiveOrganization still exists in bossanova.v1 for FILE-level breaking
+// compatibility, but current clients should switch organizations with AuthKit
+// switchToOrganization and receive an explicit retirement message. Older clients
+// were built when the organization-management surface returned the generic
+// unimplemented message, so this restores that message for them while preserving
+// CodeUnimplemented.
+//
+// The match is procedure-scoped and marker-scoped, and it checks only the
+// Connect code. It deliberately never inspects message text: the marker is the
+// handler's declaration that this is the retired procedure path.
+type SwitchActiveOrganizationRetiredMessageChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260903, so
+// it is applied to any request resolved to a strictly older version.
+func (SwitchActiveOrganizationRetiredMessageChange) Version() Version { return V20260903 }
+
+// TransformResponse implements VersionChange. Deliberately a no-op: this
+// change lives entirely on the error path.
+func (SwitchActiveOrganizationRetiredMessageChange) TransformResponse(string, any) {}
+
+// TransformError implements ErrorTransform. It rewrites ONLY the marked retired
+// SwitchActiveOrganization CodeUnimplemented error back to the legacy
+// organization-management-unimplemented message older clients saw before
+// V20260903.
+func (SwitchActiveOrganizationRetiredMessageChange) TransformError(method string, err error) error {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceSwitchActiveOrganizationProcedure {
+		return err
+	}
+	if !IsRetiredProcedure(err) {
+		return err
+	}
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		return err
+	}
+	return connect.NewError(connect.CodeUnimplemented, errors.New(legacySwitchActiveOrganizationMessage))
 }

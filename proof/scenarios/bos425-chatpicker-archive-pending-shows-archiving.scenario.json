@@ -46,13 +46,13 @@
             "label": "detail view shows the daemon-driven Archiving spinner"
           },
           "timeoutMs": 10000,
-          "caption": "archive_pending=true: the detail renders 'Archiving session...' from the explicit daemon signal (BOS-425)"
+          "caption": "archive_pending=true: the detail renders 'Archiving session…' from the explicit daemon signal (BOS-425)"
         },
         {
           "expect": {
-            "text": "Archiving session",
+            "text": "Archiving session…",
             "match": "normalized",
-            "label": "Archiving spinner text present"
+            "label": "Archiving spinner text present, spelled with the ellipsis character (U+2026) per BOS-1087 — the bare 'Archiving session' substring matched both spellings and could not have caught the marker drifting back"
           },
           "caption": "The explicit archive_pending signal drives the spinner, not the old MERGED + repo-flag inference"
         }

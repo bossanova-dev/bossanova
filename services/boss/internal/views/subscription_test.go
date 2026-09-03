@@ -188,7 +188,7 @@ func TestSubscriptionOpensLandingPageAndRendersWaiting(t *testing.T) {
 		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
 	}
 	view := m.View().Content
-	for _, want := range []string{"Loading your account...", "[enter] re-open subscription page", "[esc] cancel"} {
+	for _, want := range []string{"Loading your account…", "[enter] re-open subscription page", "[esc] cancel"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q: %q", want, view)
 		}
@@ -439,6 +439,57 @@ func TestSubscriptionCheckoutActivationPendingKeepsWaiting(t *testing.T) {
 	}
 	if strings.Contains(m.View().Content, "Cloud checkout unavailable") {
 		t.Fatalf("activation pending should not render checkout unavailable: %q", m.View().Content)
+	}
+}
+
+// The subscription flow is the second client of the server's checkout refusals.
+// A user whose abandoned checkout turns out to have been paid must not be told
+// that cloud checkout is unavailable; the flow polls and lands on success.
+func TestSubscriptionCheckoutAlreadyActiveKeepsWaiting(t *testing.T) {
+	m := newSubscriptionTestLoginModel(&fakeSubscriptionCloudAccess{checkoutURL: "https://billing.example.test/checkout"})
+	m.subscription = subscriptionState{
+		phase:   subscriptionPhaseCreatingCheckout,
+		attempt: 1,
+	}
+
+	updated, cmd := m.Update(subscriptionCheckoutMsg{
+		attempt: 1,
+		err:     connect.NewError(connect.CodeFailedPrecondition, errors.New("bossanova cloud is already active")),
+	})
+	m = updated.(LoginModel)
+
+	if m.subscription.phase != subscriptionPhaseWaiting {
+		t.Fatalf("phase = %v, want waiting", m.subscription.phase)
+	}
+	if m.subscription.err != nil {
+		t.Fatalf("err = %v, want nil", m.subscription.err)
+	}
+	if cmd == nil {
+		t.Fatal("an already-active refusal should continue polling")
+	}
+	if strings.Contains(m.View().Content, "Cloud checkout unavailable") {
+		t.Fatalf("an already-active refusal should not render checkout unavailable: %q", m.View().Content)
+	}
+}
+
+func TestSubscriptionCheckoutStripeCustomerRequiredStaysAnError(t *testing.T) {
+	m := newSubscriptionTestLoginModel(&fakeSubscriptionCloudAccess{checkoutURL: "https://billing.example.test/checkout"})
+	m.subscription = subscriptionState{
+		phase:   subscriptionPhaseCreatingCheckout,
+		attempt: 1,
+	}
+
+	updated, _ := m.Update(subscriptionCheckoutMsg{
+		attempt: 1,
+		err:     connect.NewError(connect.CodeFailedPrecondition, errors.New("stripe customer is required")),
+	})
+	m = updated.(LoginModel)
+
+	if m.subscription.phase != subscriptionPhaseError {
+		t.Fatalf("phase = %v, want error", m.subscription.phase)
+	}
+	if m.subscription.err == nil {
+		t.Fatal("a provisioning failure should surface an error")
 	}
 }
 

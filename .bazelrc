@@ -22,6 +22,20 @@ test --test_env=GIT_CONFIG_COUNT=1
 test --test_env=GIT_CONFIG_KEY_0=commit.gpgsign
 test --test_env=GIT_CONFIG_VALUE_0=false
 
+# Pass through the bosso Postgres test wiring (BOS-1081). The suites in
+# services/bosso/internal/db reach a real Postgres via
+# services/bosso/internal/dbtest, which reads BOSSO_TEST_DATABASE_URL for the
+# server it may create and drop throwaway schemas on, and
+# BOSSO_REQUIRE_POSTGRES_TESTS to turn an absent server from a skip into a hard
+# failure. Bazel injects NO environment into tests, so without these two lines
+# the Postgres legs would skip under every `bazel test` — including CI, where a
+# skip that reads as green is exactly what the require flag exists to prevent.
+# Name-only form: the value comes from the invoking environment. Unset on a dev
+# machine means "skip"; the CI jobs that own a Postgres service container set
+# both (see .github/workflows/bazel.yml and bazel-linux-smoke.yml).
+test --test_env=BOSSO_TEST_DATABASE_URL
+test --test_env=BOSSO_REQUIRE_POSTGRES_TESTS
+
 # Race detector (CI parity): bazel test --config=race <patterns>
 build:race --@rules_go//go/config:race
 

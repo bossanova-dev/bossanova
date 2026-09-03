@@ -29,6 +29,9 @@ type e2eCloudAccessClient struct {
 	githubAppLists             int
 	githubAppInstallAfterPolls int
 	checkoutError              bool
+	// organizations is the BOSS_ORG_E2E_* organization/mapping fake, nil when
+	// no scenario asked for one.
+	organizations *e2eOrganizationState
 }
 
 func resolveE2ECloudAccessClient() cloudAccessClient {
@@ -65,6 +68,7 @@ func resolveE2ECloudAccessClient() cloudAccessClient {
 		githubAppRepos:             parseE2EGitHubAppRepos(os.Getenv("BOSS_GITHUB_APP_E2E_INSTALLED_REPOS")),
 		githubAppInstallAfterPolls: parseE2EPositiveInt(os.Getenv("BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS")),
 		checkoutError:              os.Getenv("BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR") == "1",
+		organizations:              resolveE2EOrganizationState(),
 	}
 }
 

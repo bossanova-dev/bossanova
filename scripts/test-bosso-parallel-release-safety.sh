@@ -126,9 +126,19 @@ check_dns_cutover_safety() {
   require_grep_after "infra/environments/variables.tf" 'variable "bosso_api_gcp_lb_dns_enabled"' 'default     = false' "canonical GCP LB DNS cutover flag must default false"
   require_absent "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_k8s_canary"' "retired ingress canary CNAME must be removed"
   require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_gcp_lb"' "canonical GCP LB A record resource must exist"
-  require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_k8s_canary_gcp_lb"' "K8s canary GCP LB A record resource must exist"
-  require_grep "infra/environments/main.tf" '"orchestrator-k8s-staging"' "staging K8s canary hostname must be configured"
-  require_grep "infra/environments/main.tf" '"orchestrator-k8s"' "production K8s canary hostname must be configured"
+  # BOS-1056: the migration-era GKE canary hostname assertions that used to sit
+  # here were retired alongside the application-level references to those hosts.
+  # The matching DNS/TLS teardown under infra/environments and infra/modules is
+  # deferred to a human-applied terraform change, because the canary and the
+  # canonical host share one google_certificate_manager_certificate and removing
+  # the canary likely forces that certificate to be replaced.
+  #
+  # FOLLOW-UP (do this in the same change that applies that teardown): add
+  # require_absent guards for the retired canary A-record resource block in
+  # infra/modules/cf-dns/main.tf, and for its two hostname literals in
+  # infra/environments/main.tf. Until then the retired canary is guarded here in
+  # neither direction. Rationale and the full deferred terraform surface are
+  # recorded in the BOS-1056 plan under docs/plans/.
 }
 
 # BOS-49: hosted MCP gateway deploy safety. The gateway ships in the shared

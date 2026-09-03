@@ -121,8 +121,38 @@ func TestHostE2EFamilySurvivesFilterAndIsStripped(t *testing.T) {
 	}
 }
 
+// TestProofEnvOrganizationFamily pins the BOS-1061 organization family on both
+// sides of the boundary: a scenario may forward it, and an ambient developer
+// value must never survive into the subprocess.
+func TestProofEnvOrganizationFamily(t *testing.T) {
+	requested := map[string]string{
+		"BOSS_ORG_E2E_ORGANIZATIONS": "org-acme=Acme,org-recurse=Recurse",
+		"BOSS_ORG_E2E_MAPPING":       "org-acme",
+		"BOSS_ORG_E2E_SET_ERROR":     "permission_denied",
+	}
+	allowed, rejected := FilterProofEnv(requested)
+	if len(rejected) != 0 {
+		t.Fatalf("the BOSS_ORG_E2E_ family must be forwardable, got rejected %v", rejected)
+	}
+	if !reflect.DeepEqual(allowed, requested) {
+		t.Fatalf("allowed = %v, want all requested", allowed)
+	}
+
+	got := BaseHarnessEnv([]string{
+		"PATH=/bin",
+		"BOSS_ORG_E2E_ORGANIZATIONS=org-ambient=Ambient",
+		"BOSS_ORG_E2E_MAPPING=org-ambient",
+		"BOSS_ORG_E2E_SET_ERROR=permission_denied",
+	})
+	for _, e := range got {
+		if strings.HasPrefix(e, "BOSS_ORG_E2E_") {
+			t.Fatalf("BaseHarnessEnv must strip the ambient BOSS_ORG_E2E_ family, got %v", got)
+		}
+	}
+}
+
 func TestProofEnvWhitelistFamilies(t *testing.T) {
-	want := []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_PROOF_UPGRADE_"}
+	want := []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_ORG_E2E_", "BOSS_PROOF_UPGRADE_"}
 	if !reflect.DeepEqual(ProofEnvWhitelist, want) {
 		t.Fatalf("ProofEnvWhitelist = %v, want %v", ProofEnvWhitelist, want)
 	}

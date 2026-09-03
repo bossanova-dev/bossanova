@@ -948,7 +948,7 @@ func TestAccountRegisterSubprocessPhaseTransitions(t *testing.T) {
 	t.Run("entering_the_subprocess_phase", func(t *testing.T) {
 		client := &regAcctClient{}
 		// A proc that never finishes, so the model stays in the phase.
-		ex := &regExec{proc: newRegBlockingProc([]string{"Starting Claude sign-in..."})}
+		ex := &regExec{proc: newRegBlockingProc([]string{"Starting Claude sign-in…"})}
 		m := newRegisterModel(t, client, ex)
 		m = selectProvider(t, m, "claude")
 
@@ -990,7 +990,7 @@ func TestAccountRegisterSubprocessPhaseTransitions(t *testing.T) {
 
 	t.Run("cancelling_mid_phase", func(t *testing.T) {
 		client := &regAcctClient{}
-		ex := &regExec{proc: newRegBlockingProc([]string{"Starting Claude sign-in..."})}
+		ex := &regExec{proc: newRegBlockingProc([]string{"Starting Claude sign-in…"})}
 		m := newRegisterModel(t, client, ex)
 		m = selectProvider(t, m, "claude")
 

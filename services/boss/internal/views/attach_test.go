@@ -544,7 +544,7 @@ func TestAttach_CapturesChatCreatedAndAttachedTelemetry(t *testing.T) {
 // rendered across both halves of the launch — the attachReadyMsg that stages
 // RecordChat and the chatRecordedMsg that lands it: m.launching must remain
 // true and m.pendingExec must be primed for the follow-up tick. Without this,
-// the "Launching... Press Ctrl+X to detach" line flashes for only the RPC time.
+// the "Launching… Press Ctrl+X to detach" line flashes for only the RPC time.
 func TestAttach_AttachReadyDefersExec(t *testing.T) {
 	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
 

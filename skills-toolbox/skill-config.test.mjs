@@ -29,6 +29,10 @@ import {
   reviewDeltaDefaults,
   reviewMaxDispatchedRoundDefault,
   REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS,
+  epicChildWallClockMinutes,
+  EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES,
+  notesSampleRate,
+  NOTES_DEFAULT_SAMPLE_RATE,
   reviewLedgerConfig,
   command,
   moduleTestCommand,
@@ -385,6 +389,68 @@ test('DEFAULT_CONFIG documents review delta defaults and reviewDeltaDefaults rea
   validateConfig(DEFAULT_CONFIG, 'test')
 })
 
+test('notesSampleRate defaults to 1.0 so an unconfigured repo keeps taking notes', () => {
+  // The knob exists to let an operator PAY LESS for post-terminal reporting; it must never
+  // silently take reporting away from a repo that never opted down. A config predating the
+  // block, one that merged it away, and a bare `{}` all resolve to the full rate.
+  assert.equal(NOTES_DEFAULT_SAMPLE_RATE, 1)
+  assert.equal(notesSampleRate(DEFAULT_CONFIG), 1)
+  assert.equal(notesSampleRate({}), 1)
+  assert.equal(notesSampleRate({ notesDefaults: {} }), 1)
+  assert.equal(notesSampleRate(undefined), 1)
+  validateConfig({ ...DEFAULT_CONFIG, notesDefaults: undefined }, 'test')
+})
+
+test('notesSampleRate accepts every in-range rate including both endpoints', () => {
+  for (const sampleRate of [0, 0.33, 0.5, 1]) {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { notesDefaults: { sampleRate } })
+    validateConfig(cfg, 'test')
+    assert.equal(notesSampleRate(cfg), sampleRate)
+  }
+})
+
+test('validateConfig warns and coerces an out-of-range or wrong-type notesDefaults.sampleRate', () => {
+  // Same degradation style as the reviewDefaults scalars: a malformed tuning knob warns and
+  // falls back to the documented default rather than failing the run. Falling back to 1.0 is
+  // the fail-SAFE direction — a typo costs extra dispatches, never lost notes.
+  for (const sampleRate of [-0.1, 1.1, 2, '0.33', null, true, NaN, Infinity]) {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { notesDefaults: { sampleRate } })
+    const originalWarn = console.warn
+    const warnings = []
+    console.warn = (message) => warnings.push(String(message))
+    try {
+      validateConfig(cfg, 'test')
+    } finally {
+      console.warn = originalWarn
+    }
+    assert.equal(cfg.notesDefaults.sampleRate, 1)
+    assert.equal(notesSampleRate(cfg), 1)
+    assert.match(warnings.join('\n'), /notesDefaults\.sampleRate/)
+    assert.match(warnings.join('\n'), /using 1/)
+  }
+})
+
+test('validateConfig rejects a non-object notesDefaults', () => {
+  // A present-but-unusable BLOCK is a config error, not a tuning typo: every accessor below it
+  // would dereference a non-object. This is the reviewDefaults split — reject the block, coerce
+  // the scalar.
+  for (const notesDefaults of [[], 'sampled', 7, null]) {
+    assert.throws(
+      () => validateConfig({ ...DEFAULT_CONFIG, notesDefaults }, 'test'),
+      /skill-config:.*notesDefaults must be an object when present/,
+    )
+  }
+})
+
+test('notesSampleRate ignores a malformed rate that never went through validateConfig', () => {
+  // Accessors are called on configs the core loaded, but also on hand-built ones in tests and
+  // in a caller that merged its own object. The accessor must be self-defending, exactly like
+  // reviewMaxDispatchedRoundDefault.
+  for (const sampleRate of ['0.5', -1, 2, null, undefined, NaN]) {
+    assert.equal(notesSampleRate({ notesDefaults: { sampleRate } }), 1)
+  }
+})
+
 test('reviewDefaultRounds returns [] for a config carrying no registry', () => {
   // [] is the honest "this repo default-runs no extra round" — a config predating the block, or one
   // that merged it away, must degrade to an empty phase rather than failing a review run.
@@ -489,6 +555,64 @@ test('validateConfig accepts only boolean true for reviewDefaults.forceFull', ()
     const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { forceFull } })
     validateConfig(cfg, 'test')
     assert.deepEqual(reviewDeltaDefaults(cfg), { deltaFileThreshold: 20, forceFull: false })
+  }
+})
+
+test('DEFAULT_CONFIG documents a 360-minute child wall clock and the reader returns it', () => {
+  // 360, not 90: children on a repo of this class measure 2-4 h, so a short clock expires on
+  // healthy work. Pin the number here so a silent reduction has to change a test.
+  assert.equal(EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES, 360)
+  assert.equal(DEFAULT_CONFIG.epicDefaults.childWallClockMinutes, 360)
+  assert.equal(epicChildWallClockMinutes(DEFAULT_CONFIG), 360)
+  validateConfig(DEFAULT_CONFIG, 'test')
+})
+
+test('epicChildWallClockMinutes falls back to the default for a config carrying no block', () => {
+  // A config predating the block, or one that merged it away, must still resolve a usable clock —
+  // `undefined` would make every `elapsed > clock` comparison false, i.e. a child that never expires.
+  assert.equal(epicChildWallClockMinutes({}), 360)
+  assert.equal(epicChildWallClockMinutes({ epicDefaults: {} }), 360)
+  assert.equal(epicChildWallClockMinutes(undefined), 360)
+  validateConfig({ ...DEFAULT_CONFIG, epicDefaults: undefined }, 'test')
+})
+
+test('mergeConfig honors an epicDefaults.childWallClockMinutes override', () => {
+  const merged = mergeConfig(DEFAULT_CONFIG, { epicDefaults: { childWallClockMinutes: 480 } })
+  validateConfig(merged, 'test')
+  assert.equal(epicChildWallClockMinutes(merged), 480)
+
+  const shorter = mergeConfig(DEFAULT_CONFIG, { epicDefaults: { childWallClockMinutes: 45 } })
+  validateConfig(shorter, 'test')
+  assert.equal(epicChildWallClockMinutes(shorter), 45)
+})
+
+test('validateConfig rejects a non-object epicDefaults block', () => {
+  for (const epicDefaults of [360, 'long', []]) {
+    assert.throws(
+      () => validateConfig({ ...DEFAULT_CONFIG, epicDefaults }, 'test'),
+      /skill-config:.*epicDefaults must be an object when present/,
+    )
+  }
+})
+
+test('validateConfig warns and coerces a malformed epicDefaults.childWallClockMinutes', () => {
+  // Note 0 and -1 are both invalid here, unlike reviewDefaults.deltaFileThreshold where zero is a
+  // meaningful setting: a zero-minute clock would expire every child at launch.
+  for (const childWallClockMinutes of [undefined, null, '360', 1.5, 0, -1, NaN, {}]) {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { epicDefaults: { childWallClockMinutes } })
+    const originalWarn = console.warn
+    const warnings = []
+    console.warn = (message) => warnings.push(String(message))
+    try {
+      validateConfig(cfg, 'test')
+    } finally {
+      console.warn = originalWarn
+    }
+    assert.equal(cfg.epicDefaults.childWallClockMinutes, 360)
+    assert.equal(epicChildWallClockMinutes(cfg), 360)
+    assert.match(warnings.join('\n'), /epicDefaults\.childWallClockMinutes/)
+    assert.match(warnings.join('\n'), /must be a positive integer/)
+    assert.match(warnings.join('\n'), /using 360/)
   }
 })
 

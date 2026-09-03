@@ -32,7 +32,7 @@ linters:
         # talk to the host over gRPC and duplicate small types rather than take a
         # source dependency. Go's internal/ rule already blocks cross-module
         # internal imports; this catches the importable (non-internal) host
-        # packages it does not — e.g. bossd/migrations or bosso/migrations.
+        # packages it does not — e.g. bossd/migrations.
         # Scoped to plugin files so host modules linting against this same config
         # are unaffected.
         plugins-no-host-imports:

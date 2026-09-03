@@ -97,11 +97,14 @@ func TestRunClaudeAdd(t *testing.T) {
 
 	t.Run("walkthrough_dedupes_claude_noise_and_preserves_unknown", func(t *testing.T) {
 		tok := claudeToken()
+		// The lines below are the Claude CLI's own stdout, replayed byte for byte. They are
+		// another program's output rather than our copy, so they keep its spelling: ellipsis:
+		// literal-dots ok
 		ex := &fakeExec{proc: newScriptedProc([]string{
 			"\x1b[2KWelcome to Claude Code v1.2.3\r",
 			"Welcome to Claude Code v1.2.3",
-			"Opening browser to sign in...",
-			"Opening browser to sign in...",
+			"Opening browser to sign in...", // ellipsis: literal-dots ok
+			"Opening browser to sign in...", // ellipsis: literal-dots ok
 			"Error opening browser: permission denied",
 			"Opening browser failed: permission denied",
 			"Non-token warning: browser launch failed once",
@@ -121,7 +124,7 @@ func TestRunClaudeAdd(t *testing.T) {
 		if got := strings.Count(strings.Join(pr.said, "\n"), "Welcome to Claude Code"); got > 1 {
 			t.Fatalf("welcome banner emitted %d times, want at most once:\n%v", got, pr.said)
 		}
-		if got := countSaid(pr.said, "Opening browser for Claude sign-in..."); got > 1 {
+		if got := countSaid(pr.said, "Opening browser for Claude sign-in…"); got > 1 {
 			t.Fatalf("opening-browser notice emitted %d times, want at most once:\n%v", got, pr.said)
 		}
 		if !strings.Contains(transcript, "Error opening browser: permission denied") {

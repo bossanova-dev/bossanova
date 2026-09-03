@@ -93,7 +93,7 @@ func (m PreflightModel) View() tea.View {
 	footerGap := "\n"
 	if m.retryCheck != nil {
 		waiting := lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).
-			Render("Waiting for the daemon... will reconnect automatically.")
+			Render("Waiting for the daemon… will reconnect automatically.")
 		footer = waiting + "\n" + styleActionBar.Render("[q]uit")
 		footerGap = "\n\n"
 	}

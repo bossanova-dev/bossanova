@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
@@ -391,7 +392,7 @@ func TestTruncate(t *testing.T) {
 		{"short string unchanged", "short", "short"},
 		{"empty unchanged", "", ""},
 		{"exactly at limit unchanged", atLimit, atLimit},
-		{"over limit truncated with ellipsis", overLimit, strings.Repeat("b", maxSummaryLen-3) + "..."},
+		{"over limit truncated with ellipsis", overLimit, strings.Repeat("b", maxSummaryLen-3) + ellipsis},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -950,5 +951,37 @@ func TestChatTitleInDirRejectsTraversalID(t *testing.T) {
 	title, explicit := chatTitleInDir(projectDir, "good")
 	if title != "real title" || !explicit {
 		t.Errorf("chatTitleInDir valid id = (%q, %v), want (real title, true)", title, explicit)
+	}
+}
+
+// TestTruncate_CutFallsInsideMultiByteRune pins the byte-budget contract: the
+// 80-byte budget is denominated in bytes and the ellipsis marker is 3 bytes in
+// UTF-8, so the reservation is unchanged — but a fixed byte offset can land
+// inside a multi-byte rune, which used to emit invalid UTF-8. The cut backs off
+// to a rune boundary instead.
+func TestTruncate_CutFallsInsideMultiByteRune(t *testing.T) {
+	// 76 ASCII bytes then 3-byte runes, so byte maxSummaryLen-3 (77) is a
+	// continuation byte in the middle of the first multi-byte rune.
+	in := strings.Repeat("a", 76) + strings.Repeat("あ", 3)
+	if len(in) <= maxSummaryLen {
+		t.Fatalf("fixture is %d bytes, need more than maxSummaryLen (%d) to truncate", len(in), maxSummaryLen)
+	}
+	if utf8.RuneStart(in[maxSummaryLen-len(ellipsis)]) {
+		t.Fatalf("fixture does not exercise the bug: byte %d is already a rune boundary", maxSummaryLen-len(ellipsis))
+	}
+
+	got := truncate(in)
+
+	if !utf8.ValidString(got) {
+		t.Errorf("truncate(...) = %q, which is not valid UTF-8 — the cut split a rune", got)
+	}
+	if len(got) > maxSummaryLen {
+		t.Errorf("truncate(...) = %q, %d bytes, want at most maxSummaryLen (%d)", got, len(got), maxSummaryLen)
+	}
+	if !strings.HasSuffix(got, ellipsis) {
+		t.Errorf("truncate(...) = %q, want it to end in the ellipsis marker %q", got, ellipsis)
+	}
+	if want := strings.Repeat("a", 76) + ellipsis; got != want {
+		t.Errorf("truncate(...) = %q, want %q", got, want)
 	}
 }

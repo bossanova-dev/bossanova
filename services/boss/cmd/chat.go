@@ -81,6 +81,7 @@ func chatCmd() *cobra.Command {
 	// `boss rename` (main.go renameCmd) so a multi-word title can be typed
 	// without quoting, exactly as it can for a session.
 	rename := &cobra.Command{
+		// A cobra usage grammar, not a sentence: ellipsis: literal-dots ok
 		Use:   "rename <session-id|chat-id> <new-title...>",
 		Short: "Rename a chat (updates its title)",
 		Args:  cobra.MinimumNArgs(2),

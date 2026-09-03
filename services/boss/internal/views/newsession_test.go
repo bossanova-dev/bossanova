@@ -1299,7 +1299,8 @@ func TestStartCreatingClearsTheAcceptedSessionFromThePreviousAttempt(t *testing.
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 	m.acceptedSess = &pb.Session{Id: "stale-1"}
-	m.setupLines = []string{"cloning..."}
+	// Output from a user's own setup script, not copy this project writes.
+	m.setupLines = []string{"cloning..."} // ellipsis: literal-dots ok
 
 	if cmd := m.startCreating(); cmd != nil {
 		cmd()
@@ -2579,7 +2580,7 @@ func TestNewSession_CreatingPhase_RendersInitializingIndicator(t *testing.T) {
 
 // TestNewSession_CreatingPhase_BlankLineAfterInitializing asserts that the
 // creating-step view places exactly one blank line between the "initializing"
-// label and the following "Creating a new session..." status line (BOS-397).
+// label and the following "Creating a new session…" status line (BOS-397).
 func TestNewSession_CreatingPhase_BlankLineAfterInitializing(t *testing.T) {
 	sc := &stubClient{repos: oneRepo()}
 	m := NewNewSessionModel(sc, context.Background())
@@ -2593,7 +2594,7 @@ func TestNewSession_CreatingPhase_BlankLineAfterInitializing(t *testing.T) {
 		if strings.Contains(line, "initializing") {
 			initIdx = i
 		}
-		if strings.Contains(line, "Creating a new session...") {
+		if strings.Contains(line, "Creating a new session…") {
 			statusIdx = i
 		}
 	}
@@ -2601,11 +2602,11 @@ func TestNewSession_CreatingPhase_BlankLineAfterInitializing(t *testing.T) {
 		t.Fatalf("creating view missing 'initializing' line in:\n%s", view)
 	}
 	if statusIdx == -1 {
-		t.Fatalf("creating view missing 'Creating a new session...' line in:\n%s", view)
+		t.Fatalf("creating view missing 'Creating a new session…' line in:\n%s", view)
 	}
 	// Exactly one blank line between the two ⇒ status line is two indices below.
 	if statusIdx != initIdx+2 {
-		t.Errorf("want exactly one blank line between 'initializing' (line %d) and 'Creating a new session...' (line %d); indices should differ by 2, got %d:\n%s",
+		t.Errorf("want exactly one blank line between 'initializing' (line %d) and 'Creating a new session…' (line %d); indices should differ by 2, got %d:\n%s",
 			initIdx, statusIdx, statusIdx-initIdx, view)
 	}
 	if strings.TrimSpace(lines[initIdx+1]) != "" {
@@ -2635,7 +2636,7 @@ func TestNewSession_CreatingPhase_BlankLineSurvivesTheAcceptedSession(t *testing
 			initIdx = i
 		case strings.Contains(line, "Session sess-accepted"):
 			idIdx = i
-		case strings.Contains(line, "Creating a new session..."):
+		case strings.Contains(line, "Creating a new session…"):
 			statusIdx = i
 		}
 	}
@@ -2657,7 +2658,7 @@ func TestNewSession_CreatingPhase_BlankLineSurvivesTheAcceptedSession(t *testing
 }
 
 // TestNewSession_CreatingPhase_BlankLineBeforeSetupScript asserts that the same
-// blank line precedes the "Running setup script..." status line when a setup
+// blank line precedes the "Running setup script…" status line when a setup
 // script is running (m.setupLines populated), covering the setupLines>0 render
 // branch that shares the BOS-397 "\n\n" write.
 func TestNewSession_CreatingPhase_BlankLineBeforeSetupScript(t *testing.T) {
@@ -2674,7 +2675,7 @@ func TestNewSession_CreatingPhase_BlankLineBeforeSetupScript(t *testing.T) {
 		if strings.Contains(line, "initializing") {
 			initIdx = i
 		}
-		if strings.Contains(line, "Running setup script...") {
+		if strings.Contains(line, "Running setup script…") {
 			statusIdx = i
 		}
 	}
@@ -2682,11 +2683,11 @@ func TestNewSession_CreatingPhase_BlankLineBeforeSetupScript(t *testing.T) {
 		t.Fatalf("creating view missing 'initializing' line in:\n%s", view)
 	}
 	if statusIdx == -1 {
-		t.Fatalf("creating view missing 'Running setup script...' line in:\n%s", view)
+		t.Fatalf("creating view missing 'Running setup script…' line in:\n%s", view)
 	}
 	// Exactly one blank line between the two ⇒ status line is two indices below.
 	if statusIdx != initIdx+2 {
-		t.Errorf("want exactly one blank line between 'initializing' (line %d) and 'Running setup script...' (line %d); indices should differ by 2, got %d:\n%s",
+		t.Errorf("want exactly one blank line between 'initializing' (line %d) and 'Running setup script…' (line %d); indices should differ by 2, got %d:\n%s",
 			initIdx, statusIdx, statusIdx-initIdx, view)
 	}
 	if strings.TrimSpace(lines[initIdx+1]) != "" {
@@ -2884,14 +2885,14 @@ func TestNewSession_ViewPhaseArmsRenderTheirOwnScreen(t *testing.T) {
 				return m
 			},
 			want:    "Error: boom",
-			notWant: "Loading...",
+			notWant: "Loading…",
 		},
 		{
 			name: "loading",
 			setup: func(t *testing.T, sc *stubClient) NewSessionModel {
 				return NewNewSessionModel(sc, context.Background())
 			},
-			want: "Loading...",
+			want: "Loading…",
 		},
 		{
 			name: "repoSelect",
@@ -2901,7 +2902,7 @@ func TestNewSession_ViewPhaseArmsRenderTheirOwnScreen(t *testing.T) {
 				return sendMsg(t, m, reposMsg{repos: sc.repos})
 			},
 			want:    "Select a repository",
-			notWant: "Loading...",
+			notWant: "Loading…",
 		},
 		{
 			name: "agentSelect",
@@ -2932,7 +2933,7 @@ func TestNewSession_ViewPhaseArmsRenderTheirOwnScreen(t *testing.T) {
 				m = sendMsg(t, m, reposMsg{repos: sc.repos})
 				// Populate BOTH lists so notWant is a real discriminator:
 				// with m.trackerIssues empty, renderIssueSelect would draw
-				// "Loading ... issues..." and could never contain the issue
+				// "Loading %s issues…" and could never contain the issue
 				// marker, making the assertion unfireable. Issues first so
 				// the PR message wins the phase.
 				m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
@@ -2970,7 +2971,7 @@ func TestNewSession_ViewPhaseArmsRenderTheirOwnScreen(t *testing.T) {
 				m.phase = newSessionPhaseCreating
 				return m
 			},
-			want:    "Creating a new session...",
+			want:    "Creating a new session…",
 			notWant: "Session created!",
 		},
 		{
@@ -2989,7 +2990,7 @@ func TestNewSession_ViewPhaseArmsRenderTheirOwnScreen(t *testing.T) {
 				return m
 			},
 			want:    "Session created!",
-			notWant: "Creating a new session...",
+			notWant: "Creating a new session…",
 		},
 		{
 			name: "confirmOverwrite",

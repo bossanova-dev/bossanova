@@ -335,10 +335,10 @@ func Accounts() []*pb.Account {
 // on, and ArchivedAt nil (already resurrected once — no archive is actually in
 // flight from steady state):
 //   - index 0 (sess-425-resurrected): archive_pending=false — the regression
-//     case; the detail view must NOT show "Archiving session...", and the home
+//     case; the detail view must NOT show "Archiving session…", and the home
 //     list STATUS column shows "✓ merged".
 //   - index 1 (sess-425-archiving): archive_pending=true — the daemon has an
-//     archive in flight; the detail view MUST show "Archiving session...", and
+//     archive in flight; the detail view MUST show "Archiving session…", and
 //     (post-BOS-422) the home list STATUS column shows "archiving" with a
 //     spinner, computed by displaystatus.Compute from archive_pending.
 //
@@ -362,7 +362,7 @@ func ArchiveSignalSessions() []*pb.Session {
 			DisplayLabel:                        "✓ merged",
 			DisplayIntent:                       pb.DisplayIntent_DISPLAY_INTENT_MUTED,
 			RepoShouldArchiveSessionsAfterMerge: true,
-			ArchivePending:                      false, // no archive in flight — must NOT show "Archiving session..."
+			ArchivePending:                      false, // no archive in flight — must NOT show "Archiving session…"
 			PrNumber:                            i32(424), CreatedAt: ts(-2 * time.Hour),
 			WorktreePath: "/Users/demo/worktrees/my-app/resurrected-merged",
 		},
@@ -375,12 +375,12 @@ func ArchiveSignalSessions() []*pb.Session {
 			// so an in-flight archive computes DisplayLabel="archiving" (WARNING +
 			// spinner) instead of the stale "✓ merged" — this fixture mirrors that
 			// server-side result so the home STATUS column renders "archiving" for the
-			// list, matching the detail-view "Archiving session..." spinner (BOS-425).
+			// list, matching the detail-view "Archiving session…" spinner (BOS-425).
 			DisplayLabel:                        "archiving",
 			DisplayIntent:                       pb.DisplayIntent_DISPLAY_INTENT_WARNING,
 			DisplaySpinner:                      true,
 			RepoShouldArchiveSessionsAfterMerge: true,
-			ArchivePending:                      true, // daemon archive in flight — MUST show "archiving" (list) / "Archiving session..." (detail)
+			ArchivePending:                      true, // daemon archive in flight — MUST show "archiving" (list) / "Archiving session…" (detail)
 			PrNumber:                            i32(425), CreatedAt: ts(-3 * time.Hour),
 			WorktreePath: "/Users/demo/worktrees/my-app/archiving-merged",
 		},
@@ -388,7 +388,7 @@ func ArchiveSignalSessions() []*pb.Session {
 }
 
 // ArchiveSignalChats returns one chat per ArchiveSignal session so both
-// chatpickers render populated (not "Loading chats...").
+// chatpickers render populated (not "Loading chats…").
 func ArchiveSignalChats() []*pb.ClaudeChat {
 	return []*pb.ClaudeChat{
 		{Id: "chat-425-r", AgentSessionId: "claude-425-r", SessionId: "sess-425-resurrected", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
@@ -741,7 +741,7 @@ func ErroredStatusSessions() []*pb.Session {
 }
 
 // ErroredStatusChats returns one chat per ErroredStatus session so both
-// chatpickers render populated (not "Loading chats...").
+// chatpickers render populated (not "Loading chats…").
 func ErroredStatusChats() []*pb.ClaudeChat {
 	return []*pb.ClaudeChat{
 		{Id: "chat-430-o", AgentSessionId: "claude-430-o", SessionId: "sess-430-orphaned", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
@@ -847,7 +847,7 @@ func LivePastFailureSessions() []*pb.Session {
 }
 
 // LivePastFailureChats returns one chat per LivePastFailure session so every
-// chatpicker renders populated (not "Loading chats...").
+// chatpicker renders populated (not "Loading chats…").
 func LivePastFailureChats() []*pb.ClaudeChat {
 	return []*pb.ClaudeChat{
 		{Id: "chat-855-l", AgentSessionId: "claude-855-l", SessionId: "sess-855-live", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
@@ -958,7 +958,7 @@ func TransientPRFailureSessions() []*pb.Session {
 }
 
 // TransientPRFailureChats returns one chat per TransientPRFailure session so both
-// chat pickers render populated (not "Loading chats...").
+// chat pickers render populated (not "Loading chats…").
 func TransientPRFailureChats() []*pb.ClaudeChat {
 	return []*pb.ClaudeChat{
 		{Id: "chat-877-t", AgentSessionId: "claude-877-t", SessionId: "sess-877-transient", Title: "Set up the project", CreatedAt: ts(-25 * time.Minute)},
@@ -1008,7 +1008,7 @@ func HTTPEndpointsSessions() []*pb.Session {
 }
 
 // HTTPEndpointsChats returns one chat per HTTPEndpoints session so both chat
-// pickers render a populated table rather than "Loading chats...".
+// pickers render a populated table rather than "Loading chats…".
 func HTTPEndpointsChats() []*pb.ClaudeChat {
 	return []*pb.ClaudeChat{
 		{Id: "chat-474-eps", AgentSessionId: "claude-474-eps", SessionId: "sess-474-endpoints", Title: "Run the dev servers", CreatedAt: ts(-80 * time.Minute)},

@@ -38,6 +38,9 @@ var ReleasedVersions = []Version{
 	"2026-08-20", // V20260820 — SwitchDeadlineCodeChange (BOS-947 relayed switch deadline surfaces DEADLINE_EXCEEDED, not ABORTED).
 	"2026-08-21", // V20260821 — SwitchResultCeilingMessageChange + SwitchCanceledCodeChange.
 	"2026-08-25", // V20260825 — StaleCheckStateChange (last_check_state serves only head-current demonstrated verdicts).
+	"2026-09-02", // V20260902 — organization-scoped visibility handler gate.
+	"2026-09-03", // V20260903 — SwitchActiveOrganization retired in favor of AuthKit switchToOrganization.
+	"2026-09-04", // V20260904 — AbandonedCheckoutStatusChange (BOS-1076 abandoned checkout no longer reports an activating subscription).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

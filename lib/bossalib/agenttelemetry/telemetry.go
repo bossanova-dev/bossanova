@@ -25,19 +25,38 @@ type Counts struct {
 	DirectSubagentCount  int64
 	OutputTokenCount     *int64
 	ReasoningTokenCount  *int64
-	Children             []ChildSpan
+	// ReviewerDispatchCount is how many reviewer subagents this run dispatched —
+	// tool calls whose worker prompt leads with ReviewerDispatchMarker. It is a
+	// whole-tree total, not a per-transcript one: every marked dispatch a
+	// descendant made at any depth rolls into it (see
+	// ChildSpan.ReviewerDispatchCount), boss-review's own lens and round
+	// dispatches included. So read it as reviewer fan-out made observable, never
+	// as an audit of boss-build's per-run dispatch bound — that bound is scoped to
+	// the legs the protocol starts itself and deliberately excludes everything
+	// inside boss-review, so a compliant run reports well above it. 0 for a run
+	// that dispatched none, and for every runner whose transcript this package
+	// does not parse.
+	ReviewerDispatchCount int64
+	// TerminalState is the last boss-build terminal-state token the transcript's
+	// assistant output printed on a line of its own, or "" when it printed none.
+	TerminalState string
+	Children      []ChildSpan
 }
 
 type ChildSpan struct {
-	AgentSessionID      string
-	ParentAgentID       string
-	SpawnDepth          int32
-	StartedAt           time.Time
-	StoppedAt           *time.Time
-	ModelCallCount      int64
-	ToolCallCount       int64
-	OutputTokenCount    *int64
-	ReasoningTokenCount *int64
+	AgentSessionID string
+	ParentAgentID  string
+	SpawnDepth     int32
+	StartedAt      time.Time
+	StoppedAt      *time.Time
+	ModelCallCount int64
+	ToolCallCount  int64
+	// ReviewerDispatchCount is the marked reviewer dispatches this child made.
+	// It rolls up into the parent's total; the child's TerminalState deliberately
+	// does NOT, because a reviewer subagent's own BLOCKED is not the parent's.
+	ReviewerDispatchCount int64
+	OutputTokenCount      *int64
+	ReasoningTokenCount   *int64
 }
 
 type CodexSessionMeta struct {
@@ -169,6 +188,13 @@ func TallyCodexPathsWindowContext(ctx context.Context, paths []string, since, un
 		out.ToolCallCount += counts.ToolCallCount
 		out.SubagentCount += counts.SubagentCount
 		out.DirectSubagentCount += counts.DirectSubagentCount
+		out.ReviewerDispatchCount += counts.ReviewerDispatchCount
+		// One codex run is replayed across several rollout files; the run's
+		// terminal state is the last one any file printed, and a later file that
+		// printed none must not erase an earlier file's state.
+		if counts.TerminalState != "" {
+			out.TerminalState = counts.TerminalState
+		}
 		if counts.OutputTokenCount != nil {
 			addPtr(&out.OutputTokenCount, *counts.OutputTokenCount)
 		}
@@ -273,6 +299,7 @@ func TallyClaudePathWithChildrenWindowContext(ctx context.Context, path, childPa
 		counts.Children = append(counts.Children, child)
 		counts.ChildModelCallCount += child.ModelCallCount
 		counts.ToolCallCount += child.ToolCallCount
+		counts.ReviewerDispatchCount += child.ReviewerDispatchCount
 		if child.OutputTokenCount != nil {
 			addPtr(&counts.OutputTokenCount, *child.OutputTokenCount)
 		}
@@ -315,13 +342,14 @@ func ChildSpanFromJSONLContext(ctx context.Context, path string) (ChildSpan, err
 	}
 	agentID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	return ChildSpan{
-		AgentSessionID:      agentID,
-		StartedAt:           start,
-		StoppedAt:           &stop,
-		ModelCallCount:      counts.ParentModelCallCount,
-		ToolCallCount:       counts.ToolCallCount,
-		OutputTokenCount:    counts.OutputTokenCount,
-		ReasoningTokenCount: counts.ReasoningTokenCount,
+		AgentSessionID:        agentID,
+		StartedAt:             start,
+		StoppedAt:             &stop,
+		ModelCallCount:        counts.ParentModelCallCount,
+		ToolCallCount:         counts.ToolCallCount,
+		ReviewerDispatchCount: counts.ReviewerDispatchCount,
+		OutputTokenCount:      counts.OutputTokenCount,
+		ReasoningTokenCount:   counts.ReasoningTokenCount,
 	}, nil
 }
 
@@ -521,6 +549,10 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 			out.ParentModelCallCount++
 			if provider == "claude" {
 				out.ToolCallCount += countClaudeToolUseBlocks(cm.Content)
+				out.ReviewerDispatchCount += countClaudeReviewerDispatches(cm.Content)
+				if state := terminalStateInText(assistantText(cm.Content)); state != "" {
+					out.TerminalState = state
+				}
 			}
 			if msg.Usage != nil {
 				addPtr(&out.OutputTokenCount, msg.Usage.OutputTokens)
@@ -536,6 +568,9 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 			} else {
 				out.ParentModelCallCount++
 			}
+			if state := terminalStateInText(assistantText(msg.Message)); state != "" {
+				out.TerminalState = state
+			}
 			if msg.Usage != nil {
 				addPtr(&out.OutputTokenCount, msg.Usage.OutputTokens)
 				if msg.Usage.OutputTokensDetails != nil {
@@ -544,6 +579,9 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 			}
 		case "tool_use", "function_call", "tool_search_call", "function_call_item", "custom_tool_call":
 			out.ToolCallCount++
+			if toolInputIsReviewerDispatch(msg.Message) {
+				out.ReviewerDispatchCount++
+			}
 			if provider == "codex" {
 				if msg.Type == "custom_tool_call" && isCodexSubagentToolName(msg.Name) {
 					out.SubagentCount++
@@ -566,8 +604,14 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 					codexAssistantMessages++
 					codexModelInvocations++
 					codexToolInvocationOpen = false
+					if state := terminalStateInText(assistantText(msg.Item)); state != "" {
+						out.TerminalState = state
+					}
 				case "function_call", "tool_call", "custom_tool_call":
 					out.ToolCallCount++
+					if toolInputIsReviewerDispatch(msg.Item) {
+						out.ReviewerDispatchCount++
+					}
 					if item.Type == "custom_tool_call" && isCodexSubagentToolName(item.Name) {
 						out.SubagentCount++
 						out.DirectSubagentCount++

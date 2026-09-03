@@ -20,7 +20,9 @@ func TestBossRepairSkillWatchModePollingContract(t *testing.T) {
 	assertContains(t, watchMode, "gh pr checks --json bucket")
 	assertContains(t, watchMode, "${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js")
 	assertContains(t, watchMode, "if checks are pending")
-	assertContains(t, watchMode, "seconds, then poll checks, review threads, and mergeability again.")
+	// BOS-1106 replaced the fixed sleep with a callback-driven wait; the three signals a wake
+	// must re-read are unchanged, and that is what this pins.
+	assertContains(t, watchMode, "re-read checks, review threads, and mergeability")
 	assertContains(t, watchMode, "Do not wait on checks without probing reviews and mergeability first.")
 	assertContains(t, watchMode, "all fixed or declined review threads are resolved")
 	assertContains(t, watchMode, "repair_status=clean")
@@ -1316,7 +1318,7 @@ func TestBossRepairSkillWatchPassFreshnessContract(t *testing.T) {
 
 			// Position: the freshness rule runs at pass start, before the poll step.
 			freshnessAt := strings.Index(watchMode, "**Pass freshness — re-read the PR head")
-			pollAt := strings.Index(watchMode, "\n2. Poll all repair signals before every sleep:")
+			pollAt := strings.Index(watchMode, "\n2. Poll all repair signals before every wait:")
 			if freshnessAt < 0 || pollAt < 0 || freshnessAt > pollAt {
 				t.Fatalf("the pass-freshness rule must sit at pass start, before the poll step (freshness at %d, poll at %d)", freshnessAt, pollAt)
 			}
@@ -2071,6 +2073,168 @@ func TestBossRepairSkillProseFindingBlastRadius(t *testing.T) {
 			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
 			assertFalsificationPins(t, strategyC, bossRepairProseBlastRadiusPins)
 			assertFalsificationPins(t, strategyC, bossRepairDocClaimReadOrderPins)
+		})
+	}
+}
+
+// falsificationRepairBotPartitionPins pin the partition boss-repair must apply *ahead of* any
+// repair pass. Without it a repair session re-opens a fix cycle over a diff the originating build
+// run's own whole-branch review already passed — the exact loop this partition exists to cut.
+var falsificationRepairBotPartitionPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "repair-partitions-by-author-before-triage",
+		pattern:      "Partition\\s+the\\s+threads\\s+by\\s+author\\s+before\\s+triaging\\s+—\\s+the\\s+source\\s+decides\\s+whether\\s+a\\s+repair\\s+cycle\\s+opens\\s+at\\s+all\\.",
+		live:         "Partition the threads by author before triaging — the source decides whether a repair cycle opens at all.",
+		tokenRemoved: "Partition the threads by file before triaging — the source decides whether a repair cycle opens at all.",
+		alsoRemoved: []string{
+			// Ordering inverted — the partition would run after a repair pass has already opened.
+			"Partition the threads by author after triaging — the source decides whether a repair cycle opens at all.",
+			// The consequence dropped — partitioning with no stated effect on the cycle.
+			"Partition the threads by author before triaging.",
+		},
+	},
+	{
+		name:         "repair-bot-threads-open-no-cycle",
+		pattern:      "Answer\\s+the\\s+bot\\s+threads\\s+once\\s+and\\s+resolve\\s+what\\s+that\\s+response\\s+settles;\\s+do\\s+not\\s+open\\s+a\\s+repair\\s+cycle\\s+over\\s+a\\s+diff\\s+that\\s+run's\\s+own\\s+review\\s+already\\s+passed\\.",
+		live:         "Answer the bot threads once and resolve what that response settles; do not open a repair cycle over a diff that run's own review already passed.",
+		tokenRemoved: "Answer the bot threads once and resolve what that response settles; open a repair cycle over a diff that run's own review already passed.",
+		alsoRemoved: []string{
+			// The no-cycle rule dropped entirely.
+			"Answer the bot threads once and resolve what that response settles.",
+			// The once-only bound dropped.
+			"Answer the bot threads and resolve what that response settles; do not open a repair cycle over a diff that run's own review already passed.",
+		},
+	},
+	{
+		name:         "repair-human-and-red-ci-unchanged",
+		pattern:      "Human\\s+changes-requested\\s+threads\\s+and\\s+red\\s+CI\\s+are\\s+unchanged:\\s+they\\s+triage\\s+and\\s+repair\\s+exactly\\s+as\\s+below\\.",
+		live:         "Human changes-requested threads and red CI are unchanged: they triage and repair exactly as below.",
+		tokenRemoved: "Human changes-requested threads are unchanged: they triage and repair exactly as below.",
+		alsoRemoved: []string{
+			// The carve-out inverted — human feedback would become advisory too.
+			"Human changes-requested threads and red CI are advisory too: they triage and repair exactly as below.",
+		},
+	},
+})
+
+// TestBossRepairPartitionsBotReviewsBeforeAnyRepairPass pins the partition at both sites a repair
+// pass can start from: Strategy C's thread triage, and the Watch Mode step that routes
+// `repair_status=needs_repair` straight into it.
+func TestBossRepairPartitionsBotReviewsBeforeAnyRepairPass(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		name, skill := name, skill
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			assertFalsificationPins(t, strategyC, falsificationBotReviewPins)
+			assertFalsificationPins(t, strategyC, falsificationRepairBotPartitionPins)
+			assertFalsificationPins(t, strategyC, []falsificationProsePin{falsificationCiSignalPin})
+
+			// The verdict is a build-run artifact; a repair pass must read it rather than infer it.
+			assertContains(t, strategyC, "$(git rev-parse --git-dir)/boss-build-review-verdict")
+			assertContains(t, strategyC, "`REVIEW_VERDICT=clean`")
+
+			watch := markdownSection(t, skill, "## Watch Mode")
+			assertContains(t, watch, "Partition those threads by author first")
+			assertContains(t, watch, "`REVIEW_VERDICT=clean`")
+			assertContains(t, watch, "bot-authored threads are advisory")
+		})
+	}
+}
+
+// falsificationRepairPendingChecksPins pin BOS-1106's contract inside boss-repair's watch loop. The
+// pending-checks branch is the only place this skill blocks on CI, and it used to do it with a fixed
+// 30-60 second sleep: a duration that wakes the loop on a schedule unrelated to the checks and reads
+// identically whether CI resolved, stalled, or never reported. Five properties carry the replacement
+// and each is independently deletable — the callback-first rule, the fixed-sleep prohibition that
+// stops it being re-introduced beside the callback, the policy-sourced trigger list (a retyped list
+// goes stale against the adapter silently), the clean degrade when the gate is false, and the
+// fail-closed routing of an exhausted cap.
+var falsificationRepairPendingChecksPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "repair-pending-checks-waits-on-a-callback",
+		pattern:      `if\s+checks\s+are\s+pending,\s+\*\*wait\s+on\s+a\s+callback,\s+not\s+on\s+a\s+clock\*\*`,
+		live:         "if checks are pending, **wait on a callback, not on a clock**",
+		tokenRemoved: "if checks are pending, **wait on a clock**",
+		alsoRemoved: []string{
+			// The prohibition half dropped — arming a watch and then also sleeping a fixed
+			// interval satisfies "wait on a callback" while keeping the defect.
+			"if checks are pending, **wait on a callback**",
+		},
+	},
+	{
+		name:         "repair-forbids-fixed-ci-sleep",
+		pattern:      "Never\\s+spend\\s+a\\s+fixed\\s+`sleep`\\s+of\\s+60\\s+seconds\\s+or\\s+longer\\s+waiting\\s+for\\s+CI\\s+to\\s+move",
+		live:         "Never spend a fixed `sleep` of 60 seconds or longer waiting for CI to move",
+		tokenRemoved: "Prefer not to spend a long sleep waiting for CI to move",
+		alsoRemoved: []string{
+			// The threshold dropped — the ban stops naming what it bans and sweeps up the bounded
+			// poll's own sub-minute pacing with it.
+			"Never spend a fixed `sleep` waiting for CI to move",
+			// The scope dropped — the rule would forbid every sleep in the loop.
+			"Never spend a fixed `sleep` of 60 seconds or longer",
+		},
+	},
+	{
+		name:         "repair-trigger-list-comes-from-policy",
+		pattern:      `read\s+the\s+trigger\s+list\s+from\s+the\s+adapter's\s+policy,\s+never\s+retype\s+it\s+here`,
+		live:         "read the trigger list from the adapter's policy, never retype it here",
+		tokenRemoved: "read the trigger list from the table above",
+		alsoRemoved: []string{
+			// The prohibition dropped — a literal list copied into this prose drifts out of step
+			// with policy.watchTriggers with nothing to catch it.
+			"read the trigger list from the adapter's policy",
+		},
+	},
+	{
+		name:         "repair-unavailable-gate-degrades-cleanly",
+		pattern:      `an\s+unavailable\s+gate\s+is\s+a\s+clean\s+degrade,\s+never\s+a\s+failed\s+wait`,
+		live:         "an unavailable gate is a clean degrade, never a failed wait",
+		tokenRemoved: "an unavailable gate is a failed wait",
+		alsoRemoved: []string{
+			// The "never a failed wait" half dropped — a standalone run with no bossd would read
+			// the unavailable gate as an error and abandon a wait it can still perform.
+			"an unavailable gate is a clean degrade",
+		},
+	},
+	{
+		name:         "repair-exhausted-cap-is-never-green",
+		pattern:      `routing\s+an\s+exhausted\s+cap\s+and\s+an\s+unresolvable\s+rollup\s+\*\*identically\*\*\s+and\s+never\s+as\s+green`,
+		live:         "routing an exhausted cap and an unresolvable rollup **identically** and never as green",
+		tokenRemoved: "routing an exhausted cap as green once the reads run out",
+		alsoRemoved: []string{
+			// The fail-closed half dropped — "identically" alone permits routing both as green.
+			"routing an exhausted cap and an unresolvable rollup **identically**",
+			// The exhausted-cap case dropped — a wait that simply ran out of reads falls through
+			// unclassified, which is how a never-reporting check set reads as passing.
+			"routing an unresolvable rollup **identically** and never as green",
+		},
+	},
+})
+
+// TestBossRepairPendingChecksWaitIsCallbackFirst is BOS-1106's acceptance gate on boss-repair. The
+// pins live in the Watch Mode window rather than against the whole skill: asserted skill-wide, the
+// pending-checks branch could be rewritten back to a fixed sleep while the sentences stayed green
+// somewhere else in the file.
+func TestBossRepairPendingChecksWaitIsCallbackFirst(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		name, skill := name, skill
+		t.Run(name, func(t *testing.T) {
+			watchMode := sectionBetween(t, skill, "## Watch Mode", "## Checklist")
+			assertFalsificationPins(t, watchMode, falsificationRepairPendingChecksPins)
+
+			// The rule is only executable if the callback seam it names resolves from this skill's
+			// own installed toolbox — boss-repair cannot reach into another core's copy.
+			assertContains(t, watchMode, "$BOSS_REPAIR_TOOLBOX/callback/adapter.mjs")
+			assertContains(t, watchMode, "callbacksAvailable")
+			assertContains(t, watchMode, "policy.watchTriggers")
+
+			// The step-2 heading names what the poll precedes. Left as "before every sleep" it
+			// still describes a loop paced by a clock.
+			if strings.Contains(watchMode, "Poll all repair signals before every sleep") {
+				t.Error("watch mode still frames its polling around a sleep; the loop waits on state")
+			}
+			assertContains(t, watchMode, "Poll all repair signals before every wait")
 		})
 	}
 }

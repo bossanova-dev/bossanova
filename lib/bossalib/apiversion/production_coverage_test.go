@@ -180,6 +180,8 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		})...)
 	case GateFailedOutcomeChange:
 		return gateFailedProbes()
+	case AbandonedCheckoutStatusChange:
+		return abandonedCheckoutProbes()
 	default:
 		return nil
 	}
@@ -219,6 +221,10 @@ func sessionResponse(procedure string, sess *pb.Session) (any, func(any) *pb.Ses
 		return &pb.ProxyLinkSessionPRResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyLinkSessionPRResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
 		return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{sess}}, func(msg any) *pb.Session { return msg.(*pb.ProxyListSessionsResponse).GetSessions()[0] }
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure:
+		return &pb.ProxyListSessionsAcrossOrganizationsResponse{Sessions: []*pb.Session{sess}}, func(msg any) *pb.Session {
+			return msg.(*pb.ProxyListSessionsAcrossOrganizationsResponse).GetSessions()[0]
+		}
 	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
 		return &pb.ProxyMergeSessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyMergeSessionResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
@@ -283,6 +289,68 @@ func statusProbes(status pb.ChatStatus, waitingReason string, mutated func(pb.Ch
 		})
 	}
 	return probes
+}
+
+// abandonedCheckoutProbes derives its procedure list from the proto descriptors
+// rather than hard-coding it, so a fourth response that starts carrying a
+// CloudAccessStatus fails this test until AbandonedCheckoutStatusChange covers
+// it too.
+func abandonedCheckoutProbes() []responseProbe {
+	var probes []responseProbe
+	for _, procedure := range UnaryProceduresContainingCarrier(
+		(&pb.CloudAccessStatus{}).ProtoReflect().Descriptor().FullName(),
+		"OrchestratorService",
+	) {
+		procedure := procedure
+		probes = append(probes, responseProbe{
+			procedure: procedure,
+			build: func() any {
+				msg, _ := cloudAccessResponse(procedure, abandonedCheckoutStatus())
+				return msg
+			},
+			mutated: func(msg any) bool {
+				_, get := cloudAccessResponse(procedure, nil)
+				st := get(msg)
+				return st.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH &&
+					st.GetMessage() == cloudActivatingMessage &&
+					!st.GetCanCreateCheckout() &&
+					st.GetCheckoutStarted() &&
+					st.GetDenialReason() == cloudPendingEntitlementDenialReason
+			},
+		})
+	}
+	return probes
+}
+
+func cloudAccessResponse(procedure string, st *pb.CloudAccessStatus) (any, func(any) *pb.CloudAccessStatus) {
+	switch procedure {
+	case bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure:
+		return &pb.GetCloudAccessStatusResponse{Status: st}, func(msg any) *pb.CloudAccessStatus {
+			return msg.(*pb.GetCloudAccessStatusResponse).GetStatus()
+		}
+	case bossanovav1connect.OrchestratorServiceCreateCheckoutSessionProcedure:
+		return &pb.CreateCheckoutSessionResponse{Status: st}, func(msg any) *pb.CloudAccessStatus {
+			return msg.(*pb.CreateCheckoutSessionResponse).GetStatus()
+		}
+	case bossanovav1connect.OrchestratorServiceRefreshCloudEntitlementsProcedure:
+		return &pb.RefreshCloudEntitlementsResponse{Status: st}, func(msg any) *pb.CloudAccessStatus {
+			return msg.(*pb.RefreshCloudEntitlementsResponse).GetStatus()
+		}
+	default:
+		panic("apiversion: unhandled CloudAccessStatus carrier procedure " + procedure)
+	}
+}
+
+// abandonedCheckoutStatus is the V20260904 shape for a Stripe Checkout session
+// that was created and never completed.
+func abandonedCheckoutStatus() *pb.CloudAccessStatus {
+	return &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		Message:           "Checkout has not been completed. Resume checkout to activate Bossanova Cloud.",
+		CanCreateCheckout: true,
+		CheckoutStarted:   true,
+		DenialReason:      "subscription_required",
+	}
 }
 
 func gateFailedProbes() []responseProbe {

@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "title": "BOS-1077 Settings withholds the free-trial offer from a signed-out account holder",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_AUTH_E2E_NEEDS_RELOGIN": "refresh_outcome_unknown" }
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "flagged-then-settings",
+      "title": "A retained re-login state reaches Settings still flagged",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Sign in required",
+            "match": "normalized",
+            "label": "the seeded retained re-login state is staged, not a plain guest"
+          },
+          "timeoutMs": 15000,
+          "caption": "Home opens as a signed-out account holder: credentials were retained but are unusable."
+        },
+        { "key": "s", "caption": "Open the Settings hub." },
+        {
+          "waitFor": {
+            "text": "Settings",
+            "match": "normalized",
+            "label": "Settings screen is visible"
+          },
+          "timeoutMs": 10000,
+          "caption": "Settings replaces Home."
+        }
+      ]
+    },
+    {
+      "id": "no-trial-offer",
+      "title": "The Cloud trial promo is absent from the Settings menu",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Cron jobs",
+            "match": "normalized",
+            "label": "the Settings menu has finished rendering"
+          },
+          "timeoutMs": 10000,
+          "caption": "Every screen captured in this scene is a settled Settings frame, so the absence below is asserted against Settings and nothing else -- a scene that also captured Home would pass vacuously, because Home suppresses the same offer in this state."
+        },
+        {
+          "expect": [
+            {
+              "text": "Cron jobs",
+              "match": "normalized",
+              "label": "the Settings menu itself rendered, so this frame is not an empty screen"
+            },
+            {
+              "text": "^(?![\\s\\S]*Bossanova Cloud)[\\s\\S]*$",
+              "match": "regex",
+              "label": "no Bossanova Cloud block is rendered for a signed-out account holder"
+            },
+            {
+              "text": "^(?![\\s\\S]*14-day free trial)[\\s\\S]*$",
+              "match": "regex",
+              "label": "no free-trial promise is rendered for a signed-out account holder"
+            }
+          ],
+          "caption": "shouldShowCloudSettings now requires !LoggedIn AND !NeedsRelogin, so a returning account holder who may already have used their trial is not offered another one."
+        }
+      ]
+    }
+  ]
+}

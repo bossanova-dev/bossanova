@@ -28,7 +28,7 @@ type billingPortalMsg struct {
 // billingOpeningStatus is the in-flight status line for the billing portal.
 // It is a constant so the initial press and the in-flight re-press cannot
 // drift apart.
-const billingOpeningStatus = "Opening the billing portal..."
+const billingOpeningStatus = "Opening the billing portal…"
 
 // settingsSection is one row of the Settings hub menu: a destination view (or
 // the in-place billing action) plus the letter accelerator that reaches it
@@ -91,7 +91,15 @@ func shouldShowCloudSettings(authMgr ...*auth.Manager) bool {
 		return false
 	}
 	status := authMgr[0].Status()
-	return status == nil || !status.LoggedIn
+	if status == nil {
+		return true
+	}
+	// A retained re-login state reports LoggedIn=false, which is exactly what
+	// this promo keys on, so without the second check cloudSettingsBlock()
+	// offers "a 14-day free trial" to a signed-out account holder who may well
+	// have already used theirs. Same suppression, same reasoning, as Home's
+	// guestCloudOfferVisible -- keep the two together.
+	return !status.LoggedIn && !status.NeedsRelogin
 }
 
 // sections returns the menu in display order. Billing is appended only when a
@@ -172,7 +180,7 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// A new key interaction supersedes any previously-shown billing
 		// status, so clear it before processing. Activating Billing sets
-		// "Opening the billing portal..." again (including when a request is
+		// "Opening the billing portal…" again (including when a request is
 		// already in flight, so re-pressing [b] does not blank the only
 		// feedback the user has), and the async billingPortalMsg (not a
 		// KeyMsg) sets the final status, so both survive until the next

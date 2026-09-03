@@ -15,6 +15,7 @@
 package apiversion
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"time"
@@ -220,6 +221,58 @@ const V20260821 Version = "2026-08-21"
 // last_check_state again equals last_check_state_observed.
 const V20260825 Version = "2026-08-25"
 
+// V20260902 ships the organization-scoped visibility cutover. The compatibility
+// behavior is handler-gated rather than registered as a VersionChange because
+// the transform seam sees only a procedure and payload: it cannot inspect the
+// caller, convert success back to NotFound, or drop/reorder streaming frames.
+const V20260902 Version = "2026-09-02"
+
+// V20260903 ships SwitchActiveOrganizationRetiredMessageChange:
+// SwitchActiveOrganization is retired in favor of AuthKit switchToOrganization.
+// Current clients see the retirement guidance, while older clients are
+// down-converted to the legacy organization-management-unimplemented message.
+const V20260903 Version = "2026-09-03"
+
+// V20260904 ships AbandonedCheckoutStatusChange: the OrchestratorService now
+// distinguishes an abandoned Stripe Checkout from a genuinely activating
+// subscription on CloudAccessStatus (BOS-1076).
+//
+// An account that reached the CheckoutStarted setup state — a Stripe Checkout
+// session was created — used to be reported exactly like an account whose user
+// had returned from Stripe: state CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+// message "Your subscription is being activated.", can_create_checkout false and
+// checkout_started true. A user who opened Checkout and closed the tab therefore
+// watched an activation spinner forever with no route back.
+//
+// From V20260904 only CloudAccountSetupEntitlementPending — written when the
+// user returns from Stripe — reports the activating shape. A created-but-never-
+// completed session keeps state CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION, keeps its
+// checkout affordance (can_create_checkout true), and reports checkout_started
+// true purely so the client can offer to RESUME rather than restart. No field or
+// enum member was added: the change is in the VALUES served on
+// GetCloudAccessStatus, CreateCheckoutSession and RefreshCloudEntitlements, and
+// the previously-impossible combination
+// NEEDS_SUBSCRIPTION && checkout_started && can_create_checkout is what carries
+// it. Clients pinned to an older version were built when that combination could
+// not occur, so they are down-converted back to the prior activating shape (see
+// AbandonedCheckoutStatusChange in transform.go).
+//
+// One narrow sub-case is folded into that down-convert rather than restored
+// exactly: a personal account in CheckoutStarted whose idempotency key was never
+// recorded used to read NEEDS_SUBSCRIPTION with checkout_started false, and its
+// CreateCheckoutSession call was then refused with "subscription is being
+// activated" — the same dead end, reached one round trip later. Nothing on the
+// wire distinguishes it from an ordinary abandoned checkout, so the transform
+// serves the activating shape for both.
+//
+// The CreateCheckoutSession ERROR path also moved: that keyless claim now mints a
+// session instead of being refused. A transform cannot turn a success back into
+// an error (TransformResponse and TransformError never see the other path), so
+// there is no seam for it and it is deliberately not gated in the handler either:
+// down-converting a working checkout URL back into a permanent refusal would be a
+// regression introduced by the compatibility layer itself.
+const V20260904 Version = "2026-09-04"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -322,10 +375,11 @@ func (r *Registry) Newer(a, b Version) bool {
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
 // V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816,
-// V20260820, V20260821, and V20260825. Current is V20260825 (the newest released behavior) while
+// V20260820, V20260821, V20260825, V20260902, V20260903, and V20260904. Current
+// is V20260904 (the newest released behavior) while
 // Default stays Baseline (the oldest supported version), so a header-less caller
 // is pinned to Baseline and is down-converted by ProductionChanges, and a client
-// that negotiates V20260825 runs zero transforms.
+// that negotiates V20260904 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -336,12 +390,25 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825},
-		V20260825,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825, V20260902, V20260903, V20260904},
+		V20260904,
 		Baseline,
 	)
 	if err != nil {
 		panic("apiversion: DefaultRegistry is invalid: " + err.Error())
 	}
 	return reg
+}
+
+// IsOrgScopedVisibility reports whether the version resolved for ctx observes
+// organization-scoped session/chat visibility (V20260902 and newer). Callers
+// that resolve older must keep serving the pre-cutover, user-scoped view.
+//
+// This is the sanctioned handler-level gate for a change the transform seam
+// cannot express: TransformResponse/TransformError never see the request, so a
+// caller-relative result set cannot be down-converted, and a success cannot be
+// turned back into a NotFound. Streaming frame-sequence changes are likewise
+// outside the transform mechanism.
+func IsOrgScopedVisibility(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260902, ResolvedVersion(ctx))
 }

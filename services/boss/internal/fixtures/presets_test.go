@@ -20,7 +20,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"archive-signal", "async-create", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "respawn-history", "resurrect-progress", "rotation-history", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
+var allPresetNames = []string{"archive-signal", "async-create", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -437,6 +437,30 @@ func TestPresetHomeFilesAreRelative(t *testing.T) {
 			if rel == "" || strings.Contains(rel, "..") {
 				t.Errorf("preset %q: HomeFiles key %q must be a plain relative path", name, rel)
 			}
+		}
+	}
+}
+
+// TestRepoOrganizationPresetSeedsOrigins pins the one property the BOS-1061
+// organization proof depends on: every repo carries a git origin URL. The repo
+// settings view keys its organization mapping by that URL and loads nothing
+// without one, so a preset that lost its origins would still render a
+// plausible-looking "None" screen and prove nothing.
+func TestRepoOrganizationPresetSeedsOrigins(t *testing.T) {
+	w := Presets()["repo-organization"].World()
+	if len(w.Repos) == 0 {
+		t.Fatalf("repo-organization world has no repos")
+	}
+	for _, repo := range w.Repos {
+		if repo.GetOriginUrl() == "" {
+			t.Errorf("repo %q has no origin URL; the organization field cannot load without one", repo.GetId())
+		}
+	}
+	// The demo baseline must stay origin-free, otherwise this preset is
+	// redundant and the demo captures silently gained a GitHub App status line.
+	for _, repo := range DemoWorld().Repos {
+		if repo.GetOriginUrl() != "" {
+			t.Errorf("demo repo %q gained an origin URL = %q; that changes every demo capture", repo.GetId(), repo.GetOriginUrl())
 		}
 	}
 }

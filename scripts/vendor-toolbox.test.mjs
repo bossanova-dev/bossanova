@@ -488,7 +488,7 @@ test('withSkillSourceRewriteLock reclaims an abandoned reclaim sidecar', async (
         (_, reject) =>
           (timeout = setTimeout(
             () => reject(new Error('abandoned reclaim sidecar blocked the writer')),
-            1_000,
+            5_000,
           )),
       ),
     ])
@@ -737,10 +737,18 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
     }
   }
   // skill-config.mjs (BOS-192) is NOT review-exclusive: boss-review vendors it as a
-  // transitive dep of bs-review-detect.mjs, and boss-build vendors it as a direct
-  // dep of the Step 4 plan-contract check (validatePlanDescription, BOS-204). It must
-  // still not leak into any skill that consumes neither.
-  const skillConfigConsumers = new Set(['boss-review', 'boss-build', 'boss-epic', 'boss-plan'])
+  // transitive dep of bs-review-detect.mjs, boss-build vendors it as a direct
+  // dep of the Step 4 plan-contract check (validatePlanDescription, BOS-204), and every
+  // core that runs a post-terminal notes phase vendors it for notesSampleRate (BOS-1099)
+  // — boss-repair included, which reads the knob to take its per-run sampling roll. It
+  // must still not leak into any skill that consumes none of those.
+  const skillConfigConsumers = new Set([
+    'boss-review',
+    'boss-build',
+    'boss-epic',
+    'boss-plan',
+    'boss-repair',
+  ])
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {
     if (skillConfigConsumers.has(skill)) {
       assert.ok(files.includes('skill-config.mjs'), `${skill} must vendor skill-config.mjs`)

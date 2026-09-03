@@ -619,7 +619,7 @@ func TestReEnterArchivingSessionSeedsArchiving(t *testing.T) {
 // case: after a successful archive the override lingers on the still-present
 // row for rendering (archiveInFlight=false), but pressing Enter on that row
 // must NOT seed archiving=true, which would leave the picker stuck on
-// "Archiving session..." swallowing every key but Esc with no archiveResultMsg
+// "Archiving session…" swallowing every key but Esc with no archiveResultMsg
 // ever arriving for the freshly created model.
 func TestReEnterAfterArchiveSuccessDoesNotSeedArchiving(t *testing.T) {
 	a := NewApp(nil, nil)

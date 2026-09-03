@@ -60,9 +60,9 @@
         {
           "expect": [
             {
-              "text": "Restoring...",
+              "text": "Restoring…",
               "match": "normalized",
-              "label": "the restore is still in flight (spinner label)"
+              "label": "the restore is still in flight (spinner label, ellipsis character per BOS-1087)"
             },
             {
               "text": "recreating worktree",
@@ -70,7 +70,7 @@
               "label": "THE FIX: a live progress line from the streaming resurrect, appended to the spinner label"
             }
           ],
-          "caption": "Before BOS-984 this was a bare 'Restoring...' spinner and nothing else, right up until the client deadline turned a healthy restore into deadline_exceeded"
+          "caption": "Before BOS-984 this was a bare restore spinner and nothing else, right up until the client deadline turned a healthy restore into deadline_exceeded. (The label is quoted unspelled on purpose: at that time it still elided with three full stops, so naming a spelling here would date the sentence wrongly.)"
         }
       ]
     },

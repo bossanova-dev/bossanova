@@ -388,6 +388,43 @@ func (c *authCloudAccessClient) RefreshCloudEntitlements(ctx context.Context) (*
 	return remote.RefreshCloudEntitlements(ctx)
 }
 
+// The organization surface below mirrors the GitHub App methods: the TUI reaches
+// it by type-asserting App.cloudAccess, so these have to hang off the same
+// client rather than off the daemon-local BossClient. Each dials a fresh remote
+// the same way its neighbours do, so a token refresh is picked up per call.
+
+func (c *authCloudAccessClient) ListOrganizations(ctx context.Context) ([]*pb.Organization, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remote.ListOrganizations(ctx)
+}
+
+func (c *authCloudAccessClient) GetRepoOrganization(ctx context.Context, repoOriginURL string) (*pb.RepoOrganizationMapping, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remote.GetRepoOrganization(ctx, repoOriginURL)
+}
+
+func (c *authCloudAccessClient) SetRepoOrganization(ctx context.Context, repoOriginURL, organizationID string) (*pb.RepoOrganizationMapping, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remote.SetRepoOrganization(ctx, repoOriginURL, organizationID)
+}
+
+func (c *authCloudAccessClient) ClearRepoOrganization(ctx context.Context, repoOriginURL, organizationID string) error {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return err
+	}
+	return remote.ClearRepoOrganization(ctx, repoOriginURL, organizationID)
+}
+
 func (c *authCloudAccessClient) GetGitHubAppInstallURL(ctx context.Context, returnURL string) (string, error) {
 	remote, err := c.remote(ctx)
 	if err != nil {

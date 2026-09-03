@@ -31,6 +31,12 @@ service OrchestratorService {
 
   // Proxied daemon RPCs (remote CLI → orchestrator → daemon)
   rpc ProxyListSessions(ProxyListSessionsRequest) returns (ProxyListSessionsResponse);
+  // Union of sessions across EVERY organization the caller is a member of.
+  // A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
+  // keep failing when the caller's scope resolves to no single organization,
+  // because that error is how a caller learns to claim one. This read must
+  // succeed exactly then.
+  rpc ProxyListSessionsAcrossOrganizations(ProxyListSessionsAcrossOrganizationsRequest) returns (ProxyListSessionsAcrossOrganizationsResponse);
   rpc ProxyGetSession(ProxyGetSessionRequest) returns (ProxyGetSessionResponse);
   rpc ProxyAttachSession(ProxyAttachSessionRequest) returns (stream ProxyAttachSessionResponse);
   // Creates a new session on a chosen daemon, streaming setup output as it
@@ -214,6 +220,29 @@ service OrchestratorService {
   rpc CreateBillingPortalSession(CreateBillingPortalSessionRequest) returns (CreateBillingPortalSessionResponse);
   rpc RefreshCloudEntitlements(RefreshCloudEntitlementsRequest) returns (RefreshCloudEntitlementsResponse);
 
+  // Organizations. User-authenticated.
+  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse);
+  rpc GetOrganization(GetOrganizationRequest) returns (GetOrganizationResponse);
+  rpc CreateOrganization(CreateOrganizationRequest) returns (CreateOrganizationResponse);
+  rpc RenameOrganization(RenameOrganizationRequest) returns (RenameOrganizationResponse);
+  rpc ListOrganizationMembers(ListOrganizationMembersRequest) returns (ListOrganizationMembersResponse);
+  rpc InviteOrganizationMember(InviteOrganizationMemberRequest) returns (InviteOrganizationMemberResponse);
+  rpc RemoveOrganizationMember(RemoveOrganizationMemberRequest) returns (RemoveOrganizationMemberResponse);
+  rpc SetOrganizationMemberRole(SetOrganizationMemberRoleRequest) returns (SetOrganizationMemberRoleResponse);
+  // Deprecated: use AuthKit switchToOrganization instead. This RPC is
+  // deprecated rather than deleted because buf breaking: use: FILE blocks
+  // deleting it from bossanova.v1; true removal requires bossanova.v2.
+  rpc SwitchActiveOrganization(SwitchActiveOrganizationRequest) returns (SwitchActiveOrganizationResponse) {
+    option deprecated = true;
+  }
+
+  // Repo-to-organization ownership mapping, keyed by canonical repo origin URL.
+  // User-authenticated; the caller must be a member of the target organization.
+  rpc SetRepoOrganization(SetRepoOrganizationRequest) returns (SetRepoOrganizationResponse);
+  rpc GetRepoOrganization(GetRepoOrganizationRequest) returns (GetRepoOrganizationResponse);
+  rpc ClearRepoOrganization(ClearRepoOrganizationRequest) returns (ClearRepoOrganizationResponse);
+  rpc ListRepoOrganizations(ListRepoOrganizationsRequest) returns (ListRepoOrganizationsResponse);
+
   // Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
   // resolves the caller's identity when a bearer token is present.
   rpc ReportBug(ReportBugRequest) returns (ReportBugResponse);
@@ -299,6 +328,44 @@ message ProxyListSessionsResponse {
   // the rendered state directly. Tag reserved to prevent reuse.
   reserved 2;
   reserved "chat_statuses";
+}
+
+message ProxyListSessionsAcrossOrganizationsRequest {
+  // Mirrors ProxyListSessionsRequest field-for-field; each filter is applied
+  // per organization, exactly as the single-organization read applies it.
+  // The archived flag carries the should_ prefix the bool naming rule requires;
+  // ProxyListSessionsRequest.include_archived keeps its legacy spelling because
+  // renaming a shipped field is an API-version change of its own.
+  optional string repo_id = 1;
+  repeated SessionState states = 2;
+  bool should_include_archived = 3;
+  // Target daemon, if known. Otherwise orchestrator queries all.
+  optional string daemon_id = 4;
+}
+
+message ProxyListSessionsAcrossOrganizationsResponse {
+  // Union across the caller's memberships, sorted newest-first then by id.
+  // Unlike ProxyListSessionsResponse.sessions, every entry carries a non-empty
+  // `organization_id` naming the organization whose read produced it.
+  repeated Session sessions = 1;
+  // Directory of the organizations that were read, so a client can label a
+  // filter without a second ListOrganizations call. `caller_role` and
+  // `member_count` are best-effort: they are left at their zero values when
+  // the organization mirror is unavailable.
+  repeated Organization organizations = 2;
+  // Organizations whose read failed. Their sessions are absent from
+  // `sessions`; the rest of the union is still served. A client showing an
+  // "all organizations" view should surface this as a partial result.
+  repeated OrganizationSessionReadFailure failed_organizations = 3;
+}
+
+// One organization that could not be read during a cross-organization fan-out.
+message OrganizationSessionReadFailure {
+  string organization_id = 1;
+  string organization_name = 2;
+  // Human-readable cause, safe to display. Never carries credentials or
+  // internal identifiers beyond the organization id above.
+  string reason = 3;
 }
 
 message ProxyGetSessionRequest {
@@ -1084,6 +1151,21 @@ enum CloudAccessState {
   CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE = 6;
 }
 
+// Whether a checkout created for this account right now would still include
+// the introductory free trial. The server determines it only in the states
+// that serve the subscribe call to action (NEEDS_SUBSCRIPTION, PAST_DUE,
+// CANCELED); every other state -- and every server built before this field
+// existed -- leaves it UNSPECIFIED. UNSPECIFIED is not a verdict: it must not
+// be read as INELIGIBLE, and it must not be presented as a trial offer
+// either. Only an explicit ELIGIBLE may be shown as one, because
+// CreateCheckoutSession re-decides eligibility independently and fails closed
+// the same way, so a trial promised on anything weaker can be a charge today.
+enum CloudTrialEligibility {
+  CLOUD_TRIAL_ELIGIBILITY_UNSPECIFIED = 0;
+  CLOUD_TRIAL_ELIGIBILITY_ELIGIBLE = 1;
+  CLOUD_TRIAL_ELIGIBILITY_INELIGIBLE = 2;
+}
+
 message CloudAccessStatus {
   CloudAccessState state = 1;
   string account_id = 2;
@@ -1094,12 +1176,20 @@ message CloudAccessStatus {
   // True when the client should call CreateCheckoutSession to open Stripe Checkout.
   bool can_create_checkout = 6;
 
-  // True when checkout has already been started and the client should poll
-  // RefreshCloudEntitlements instead of creating another checkout.
+  // True when a Stripe Checkout session already exists for this account. It
+  // does not mean the user paid: read it with can_create_checkout, which
+  // separates the two cases.
+  //   checkout_started && can_create_checkout: the session was created and
+  //     never completed (an abandoned checkout). Offer to resume checkout.
+  //   checkout_started && !can_create_checkout: the user returned from Stripe
+  //     and the entitlement is landing. Poll RefreshCloudEntitlements.
   bool checkout_started = 7;
 
   // Short machine-readable reason for inactive cloud access.
   string denial_reason = 8;
+
+  // Whether a checkout created now would still include a free trial.
+  CloudTrialEligibility trial_eligibility = 9;
 }
 
 message GetCloudAccessStatusRequest {}
@@ -1130,6 +1220,184 @@ message RefreshCloudEntitlementsRequest {}
 
 message RefreshCloudEntitlementsResponse {
   CloudAccessStatus status = 1;
+}
+
+// --- Organizations ---
+
+// MemberRole is a member's role inside an organization. Owners can rename the
+// organization and manage its members and billing; users cannot.
+enum MemberRole {
+  // Default zero value. bosso MUST reject InviteOrganizationMember and
+  // SetOrganizationMemberRole requests carrying this role; do not silently
+  // default to MEMBER_ROLE_USER. This mirrors the ATTACH_SCOPE_UNSPECIFIED
+  // reject rule.
+  MEMBER_ROLE_UNSPECIFIED = 0;
+  MEMBER_ROLE_OWNER = 1;
+  MEMBER_ROLE_USER = 2;
+}
+
+message Organization {
+  // bosso-local mirror row id, stable across renames.
+  string id = 1;
+  // WorkOS organization id, the source of truth for identity and membership.
+  string workos_org_id = 2;
+  string name = 3;
+  // Role the calling user holds in this organization.
+  MemberRole caller_role = 4;
+  // True for the auto-created single-person organization from signup.
+  bool is_personal = 5;
+  // Active membership count; per-seat Stripe quantity tracks this value.
+  int32 member_count = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message OrganizationMember {
+  // bosso-local users.id; empty while an invite is unaccepted.
+  string user_id = 1;
+  string workos_membership_id = 2;
+  string email = 3;
+  string display_name = 4;
+  MemberRole role = 5;
+  bool is_invite_pending = 6;
+  google.protobuf.Timestamp joined_at = 7;
+}
+
+message ListOrganizationsRequest {}
+
+message ListOrganizationsResponse {
+  repeated Organization organizations = 1;
+}
+
+message GetOrganizationRequest {
+  string organization_id = 1;
+}
+
+message GetOrganizationResponse {
+  Organization organization = 1;
+}
+
+message CreateOrganizationRequest {
+  string name = 1;
+}
+
+message CreateOrganizationResponse {
+  Organization organization = 1;
+  string reauthorize_url = 2;
+}
+
+message RenameOrganizationRequest {
+  string organization_id = 1;
+  string name = 2;
+}
+
+message RenameOrganizationResponse {
+  Organization organization = 1;
+}
+
+message ListOrganizationMembersRequest {
+  string organization_id = 1;
+}
+
+message ListOrganizationMembersResponse {
+  repeated OrganizationMember members = 1;
+}
+
+message InviteOrganizationMemberRequest {
+  string organization_id = 1;
+  string email = 2;
+  MemberRole role = 3;
+}
+
+message InviteOrganizationMemberResponse {
+  OrganizationMember member = 1;
+}
+
+message RemoveOrganizationMemberRequest {
+  string organization_id = 1;
+  string user_id = 2;
+  string workos_membership_id = 3;
+}
+
+message RemoveOrganizationMemberResponse {}
+
+message SetOrganizationMemberRoleRequest {
+  string organization_id = 1;
+  string user_id = 2;
+  string workos_membership_id = 3;
+  MemberRole role = 4;
+}
+
+message SetOrganizationMemberRoleResponse {
+  OrganizationMember member = 1;
+}
+
+// Deprecated: use AuthKit switchToOrganization instead. This message is
+// deprecated rather than deleted because buf breaking: use: FILE blocks deleting
+// it from bossanova.v1; true removal requires bossanova.v2.
+message SwitchActiveOrganizationRequest {
+  option deprecated = true;
+
+  string organization_id = 1;
+  string return_url = 2;
+}
+
+// Deprecated: use AuthKit switchToOrganization instead. This message is
+// deprecated rather than deleted because buf breaking: use: FILE blocks deleting
+// it from bossanova.v1; true removal requires bossanova.v2.
+message SwitchActiveOrganizationResponse {
+  option deprecated = true;
+
+  Organization organization = 1;
+  string reauthorize_url = 2;
+}
+
+// --- Repo organization mappings ---
+
+// RepoOrganizationMapping records which organization owns a repo, keyed by the
+// repo's canonical origin URL. One organization per origin.
+message RepoOrganizationMapping {
+  string id = 1;
+  // Canonical repo origin URL, the mapping key.
+  string repo_origin_url = 2;
+  string organization_id = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message SetRepoOrganizationRequest {
+  string repo_origin_url = 1;
+  string organization_id = 2;
+}
+
+message SetRepoOrganizationResponse {
+  RepoOrganizationMapping mapping = 1;
+}
+
+message GetRepoOrganizationRequest {
+  string repo_origin_url = 1;
+}
+
+message GetRepoOrganizationResponse {
+  // Unset when the origin is unmapped; an unset mapping is the miss signal,
+  // not an error.
+  RepoOrganizationMapping mapping = 1;
+}
+
+message ClearRepoOrganizationRequest {
+  string repo_origin_url = 1;
+  // Deletes are scoped by organization as an authorization backstop, so the
+  // wire carries the organization alongside the key.
+  string organization_id = 2;
+}
+
+message ClearRepoOrganizationResponse {}
+
+message ListRepoOrganizationsRequest {
+  string organization_id = 1;
+}
+
+message ListRepoOrganizationsResponse {
+  repeated RepoOrganizationMapping mappings = 1;
 }
 
 // --- Bug reporting ---

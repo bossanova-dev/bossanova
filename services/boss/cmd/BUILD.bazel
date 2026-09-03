@@ -136,6 +136,7 @@ go_test(
         "tail_test.go",
         "telemetry_test.go",
         "testmain_test.go",
+        "truncate_string_test.go",
         "upgrade_test.go",
     ],
     data = glob(["testdata/**"]),

@@ -67,14 +67,7 @@ names generically everywhere else:
    no-op, not an error (a `/boss-plan` in an unrelated repo is a no-op; a non-zero exit would surface
    as a cron/agent error):
    ```bash
-   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
-   fi
-   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?"yes":"no")}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
    # `isConfiguredForPlanning` requires the tracker identity AND the full state role map
    # (`states.{unplanned,planned,inProgress,inReview}`), so a repo configured only for a stateless
@@ -94,24 +87,29 @@ names generically everywhere else:
    node "$BOSS_PLAN_TOOLBOX/plan-scratch-reap.mjs" .linear-plans ||
      echo "warning: stale plan-scratch reap failed (non-fatal)" >&2
    ```
-   This block is the **toolbox preamble**. Each Bash tool call is a fresh shell, so every command
-   block that dereferences `$BOSS_PLAN_TOOLBOX` must begin with this preamble; an exported value
-   never survives to the next block. `loadSkillConfig` is synchronous and takes an options object
+   That first `.` line is the **toolbox preamble**. Each Bash tool call is a fresh shell, so every
+   command block that dereferences `$BOSS_PLAN_TOOLBOX` must begin with it; an exported value never
+   survives to the next block. It sources `toolbox/boss-plan-env.sh`, which is what actually resolves
+   `BOSS_SKILLS_HOME` (a pre-set value first, else the first of `~/.claude/skills` and
+   `~/.codex/skills` that carries `boss-plan/toolbox/boss-plan-env.sh` — the helper _file_, not
+   merely the directory, which a stale tree keeps long after it stops carrying the helper), sets and
+   exports `BOSS_PLAN_TOOLBOX`, and fails loudly when no tree carries it. The line probes those same
+   candidates itself, with `[ -f ]` tests and `||` reassignments, because the helper cannot locate
+   itself before it is read. `~/.claude/skills` is named a second time on purpose:
+   `${BOSS_SKILLS_HOME:-…}` supplies its default only when the variable is _unset_, so without the
+   explicit candidate a pre-set value drops that tree out of the search entirely.
+   `loadSkillConfig` is synchronous and takes an options object
    (`loadSkillConfig({ cwd })`); positional or awaited calls read as broken config.
-2. **Gate installed skill drift before planning.** If `boss` resolves, run the read-only
+2. **Report installed skill drift before planning.** If `boss` resolves, run the read-only
    `boss skills check --gate` before any tracker write. It fails only on installed-vs-checkout drift
-   that is not `self-edited` by this branch; non-zero is a hard `BLOCKED:` stop with the reported
-   reinstall remedy. Without `boss`, keep the older warning probe so drift is visible rather than
-   called clean. Re-derive the path first, since an unset guard is silent like a clean tree:
+   that is not `self-edited` by this branch; non-zero is **advisory** — print a `warning:` line with
+   the reported reinstall remedy and continue, because drift is bookkeeping and a stale tree still
+   runs. The hard stop is the line before it: a missing `boss-plan-env.sh` means the skills are not
+   installed at all, and nothing downstream can execute. Without `boss`, keep the older warning probe
+   so drift is visible rather than called clean. Re-derive the path first, since an unset guard is
+   silent like a clean tree:
    ```bash
-   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
-   fi
-   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
      if O="$("$BOSS_BIN" skills check --gate 2>&1)"; then
        if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
@@ -122,11 +120,11 @@ names generically everywhere else:
            printf '%s\n' "$O" >&2
            R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
            if [ -n "$R" ]; then
-             echo "BLOCKED: installed boss skills differ from checkout source; run: $R" >&2
+             echo "warning: installed boss skills drift from checkout source; run: $R — bookkeeping only, work state unaffected" >&2
            else
-             echo "BLOCKED: installed boss skills differ from checkout source; see gate output above" >&2
+             echo "warning: installed boss skills drift from checkout source; see gate output above — bookkeeping only, work state unaffected" >&2
            fi
-           exit 1 ;;
+           ;;
        esac
      fi
    elif [ -f "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" ]; then
@@ -135,8 +133,9 @@ names generically everywhere else:
      echo "boss-toolbox-drift: (drift helper not installed) — this install predates the check; drift is UNKNOWN, not clean." >&2
    fi
    ```
-   A `boss-toolbox-drift:` line is the degraded no-CLI signal: warning-only, because that helper may
-   itself be stale. Re-vendor and reinstall the skills to clear it.
+   A `boss-toolbox-drift:` line is the no-CLI fallback signal: warning-only, because that helper may
+   itself be stale. Re-vendor and reinstall the skills to clear it. Either way drift never decides a
+   terminal state.
 3. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`,
    `readPlanAttachment`, and `deletePlanAttachment` operations now. If any is absent, stop before
    drafting or tracker writes. These names are conventional tracker-adapter operations declared in
@@ -176,14 +175,7 @@ the Phase 1 read to `.linear-plans/<ISSUE-ID>.precheck.json` and invoke the dete
 (`planIdempotencePrecheck(...)` in `$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs`):
 
 ```bash
-if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-  done
-fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 PRECHECK=".linear-plans/<ISSUE-ID>.precheck.json"
 node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" idempotence "$PRECHECK"
 ```
@@ -234,14 +226,7 @@ for the Phase 4 secret gate.
    the module constant in `bs-run-sentinel.mjs`:
 
    ```bash
-   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
-   fi
-   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
    test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
    DISPATCH_FAILURE="dispatch-failure"
@@ -384,14 +369,7 @@ for the Phase 4 secret gate.
    `.linear-plans/<ISSUE-ID>.draft-metadata.json` and run:
 
    ```bash
-   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
-   fi
-   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    METADATA=".linear-plans/<ISSUE-ID>.draft-metadata.json"
    if ! node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata "$METADATA"; then
      echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs metadata — no Linear write, aborting" >&2
@@ -880,14 +858,7 @@ subagent → validate its envelope → fold or skip), against
 > `uploads.linear.app` origin plus pathname, ignoring query strings — then run the guard:
 >
 > ```bash
-> if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
->   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
->     if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
->   done
-> fi
-> test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-> BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-> export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+> BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 > ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
 > PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
 > EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"
@@ -941,14 +912,7 @@ subagent → validate its envelope → fold or skip), against
 > reads. Re-derive the toolbox dir here; blocks inherit nothing:
 >
 > ```bash
-> if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
->   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
->     if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
->   done
-> fi
-> test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-> BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-> export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+> BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 > ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
 > PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
 > if ! node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_FILE"; then
@@ -977,14 +941,7 @@ subagent → validate its envelope → fold or skip), against
 > live states, and run:
 >
 > ```bash
-> if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
->   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
->     if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
->   done
-> fi
-> test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-> BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-> export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+> BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 > PREMISES_FILE=".linear-plans/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/<ISSUE-ID>.premise-states.json"
 > PREMISE_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE" 2>&1)"
 > PREMISE_RC=$?
@@ -1072,14 +1029,7 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    empty `mktemp` file parses as nothing and throws.
 
    ```bash
-   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
-   fi
-   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    DEPS_IN="<the scratch JSON file you just wrote>"
    node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]}).areas;i.stateRoles=i.stateRoles||c.stateRolesFor(g);i.subjectAreas=a(i.subject);i.candidates=i.candidates.map(x=>({...x,areas:a(x)}));console.log(JSON.stringify(d.planDependencyEdges(i)))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
    rm -f "$DEPS_IN"
@@ -1195,17 +1145,31 @@ remaining (it is copied into `docs/plans/` at implementation time, per the plan'
 
 ### Post-terminal notes extensions (repo opt-in)
 
+**Caller suppression — check this before anything else.** A run another boss core dispatched as
+part of its own larger run must not take its own notes: that caller already owns the single
+post-terminal notes dispatch for the whole top-level run, so a nested phase here is exactly the
+duplicate this gate exists to remove. A caller signals that ownership by setting
+`BOSS_NOTES_SUPPRESSED=1` in the dispatched worker's environment. The marker **defaults to not
+suppressed** — unset, empty, or any other value means this run owns its own notes, so a standalone
+invocation still takes them.
+
+A dispatched worker does not inherit that environment, so the caller also states the marker **in the
+invocation**: bind it into the shell that runs the gate below (`BOSS_NOTES_SUPPRESSED=1`) before
+reading it. Left unbound the gate reads a name nothing assigned, takes the not-suppressed branch,
+and ships the duplicate this section exists to remove with both halves still reading as satisfied.
+
+```bash
+if [ "${BOSS_NOTES_SUPPRESSED:-}" = "1" ]; then
+  echo "notes: suppressed (caller owns notes)"   # end the phase here: no discovery, no scratch, no dispatch
+fi
+```
+
+Skipping is all that is due: suppression is never fatal and never changes the terminal outcome.
+
 After the terminal outcome is decided and the report is emitted, resolve the extension helper and run:
 
 ```bash
-if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-  done
-fi
-test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 NOTES_JSON=$(node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role notes --json)
 ```
 
@@ -1217,7 +1181,33 @@ and is never reported. Recording is all that is due: a discovery skip is never f
 changes control flow; the phase still degrades exactly as documented below.
 
 If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
-extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
+extension has not opted in. Create no scratch in that case.
+
+**Sampling roll — one per run, shared by every reporting phase.** `notesDefaults.sampleRate` (a
+number in `[0,1]`, default `1.0`; `0.33` is the recommended production setting) is the probability
+that a run reports at all. Roll it **once per run** and carry the pair forward — a phase that
+re-rolls turns one configured rate into two independent ones, so a run could pay for one reporting
+phase and skip another. If an earlier phase in this run already rolled, reuse its values verbatim
+and re-export them into this shell rather than rolling again:
+
+```bash
+if [ -z "${NOTES_SAMPLED:-}" ]; then
+  NOTES_SAMPLE_RATE=$(export BOSS_PLAN_TOOLBOX; node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, notesSampleRate } = await import(pathToFileURL(process.env.BOSS_PLAN_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(String(notesSampleRate(loadSkillConfig())))')
+  NOTES_SAMPLED=$(awk -v r="${NOTES_SAMPLE_RATE:-1}" -v s="$$" 'BEGIN{srand(s);print (rand()<r)?"yes":"no"}')
+  export NOTES_SAMPLE_RATE NOTES_SAMPLED
+fi
+if [ "$NOTES_SAMPLED" != "yes" ]; then
+  echo "notes: sampled out (rate ${NOTES_SAMPLE_RATE:-1})"   # end the phase here: no scratch, no dispatch
+fi
+```
+
+An unreadable or malformed rate resolves to `1.0` at both ends — the accessor's own fallback and
+the `${NOTES_SAMPLE_RATE:-1}` default — so a broken config costs a few extra dispatches and never
+silently switches reporting off. Seeding `srand` from the shell PID rather than the clock alone
+keeps two runs that start in the same second from rolling identically. This gate sits **after** the
+empty-`extensions` check, so a repo that never opted in still prints nothing at all.
+
+Once both gates pass, create the terminal-only handoff:
 
 ```bash
 NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-plan-notes.XXXXXX")
@@ -1258,6 +1248,10 @@ discovery skip, timeout, missing output, malformed envelope, validation failure,
 append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
 post-opt-in terminal path. The phase cannot change the outcome, exit code, tracker or PR writes, and
 is non-fatal in every case.
+
+A **ledger write that itself fails** prints
+`warning: ledger write failed (<reason>) — bookkeeping only, work state unaffected` and the run
+continues. Ledger recording is advisory: it is history, never a terminal-state input.
 
 ## Privacy
 

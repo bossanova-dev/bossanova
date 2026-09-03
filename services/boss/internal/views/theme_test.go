@@ -880,6 +880,7 @@ func TestProjectRow(t *testing.T) {
 
 	t.Run("empty fitted set yields an empty row", func(t *testing.T) {
 		if got := projectRow(nil, full); len(got) != 0 {
+			// Go call notation naming the call under test, not copy: ellipsis: literal-dots ok
 			t.Fatalf("projectRow(nil, ...) = %v, want empty", got)
 		}
 	})

@@ -1746,6 +1746,7 @@ func TestRunSkillSyncDoesNotFreshInstall(t *testing.T) {
 	}
 	got := out.String()
 	if !strings.Contains(got, "not installed") || !strings.Contains(got, "boss skills install") {
+		// Quotes two non-adjacent fragments of one output line: ellipsis: literal-dots ok
 		t.Fatalf("output = %q, want a 'not installed ... boss skills install' line for the empty tree", got)
 	}
 	if strings.Contains(got, "up to date") {

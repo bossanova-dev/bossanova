@@ -36,7 +36,7 @@ func (m ChatPickerModel) renderErrState() string {
 	switch {
 	case m.isArchiving():
 		body += lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
-			m.spinner.View() + "Archiving session...")
+			m.spinner.View() + "Archiving session…")
 	case m.confirm == confirmArchive:
 		body += lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?") + "\n" +
 			styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
@@ -62,7 +62,7 @@ func (m ChatPickerModel) renderLoading() string {
 		title = m.session.Title
 	}
 	return lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("Loading chats for %s...", title))
+		fmt.Sprintf("Loading chats for %s…", title))
 }
 
 // renderAgentSelect renders the agent-select overlay.
@@ -199,18 +199,18 @@ func (m ChatPickerModel) renderRenamePrompt() (string, bool) {
 func (m ChatPickerModel) renderConfirm() (string, bool) {
 	var b strings.Builder
 	if m.merging {
-		label := "Merging PR..."
+		label := "Merging PR…"
 		if n := m.session.GetPrNumber(); n != 0 {
-			label = fmt.Sprintf("Merging PR #%d...", n)
+			label = fmt.Sprintf("Merging PR #%d…", n)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))
 	} else if m.isArchiving() {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
-			m.spinner.View() + "Archiving session..."))
+			m.spinner.View() + "Archiving session…"))
 	} else if m.switching {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
-			m.spinner.View() + "Switching account..."))
+			m.spinner.View() + "Switching account…"))
 	} else if m.confirm == confirmSwitch {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
@@ -301,18 +301,17 @@ func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	}
 	if chat := m.selectedChat(); chat != nil {
 		left = []string{"[enter] select", "[d]elete"}
-		// Bar and key read the same predicate, so the advertised action and the
-		// one `r` performs cannot drift apart.
-		if m.canRename() {
-			left = append(left, "[r]ename")
-		}
+		// [r]ename and swit[c]h account are deliberately unadvertised
+		// (BOS-1063): both keys still work, but the bar stays short enough to
+		// read at a glance. Their availability predicates live with the key
+		// handlers — see canRename and keySwitchAccount.
+		//
 		// Only advertise [w]ake when the highlighted chat is actually
 		// stopped — for any other status the keypress is a no-op, so
 		// dangling the action in the bar would mislead users.
 		if m.daemonStatuses[chat.AgentSessionId] == statusStopped {
 			left = append(left, "[w]ake")
 		}
-		left = append(left, "swit[c]h account")
 	}
 	return left, middle, []string{"[esc] back"}
 }

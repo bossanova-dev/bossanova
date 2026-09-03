@@ -129,7 +129,7 @@ func TestChatPicker_EscDuringArchiveInErrorState(t *testing.T) {
 // TestChatPicker_ResurrectedMerged_NoArchivingSpinner is the BOS-425 regression
 // guard: a merged session in an archive-after-merge repo that has already been
 // archived-and-resurrected (archived_at=nil, archive_pending=false) must NOT
-// render "Archiving session..." — the old heuristic inferred it from
+// render "Archiving session…" — the old heuristic inferred it from
 // MERGED + repo flag and showed a permanent false spinner.
 func TestChatPicker_ResurrectedMerged_NoArchivingSpinner(t *testing.T) {
 	m := seedChatPicker(&chatPickerStub{}, "")
@@ -153,7 +153,7 @@ func TestChatPicker_ResurrectedMerged_NoArchivingSpinner(t *testing.T) {
 }
 
 // TestChatPicker_ArchivePending_ShowsArchivingSpinner verifies the daemon-driven
-// signal drives the spinner: archive_pending=true renders "Archiving session...".
+// signal drives the spinner: archive_pending=true renders "Archiving session…".
 func TestChatPicker_ArchivePending_ShowsArchivingSpinner(t *testing.T) {
 	m := seedChatPicker(&chatPickerStub{}, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
@@ -176,7 +176,7 @@ func TestChatPicker_ArchivePending_ShowsArchivingSpinner(t *testing.T) {
 
 // TestChatPicker_OptimisticLatchAfterMerge_ShowsArchivingSpinner verifies the
 // short-lived optimistic latch: right after a TUI-initiated merge on an
-// archive-after-merge repo, the detail view shows "Archiving session..."
+// archive-after-merge repo, the detail view shows "Archiving session…"
 // immediately, before the daemon's archive_pending round-trips.
 func TestChatPicker_OptimisticLatchAfterMerge_ShowsArchivingSpinner(t *testing.T) {
 	m := seedChatPicker(&chatPickerStub{}, "")

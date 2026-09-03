@@ -36,7 +36,7 @@ func (m NewSessionModel) renderErr() string {
 
 // renderLoading renders the initial repo-fetch placeholder.
 func (m NewSessionModel) renderLoading() string {
-	return lipgloss.NewStyle().Padding(0, 2).Render("Loading...")
+	return lipgloss.NewStyle().Padding(0, 2).Render("Loading…")
 }
 
 // renderRepoSelect renders the repo picker.
@@ -97,7 +97,7 @@ func (m NewSessionModel) renderIssueSelect() string {
 	var b strings.Builder
 	b.WriteString(m.headerView())
 	if !m.issueTableReady {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("Loading %s issues...", m.trackerSourceLabel())))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("Loading %s issues…", m.trackerSourceLabel())))
 	} else {
 		if m.issueFilter.Engaged() && len(m.issuesFiltered) == 0 {
 			placeholder := "no matches"
@@ -141,11 +141,11 @@ func (m NewSessionModel) renderCreating() string {
 	}
 	// Blank line so the creating phase has more breathing room before the
 	// following status line (BOS-397). The gap always immediately precedes
-	// whichever message comes next ("Running setup script..." or "Creating a new
-	// session..."), whatever is rendered above it.
+	// whichever message comes next ("Running setup script…" or "Creating a new
+	// session…"), whatever is rendered above it.
 	b.WriteString("\n\n")
 	if len(m.setupLines) > 0 {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script..."))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script…"))
 		b.WriteString("\n")
 		// Show last 10 lines of setup output.
 		start := 0
@@ -157,7 +157,7 @@ func (m NewSessionModel) renderCreating() string {
 			b.WriteString("\n")
 		}
 	} else {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Creating a new session..."))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Creating a new session…"))
 	}
 	return b.String()
 }

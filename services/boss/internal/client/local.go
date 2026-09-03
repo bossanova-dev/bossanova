@@ -621,6 +621,30 @@ func (c *LocalClient) RefreshCloudEntitlements(_ context.Context) (*pb.CloudAcce
 	return nil, errLocalOnly("cloud billing")
 }
 
+// --- Organizations and repo-organization mapping (cloud only) ---
+//
+// A local daemon holds no organizations and no repo-organization mapping: both
+// live in bosso. These exist so the surface fails in a defined, non-panicking
+// way if a caller ever reaches them through a LocalClient, and so *LocalClient
+// satisfies the same narrow organization client interface *RemoteClient does.
+// The TUI does not route here — it only asks its authenticated cloud client.
+
+func (c *LocalClient) ListOrganizations(_ context.Context) ([]*pb.Organization, error) {
+	return nil, errCloudOnly("organizations")
+}
+
+func (c *LocalClient) GetRepoOrganization(_ context.Context, _ string) (*pb.RepoOrganizationMapping, error) {
+	return nil, errCloudOnly("the repo organization mapping")
+}
+
+func (c *LocalClient) SetRepoOrganization(_ context.Context, _, _ string) (*pb.RepoOrganizationMapping, error) {
+	return nil, errCloudOnly("the repo organization mapping")
+}
+
+func (c *LocalClient) ClearRepoOrganization(_ context.Context, _, _ string) error {
+	return errCloudOnly("the repo organization mapping")
+}
+
 // --- Cron Jobs ---
 
 func (c *LocalClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {

@@ -177,7 +177,7 @@ func Login(ctx context.Context, cfg Config) (*DeviceCodeResult, error) {
 	// Display the user code.
 	fmt.Printf("\nYour authentication code: %s\n\n", dcResp.UserCode)
 	fmt.Printf("Visit: %s\n\n", dcResp.VerificationURIComplete)
-	fmt.Println("Waiting for authentication...")
+	fmt.Println("Waiting for authentication…")
 
 	// Open browser to verification URL.
 	if err := openBrowserFn(dcResp.VerificationURIComplete); err != nil {

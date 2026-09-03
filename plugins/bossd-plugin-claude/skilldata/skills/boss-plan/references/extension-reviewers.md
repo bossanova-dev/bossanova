@@ -16,14 +16,7 @@ dispatched as an awaited subagent (no human gating).
    `skipped`:
 
    ```bash
-   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
-   fi
-   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role plan-reviewer --json
    ```
 
@@ -75,14 +68,7 @@ dispatched as an awaited subagent (no human gating).
 3. **Validate + fold or skip.** Validate each returned envelope:
 
    ```bash
-   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
-     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
-     done
-   fi
-   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
-   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
-   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" validate --role plan-reviewer --file "<outPath>"
    ```
 

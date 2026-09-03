@@ -186,7 +186,8 @@ Two caveats worth knowing:
   still reach the agent, so a `/boss switch` typed straight into an exhausted
   pane hits a 401 rather than switching.
 - You can also switch from **outside** the chat at any time: the TUI chat picker
-  / session-detail view (press **`c`**, "swit[c]h account"), or the CLI
+  / session-detail view (press **`c`** on the selected chat — a hidden shortcut
+  the action bar no longer advertises, to keep it short), or the CLI
   `boss account switch <session> <account>`.
 
 ## Rotation behavior

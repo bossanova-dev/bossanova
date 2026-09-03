@@ -99,6 +99,15 @@ function run(repo, extraArgs = [], options = {}) {
   }
 }
 
+async function waitForFile(path, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (fs.existsSync(path)) return true
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  return fs.existsSync(path)
+}
+
 function porcelain(repo) {
   return execFileSync('git', ['-C', repo, 'status', '--porcelain', '--', 'target.txt'], {
     encoding: 'utf8',
@@ -354,10 +363,7 @@ test('prove-red restores the target after SIGTERM during the mutated gate leg', 
     { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] },
   )
 
-  for (let i = 0; i < 100 && !fs.existsSync(marker); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 20))
-  }
-  assert.equal(fs.existsSync(marker), true, 'mutated gate leg did not start')
+  assert.equal(await waitForFile(marker), true, 'mutated gate leg did not start')
   child.kill('SIGTERM')
   await new Promise((resolve) => child.on('exit', resolve))
 
@@ -406,10 +412,7 @@ test('prove-red waits for a SIGTERM-trapping gate before restoring the target', 
     { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] },
   )
 
-  for (let i = 0; i < 100 && !fs.existsSync(marker); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 20))
-  }
-  assert.equal(fs.existsSync(marker), true, 'mutated gate leg did not start')
+  assert.equal(await waitForFile(marker), true, 'mutated gate leg did not start')
   child.kill('SIGTERM')
   await new Promise((resolve) => child.on('exit', resolve))
   await new Promise((resolve) => setTimeout(resolve, 200))

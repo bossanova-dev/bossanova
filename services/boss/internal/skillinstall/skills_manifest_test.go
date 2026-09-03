@@ -730,19 +730,112 @@ func TestPublishedCoreNotesHelpersResolveFromHomeWhenSkillsHomeIsUnset(t *testin
 				}
 				resolver := notesToolboxResolver(t, content, core.name, core.toolbox)
 
-				home := t.TempDir()
-				want := filepath.Join(home, ".codex", "skills", core.name, "toolbox")
-				if err := os.MkdirAll(want, 0o755); err != nil {
-					t.Fatalf("create toolbox: %v", err)
+				helperRel := core.name + "-env.sh"
+				helper, helperErr := fs.ReadFile(fsys, "skills/"+core.name+"/toolbox/"+helperRel)
+				sourcedHelper := helperErr == nil
+				if !sourcedHelper && strings.Contains(resolver, helperRel) {
+					t.Fatalf("%s resolver sources toolbox/%s but the payload does not ship it: %v", core.name, helperRel, helperErr)
 				}
-				cmd := exec.Command("bash", "-c", resolver+"\nprintf '%s' \"$"+core.toolbox+"\"")
-				cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
-				got, err := cmd.Output()
-				if err != nil {
-					t.Fatalf("resolve notes helper: %v", err)
+
+				// BOS-1102: a sourced resolver resolves nothing unless the helper it sources is really
+				// there, so the good tree gets the SHIPPED helper. That makes this an end-to-end check
+				// of the payload's own env script, not of a regex — and it fails loudly if a core adopts
+				// the sourced form without vendoring the helper.
+				//
+				// The other tree is left STALE — toolbox directory present, helper absent — because that
+				// is the shape a real stale install has: the locate line falls through to the tree that
+				// carries the helper while a directory-test inside the helper would send the toolbox back
+				// to the stale one, giving helper from one install and guards from another, silently,
+				// with exit 0. Only the sourced form gets a stale decoy: the inline resolvers probe for a
+				// directory by construction and would fail here for a reason this test is not about.
+				newHome := func(goodAgent, staleAgent string) (string, string) {
+					home := t.TempDir()
+					want := filepath.Join(home, goodAgent, "skills", core.name, "toolbox")
+					if err := os.MkdirAll(want, 0o755); err != nil {
+						t.Fatalf("create toolbox: %v", err)
+					}
+					if sourcedHelper {
+						if err := os.WriteFile(filepath.Join(want, helperRel), helper, 0o644); err != nil {
+							t.Fatalf("install %s: %v", helperRel, err)
+						}
+						staleDir := filepath.Join(home, staleAgent, "skills", core.name, "toolbox")
+						if err := os.MkdirAll(staleDir, 0o755); err != nil {
+							t.Fatalf("create stale toolbox: %v", err)
+						}
+						if err := os.WriteFile(filepath.Join(staleDir, "stale-guard.mjs"), []byte("stale\n"), 0o644); err != nil {
+							t.Fatalf("seed stale toolbox: %v", err)
+						}
+					}
+					return home, want
 				}
-				if string(got) != want {
-					t.Fatalf("notes helper = %q; want %q when BOSS_SKILLS_HOME is unset", got, want)
+
+				resolve := func(t *testing.T, shell, home, skillsHome string) string {
+					t.Helper()
+					cmd := exec.Command(shell, "-c", resolver+"\nprintf '%s' \"$"+core.toolbox+"\"")
+					cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+					if skillsHome != "" {
+						cmd.Env = append(cmd.Env, "BOSS_SKILLS_HOME="+skillsHome)
+					}
+					got, err := cmd.Output()
+					if err != nil {
+						t.Fatalf("resolve notes helper under %s: %v", shell, err)
+					}
+					return string(got)
+				}
+
+				// Both shell families, because they disagree on the one thing the locate depends
+				// on: `.` is a POSIX special built-in, so a missing file exits `sh`/`dash` outright
+				// instead of returning non-zero. A bash-only matrix cannot see a resolver whose
+				// fallback and whose error message are both unreachable under `sh`.
+				for _, shell := range []string{"bash", "sh"} {
+					home, want := newHome(".codex", ".claude")
+					if got := resolve(t, shell, home, ""); got != want {
+						t.Fatalf("notes helper under %s = %q; want %q when BOSS_SKILLS_HOME is unset", shell, got, want)
+					}
+					if !sourcedHelper {
+						// The inline resolvers honour a pre-set BOSS_SKILLS_HOME blindly by
+						// construction, so the pre-set sub-matrix below is not about them.
+						continue
+					}
+					// BOS-1102: `${BOSS_SKILLS_HOME:-…}` supplies its default only when the variable is
+					// UNSET, so a locate line naming just that default plus one fallback dropped a whole
+					// install tree out of the search the moment anything pre-set the variable. Each case
+					// below pre-sets it to a value that cannot serve the helper and still requires the
+					// tree that does carry it to win.
+					for _, tc := range []struct {
+						name        string
+						good, stale string
+						skillsHome  func(home string) string
+					}{
+						{
+							name: "preset-stale-tree", good: ".codex", stale: ".claude",
+							skillsHome: func(home string) string { return filepath.Join(home, ".claude", "skills") },
+						},
+						{
+							name: "preset-nonexistent", good: ".codex", stale: ".claude",
+							skillsHome: func(home string) string { return filepath.Join(home, "no-such-skills") },
+						},
+						{
+							// The regression this case exists for: the good tree is ~/.claude/skills, the
+							// very path the `:-` default names — but a pre-set value suppresses that
+							// default, so only an explicit ~/.claude candidate can still find it. Without
+							// one, a healthy Claude install BLOCKs with a remedy that cannot fix it.
+							name: "preset-elsewhere-good-tree-is-claude", good: ".claude", stale: ".codex",
+							skillsHome: func(home string) string { return filepath.Join(home, ".codex", "skills") },
+						},
+						{
+							name: "preset-already-correct", good: ".claude", stale: ".codex",
+							skillsHome: func(home string) string { return filepath.Join(home, ".claude", "skills") },
+						},
+					} {
+						t.Run(shell+"/"+tc.name, func(t *testing.T) {
+							home, want := newHome(tc.good, tc.stale)
+							skillsHome := tc.skillsHome(home)
+							if got := resolve(t, shell, home, skillsHome); got != want {
+								t.Fatalf("notes helper under %s = %q; want %q with BOSS_SKILLS_HOME=%s", shell, got, want, skillsHome)
+							}
+						})
+					}
 				}
 			})
 		}
@@ -757,6 +850,26 @@ func notesToolboxResolver(t *testing.T, content, core, toolbox string) string {
 		t.Fatalf("%s post-terminal notes section not found", core)
 	}
 
+	// BOS-1102: boss-plan collapsed the eight-line inline probe to one sourced line. The helper
+	// cannot locate itself before it is read, so the line probes every install tree itself — a
+	// pre-set BOSS_SKILLS_HOME, then ~/.claude/skills, then ~/.codex/skills — while the
+	// authoritative resolution (and the loud failure) lives inside `<core>/toolbox/<core>-env.sh`.
+	// ~/.claude is named twice because `${BOSS_SKILLS_HOME:-…}` defaults only when the variable is
+	// UNSET, so without the explicit candidate a pre-set value drops that tree out of the search.
+	// The locate tests `[ -f ]` rather than letting `.` fail: `.` is a POSIX special built-in, so
+	// under sh/dash a missing file exits the shell outright and a `. a || . b || { echo … }` chain
+	// silently skips every remaining candidate along with its own error message.
+	env := strings.ToUpper(strings.ReplaceAll(core, "-", "_")) + "_ENV"
+	sourcedPattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(env) +
+		`="\$\{BOSS_SKILLS_HOME:-\$HOME/\.claude/skills\}/` + regexp.QuoteMeta(core) + `/toolbox/` +
+		regexp.QuoteMeta(core) + `-env\.sh"; \[ -f "\$` + regexp.QuoteMeta(env) + `" \] \|\| ` +
+		regexp.QuoteMeta(env) + `="\$HOME/\.claude/skills/` + regexp.QuoteMeta(core) + `/toolbox/` +
+		regexp.QuoteMeta(core) + `-env\.sh"; \[ -f "\$` + regexp.QuoteMeta(env) + `" \] \|\| ` +
+		regexp.QuoteMeta(env) + `="\$HOME/\.codex/skills/` + regexp.QuoteMeta(core) + `/toolbox/` +
+		regexp.QuoteMeta(core) + `-env\.sh"; \[ -f "\$` + regexp.QuoteMeta(env) + `" \] \|\| ` +
+		`\{ echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; \}; ` +
+		`\. "\$` + regexp.QuoteMeta(env) + `"$`)
+
 	canonicalPattern := regexp.MustCompile(`(?m)^if \[ -z "\$\{BOSS_SKILLS_HOME:-\}" \]; then
   for candidate in "\$HOME/\.claude/skills" "\$HOME/\.codex/skills"; do
     if \[ -d "\$candidate/` + regexp.QuoteMeta(core) + `/toolbox" \]; then BOSS_SKILLS_HOME="\$candidate"; break; fi
@@ -765,7 +878,10 @@ fi
 test -n "\$\{BOSS_SKILLS_HOME:-\}" \|\| \{ echo "BLOCKED: installed boss skills not found"; exit 1; \}
 ` + regexp.QuoteMeta(toolbox) + `="\$BOSS_SKILLS_HOME/` + regexp.QuoteMeta(core) + `/toolbox"
 export BOSS_SKILLS_HOME ` + regexp.QuoteMeta(toolbox) + `$`)
-	loc := canonicalPattern.FindStringIndex(notesSection)
+	loc := sourcedPattern.FindStringIndex(notesSection)
+	if loc == nil {
+		loc = canonicalPattern.FindStringIndex(notesSection)
+	}
 	if loc == nil {
 		legacyPattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(toolbox) + `="\$\{BOSS_SKILLS_HOME:-[^}]+\}/` + regexp.QuoteMeta(core) + `/toolbox"\n(?:if \[ ! -d "\$` + regexp.QuoteMeta(toolbox) + `" \]; then ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox"; fi|\[ -d "\$` + regexp.QuoteMeta(toolbox) + `" \] \|\| ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox")$`)
 		loc = legacyPattern.FindStringIndex(notesSection)
@@ -778,6 +894,176 @@ export BOSS_SKILLS_HOME ` + regexp.QuoteMeta(toolbox) + `$`)
 		t.Fatalf("%s terminal notes-hook discovery command not found after resolver", core)
 	}
 	return notesSection[loc[0]:loc[1]]
+}
+
+// TestBossPlanDocumentsInteractiveBatchChildDrafting pins BOS-1102's interactive batch drafting
+// mode. Each clause below is a thing the mode is wrong without:
+//
+//   - the threshold, because "batch when there are several children" is not a selection rule and
+//     leaves each run to invent one;
+//   - default-stays-per-child, because a mode documented without its default reads as a replacement;
+//   - the per-child gates — contract, image with --require-verbatim, secret — because batching the
+//     DRAFTS while batching the VALIDATION is the actual hazard: one worker's tenth plan is the one
+//     the gates exist to catch;
+//   - the pointer to the toolbox preamble, because those gate commands dereference
+//     $BOSS_PLAN_TOOLBOX and this reference has no preamble site of its own;
+//   - the link to the shared drafting spec, because the whole point is that interactive-mode.md
+//     does not carry a second copy of the plan-body contract; and
+//   - the reciprocal note in the brief, so the normative source knows it has a second consumer.
+//
+// The Phase 4 clauses are matched against the batch SECTION, not the whole file. Several of these
+// tokens (the guard names, the brief's path) also occur in the file's pre-existing prose, so a
+// whole-file Contains would keep passing after the section that has to say them was gutted — the
+// clause would pin the file's history rather than this change.
+func TestBossPlanDocumentsInteractiveBatchChildDrafting(t *testing.T) {
+	const batchHeading = "### Batch child drafting (epic runs only)"
+
+	// Phase 2.5 offers the choice, and says the choice does not move the gates.
+	phase25 := []string{
+		"**Per-child dispatch (the default).**",
+		"Batching changes who writes the drafts, not what is validated.",
+	}
+	// The Phase 4 section's own contract.
+	batchSection := []string{
+		// The threshold as a NUMBER a run can act on.
+		"`BATCH_DRAFT_MIN_CHILDREN`=3",
+		// The gate commands dereference $BOSS_PLAN_TOOLBOX, and this file carries no preamble
+		// site of its own — so the section has to point at the preamble or every gate below is a
+		// module-not-found in the fresh shell each Bash call gets.
+		"toolbox preamble",
+		// All three gates, per child and orchestrator-side, before anything is written.
+		"plan-contract-guard.mjs",
+		`plan-image-guard.mjs" --require-verbatim`,
+		"and the secret gate",
+		"before the first tracker write",
+		// The output contract the orchestrator's create-and-attach loop reads.
+		"batch-metadata.json",
+		// Link, do not duplicate.
+		"references/headless-drafting-brief.md",
+		// A partial batch must not become half an epic.
+		"A partial batch is a **failed** dispatch",
+	}
+	brief := []string{
+		"**The interactive path may reuse this step wholesale.**",
+		"(`references/interactive-mode.md`) briefs one batch worker against **this** step",
+	}
+
+	for label, fsys := range shippedPayloads(t) {
+		t.Run(label, func(t *testing.T) {
+			read := func(rel string) string {
+				data, err := fs.ReadFile(fsys, "skills/boss-plan/"+rel)
+				if err != nil {
+					t.Fatalf("read %s: %v", rel, err)
+				}
+				return string(data)
+			}
+			contains := func(rel, body string, want []string) {
+				for _, clause := range want {
+					if !strings.Contains(body, clause) {
+						t.Errorf("%s does not document %q", rel, clause)
+					}
+				}
+			}
+
+			const interactiveRel = "references/interactive-mode.md"
+			interactive := read(interactiveRel)
+			contains(interactiveRel, interactive, phase25)
+
+			_, section, found := strings.Cut(interactive, batchHeading)
+			if !found {
+				t.Fatalf("%s has no %q section", interactiveRel, batchHeading)
+			}
+			if next := strings.Index(section, "\n## "); next >= 0 {
+				section = section[:next]
+			}
+			if next := strings.Index(section, "\n### "); next >= 0 {
+				section = section[:next]
+			}
+			contains(interactiveRel+" "+batchHeading, section, batchSection)
+
+			const briefRel = "references/headless-drafting-brief.md"
+			contains(briefRel, read(briefRel), brief)
+		})
+	}
+}
+
+// bossPlanSourcedPreamble is the ONE line every boss-plan Bash block spends resolving its toolbox
+// (BOS-1102). It is pinned byte-for-byte rather than by shape, because each candidate earns its
+// place: `${BOSS_SKILLS_HOME:-…}` defaults only when the variable is UNSET, so the explicit
+// ~/.claude candidate is the only thing keeping a healthy Claude install reachable once anything
+// pre-sets that variable, and the ~/.codex candidate is the only thing a Codex-only install has.
+// The `[ -f ]` locate is what makes both fallbacks and the BLOCKED message reachable — `.` is a
+// POSIX special built-in, so under sh/dash a missing file exits the shell outright and a
+// `. a || . b || { echo …; exit 1; }` chain would silently skip all of them. Drop any one and the
+// block still looks plausible while failing, in silence, on exactly the installs it exists for.
+const bossPlanSourcedPreamble = `BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; ` +
+	`[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; ` +
+	`[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; ` +
+	`[ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; ` +
+	`. "$BOSS_PLAN_ENV"`
+
+// TestBossPlanResolvesToolboxThroughSourcedHelper pins BOS-1102's preamble diet across the whole
+// boss-plan payload, not just its spine: the eight-line inline probe is gone, no markdown file
+// re-derives BOSS_PLAN_TOOLBOX itself, and every preamble site is the exact sourced line above.
+//
+// The site floor is the vacuity guard. Without it a sweep that deleted the preambles outright —
+// leaving blocks that dereference an unset $BOSS_PLAN_TOOLBOX — would satisfy every other
+// assertion here, because "no inline probe" and "no assignment" are both satisfied by nothing.
+func TestBossPlanResolvesToolboxThroughSourcedHelper(t *testing.T) {
+	// The inline probe's distinctive first line. Its presence anywhere in the payload means a
+	// block re-derived the resolution the helper now owns.
+	const inlineProbe = `if [ -z "${BOSS_SKILLS_HOME:-}" ]; then`
+	// Sweeping the 14 known sites is the floor, not the ceiling; new blocks only raise it.
+	const wantSites = 14
+
+	for label, fsys := range shippedPayloads(t) {
+		t.Run(label, func(t *testing.T) {
+			if _, err := fs.ReadFile(fsys, "skills/boss-plan/toolbox/boss-plan-env.sh"); err != nil {
+				t.Fatalf("boss-plan payload must ship toolbox/boss-plan-env.sh, the helper every block sources: %v", err)
+			}
+			sites := 0
+			err := fs.WalkDir(fsys, "skills/boss-plan", func(p string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if d.IsDir() || !strings.HasSuffix(p, ".md") {
+					return nil
+				}
+				data, err := fs.ReadFile(fsys, p)
+				if err != nil {
+					return err
+				}
+				for i, line := range strings.Split(string(data), "\n") {
+					trimmed := strings.TrimPrefix(strings.TrimLeft(line, " \t"), "> ")
+					switch {
+					case strings.Contains(line, inlineProbe):
+						t.Errorf("%s:%d re-derives the toolbox inline; source toolbox/boss-plan-env.sh instead", p, i+1)
+					case strings.Contains(line, "BOSS_PLAN_TOOLBOX="):
+						t.Errorf("%s:%d assigns BOSS_PLAN_TOOLBOX; only toolbox/boss-plan-env.sh may", p, i+1)
+					// A preamble SITE is a command line, not prose that merely names the helper:
+					// the pinned locate assignment, or a bare `.`/`source` in leading position.
+					// The latter two spellings are still matched so a rewrite back to the
+					// `. a || . b` chain — the form that dies silently under sh/dash — is caught
+					// by the byte pin below rather than skipped as prose.
+					case (strings.HasPrefix(trimmed, "BOSS_PLAN_ENV=") ||
+						strings.HasPrefix(trimmed, ". ") || strings.HasPrefix(trimmed, "source ")) &&
+						strings.Contains(trimmed, "boss-plan-env.sh"):
+						if trimmed != bossPlanSourcedPreamble {
+							t.Errorf("%s:%d preamble is not the pinned sourced line:\n got %s\nwant %s", p, i+1, trimmed, bossPlanSourcedPreamble)
+						}
+						sites++
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("walk boss-plan payload: %v", err)
+			}
+			if sites < wantSites {
+				t.Errorf("found %d sourced toolbox preambles, want at least %d; blocks that dereference $BOSS_PLAN_TOOLBOX without one run against an unset variable", sites, wantSites)
+			}
+		})
+	}
 }
 
 // scriptRefPattern matches a repo-root `scripts/<path>` token anywhere in a payload file — prose

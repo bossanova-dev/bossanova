@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version — so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-08-21**. The engineering procedure for adding a new
+The current version is **2026-09-04**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -195,7 +195,7 @@ for older clients.
 Clients pinned to an older version were built when this case read as `ABORTED`,
 so they are down-converted back to `ABORTED` with the failure message preserved.
 
-### 2026-08-21 — Switch cancellation and result-ceiling behavior (Current)
+### 2026-08-21 — Switch cancellation and result-ceiling behavior
 
 The OrchestratorService began distinguishing a session account switch that the
 caller **canceled** from one that **failed for an unknown reason**. Previously the
@@ -231,6 +231,73 @@ Previously this handler-owned result ceiling used the generic relay timeout text
 `command timed out after 2m0s`. Clients pinned to an older version were built
 against that message, so they are down-converted back to the legacy text while
 keeping `DEADLINE_EXCEEDED`.
+
+### 2026-08-25 — Head-current check state
+
+`Session.last_check_state` now serves only a CI verdict demonstrated at the
+current PR head SHA. Stale, missing, or non-demonstrated observations serve
+`CHECKS_OVERALL_UNSPECIFIED`, while the raw persisted latch moves to
+`Session.last_check_state_observed` with `last_check_state_head_sha` and
+`last_check_state_at` provenance.
+
+Clients pinned to an older version are down-converted so `last_check_state`
+again equals `last_check_state_observed`, matching the prior behavior that could
+surface a stale verdict as if it still described the current head.
+
+### 2026-09-02 — Organization-scoped visibility
+
+The API surface now includes organization management messages and nine
+organization RPCs on `OrchestratorService`: list, get, create, and rename
+organizations; list, invite, remove, and role-edit members; and switch the
+active organization.
+
+The organization visibility cutover is intentionally handler-gated rather than
+registered as a down-convert transform. Session, chat, repo, cron, notes,
+webhook, GitHub App, attach-token, daemon, and stream procedures whose
+caller-visible resource set changes must branch on the resolved API version:
+clients pinned before `2026-09-02` keep the legacy user-scoped view, while
+current clients observe organization-scoped visibility. The transform layer
+cannot express this because it sees only the procedure and payload, cannot
+inspect the caller, cannot turn a success back into `NOT_FOUND`, and cannot add
+or remove streaming frames.
+
+### 2026-09-03 — SwitchActiveOrganization retired
+
+`SwitchActiveOrganization` is retired in favor of AuthKit
+`switchToOrganization`. The RPC and request/response messages remain in
+`bossanova.v1` only for wire compatibility: `buf breaking: use: FILE` blocks
+deleting them from v1, and true removal requires `bossanova.v2`.
+
+Current clients receive `UNIMPLEMENTED` with retirement guidance naming AuthKit
+`switchToOrganization`. Clients pinned to an older version are down-converted to
+the legacy `organization management is not implemented` message while keeping
+`UNIMPLEMENTED`.
+
+### 2026-09-04 — Abandoned checkout no longer reports an activating subscription (Current)
+
+An account that opened a Stripe Checkout session and never completed it was
+previously reported as `CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH` with the
+message "Your subscription is being activated." and `can_create_checkout=false`,
+which left clients polling forever for an activation that would never arrive.
+
+Current clients receive `CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION` with
+`checkout_started=true`, `can_create_checkout=true`,
+`denial_reason="subscription_required"` and a message inviting the user to
+resume checkout. Only an account that has actually paid — one awaiting its
+entitlement refresh — still reports the activating shape.
+
+No field or enum member was added: the change is in the values served on
+`CloudAccessStatus`, carried on `GetCloudAccessStatus`,
+`CreateCheckoutSession`, and `RefreshCloudEntitlements`. Clients pinned to an
+older version are down-converted back to the activating shape.
+
+One behavior change on this version is **not** down-converted, deliberately.
+`CreateCheckoutSession` against an account that had started a checkout but never
+recorded an idempotency key used to be refused; it now records a key and returns
+a hosted URL. A down-convert transform can only rewrite a response, never turn a
+success back into an error, and re-introducing the refusal for pinned clients
+would restore the dead end this version exists to remove. Pinned clients see the
+old _status_ shape but the new _checkout_ behavior.
 
 ## See also
 

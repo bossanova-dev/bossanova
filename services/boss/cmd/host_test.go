@@ -188,6 +188,7 @@ func TestRootRejectsHostWithRemote(t *testing.T) {
 
 	err := root.Execute()
 	if err == nil {
+		// Elides the middle of a command line, not prose: ellipsis: literal-dots ok
 		t.Fatal("expected boss --host ... --remote ... to fail")
 	}
 	for _, want := range []string{"--host", "--remote"} {
@@ -697,6 +698,7 @@ func TestRequireLocalDaemonTarget(t *testing.T) {
 			t.Run(sub, func(t *testing.T) {
 				err := requireLocalDaemonTarget(hostDaemonSubcommand(t, "user@example.test", "daemon", sub))
 				if err == nil {
+					// Elides the middle of a command line, not prose: ellipsis: literal-dots ok
 					t.Fatalf("boss --host ... daemon %s must be refused", sub)
 				}
 				for _, want := range []string{"--host", "user@example.test", "ssh user@example.test boss daemon"} {
@@ -729,6 +731,7 @@ func TestRequireLocalDaemonTarget(t *testing.T) {
 		for _, path := range [][]string{{"ls"}, {"session", "new"}, {"repo", "ls"}} {
 			cmd := hostDaemonSubcommand(t, "user@example.test", path...)
 			if err := requireLocalDaemonTarget(cmd); err != nil {
+				// Elides the middle of a command line, not prose: ellipsis: literal-dots ok
 				t.Fatalf("boss --host ... %s: %v", cmd.CommandPath(), err)
 			}
 		}
@@ -759,6 +762,7 @@ func TestRootRejectsDaemonSubtreeAgainstHost(t *testing.T) {
 
 			err := root.Execute()
 			if err == nil {
+				// Elides the middle of a command line, not prose: ellipsis: literal-dots ok
 				t.Fatalf("boss --host ... daemon %s must fail", sub)
 			}
 			if !strings.Contains(err.Error(), "--host user@example.test") {

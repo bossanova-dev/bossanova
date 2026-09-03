@@ -80,9 +80,10 @@ func TestInit(t *testing.T) {
 			wantCommand: "cargo build",
 		},
 		{
-			name:        "go.mod",
-			files:       map[string]string{"go.mod": "module example.com/fx\n\ngo 1.25\n"},
-			wantSystem:  "go.mod",
+			name:       "go.mod",
+			files:      map[string]string{"go.mod": "module example.com/fx\n\ngo 1.25\n"},
+			wantSystem: "go.mod",
+			// The Go package-pattern operator, not copy: ellipsis: literal-dots ok
 			wantCommand: "go build ./...",
 		},
 		{
@@ -528,6 +529,7 @@ func TestDetectedBuildSystems(t *testing.T) {
 		{"yarn", map[string]string{"test": "yarn run test"}, []string{"package.json"}},
 		{"bun", map[string]string{"test": "bun run test"}, []string{"package.json"}},
 		{"cargo", map[string]string{"build": "cargo build"}, []string{"Cargo.toml"}},
+		// The Go package-pattern operator, not copy: ellipsis: literal-dots ok
 		{"go", map[string]string{"build": "go build ./..."}, []string{"go.mod"}},
 		{"mixed", map[string]string{"build": "make build", "test": "cargo test"}, []string{"Makefile", "Cargo.toml"}},
 		{"none", map[string]string{}, nil},

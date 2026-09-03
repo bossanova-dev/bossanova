@@ -2,8 +2,6 @@
 
 ## Overview
 
-Code review requires technical evaluation, not emotional performance.
-
 **Core principle:** Verify before implementing. Ask before assuming. Technical correctness over social comfort.
 
 ## The Response Pattern
@@ -22,9 +20,8 @@ WHEN receiving code review feedback:
 ## Within-Run Observations
 
 When the fix brief includes carried observations, treat them as constraints on what the fix may
-write. They are provisional observations derived from earlier findings in the same run, not
-established rules and not replacements for adjudicating the current finding. Verify the current
-premise first, then avoid introducing the named defect class while making the fix.
+write. Verify the current premise first, then avoid introducing the named defect class while making
+the fix.
 
 ## Forbidden Responses
 
@@ -47,18 +44,6 @@ premise first, then avoid introducing the named defect class while making the fi
 IF any item is unclear:
   STOP - do not implement anything yet
   ASK for clarification on unclear items
-
-WHY: Items may be related. Partial understanding = wrong implementation.
-```
-
-**Example:**
-
-```
-your human partner: "Fix 1-6"
-You understand 1,2,3,6. Unclear on 4,5.
-
-❌ WRONG: Implement 1,2,3,6 now, ask about 4,5 later
-✅ RIGHT: "I understand items 1,2,3,6. Need clarification on 4 and 5 before proceeding."
 ```
 
 ## Source-Specific Handling
@@ -90,7 +75,49 @@ IF conflicts with your human partner's prior decisions:
   Stop and discuss with your human partner first
 ```
 
-**your human partner's rule:** "External feedback - be skeptical, but check carefully"
+### From Bot Reviewers, After a Clean Review
+
+Identify an automated reviewer generically from the review author, never from a list of product
+names: the GraphQL author's `isBot` field, the REST author's `"type": "Bot"` value, or a login
+ending in the `[bot]` suffix. Any one signal is sufficient.
+
+The shortcut is verdict-gated: only a verdict positively recorded as `clean` unlocks it; `capped`,
+`none`, or an absent record means bot feedback is triaged exactly as today. The verdict in question
+is this run's own whole-branch review result, recorded as `REVIEW_VERDICT` in the run note at
+`$(git rev-parse --git-dir)/boss-build-review-verdict`.
+
+#### The `REVIEW_VERDICT` run note
+
+Step 6 writes that note the same way Step 5 records its pre-dispatch HEAD: a plain file under the git
+dir, outside the worktree, which survives the fresh shell each later block runs in.
+`git rev-parse --git-dir` resolves per worktree, so a repair pass in a worktree reads that run's
+verdict and never a sibling session's.
+
+`REVIEW_VERDICT` is exactly one of `clean`, `capped`, or `none`: the `case` that writes it collapses
+`dispatch-failure`, and anything else it cannot classify, to `none`. boss-build's Preflight clears any
+note a previous run left, so the file can never carry a stale verdict across runs. The note is
+advisory routing input only — it never substitutes for the file verdict Step 6 itself routes on.
+
+The note is run-scoped, not diff-scoped: it records that this run's whole-branch review passed, and
+it is deliberately not re-pinned to a later HEAD when the settle loop or a repair pass commits on
+top.
+
+Step 10 is not the note's only reader. A repair pass reads it from a later session that clears
+nothing; what bounds the reader there is its own acknowledge-once contract — one grouped response
+per bot review, per pass.
+
+After a clean verdict, a bot review is **advisory**. It gets exactly one grouped response comment
+per bot review, posted within the bot's own threads, carrying a per-finding reason for every finding
+it raised — never a blanket dismissal, and never silence. Reply inside the thread as
+`## GitHub Thread Replies` below describes, not as a top-level PR comment: a comment posted at the
+top level is not an answer to the threads it was supposed to close.
+
+Advisory is not ignored: a bot finding that names a real defect is still fixed — advisory means it
+does not mechanically open a fix cycle, not that the finding is dropped. Judge each finding on the
+same technical terms as any other external review, then either fix it and say so in the grouped
+response, or give the specific reason it needs no change. A fix taken on the advisory path gets
+the same finalize re-verification a Step 8 repair would: run the gates, commit, push, and re-verify
+finalize on the new head before the grouped response is posted.
 
 ## YAGNI Check for "Professional" Features
 
@@ -101,8 +128,6 @@ IF reviewer suggests "implementing properly":
   IF unused: "This endpoint isn't called. Remove it (YAGNI)?"
   IF used: Then implement properly
 ```
-
-**your human partner's rule:** "You and reviewer both report to me. If we don't need this feature, don't add it."
 
 ## Implementation Order
 
@@ -153,8 +178,6 @@ When feedback IS correct:
 ❌ ANY gratitude expression
 ```
 
-**Why no thanks:** Actions speak. Just fix it. The code itself shows you heard the feedback.
-
 **If you catch yourself about to write "Thanks":** DELETE IT. State the fix instead.
 
 ## Gracefully Correcting Your Pushback
@@ -170,59 +193,6 @@ If you pushed back and were wrong:
 ❌ Over-explaining
 ```
 
-State the correction factually and move on.
-
-## Common Mistakes
-
-| Mistake                      | Fix                                 |
-| ---------------------------- | ----------------------------------- |
-| Performative agreement       | State requirement or just act       |
-| Blind implementation         | Verify against codebase first       |
-| Batch without testing        | One at a time, test each            |
-| Assuming reviewer is right   | Check if breaks things              |
-| Avoiding pushback            | Technical correctness > comfort     |
-| Partial implementation       | Clarify all items first             |
-| Can't verify, proceed anyway | State limitation, ask for direction |
-
-## Real Examples
-
-**Performative Agreement (Bad):**
-
-```
-Reviewer: "Remove legacy code"
-❌ "You're absolutely right! Let me remove that..."
-```
-
-**Technical Verification (Good):**
-
-```
-Reviewer: "Remove legacy code"
-✅ "Checking... build target is 10.15+, this API needs 13+. Need legacy for backward compat. Current impl has wrong bundle ID - fix it or drop pre-13 support?"
-```
-
-**YAGNI (Good):**
-
-```
-Reviewer: "Implement proper metrics tracking with database, date filters, CSV export"
-✅ "Grepped codebase - nothing calls this endpoint. Remove it (YAGNI)? Or is there usage I'm missing?"
-```
-
-**Unclear Item (Good):**
-
-```
-your human partner: "Fix items 1-6"
-You understand 1,2,3,6. Unclear on 4,5.
-✅ "Understand 1,2,3,6. Need clarification on 4 and 5 before implementing."
-```
-
 ## GitHub Thread Replies
 
 When replying to inline review comments on GitHub, reply in the comment thread (`gh api repos/{owner}/{repo}/pulls/{pr}/comments/{id}/replies`), not as a top-level PR comment.
-
-## The Bottom Line
-
-**External feedback = suggestions to evaluate, not orders to follow.**
-
-Verify. Question. Then implement.
-
-No performative agreement. Technical rigor always.

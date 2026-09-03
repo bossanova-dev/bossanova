@@ -10,10 +10,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const maxScanLines = 50
 const maxSummaryLen = 80
+
+// ellipsis is the house truncation marker (U+2026). It is 3 bytes in UTF-8,
+// which is why the byte budget above still reserves 3 for it.
+const ellipsis = "…"
 
 // ChatTitle reads the JSONL file for the given Claude session and returns
 // the first user message as a title. Returns "" if the file doesn't exist
@@ -194,5 +199,13 @@ func truncate(s string) string {
 	if len(s) <= maxSummaryLen {
 		return s
 	}
-	return s[:maxSummaryLen-3] + "..."
+	// maxSummaryLen is a byte budget and the ellipsis marker is 3 bytes in
+	// UTF-8, so the reservation is unchanged. Back the cut off to a rune
+	// boundary first: a fixed byte offset can land inside a multi-byte rune
+	// and emit invalid UTF-8.
+	cut := maxSummaryLen - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
 }

@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -44,6 +45,35 @@ type repoSettingsGitHubOpenedMsg struct {
 	attempt int
 }
 
+// repoSettingsOrganizationsMsg carries the whole organization picture in one
+// message: the caller's organizations and this repo's current mapping. They
+// travel together because they are fetched together, chained off the existing
+// settings load rather than opening a second fetch lifecycle in this view.
+type repoSettingsOrganizationsMsg struct {
+	orgs    []*pb.Organization
+	mapping *pb.RepoOrganizationMapping
+	// err is a ListOrganizations failure; mappingErr is a GetRepoOrganization
+	// failure. They stay separate because the view says different things about
+	// them: a missing list costs the user the picker, a missing mapping costs
+	// them the current value, and reporting either as the other names a failure
+	// that did not happen.
+	err        error
+	mappingErr error
+}
+
+// repoSettingsOrganizationSavedMsg carries the result of a set or a clear. A
+// successful clear reports a nil mapping, which is the same shape an unmapped
+// repo loads with, so both paths converge on one representation.
+type repoSettingsOrganizationSavedMsg struct {
+	mapping *pb.RepoOrganizationMapping
+	// organizationID is the organization the write named -- the one being set,
+	// or the one being released by a clear. A refusal is only classifiable
+	// against it: whether the caller is a member of that organization is what
+	// separates the sentences bosso's single PermissionDenied could mean.
+	organizationID string
+	err            error
+}
+
 // rowID is a stable identity for each logical row in the settings view. Rows are
 // referenced by identity rather than position because collapsing an integration
 // hides its child rows, so on-screen positions are dynamic.
@@ -54,6 +84,7 @@ const (
 
 	repoSettingsRowName
 	repoSettingsRowSetupScript
+	repoSettingsRowOrganization
 	repoSettingsRowMergeStrategy
 	repoSettingsRowCanAutoMerge
 	repoSettingsRowCanAutoMergeDependabot
@@ -103,6 +134,113 @@ func mergeStrategyLabel(s string) string {
 	}
 }
 
+// RepoOrganizationClient is the narrow slice of the authenticated cloud client
+// the repo settings view needs in order to read and write a repo's organization
+// mapping. It is deliberately NOT part of client.BossClient: the mapping is
+// bosso-owned, a local daemon holds none of it, and putting these four methods
+// on the shared interface would force every BossClient fake in the tree to grow
+// stubs it can never serve. The view receives it the same way it receives
+// GitHubAppClient — a type assertion on App.cloudAccess — so a signed-out user,
+// whose cloudAccess is nil, simply never gets the field.
+type RepoOrganizationClient interface {
+	ListOrganizations(ctx context.Context) ([]*pb.Organization, error)
+	GetRepoOrganization(ctx context.Context, repoOriginURL string) (*pb.RepoOrganizationMapping, error)
+	SetRepoOrganization(ctx context.Context, repoOriginURL, organizationID string) (*pb.RepoOrganizationMapping, error)
+	ClearRepoOrganization(ctx context.Context, repoOriginURL, organizationID string) error
+}
+
+// repoSettingsNoOrgLabel names the unmapped state. It is a real, default choice
+// rather than an empty one, and the label says so plainly.
+//
+// It reads "None" and not "Unmapped (Personal)". That earlier label tried to
+// carry the consequence as well as the state -- an unmapped repo's sessions
+// follow the serving daemon's own organization, which for a local daemon is the
+// owner's personal one -- and ended up naming two things at once, neither
+// obviously. "None" answers the question the field actually asks, which is
+// which organization this repository is in.
+const repoSettingsNoOrgLabel = "None"
+
+// repoSettingsNotAMemberPrefix opens the lines that assert non-membership. It is
+// used only where non-membership is actually established: a stored mapping
+// naming an organization absent from the caller's own list, and the defensive
+// set-time case of a write naming one. A refusal of a write the picker offered
+// is not one of those -- see organizationSetRefusalMessage.
+const repoSettingsNotAMemberPrefix = "You are not a member of"
+
+// orgChoice is one row of the organization picker. An empty id is the Personal
+// (unmapped) choice, which is always present and always first.
+type orgChoice struct {
+	id    string
+	label string
+}
+
+// organizationLabel names an organization for display, falling back to its id
+// so a nameless row is still legible and selectable rather than a blank line.
+func organizationLabel(o *pb.Organization) string {
+	if name := strings.TrimSpace(o.GetName()); name != "" {
+		return name
+	}
+	return o.GetId()
+}
+
+// organizationSetRefusalMessage turns a refused set or clear into a line the
+// user can act on.
+//
+// PermissionDenied at this endpoint is not evidence of non-membership. bosso
+// raises it from two unrelated places: the cloud-access gate raises it for an
+// entitlement lapse, and only the other case is a genuine membership refusal.
+// The picker offers exactly what ListOrganizations returned — organizations the
+// caller is already a member of — so for anything it can offer, "you are not a
+// member" is the one reading that is certainly wrong, and it sends the user to
+// the only thing they cannot fix. The caller's own list is evidence the server
+// does not have, so it decides which sentence is true.
+//
+// There used to be a third source, and it was the common one: the membership
+// gate compared the named id against the token's *active* organization rather
+// than the membership table, so mapping a repo into any organization you were
+// not currently signed in to was refused as "membership required" — which was
+// false, and which this message had to hedge around. That gate now authorizes by
+// membership, so an entitlement lapse is the only thing left for a member to
+// check.
+//
+// FailedPrecondition is deliberately not classified here. bosso raises it as
+// "re-authenticate with an organization-scoped token", a better instruction than
+// anything this could substitute, so it travels to the ordinary error banner
+// intact rather than being overwritten.
+func (m RepoSettingsModel) organizationSetRefusalMessage(err error, organizationID string) string {
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		return ""
+	}
+	if organizationID == "" {
+		// No id means no evidence either way, and the non-membership branch
+		// below would otherwise claim one. Unreachable today — every saved
+		// message carries the id it acted on — but the claim is only ever as
+		// safe as the guard that makes it, so the guard is structural.
+		return ""
+	}
+	label, isMember := m.callerOrganization(organizationID)
+	if !isMember {
+		return repoSettingsNotAMemberPrefix + " that organization, so the mapping was refused."
+	}
+	return "Bossanova refused the mapping to " + label +
+		". You are a member of it, so check that your Bossanova Cloud subscription is active."
+}
+
+// callerOrganization reports an organization's display label and whether it is
+// in the caller's own list at all. Membership of the list is the view's only
+// first-hand evidence about membership of the organization.
+func (m RepoSettingsModel) callerOrganization(organizationID string) (string, bool) {
+	if organizationID == "" {
+		return "", false
+	}
+	for _, o := range m.organizations {
+		if o.GetId() == organizationID {
+			return organizationLabel(o), true
+		}
+	}
+	return "", false
+}
+
 // maskAPIKey masks an API key, showing only the last 4 characters.
 func maskAPIKey(key string) string {
 	if key == "" {
@@ -139,6 +277,25 @@ type RepoSettingsModel struct {
 	linearExpanded bool
 	sentryExpanded bool
 
+	// Organization mapping. orgClient is nil for a local-only / signed-out user,
+	// which is the whole of the "no picker" behaviour: visibleRows() then never
+	// emits repoSettingsRowOrganization and View() never renders it.
+	orgClient     RepoOrganizationClient
+	organizations []*pb.Organization
+	orgMapping    *pb.RepoOrganizationMapping
+	orgLoadErr    error
+	orgMappingErr error // GetRepoOrganization failure; the current value is unknown, not Personal
+	// orgRefusal is the notice rendered above the field's load-error line, and
+	// again inside the picker overlay, where it stands alone: a standing
+	// membership refusal from the load, a set-time refusal from a failed write,
+	// or a pick this view could not carry out at all. "" when none. It is not
+	// only a membership refusal -- check every sender before adding a rule
+	// about when it clears.
+	orgRefusal      string
+	orgPickerOpen   bool
+	orgPickerCursor int
+	orgSaving       bool
+
 	githubAppClient      GitHubAppClient
 	githubAppStatus      *pb.GitHubAppRepoStatus
 	githubAppStatusErr   error
@@ -170,11 +327,11 @@ func NewRepoSettingsModel(c client.BossClient, ctx context.Context, repoID strin
 	si.SetWidth(60)
 
 	aki := textinput.New()
-	aki.Placeholder = "lin_api_..."
+	aki.Placeholder = "lin_api_…"
 	aki.SetWidth(60)
 
 	ski := textinput.New()
-	ski.Placeholder = "sntrys_..."
+	ski.Placeholder = "sntrys_…"
 	ski.SetWidth(60)
 
 	soi := textinput.New()
@@ -198,6 +355,37 @@ func (m *RepoSettingsModel) SetGitHubAppInstall(c GitHubAppClient) {
 	m.githubAppClient = c
 }
 
+// SetRepoOrganizationClient injects the cloud client that backs the organization
+// field. Leaving it unset is the supported local-only shape, not a degraded one.
+func (m *RepoSettingsModel) SetRepoOrganizationClient(c RepoOrganizationClient) {
+	m.orgClient = c
+}
+
+// organizationRowVisible reports whether the organization row exists at all. It
+// needs two things: a cloud client to serve the mapping, and an origin URL to
+// key it by.
+//
+// Those two structural preconditions are the whole rule; the size of the
+// caller's organization list is deliberately not part of it. A signed-out or
+// local-only user has no cloud client, so there is nothing to serve a mapping
+// and no picker is offered rather than a row that could only ever report "not
+// logged in". A repo with no git origin is the same shape arrived at from the
+// other side — it cannot be mapped, so a confirm on it would send an empty
+// origin for bosso to refuse.
+//
+// A signed-in user who belongs to no organization still gets the row, and its
+// picker still holds the Personal choice alone. That is intended rather than an
+// oversight of the rule above: Personal is a real destination, so a mapping made
+// earlier (or made from another client) has to stay resettable by someone whose
+// list is empty today.
+//
+// visibleRows(), View(), and activateRow() share this one predicate, so the
+// cursor can never land on a row that does not render and no row can be
+// activated unseen.
+func (m RepoSettingsModel) organizationRowVisible() bool {
+	return m.orgClient != nil && m.repo.GetOriginUrl() != ""
+}
+
 // visibleRows returns the ordered list of navigable rows given the current
 // expansion state. Headers and non-integration rows are always present;
 // integration child rows are appended only when their parent is expanded. The
@@ -206,6 +394,11 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 	rows := []rowID{
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
+	}
+	if m.organizationRowVisible() {
+		rows = append(rows, repoSettingsRowOrganization)
+	}
+	rows = append(rows,
 		repoSettingsRowMergeStrategy,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
@@ -213,7 +406,7 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 		repoSettingsRowShouldArchiveSessionsAfterMerge,
 		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
-	}
+	)
 	if m.linearExpanded {
 		rows = append(rows, repoSettingsRowLinearApiKey)
 	}
@@ -316,7 +509,12 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setupInput.SetValue(m.repo.GetSetupScript())
 		m.initExpansionState()
 		// Note: API key is NOT pre-filled (always full replace for security)
-		return m, m.loadGitHubAppStatus()
+		//
+		// Both follow-on loads hang off this one message rather than off Init, so
+		// the view keeps a single settings-load lifecycle: the repo has to be
+		// known before either can be asked for (the GitHub status needs its NWO,
+		// the organization mapping needs its origin URL).
+		return m, tea.Batch(m.loadGitHubAppStatus(), m.loadOrganizations())
 
 	case repoSettingsSavedMsg:
 		if msg.err != nil {
@@ -359,9 +557,41 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case repoSettingsOrganizationsMsg:
+		m.organizations = msg.orgs
+		m.orgLoadErr = msg.err
+		m.orgMappingErr = msg.mappingErr
+		if msg.err == nil && msg.mappingErr == nil {
+			m.orgMapping = msg.mapping
+		}
+		m.orgRefusal = m.orgMembershipRefusal()
+		return m, nil
+
+	case repoSettingsOrganizationSavedMsg:
+		m.orgSaving = false
+		if msg.err != nil {
+			// A membership refusal is not a generic RPC failure: it is the one
+			// outcome the user can do something about, so it gets its own line
+			// next to the field instead of the shared error banner.
+			if refusal := m.organizationSetRefusalMessage(msg.err, msg.organizationID); refusal != "" {
+				m.orgRefusal = refusal
+				return m, nil
+			}
+			m.err = msg.err
+			return m, nil
+		}
+		m.orgMapping = msg.mapping
+		m.orgMappingErr = nil
+		m.err = nil
+		m.orgRefusal = m.orgMembershipRefusal()
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.githubAppMode != repoSettingsGitHubModeNone {
 			return m.updateGitHubMode(msg)
+		}
+		if m.orgPickerOpen {
+			return m.updateOrgPicker(msg)
 		}
 		switch msg.String() {
 		case "esc":
@@ -541,6 +771,23 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	case repoSettingsRowSetupScript:
 		m.editingField = repoSettingsRowSetupScript
 		return m, m.setupInput.Focus()
+	case repoSettingsRowOrganization:
+		if !m.organizationRowVisible() {
+			return m, nil
+		}
+		if m.orgSaving {
+			// A write is already in flight. Reopening the picker now would seed
+			// its cursor from a mapping the server has been told to change, and
+			// a second confirm would race the first: the replies land in arrival
+			// order, so the field could settle on the earlier choice.
+			return m, nil
+		}
+		// A picker rather than the merge-strategy cycle idiom: cycling would fire
+		// a server write on every keypress, and each intermediate value is a real
+		// remapping of the repo, not a local toggle.
+		m.orgPickerOpen = true
+		m.orgPickerCursor = m.orgPickerIndexForCurrent()
+		return m, nil
 	case repoSettingsRowMergeStrategy:
 		// Cycle through merge strategies. Normalize the stored value first so an
 		// unknown/empty value starts the cycle from the default (merge).
@@ -646,6 +893,200 @@ func (m RepoSettingsModel) activateGitHubAction() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateOrgPicker drives the organization picker overlay. Navigation is local;
+// only enter reaches the network, and it does so through a tea.Cmd.
+func (m RepoSettingsModel) updateOrgPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	choices := m.orgChoices()
+	switch msg.String() {
+	case "esc":
+		m.orgPickerOpen = false
+		return m, nil
+	case "up", "k":
+		if m.orgPickerCursor > 0 {
+			m.orgPickerCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.orgPickerCursor < len(choices)-1 {
+			m.orgPickerCursor++
+		}
+		return m, nil
+	case "enter", "space":
+		if m.orgPickerCursor < 0 || m.orgPickerCursor >= len(choices) {
+			m.orgPickerOpen = false
+			return m, nil
+		}
+		m.orgPickerOpen = false
+		return m.applyOrganizationChoice(choices[m.orgPickerCursor])
+	}
+	return m, nil
+}
+
+// applyOrganizationChoice writes the picked choice. Selecting the Personal row
+// clears the mapping; selecting an organization sets it. Both are tea.Cmds — no
+// RPC is issued on the Update goroutine.
+func (m RepoSettingsModel) applyOrganizationChoice(choice orgChoice) (tea.Model, tea.Cmd) {
+	current := m.orgMapping.GetOrganizationId()
+	switch {
+	// This case must precede the dedup below: organizationMappingUnknown()
+	// implies current == "", so a reset would otherwise match `choice.id ==
+	// current` and be discarded as a no-op — the bug
+	// TestRepoSettingsOrganization_UnknownMappingDoesNotSwallowAReset guards. A
+	// non-empty choice deliberately falls out of this case and proceeds to the
+	// save.
+	case m.organizationMappingUnknown():
+		// Nothing is known to be in force, so no pick is a no-op. A reset is
+		// the one pick that still cannot be carried out: ClearRepoOrganization
+		// is organization-scoped and takes the id being cleared, which is
+		// exactly what the unknown state does not supply. Say so here rather
+		// than send a request the server refuses for a field the user never saw.
+		//
+		// The message names the unknown state and not the RPC behind it: the
+		// predicate is an OR over two causes, and a ListOrganizations failure
+		// means GetRepoOrganization was never issued at all. Which read failed
+		// is a fact the notice below has and this one does not.
+		//
+		// It says "could not determine" and not "does not know" for the same
+		// reason: a failed read is a fact about this attempt, not about the
+		// server, which may still hold a mapping this view never received.
+		if choice.id == "" {
+			m.orgRefusal = "Bossanova could not determine this repo's current organization, so there is nothing this view can reset. Reopen this view to retry."
+			return m, nil
+		}
+	case choice.id == current:
+		return m, nil
+	}
+	m.orgSaving = true
+	m.orgRefusal = ""
+	m.err = nil
+
+	// Capture what the closure needs off the receiver: m is a value, and the
+	// command runs after this Update has returned a different copy of it.
+	orgClient := m.orgClient
+	ctx := m.ctx
+	originURL := m.repo.GetOriginUrl()
+
+	if choice.id == "" {
+		// Reset to Personal. ClearRepoOrganization is organization-scoped as an
+		// authorization backstop, so it takes the id currently mapped — not the
+		// (empty) id being selected.
+		clearID := current
+		return m, func() tea.Msg {
+			if err := orgClient.ClearRepoOrganization(ctx, originURL, clearID); err != nil {
+				return repoSettingsOrganizationSavedMsg{organizationID: clearID, err: err}
+			}
+			return repoSettingsOrganizationSavedMsg{}
+		}
+	}
+	organizationID := choice.id
+	return m, func() tea.Msg {
+		mapping, err := orgClient.SetRepoOrganization(ctx, originURL, organizationID)
+		return repoSettingsOrganizationSavedMsg{organizationID: organizationID, mapping: mapping, err: err}
+	}
+}
+
+// loadOrganizations fetches the caller's organizations and this repo's mapping
+// in one command, emitting one message. Two RPCs, one lifecycle: the view has a
+// single async organization state to reason about rather than two that can
+// disagree about whether they have landed.
+func (m RepoSettingsModel) loadOrganizations() tea.Cmd {
+	if !m.organizationRowVisible() {
+		return nil
+	}
+	orgClient := m.orgClient
+	ctx := m.ctx
+	originURL := m.repo.GetOriginUrl()
+	return func() tea.Msg {
+		orgs, err := orgClient.ListOrganizations(ctx)
+		if err != nil {
+			return repoSettingsOrganizationsMsg{err: err}
+		}
+		mapping, err := orgClient.GetRepoOrganization(ctx, originURL)
+		if err != nil {
+			// Keep the organizations: the picker is still usable, only the
+			// current value is unknown, and reporting that beats a blank field.
+			return repoSettingsOrganizationsMsg{orgs: orgs, mappingErr: err}
+		}
+		return repoSettingsOrganizationsMsg{orgs: orgs, mapping: mapping}
+	}
+}
+
+// orgChoices is the picker's row set: Personal first, then exactly the caller's
+// organizations as ListOrganizations returned them, in that order.
+func (m RepoSettingsModel) orgChoices() []orgChoice {
+	choices := make([]orgChoice, 0, len(m.organizations)+1)
+	choices = append(choices, orgChoice{label: repoSettingsNoOrgLabel})
+	for _, o := range m.organizations {
+		choices = append(choices, orgChoice{id: o.GetId(), label: organizationLabel(o)})
+	}
+	return choices
+}
+
+// orgPickerIndexForCurrent opens the picker on the mapping in force, so enter
+// on an unchanged selection is a no-op rather than a surprise remapping.
+func (m RepoSettingsModel) orgPickerIndexForCurrent() int {
+	current := m.orgMapping.GetOrganizationId()
+	for i, c := range m.orgChoices() {
+		if c.id == current {
+			return i
+		}
+	}
+	return 0
+}
+
+// organizationMappingUnknown reports that this repo's mapping was not read, as
+// distinct from being read and found empty. Either RPC leaves it unread: a
+// ListOrganizations failure returns before GetRepoOrganization is issued at all,
+// and a GetRepoOrganization failure returns without a mapping.
+//
+// It is one predicate rather than a check at each site because the empty id the
+// failure leaves behind is indistinguishable from a genuine Personal mapping,
+// and every consumer that mistakes one for the other asserts something nobody
+// established: the field would read "None", the picker would mark
+// Personal "(current)", and a reset to Personal would be discarded as a no-op.
+func (m RepoSettingsModel) organizationMappingUnknown() bool {
+	return m.orgMapping.GetOrganizationId() == "" &&
+		(m.orgLoadErr != nil || m.orgMappingErr != nil)
+}
+
+// organizationValue renders the row's current value. An unmapped repo shows the
+// Personal default rather than "(not set)": there is no unset state here, only
+// two real ones.
+func (m RepoSettingsModel) organizationValue() string {
+	if m.organizationMappingUnknown() {
+		return "Unknown"
+	}
+	id := m.orgMapping.GetOrganizationId()
+	if id == "" {
+		return repoSettingsNoOrgLabel
+	}
+	if label, ok := m.callerOrganization(id); ok {
+		return label
+	}
+	// Mapped to something outside the caller's list. Show the id so the row is
+	// never blank; orgMembershipRefusal supplies the why underneath it.
+	return id
+}
+
+// orgMembershipRefusal reports a stored mapping that names an organization the
+// signed-in user is not a member of. bosso's read path normally hides such a
+// row — GetRepoOrganization scopes the lookup to the caller's organization and
+// answers an unset mapping — so this is the defensive half of the criterion,
+// covering the case where a mapping does come back naming an id absent from
+// ListOrganizations. The other half is at set time, in
+// organizationSetRefusalMessage. Both share repoSettingsNotAMemberPrefix.
+func (m RepoSettingsModel) orgMembershipRefusal() string {
+	id := m.orgMapping.GetOrganizationId()
+	if id == "" {
+		return ""
+	}
+	if _, ok := m.callerOrganization(id); ok {
+		return ""
+	}
+	return repoSettingsNotAMemberPrefix + " the mapped organization (" + id +
+		"). New sessions for this repo will not be published to it until the mapping is changed."
+}
+
 func (m RepoSettingsModel) loadGitHubAppStatus() tea.Cmd {
 	if m.githubAppClient == nil || m.githubRepoNWO() == "" {
 		return nil
@@ -748,6 +1189,9 @@ func (m RepoSettingsModel) textEntryActive() bool {
 }
 
 func (m RepoSettingsModel) View() tea.View {
+	if m.orgPickerOpen {
+		return tea.NewView(m.organizationPickerContent())
+	}
 	if m.githubAppMode == repoSettingsGitHubModePrompt {
 		if m.githubAppInstalled() {
 			return tea.NewView(m.githubAppSettingsPromptContent())
@@ -764,7 +1208,7 @@ func (m RepoSettingsModel) View() tea.View {
 					styleActionBar.Render("[esc] back"),
 			)
 		}
-		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading repository..."))
+		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading repository…"))
 	}
 
 	var b strings.Builder
@@ -809,7 +1253,27 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	// Row 2: Merge strategy
+	// Row 2: Organization. Present only for a signed-in user with a mappable
+	// repo — visibleRows() and this block are gated on the same predicate, so
+	// the cursor can never land on a row that does not render.
+	if m.organizationRowVisible() {
+		value := m.organizationValue()
+		if m.orgSaving {
+			// The round trip is a remote one and the field keeps showing the old
+			// mapping until it lands, so say so rather than look unresponsive.
+			value += "  (saving…)"
+		}
+		b.WriteString(renderFieldRow(
+			cur == repoSettingsRowOrganization,
+			fmt.Sprintf("Organization: %s", value),
+		))
+		b.WriteString("\n")
+		for _, notice := range m.organizationNotices() {
+			b.WriteString(m.renderOrgNotice(notice))
+		}
+	}
+
+	// Row 3: Merge strategy
 	b.WriteString(renderFieldRow(
 		cur == repoSettingsRowMergeStrategy,
 		fmt.Sprintf("Merge strategy: %s", mergeStrategyLabel(m.repo.MergeStrategy)),
@@ -919,6 +1383,62 @@ func (m RepoSettingsModel) renderIntegrationHeader(label string, expanded bool, 
 	return renderFieldRow(focused, renderCheckboxLabel(expanded, label)) + "\n"
 }
 
+// orgNoticeWrapConsumed is how many columns an organization notice line spends
+// before its text starts: the field-row gutter column, the child indent, and the
+// gutter's own border plus padding.
+const orgNoticeWrapConsumed = fieldRowGutterColumn + repoSettingsChildIndent + 2
+
+// orgNoticeMinWrap is the narrowest text column worth wrapping into. Below it
+// the notice is unreadable either way, so leave it unconstrained rather than
+// shredding it one word per line.
+const orgNoticeMinWrap = 20
+
+// renderOrgNotice renders one organization notice line (the membership refusal
+// or an organizations load failure) under the Organization row, wrapped to the
+// terminal rather than truncated at its edge.
+//
+// The refusal is a full sentence naming the organization and what it costs the
+// user, so it outruns a 100-column terminal on its own. An unwrapped status line
+// that runs off the edge is a status line the user cannot read — the same defect
+// BOS-507 fixed on Home, where the fix was likewise to wrap at the content width
+// instead of letting the terminal cut the sentence mid-word.
+// organizationNotices returns the organization row's diagnostic lines in render
+// order.
+//
+// The refusal and the load error are two different facts -- what a pick could
+// not do, and why the state behind it is unknown -- so both are returned rather
+// than the first shadowing the second. A refusal is raised by a keystroke, so
+// shadowing would delete the user's only diagnostic at exactly the moment they
+// went looking for one.
+//
+// View() and organizationPickerContent() share this one helper. The overlay is
+// the screen the user opened in order to act on the field, so it must not be
+// the one screen that omits why the list or the mapping is missing: a failed
+// ListOrganizations leaves a picker holding nothing but the Personal row, and
+// without these lines there is nothing on screen to distinguish that from
+// belonging to no organizations.
+func (m RepoSettingsModel) organizationNotices() []string {
+	var notices []string
+	if m.orgRefusal != "" {
+		notices = append(notices, m.orgRefusal)
+	}
+	switch {
+	case m.orgLoadErr != nil:
+		notices = append(notices, "Could not load organizations: "+rpcErrorMessage(m.orgLoadErr))
+	case m.orgMappingErr != nil:
+		notices = append(notices, "Could not read this repo's organization: "+rpcErrorMessage(m.orgMappingErr))
+	}
+	return notices
+}
+
+func (m RepoSettingsModel) renderOrgNotice(text string) string {
+	style := styleStatusWarning
+	if wrap := m.width - orgNoticeWrapConsumed; wrap >= orgNoticeMinWrap {
+		style = style.Width(wrap)
+	}
+	return renderIndentedFieldRow(false, repoSettingsChildIndent, style.Render(text)) + "\n"
+}
+
 // repoSettingsChildIndent is how many columns an integration's child field rows
 // sit right of their header row, marking them as nested under it. It is the
 // indent the chevron idiom baked into its own cursor strings before BOS-567.
@@ -932,6 +1452,33 @@ func (m RepoSettingsModel) renderChildField(label, value string, row, cur rowID,
 		value = styleStatusDanger.Render(value)
 	}
 	return renderIndentedFieldRow(focused, repoSettingsChildIndent, fmt.Sprintf("%s: %s", label, value)) + "\n"
+}
+
+// organizationPickerContent renders the organization picker overlay. It lists
+// Personal plus exactly the caller's organizations, marking the one in force.
+func (m RepoSettingsModel) organizationPickerContent() string {
+	var b strings.Builder
+	// The two literal spaces are this file's header idiom, not a stray indent:
+	// Padding(0, 2) plus them lands the header at column 4, the column
+	// renderFieldRow draws its rows at, matching "  Automations" and
+	// "  Integrations" above.
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Organization"))
+	b.WriteString("\n")
+	current := m.orgMapping.GetOrganizationId()
+	unknown := m.organizationMappingUnknown()
+	for i, c := range m.orgChoices() {
+		label := c.label
+		if !unknown && c.id == current {
+			label += "  (current)"
+		}
+		b.WriteString(renderFieldRow(i == m.orgPickerCursor, label))
+		b.WriteString("\n")
+	}
+	for _, notice := range m.organizationNotices() {
+		b.WriteString(m.renderOrgNotice(notice))
+	}
+	b.WriteString(actionBarWidth(m.width, []string{"[enter] select"}, []string{"[esc] back"}))
+	return b.String()
 }
 
 func (m RepoSettingsModel) githubAppRepoLabel() string {
@@ -954,7 +1501,7 @@ func (m RepoSettingsModel) githubAppSettingsPromptContent() string {
 
 func (m RepoSettingsModel) githubAppOpeningView() string {
 	padding := lipgloss.NewStyle().Padding(0, 2)
-	body := "Opening GitHub App installation page..."
+	body := "Opening GitHub App installation page…"
 	if m.githubAppInstallOpen {
 		body = "GitHub App installation page opened for " + m.githubAppRepoLabel() + "."
 	}

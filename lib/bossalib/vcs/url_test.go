@@ -134,6 +134,76 @@ func TestNormalizeRepoURL_Idempotent(t *testing.T) {
 	}
 }
 
+// CanonicalRepoURL is the value a globally unique index is keyed on, so what
+// matters is that every spelling of one repository reaches the same string and
+// that the string is a fixed point -- not merely that one pass ran.
+func TestCanonicalRepoURL(t *testing.T) {
+	tests := []struct {
+		name      string
+		originURL string
+		want      string
+	}{
+		// Spellings NormalizeRepoURL already settles in a single pass.
+		{"github ssh shorthand", "git@github.com:owner/repo.git", "https://github.com/owner/repo"},
+		{"github https no .git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"github https trailing slash", "https://github.com/owner/repo/", "https://github.com/owner/repo"},
+
+		// The reason this function exists: ".git" is stripped before the
+		// trailing slash, so one pass leaves ".git" behind and a caller that
+		// stopped there would key the same repository twice.
+		{"dot-git before trailing slash", "https://github.com/owner/repo.git/", "https://github.com/owner/repo"},
+		{"ssh shorthand with .git/", "git@github.com:owner/repo.git/", "https://github.com/owner/repo"},
+		{"repeated trailing slashes", "https://github.com/owner/repo.git//", "https://github.com/owner/repo"},
+		{"doubled .git suffix", "https://github.com/owner/repo.git.git", "https://github.com/owner/repo"},
+		{"surrounding whitespace", "  https://github.com/owner/repo.git/  ", "https://github.com/owner/repo"},
+		{"dot-git path segment", "https://github.com/owner/repo/.git", "https://github.com/owner/repo"},
+
+		// No fixed point: report "" rather than a spelling this function does
+		// not reproduce. The second case only collapses on the *second* pass,
+		// which is the case a single-pass caller would have accepted.
+		{"empty", "", ""},
+		{"bare name", "foobar", ""},
+		{"unparseable on the first pass", "https://github.com/owner/.git", ""},
+		{"collapses to unparseable on a later pass", "https://github.com/owner/.git/", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CanonicalRepoURL(tt.originURL)
+			if got != tt.want {
+				t.Errorf("CanonicalRepoURL(%q) = %q, want %q", tt.originURL, got, tt.want)
+			}
+		})
+	}
+}
+
+// The invariant the callers rely on: the result is a NormalizeRepoURL fixed
+// point, so re-canonicalizing a stored value is a no-op and two independently
+// derived spellings of one repository compare equal.
+func TestCanonicalRepoURL_IsANormalizeFixedPoint(t *testing.T) {
+	inputs := []string{
+		"git@github.com:owner/repo.git",
+		"https://github.com/owner/repo.git/",
+		"https://github.com/owner/repo.git//",
+		"ssh://git@git.company.com/team/service.git",
+		"https://gitlab.example/group/subgroup/repo-a.git/",
+	}
+	for _, in := range inputs {
+		t.Run(in, func(t *testing.T) {
+			canonical := CanonicalRepoURL(in)
+			if canonical == "" {
+				t.Fatalf("CanonicalRepoURL(%q) did not converge", in)
+			}
+			if once := NormalizeRepoURL(canonical); once != canonical {
+				t.Errorf("NormalizeRepoURL(%q) = %q, want the input unchanged", canonical, once)
+			}
+			if again := CanonicalRepoURL(canonical); again != canonical {
+				t.Errorf("CanonicalRepoURL(%q) = %q, want the input unchanged", canonical, again)
+			}
+		})
+	}
+}
+
 func TestRepoWebLink(t *testing.T) {
 	tests := []struct {
 		name         string

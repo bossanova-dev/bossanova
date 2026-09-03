@@ -1,12 +1,47 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-08-25'
+  version: '2026-09-04'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
     name: Proprietary
 paths:
+  /bossanova.v1.OrchestratorService/ClearRepoOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ClearRepoOrganization
+      operationId: bossanova.v1.OrchestratorService.ClearRepoOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ClearRepoOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ClearRepoOrganizationResponse'
   /bossanova.v1.OrchestratorService/CompleteGitHubAppSetup:
     post:
       tags:
@@ -112,6 +147,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.CreateCheckoutSessionResponse'
+  /bossanova.v1.OrchestratorService/CreateOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: CreateOrganization
+      operationId: bossanova.v1.OrchestratorService.CreateOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.CreateOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.CreateOrganizationResponse'
   /bossanova.v1.OrchestratorService/CreateWebhookConfig:
     post:
       tags:
@@ -291,6 +361,111 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.GetGitHubAppInstallURLResponse'
+  /bossanova.v1.OrchestratorService/GetOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetOrganization
+      operationId: bossanova.v1.OrchestratorService.GetOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetOrganizationResponse'
+  /bossanova.v1.OrchestratorService/GetRepoOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetRepoOrganization
+      operationId: bossanova.v1.OrchestratorService.GetRepoOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetRepoOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetRepoOrganizationResponse'
+  /bossanova.v1.OrchestratorService/InviteOrganizationMember:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: InviteOrganizationMember
+      operationId: bossanova.v1.OrchestratorService.InviteOrganizationMember
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.InviteOrganizationMemberRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.InviteOrganizationMemberResponse'
   /bossanova.v1.OrchestratorService/IssueAttachToken:
     post:
       tags:
@@ -400,6 +575,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListGitHubAppReposResponse'
+  /bossanova.v1.OrchestratorService/ListOrganizationMembers:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListOrganizationMembers
+      operationId: bossanova.v1.OrchestratorService.ListOrganizationMembers
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListOrganizationMembersRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListOrganizationMembersResponse'
+  /bossanova.v1.OrchestratorService/ListOrganizations:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListOrganizations
+      description: Organizations. User-authenticated.
+      operationId: bossanova.v1.OrchestratorService.ListOrganizations
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListOrganizationsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListOrganizationsResponse'
+  /bossanova.v1.OrchestratorService/ListRepoOrganizations:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListRepoOrganizations
+      operationId: bossanova.v1.OrchestratorService.ListRepoOrganizations
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListRepoOrganizationsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListRepoOrganizationsResponse'
   /bossanova.v1.OrchestratorService/ListWebhookConfigs:
     post:
       tags:
@@ -1587,6 +1868,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListSessionsResponse'
+  /bossanova.v1.OrchestratorService/ProxyListSessionsAcrossOrganizations:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyListSessionsAcrossOrganizations
+      description: |-
+        Union of sessions across EVERY organization the caller is a member of.
+         A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
+         keep failing when the caller's scope resolves to no single organization,
+         because that error is how a caller learns to claim one. This read must
+         succeed exactly then.
+      operationId: bossanova.v1.OrchestratorService.ProxyListSessionsAcrossOrganizations
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyListSessionsAcrossOrganizationsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyListSessionsAcrossOrganizationsResponse'
   /bossanova.v1.OrchestratorService/ProxyListTrackerIssues:
     post:
       tags:
@@ -2644,6 +2966,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.RegisterDaemonResponse'
+  /bossanova.v1.OrchestratorService/RemoveOrganizationMember:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RemoveOrganizationMember
+      operationId: bossanova.v1.OrchestratorService.RemoveOrganizationMember
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RemoveOrganizationMemberRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RemoveOrganizationMemberResponse'
+  /bossanova.v1.OrchestratorService/RenameOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RenameOrganization
+      operationId: bossanova.v1.OrchestratorService.RenameOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RenameOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RenameOrganizationResponse'
   /bossanova.v1.OrchestratorService/ReportBug:
     post:
       tags:
@@ -2682,6 +3074,119 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ReportBugResponse'
+  /bossanova.v1.OrchestratorService/SetOrganizationMemberRole:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SetOrganizationMemberRole
+      operationId: bossanova.v1.OrchestratorService.SetOrganizationMemberRole
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SetOrganizationMemberRoleRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SetOrganizationMemberRoleResponse'
+  /bossanova.v1.OrchestratorService/SetRepoOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SetRepoOrganization
+      description: |-
+        Repo-to-organization ownership mapping, keyed by canonical repo origin URL.
+         User-authenticated; the caller must be a member of the target organization.
+      operationId: bossanova.v1.OrchestratorService.SetRepoOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SetRepoOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SetRepoOrganizationResponse'
+  /bossanova.v1.OrchestratorService/SwitchActiveOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SwitchActiveOrganization
+      description: |-
+        Deprecated: use AuthKit switchToOrganization instead. This RPC is
+         deprecated rather than deleted because buf breaking: use: FILE blocks
+         deleting it from bossanova.v1; true removal requires bossanova.v2.
+      operationId: bossanova.v1.OrchestratorService.SwitchActiveOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SwitchActiveOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SwitchActiveOrganizationResponse'
+      deprecated: true
   /bossanova.v1.OrchestratorService/TerminalStream: {}
   /bossanova.v1.OrchestratorService/TransferSession:
     post:
@@ -3073,6 +3578,21 @@ components:
             - "null"
           title: reasoning_token_count
           format: int64
+        reviewerDispatchCount:
+          type:
+            - integer
+            - string
+          title: reviewer_dispatch_count
+          format: int64
+          description: |-
+            How many reviewer subagents this run dispatched (0 when it dispatched none,
+             and for runners whose transcripts are not parsed).
+        terminalState:
+          type: string
+          title: terminal_state
+          description: |-
+            Terminal state the run ended in: REVIEW_READY, PARTIAL, BLOCKED, NO_CHANGE,
+             or "" when the run recorded none.
       title: AgentRunCost
       additionalProperties: false
     bossanova.v1.AgentRunnerServiceGetInfoRequest:
@@ -4144,6 +4664,9 @@ components:
              "attempted but never came up" entries so the chat list can show a
              (failed to start) badge instead of silently swallowing the
              attempt.
+        ownerUserId:
+          type: string
+          title: owner_user_id
       title: ClaudeChat
       additionalProperties: false
       description: ClaudeChat represents a Claude Code conversation associated with a session.
@@ -4201,6 +4724,24 @@ components:
       title: ClaudeTurn
       additionalProperties: false
       description: ClaudeTurn is a single turn from a recent Claude conversation.
+    bossanova.v1.ClearRepoOrganizationRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+        organizationId:
+          type: string
+          title: organization_id
+          description: |-
+            Deletes are scoped by organization as an authorization backstop, so the
+             wire carries the organization alongside the key.
+      title: ClearRepoOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.ClearRepoOrganizationResponse:
+      type: object
+      title: ClearRepoOrganizationResponse
+      additionalProperties: false
     bossanova.v1.CloneAndRegisterRepoRequest:
       type: object
       properties:
@@ -4298,14 +4839,40 @@ components:
           type: boolean
           title: checkout_started
           description: |-
-            True when checkout has already been started and the client should poll
-             RefreshCloudEntitlements instead of creating another checkout.
+            True when a Stripe Checkout session already exists for this account. It
+             does not mean the user paid: read it with can_create_checkout, which
+             separates the two cases.
+               checkout_started && can_create_checkout: the session was created and
+                 never completed (an abandoned checkout). Offer to resume checkout.
+               checkout_started && !can_create_checkout: the user returned from Stripe
+                 and the entitlement is landing. Poll RefreshCloudEntitlements.
         denialReason:
           type: string
           title: denial_reason
           description: Short machine-readable reason for inactive cloud access.
+        trialEligibility:
+          title: trial_eligibility
+          description: Whether a checkout created now would still include a free trial.
+          $ref: '#/components/schemas/bossanova.v1.CloudTrialEligibility'
       title: CloudAccessStatus
       additionalProperties: false
+    bossanova.v1.CloudTrialEligibility:
+      type: string
+      title: CloudTrialEligibility
+      enum:
+        - CLOUD_TRIAL_ELIGIBILITY_UNSPECIFIED
+        - CLOUD_TRIAL_ELIGIBILITY_ELIGIBLE
+        - CLOUD_TRIAL_ELIGIBILITY_INELIGIBLE
+      description: |-
+        Whether a checkout created for this account right now would still include
+         the introductory free trial. The server determines it only in the states
+         that serve the subscribe call to action (NEEDS_SUBSCRIPTION, PAST_DUE,
+         CANCELED); every other state -- and every server built before this field
+         existed -- leaves it UNSPECIFIED. UNSPECIFIED is not a verdict: it must not
+         be read as INELIGIBLE, and it must not be presented as a trial offer
+         either. Only an explicit ELIGIBLE may be shown as one, because
+         CreateCheckoutSession re-decides eligibility independently and fails closed
+         the same way, so a trial promised on anything weaker can be a charge today.
     bossanova.v1.CommandCancel:
       type: object
       properties:
@@ -5180,6 +5747,25 @@ components:
           title: note
           $ref: '#/components/schemas/bossanova.v1.Note'
       title: CreateNoteResponse
+      additionalProperties: false
+    bossanova.v1.CreateOrganizationRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+      title: CreateOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.CreateOrganizationResponse:
+      type: object
+      properties:
+        organization:
+          title: organization
+          $ref: '#/components/schemas/bossanova.v1.Organization'
+        reauthorizeUrl:
+          type: string
+          title: reauthorize_url
+      title: CreateOrganizationResponse
       additionalProperties: false
     bossanova.v1.CreatePROpts:
       type: object
@@ -6751,6 +7337,22 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Note'
       title: GetNoteResponse
       additionalProperties: false
+    bossanova.v1.GetOrganizationRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: GetOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.GetOrganizationResponse:
+      type: object
+      properties:
+        organization:
+          title: organization
+          $ref: '#/components/schemas/bossanova.v1.Organization'
+      title: GetOrganizationResponse
+      additionalProperties: false
     bossanova.v1.GetPRStatusRequest:
       type: object
       properties:
@@ -6784,6 +7386,25 @@ components:
       description: |-
         GetRepoCommand asks the daemon for its web-safe repo settings. It reuses the
          existing GetRepoSettings daemon handler and therefore never carries secrets.
+    bossanova.v1.GetRepoOrganizationRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+      title: GetRepoOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.GetRepoOrganizationResponse:
+      type: object
+      properties:
+        mapping:
+          title: mapping
+          description: |-
+            Unset when the origin is unmapped; an unset mapping is the miss signal,
+             not an error.
+          $ref: '#/components/schemas/bossanova.v1.RepoOrganizationMapping'
+      title: GetRepoOrganizationResponse
+      additionalProperties: false
     bossanova.v1.GetRepoSettingsRequest:
       type: object
       properties:
@@ -7286,6 +7907,28 @@ components:
         - STATUS_LOADED
         - STATUS_DISABLED
         - STATUS_LOAD_FAILED
+    bossanova.v1.InviteOrganizationMemberRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        email:
+          type: string
+          title: email
+        role:
+          title: role
+          $ref: '#/components/schemas/bossanova.v1.MemberRole'
+      title: InviteOrganizationMemberRequest
+      additionalProperties: false
+    bossanova.v1.InviteOrganizationMemberResponse:
+      type: object
+      properties:
+        member:
+          title: member
+          $ref: '#/components/schemas/bossanova.v1.OrganizationMember'
+      title: InviteOrganizationMemberResponse
+      additionalProperties: false
     bossanova.v1.IsAgentRunningRequest:
       type: object
       properties:
@@ -8006,6 +8649,38 @@ components:
           title: prs
       title: ListOpenPRsResponse
       additionalProperties: false
+    bossanova.v1.ListOrganizationMembersRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: ListOrganizationMembersRequest
+      additionalProperties: false
+    bossanova.v1.ListOrganizationMembersResponse:
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationMember'
+          title: members
+      title: ListOrganizationMembersResponse
+      additionalProperties: false
+    bossanova.v1.ListOrganizationsRequest:
+      type: object
+      title: ListOrganizationsRequest
+      additionalProperties: false
+    bossanova.v1.ListOrganizationsResponse:
+      type: object
+      properties:
+        organizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Organization'
+          title: organizations
+      title: ListOrganizationsResponse
+      additionalProperties: false
     bossanova.v1.ListPluginsCommand:
       type: object
       title: ListPluginsCommand
@@ -8027,6 +8702,24 @@ components:
             $ref: '#/components/schemas/bossanova.v1.InstalledPlugin'
           title: plugins
       title: ListPluginsResponse
+      additionalProperties: false
+    bossanova.v1.ListRepoOrganizationsRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: ListRepoOrganizationsRequest
+      additionalProperties: false
+    bossanova.v1.ListRepoOrganizationsResponse:
+      type: object
+      properties:
+        mappings:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.RepoOrganizationMapping'
+          title: mappings
+      title: ListRepoOrganizationsResponse
       additionalProperties: false
     bossanova.v1.ListRepoPRsCommand:
       type: object
@@ -8332,6 +9025,16 @@ components:
       description: |-
         MaterializedFile is one file the daemon must write into the agent's
          per-account home directory. content is secret-bearing and NEVER logged.
+    bossanova.v1.MemberRole:
+      type: string
+      title: MemberRole
+      enum:
+        - MEMBER_ROLE_UNSPECIFIED
+        - MEMBER_ROLE_OWNER
+        - MEMBER_ROLE_USER
+      description: |-
+        MemberRole is a member's role inside an organization. Owners can rename the
+         organization and manage its members and billing; users cannot.
     bossanova.v1.MergeBlock:
       type: object
       properties:
@@ -9148,6 +9851,83 @@ components:
         OrchestratorCommand is the envelope for every command bosso sends down the
          stream. command_id is echoed back in the matching CommandResult, WebhookAck,
          or SessionAttachChunk.
+    bossanova.v1.Organization:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          description: bosso-local mirror row id, stable across renames.
+        workosOrgId:
+          type: string
+          title: workos_org_id
+          description: WorkOS organization id, the source of truth for identity and membership.
+        name:
+          type: string
+          title: name
+        callerRole:
+          title: caller_role
+          description: Role the calling user holds in this organization.
+          $ref: '#/components/schemas/bossanova.v1.MemberRole'
+        isPersonal:
+          type: boolean
+          title: is_personal
+          description: True for the auto-created single-person organization from signup.
+        memberCount:
+          type: integer
+          title: member_count
+          format: int32
+          description: Active membership count; per-seat Stripe quantity tracks this value.
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: Organization
+      additionalProperties: false
+    bossanova.v1.OrganizationMember:
+      type: object
+      properties:
+        userId:
+          type: string
+          title: user_id
+          description: bosso-local users.id; empty while an invite is unaccepted.
+        workosMembershipId:
+          type: string
+          title: workos_membership_id
+        email:
+          type: string
+          title: email
+        displayName:
+          type: string
+          title: display_name
+        role:
+          title: role
+          $ref: '#/components/schemas/bossanova.v1.MemberRole'
+        isInvitePending:
+          type: boolean
+          title: is_invite_pending
+        joinedAt:
+          title: joined_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: OrganizationMember
+      additionalProperties: false
+    bossanova.v1.OrganizationSessionReadFailure:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        organizationName:
+          type: string
+          title: organization_name
+        reason:
+          type: string
+          title: reason
+          description: |-
+            Human-readable cause, safe to display. Never carries credentials or
+             internal identifiers beyond the organization id above.
+      title: OrganizationSessionReadFailure
+      additionalProperties: false
+      description: One organization that could not be read during a cross-organization fan-out.
     bossanova.v1.OutputLine:
       type: object
       properties:
@@ -10562,6 +11342,69 @@ components:
           title: repos
       title: ProxyListReposAggregatedResponse
       additionalProperties: false
+    bossanova.v1.ProxyListSessionsAcrossOrganizationsRequest:
+      type: object
+      properties:
+        repoId:
+          type:
+            - string
+            - "null"
+          title: repo_id
+          description: |-
+            Mirrors ProxyListSessionsRequest field-for-field; each filter is applied
+             per organization, exactly as the single-organization read applies it.
+             The archived flag carries the should_ prefix the bool naming rule requires;
+             ProxyListSessionsRequest.include_archived keeps its legacy spelling because
+             renaming a shipped field is an API-version change of its own.
+        states:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionState'
+          title: states
+        shouldIncludeArchived:
+          type: boolean
+          title: should_include_archived
+        daemonId:
+          type:
+            - string
+            - "null"
+          title: daemon_id
+          description: Target daemon, if known. Otherwise orchestrator queries all.
+      title: ProxyListSessionsAcrossOrganizationsRequest
+      additionalProperties: false
+    bossanova.v1.ProxyListSessionsAcrossOrganizationsResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Session'
+          title: sessions
+          description: |-
+            Union across the caller's memberships, sorted newest-first then by id.
+             Unlike ProxyListSessionsResponse.sessions, every entry carries a non-empty
+             `organization_id` naming the organization whose read produced it.
+        organizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Organization'
+          title: organizations
+          description: |-
+            Directory of the organizations that were read, so a client can label a
+             filter without a second ListOrganizations call. `caller_role` and
+             `member_count` are best-effort: they are left at their zero values when
+             the organization mirror is unavailable.
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationSessionReadFailure'
+          title: failed_organizations
+          description: |-
+            Organizations whose read failed. Their sessions are absent from
+             `sessions`; the rest of the union is still served. A client showing an
+             "all organizations" view should surface this as a partial result.
+      title: ProxyListSessionsAcrossOrganizationsResponse
+      additionalProperties: false
     bossanova.v1.ProxyListSessionsRequest:
       type: object
       properties:
@@ -11899,6 +12742,24 @@ components:
           title: is_supported
       title: RemoveAgentRunHookResponse
       additionalProperties: false
+    bossanova.v1.RemoveOrganizationMemberRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        userId:
+          type: string
+          title: user_id
+        workosMembershipId:
+          type: string
+          title: workos_membership_id
+      title: RemoveOrganizationMemberRequest
+      additionalProperties: false
+    bossanova.v1.RemoveOrganizationMemberResponse:
+      type: object
+      title: RemoveOrganizationMemberResponse
+      additionalProperties: false
     bossanova.v1.RemoveRepoCommand:
       type: object
       properties:
@@ -11944,6 +12805,25 @@ components:
     bossanova.v1.RemoveSessionResponse:
       type: object
       title: RemoveSessionResponse
+      additionalProperties: false
+    bossanova.v1.RenameOrganizationRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        name:
+          type: string
+          title: name
+      title: RenameOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.RenameOrganizationResponse:
+      type: object
+      properties:
+        organization:
+          title: organization
+          $ref: '#/components/schemas/bossanova.v1.Organization'
+      title: RenameOrganizationResponse
       additionalProperties: false
     bossanova.v1.RepairDoctorCheck:
       type: object
@@ -12101,6 +12981,30 @@ components:
       title: Repo
       additionalProperties: false
       description: Repo represents a registered Git repository.
+    bossanova.v1.RepoOrganizationMapping:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: Canonical repo origin URL, the mapping key.
+        organizationId:
+          type: string
+          title: organization_id
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: RepoOrganizationMapping
+      additionalProperties: false
+      description: |-
+        RepoOrganizationMapping records which organization owns a repo, keyed by the
+         repo's canonical origin URL. One organization per origin.
     bossanova.v1.RepoSettings:
       type: object
       properties:
@@ -12679,7 +13583,40 @@ components:
             - "null"
           title: median_parallelism
           format: double
+        terminalStateMix:
+          type: object
+          title: terminal_state_mix
+          additionalProperties:
+            type:
+              - integer
+              - string
+            title: value
+            format: int64
+          description: |-
+            Runs per terminal state, keyed by the same tokens as
+             AgentRunCost.terminal_state ("" means not recorded).
+        medianReviewerDispatchCount:
+          type:
+            - integer
+            - string
+            - "null"
+          title: median_reviewer_dispatch_count
+          format: int64
       title: RunCostAggregate
+      additionalProperties: false
+    bossanova.v1.RunCostAggregate.TerminalStateMixEntry:
+      type: object
+      properties:
+        key:
+          type: string
+          title: key
+        value:
+          type:
+            - integer
+            - string
+          title: value
+          format: int64
+      title: TerminalStateMixEntry
       additionalProperties: false
     bossanova.v1.RunCostBackfillSummary:
       type: object
@@ -13079,6 +14016,15 @@ components:
         effectiveEffort:
           type: string
           title: effective_effort
+        organizationId:
+          type: string
+          title: organization_id
+        ownerUserId:
+          type: string
+          title: owner_user_id
+        ownerDisplayName:
+          type: string
+          title: owner_display_name
         isAutomationEnabled:
           type: boolean
           title: is_automation_enabled
@@ -13678,6 +14624,31 @@ components:
       title: SessionSummary
       additionalProperties: false
       description: SessionSummary is a lightweight view of a Session for report context.
+    bossanova.v1.SetOrganizationMemberRoleRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        userId:
+          type: string
+          title: user_id
+        workosMembershipId:
+          type: string
+          title: workos_membership_id
+        role:
+          title: role
+          $ref: '#/components/schemas/bossanova.v1.MemberRole'
+      title: SetOrganizationMemberRoleRequest
+      additionalProperties: false
+    bossanova.v1.SetOrganizationMemberRoleResponse:
+      type: object
+      properties:
+        member:
+          title: member
+          $ref: '#/components/schemas/bossanova.v1.OrganizationMember'
+      title: SetOrganizationMemberRoleResponse
+      additionalProperties: false
     bossanova.v1.SetRepairStatusRequest:
       type: object
       properties:
@@ -13704,6 +14675,25 @@ components:
     bossanova.v1.SetRepairStatusResponse:
       type: object
       title: SetRepairStatusResponse
+      additionalProperties: false
+    bossanova.v1.SetRepoOrganizationRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+        organizationId:
+          type: string
+          title: organization_id
+      title: SetRepoOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.SetRepoOrganizationResponse:
+      type: object
+      properties:
+        mapping:
+          title: mapping
+          $ref: '#/components/schemas/bossanova.v1.RepoOrganizationMapping'
+      title: SetRepoOrganizationResponse
       additionalProperties: false
     bossanova.v1.SetupScriptOutput:
       type: object
@@ -14093,6 +15083,36 @@ components:
       description: |-
         SwitchAccountResult is the payload sent in a CommandResult for a successful
          SwitchAccountCommand. Mirrors the daemon's SwitchSessionAccountResponse.
+    bossanova.v1.SwitchActiveOrganizationRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        returnUrl:
+          type: string
+          title: return_url
+      title: SwitchActiveOrganizationRequest
+      additionalProperties: false
+      description: |-
+        Deprecated: use AuthKit switchToOrganization instead. This message is
+         deprecated rather than deleted because buf breaking: use: FILE blocks deleting
+         it from bossanova.v1; true removal requires bossanova.v2.
+    bossanova.v1.SwitchActiveOrganizationResponse:
+      type: object
+      properties:
+        organization:
+          title: organization
+          $ref: '#/components/schemas/bossanova.v1.Organization'
+        reauthorizeUrl:
+          type: string
+          title: reauthorize_url
+      title: SwitchActiveOrganizationResponse
+      additionalProperties: false
+      description: |-
+        Deprecated: use AuthKit switchToOrganization instead. This message is
+         deprecated rather than deleted because buf breaking: use: FILE blocks deleting
+         it from bossanova.v1; true removal requires bossanova.v2.
     bossanova.v1.SwitchSessionAccountRequest:
       type: object
       properties:

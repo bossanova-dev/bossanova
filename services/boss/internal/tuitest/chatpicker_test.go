@@ -352,7 +352,7 @@ func TestTUI_ChatPicker_Archive_InFlightBlocksNavigation(t *testing.T) {
 	}
 
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "Archiving session...") &&
+		return strings.Contains(screen, "Archiving session…") &&
 			!strings.Contains(screen, "[a]rchive") &&
 			!strings.Contains(screen, "[m]erge")
 	}); err != nil {
@@ -364,7 +364,7 @@ func TestTUI_ChatPicker_Archive_InFlightBlocksNavigation(t *testing.T) {
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	if !h.Driver.ScreenContains("Archiving session...") {
+	if !h.Driver.ScreenContains("Archiving session…") {
 		t.Fatalf("archive in-flight enter navigated away; screen:\n%s", h.Driver.Screen())
 	}
 
@@ -618,7 +618,7 @@ func TestTUI_ChatPicker_ArchivingStatusPersistsAcrossNavigation(t *testing.T) {
 
 	// Wait for the in-flight archiving state.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "Archiving session...")
+		return strings.Contains(screen, "Archiving session…")
 	}); err != nil {
 		t.Fatalf("expected in-flight archive state; screen:\n%s", h.Driver.Screen())
 	}
@@ -646,9 +646,9 @@ func TestTUI_ChatPicker_ArchivingStatusPersistsAcrossNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The chat picker should show "Archiving session..." after re-entry.
+	// The chat picker should show "Archiving session…" after re-entry.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "Archiving session...")
+		return strings.Contains(screen, "Archiving session…")
 	}); err != nil {
 		t.Fatalf("expected archiving state in chat picker after re-entry; screen:\n%s", h.Driver.Screen())
 	}

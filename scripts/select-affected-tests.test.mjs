@@ -109,6 +109,7 @@ test('selectTargets routes declared external inputs to native module targets', (
   ])
   assert.deepEqual(selectTargets(['services/web/src/api.ts']), [
     { kind: 'make', target: 'test-bossalib', env: {} },
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])
   assert.deepEqual(selectTargets(['plugins/bossd-plugin-codex/testdata/fake_codex_tui.sh']), [
@@ -229,6 +230,31 @@ test('selectTargets adds the script tests to published skill sources WITHOUT dro
   )
 })
 
+test('selectTargets routes the skill manifest test to test-scripts as well as test-boss', () => {
+  // scripts/check-email-course.mjs parses its published-skill allowlist out of this file's
+  // `want` slice, so dropping a core from the publish set can leave the trial email course
+  // naming a skill nobody receives — the boss-proof failure that gate exists to catch. The
+  // file sits one directory ABOVE skillinstall/skills/, so the payload rule does not cover
+  // it, and it touches neither docs/email-course/ nor scripts/. test-boss must survive: it
+  // is the manifest test's own package.
+  assert.deepEqual(selectTargets(['services/boss/internal/skillinstall/skills_manifest_test.go']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-boss', env: { GO_TEST_PACKAGES: './internal/skillinstall' } },
+  ])
+})
+
+test('selectTargets routes the trial-enrolment source to test-scripts as well as test-bosso', () => {
+  // scripts/check-email-course.mjs parses the event name out of this file's
+  // `stripeTrialStartedEvent` constant, so renaming it is a script-gate input even
+  // though the Go build stays green. The file is under neither scripts/ nor
+  // docs/email-course/, so no other rule selects test-scripts for it. test-bosso must
+  // survive: the wire-contract test the course cites lives in this package.
+  assert.deepEqual(selectTargets(['services/bosso/cmd/trial_enrollment.go']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-bosso', env: { GO_TEST_PACKAGES: './cmd' } },
+  ])
+})
+
 test('selectTargets adds script tests to plugin skilldata WITHOUT dropping plugin and boss readers', () => {
   assert.deepEqual(
     selectTargets(['plugins/bossd-plugin-claude/skilldata/skills/boss-build/SKILL.md']),
@@ -299,7 +325,18 @@ test('selectTargets maps Claude testing docs to manifest checks', () => {
 })
 
 test('selectTargets maps web changes to the turbo web target', () => {
+  // test-scripts rides along because scripts/check-price-parity.mjs scans this tree for
+  // stray price literals and its own test asserts against the real repository tree.
   assert.deepEqual(selectTargets(['services/web/src/App.tsx']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+})
+
+test('selectTargets does not route generated web code to the price gate', () => {
+  // check-price-parity.mjs skips `gen/`, so routing it here would run the gate on behalf
+  // of files it never reads and make test-proto.yml's exemption stale.
+  assert.deepEqual(selectTargets(['services/web/src/gen/bossanova/v1/session_pb.ts']), [
     { kind: 'make', target: 'test-web', env: {} },
   ])
 })
@@ -307,6 +344,7 @@ test('selectTargets maps web changes to the turbo web target', () => {
 test('selectTargets maps marketing changes to the turbo web target', () => {
   assert.deepEqual(selectTargets(['services/marketing/src/pages/index.astro']), [
     { kind: 'make', target: 'test-bossalib', env: {} },
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])
 })

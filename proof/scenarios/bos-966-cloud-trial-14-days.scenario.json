@@ -3,7 +3,7 @@
   "title": "BOS-966 Settings Cloud block offers a 14-day free trial",
   "fixture": {
     "preset": "demo",
-    "env": { "BOSS_AUTH_E2E_NEEDS_RELOGIN": "refresh_outcome_unknown" }
+    "env": { "BOSS_AUTH_E2E_EMAIL": "" }
   },
   "terminal": { "cols": 100, "rows": 36 },
   "scenes": [
@@ -20,7 +20,7 @@
         {
           "waitFor": "Bossanova Cloud",
           "timeoutMs": 10000,
-          "caption": "The optional Cloud settings block is visible"
+          "caption": "The optional Cloud settings block is visible to this never-authenticated visitor"
         },
         {
           "expect": [

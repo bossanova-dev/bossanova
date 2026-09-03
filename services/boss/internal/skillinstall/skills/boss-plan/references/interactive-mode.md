@@ -61,7 +61,20 @@ Interactively:
    oversized ticket.
 2. **Fully plan every child locally** through the normal draft path with the child as a synthetic
    ticket, passing `allowEpic: false` in the context (the recursion guard — a child is never itself
-   decomposed). Run the secret + image-parity gates on each child plan before any write.
+   decomposed). Two dispatch shapes produce those plans, and both end at the same per-child gates:
+
+   - **Per-child dispatch (the default).** One draft dispatch per child, each resolving its own tier
+     through Phase 4 exactly as a single ticket does.
+   - **Batch dispatch.** ONE drafting subagent drafts every child, the way the headless epic path
+     already does. Select it when the approved spec has **≥ `BATCH_DRAFT_MIN_CHILDREN`=3** children,
+     or whenever the operator asks for it at any child count. Below that threshold the default
+     stands: a two-child epic saves one dispatch and gives up per-child tier fallback for it. See
+     Phase 4's **Batch child drafting** for the dispatch and its output contract.
+
+   Whichever shape drafted them, the per-child gates are unchanged and stay orchestrator-side: for
+   every child run the plan-contract guard, the image-parity guard, and the secret gate before any
+   write. Batching changes who writes the drafts, not what is validated.
+
 3. **Confirm before any Linear write** via `AskUserQuestion`, presenting the parent goal, the N
    child titles/goals, and the DAG edges. Offer exactly: **create this epic** / **plan as one ticket
    instead** / **cancel**. `AskUserQuestion` is approve/adjust/cancel only — there is no per-child
@@ -193,6 +206,58 @@ runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath`
 
 If the ticket is TRIVIAL, keep your interview answers and follow-ups proportionate; do not
 manufacture complexity.
+
+### Batch child drafting (epic runs only)
+
+Phase 2.5 step 2 selects this shape when the approved spec has **≥ `BATCH_DRAFT_MIN_CHILDREN`=3**
+children, or whenever the operator asks. Dispatch **one** drafting subagent for the whole epic and
+await it, resolving the tier for that single dispatch exactly as above — Tier 1 with a discovered
+draft extension, else Tier 2, else Tier 3.
+
+Brief the worker with the **same** shared drafting spec the headless epic path uses: point it at
+`references/headless-drafting-brief.md` **Steps 5–7** for the plan body, and at that file's "Epic
+decompose-and-auto-create" **step 2** for the per-child drafting rules (`allowEpic: false`, and the
+`agentFriendly` + `openQuestions` copy-back onto each spec entry). Do not restate the plan-body spec
+here. That brief is the single normative source for it, and this path already links rather than
+duplicates it; a second copy is a second thing to keep in sync, and the copy that drifts is the one
+nobody is reading when the contract changes.
+
+**What differs from headless: the worker writes files, never the tracker.** The human approved a
+_shape_, not the drafts, so Phase 2.5 step 3's confirmation and step 4's create-and-wire stay
+orchestrator-owned. Give the worker the run scratch and require it to write, for each child `key` in
+the approved spec:
+
+- `<runTmp>/batch-draft/<key>.md` — that child's planContract-v1 plan.
+- `<runTmp>/batch-draft/<key>.description.md` — that child's ticket description.
+- `<runTmp>/batch-draft/<PARENT-ISSUE-ID>.batch-metadata.json` — ONE bounded file for the whole
+  batch: `{ "parentId": "<ISSUE-ID>", "children": { "<key>": { … } } }`, keyed by spec key. Each
+  child entry is the ordinary bounded draft-metadata object minus the two fields that are files
+  above — so `agentFriendly`, `estimate`, `priority`, `openQuestions`, `labels`. The descriptions
+  stay out of the JSON on purpose: this file is read whole, and inlining N descriptions is what makes
+  a bounded artifact unbounded in exactly the runs that have the most children.
+
+**Per-child validation reuses the existing gate — do not write a second one.** Every command below
+dereferences `$BOSS_PLAN_TOOLBOX`, so run each in a block that begins with the toolbox preamble —
+each Bash call is a fresh shell, and an unset `$BOSS_PLAN_TOOLBOX` turns these gates into
+module-not-found errors at the one step whose whole point is that they run. For each child, compose
+its draft-metadata object from its `children[<key>]` entry plus `planPath` (its plan file) and
+`descriptionSummary` (its description file's contents), write that to a scratch file, and run
+`node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata <file>` — the same bounded-metadata guard the
+single-ticket path runs, so an unknown key, a non-boolean `agentFriendly` or a non-single-ticket
+estimate fails identically here. Then run the plan-contract guard
+(`node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <desc> --plan <plan>`), the image
+guard (`node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --require-verbatim …`), and the secret gate,
+per child, **before the first tracker write**. One dispatch drafting ten plans is precisely where a
+late plan degrades, so these are the gates that must not be batched.
+
+**Batch success predicate.** The dispatch succeeded only when all three hold: it returned a result
+envelope valid for the requested dispatch, **AND** every child key in the approved spec has a
+non-empty plan and description at its path above, **AND** the metadata file parses with an entry for
+every one of those keys. A partial batch is a **failed** dispatch, not a partial success: discard it,
+fall back to per-child dispatch for the whole epic, and record
+`batch draft: fell back to per-child (<reason>)` in the autonomous decisions. Never create children
+from a partial batch — a child with no plan becomes a ticket with no plan, and the DAG makes every
+dependent of that child unbuildable behind it.
 
 ## Phase 5 — Tier 3 inline drafting prompt
 

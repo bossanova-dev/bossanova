@@ -55,7 +55,7 @@ var (
 	// Foreground discovery runs before boss attaches to the freshly spawned
 	// tmux session. Keep this short: slow Codex startup is covered by the
 	// daemon's background provider-ID discovery and by attach-time legacy
-	// backfill, so extending this window only recreates a long "Launching..."
+	// backfill, so extending this window only recreates a long "Launching…"
 	// screen without improving eventual resume correctness.
 	interactiveProviderIDForegroundDiscoveryTimeout      = 2 * time.Second
 	interactiveProviderIDForegroundDiscoveryPollInterval = 250 * time.Millisecond

@@ -54,7 +54,16 @@ test('BOS-1002: installed-skill gate derives the current tree and degrades for a
       /case "\$O" in[\s\S]{0,120}\*--gate\*\) node "\$BOSS_REPAIR_TOOLBOX\/toolbox-drift\.mjs"/,
       dir,
     )
+    // BOS-1105 flipped skills drift from BLOCKING to advisory: drift is bookkeeping, so the gate
+    // reports it and the run continues. A totally missing install still blocks (asserted
+    // separately); only the drift arm warns.
     assert.match(
+      skill,
+      /warning:\s+installed\s+boss\s+skills\s+drift\s+from\s+checkout\s+source/,
+      dir,
+    )
+    assert.match(skill, /bookkeeping\s+only,\s+work\s+state\s+unaffected/, dir)
+    assert.doesNotMatch(
       skill,
       /BLOCKED:\s+installed\s+boss\s+skills\s+differ\s+from\s+checkout\s+source/,
       dir,

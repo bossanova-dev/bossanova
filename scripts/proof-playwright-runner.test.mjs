@@ -72,6 +72,105 @@ test('buildSpec stages a closing attach socket only for the reconnecting chat re
   assert.match(healthySpec, /ws\.send\(Buffer\.from/)
 })
 
+test('buildSpec stages a signed-in organization only for the recipes that name one', () => {
+  // The shared web fixture stages no organization, so a recipe entering the
+  // organization-scoped settings subtree without this init script photographs
+  // OrgScopedSettings' notice instead of its subject. Applied globally it would
+  // instead hand every unrelated web still an organization it never asked for.
+  const orgSpec = buildSpec({
+    recipe: { id: 'web-org-create-modal', surface: 'web', route: '/org-e2e/settings/organization' },
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  const otherSpec = buildSpec({
+    recipe: { id: 'web-header-menu', surface: 'web', route: '/' },
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+
+  assert.match(orgSpec, /organizationId: 'workos-e2e'/)
+  assert.doesNotMatch(otherSpec, /organizationId/)
+
+  // The fakes resolve their fixture as `__BOSSANOVA_E2E__ ?? bossanovaE2e`, so a
+  // staged spec must write through to whichever global is installed. A
+  // bossanovaE2e-only write is invisible on a page that already has the other.
+  assert.match(
+    orgSpec,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, organizationId/,
+  )
+  assert.doesNotMatch(otherSpec, /__BOSSANOVA_E2E__/)
+})
+
+test('the shipped catalog keeps the org-create-modal recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-org-create-modal')
+  assert.ok(recipe, 'web-org-create-modal recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // The modal is opened by clicks, and buildSpec's still branch never runs a
+  // recipe's steps — a "still" capture here would silently photograph the bare
+  // route with no modal, so the capture kind is load-bearing.
+  assert.equal(recipe.capture, 'video')
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule, 'no pathRule matches services/web/')
+  assert.ok(webRule.recipeIds.includes('web-org-create-modal'))
+})
+
+// Standing invariant, not a fact about any one recipe: the settings-page
+// OrgPicker only renders once useAuth() reports an organizationId, and the
+// shared web fixture stages none. So any recipe that reaches it must be staged
+// by organizationStageScript, or it silently photographs a frame with no control
+// in it. Deriving the expectation from the catalog rather than restating a
+// hardcoded id means a recipe added later - or the staging rule narrowed later -
+// fails here loudly.
+//
+// The match is on the picker's `org-picker` test id rather than on a CSS class.
+// The control used to be a button plus a hand-rolled `.org-switcher-*` menu; it
+// is a native <select> now, and a class-based predicate would have gone on
+// matching NOTHING while this test stayed green on its `length > 0` guard alone
+// only until that guard was reached. The test id is the handle the recipes and
+// the e2e spec both drive, so it survives the next restyling too.
+//
+// "Reaches the switcher" has to be read off every selector-bearing field, not
+// just one: a still declares its subject in cropToSelector while a flow's are
+// all step selectors, so a step-selector-only predicate would match nothing for
+// a cropped still and leave the staging it depends on unguarded, while still
+// leaving this file green.
+function pickerSelectors(recipe) {
+  return [
+    recipe.cropToSelector,
+    recipe.selector,
+    ...(recipe.steps ?? []).flatMap((step) => [step.selector, step.toSelector]),
+  ]
+}
+
+test('every catalog recipe that drives the org picker is staged with an organization', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const pickerRecipes = catalog.recipes.filter((recipe) =>
+    pickerSelectors(recipe).some((selector) => (selector ?? '').includes('org-picker')),
+  )
+  assert.ok(pickerRecipes.length > 0, 'no catalog recipe drives the org picker')
+
+  for (const recipe of pickerRecipes) {
+    const spec = buildSpec({
+      recipe,
+      outputDir: '/tmp/out',
+      surface: recipe.surface ?? 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+    assert.match(
+      spec,
+      /organizationId: '[a-z0-9-]+'/,
+      recipe.id + ' drives the org picker but buildSpec stages no organization',
+    )
+  }
+})
+
 test('buildSpec replays the BOS-658 glyph line only for the plain chat-terminal still', () => {
   const specFor = (id) =>
     buildSpec({
@@ -294,6 +393,527 @@ test('the shipped catalog keeps the paste recipe wired to the web path rule', ()
   assert.ok(webRule.recipeIds.includes('web-chat-terminal-paste'))
 })
 
+test('the session-expired recipe stages the fixture flag into BOTH e2e globals', () => {
+  const specFor = (id) =>
+    buildSpec({
+      recipe: { id, surface: 'web', capture: 'still', route: '/' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+
+  const staged = specFor('web-session-expired')
+  assert.match(staged, /authRefreshFailed: true/)
+  // The app fakes resolve `__BOSSANOVA_E2E__ ?? bossanovaE2e`, a precedence and
+  // not a merge, so a single-global write is invisible wherever the other is
+  // already installed. Nothing in the proof runner installs it today, so this
+  // mirror is latent rather than load-bearing; it is pinned so a future writer
+  // cannot quietly turn this recipe into an unstaged capture. Were that to
+  // happen the readiness gate asserted below is what makes it a failing spec
+  // rather than a screenshot of a healthy signed-in app.
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+  assert.match(
+    staged,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
+  )
+
+  // The live control. The flag replaces the whole app with the notice, so a
+  // staging that leaked into the shared web fixture would blank out every other
+  // web recipe's subject while this test still passed.
+  assert.doesNotMatch(specFor('web-sessions'), /authRefreshFailed/)
+})
+
+test('the accounts-probe recipe stages the cut-short daemon into BOTH e2e globals', () => {
+  // Built from the SHIPPED catalog rather than a synthetic literal: this test's
+  // subject is that the staging reaches exactly one recipe id, and against a
+  // stand-in it would keep passing after the id was renamed out of the catalog
+  // -- a recipe capturing an unstaged refresh with the gate still green.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const specFor = (id) => {
+    const recipe = catalog.recipes.find((r) => r.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    return buildSpec({
+      recipe,
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  }
+
+  const staged = specFor('web-accounts-refresh-interrupted')
+  // The daemon id is asserted, not just the key: staging the WRONG daemon would
+  // cut short the one that owns the rows the capture is about, which is the
+  // opposite recipe -- and an all-legs cancellation, which is the shape the unit
+  // tests pin rather than the recovery this video is proof of.
+  assert.match(staged, /accountsProbeErrors: \{ 'daemon-proof-standby': /)
+  // The app fakes resolve `__BOSSANOVA_E2E__ ?? bossanovaE2e`, a precedence and
+  // not a merge, so a single-global write is invisible wherever the other is
+  // already installed. Latent today (nothing in the runner installs the other
+  // global) and pinned for the same reason the session-expired mirror above is.
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+  assert.match(
+    staged,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
+  )
+
+  // The live control, and the reason this staging is recipe-scoped at all: a
+  // leak into the shared web fixture would leave every OTHER accounts recipe
+  // photographing a permanently cut-short probe -- an interruption notice over
+  // the very table they exist to show -- while this test still passed.
+  for (const id of ['web-accounts-list', 'web-accounts-filter-flow', 'web-accounts-refresh-flow']) {
+    assert.doesNotMatch(specFor(id), /accountsProbeErrors/)
+  }
+})
+
+test('the session-expired spec waits for the notice before it screenshots', () => {
+  // Built from the SHIPPED recipes, not from a synthetic literal, because WHICH
+  // buildSpec branch emits the screenshot depends on whether the recipe declares
+  // `selector` or `cropToSelector` -- and this test's whole subject is where the
+  // gate lands relative to that screenshot. Against a stand-in, adding either
+  // field to the catalog entry would move the capture into a different branch
+  // with this assertion still green, which is the gate covering a recipe shape
+  // the catalog no longer ships. The registration test below reads the same
+  // catalog; the control `web-sessions` is a cropToSelector recipe, so the pair
+  // spans both branches as they are actually shipped.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const specFor = (id) => {
+    const recipe = catalog.recipes.find((r) => r.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    return buildSpec({
+      recipe,
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  }
+
+  // The recipe declares neither `selector` nor `cropToSelector`, so buildSpec's
+  // third branch screenshots straight after page.goto with no assertion of its
+  // own -- and the subject arrives from an EFFECT (the fake provider fires
+  // onRefreshFailure on mount, which latches the store and only then re-renders
+  // Layout). Without this wait the capture races the very transition it is proof
+  // of, and a staging that stopped landing would be photographed as a healthy
+  // signed-in app with the spec still green.
+  const staged = specFor('web-session-expired')
+  assert.match(staged, /await expect\(page\.getByText\('Session expired'\)\)\.toBeVisible\(/)
+  // After the navigation and before the still, or it gates nothing -- the same
+  // pair the subscribe test below asserts.
+  //
+  // BOS-737: `precedes()` rather than the raw `indexOf < indexOf`. Raw, deleting
+  // the gate -- the exact regression this pins -- makes `indexOf` return -1, and
+  // `-1 < n` is true, so the assertion goes green on precisely the spec it exists
+  // to forbid. `precedes()` throws on an absent marker instead. That matters more
+  // here than almost anywhere: the defect this gate catches is one whose only
+  // other symptom is a healthy-looking screenshot and a passing spec.
+  assert.ok(precedes(staged, 'page.goto(', 'Session expired'))
+  assert.ok(precedes(staged, 'Session expired', 'page.screenshot('))
+
+  // The live control: the wait is recipe-scoped. Applied to every web still it
+  // would hang each one that never shows the notice -- which is all of them.
+  assert.doesNotMatch(specFor('web-sessions'), /Session expired/)
+})
+
+test('the shipped catalog keeps the session-expired recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-session-expired')
+  assert.ok(recipe, 'web-session-expired recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // Same hazard as the recipes below: absent from the pathRule it is never
+  // selected for a services/web diff, so BOS-1085's required proof would
+  // silently never run.
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule.recipeIds.includes('web-session-expired'))
+  // The id the stage script gates on is the id the catalog ships; a drift
+  // between them captures the signed-in app instead of the expired state.
+  assert.equal(recipe.capture, 'still')
+  assert.equal(recipe.route, '/')
+})
+
+test('the daemon give-up recipe stages a NON-transient listDaemons failure into both e2e globals', () => {
+  const specFor = (id) =>
+    buildSpec({
+      recipe: { id, surface: 'web', capture: 'still', route: '/' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+
+  const staged = specFor('web-sessions-daemons-give-up')
+  assert.match(staged, /errors: \{ listDaemons: \{ message: 'Daemon list unavailable', code: 13 \}/)
+  // Code 13 is INTERNAL, and the code is the whole point: the page classifies
+  // retryability by code, so a transient one would leave the capture racing
+  // ~15s of retry ladder for a "Reconnecting…" pill instead of the give-up
+  // notice this recipe is evidence of. Pinned as a number because that is what
+  // the fake reads.
+  assert.match(staged, /code: 13/)
+  // Same latent-mirror reasoning as the session-expired test above.
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+  assert.match(
+    staged,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
+  )
+
+  // The live control. Staged globally, an empty daemon filter would silently
+  // change every other web recipe's subject.
+  assert.doesNotMatch(specFor('web-sessions'), /listDaemons/)
+})
+
+test('the daemon give-up spec waits for the notice before it screenshots', () => {
+  // Built from the SHIPPED catalog for the reason spelled out on the
+  // session-expired gate above: which buildSpec branch emits the screenshot
+  // depends on the recipe's own selector/cropToSelector fields.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const specFor = (id) => {
+    const recipe = catalog.recipes.find((r) => r.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    return buildSpec({
+      recipe,
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  }
+
+  // The notice arrives only after a poll has actually failed, so without the
+  // gate the still races it and photographs a page with a healthy daemon
+  // filter — green spec, wrong subject.
+  const staged = specFor('web-sessions-daemons-give-up')
+  assert.match(staged, /await expect\(page\.getByRole\('button', \{ name: 'Try again' \}\)\)/)
+  assert.ok(precedes(staged, 'page.goto(', "name: 'Try again'"))
+  assert.ok(precedes(staged, "name: 'Try again'", 'page.screenshot('))
+
+  // Recipe-scoped: applied to every web still it would hang each one that has
+  // no failing poll, which is all of them.
+  assert.doesNotMatch(specFor('web-sessions'), /Try again/)
+})
+
+test('the shipped catalog keeps the daemon give-up recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-sessions-daemons-give-up')
+  assert.ok(recipe, 'web-sessions-daemons-give-up recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // Absent from the pathRule it is never selected for a services/web diff, and
+  // BOS-1091's required proof would silently never run.
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule.recipeIds.includes('web-sessions-daemons-give-up'))
+  assert.equal(recipe.capture, 'still')
+  assert.equal(recipe.route, '/')
+  // Uncropped on purpose: the evidence is the notice AND the surviving table in
+  // one frame, and web-sessions' `.data-table-wrap` crop would cut the notice
+  // out entirely.
+  assert.equal(recipe.cropToSelector, undefined)
+  assert.equal(recipe.selector, undefined)
+})
+
+test('the cold-start probe-failure spec clicks Refresh and waits for the compat notice', () => {
+  // Built from the SHIPPED recipe for the same reason the session-expired test
+  // above is: which buildSpec branch emits the screenshot depends on whether the
+  // catalog entry declares `selector` or `cropToSelector`, and this test's whole
+  // subject is where the staging lands relative to that screenshot.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const specFor = (id) => {
+    const recipe = catalog.recipes.find((r) => r.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    return buildSpec({
+      recipe,
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  }
+
+  const staged = specFor('web-accounts-cold-start-probe-failure')
+  // Both fixture flags, and both e2e globals. The subject only exists when the
+  // passive read is still in flight (hangPassiveAccountsRead) AND the refresh
+  // probe is answered the way an older bosso answers it
+  // (accountsUsageRefreshUnsupported). Drop either and the capture is a healthy
+  // accounts table; the app fakes resolve `__BOSSANOVA_E2E__ ?? bossanovaE2e`,
+  // a precedence and not a merge, so a single-global write is invisible
+  // wherever the other is already installed.
+  assert.match(staged, /hangPassiveAccountsRead: true/)
+  assert.match(staged, /accountsUsageRefreshUnsupported: true/)
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+  assert.match(
+    staged,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
+  )
+
+  // A still recipe has no `steps`, so the one interaction the subject requires
+  // lives in the readiness gate. The order is the whole gate: wait for the
+  // spinner (the page must still be loading, or the probe failure is not the
+  // cold-start case), THEN click Refresh, THEN wait for the compat notice the
+  // probe mints. `precedes()` rather than a raw `indexOf < indexOf` because a
+  // deleted marker makes `indexOf` return -1 and `-1 < n` passes on precisely
+  // the spec this forbids.
+  assert.ok(precedes(staged, 'page.goto(', "getByText('Loading accounts')"))
+  assert.ok(precedes(staged, "getByText('Loading accounts')", 'Refresh account usage'))
+  assert.ok(precedes(staged, 'Refresh account usage', 'update bosso and try again'))
+  // The trailing wait is what makes an unstaged run fail loudly instead of
+  // photographing a healthy accounts table.
+  assert.ok(precedes(staged, 'update bosso and try again', 'page.screenshot('))
+
+  // ...and these two are what make it a REGRESSION gate rather than a
+  // screenshot. The compat-notice wait above cannot tell the fixed page from
+  // the BOS-1089 one: the regressed cold-start branch titles its full-page
+  // danger panel with the folded error, which for an unsuperseded probe
+  // failure is that same string, and `getByText` matches on substring. Nor can
+  // the spinner wait at the top, which is sequenced before the click. So the
+  // spinner must be re-checked AFTER the notice paints, and the notice must
+  // have arrived through the INLINE route. The live region is what carries
+  // that second claim: BOS-1090 gives the give-up notice `role="alert"` on
+  // every page, so an alert census no longer separates the inline notice from
+  // the danger panel, whereas `[data-testid="connection-status"]` is rendered
+  // only by ConnectionNotice — the subtree the panel replaces. Asserted over
+  // the region between the notice and the capture, because both markers also
+  // appear earlier in the spec and a first-occurrence `precedes` would be
+  // satisfied by those. `region()` throws on an absent marker, so deleting
+  // either assertion fails loudly rather than going green.
+  const beforeCapture = region(staged, 'update bosso and try again', 'page.screenshot(')
+  assert.match(beforeCapture, /getByText\('Loading accounts'\)/)
+  assert.match(beforeCapture, /\.settings-content \[data-testid="connection-status"\]/)
+  assert.match(beforeCapture, /toHaveCount\(1\)/)
+
+  // The live control: both the staging and the gate are recipe-scoped. Leaked
+  // into the shared web fixture, the hang would strand every other accounts
+  // recipe on its spinner.
+  const control = specFor('web-accounts-list')
+  assert.doesNotMatch(control, /hangPassiveAccountsRead/)
+  assert.doesNotMatch(control, /accountsUsageRefreshUnsupported/)
+  assert.doesNotMatch(control, /update bosso and try again/)
+})
+
+test('the shipped catalog keeps the cold-start probe-failure recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-accounts-cold-start-probe-failure')
+  assert.ok(recipe, 'web-accounts-cold-start-probe-failure recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // Same hazard as the recipes around it: absent from the pathRule it is never
+  // selected for a services/web diff, so BOS-1089's required proof would
+  // silently never run.
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule.recipeIds.includes('web-accounts-cold-start-probe-failure'))
+  // The id accountsColdStartStageScript and the captureReadyScript clause both
+  // gate on is the id the catalog ships; a drift between them captures a
+  // healthy accounts table instead of the probe failure.
+  assert.equal(recipe.capture, 'still')
+  assert.equal(recipe.route, '/org-e2e/settings/accounts')
+  // NOT the accounts-section testid the sibling accounts recipes crop to: that
+  // node lives inside AccountsView, which the page does not render while the
+  // first read is still in flight. Cropping to it here would fail the
+  // `toBeVisible()` guard on the very state this recipe exists to capture.
+  assert.equal(recipe.cropToSelector, '.settings-content')
+})
+
+test('the accounts give-up recipe stages a failing daemon read into BOTH e2e globals', () => {
+  const specFor = (id) =>
+    buildSpec({
+      recipe: { id, surface: 'web', capture: 'still', route: '/' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+
+  const staged = specFor('web-accounts-give-up-retry')
+  // `listDaemons` and not one of the per-daemon account reads:
+  // fetchAccountsSnapshot folds those through Promise.allSettled, so failing
+  // them yields an empty TABLE rather than the notice this recipe is proof of.
+  assert.match(staged, /Object\.defineProperty\(errors, 'listDaemons'/)
+  // Code 14 is the honest wire code for a dropped daemon connection, and it is
+  // what the notice's message is derived from. It is deliberately NOT load-
+  // bearing for retry classification: `fetchAccountsSnapshot` re-throws
+  // `errorMessage(err)` as a plain string, so the code is gone before
+  // `isTransient` sees it and the failure is terminal whatever is staged here.
+  // That is why the recipe films the notice persisting rather than a ladder --
+  // see the comment on accountsGiveUpStageScript.
+  assert.match(staged, /code: 14/)
+  // BOTH halves of the arming condition, but NOT because they are symmetric --
+  // see the comment on accountsGiveUpStageScript. The elapsed half is the
+  // load-bearing one: `firstReadAt` is seeded inside the getter, so read #1 is
+  // answered whatever the boot cost, and the elapsed check is then the only
+  // thing standing between StrictMode's second mount read and a capture that
+  // opens on an already-given-up page. `reads < 2` is a clock-independent
+  // floor kept alongside it. Both are pinned because dropping either leaves a
+  // spec that still builds and still runs.
+  assert.match(staged, /reads < 2/)
+  assert.match(staged, /Date\.now\(\) - firstReadAt < ARM_AFTER_MS/)
+  // The seeding ORDER is the reason the halves are asymmetric, so pin it: move
+  // this line above the increment or out of the getter and read #1 can start
+  // failing, which is the cold-start substitution the capture gate exists for.
+  assert.match(
+    staged,
+    /get\(\) \{\n\s+reads \+= 1;\n\s+if \(firstReadAt === 0\) firstReadAt = Date\.now\(\);/,
+  )
+
+  // Same latent-mirror pin as the session-expired recipe above.
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+  assert.match(
+    staged,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
+  )
+
+  // The live control. A daemon read staged into the shared web fixture would
+  // break every other web recipe's subject while this test stayed green.
+  assert.doesNotMatch(specFor('web-accounts-list'), /defineProperty\(errors/)
+})
+
+test("the accounts give-up arming delay stays under the recipe's own dwell", () => {
+  // A cross-file coupling with nowhere to live on the JSON side: the recipe
+  // schema is `unevaluatedProperties: false` (proof/recipes/schema.json), so
+  // the catalog cannot carry a note beside the number this constrains. Pin it
+  // here instead, because this is what a maintainer trimming the dwell to keep
+  // the video short will actually hit.
+  //
+  // accountsGiveUpStageScript answers every daemon read until ARM_AFTER_MS has
+  // passed since the page's FIRST read. The recipe's selector-less waits before
+  // the refresh click are what buy that time, so a dwell shorter than the
+  // arming delay leaves the click's read answered: no notice is raised, and the
+  // step waiting for one times out against a perfectly healthy page.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-accounts-give-up-retry')
+  assert.ok(recipe, 'web-accounts-give-up-retry recipe is missing from the catalog')
+
+  const clickIndex = recipe.steps.findIndex(
+    (step) => step.action === 'click' && String(step.selector).includes('Refresh account usage'),
+  )
+  assert.ok(clickIndex > 0, 'the give-up recipe no longer clicks the usage refresh control')
+  // Only the dwells BEFORE the click count: the arming has to be satisfied by
+  // the time that read happens. `|| 500` mirrors renderVideoStep's own default
+  // for a timeout-less wait.
+  const dwellMs = recipe.steps
+    .slice(0, clickIndex)
+    .filter((step) => step.action === 'wait' && step.selector === undefined)
+    .reduce((total, step) => total + (Number(step.timeoutMs) || 500), 0)
+  assert.ok(dwellMs > 0, 'the give-up recipe no longer dwells before the refresh click')
+
+  const staged = buildSpec({
+    recipe,
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  const armed = staged.match(/const ARM_AFTER_MS = (\d+);/)
+  assert.ok(armed, 'accountsGiveUpStageScript no longer declares ARM_AFTER_MS')
+  assert.ok(
+    Number(armed[1]) < dwellMs,
+    `ARM_AFTER_MS (${armed[1]}ms) must stay under the recipe's pre-click dwell (${dwellMs}ms), ` +
+      'or the refresh click reads a daemon that is still answering and no give-up notice is raised',
+  )
+})
+
+test('the accounts give-up video waits for the loaded table before it starts stepping', () => {
+  // Built from the SHIPPED catalog for the same reason the session-expired gate
+  // test is: which branch emits the capture depends on the recipe's declared
+  // shape, and this test's subject is where the gate lands relative to it.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const specFor = (id) => {
+    const recipe = catalog.recipes.find((r) => r.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    return buildSpec({
+      recipe,
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  }
+
+  const staged = specFor('web-accounts-give-up-retry')
+  // The gate names a fixture ROW, which is the one thing the failure mode it
+  // guards cannot produce: if the staging ever let the page's first read fail,
+  // the route renders the cold-start EmptyState -- which also carries a
+  // `[role="alert"]` and a "Try again", so every later step would still find
+  // something to click and the video would be green proof of the wrong
+  // component.
+  assert.match(staged, /await expect\(page\.getByText\('work@anthropic\.com'\)/)
+  // After the navigation and before anything is captured or clicked, or it
+  // gates nothing. `precedes()` rather than raw indexOf comparison, for the
+  // BOS-737 reason documented on the session-expired gate above: a deleted
+  // marker makes indexOf return -1, and -1 < n is true.
+  //
+  // The markers below carry the `getByText(` call and not the bare address:
+  // webStageScript seeds that same label into the accounts fixture ABOVE the
+  // steps, so a bare-string search would match the staging block and order the
+  // assertion against the wrong occurrence.
+  const gate = "page.getByText('work@anthropic.com')"
+  assert.ok(precedes(staged, 'page.goto(', gate))
+  assert.ok(precedes(staged, gate, 'Refresh account usage'))
+
+  // The live control: the wait is recipe-scoped. Applied to the sibling refresh
+  // recipe it would still pass here while gating a capture that never needed it.
+  assert.doesNotMatch(specFor('web-accounts-refresh-flow'), /getByText\('work@anthropic\.com'\)/)
+})
+
+test('the shipped catalog keeps the accounts give-up recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-accounts-give-up-retry')
+  assert.ok(recipe, 'web-accounts-give-up-retry recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // Absent from the pathRule it is never selected for a services/web diff, so
+  // BOS-1090's required proof would silently never run.
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule.recipeIds.includes('web-accounts-give-up-retry'))
+  // The id the stage script gates on is the id the catalog ships, and the
+  // capture mode the recipe's evidence depends on: a still cannot show a
+  // control surviving the press that used to remove it.
+  assert.equal(recipe.capture, 'video')
+  // The control recipe named in the plan's required proof, re-run unmodified.
+  const control = catalog.recipes.find((r) => r.id === 'web-chat-terminal-reconnecting')
+  assert.ok(control, 'web-chat-terminal-reconnecting control recipe is missing')
+  assert.ok(webRule.recipeIds.includes('web-chat-terminal-reconnecting'))
+
+  // This recipe must never wait for the reconnecting pill. `accountsGiveUpStageScript`
+  // rejects `listDaemons`, but `fetchAccountsSnapshot` rethrows `errorMessage(err)` as a
+  // plain STRING, so `ConnectError.from(aString)` is `Code.Unknown` with a non-TypeError
+  // cause and `isTransient` classifies it terminal -- `dispatch({type:'reconnecting'})`
+  // lives only inside `scheduleRetry`, which a terminal failure never reaches. A step
+  // waiting on that pill therefore hangs until the runner's own timeout, and because the
+  // recipe sits in the `services/web/` pathRule asserted above it would fail EVERY future
+  // web diff, not just the one that added it. That is the shape this assertion pins: the
+  // wait is unsatisfiable-by-construction, so it cannot be caught by running the recipe
+  // once on a good day. `Reconnecting` evidence belongs to the sibling
+  // web-chat-terminal-reconnecting control, whose route does arm the ladder.
+  const giveUpSteps = JSON.stringify(recipe.steps)
+  assert.doesNotMatch(giveUpSteps, /connection-status/)
+  assert.doesNotMatch(giveUpSteps, /Reconnecting/)
+})
+
+test('the shipped catalog keeps both organization members recipes wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  for (const id of ['web-organization-members', 'web-organization-members-mobile']) {
+    const recipe = catalog.recipes.find((r) => r.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    assert.doesNotThrow(() => validateRecipe(recipe))
+    // Same hazard as the two chat-terminal recipes above, and worse here:
+    // captureStill swallows a failed crop and falls back to a full-frame
+    // screenshot, so a recipe that drops out of the pathRule -- or whose id
+    // drifts from the one organizationStageScript seeds -- degrades to a
+    // wrong-state capture instead of an error.
+    assert.ok(webRule.recipeIds.includes(id), `${id} is not wired to the web path rule`)
+  }
+})
+
 test('buildSpec waits for the rendered glyph row before capturing the chat-terminal still', () => {
   // The capture selector ([data-testid='chat-terminal-canvas']) goes visible as
   // soon as xterm mounts, which is before the staged socket's data frame is
@@ -319,6 +939,84 @@ test('buildSpec waits for the rendered glyph row before capturing the chat-termi
   assert.doesNotMatch(specFor('web-chat-terminal', undefined), /\.xterm-rows/)
   assert.doesNotMatch(specFor('web-sessions', { VITE_E2E: '1' }), /\.xterm-rows/)
   assert.doesNotMatch(specFor('web-chat-terminal-reconnecting', { VITE_E2E: '1' }), /\.xterm-rows/)
+})
+
+test('buildSpec video waits for the eligibility verdict before capturing a subscribe still', () => {
+  // The readiness gate was wired into the stills branch only, so a video
+  // capture of /subscribe could record and still-capture the fail-closed
+  // pre-verdict frame the gate exists to prevent. Video must gate the same way.
+  const specFor = (id, stageEnv) =>
+    buildSpec({
+      recipe: {
+        id,
+        surface: 'web',
+        capture: 'video',
+        steps: [{ action: 'goto', route: '/subscribe', label: 'open subscribe' }],
+      },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv,
+    })
+
+  const staged = specFor('web-subscribe-trial-used', { VITE_E2E: '1' })
+  assert.ok(staged.includes(String.raw`page.locator('.subscribe-cta')).toBeEnabled(`))
+  // After the navigation and before the still, or it gates nothing.
+  assert.ok(precedes(staged, 'page.goto(', '.subscribe-cta'))
+  assert.ok(precedes(staged, '.subscribe-cta', 'await captureStill(page'))
+
+  // Unstaged there is no fixture verdict to wait for, and a non-subscribe
+  // recipe has no CTA at all — the wait would hang in both.
+  assert.doesNotMatch(specFor('web-subscribe-trial-used', undefined), /subscribe-cta/)
+  assert.doesNotMatch(specFor('web-sessions', { VITE_E2E: '1' }), /subscribe-cta/)
+})
+
+test('buildSpec stages a checkout-CTA state so the subscribe eligibility captures can differ', () => {
+  // Regression: the ineligible opt-in used to stage cloudTrialEligibility alone.
+  // The shared fixture leaves cloudAccessState unset -> the fake resolves ACTIVE
+  // -> ACTIVE shows no checkout CTA -> the fake answers UNSPECIFIED and never
+  // consults the eligibility that was staged. Both subscribe recipes then
+  // rendered the same non-trial copy, and the two captures came back as one
+  // byte-identical PNG -- a "passed" proof run whose eligible capture showed the
+  // ineligible page. The access state is what makes the eligibility reachable,
+  // so both fields must be staged together.
+  const specFor = (id, stageEnv) =>
+    buildSpec({
+      recipe: { id, surface: 'web', route: '/subscribe', selector: '.subscribe-actions' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv,
+    })
+
+  for (const id of [
+    'web-subscribe',
+    'web-subscribe-trial-used',
+    'web-subscribe-no-notification-prompt',
+  ]) {
+    const staged = specFor(id, { VITE_E2E: '1' })
+    assert.match(
+      staged,
+      /cloudAccessState: 'needs_subscription'/,
+      `${id} does not stage a checkout-CTA state`,
+    )
+    // Staging has to happen before the page is opened, or the first render
+    // reads the unstaged fixture.
+    assert.ok(
+      precedes(staged, 'cloudAccessState', 'page.goto('),
+      `${id} stages after the navigation`,
+    )
+  }
+
+  // The two eligibility verdicts are the whole subject of the pair; if they
+  // ever agree, the captures are proof of nothing.
+  assert.match(specFor('web-subscribe', { VITE_E2E: '1' }), /cloudTrialEligibility: 'eligible'/)
+  assert.match(
+    specFor('web-subscribe-trial-used', { VITE_E2E: '1' }),
+    /cloudTrialEligibility: 'ineligible'/,
+  )
+
+  // Unstaged, and for a recipe that is not about the CTA, neither field is touched.
+  assert.doesNotMatch(specFor('web-subscribe', undefined), /cloudAccessState/)
+  assert.doesNotMatch(specFor('web-sessions', { VITE_E2E: '1' }), /cloudTrialEligibility/)
 })
 
 test('validateRecipe requires a key for press steps and accepts a valid one', () => {
@@ -997,6 +1695,19 @@ function runRunner(args) {
   })
 }
 
+// Same, but with an empty PATH so the `pnpm exec playwright` spawn fails
+// immediately with ENOENT. That turns a real capture into a fast assertion on
+// everything the runner does BEFORE the browser: parse, validate, and build the
+// spec -- including every staging payload.
+function runRunnerWithoutPlaywright(args) {
+  return spawnSync(process.execPath, [runnerPath, ...args], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 5000,
+    env: { ...process.env, PATH: '' },
+  })
+}
+
 // ── Surface-agnostic runner: spec-root, crop, stage env via CLI args (BOS-202) ──
 
 test('parseArgs accepts an arbitrary surface when spec-root is supplied', () => {
@@ -1079,6 +1790,124 @@ test('buildSpec stages the web fixture only when a stageEnv is supplied', () => 
   assert.ok(staged.includes('window.bossanovaE2e'))
   const unstaged = buildSpec({ recipe: base, outputDir: '/out', surface: 'web' })
   assert.ok(!unstaged.includes('window.bossanovaE2e'))
+})
+
+// BOS-1065, extended by BOS-1067/BOS-1072 and generalised by BOS-1073: some web
+// captures need a signed-in organization. Two reasons, and since BOS-1073 they
+// are staged by route: everything under `/<orgId>/settings/...` is guarded by
+// OrgScopedSettings, which reconciles the URL against the WorkOS claim and
+// renders "Switching to ..." until it agrees. Twenty-five catalog recipes live
+// there, so an allowlist would be a standing invitation to add a recipe and
+// photograph the spinner.
+//
+// Every OTHER web recipe must keep the unset organizationId, so both halves are
+// pinned: what enters the subtree is seeded, and the staging does not leak to
+// recipes that need no organization.
+// A direct CLI run reaches the staging payloads while every `const` declared
+// below the `if (invokedDirectly) run(...)` block is still in its temporal dead
+// zone, so a module-level const used by staging fails the capture with
+// "Cannot access '<name>' before initialization" -- a message that names no
+// recipe and does not reproduce under the in-process tests above, which import
+// the module and therefore always finish evaluating it first. Only a spawned
+// run can see it.
+test('a direct CLI run stages an organization-scoped recipe without a dead-zone error', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-runner-org-tdz-'))
+  const recipePath = path.join(dir, 'recipe.json')
+  fs.writeFileSync(
+    recipePath,
+    JSON.stringify({
+      id: 'web-org-tdz-probe',
+      // The runner's own recipe.json carries the surface (proof.mjs writes it),
+      // and the organization staging gate reads it -- without it this probe
+      // would take the not-web early return and stage nothing at all.
+      surface: 'web',
+      route: '/org-e2e/settings/organization',
+      selector: 'main',
+    }),
+  )
+
+  const result = runRunnerWithoutPlaywright([
+    '--surface',
+    'web',
+    '--recipe',
+    recipePath,
+    '--output-dir',
+    path.join(dir, 'out'),
+  ])
+
+  assert.doesNotMatch(result.stderr, /before initialization/)
+  // Reaching the (unavailable) playwright spawn is what proves the spec was
+  // built: the runner writes it and only then launches the browser.
+  assert.match(result.stderr, /ENOENT/)
+})
+
+test('buildSpec seeds an organizationId for any organization-scoped route', () => {
+  // Shape-based, not fixture-based: a recipe that coins its own organization id
+  // is behind the same guard and needs the same staging.
+  for (const route of [
+    '/org-e2e/settings/appearance',
+    '/whatever-org/settings',
+    '/o/settings/cron',
+  ]) {
+    const staged = buildSpec({
+      recipe: {
+        id: 'web-unlisted-recipe',
+        surface: 'web',
+        route,
+        viewport: { width: 1024, height: 768 },
+      },
+      outputDir: '/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+    assert.ok(staged.includes("organizationId: 'workos-e2e'"), `${route} should be seeded`)
+  }
+
+  // A video recipe names its routes on the steps, not on the recipe.
+  const stepped = buildSpec({
+    recipe: {
+      id: 'web-unlisted-video',
+      surface: 'web',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/org-e2e/settings/organization' }],
+      viewport: { width: 1024, height: 768 },
+    },
+    outputDir: '/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  assert.ok(stepped.includes("organizationId: 'workos-e2e'"))
+})
+
+test('buildSpec leaves every other recipe without an organization', () => {
+  const other = buildSpec({
+    recipe: {
+      id: 'web-header-menu',
+      surface: 'web',
+      route: '/',
+      viewport: { width: 1440, height: 1000 },
+    },
+    outputDir: '/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  assert.ok(other.includes('window.bossanovaE2e'))
+  assert.ok(!other.includes('organizationId'))
+
+  // The route shape is not unique to the app: the docs site has its own
+  // `/reference/settings` page and no organization to stage.
+  const docs = buildSpec({
+    recipe: {
+      id: 'docs-settings',
+      surface: 'docs',
+      route: '/reference/settings',
+      viewport: { width: 1280, height: 1000 },
+    },
+    outputDir: '/out',
+    surface: 'docs',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  assert.ok(!docs.includes('organizationId'))
 })
 
 // ----- BOS-879 staged echo responder --------------------------------------
@@ -1364,4 +2193,95 @@ test('recipe schema documents what each capture field actually captures', () => 
   assert.match(props.cropToSelector.description, /top/i)
   assert.match(props.cropToSelector.description, /not a box crop/i)
   assert.match(props.selector.description, /unobtainable/i)
+})
+
+test('the reconnecting recipe stages a dark theme and a post-first-answer hang into both e2e globals', () => {
+  const specFor = (id) =>
+    buildSpec({
+      recipe: { id, surface: 'web', capture: 'still', route: '/' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+
+  const staged = specFor('web-sessions-reconnecting-dark')
+  // `1`, not `0`, and the difference is the whole recipe. The counter is read
+  // AFTER recordCall, so `1` answers call one and hangs from call two -- a
+  // painted table with a live ladder behind it. `0` would hang from call one,
+  // and Sessions returns its loading view with no pill at all.
+  assert.match(staged, /hangSessionsReadAfter: 1/)
+  // Dark is asserted twice because the two halves fail independently: the
+  // emulateMedia call covers a system-preference read, the storage key covers
+  // index.html's pre-paint reader. Either alone can leave a light capture.
+  assert.match(staged, /emulateMedia\(\{ colorScheme: 'dark' \}\)/)
+  assert.match(staged, /localStorage\.setItem\('bossanova\.theme', 'dark'\)/)
+  // Same latent-mirror reasoning as the give-up test above: the app fakes read
+  // `__BOSSANOVA_E2E__ ?? bossanovaE2e`, so a single-global write is invisible
+  // wherever the other one is already installed.
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+  assert.match(
+    staged,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
+  )
+
+  // The live control. Staged globally, a hanging sessions read would strand
+  // every other web recipe behind a permanently-retrying page.
+  assert.doesNotMatch(specFor('web-sessions'), /hangSessionsReadAfter/)
+})
+
+test('the reconnecting spec waits for the pill AND its staleness clause before it screenshots', () => {
+  // Built from the SHIPPED catalog for the same reason as the give-up gate: the
+  // screenshot branch buildSpec emits depends on the recipe's own
+  // selector/cropToSelector fields, which a hand-built stub would not carry.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const specFor = (id) => {
+    const recipe = catalog.recipes.find((r) => r.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    return buildSpec({
+      recipe,
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  }
+
+  const staged = specFor('web-sessions-reconnecting-dark')
+  // The pill region is mounted unconditionally and starts empty, so waiting on
+  // its VISIBILITY is satisfied at first paint and photographs the healthy
+  // list. Both clauses are text waits for that reason, and both are asserted
+  // here because they fail independently -- see the runner's own note beside
+  // the gate.
+  assert.match(staged, /toContainText\('Reconnecting…'/)
+  assert.match(staged, /toContainText\('Showing data from'/)
+  assert.ok(precedes(staged, 'page.goto(', "toContainText('Reconnecting…'"))
+  assert.ok(precedes(staged, "toContainText('Showing data from'", 'page.screenshot('))
+
+  // Recipe-scoped: applied to every web still, it would hang each one whose
+  // page never reconnects, which is all of them.
+  assert.doesNotMatch(specFor('web-sessions'), /Reconnecting…/)
+})
+
+test('the shipped catalog keeps the reconnecting recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-sessions-reconnecting-dark')
+  assert.ok(recipe, 'web-sessions-reconnecting-dark recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // Absent from the pathRule it is never selected for a services/web diff, and
+  // BOS-1093's reconnect-pill proof would silently never run.
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule.recipeIds.includes('web-sessions-reconnecting-dark'))
+  assert.equal(recipe.capture, 'still')
+  assert.equal(recipe.route, '/')
+  // Uncropped on purpose: the evidence is the pill AND the stale table it
+  // qualifies in one frame, so web-sessions' `.data-table-wrap` crop would cut
+  // the pill out entirely.
+  assert.equal(recipe.cropToSelector, undefined)
+  assert.equal(recipe.selector, undefined)
+  // Desktop width, well clear of the 390px mobile recipes: the pill sits above
+  // the table and a narrow viewport reflows it out of the frame.
+  assert.equal(recipe.viewport.width, 1024)
 })

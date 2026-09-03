@@ -917,7 +917,7 @@ func TestTrashModel_FastRestoreShowsNoProgressFlicker(t *testing.T) {
 		if step.restoreLine != "" {
 			t.Fatalf("progress line %q appeared with no setup output to show", step.restoreLine)
 		}
-		if step.restoring && !strings.Contains(step.View().Content, "Restoring...") {
+		if step.restoring && !strings.Contains(step.View().Content, "Restoring…") {
 			t.Fatal("the restoring frame lost its spinner label")
 		}
 	}

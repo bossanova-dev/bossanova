@@ -604,8 +604,8 @@ func TestChatPicker_W_OnStoppedChat_FiresWake(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a cmd from 'w' on stopped chat, got nil")
 	}
-	if m.statusMsg != "Waking..." {
-		t.Errorf("statusMsg before resolve = %q, want %q", m.statusMsg, "Waking...")
+	if m.statusMsg != "Waking…" {
+		t.Errorf("statusMsg before resolve = %q, want %q", m.statusMsg, "Waking…")
 	}
 
 	// Execute the cmd; it should call WakeChat exactly once.
@@ -1408,7 +1408,7 @@ func TestChatPicker_RefreshRefetchesWebLinkWhenPRNumberAppears(t *testing.T) {
 // TestChatPicker_ArchivePendingShowsArchiving guards the BOS-425 daemon-driven
 // signal: when a refresh reports a merged session whose daemon has an archive
 // actually in flight (archive_pending=true), the detail view shows the
-// "Archiving..." status. This replaced the old BOS-46 heuristic that inferred
+// "Archiving…" status. This replaced the old BOS-46 heuristic that inferred
 // archiving from MERGED + repo flag alone (which never cleared for a
 // resurrected merged session).
 func TestChatPicker_ArchivePendingShowsArchiving(t *testing.T) {
@@ -1449,7 +1449,7 @@ func TestChatPicker_MergedWithArchiveFlagButNotPendingDoesNotShowArchiving(t *te
 }
 
 // TestChatPicker_RefreshClearsOptimisticLatchWhenArchiveSettingIsDisabled guards
-// against leaving the detail view in a permanent "Archiving..." state after
+// against leaving the detail view in a permanent "Archiving…" state after
 // another client disables the repo setting between polls, so the optimistic
 // merge latch cannot get stuck.
 func TestChatPicker_RefreshClearsOptimisticLatchWhenArchiveSettingIsDisabled(t *testing.T) {
@@ -3235,25 +3235,21 @@ func runChatPickerCmd(m ChatPickerModel, cmd tea.Cmd) ChatPickerModel {
 	return updated.(ChatPickerModel)
 }
 
-// TestChatPicker_RendersRenameActionWithSelectedChat pins acceptance criterion
-// 1: the action bar advertises the rename with a chat highlighted.
-func TestChatPicker_RendersRenameActionWithSelectedChat(t *testing.T) {
+// TestChatPicker_HidesRenameActionFromActionBar pins BOS-1063: [r]ename is a
+// hidden action. The key still works — the tests below cover that — but the bar
+// never advertises it, with or without a chat selected.
+func TestChatPicker_HidesRenameActionFromActionBar(t *testing.T) {
 	m := chatPickerSized(&chatPickerStub{})
 	view := m.View().Content
-	if !strings.Contains(view, "[r]ename") {
-		t.Fatalf("action bar does not advertise [r]ename with a chat selected:\n%s", view)
+	if strings.Contains(view, "[r]ename") {
+		t.Fatalf("action bar advertises the hidden [r]ename with a chat selected:\n%s", view)
 	}
-	// It sits with the other per-chat actions, not among the session actions.
+	// The per-chat group still renders — this is a hidden action, not a
+	// missing bar.
 	if !strings.Contains(view, "[d]elete") {
 		t.Fatalf("action bar lost [d]elete:\n%s", view)
 	}
-}
 
-// TestChatPicker_HidesRenameActionWithEmptyChatList pins acceptance criterion
-// 1's negative half: with nothing selected there is nothing to rename, so the
-// bar must not advertise it.
-func TestChatPicker_HidesRenameActionWithEmptyChatList(t *testing.T) {
-	m := chatPickerSized(&chatPickerStub{})
 	m.chats = nil
 	m.buildTableRows()
 	if view := m.View().Content; strings.Contains(view, "[r]ename") {
@@ -3398,7 +3394,7 @@ func TestChatPicker_RenameEscCancels(t *testing.T) {
 	if got := m.chats[0].Title; got != "Test chat" {
 		t.Fatalf("chat title = %q after cancel, want it unchanged", got)
 	}
-	if view := m.View().Content; !strings.Contains(view, "[r]ename") {
+	if view := m.View().Content; !strings.Contains(view, "[d]elete") {
 		t.Fatalf("action bar did not come back after cancel:\n%s", view)
 	}
 }

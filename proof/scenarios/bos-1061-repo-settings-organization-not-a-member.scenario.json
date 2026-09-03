@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "title": "BOS-1061 Repo settings surfaces a mapping the caller is not a member of",
+  "fixture": {
+    "preset": "repo-organization",
+    "env": {
+      "BOSS_AUTH_E2E_EMAIL": "proof@example.com",
+      "BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active",
+      "BOSS_ORG_E2E_ORGANIZATIONS": "org-acme=Acme Corp",
+      "BOSS_ORG_E2E_MAPPING": "org-ghost"
+    }
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "not-a-member",
+      "title": "a mapping naming an organization the caller cannot see is called out",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": {
+            "anyOf": [
+              { "text": "design-system", "match": "normalized" },
+              { "text": "[enter] settings", "match": "normalized" }
+            ],
+            "label": "Repository list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Repository list settled"
+        },
+        {
+          "key": "enter",
+          "caption": "Press [enter] to open the selected repo's settings"
+        },
+        {
+          "waitFor": "You are not a member of",
+          "timeoutMs": 10000,
+          "caption": "The membership refusal is on screen"
+        },
+        {
+          "expect": [
+            {
+              "text": "Organization",
+              "match": "normalized",
+              "label": "the refusal sits next to the setting that caused it"
+            },
+            {
+              "text": "You are not a member of",
+              "match": "normalized",
+              "label": "the cross-organization mapping is surfaced, not silent"
+            },
+            {
+              "text": "org-ghost",
+              "match": "normalized",
+              "label": "the refusal names the organization it is about"
+            }
+          ],
+          "caption": "This repo is mapped to an organization absent from ListOrganizations for this caller. Without this line the field would render a bare id or fall back to Personal, and the user would lose their web-UI sessions with nothing on screen explaining why. The plan's open question resolved this to the repo settings view: proximity to the cause, which is also the only place that can fix it."
+        }
+      ]
+    }
+  ]
+}

@@ -7,6 +7,7 @@ SUITE="${1:-all}"
 LEGACY_PROVIDER="f""ly"
 LEGACY_INGRESS="cloud""flared"
 LEGACY_BACKUP="lite""stream"
+LEGACY_CANARY_HOST="orchestrator-""k8s"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -50,6 +51,7 @@ check_terraform_env() {
     "variable \"bosso_stripe_secret_key\""
     "variable \"bosso_stripe_cloud_price_id\""
     "variable \"bosso_sentry_dsn\""
+    "variable \"posthog_project_token\""
   )
   local terraform_lines=(
     "bosso_github_app_private_key_env = replace(var.bosso_github_app_private_key, \"\\n\", \"\\\\n\")"
@@ -64,6 +66,8 @@ check_terraform_env() {
     "BOSSO_GITHUB_APP_CLIENT_ID=\${var.bosso_github_app_client_id}"
     "BOSSO_GITHUB_APP_CLIENT_SECRET=\${var.bosso_github_app_client_secret}"
     "BOSSO_SENTRY_DSN=\${var.bosso_sentry_dsn}"
+    "BOSSO_POSTHOG_PROJECT_TOKEN=\${var.posthog_project_token}"
+    "BOSSO_POSTHOG_HOST=https://\${local.posthog_proxy_domain}"
   )
 
   for pattern in "${variables[@]}"; do
@@ -118,8 +122,8 @@ check_smoke_script() {
   require_grep "scripts/verify-bosso-k8s.sh" "REPLACE_ME" "smoke script must reject REPLACE_ME placeholder values"
   require_grep "scripts/verify-bosso-k8s.sh" "PRIVATE_IP" "smoke script must reject PRIVATE_IP placeholder values"
   require_grep "scripts/verify-bosso-k8s.sh" "placeholder value in bs-bosso-secret" "smoke script must fail closed on placeholder secret values"
-  require_grep "scripts/verify-bosso-k8s.sh" "https://orchestrator-k8s-staging.bossanova.dev" "smoke script must include staging canary URL"
-  require_grep "scripts/verify-bosso-k8s.sh" "https://orchestrator-k8s.bossanova.dev" "smoke script must include production canary URL"
+  require_grep "scripts/verify-bosso-k8s.sh" "https://orchestrator-staging.bossanova.dev" "smoke script must include staging orchestrator URL"
+  require_grep "scripts/verify-bosso-k8s.sh" "https://orchestrator.bossanova.dev" "smoke script must include production orchestrator URL"
   # Deploy-ordering gate (BOS-241): the post-deploy smoke must assert the live
   # server supports the API version the built clients request, so production can
   # never trail circulating clients.
@@ -190,6 +194,23 @@ check_retired_ingress_removed() {
   require_absent "${KUSTOMIZE_DIR}/overlays/staging/kustomization.yml" "bs-${LEGACY_INGRESS}-secret" "staging overlay must not generate retired ingress secret"
 }
 
+# BOS-1056: the migration-era GKE canary hostnames are retired aliases of the
+# canonical orchestrator hosts. Every surface that was repointed off them is
+# guarded here, in one function named after the retired concept, so a later
+# regression on any of them is caught rather than only the smoke script's.
+# LEGACY_CANARY_HOST is assembled from a split literal, matching the LEGACY_*
+# idiom at the top of this file, so these guards do not themselves answer a
+# repo-wide grep for the retired name.
+check_retired_canary_host() {
+  require_file "scripts/verify-bosso-k8s.sh"
+  require_file "${KUSTOMIZE_DIR}/overlays/production/patch-configmap-bosso.yml"
+  require_file "${KUSTOMIZE_DIR}/overlays/staging/patch-configmap-bosso.yml"
+  require_absent "scripts/verify-bosso-k8s.sh" "https://${LEGACY_CANARY_HOST}-staging.bossanova.dev" "smoke script must not use the retired staging canary URL"
+  require_absent "scripts/verify-bosso-k8s.sh" "https://${LEGACY_CANARY_HOST}.bossanova.dev" "smoke script must not use the retired production canary URL"
+  require_absent "${KUSTOMIZE_DIR}/overlays/production/patch-configmap-bosso.yml" "https://${LEGACY_CANARY_HOST}.bossanova.dev" "production CORS allowlist must not include the retired canary origin"
+  require_absent "${KUSTOMIZE_DIR}/overlays/staging/patch-configmap-bosso.yml" "https://${LEGACY_CANARY_HOST}-staging.bossanova.dev" "staging CORS allowlist must not include the retired canary origin"
+}
+
 check_gcp_only_release() {
   require_file "services/bosso/Dockerfile.k8s"
   require_file "scripts/test-bosso-parallel-release-safety.sh"
@@ -209,6 +230,7 @@ run_suite() {
     smoke-script) check_smoke_script ;;
     k8s-hardening) check_k8s_hardening ;;
     retired-ingress) check_retired_ingress_removed ;;
+    retired-canary) check_retired_canary_host ;;
     parallel-release) check_gcp_only_release ;;
     all)
       check_terraform_env
@@ -216,10 +238,11 @@ run_suite() {
       check_smoke_script
       check_k8s_hardening
       check_retired_ingress_removed
+      check_retired_canary_host
       check_gcp_only_release
       ;;
     *)
-      echo "Usage: $0 [all|terraform-env|dockerignore|smoke-script|k8s-hardening|retired-ingress|parallel-release]" >&2
+      echo "Usage: $0 [all|terraform-env|dockerignore|smoke-script|k8s-hardening|retired-ingress|retired-canary|parallel-release]" >&2
       exit 2
       ;;
   esac

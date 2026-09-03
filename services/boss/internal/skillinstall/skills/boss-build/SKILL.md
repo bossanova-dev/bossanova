@@ -18,8 +18,15 @@ Four terminal states, nothing else:
   signal for the cron/CI proof gate. Step 11 still records-and-ignores that exit code (it never flips
   this run to BLOCKED), so author the TUI scenario proactively. Web and other surfaces stay
   best-effort, captured opportunistically (never blocking — Step 11).
+  **Open review findings do not disqualify this state** — a round-capped review ships here with the
+  findings **published**: the open-findings ledger as a PR comment and a tracker comment, the
+  `please-review` label applied, PR readied. Route: review-stack.md
+  §REVIEW_READY-with-findings publication.
 - `BLOCKED` — ticket left **In Progress**; blocker comment explaining what failed (`file:line`) and
-  what was tried; draft PR if work was pushed. Self-quarantines.
+  what was tried; draft PR if work was pushed. Self-quarantines. Reachable for **four causes only**
+  (Step 12): red quality gates, an unpushable branch, a missing required API-version bump or
+  down-convert transform, or a plan that demands something unsafe. Open review findings are **not**
+  one of them.
 - `PARTIAL` — ≥1 in-scope criterion satisfied **and** certified by the acceptance-criteria
   lens, branch green, and every deferred required item is an unsatisfied in-scope criterion. Ticket
   stays **In Progress**; ready PR, do-not-merge marked, enumerating open criteria; never
@@ -58,8 +65,8 @@ resumed**, not a stop condition; only foreign real work or a live concurrent wri
   Every wake **reconciles against real PR state before acting**, re-arms while waiting, and dedups by
   callback id (`policy.dedupById`).
   Whether to arm at all is the single `callbacksAvailable(env)` gate (same module): gate false ⇒
-  skip `registerWatch` and degrade to bounded `policy.fallbackPoll`
-  (`gh pr checks --watch --fail-fast`), never a failed wait. Protocol:
+  skip `registerWatch` and degrade to `policy.fallbackPoll`, the reference's
+  bounded poll loop, never a failed wait. Protocol:
   [`references/callback-watches.md`](references/callback-watches.md).
 
 ## On-demand references (read when the trigger fires)
@@ -68,19 +75,18 @@ Situational deep-dives live in `references/*.md` (relative to this skill's base 
 **only when their trigger fires** — the read-when-triggered pattern the situational references use. The
 body carries the decision skeleton; every moved instruction is still reachable here.
 
-| Reference                              | Read it when…                                                                       |
-| -------------------------------------- | ----------------------------------------------------------------------------------- |
-| `references/core-spine.md`             | Orienting — the portable spine; before any skill-body or contract prose edit        |
-| `references/code-reviewer-template.md` | Step 6 — the reviewer prompt template                                               |
-| `references/receiving-code-review.md`  | Step 6 — the fix discipline                                                         |
-| `references/review-stack.md`           | Step 6 — full review protocol (6b/6c)                                               |
-| `references/claim-and-eligibility.md`  | Steps 2.5/3 — claim/salvage rules                                                   |
-| `references/proof-capture.md`          | Step 5 for TUI scenario authoring; Step 11 (`REVIEW_READY`) proof gate detail       |
-| `references/callback-watches.md`       | Step 8/9 — wiring one-shot CI/PR callbacks (per-trigger watches, reconcile, re-arm) |
-| `references/cron-gate.md`              | Setup — registering the cron gate command                                           |
-| `references/finalize-and-stop.md`      | Steps 8-12 — tag, green gate, finalize, settle, proof, stop cleanly                 |
-| `references/troubleshooting.md`        | Ambiguous terminal state — status-rollback table + red-flags catalog                |
-| `references/standalone-mode.md`        | Running with no bossd (`BOSSD_MANAGED=0`)                                           |
+| Reference                             | Read it when…                                                                       |
+| ------------------------------------- | ----------------------------------------------------------------------------------- |
+| `references/core-spine.md`            | Orienting — the portable spine; before any skill-body or contract prose edit        |
+| `references/receiving-code-review.md` | Step 6 — the fix discipline                                                         |
+| `references/review-stack.md`          | Step 6 — full review protocol (the single `boss-review` pass)                       |
+| `references/claim-and-eligibility.md` | Steps 2.5/3 — claim/salvage rules                                                   |
+| `references/proof-capture.md`         | Step 5 for TUI scenario authoring; Step 11 (`REVIEW_READY`) proof gate detail       |
+| `references/callback-watches.md`      | Step 8/9 — wiring one-shot CI/PR callbacks (per-trigger watches, reconcile, re-arm) |
+| `references/cron-gate.md`             | Setup — registering the cron gate command                                           |
+| `references/finalize-and-stop.md`     | Steps 8-12 — tag, green gate, finalize, settle, proof, stop cleanly                 |
+| `references/troubleshooting.md`       | Ambiguous terminal state — status-rollback table + red-flags catalog                |
+| `references/standalone-mode.md`       | Running with no bossd (`BOSSD_MANAGED=0`)                                           |
 
 ## Hard rules
 
@@ -90,9 +96,9 @@ body carries the decision skeleton; every moved instruction is still reachable h
   / merge state, first arm one-shot callback watches — do not spin on `gh` blind. Gate the
   choice on the single `callbacksAvailable(env)` signal (`toolbox/callback/adapter.mjs`: managed
   session **and** resolvable `boss` binary): when it is **true**, `registerWatch` them and let
-  the wake drive you; when it is **false**, log its `reason` and fall through to the bounded
-  `policy.fallbackPoll`
-  (`gh pr checks --watch --fail-fast`) — a clean no-op, never a failed wait. This reflex applies
+  the wake drive you; when it is **false**, log its `reason` and fall through to
+  `policy.fallbackPoll`, the reference's bounded poll loop — a clean no-op, never
+  a failed wait. This reflex applies
   everywhere a wait happens (Steps 8/9 are the concrete sites). Mechanics:
   [`references/callback-watches.md`](references/callback-watches.md).
 - A step is not complete until its artifact exists. "Plan fetched" means the file is in
@@ -109,22 +115,25 @@ body carries the decision skeleton; every moved instruction is still reachable h
 - Once the worktree lock is acquired (Step 1), every terminal exit routes through **Stop cleanly**
   (Step 12) so the lock is released. The sole exception is the startup `HELD_BY_PEER` yield, which
   never acquired the lock.
-- **Required-deferred ⇒ BLOCKED, never REVIEW_READY** (Steps 9/12): a _required_ item deferred for any
-  reason ⇒ BLOCKED naming it. Required = API-version bump + transform for an observable `bossanova.v1`
-  change, open must-fix findings, and **any in-scope acceptance criterion left unsatisfied** (an open
-  `- [ ]` this ticket was scoped to close — **partial implementation is not complete**);
-  _optional_ (Minor findings, best-effort proof) stays non-fatal. The **single** exception is
-  `PARTIAL`, available **only** when the deferred required items are
-  **exclusively** unsatisfied in-scope acceptance criteria, ≥1 criterion is lens-certified
-  (`0/<total>` is BLOCKED), on a green branch. An open must-fix from any other lens, a missing
-  `bossanova.v1` API-version bump or transform, or a red branch still forces BLOCKED — never
-  `PARTIAL`.
+- **Open findings are published, not fatal** (Steps 9/12): open must-fix review findings **never**
+  force BLOCKED. A round-capped review on a pushed, green branch ships `REVIEW_READY` with the
+  findings published — ledger comment on the PR, the same summary on the ticket, `please-review`
+  applied, PR readied — per review-stack.md §REVIEW_READY-with-findings publication. Human
+  review is the next gate.
+- **Unsatisfied in-scope criteria ⇒ `PARTIAL`, not BLOCKED** (Steps 9/12): an in-scope acceptance
+  criterion left unsatisfied (an open `- [ ]` this ticket was scoped to close — **partial
+  implementation is not complete**) routes to `PARTIAL` on a **pushed, green** branch, available
+  **only** when ≥1 criterion is lens-certified (`0/<total>` is not `PARTIAL`) and the deferred
+  required items are **exclusively** unsatisfied in-scope criteria. _Optional_ items (Minor
+  findings, best-effort proof) stay non-fatal.
+- **BLOCKED has exactly four causes** (Step 12): quality gates are red; the branch cannot be pushed;
+  a required API-version bump or down-convert transform is missing, per the configured
+  API-compatibility lens role; or the plan demands something unsafe (Decide vs ABORT). That list is
+  exhaustive — open review findings are **not** on it.
 - Never merge. Terminal success is review-ready, never "Done".
-- Honor the Preflight wall-clock breaker. When it trips, flush to the nearest honest terminal state
-  — BLOCKED if any required item remains — then stop via **Stop cleanly** if claim/work began.
 - Never `run_in_background`; use `toolbox/bs-dispatch-await.mjs` (`Task`/`spawn_agent`+`wait_agent`).
-- **No raw bulk output in main thread** (rationale: [`references/core-spine.md`](references/core-spine.md)
-  §5). Never paste full diffs, CI logs, or review threads into orchestrator context. Read them
+- **No raw bulk output in main thread.** Never paste full diffs, CI logs, or review threads into
+  orchestrator context. Read them
   **inside a subagent that returns a short summary**, or filter to few lines (`gh pr checks --json
 statusCheckRollup`, `gh pr view --json mergeable`). Each review/repair/finalize dispatch keeps its
   bulk material in its context and returns the verdict/summary.
@@ -149,6 +158,7 @@ is exhaustive:
 - dependency upgrades/additions not already specified by the plan
 - empty/contradictory acceptance criteria
 - AC requiring production access or deployed-environment audit from a worktree
+- a refuted **central** premise — the ticket's stated reason for the change is false
 - anything the Trust rules name
 
 On any of these: revert the working changes, leave the ticket **In Progress**, comment the abort
@@ -160,7 +170,8 @@ reason, then stop via **Stop cleanly** with BLOCKED.
   the decision **and its rationale** under `## Autonomous decisions` in the Step 7 PR body, and
   continue. An unresolved decision is not an abort condition.
 - **a premise refuted by merged work** — implement truth; record criterion, merged change, and
-  departure in the PR body plus tracker comment.
+  departure in the PR body plus tracker comment. Not the central-premise abort above: there the
+  reason for the change dies, here only its starting point moved.
 
 ## Mode detection (headless / interactive)
 
@@ -186,16 +197,12 @@ git branch --show-current
 command -v git; command -v gh; gh auth status
 ```
 
-Arm one wall-clock deadline during Preflight and preserve that absolute value for the whole run. Treat
-~4 hours as the cap. If it is exceeded at any phase boundary, stop at the nearest honest terminal
-state. Capture the baseline and branch facts:
+Capture the baseline and branch facts:
 
 ```bash
-PREFLIGHT_STARTED_AT="$(date +%s)"
-PREFLIGHT_DEADLINE=$(( PREFLIGHT_STARTED_AT + 4 * 60 * 60 ))
-export PREFLIGHT_DEADLINE
-
 START_SHA="$(git rev-parse HEAD)"
+# Clear a previous run's Step 6 review-verdict note (contract: Step 6).
+rm -f "$(git rev-parse --git-dir)/boss-build-review-verdict"
 SESSION_BRANCH="$(git branch --show-current)"
 BASE_UPSTREAM="$(git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null)"
 BASE_REMOTE="${BASE_UPSTREAM%%/*}"
@@ -225,8 +232,9 @@ fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
-# Gate installed skill drift before tracker writes or worktree mutation. Without
-# a boss CLI, use warning helper so drift is not called clean.
+# Report installed skill drift before tracker writes or worktree mutation. Drift is
+# bookkeeping: it is reported and never terminal. Without a boss CLI, use the
+# warning helper so drift is not called clean.
 if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
   if O="$("$BOSS_BIN" skills check --gate 2>&1)"; then
     if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
@@ -237,11 +245,11 @@ if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
         printf '%s\n' "$O" >&2
         R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
         if [ -n "$R" ]; then
-          echo "BLOCKED: installed boss skills differ from checkout source; run: $R" >&2
+          echo "warning: installed boss skills drift from checkout source; run: $R — bookkeeping only, work state unaffected" >&2
         else
-          echo "BLOCKED: installed boss skills differ from checkout source; see gate output above" >&2
+          echo "warning: installed boss skills drift from checkout source; see gate output above — bookkeeping only, work state unaffected" >&2
         fi
-        exit 1 ;;
+        ;;
     esac
   fi
 elif [ -f "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" ]; then
@@ -255,6 +263,11 @@ if [ "$BOSSD_MANAGED" = "1" ]; then
   test -n "$SESSION_BRANCH" || exit 1
 fi
 ```
+
+**Bookkeeping warns; a missing install blocks.** Drift only records which payload this run read, so
+it warns and a stale tree still runs; `BLOCKED: installed boss skills not found` above stays hard —
+no toolbox, nothing runs. See _Bookkeeping is advisory_ in
+[`references/finalize-and-stop.md`](references/finalize-and-stop.md).
 
 Confirm the tracker is reachable with a cheap read through the adapter's status/select capability
 (Linear: the statuses read for the configured backlog team).
@@ -321,10 +334,16 @@ spawn expect `cli`. `transport: 'mcp'` only when the CLI set is incomplete and t
 complete; `ok: false` only when neither is. On `ok: false` stop `BLOCKED: no complete boss
 transport: <comma-separated
 missing>; <inventoryHint when non-null>`. Otherwise **report it in this run's opening line** — `transport: <mcp|cli>`, plus
-`degraded: <capabilities>` and `partial: <capability>(<missing fields>)` when each is non-empty — so
-the handoff says which capabilities the run never consulted, and which it read **half-blind**.
+`cli-only mode (expected): <capabilities>` and `partial: <capability>(<missing fields>)` when each is
+non-empty — so the handoff says which capabilities the run never consulted, and which it read
+**half-blind**.
 
-`degraded` = no CLI equivalent: `resolveContext`, `getSessionStatuses`, `createPlanningChat`.
+**Print the helper's `degraded` array as `cli-only mode (expected)`.** The field keeps its name; on
+a `cli` transport it always holds the three capabilities with no CLI equivalent —
+`cli-only mode (expected): resolveContext, getSessionStatuses, createPlanningChat` — so substitute
+their documented fallbacks. Reserve this report's `degraded:` for a capability missing from
+**both** transports.
+
 `partial` = working but blind: today `getSession` via `boss show --json` lacks `repair_active`,
 `attention_status.reason`, `pr_mergeable` and `merge_block`; unreadable means "not settled", never
 green. Under `BOSSD_MANAGED=0` there may be no boss transport at all; that is
@@ -362,8 +381,8 @@ The `pending` ticket is a placeholder; reconcile it in Step 2 (`"$LOCK" acquire 
   Step 12 (you hold no lock to release).
 
 Pass `"$BLI_RUNID"` on every later lock call. Refresh the lock with `"$LOCK" heartbeat "$BLI_RUNID"`
-at each step boundary and at the top of long phases (Step 5 implement, Step 8 repair). Release it on
-every terminal state in Step 12.
+at each step boundary and at the top of long phases (Steps 5 implement, 6 review, 8 repair) — on
+the uncontended fast path, at long phases only. Release it on every terminal state in Step 12.
 
 An **open PR, or commits already ahead of `$BASE_REF`, is NOT a stop condition**. Under
 `BOSSD_MANAGED=1` bossd opens a draft PR + empty `chore: [skip ci] create pull request` commit at
@@ -425,8 +444,7 @@ before committing (snippet + narrative: `references/standalone-mode.md`).
 ## Step 2.5: Classify the workspace (ours to adopt, or foreign)
 
 Decide whether an existing PR/branch is **safe to adopt** or belongs to a **foreign** process whose
-committed work must never be co-edited (the portable rule is [`references/core-spine.md`](references/core-spine.md)
-§6). The distinction is _real work_, not the ticket name: a PR/branch with **no real work yet** (only
+committed work must never be co-edited. The distinction is _real work_, not the ticket name: a PR/branch with **no real work yet** (only
 bossd's bootstrap commit) is **always adoptable**; a branch already carrying real work must prove it
 is _this ticket's own_ before we touch it.
 
@@ -457,9 +475,6 @@ decision. Record mode/PR — Steps 4.5,6,7 read them.
 
 ## Step 3: Claim (cross-worktree arbitration via the tracker claim capability)
 
-Read [`references/claim-and-eligibility.md`](references/claim-and-eligibility.md) before claim
-decision.
-
 ```bash
 if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
@@ -471,28 +486,33 @@ TOKEN="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-token)"
 BODY="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-comment --token "$TOKEN" --session-id "${BOSS_SESSION_ID:-}")" || { echo "BLOCKED: claim body"; exit 1; }
 ```
 
-Pre-post: `readComments` + same-shell inline
-[`references/claim-and-eligibility.md`](references/claim-and-eligibility.md)'s liveness snippet +
-claim-verdict (3=NO_CHANGE, 4=cleanup+post, other=BLOCKED; lock/`tracker_id` not peer detectors). Then post `$BODY` via `writeComment`, set .inProgress; 20s inline
+Pre-post: `readComments` + claim-verdict (contended `--liveness`; 3=NO_CHANGE, 4=cleanup+post,
+other=BLOCKED; lock/`tracker_id` not peer detectors). Route before posting: fresh `ACQUIRED` **and**
+zero peer claim comments is the uncontended fast path — skip the liveness snippet and both waits;
+run the block below with `UNCONTENDED=1` set. Else the full ceremony stays unweakened: same-shell
+inline [`references/claim-and-eligibility.md`](references/claim-and-eligibility.md)'s liveness
+snippet before the post, 20s inline after it, malformed evidence hard-errors.
+Then post `$BODY` via `writeComment`, set .inProgress. **Both paths re-read `$COMMENTS_JSON`
+after posting** — the fast path drops the waits, not the re-read:
 
 ```bash
-test -n "${BOSS_CLAIM_LIVENESS_JSON:-}" || { echo "BLOCKED: claim liveness evidence"; exit 1; }
-node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comments "$COMMENTS_JSON" --liveness "$BOSS_CLAIM_LIVENESS_JSON"
+set --
+if [ -z "${UNCONTENDED:-}" ]; then
+  test -n "${BOSS_CLAIM_LIVENESS_JSON:-}" || { echo "BLOCKED: liveness"; exit 1; }
+  set -- --liveness "$BOSS_CLAIM_LIVENESS_JSON"
+fi
+node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comments "$COMMENTS_JSON" "$@"
 ```
 
-Post-claim exits:
+Post-claim:
 
 - exit 0 (WON): wait ~10s, apply ref cleanup + fresh liveness confirm; proceed if still 0
-  (4=NO_WINNER).
-- exit 3 (LOST): delete your claim comment, leave status alone, drop this ticket, and take the next
-  candidate; if none, stop `NO_CHANGE`.
-- exit 4 (NO_WINNER): delete your claim comment and repeat Claim once; if it repeats, stop `NO_CHANGE`.
+  (4=NO_WINNER); fast path skips both.
+- exit 3 (LOST): delete your claim, leave status be, take the next ticket; else
+  `NO_CHANGE`.
+- exit 4 (NO_WINNER): same cleanup, repeat Claim once; if repeated, `NO_CHANGE`.
 
-Once WON, link this session to the ticket so the TUI `[l]inear` shortcut opens it — **only when
-`BOSS_SESSION_ID` is set** (skip under `BOSSD_MANAGED=0`: no bossd session to link): call the boss MCP
-`update_session id=$BOSS_SESSION_ID tracker_url=<issue url> tracker_id=<ISSUE-ID>` (from Step 2's
-the `getIssue` read). This is **best-effort and non-fatal** — log and continue on any error; never let it block
-the run.
+Once WON, link the session per the ref; best-effort.
 
 ## Step 4: Fetch + validate plan, copy to docs/plans/
 
@@ -547,7 +567,7 @@ Only when **Step 2.5** marked the branch a **resume**: build a done-vs-remaining
 On any resume or re-dispatch after an interruption, first inventory committed state
 (`git log --oneline` against the plan's task list) and dispatch **only** the remainder, carrying the
 standing instruction _continue from committed state; do not redo committed tasks_ into every
-re-dispatched subagent. Per-task commits only save time if the resume reads them.
+re-dispatched subagent.
 
 Before Step 5, verify `## Premises` / `## Acceptance criteria`: resolve `path:line`s, re-derive
 claimed-complete sets, read symbols claimed missing; exclude `## Original notes`. False premise:
@@ -558,20 +578,6 @@ merged-work inversion ⇒ departure; else comment refutation and stop BLOCKED.
 This is inlined; its portable shape is [`references/core-spine.md`](references/core-spine.md) §2.
 Full plan fresh; Step 4.5 remainder resume; skip when none remain. Subagents decide/record, never
 ask, report hard-ABORT, and are awaited; never `run_in_background`. Hard-ABORT ⇒ BLOCKED.
-
-**Step 5 dispatch budget.** Immediately before each dispatch, reserve review tail:
-
-```bash
-STEP_5_NOW="$(date +%s)"
-STEP_5_REMAINING=$(( (PREFLIGHT_DEADLINE - STEP_5_NOW) / 60 ))
-STEP_5_REVIEW_RESERVE_MINUTES=${STEP_5_REVIEW_RESERVE_MINUTES:-40}
-STEP_5_BUDGET_MINUTES=$(( STEP_5_REMAINING - STEP_5_REVIEW_RESERVE_MINUTES ))
-export STEP_5_BUDGET_MINUTES PREFLIGHT_DEADLINE
-```
-
-If `STEP_5_BUDGET_MINUTES` is less than or equal to zero, dispatch nothing and go to **Stop cleanly**
-with BLOCKED. Pass both `STEP_5_BUDGET_MINUTES` and `PREFLIGHT_DEADLINE` into every
-implementation dispatch; 40 minutes funds Step 6 degraded review plus post-review floor.
 
 **boss-build overlay:** each task subagent returns a **fixed short contract** — task id, files
 touched, tests added/passing, interface signatures, residual risks cross-checked against the prior
@@ -675,11 +681,9 @@ unattributed — the resume rule applies, so leave it alone and note it rather t
 this task. (A subagent that never returned names nothing; that case is the snapshot branch below.)
 
 A non-empty range is necessary but not sufficient: confirm the commits the subagent reported in its
-**commits made** field actually appear in it. Any commit reaching HEAD lands in that range, so an
-unrelated one — a concurrent writer, your own recovery commit for the previous task — would otherwise
-read as this task's work and let a task that landed nothing pass as done. A range holding **no**
-commit the subagent reported is the empty-log-range case wearing a disguise, so treat it as one: take
-that remedy below — re-dispatch the task with the same brief — rather than accepting the range.
+**commits made** field actually appear in it. A range holding **no** commit the subagent reported is
+the empty-log-range case wearing a disguise, so treat it as one: take that remedy below —
+re-dispatch the task with the same brief — rather than accepting the range.
 
 Then delete the snapshot: `rm "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"`. Do this
 once the task reaches **any** resolved outcome — the range checked out, a verification-only task
@@ -721,8 +725,7 @@ git commit --only -m "chore(task-N): recover uncommitted subagent work" \
 
 Anything the status listed that you could **not** attribute stays out of that commit, and out of the
 branch: leave it in the tree, stop dispatching, and go to **Stop cleanly** with BLOCKED naming those
-paths. Committing an unattributed path under this task and continuing is the outcome the
-files-touched cross-check exists to prevent.
+paths.
 
 The recovery commit goes through the same hooks the subagent's did, so it can be rejected the same
 way: adapt the subject to exactly what the hook's own error names and retry once. If it still will
@@ -730,20 +733,16 @@ not commit, leave the residue in the tree, stop dispatching further tasks, and g
 with BLOCKED naming the uncommitted paths — never revert the work, and never continue on top of
 residue you could not capture.
 
-Capturing the residue preserves the work; it does not prove the task is **done**. A subagent that
-died mid-task, or one whose commit the hook rejected, can leave a partial implementation that commits
-cleanly. So re-assess the recovered task against its acceptance criteria before advancing — trust the
-diff, not the fact that a commit now exists — and re-dispatch it with the same brief if it falls
-short, exactly as [`references/resume-assessment.md`](references/resume-assessment.md) does after a
-resume. Advancing on a recovery commit alone is how a half-finished task becomes a missing acceptance
-criterion at Step 9.
+Capturing the residue preserves the work; it does not prove the task is **done**. So re-assess the
+recovered task against its acceptance criteria before advancing — trust the diff, not the fact that a
+commit now exists — and re-dispatch it with the same brief if it falls short, exactly as
+[`references/resume-assessment.md`](references/resume-assessment.md) does after a resume.
 
 An **empty log range** is the other half of the check and has its own remedy: a clean tree with
 nothing committed and no _no commit — verification only_ claim means the task never landed. There is
 no residue to recover, so recovery does not apply — **re-dispatch that task** with the same brief
 rather than moving on, and if the second attempt also lands nothing, record it as a deferred
-required item **unless a fallback tier is still to run** for that scope. Silently continuing to the
-next task is what turns one lost task into an unexplained missing acceptance criterion at Step 9.
+required item **unless a fallback tier is still to run** for that scope.
 
 That exception is the contract's own **fallback outranking this remedy**, and it is not optional.
 Where the dispatch that landed nothing still has a **lower tier left to run** — every Tier-1
@@ -751,17 +750,12 @@ methodology extension does, because tiers 2 and 3 exist to finish exactly this r
 the exhausted attempt as that tier's own skip (`extension <name>: skipped (<reason>)`) and fall
 through, with **no** deferred required item. Defer the required item only once no fallback remains:
 the scope is still open after the last tier has run, or the dispatch had no lower tier behind it.
-Deferring at the Tier-1 attempt instead is the two-rules-one-situation failure this precedence
-removes — the fallback then implements every remaining criterion and Step 9 still finalizes BLOCKED
-(Hard rules) on an item the branch has already closed.
 
 Both halves of that remedy assume work is **missing**, so establish that before either one: check the
 acceptance criteria in that dispatch's scope against the branch, and where **you** confirm every one
 already holds, nothing was left to land — record the dispatch as landing nothing against an
 already-satisfied scope and move on, with neither a re-dispatch nor a deferred required item.
-Confirm it from the diff yourself, never on the dispatch's word. A deferred required item recorded
-here is not a bounded cost: Step 9 finalizes BLOCKED on any deferred required item (Hard rules), so
-recording one for a scope the branch already satisfies blocks a run that has nothing left to do.
+Confirm it from the diff yourself, never on the dispatch's word.
 
 If a subagent **never returns** — a killed process, a host error — the same inventory applies even
 on a **fresh** run, where Step 4.5 never executed: list `git log --oneline "$BASE_REF..HEAD"`,
@@ -770,31 +764,25 @@ carrying _continue from committed state; do not redo committed tasks_. Which rec
 on **the snapshot, not on whether your process restarted** — that is what consuming it on every
 resolved outcome buys. If `boss-build-pre-dispatch-head` is present, a dispatch was in flight and its
 tree was verified clean, so everything dirty is that subagent's residue: recover it with the command
-above, whether or not this is the same orchestrator that wrote it (a crash normally leaves the
-file behind, and that is exactly the case it exists for). Its second field names **which dispatch**
-was in flight, and the recovery commit and the re-assessment both scope to it: a restarted
-orchestrator cannot infer that from the log, because the log shows what **finished**, and every
-unfinished task is equally a candidate. Read that field from the file rather than guessing, and
-**branch on which of its two forms** you actually read — the snapshot writes one per dispatch unit:
+above, whether or not this is the same orchestrator that wrote it. Its second field names **which
+dispatch** was in flight, and the recovery commit and the re-assessment both scope to it. Read that
+field from the file rather than guessing, and **branch on which of its two forms** you actually
+read — the snapshot writes one per dispatch unit:
 
 - `task-N` — a per-task dispatch. Commit the residue as `chore(task-N)` and re-assess task `N`.
 - `ext-<name>` — one whole Tier-1 methodology extension. Recovery is extension-wide: commit the
   residue as `chore(ext-<name>)` and re-assess that extension's entire Step-5 scope, never a single
-  task inside it. Nothing outside the extension records which of its internal tasks was in flight, so
-  there is no `N` here and inventing one is the guess this field exists to remove.
+  task inside it.
 
-Never assume the per-task form. A recovery scoped to the wrong dispatch sends you on to re-assess a
-task that already passed while the interrupted one stays half-done, and reading an `ext-<name>`
-snapshot as a task id scopes it to a task that does not exist. If
-the file is **absent**, there is no
-clean-tree guarantee to lean on: attribute each dirty path to a task before staging it, and leave
-anything you cannot attribute alone rather than sweeping it in. The full procedure is in
+Never assume the per-task form. If the file is **absent**, there is no clean-tree guarantee to lean
+on: attribute each dirty path to a task before staging it, and leave anything you cannot attribute
+alone rather than sweeping it in. The full procedure is in
 [`references/resume-assessment.md`](references/resume-assessment.md).
 
 Resolve the implementation methodology by strict precedence. One rule governs every dispatch this
-step makes, whichever tier makes it: **recompute both the Step-5 scope and the dispatch budget
+step makes, whichever tier makes it: **recompute the Step-5 scope
 immediately before each dispatch** — before each Tier-1 sibling, and again before tier 2 and before
-tier 3 — never reuse the Step 4.5 set or a stale budget. Recompute scope from the branch: the plan's
+tier 3 — never reuse the Step 4.5 set. Recompute scope from the branch: the plan's
 acceptance criteria checked against the diff, never a dispatch's own report of what it finished. Two
 things close criteria mid-step, and only one of them is a success — an earlier sibling that ran
 successfully, and a dispatch that did **not**, which still committed whatever part of its scope it
@@ -823,11 +811,10 @@ either.
    declaring `disable-model-invocation: true`.
    Each extension receives the copied plan path, the current Step-5 scope
    (full plan vs. remaining acceptance criteria), the unattended Decide-vs-ABORT rules, the
-   fixed short task-contract schema, `STEP_5_BUDGET_MINUTES`, `PREFLIGHT_DEADLINE`, and
+   fixed short task-contract schema, and
    the **commit-before-return contract** above — every extension inherits it and must pass it down to
-   its own implementation subagents. A methodology extension must return control when
-   `STEP_5_BUDGET_MINUTES` is exhausted, reporting finished scope and unfinished scope; that
-   budget-exhausted return is not "ran successfully". Apply the recompute
+   its own implementation subagents. A methodology extension that returns without finishing must
+   report finished scope and unfinished scope; that short return is not "ran successfully". Apply the recompute
    rule above **per sibling**: an earlier sibling may have closed the
    criteria a later one would otherwise be handed. Where nothing remains, do not
    dispatch that sibling at all — record `extension <name>: not dispatched (scope already
@@ -869,26 +856,20 @@ satisfied)`. That is a ledger entry, not a failed dispatch and never a deferred 
    paths. Still confirm it. Without that confirmation the empty-range remedy re-dispatches an
    extension whose scope the branch already satisfies, and once the last tier has run and no fallback
    is left, that same unconfirmed empty range is what finally defers a required item and finalizes
-   Step 9 BLOCKED on criteria the branch already satisfies — so the confirmation and the precedence
+   Step 9 short of `REVIEW_READY` on criteria the branch already satisfies — so the confirmation and the precedence
    are what bound the cost, not the classification. Both edges of this gate turn on that same check — the scope's
-   criteria against the branch, never the commit count: nothing landed against a scope already
-   satisfied is nothing left to do, while commits landed against a scope still open is work left
-   undone. (Step 4.5 already skips this step outright when it sets the scope to _none_.) Use this one
-   definition on both sides of the gate — a second wording for the same decision is how a tier gets
-   silently skipped.
+   criteria against the branch, never the commit count. (Step 4.5 already skips this step outright
+   when it sets the scope to _none_.) Use this one definition on both sides of the gate — a second wording for the
+   same decision is how a tier gets silently skipped.
 
    Label that snapshot for the dispatch, not for a task inside it: write `ext-<name>` in the second
-   field where the per-task form writes `task-N`, and read it back the same way. Recovery under an
-   `ext-<name>` label is extension-wide — commit the residue as `chore(ext-<name>)` and re-assess the
-   extension's whole Step-5 scope rather than one task. Nothing outside the extension records which
-   of its internal tasks was in flight, so a `task-N` label here would be a guess, and the recovery
-   it scopes would re-assess a task that already passed while the interrupted one stayed half-done.
+   field where the per-task form writes `task-N`. Recovery under an `ext-<name>` label is
+   extension-wide, per the forms above.
 
    Account for each dispatch on its own, as you classify it: record
    `extension <name>: skipped (<reason>)` for **every** extension that failed to load or returned no valid result
    — or that did not **run successfully** under the definition above —
-   including when a sibling succeeded. A successful sibling suppresses the lower tiers; it does not
-   excuse omitting its failed peers from the ledger. When at least
+   including when a sibling succeeded. When at least
    one extension **ran successfully**, tiers 2 and 3 are **suppressed** — with every failed sibling
    still recorded beside it. When **no** discovered extension ran successfully, that same
    per-extension accounting has already recorded each one: fall through to tier 2, then tier 3 — the
@@ -897,8 +878,7 @@ satisfied)`. That is a ledger entry, not a failed dispatch and never a deferred 
 2. **Tier 2 — host built-in.** If no methodology extension ran successfully, use a host-native
    test-first/implementation affordance only when the current agent environment actually exposes one.
    This is a prose self-assessment, not a programmatic probe. Hand it the scope the recompute rule
-   above leaves open, not the one the failed Tier-1 dispatch was handed; pass
-   `STEP_5_BUDGET_MINUTES` plus `PREFLIGHT_DEADLINE`. Record
+   above leaves open, not the one the failed Tier-1 dispatch was handed. Record
    `tier 2: not dispatched (scope already satisfied)` where that leaves nothing.
    Whatever that affordance dispatches is
    still bound by the **commit-before-return contract** above — hand it down with every task, and run
@@ -907,7 +887,7 @@ satisfied)`. That is a ledger entry, not a failed dispatch and never a deferred 
 
 3. **Tier 3 — inline TDD methodology.** If tiers 1 and 2 are unavailable, execute the compact
    self-contained loop in **Inline TDD methodology (tier 3)** below, against the scope the recompute
-   rule above leaves open, bounded by `STEP_5_BUDGET_MINUTES` plus `PREFLIGHT_DEADLINE` — record
+   rule above leaves open — record
    `tier 3: not dispatched (scope already satisfied)` where that
    leaves nothing. This is the portable last resort
    for a bare host and has no external skill dependency.
@@ -925,8 +905,7 @@ recorded as `extension <name>: skipped (<reason>)` and the run falls through to 
 For each **remaining** task from the copied plan — the recompute rule above, not the plan as Step 4.5
 handed it, decides which — create a fresh focused implementation pass with only that task,
 the relevant acceptance criteria, and the global constraints, carrying _continue from committed
-state; do not redo committed tasks_. A failed Tier-1 dispatch may have committed part of the plan
-before falling short, and this loop finishes the remainder rather than re-running it.
+state; do not redo committed tasks_.
 Write the failing test first and run the
 smallest covering command until the failure proves the missing behavior. Then write the minimal code
 to pass, rerun the same covering command, and refactor only after it is green. Run a task-scoped
@@ -945,14 +924,13 @@ verification only_ note). Settled risks are cleared; survivors name the failed c
 appears, stop and report it rather than guessing — ordinary ambiguity is decided and recorded, not
 reported.
 
-## Step 6: Whole-branch review (dispatch the review stack)
+## Step 6: Whole-branch review (dispatch the review pass)
 
 **Pick the review baseline** from the workspace mode:
 
 - **fresh / bootstrap-only**: `REVIEW_BASE="$START_SHA"` — the diff is this run's new work.
 - **resume**: `REVIEW_BASE="$BASE_REF"` — the work to ship is the whole branch vs base, including a
-  prior run's commits. On a resume `START_SHA == HEAD`, so a `START_SHA` baseline would read "no
-  change" and wrongly restore the entry state.
+  prior run's commits.
 
 **Change-detection gate.** Detect real changes against that baseline plus working-tree changes,
 excluding daemon artifacts:
@@ -971,8 +949,7 @@ never a blanket `git add -A`**, commit tagless, and ensure all work to review is
 so the worktree is clean for finalize.
 
 **Provision the run-file sentinel.** The Step-6 verdict routes through a file, never the subagent's
-returned prose, so a hallucinated summary cannot corrupt routing. Provision the per-run context
-**before** dispatch — and seed it:
+returned prose. Provision it **before** dispatch — and seed it:
 
 ```bash
 RUN_SENTINEL="$BOSS_BUILD_TOOLBOX/bs-run-sentinel.mjs"
@@ -981,48 +958,44 @@ RUN="$(node "$RUN_SENTINEL" make-ctx boss-build)"
 RUN_ID="${RUN%%$'\t'*}"; RUN_DIR="${RUN#*$'\t'}"
 DISPATCH_FAILURE="dispatch-failure"   # byte-identical to the module's DISPATCH_FAILURE
 export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX RUN_SENTINEL RUN_ID RUN_DIR DISPATCH_FAILURE
-# Seed a provisional pessimistic verdict: a subagent that dies at any point — including before its
-# first tool call — then leaves a routable `capped`, not a missing file. GENERATE the line; a
-# hand-written literal is unmatchable. The marker stops an un-upgraded seed reading as a cap a
-# reviewer earned; the budget floor below overwrites it with a non-provisional `capped 1`.
+# Seed a provisional pessimistic verdict: GENERATE the line; a hand-written literal is unmatchable.
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
   "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" '{"provisional":true}'
 ```
 
-**Dispatch the review stack.** Dispatch the ENTIRE review stack to **one fresh awaited subagent**
+**Dispatch the review pass — exactly one.** Dispatch the ENTIRE review protocol to **one fresh
+awaited subagent**
 (`subagent_type: general-purpose`, **await**, **never** `run_in_background`; on the orchestrator's
-model — review is the canonical judgment step). It runs the full
-protocol in **[review-stack.md](references/review-stack.md)**: the bounded whole-branch
-loop (cap + guard), the Step 6b outside-voice / cross-model Codex pass, and the Step 6c `boss-review`
-pass — fixing must-fix findings and committing tagless. First take a **fresh** whole-minute reading
-from the absolute deadline, then pass it `REVIEW_BASE`, `HEAD=$(git rev-parse HEAD)`,
-`BASE_REF` / `BASE_REMOTE` / `BASE_BRANCH` (the round-boundary drift check), the
-plan/acceptance-criteria, (on a resume) the Step 4.5 map, `RUN_DIR` / `RUN_ID`, **and
-`REMAINING_MINUTES`**:
+model). It runs the full protocol in **[review-stack.md](references/review-stack.md)**, which is **one `boss-review` pass**
+over the whole branch and nothing else: it carries the lenses, the repo-local rounds, its
+cross-model `second-voice` round, and its own capped fix loop, and commits fixes tagless. Do
+**not** dispatch a second review of any kind — no whole-branch loop before it, no cross-model chain
+after it, no reviewer prompt of this step's own. Pass it `REVIEW_BASE`, `HEAD=$(git rev-parse HEAD)`,
+`BASE_REF` / `BASE_REMOTE` / `BASE_BRANCH` (the base-drift check), the
+plan/acceptance-criteria (the pass certifies against them), (on a resume) the Step 4.5 map, and
+`RUN_DIR` / `RUN_ID`. **Lead that prompt with exactly `[bs-reviewer-dispatch]` on a line of its
+own** — an inert marker, not an instruction to the subagent, that run-cost telemetry matches at the
+head of a dispatched prompt to count reviewer subagents.
 
-```bash
-NOW="$(date +%s)"
-REMAINING_MINUTES=$(( (PREFLIGHT_DEADLINE - NOW) / 60 ))
-export REMAINING_MINUTES
-```
+**The review tier is picked from the diff, not from a clock.** The reference decides quick vs full at
+Step 6 entry from the branch diff alone: the configured lens globs plus the changed-file count
+against `reviewDefaults.deltaFileThreshold`, with `reviewDefaults.forceFull` winning outright and an
+unreadable diff selecting full. Every input is repo-local, so there is nothing for you to compute or
+hand over here. Do **not** pass a clock reading, an elapsed time, or a remaining-minutes figure into
+the dispatch — no gate reads one, and how long this run has been going must never decide how deeply
+its code is reviewed. The one deadline the dispatch does carry is `STEP_6C_DEADLINE`, a per-step
+allowance derived from the per-dispatch extension timeout, stamped by the reference itself.
 
-`REMAINING_MINUTES` is whole minutes left against the Preflight deadline, computed by **you**, never
-an instruction to estimate one; omitting it fires the reference's `was not supplied → full tier`
-fail-safe on **every** dispatched run and the degraded tier becomes unreachable.
-
-**Pass the deadline itself too — `PREFLIGHT_DEADLINE`.** Unix seconds, under **exactly** that name;
-any other leaves the reference's later gates binding a name nothing assigned and the cap inert. It
-is **not**
-`STEP_6C_DEADLINE`, a per-step allowance stamped from it.
-
-**Apply the tier ladder's budget floor before you dispatch.** Below the degraded tier plus the
-post-review reserve (default **40**; zero/negative included), dispatch **nothing**. Follow
-[review-stack.md](references/review-stack.md) §BLOCKED-route publication: its
+**The one pre-dispatch decline is the off switch.** With `BOSS_BS_REVIEW=0` set, dispatch
+**nothing**. Follow
+[review-stack.md](references/review-stack.md) §REVIEW_READY-with-findings publication: its
 retry/rebase/rescue procedure must yield `PUSHED=yes` before the generated `capped 1` sentinel;
-`rescue`/`no` report BLOCKED. Publish both tokens, then exit cleanly BLOCKED — never Step 7. Do
+`rescue`/`no` report BLOCKED (cause 2). Publish both tokens — the coverage one is
+`none: review stack did not run (<reason>)`, decidable here from your own record that you dispatched
+nothing — then exit cleanly `REVIEW_READY` on a green pushed branch, never Step 7. Do
 **not** fall through to generic sentinel classification.
 
-**The dispatched stack's contract**: write its terminal sentinel line to the run file **the moment
+**The dispatched pass's contract**: write its terminal sentinel line to the run file **the moment
 the blocking verdict is determined**, re-affirmed as its last action —
 
 ```bash
@@ -1030,16 +1003,18 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
   "$(node "${RUN_SENTINEL%/*}/bs-review-caps.mjs" sentinel clean)" '{"provisional":false}'
 ```
 
-— `bs-review clean:` when the blocking loop exited clean, `bs-review capped:` (N = rounds reached)
-when it capped with open must-fix; the advisory Step 6c never writes it.
+— `bs-review clean:` when `boss-review`'s Phase 7 report carries zero open must-fix,
+`bs-review capped:` (N = rounds reached) when its Phase 6 fix loop capped with open must-fix. That
+verdict is **blocking**: it is the only review verdict this run has, so nothing downstream may demote
+it to advisory.
 
 **What comes back (thin, non-routing).** The subagent RETURNS only the rendered `boss-review` report
-(leading with `<!-- bs-review -->`, for Step 7), the Step 6b `## Cross-model review` outcome token,
-the `## Review coverage` outcome token, the drift note, and the finding ledger — all **non-routing** (the verdict is
-read from the run file below). Bulk stays in the subagent's context, **NOT pasted back**.
+(leading with `<!-- bs-review -->`, for Step 7), the `## Cross-model review` token
+(boss-review's Phase D `second-voice` round), the `## Review coverage` outcome token, the drift
+note, and the finding ledger. Bulk stays in the subagent's context,
+**NOT pasted back**.
 
-**Classify from the run file only.** Read the sentinel and route on `matchSentinel`
-— never on the subagent's reply:
+**Classify from the run file only.** Read the sentinel and route on `matchSentinel`:
 
 ```bash
 READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" review)"
@@ -1049,39 +1024,63 @@ if [ "$(printf '%s' "$READ" | jq -r '.status')" = "ok" ]; then
   if [ -z "$VERDICT" ]; then VERDICT="$DISPATCH_FAILURE"; fi
   PROVISIONAL="$(printf '%s' "$READ" | jq -r '.payload.provisional // empty')"
 else
-  # status == missing (dead/watchdog-killed subagent) OR stale (foreign leftover): a distinct
-  # dispatch-failure that routes to the SAFE non-clean branch and is NEVER treated as clean.
+  # status == missing (dead subagent) OR stale (foreign leftover): a distinct dispatch-failure
+  # that routes to the SAFE non-clean branch and is NEVER treated as clean.
   VERDICT="$DISPATCH_FAILURE"
 fi
 node "$RUN_SENTINEL" cleanup "$RUN_DIR"
+case "$VERDICT" in clean|capped) REVIEW_VERDICT="$VERDICT" ;; *) REVIEW_VERDICT="none" ;; esac
+printf 'REVIEW_VERDICT=%s\n' "$REVIEW_VERDICT" \
+  >"$(git rev-parse --git-dir)/boss-build-review-verdict"
 ```
+
+Readers take an absent or unreadable `boss-build-review-verdict` file as `none`, so a review that
+never settled can never be read downstream as clean. Its full contract is in
+[receiving-code-review.md](references/receiving-code-review.md).
 
 **Route on the file verdict.**
 
-- `clean` → proceed to **Step 6.5**, which is the only route onward to Step 7.
-- `capped` with `PROVISIONAL` = `true` (the seed was never upgraded) → **Stop cleanly** `BLOCKED`:
-  **never** PARTIAL, **never** clean — no reviewer settled anything. Take this arm **before** the
-  next one, and decide it from the payload marker alone, never from the kind, the round count or the
-  returned prose; publish both tokens per §BLOCKED-route publication's third bullet.
-- `capped` → otherwise, a run whose only open items are unsatisfied in-scope
-  criteria, ≥1 lens-certified, on a green branch, publishes `PARTIAL` via
-  [review-stack.md](references/review-stack.md) §PARTIAL-route publication (it re-checks all
-  three); otherwise record findings and **Stop cleanly** `BLOCKED`.
-- `dispatch-failure` (a **missing/stale** sentinel, or one present but unmatchable) → the safe
-  non-clean branch: **Stop cleanly** with `BLOCKED`, **never clean**. The two sub-cases do **not**
-  share a coverage token, and **neither** of them is `none: review stack did not run` — both fire
-  after the stack was entered, so one or more reviewers may already have run. Neither reaches Step 7,
-  the sole place that writes the PR body, so publish both tokens yourself per
-  [review-stack.md](references/review-stack.md) §BLOCKED-route publication.
+None of these arms is `clean`, and none of them is fatal on its own. A capped or unreadable review
+is a **coverage** fact, not a defect: the branch it covers is still pushed, still green, and still
+headed for human review, so the honest terminal state is `REVIEW_READY` with the truth published —
+**never** silently, and **never** a swallowed BLOCKED. Only the four causes in the Hard rules
+(red gates, an unpushable branch, a missing required API-version bump or transform, an unsafe plan)
+turn any of these into `BLOCKED`, and of those only the first two are decidable here.
 
-Steps 6b and 6c are **non-fatal** — they never flip the terminal state on their own. If the wall-clock
-breaker trips mid-review, flush to `BLOCKED`. If the review-subagent **dispatch itself** fails (a tool
+- `clean` → proceed to **Step 6.5**, which is the only route onward to Step 7.
+- `capped` with `PROVISIONAL` = `true` (the seed was never upgraded) → the
+  **REVIEW_READY-with-findings** route, **never** clean and **never** `PARTIAL` — no reviewer
+  settled anything, so there is no certified criterion to stand on. Take this arm **before** the
+  next one, and decide it from the payload marker alone, never from the kind, the round count or the
+  returned prose. Publish via [review-stack.md](references/review-stack.md)
+  §REVIEW_READY-with-findings publication with the honest `none: …` coverage token that route names
+  for this sub-case (`none: review coverage unknown (review stack entered; provisional verdict never
+upgraded — <reason>)`); it becomes `BLOCKED` **only** when the push or the quality gates fail.
+- `capped` → otherwise a reviewer really ran and really settled rounds, so its open findings are
+  **published, not fatal**: take the **REVIEW_READY-with-findings** route via
+  [review-stack.md](references/review-stack.md) §REVIEW_READY-with-findings publication — findings
+  ledger on the PR, the same summary on the ticket, `please-review` applied, PR readied, keeping
+  whatever coverage token the tier earned. The **one** exception is the run whose only open items are
+  unsatisfied in-scope acceptance criteria, ≥1 lens-certified, on a green pushed branch: that
+  publishes `PARTIAL` via §PARTIAL-route publication (it re-checks all three). It becomes `BLOCKED`
+  **only** when the push or the quality gates fail.
+- `dispatch-failure` (a **missing/stale** sentinel, or one present but unmatchable) → the safe
+  non-clean branch, **never clean**: the same **REVIEW_READY-with-findings** route, with the honest
+  `none: …` coverage token. The two sub-cases do **not** share a coverage token, and **neither** of
+  them is `none: review stack did not run` — both fire after the pass was entered. Neither reaches
+  Step 7, the sole place that writes the PR body, so publish both tokens yourself per
+  [review-stack.md](references/review-stack.md) §REVIEW_READY-with-findings publication, which names
+  the token for each sub-case. It becomes `BLOCKED` **only** when the push or the quality gates fail.
+
+If the review-subagent **dispatch itself** fails (a tool
 error, distinct from a missing sentinel), run `references/review-stack.md` inline as an
-awaited, non-fatal fallback (it writes the same run-file sentinel).
+awaited, non-fatal fallback (it writes the same run-file sentinel) — that inline run is the **same**
+single pass, not a second one.
 
 ## Step 6.5: Knowledge extensions (repo opt-in, non-fatal)
 
-After `clean`, before Step 7, run the `knowledge` phase — **budget gate first, then** discover:
+After `clean`, before Step 7, run the `knowledge` phase — **shared sampling,
+budget gate, then** discover:
 `node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" discover --core boss-build --role knowledge --json`.
 **No extensions → do nothing, print nothing, create no scratch**; go straight to Step 7. Otherwise
 dispatch each descriptor by reading its `skillPath`, validate each result with
@@ -1098,13 +1097,10 @@ After committed work passes review, first run the **retry/rebase/rescue procedur
 push. Continue only when it sets `PUSHED=yes`; `PUSHED=rescue` or `PUSHED=no` means the session
 branch cannot safely back a PR, so record the procedure's result and **Stop cleanly** `BLOCKED`.
 
-**`PUSHED=yes` is not proof the reviewed tree is the tree that ships.** That procedure can accept a
-remote tip that merely **contains** `HEAD`, or rebase onto `FETCH_HEAD` — either way the branch
-backing the PR carries commits this run never reviewed, while the body below still reports full
-coverage. Run §Reviewed-tip confirmation in
-[`references/review-stack.md`](references/review-stack.md): capture the reviewed tip before the
-procedure, compare it against the remote tip after, and on any difference either re-run the Step 5
-gates and the Step 6 review against the new tip or **Stop cleanly** `BLOCKED`.
+**`PUSHED=yes` is not proof the reviewed tree is the tree that ships.** Run §Reviewed-tip
+confirmation in [`references/review-stack.md`](references/review-stack.md): capture the reviewed tip
+before the procedure, compare it against the remote tip after, and on any difference take one of the
+exactly two routes that section names; a moved tip is not itself a `BLOCKED` cause.
 
 Once `PUSHED=yes` and that comparison matches, **create or reuse** the PR per the Step 2.5 mode.
 Write the body to a temp file **outside** the worktree so it never trips the change gate:
@@ -1133,14 +1129,13 @@ rm -f "$PR_BODY"
 
 **Post the boss-review comment (always).** Upsert exactly **one** `<!-- bs-review -->` comment every run
 — one per PR: edit the existing marker comment in place on a resume, never stack duplicates. Post the
-Step 6c rendered report when it exists (it carries the marker); when Step 6c was skipped or errored,
-post an honest **fallback note** under the same marker — review ran, why the boss-review pass was
+Step 6 rendered `boss-review` report when it exists (it carries the marker); when that pass was
+skipped or errored, post an honest **fallback note** under the same marker — what ran, why it was
 unavailable, and a pointer to the PR-body `## Review coverage` and `## Cross-model review` sections
-(coverage is the one that explains a reduced or absent pass) — so every run leaves a
-visible review trace. Write the body to a temp file outside the worktree and:
+— so every run leaves a visible review trace. Write the body to a temp file outside the worktree and:
 
 ```bash
-BS_REVIEW_BODY="$(mktemp)"   # Step 6c report, or the honest fallback note — both lead with <!-- bs-review -->
+BS_REVIEW_BODY="$(mktemp)"   # boss-review report, or the honest fallback note — both lead with <!-- bs-review -->
 CID=$(gh pr view "$PR_NUMBER" --json comments \
   --jq '[.comments[] | select(.body | contains("<!-- bs-review -->")) | .url][-1] // ""')
 if [ -n "$CID" ]; then
@@ -1175,20 +1170,22 @@ Plan: docs/plans/<file>
 - <decision + rationale>
 
 ## Cross-model review
-<outcome token from Step 6b §4: clean | findings-fixed (per-finding dispositions) | skipped: <reason> | error: <reason>>
+<outcome token for boss-review's Phase D second-voice round: clean | findings-fixed (per-finding dispositions) | skipped: <reason> | error: <reason>>
 
 ## Review coverage
-<review-coverage token: full | full (skipped: <pass list>) | degraded: <reason> (skipped: <pass list>) | none: review stack did not run (<reason>) | none: review verdict unreadable (<reason>) | none: review coverage unknown (<reason>)>
+<review-coverage token: full | full (skipped: <round list>) | quick: <reason> (skipped: <round list>) | none: review stack did not run (<reason>) | none: review verdict unreadable (<reason>) | none: review coverage unknown (<reason>)>
 ```
 
 `## Autonomous decisions` collects the decisions-recorded element of **every** task contract as well
 as the orchestrator's own — that is the only route a decision made inside a dispatch reaches the PR.
 
-The `## Cross-model review` section carries the Step 6b §4 outcome token; never omit it (a missing
-section reads as "passed clean" to a reviewer). The `## Review coverage` section carries the review
-tier the stack actually ran; never omit it either (a missing section reads as full coverage to a
+The `## Cross-model review` section carries the outcome of `boss-review`'s Phase D `second-voice`
+round — the one cross-model pass this run makes. **Never omit it** (a missing section reads as
+"passed clean" to a reviewer): a skipped or errored round emits `skipped: <reason>` or
+`error: <reason>`, never no section. The `## Review coverage` section carries the review
+tier the pass actually ran; never omit it either (a missing section reads as full coverage to a
 reviewer). On a resume, **replace** both rather than appending a
-duplicate. On a resume, regenerate this body from the current done-vs-remaining map (Step 4.5). Do not add
+duplicate, and regenerate this body from the current done-vs-remaining map (Step 4.5). Do not add
 `please-review` or expose a ready PR before the green/finalize gate.
 
 ## Steps 8-12: tag, repair, finalize, settle, proof, stop
@@ -1207,8 +1204,9 @@ Each bullet is a summary, never the instruction — follow its link and do the s
 - **[Step 11](references/finalize-and-stop.md) — Proof (capture-only, mode-aware, non-fatal).**
   `REVIEW_READY` only.
 - **[Step 12](references/finalize-and-stop.md) — Stop cleanly.** Remove hooks, release lock, run
-  `OUTCOME="$(node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" assert --outcome "$OUTCOME" --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --run-id "$BLI_RUNID")" || OUTCOME=ROUTE_UNSATISFIED`;
-  print `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`; `ROUTE_UNSATISFIED`: no terminal print.
+  `"$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" assert`. A **satisfied** receipt may still
+  downgrade the outcome to `BLOCKED`; an unsatisfied one only warns and never suppresses the print.
+  Always print `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`, chosen from the work state.
 
 Ambiguous terminal state ⇒ [`references/troubleshooting.md`](references/troubleshooting.md)
 (status-rollback table + red-flags catalog).

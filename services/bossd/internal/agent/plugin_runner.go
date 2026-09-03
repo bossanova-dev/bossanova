@@ -291,13 +291,15 @@ func (r *PluginRunner) recordTelemetryFromLog(ctx context.Context, agentSessionI
 		return
 	}
 	telemetry := db.AgentRunTelemetry{
-		ParentModelCallCount: counts.ParentModelCallCount,
-		ChildModelCallCount:  counts.ChildModelCallCount,
-		ToolCallCount:        counts.ToolCallCount,
-		SubagentCount:        counts.SubagentCount,
-		DirectSubagentCount:  counts.DirectSubagentCount,
-		OutputTokenCount:     counts.OutputTokenCount,
-		ReasoningTokenCount:  counts.ReasoningTokenCount,
+		ParentModelCallCount:  counts.ParentModelCallCount,
+		ChildModelCallCount:   counts.ChildModelCallCount,
+		ToolCallCount:         counts.ToolCallCount,
+		SubagentCount:         counts.SubagentCount,
+		DirectSubagentCount:   counts.DirectSubagentCount,
+		OutputTokenCount:      counts.OutputTokenCount,
+		ReasoningTokenCount:   counts.ReasoningTokenCount,
+		ReviewerDispatchCount: counts.ReviewerDispatchCount,
+		TerminalState:         counts.TerminalState,
 	}
 	for _, child := range counts.Children {
 		telemetry.Children = append(telemetry.Children, db.AgentRunChild{

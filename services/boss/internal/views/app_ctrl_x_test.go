@@ -449,7 +449,8 @@ func TestCtrlXMatchesEscapeAfterSelectingFromAFilteredIssuePicker(t *testing.T) 
 
 // newSessionAfterFilteredIssueSelect drives the wizard to the creating screen
 // the way the user reaches it from a filtered issue picker: "/" to open the
-// filter, a typed query, then Enter on the highlighted row.
+// filter, a typed query, Enter while the search is pending, then the matching
+// result landing and consuming that armed activation.
 func newSessionAfterFilteredIssueSelect(t *testing.T) NewSessionModel {
 	t.Helper()
 	sc := &stubClient{
@@ -473,7 +474,12 @@ func newSessionAfterFilteredIssueSelect(t *testing.T) NewSessionModel {
 	for _, r := range "auth" {
 		m = sendKey(t, m, r)
 	}
-	return sendSpecialKey(t, m, tea.KeyEnter)
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+	return sendMsg(t, m, issuesMsg{
+		issues: sc.trackerIssues,
+		seq:    m.issueSearchSeq,
+		query:  m.issueFilter.Query(),
+	})
 }
 
 // newRepoAddWithSubmittedForm builds an add-repo model whose input form has been

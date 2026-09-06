@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1189,6 +1190,33 @@ func TestEffectiveEffortForAgentUsesConfiguredCrossAgentDefault(t *testing.T) {
 	}
 	if got := EffectiveEffortForAgent("claude", "high", "opencode"); got != "" {
 		t.Fatalf("unknown cross-agent effort = %q, want empty plugin default", got)
+	}
+}
+
+// TestEffectiveModelForAgentResetsAcrossAgents proves the model analogue of
+// EffectiveEffortForAgent: model ids are provider-scoped, so a spawn under a
+// DIFFERENT agent than the session's must not inherit the session's model. The
+// empty result is the agent CLI default (db.CreateAgentChatParams.Model), which
+// each runner plugin resolves for itself (BOS-1135).
+func TestEffectiveModelForAgentResetsAcrossAgents(t *testing.T) {
+	if got := EffectiveModelForAgent("claude", "claude-opus-4", "claude"); got != "claude-opus-4" {
+		t.Errorf("same-agent model = %q, want the session model claude-opus-4", got)
+	}
+	if got := EffectiveModelForAgent("claude", "claude-opus-4", "codex"); got != "" {
+		t.Errorf("cross-agent model = %q, want \"\" (the codex CLI default), not a claude id", got)
+	}
+	// An unknown SPAWN agent is still cross-agent: guessing the session's id is
+	// exactly the failure this resets.
+	if got := EffectiveModelForAgent("claude", "claude-opus-4", "opencode"); got != "" {
+		t.Errorf("unknown cross-agent model = %q, want empty", got)
+	}
+	// Missing either side means there is no cross-agent conclusion to draw, so
+	// the session value stands rather than being silently dropped.
+	if got := EffectiveModelForAgent("", "claude-opus-4", "codex"); got != "claude-opus-4" {
+		t.Errorf("unknown session agent = %q, want the session model preserved", got)
+	}
+	if got := EffectiveModelForAgent("claude", "claude-opus-4", ""); got != "claude-opus-4" {
+		t.Errorf("unknown spawn agent = %q, want the session model preserved", got)
 	}
 }
 
@@ -2536,6 +2564,12 @@ func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
 	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
+	// A resume needs a row to resume into: since BOS-1143 the resume path
+	// updates the existing chat in place rather than re-creating it, so a
+	// resume addressed at nothing is refused rather than silently rebuilt.
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior"}},
+	}
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
 		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
@@ -2557,10 +2591,14 @@ func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
 	}
 }
 
-// TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate verifies that resuming
-// deletes the stale prior chat row (whose agent_session_id is non-unique)
-// before re-creating, so exactly one row carries the reused id.
-func TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate(t *testing.T) {
+// TestStartTmuxChat_ResumeRebindsPriorRowPreservingIdentity is the regression
+// test for BOS-1143. Resume used to DELETE the prior chat row and Create a
+// replacement, and the replacement's columns were recomputed from the parent
+// session -- so an interrupted codex chat came back as a claude chat with its
+// provider_session_id, model, and account_id all gone. Resume now updates the
+// row in place: exactly one row still carries the id, no DELETE is issued, and
+// every identity column the row already had survives.
+func TestStartTmuxChat_ResumeRebindsPriorRowPreservingIdentity(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
@@ -2568,14 +2606,20 @@ func TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 
 	staleTmuxName := "boss-repo-prior123"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
-		"sess-1": {{
-			ID:              "chat-prior",
-			SessionID:       "sess-1",
-			AgentSessionID:  "agent-session-prior",
-			TmuxSessionName: &staleTmuxName,
-		}},
+	acct := "acct-chat"
+	provider := "codex-rollout-abc"
+	prior := &models.AgentChat{
+		ID:                "chat-prior",
+		SessionID:         "sess-1",
+		AgentSessionID:    "agent-session-prior",
+		AgentName:         "codex",
+		Model:             "gpt-5",
+		AccountID:         &acct,
+		ProviderSessionID: &provider,
+		TmuxSessionName:   &staleTmuxName,
 	}
+	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	// Force the prior tmux session to read as dead so idempotency clears it
 	// and the launch proceeds.
 	h.tmuxFake.failSubcommand["has-session"] = true
@@ -2589,15 +2633,274 @@ func TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate(t *testing.T) {
 	if id != "agent-session-prior" {
 		t.Fatalf("returned id = %q, want %q (reused prior id)", id, "agent-session-prior")
 	}
-	if !slices.Contains(h.chats.deletedAgentSessionIDs, "agent-session-prior") {
-		t.Errorf("expected stale row %q to be deleted before re-create, deletes=%v",
-			"agent-session-prior", h.chats.deletedAgentSessionIDs)
+
+	// Acceptance criterion 3: the resume path issues no DELETE at all.
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("resume deleted chat rows %v; the row must be updated in place",
+			h.chats.deletedAgentSessionIDs)
 	}
-	if len(h.chats.createCalls) != 1 {
-		t.Fatalf("expected exactly 1 Create call (no duplicate), got %d", len(h.chats.createCalls))
+	if len(h.chats.createCalls) != 0 {
+		t.Errorf("resume created %d chat rows; the row must be updated in place",
+			len(h.chats.createCalls))
 	}
-	if got := h.chats.createCalls[0].AgentSessionID; got != "agent-session-prior" {
-		t.Errorf("Create AgentSessionID = %q, want %q (reused, no duplicate)", got, "agent-session-prior")
+	if len(h.chats.rebindCalls) != 1 {
+		t.Fatalf("resume rebinds = %d, want exactly 1", len(h.chats.rebindCalls))
+	}
+	if got := h.chats.rebindCalls[0].agentSessionID; got != "agent-session-prior" {
+		t.Errorf("rebind addressed %q, want agent-session-prior", got)
+	}
+	if h.chats.rebindCalls[0].params.NewAgentSessionID != nil {
+		t.Errorf("tmux resume must not re-key the row: NewAgentSessionID = %v",
+			h.chats.rebindCalls[0].params.NewAgentSessionID)
+	}
+
+	// Acceptance criteria 1 and 2: the chat's own identity survives resume.
+	if prior.AgentName != "codex" {
+		t.Errorf("agent_name = %q, want codex preserved (the reported defect)", prior.AgentName)
+	}
+	if prior.Model != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5 preserved", prior.Model)
+	}
+	if prior.AccountID == nil || *prior.AccountID != acct {
+		t.Errorf("account_id = %v, want %q preserved", prior.AccountID, acct)
+	}
+	if prior.ProviderSessionID == nil || *prior.ProviderSessionID != provider {
+		t.Errorf("provider_session_id = %v, want %q preserved", prior.ProviderSessionID, provider)
+	}
+	if prior.SessionID != "sess-1" {
+		t.Errorf("session_id = %q, want sess-1", prior.SessionID)
+	}
+}
+
+// TestStartTmuxChat_ResumeTwicePreservesIdentity pins the eraser class named in
+// BOS-1107: a partial-row rewrite can look correct after one write and still
+// lose a column on the next. Nothing about the first resume may leave the row
+// in a shape the second resume degrades.
+func TestStartTmuxChat_ResumeTwicePreservesIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	acct := "acct-chat"
+	provider := "codex-rollout-abc"
+	prior := &models.AgentChat{
+		ID:                "chat-prior",
+		SessionID:         "sess-1",
+		AgentSessionID:    "agent-session-prior",
+		AgentName:         "codex",
+		Model:             "gpt-5",
+		AccountID:         &acct,
+		ProviderSessionID: &provider,
+	}
+	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.tmuxFake.failSubcommand["has-session"] = true
+
+	for i := 1; i <= 2; i++ {
+		if _, err := h.lc.StartTmuxChat(ctx, "sess-1",
+			ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
+			"T", HookOpts{}); err != nil {
+			t.Fatalf("StartTmuxChat resume #%d: %v", i, err)
+		}
+		if prior.AgentName != "codex" {
+			t.Fatalf("resume #%d: agent_name = %q, want codex", i, prior.AgentName)
+		}
+		if prior.Model != "gpt-5" {
+			t.Fatalf("resume #%d: model = %q, want gpt-5", i, prior.Model)
+		}
+		if prior.AccountID == nil || *prior.AccountID != acct {
+			t.Fatalf("resume #%d: account_id = %v, want %q", i, prior.AccountID, acct)
+		}
+		if prior.ProviderSessionID == nil || *prior.ProviderSessionID != provider {
+			t.Fatalf("resume #%d: provider_session_id = %v, want %q", i, prior.ProviderSessionID, provider)
+		}
+	}
+	if len(h.chats.deletedAgentSessionIDs) != 0 || len(h.chats.createCalls) != 0 {
+		t.Errorf("two resumes deleted %v and created %d rows; both must be zero",
+			h.chats.deletedAgentSessionIDs, len(h.chats.createCalls))
+	}
+	if len(h.chats.rebindCalls) != 2 {
+		t.Errorf("rebinds = %d, want 2 (one per resume)", len(h.chats.rebindCalls))
+	}
+}
+
+// TestStartTmuxChat_ResumeByProviderSessionIDWithDeadPane covers the resume
+// key that only the live-pane branch used to understand. The repair plugin
+// resumes a codex iteration by the provider's own rollout id, not by bossd's
+// agent_session_id; GetByAgentSessionID never matches that, so once the pane
+// had exited the resume fell through to the Step 3b refusal even though the
+// row was sitting right there in the session. Step 2 now falls back to a
+// session-scoped provider_session_id lookup, so the row resolves with no pane
+// alive -- and the run stays keyed on the row's OWN agent_session_id while the
+// PROVIDER id is what reaches BuildInteractiveCommand.
+func TestStartTmuxChat_ResumeByProviderSessionIDWithDeadPane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	const logicalAgentSessionID = "agent-session-logical"
+	const providerSessionID = "codex-rollout-provider"
+	acct := "acct-chat"
+	prior := &models.AgentChat{
+		ID:                "chat-prior",
+		SessionID:         "sess-1",
+		AgentSessionID:    logicalAgentSessionID,
+		AgentName:         "codex",
+		Model:             "gpt-5",
+		AccountID:         &acct,
+		ProviderSessionID: ptr(providerSessionID),
+		// No tmux_session_name: the pane has already exited, which is
+		// exactly the state MarkStartFailed and the stale-name cleanup
+		// leave behind. findLiveTmuxChat skips such a row, so the
+		// live-pane branch cannot rescue this resume.
+	}
+	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: providerSessionID, Delivery: DeliverySubmit},
+		"T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat resume by provider session id: %v", err)
+	}
+	if id != logicalAgentSessionID {
+		t.Fatalf("returned id = %q, want the row's own id %q", id, logicalAgentSessionID)
+	}
+
+	// The row was adopted, not re-created: no DELETE, no Create, one rebind
+	// addressed at the row's durable id rather than at the provider id.
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("resume deleted chat rows %v; the row must be updated in place",
+			h.chats.deletedAgentSessionIDs)
+	}
+	if len(h.chats.createCalls) != 0 {
+		t.Errorf("resume created %d chat rows; the row must be updated in place",
+			len(h.chats.createCalls))
+	}
+	if len(h.chats.rebindCalls) != 1 {
+		t.Fatalf("resume rebinds = %d, want exactly 1", len(h.chats.rebindCalls))
+	}
+	if got := h.chats.rebindCalls[0].agentSessionID; got != logicalAgentSessionID {
+		t.Errorf("rebind addressed %q, want the row's own id %q", got, logicalAgentSessionID)
+	}
+
+	// The provider only accepts its own id on its resume flag, so that is the
+	// id that must reach the runner -- while everything bossd keys on stays on
+	// the durable id.
+	if h.agentFake.LastBuildInteractiveCommand == nil {
+		t.Fatal("resume never asked the agent plugin to build a command")
+	}
+	if !h.agentFake.LastBuildInteractiveCommand.GetResume() {
+		t.Error("expected BuildInteractiveCommand Resume=true")
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetSessionId(); got != providerSessionID {
+		t.Errorf("BuildInteractiveCommand SessionId = %q, want provider id %q", got, providerSessionID)
+	}
+
+	// The chat's identity survives, as on the agent_session_id resume path.
+	if prior.AgentName != "codex" {
+		t.Errorf("agent_name = %q, want codex preserved", prior.AgentName)
+	}
+	if prior.Model != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5 preserved", prior.Model)
+	}
+	if prior.ProviderSessionID == nil || *prior.ProviderSessionID != providerSessionID {
+		t.Errorf("provider_session_id = %v, want %q preserved", prior.ProviderSessionID, providerSessionID)
+	}
+}
+
+// TestStartTmuxChat_ResumeUnknownIDRefusesEvenWhenSessionHasChats guards the
+// blast radius of the provider_session_id fallback above. The fallback scans
+// this session's rows, so the failure mode to rule out is it latching onto
+// whatever row happens to be there. An id that matches neither key must still
+// hit the Step 3b refusal.
+func TestStartTmuxChat_ResumeUnknownIDRefusesEvenWhenSessionHasChats(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {{
+		ID:                "chat-unrelated",
+		SessionID:         "sess-1",
+		AgentSessionID:    "agent-session-unrelated",
+		AgentName:         "codex",
+		ProviderSessionID: ptr("codex-rollout-unrelated"),
+	}}}
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "codex-rollout-gone", Delivery: DeliverySubmit},
+		"T", HookOpts{})
+	var typed *ResumedChatMissingError
+	if !errors.As(err, &typed) {
+		t.Fatalf("err = %v, want a *ResumedChatMissingError", err)
+	}
+	if typed.AgentSessionID != "codex-rollout-gone" {
+		t.Errorf("refusal names %q, want codex-rollout-gone", typed.AgentSessionID)
+	}
+	if !errors.Is(err, ErrResumedChatMissing) {
+		t.Errorf("errors.Is(err, ErrResumedChatMissing) = false; err = %v", err)
+	}
+	// The unrelated row must be left exactly as it was.
+	if len(h.chats.rebindCalls) != 0 {
+		t.Errorf("refusal rebound %d rows; it must adopt none", len(h.chats.rebindCalls))
+	}
+	if len(h.chats.createCalls) != 0 {
+		t.Errorf("refusal created %d chat rows; it must invent none", len(h.chats.createCalls))
+	}
+}
+
+// TestStartTmuxChat_ResumeWithNoChatRowRefuses pins acceptance criterion 4 and
+// the BOS-973 anti-pattern: when the id names no chat, the refusal is typed and
+// names the id, and it does NOT degrade into "create something" -- no agent is
+// built and no tmux pane is spawned.
+func TestStartTmuxChat_ResumeWithNoChatRowRefuses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-gone", Delivery: DeliverySubmit},
+		"T", HookOpts{})
+	if err == nil {
+		t.Fatal("expected a refusal resuming an agent session with no chat row")
+	}
+	t.Logf("refusal: %v", err)
+
+	var typed *ResumedChatMissingError
+	if !errors.As(err, &typed) {
+		t.Fatalf("err = %v, want a *ResumedChatMissingError", err)
+	}
+	if typed.AgentSessionID != "agent-session-gone" {
+		t.Errorf("refusal names %q, want agent-session-gone", typed.AgentSessionID)
+	}
+	if !errors.Is(err, ErrResumedChatMissing) {
+		t.Errorf("errors.Is(err, ErrResumedChatMissing) = false; err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "agent-session-gone") {
+		t.Errorf("refusal message %q does not name the agent session id", err.Error())
+	}
+
+	// Nothing was built and nothing was spawned.
+	if h.agentFake.LastBuildInteractiveCommand != nil {
+		t.Error("refusal still asked the agent plugin to build a command")
+	}
+	if len(h.chats.createCalls) != 0 {
+		t.Errorf("refusal created %d chat rows; it must invent none", len(h.chats.createCalls))
+	}
+	for _, sub := range h.tmuxFake.subcommands() {
+		if sub == "new-session" {
+			t.Errorf("refusal spawned a tmux pane; subcommands = %v", h.tmuxFake.subcommands())
+			break
+		}
 	}
 }
 
@@ -2852,6 +3155,11 @@ func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
 	h.lc.SetPollCompleter(completer)
 	h.lc.SetDaemonCtx(ctx)
 	h.lc.tmuxCompletionPollInterval = time.Millisecond
+	// Since BOS-1143 a resume updates an existing row rather than re-creating
+	// one, so the row it resumes into has to exist.
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior"}},
+	}
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
 		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
@@ -2878,29 +3186,36 @@ func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
 	}
 }
 
-// TestStartTmuxChat_ResumeDeleteErrorTearsDown verifies that a
-// DeleteByAgentSessionID failure on the resume branch tears the just-spawned
-// tmux session back down and returns an error, and that no Create call is made
-// (the delete failed before we reached Create).
-func TestStartTmuxChat_ResumeDeleteErrorTearsDown(t *testing.T) {
+// TestStartTmuxChat_ResumeRebindErrorTearsDown verifies that a
+// RebindResumedChat failure on the resume branch tears the just-spawned tmux
+// session back down and returns an error, and that the failure is not papered
+// over by falling back to a Create -- which is exactly the delete+create shape
+// BOS-1143 removed.
+func TestStartTmuxChat_ResumeRebindErrorTearsDown(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
-	h.chats.deleteErr = errors.New("boom")
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior"}},
+	}
+	h.chats.rebindErr = errors.New("boom")
 
 	_, err := h.lc.StartTmuxChat(ctx, "sess-1",
 		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
 		"T", HookOpts{})
 	if err == nil {
-		t.Fatal("expected error when DeleteByAgentSessionID fails")
+		t.Fatal("expected error when RebindResumedChat fails")
 	}
 	if !h.tmuxFake.hasSubcommand("kill-session") {
-		t.Error("expected tmux kill-session to clean up after delete failure")
+		t.Error("expected tmux kill-session to clean up after rebind failure")
 	}
 	if len(h.chats.createCalls) != 0 {
-		t.Errorf("expected 0 Create calls (delete failed before Create), got %d", len(h.chats.createCalls))
+		t.Errorf("expected 0 Create calls (a failed rebind must not fall back to Create), got %d", len(h.chats.createCalls))
+	}
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("expected 0 deletes, got %v", h.chats.deletedAgentSessionIDs)
 	}
 }
 
@@ -3913,4 +4228,228 @@ func TestResolveSubagentGrantForSpawn(t *testing.T) {
 func appendSystemPromptText(sess *models.Session, agentSessionID, agentName string) string {
 	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName, config.SubagentDispatchGrantAlways)
 	return text
+}
+
+// --- BOS-1144: launch-time provider-session-id binding ---------------------
+
+// shrinkProviderSessionIDBudgets makes the launch-path discovery budgets
+// millisecond-scale for one test and restores them afterwards. The production
+// values (a 2s foreground deadline followed by a minute of background polling)
+// are wall-clock time no test should pay.
+func shrinkProviderSessionIDBudgets(t *testing.T, foreground, foregroundInterval, background, backgroundInterval time.Duration) {
+	t.Helper()
+	oldFG, oldFGI := freshProviderSessionIDResolveDeadline, freshProviderSessionIDResolveInterval
+	oldBG, oldBGI := backgroundProviderSessionIDResolveTimeout, backgroundProviderSessionIDResolveInterval
+	freshProviderSessionIDResolveDeadline = foreground
+	freshProviderSessionIDResolveInterval = foregroundInterval
+	backgroundProviderSessionIDResolveTimeout = background
+	backgroundProviderSessionIDResolveInterval = backgroundInterval
+	t.Cleanup(func() {
+		freshProviderSessionIDResolveDeadline, freshProviderSessionIDResolveInterval = oldFG, oldFGI
+		backgroundProviderSessionIDResolveTimeout, backgroundProviderSessionIDResolveInterval = oldBG, oldBGI
+	})
+}
+
+// TestStartTmuxChat_FreshLaunchSendsPanePIDAndLaunchedAfter is the BOS-1144
+// core guard: the launch-path resolution request must carry this chat's own
+// pane pid and the instant its pane was spawned. Without them the codex plugin
+// can only run the (work_dir, launched_after) time-window scan, which reports
+// "multiple matching codex-tui rollouts found" as soon as a sibling chat exists
+// in the same worktree — which is why two thirds of codex chats had no
+// provider_session_id and reopened into a brand new conversation.
+func TestStartTmuxChat_FreshLaunchSendsPanePIDAndLaunchedAfter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.tmuxFake.listPanesOutput = "4242\n"
+	h.sessions.sessions["sess-1"].AgentName = "opencode"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.agentFake.ConsumesInitialInput = true
+
+	before := time.Now().UTC()
+	var got *bossanovav1.ResolveInteractiveSessionIDRequest
+	h.agentFake.ResolveInteractiveSessionIDFunc = func(req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+		got = req
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "ses_codex_fresh"}, nil
+	}
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "repair", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ResolveInteractiveSessionID was never called")
+	}
+	if got.GetPanePid() != 4242 {
+		t.Errorf("PanePid = %d, want the pid tmux list-panes reported (4242)", got.GetPanePid())
+	}
+	if got.GetLaunchedAfter() == nil {
+		t.Fatal("LaunchedAfter = nil, want the pane spawn instant")
+	}
+	launchedAfter := got.GetLaunchedAfter().AsTime()
+	if launchedAfter.IsZero() {
+		t.Fatal("LaunchedAfter is the zero time, want the pane spawn instant")
+	}
+	if launchedAfter.Before(before) || launchedAfter.After(time.Now().UTC().Add(time.Second)) {
+		t.Errorf("LaunchedAfter = %v, want an instant inside this launch (>= %v)", launchedAfter, before)
+	}
+}
+
+// TestStartTmuxChat_FreshLaunchSurvivesUnavailablePanePID pins the degrade
+// path: a tmux failure (or a pane that reports no pid) must leave PanePid unset
+// and let the launch stand. A chat that resolves by time-window scan is worse
+// bound than one that resolves by fd — it is not a failed launch, and treating
+// it as one would destroy a live pane over an optimization.
+func TestStartTmuxChat_FreshLaunchSurvivesUnavailablePanePID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	// list-panes exits 0 with no output ⇒ tmux.Client.PanePID returns an error.
+	h.tmuxFake.listPanesOutput = ""
+	h.sessions.sessions["sess-1"].AgentName = "opencode"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.agentFake.ConsumesInitialInput = true
+
+	var got *bossanovav1.ResolveInteractiveSessionIDRequest
+	h.agentFake.ResolveInteractiveSessionIDFunc = func(req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+		got = req
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "ses_codex_scan"}, nil
+	}
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "repair", Delivery: DeliverySubmit}, "T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v — a pane pid miss must never fail the launch", err)
+	}
+	if id == "" {
+		t.Fatal("StartTmuxChat returned an empty agent session id")
+	}
+	if got == nil {
+		t.Fatal("ResolveInteractiveSessionID was never called")
+	}
+	if got.GetPanePid() != 0 {
+		t.Errorf("PanePid = %d, want 0 (unset) when tmux cannot report a pid", got.GetPanePid())
+	}
+	if got.GetLaunchedAfter() == nil {
+		t.Error("LaunchedAfter = nil; the time-window scan is all that is left, so it must still be bounded")
+	}
+	if len(h.chats.providerSessionIDUpdates) != 1 {
+		t.Fatalf("provider session updates = %d, want 1 (the chat is still usable and still binds)", len(h.chats.providerSessionIDUpdates))
+	}
+}
+
+// TestStartTmuxChat_BackgroundRetryBindsProviderSessionIDAfterDeadline pins the
+// handoff: codex opens its rollout fd some way into startup, so a cold worktree
+// routinely misses the foreground window. The launch must return immediately
+// (the pane is usable) while a bounded background retry keeps resolving and
+// binds the id when the fd finally appears.
+func TestStartTmuxChat_BackgroundRetryBindsProviderSessionIDAfterDeadline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	shrinkProviderSessionIDBudgets(t, 20*time.Millisecond, 2*time.Millisecond, 5*time.Second, time.Millisecond)
+
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.tmuxFake.listPanesOutput = "4242\n"
+	h.sessions.sessions["sess-1"].AgentName = "opencode"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.agentFake.ConsumesInitialInput = true
+
+	// The rollout does not exist until the test says so, which is what makes
+	// the foreground deadline expire deterministically without a sleep.
+	var mu sync.Mutex
+	rolloutOpen := false
+	h.agentFake.ResolveInteractiveSessionIDFunc = func(_ *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !rolloutOpen {
+			return &bossanovav1.ResolveInteractiveSessionIDResponse{
+				Reason: "codex process tree visible but no rollout fd open yet",
+			}, nil
+		}
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "ses_codex_late"}, nil
+	}
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "repair", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if got := len(h.chats.snapshotProviderSessionIDUpdates()); got != 0 {
+		t.Fatalf("provider session updates after the foreground deadline = %d, want 0", got)
+	}
+
+	mu.Lock()
+	rolloutOpen = true
+	mu.Unlock()
+
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	h.lc.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+
+	updates := h.chats.snapshotProviderSessionIDUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("provider session updates = %d, want 1 bound by the background retry", len(updates))
+	}
+	if updates[0].providerSessionID == nil || *updates[0].providerSessionID != "ses_codex_late" {
+		t.Errorf("provider update id = %v, want ses_codex_late", updates[0].providerSessionID)
+	}
+}
+
+// TestStartTmuxChat_BackgroundRetryNeverOverwritesBoundProviderSessionID is the
+// BOS-290 invariant at this new write site. Another path (wake, attach-time
+// discovery, legacy backfill) can bind an id while the background loop polls;
+// re-resolving must not clobber it. The loop therefore re-reads the row from
+// the store rather than trusting a pointer captured at launch.
+func TestStartTmuxChat_BackgroundRetryNeverOverwritesBoundProviderSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	shrinkProviderSessionIDBudgets(t, 20*time.Millisecond, 2*time.Millisecond, 5*time.Second, time.Millisecond)
+
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.tmuxFake.listPanesOutput = "4242\n"
+	h.sessions.sessions["sess-1"].AgentName = "opencode"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.agentFake.ConsumesInitialInput = true
+
+	var mu sync.Mutex
+	rolloutOpen := false
+	h.agentFake.ResolveInteractiveSessionIDFunc = func(_ *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !rolloutOpen {
+			return &bossanovav1.ResolveInteractiveSessionIDResponse{Reason: "no matching codex-tui rollout found"}, nil
+		}
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "ses_codex_late"}, nil
+	}
+
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "repair", Delivery: DeliverySubmit}, "T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+
+	// A competing path binds the id while the background goroutine is polling.
+	bound := "ses_bound_by_wake"
+	h.chats.seedChat("sess-1", &models.AgentChat{
+		SessionID:         "sess-1",
+		AgentSessionID:    agentSessionID,
+		ProviderSessionID: &bound,
+	})
+
+	mu.Lock()
+	rolloutOpen = true
+	mu.Unlock()
+
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	h.lc.WaitForBackgroundProviderSessionIDDiscovery(waitCtx)
+
+	for _, update := range h.chats.snapshotProviderSessionIDUpdates() {
+		if update.providerSessionID != nil && *update.providerSessionID == "ses_codex_late" {
+			t.Fatalf("background retry wrote %q over the already-bound %q (must never overwrite)", "ses_codex_late", bound)
+		}
+	}
 }

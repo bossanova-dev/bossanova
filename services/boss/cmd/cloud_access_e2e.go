@@ -107,7 +107,35 @@ func (c *e2eCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudA
 	if state == pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED {
 		return nil, errors.New(c.errorText())
 	}
-	return &pb.CloudAccessStatus{State: state, CanCreateCheckout: true}, nil
+	return &pb.CloudAccessStatus{State: state, CanCreateCheckout: true, WorkosOrgId: c.activeWorkOSOrgID()}, nil
+}
+
+// activeWorkOSOrgID mirrors what bosso's decorateCloudAccessStatus fills
+// CloudAccessStatus.workos_org_id with: the WorkOS organization the caller is
+// acting as. Without it this fake could never produce the organization-scoped
+// `/:orgId/subscribe` URL the cloud login gate opens (BOS-1155), so the e2e tier
+// would demonstrate only the unscoped fallback -- which is exactly how that
+// feature stayed inert with every gate green.
+//
+// The mapped organization is preferred over the first because it is the one a
+// fixture explicitly named; a scenario that configures no organizations at all
+// reports "", the daemon-caller shape, and still exercises the unscoped path.
+func (c *e2eCloudAccessClient) activeWorkOSOrgID() string {
+	state := c.organizations
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for _, org := range state.orgs {
+		if state.mapped != "" && org.GetId() == state.mapped {
+			return org.GetWorkosOrgId()
+		}
+	}
+	if len(state.orgs) > 0 {
+		return state.orgs[0].GetWorkosOrgId()
+	}
+	return ""
 }
 
 // errorText returns the configured failure text, defaulting when unset (a
@@ -133,7 +161,7 @@ func (c *e2eCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.Cl
 	if state == pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED {
 		return nil, errors.New("e2e cloud access refresh error")
 	}
-	return &pb.CloudAccessStatus{State: state, CanCreateCheckout: true}, nil
+	return &pb.CloudAccessStatus{State: state, CanCreateCheckout: true, WorkosOrgId: c.activeWorkOSOrgID()}, nil
 }
 
 func (c *e2eCloudAccessClient) CreateCheckoutSession(context.Context, string, string) (string, error) {

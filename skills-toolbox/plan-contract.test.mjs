@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import {
   DEFAULT_CONFIG,
   planSections,
+  planFileFloor,
   planContractVersion,
   requiredPlanSections,
   validatePlanDescription,
@@ -16,6 +17,7 @@ import {
   VERIFY_ONLY_CHECKED,
   VERIFY_ONLY_RESULT,
 } from './skill-config.mjs'
+import { checkPlanFileStructure } from './plan-contract-guard.mjs'
 
 // Skill bodies live one level up from skills-toolbox/.
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
@@ -36,6 +38,7 @@ const BOS_1015_PLAN = read(
 const IMPLEMENT_TREE = `${IMPLEMENT}\n${FINALIZE}`
 
 const HEADINGS = planSections(DEFAULT_CONFIG).map((s) => s.heading)
+const PLAN_FILE_HEADINGS = planFileFloor(DEFAULT_CONFIG).requiredHeadings
 
 /** A parsed criterion whose named check command carries actual content. */
 const nonEmptyCheck = (criterion) =>
@@ -52,6 +55,29 @@ describe('plan-contract sync', () => {
     for (const h of HEADINGS) {
       assert.ok(BRIEF.includes(h), `drafting brief must emit contract section ${h}`)
     }
+  })
+
+  test('every configured plan-file heading is documented in the shared drafting spec', () => {
+    for (const h of PLAN_FILE_HEADINGS) {
+      assert.ok(BRIEF.includes(h), `drafting brief must document plan-file heading ${h}`)
+      assert.ok(PLAN_SKILL.includes(h), `boss-plan SKILL.md must document plan-file heading ${h}`)
+    }
+    assert.match(BRIEF, /No consumer-side path\s+requires the plan-file structure/)
+  })
+
+  test('a plan built from the inline tier plan-body requirements satisfies the plan-file floor', () => {
+    const plan = [
+      ...planSections(DEFAULT_CONFIG)
+        .filter((s) => s.required === 'always')
+        .filter((s) => s.heading !== '## Original notes')
+        .map((s) => `${s.heading}\n\nBody for ${s.heading}.`),
+      ...PLAN_FILE_HEADINGS.map((heading) => `${heading}\n\nBody for ${heading}.`),
+      '## Original notes\n\nBody for ## Original notes.',
+    ]
+      .join('\n\n')
+      .replace('## Planning\n\nBody for ## Planning.', '## Planning\n\n- Contract: v1')
+
+    assert.deepEqual(checkPlanFileStructure(DEFAULT_CONFIG, `${plan}\n`).violations, [])
   })
 
   test('the brief stamps a Contract version equal to the config version', () => {

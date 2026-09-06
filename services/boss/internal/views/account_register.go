@@ -92,6 +92,15 @@ type AccountRegisterModel struct {
 	provider string
 	state    registerState
 
+	// reauthAccountID is non-empty when this model is running in-place
+	// reauthentication (BOS-1142) rather than adding an account. It changes
+	// three things: the provider chooser is skipped, the codex flow calls
+	// RunCodexReauth instead of RunCodexAdd so the credential is replaced on the
+	// existing row rather than stored on a second one, and the telemetry action
+	// is recorded as a reauthentication so it cannot inflate the add-failure
+	// rate.
+	reauthAccountID string
+
 	// provider chooser cursor.
 	providerCursor int
 	// confirmCursor selects Yes (0) or No (1) for the active confirmation.
@@ -282,21 +291,33 @@ func (m AccountRegisterModel) handleProviderKey(msg tea.KeyMsg) (tea.Model, tea.
 			m.providerCursor++
 		}
 	case "enter", "space":
-		return m.startFlow(registerProviders[m.providerCursor])
+		next, cmd := m.startFlow(registerProviders[m.providerCursor])
+		return next, cmd
 	}
 	return m, nil
+}
+
+// beginReauth switches the model into in-place reauthentication for accountID
+// and launches the codex flow immediately. There is no provider chooser step:
+// the account already has a provider, and the flow replaces that account's
+// credential rather than registering a new one.
+func (m AccountRegisterModel) beginReauth(accountID string) (AccountRegisterModel, tea.Cmd) {
+	m.reauthAccountID = accountID
+	return m.startFlow(accountReauthProvider)
 }
 
 // startFlow wires the bridge prompter and launches RunClaudeAdd / RunCodexAdd on
 // a background goroutine, returning the reader Cmds that surface its progress
 // and prompt requests.
-func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
+// It returns the concrete model rather than tea.Model so beginReauth can chain
+// onto it without an unchecked type assertion.
+func (m AccountRegisterModel) startFlow(provider string) (AccountRegisterModel, tea.Cmd) {
 	m.provider = provider
 	m.state = registerStateProgress
 
 	// cancel is retained in m.cancel and invoked from teardown() (esc/ctrl+c) and
 	// handleFlowDone (flow return), so the context is always released.
-	flowCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118: cancel stored in m.cancel, called in teardown()/handleFlowDone
+	flowCtx, cancel := context.WithCancel(m.ctx)
 	m.flowCtx = flowCtx
 	m.cancel = cancel
 	m.prompter = newTUIPrompter(flowCtx)
@@ -310,6 +331,7 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 	scratch := m.scratchDir
 	home := m.homeDir
 	remote := m.remoteHost
+	reauthID := m.reauthAccountID
 
 	// Pick the subprocess seam. An injected exec (tests) always wins verbatim.
 	//
@@ -326,7 +348,10 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 	// the claude flow runs in PasteMode and starts no child at all.
 	exec := m.exec
 	if exec == nil {
-		if prov == "claude" && remote == "" {
+		if pe := proofRegisterExec(); pe != nil {
+			// e2e proof builds only; nil in every production binary.
+			exec = pe
+		} else if prov == "claude" && remote == "" {
 			m.execBridge = newTUIExec(flowCtx)
 			exec = m.execBridge
 		} else {
@@ -344,15 +369,23 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 			// (the BOS-267 ordering). A chooser-level short-circuit would run before
 			// m.prompter exists and would bypass that drain entirely.
 			if remote != "" {
-				donec <- codexRemoteRefusal(remote)
+				donec <- codexRemoteRefusal(remote, reauthID)
 				return
 			}
-			err = accountflow.RunCodexAdd(flowCtx, accountflow.CodexOptions{
+			opts := accountflow.CodexOptions{
 				Exec:     exec,
 				Prompter: prompter,
 				Client:   client,
 				HomeDir:  home,
-			})
+			}
+			if reauthID != "" {
+				// Replace the bound row's credential in place. The flow verifies
+				// the account exists and is a codex account BEFORE dialling, so a
+				// stale row id costs no browser round-trip.
+				err = accountflow.RunCodexReauth(flowCtx, opts, reauthID)
+			} else {
+				err = accountflow.RunCodexAdd(flowCtx, opts)
+			}
 		default: // claude
 			opts := accountflow.ClaudeOptions{
 				Exec:       exec,
@@ -408,11 +441,22 @@ func isRegistrationRefusal(err error) bool {
 // child wrote into a LOCAL scratch HOME. A codex paste route is buildable — the
 // daemon takes an opaque blob and agentcred.ValidateCodexAuthJSON already
 // exists — but it is not built today.
-func codexRemoteRefusal(destination string) error {
+//
+// reauthAccountID splits the remedy. `boss account add codex` is the right
+// command only when there is no account yet; told to an operator who came here
+// to REPAIR a bound account it registers a second one and leaves the broken
+// binding exactly as it was. A reauth therefore names its own command, with the
+// id, matching the CLI's own reauth refusal in services/boss/cmd/handlers.go
+// (BOS-1142).
+func codexRemoteRefusal(destination, reauthAccountID string) error {
+	remedy := "boss account add codex"
+	if reauthAccountID != "" {
+		remedy = "boss account reauth " + reauthAccountID
+	}
 	return &registrationRefusedError{msg: fmt.Sprintf(
 		"codex registration runs `codex login` on this machine, not on %s, and this machine need not have the codex CLI at all. "+
-			"Run `boss account add codex` in a shell on %s instead.",
-		destination, destination)}
+			"Run `%s` in a shell on %s instead.",
+		destination, remedy, destination)}
 }
 
 // claudeRemotePasteNotice is the line shown before the token prompt in a --host
@@ -524,7 +568,13 @@ func (m AccountRegisterModel) handleFlowDone(err error) (tea.Model, tea.Cmd) {
 	// dialled, and never touched a credential, so counting it would report a
 	// failure rate for an operation that was declined before it started.
 	if !m.cancelled && !isRegistrationRefusal(err) {
-		captureTUIAction(m.ctx, m.telemetry, tuiFeatureAccounts, tuiActionAccountAdded, tuiActionStatus(err))
+		// A reauthentication is not an add: recording it as one would report an
+		// add-failure rate for an operation that registered nothing.
+		action := tuiActionAccountAdded
+		if m.reauthAccountID != "" {
+			action = tuiActionAccountReauthed
+		}
+		captureTUIAction(m.ctx, m.telemetry, tuiFeatureAccounts, action, tuiActionStatus(err))
 	}
 	if err != nil {
 		m.err = err
@@ -581,7 +631,14 @@ func (m AccountRegisterModel) View() tea.View {
 	if provider == "" {
 		provider = "account"
 	}
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Bold(true).Render("Add " + provider + " account"))
+	title := "Add " + provider + " account"
+	if m.reauthAccountID != "" {
+		// Say which account is being overwritten. A device login that does not
+		// name its target reads exactly like the add flow, and the operator has
+		// no way to notice they are about to replace the wrong credential.
+		title = "Reauthenticate " + provider + " account " + m.reauthAccountID
+	}
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Bold(true).Render(title))
 	b.WriteString("\n\n")
 
 	// Progress log tail (concise, bounded).
@@ -611,7 +668,15 @@ func (m AccountRegisterModel) View() tea.View {
 			"The claude CLI has the terminal — follow its prompts below."))
 		b.WriteString("\n")
 	case registerStateDone:
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusSuccess.Render("Account registered.")))
+		// A reauthentication registered nothing — it replaced one account's
+		// secret. Saying "registered" here would tell an operator who came to
+		// repair a row that a new row now exists, which is the exact confusion
+		// RunCodexReauth was built to avoid (BOS-1142).
+		doneLine := "Account registered."
+		if m.reauthAccountID != "" {
+			doneLine = "Credential replaced."
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusSuccess.Render(doneLine)))
 		b.WriteString("\n")
 	case registerStateError:
 		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
@@ -700,4 +765,23 @@ func (m AccountRegisterModel) progressView() string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// flowVerdictLine returns the flow's most recent Say line, which for a
+// completed flow is its closing verdict. Empty when the flow said nothing.
+//
+// Deliberately the last line rather than a dedicated success field: whatever
+// the flow said last IS the outcome it reported, including the "verification
+// couldn't run" wording, so this cannot drift into claiming a verified success
+// the flow never claimed.
+//
+// It reads the prompter's own record, not the rendered tail: the reader Cmd can
+// still be holding the closing line as an in-flight message when flowDoneMsg is
+// processed, so m.progress is exactly one line short precisely when the verdict
+// matters.
+func (m AccountRegisterModel) flowVerdictLine() string {
+	if m.prompter == nil {
+		return ""
+	}
+	return m.prompter.lastSaid()
 }

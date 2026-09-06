@@ -5,6 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,8 +25,10 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/credmaterialize"
 
 	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
@@ -49,6 +54,11 @@ type spyStore struct {
 	injectReason string
 	clearCalls   int
 	clearID      string
+
+	// getErr, when set, is returned from Get instead of consulting accounts.
+	// It lets a test drive an infrastructure failure (a locked SQLite file, an
+	// I/O error) as distinct from the sql.ErrNoRows absence below.
+	getErr error
 }
 
 func (s *spyStore) RecordInjectionFailure(_ context.Context, id string, reason string) error {
@@ -74,6 +84,9 @@ func (s *spyStore) List(_ context.Context) ([]*models.Account, error) {
 
 func (s *spyStore) Get(_ context.Context, id string) (*models.Account, error) {
 	s.getCalls++
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 	a, ok := s.accounts[id]
 	if !ok {
 		return nil, sql.ErrNoRows
@@ -314,7 +327,7 @@ func TestSpawnEnvResolver_UnboundNoRPC(t *testing.T) {
 	client := &fakeRotationClient{}
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{}), zerolog.Nop())
 
-	if env := r.Resolve(context.Background(), &models.Session{AgentName: "claude"}); env != nil {
+	if env, _ := r.Resolve(context.Background(), &models.Session{AgentName: "claude"}); env != nil {
 		t.Fatalf("unbound session env = %v, want nil", env)
 	}
 	if store.getCalls != 0 || store.updateCalls != 0 {
@@ -334,7 +347,7 @@ func TestSpawnEnvResolver_NoRotationDegrades(t *testing.T) {
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.Nop())
 
 	sess := &models.Session{AgentName: "claude", AccountID: strptr("a1")}
-	if env := r.Resolve(context.Background(), sess); env != nil {
+	if env, _ := r.Resolve(context.Background(), sess); env != nil {
 		t.Fatalf("no-rotation env = %v, want nil (degrade)", env)
 	}
 	if client.capCalls != 1 {
@@ -357,7 +370,7 @@ func TestSpawnEnvResolver_BoundRotationInjectsEnvAndTouchesOnce(t *testing.T) {
 	r := NewSpawnEnvResolver(newResolver(store, client, creds), zerolog.Nop())
 
 	sess := &models.Session{AgentName: "claude", AccountID: strptr("a1")}
-	env := r.Resolve(context.Background(), sess)
+	env, _ := r.Resolve(context.Background(), sess)
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Fatalf("materialized env = %v, want CLAUDE_CODE_OAUTH_TOKEN=x", env)
 	}
@@ -417,7 +430,7 @@ func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
 		zerolog.Nop(),
 	)
 
-	env := resolver.Resolve(context.Background(), &models.Session{
+	env, _ := resolver.Resolve(context.Background(), &models.Session{
 		AgentName: "codex",
 		AccountID: strptr("codex-1"),
 	})
@@ -461,8 +474,10 @@ func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
 	}
 }
 
-// SupportsRotation degrades (false, nil) for a missing client, an Unimplemented
-// plugin, and any other RPC error — an unreachable plugin never fails a spawn.
+// SupportsRotation degrades to (false, nil) for the two answers that are
+// authoritative: a client that was never registered, and an Unimplemented
+// plugin. Neither is a guess — the first means the plugin was not loaded at
+// daemon start, the second is the runner saying "no rotation" in as many words.
 func TestMaterializer_SupportsRotationDegrades(t *testing.T) {
 	store := &spyStore{accounts: map[string]*models.Account{}}
 
@@ -472,14 +487,36 @@ func TestMaterializer_SupportsRotationDegrades(t *testing.T) {
 		t.Errorf("missing client: got (%v,%v), want (false,nil)", ok, err)
 	}
 
+	client := &fakeRotationClient{capErr: grpcstatus.Error(codes.Unimplemented, "no rotation")}
+	m = NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{}, zerolog.Nop())
+	if ok, err := m.SupportsRotation(context.Background(), "claude"); ok || err != nil {
+		t.Errorf("unimplemented: got (%v,%v), want (false,nil)", ok, err)
+	}
+}
+
+// Any other probe failure is undetermined and must propagate. codes.Unavailable
+// is named explicitly because host_agent_proxy resolves a momentarily-absent
+// plugin to exactly that: collapsed to (false, nil) it would reach the
+// resolver's "the answer IS known" branch and tell the operator to rebind an
+// account whose runner was merely restarting.
+func TestMaterializer_SupportsRotationPropagatesUndeterminedProbe(t *testing.T) {
+	store := &spyStore{accounts: map[string]*models.Account{}}
+
 	for name, capErr := range map[string]error{
-		"unimplemented": grpcstatus.Error(codes.Unimplemented, "no rotation"),
-		"other":         errors.New("boom"),
+		"unavailable": grpcstatus.Error(codes.Unavailable, "plugin restarting"),
+		"opaque":      errors.New("boom"),
 	} {
 		client := &fakeRotationClient{capErr: capErr}
 		m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{}, zerolog.Nop())
-		if ok, err := m.SupportsRotation(context.Background(), "claude"); ok || err != nil {
-			t.Errorf("%s: got (%v,%v), want (false,nil)", name, ok, err)
+		ok, err := m.SupportsRotation(context.Background(), "claude")
+		if ok {
+			t.Errorf("%s: supports = true, want false", name)
+		}
+		if err == nil {
+			t.Fatalf("%s: err = nil, want the probe failure to propagate", name)
+		}
+		if !errors.Is(err, capErr) {
+			t.Errorf("%s: err = %v, want it to wrap the probe failure", name, err)
 		}
 	}
 }
@@ -1183,7 +1220,7 @@ func TestSpawnEnvResolver_MaterializeFailureIsLoudAndRecorded(t *testing.T) {
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.New(&logs))
 
 	sess := &models.Session{AgentName: "claude", AccountID: strptr("a1")}
-	if env := r.Resolve(context.Background(), sess); env != nil {
+	if env, _ := r.Resolve(context.Background(), sess); env != nil {
 		t.Fatalf("env = %v, want nil (the degrade policy is unchanged)", env)
 	}
 
@@ -1217,7 +1254,7 @@ func TestSpawnEnvResolver_SuccessClearsInjectionFailure(t *testing.T) {
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.Nop())
 
 	sess := &models.Session{AgentName: "claude", AccountID: strptr("a1")}
-	if env := r.Resolve(context.Background(), sess); env["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
+	if env, _ := r.Resolve(context.Background(), sess); env["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Fatalf("env = %v, want the materialized overlay", env)
 	}
 	if store.clearCalls != 1 {
@@ -1226,4 +1263,670 @@ func TestSpawnEnvResolver_SuccessClearsInjectionFailure(t *testing.T) {
 	if store.injectCalls != 0 {
 		t.Errorf("store recorded %d injection failures on success, want 0", store.injectCalls)
 	}
+}
+
+// BOS-1142: the unwired-resolver guard must read the binding before it decides.
+// An UNBOUND session keeps degrading to account 0 (the plan's degrade-site table
+// requires it), but a session BOUND to a managed account must not silently spawn
+// on the ambient CLI login just because this daemon was assembled without a
+// spawn-env resolver. The refusal is classified undetermined — wiring absent is
+// "could not evaluate", never "credential is bad".
+func TestSpawnEnvResolver_UnwiredResolverFailsClosedOnlyWhenBound(t *testing.T) {
+	r := NewSpawnEnvResolver(nil, zerolog.Nop())
+
+	t.Run("bound", func(t *testing.T) {
+		id := "a1"
+		env, err := r.Resolve(context.Background(), &models.Session{AgentName: "codex", AccountID: &id})
+		if err == nil {
+			t.Fatalf("bound session with unwired resolver: err = nil, want refusal")
+		}
+		if env != nil {
+			t.Errorf("env = %v, want nil", env)
+		}
+		if !account.IsInjectionUndetermined(err) {
+			t.Fatalf("outcome = %q, want %q", account.InjectionOutcomeOf(err), account.InjectionOutcomeUndetermined)
+		}
+		if account.IsInjectionInvalid(err) {
+			t.Error("unwired wiring must not be reported as an invalid credential")
+		}
+		ie, ok := account.AsInjectionError(err)
+		if !ok {
+			t.Fatal("refusal is not a typed *account.InjectionError")
+		}
+		if ie.AccountID != id {
+			t.Errorf("AccountID = %q, want %q", ie.AccountID, id)
+		}
+	})
+
+	t.Run("unbound", func(t *testing.T) {
+		env, err := r.Resolve(context.Background(), &models.Session{AgentName: "codex"})
+		if err != nil {
+			t.Fatalf("unbound session with unwired resolver: err = %v, want nil", err)
+		}
+		if env != nil {
+			t.Errorf("env = %v, want nil", env)
+		}
+	})
+
+	t.Run("explicit account 0", func(t *testing.T) {
+		id := account.SystemDefaultAccountID
+		env, err := r.Resolve(context.Background(), &models.Session{AgentName: "codex", AccountID: &id})
+		if err != nil {
+			t.Fatalf("account-0 session with unwired resolver: err = %v, want nil", err)
+		}
+		if env != nil {
+			t.Errorf("env = %v, want nil", env)
+		}
+	})
+}
+
+// This is the half of the BOS-1142 classification that internal/account cannot
+// test: deciding a materialize failure never reached a verdict means reading a
+// gRPC status code, and that package is grpc-free by design. So the wiring layer
+// marks such causes with account.ErrInjectionUndetermined and the resolver reads
+// the sentinel back (see TestResolveSpawnEnvUndeterminedMaterializeFailure).
+//
+// codes.Unavailable is the case that motivates it: agent runners resolve
+// per-call through host_agent_proxy, so a plugin restarting between two RPCs
+// surfaces exactly that code. Reporting it as "invalid" tells an operator to
+// re-authenticate a credential no plugin ever looked at.
+func TestMaterializeAccountMarksTransportFailuresUndetermined(t *testing.T) {
+	tests := []struct {
+		name             string
+		matErr           error
+		wantUndetermined bool
+	}{
+		{
+			name:             "plugin restarting between calls",
+			matErr:           grpcstatus.Error(codes.Unavailable, `agent "claude" is not currently loaded (plugin restarting?)`),
+			wantUndetermined: true,
+		},
+		{
+			name:             "rpc deadline expired",
+			matErr:           grpcstatus.Error(codes.DeadlineExceeded, "context deadline exceeded"),
+			wantUndetermined: true,
+		},
+		{
+			name:             "context cancelled beneath the rpc",
+			matErr:           context.Canceled,
+			wantUndetermined: true,
+		},
+		{
+			// The same cancellation in its OTHER shape. A gRPC client reports a
+			// cancelled call as a status error that does not unwrap to the
+			// context.Canceled sentinel, so the errors.Is arm above cannot see
+			// it and the status arm has to carry the code.
+			name:             "cancellation arriving as a grpc status",
+			matErr:           grpcstatus.Error(codes.Canceled, "context canceled"),
+			wantUndetermined: true,
+		},
+		{
+			// Negative controls. A plugin that answered and rejected the
+			// credential HAS reached a verdict, and must keep prompting the
+			// operator to re-authenticate; marking these undetermined would
+			// reopen the opposite half of BOS-1142.
+			name:             "provider rejected the credential",
+			matErr:           grpcstatus.Error(codes.PermissionDenied, "stored credential is no longer valid"),
+			wantUndetermined: false,
+		},
+		{
+			name:             "plugin returned a plain error",
+			matErr:           errors.New("malformed credential blob"),
+			wantUndetermined: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+			client := &fakeRotationClient{matErr: tc.matErr}
+			m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+
+			env, err := m.MaterializeAccount(context.Background(), "a1")
+			if err == nil {
+				t.Fatal("MaterializeAccount: want an error, got nil")
+			}
+			if env != nil {
+				t.Fatalf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+			}
+			if got := errors.Is(err, account.ErrInjectionUndetermined); got != tc.wantUndetermined {
+				t.Errorf("errors.Is(err, account.ErrInjectionUndetermined) = %v, want %v (err: %v)", got, tc.wantUndetermined, err)
+			}
+			// The original cause must stay reachable: callers match on
+			// context cancellation and on gRPC codes through this error.
+			if !errors.Is(err, tc.matErr) && grpcstatus.Code(err) != grpcstatus.Code(tc.matErr) {
+				t.Errorf("the underlying cause did not survive wrapping (err: %v)", err)
+			}
+			// The credential blob must never reach an error string.
+			if strings.Contains(err.Error(), "secret") {
+				t.Errorf("error text leaked the credential blob: %v", err)
+			}
+		})
+	}
+}
+
+// TestMaterializeAccountClassifiesLookupAndKeyringFailures pins the two legs
+// that run BEFORE any provider is consulted: reading the account row and
+// loading the credential blob from the keyring.
+//
+// Neither of these ever asks the provider anything, so only a genuine ABSENCE
+// is a verdict about the credential: no account row (sql.ErrNoRows) or no
+// stored blob (accountcred.ErrCredentialNotFound) both mean re-binding or
+// re-authenticating is the right operator action, and both stay invalid. A
+// locked SQLite file or a keyring that cannot be opened is infrastructure
+// noise; labelling it invalid tells the operator to re-authenticate a
+// credential nothing ever read, which is the BOS-881 collapse.
+func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		storeErr         error
+		credsErr         error
+		wantUndetermined bool
+	}{
+		{
+			// Definite absence. SQLiteAccountStore.Get returns sql.ErrNoRows
+			// verbatim from its row scan for a row that is not there.
+			name:             "account row is genuinely absent",
+			storeErr:         sql.ErrNoRows,
+			wantUndetermined: false,
+		},
+		{
+			// Same verdict once a caller has added context around it.
+			name:             "absent account row wrapped in context",
+			storeErr:         fmt.Errorf("scan account %q: %w", "a1", sql.ErrNoRows),
+			wantUndetermined: false,
+		},
+		{
+			name:             "account store is locked",
+			storeErr:         errors.New("database is locked"),
+			wantUndetermined: true,
+		},
+		{
+			name:             "account store i/o failure",
+			storeErr:         fmt.Errorf("query account: %w", io.ErrUnexpectedEOF),
+			wantUndetermined: true,
+		},
+		{
+			name:             "lookup cancelled underneath us",
+			storeErr:         context.Canceled,
+			wantUndetermined: true,
+		},
+		{
+			// Definite absence on the credential side: the keyring store maps
+			// keyring.ErrKeyNotFound to this sentinel and nothing else.
+			name:             "credential is genuinely absent",
+			credsErr:         accountcred.ErrCredentialNotFound,
+			wantUndetermined: false,
+		},
+		{
+			name:             "absent credential wrapped in context",
+			credsErr:         fmt.Errorf("load account credential: %w", accountcred.ErrCredentialNotFound),
+			wantUndetermined: false,
+		},
+		{
+			// The store's own "open keyring: %w" shape: the keyring could not
+			// be opened or unlocked, so the blob inside was never read.
+			name:             "keyring cannot be opened",
+			credsErr:         fmt.Errorf("open keyring: %w", errors.New("dial unix /run/dbus: connection refused")),
+			wantUndetermined: true,
+		},
+		{
+			name:             "keyring read failed",
+			credsErr:         errors.New("load account credential: keyring is locked"),
+			wantUndetermined: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &spyStore{
+				accounts: map[string]*models.Account{"a1": newClaudeAccount()},
+				getErr:   tc.storeErr,
+			}
+			creds := &fakeCreds{blob: []byte("secret"), err: tc.credsErr}
+			// A healthy, loaded plugin, so nothing else can account for the
+			// refusal: the only failure in play is the one under test.
+			client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
+			m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, creds, zerolog.Nop())
+
+			env, err := m.MaterializeAccount(context.Background(), "a1")
+			if err == nil {
+				t.Fatalf("MaterializeAccount must refuse, got env %v and a nil error", env)
+			}
+			if env != nil {
+				t.Errorf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+			}
+			if got := errors.Is(err, account.ErrInjectionUndetermined); got != tc.wantUndetermined {
+				t.Errorf("errors.Is(err, account.ErrInjectionUndetermined) = %v, want %v (err: %v)", got, tc.wantUndetermined, err)
+			}
+			// The original cause must stay reachable through the wrap.
+			cause := tc.storeErr
+			if cause == nil {
+				cause = tc.credsErr
+			}
+			if !errors.Is(err, cause) {
+				t.Errorf("the underlying cause did not survive wrapping (err: %v, want cause: %v)", err, cause)
+			}
+			// A refusal on the credential leg must never have reached the
+			// plugin, and no refusal may leak the blob.
+			if tc.credsErr == nil && tc.storeErr != nil && client.matCalls != 0 {
+				t.Errorf("a failed account lookup still called the plugin %d time(s)", client.matCalls)
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Errorf("error text leaked the credential blob: %v", err)
+			}
+		})
+	}
+
+	// Negative control for the fail-safe direction taken above: enumerating
+	// absence and defaulting everything else to undetermined must not turn a
+	// rendered provider verdict undetermined too.
+	t.Run("loaded plugin rejecting the credential stays invalid", func(t *testing.T) {
+		t.Parallel()
+
+		store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+		client := &fakeRotationClient{
+			supports: true,
+			matErr:   grpcstatus.Error(codes.PermissionDenied, "stored credential is no longer valid"),
+		}
+		m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+
+		env, err := m.MaterializeAccount(context.Background(), "a1")
+		if err == nil {
+			t.Fatalf("MaterializeAccount must refuse, got env %v", env)
+		}
+		if errors.Is(err, account.ErrInjectionUndetermined) {
+			t.Errorf("a rendered provider verdict must stay invalid: %v", err)
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Errorf("error text leaked the credential blob: %v", err)
+		}
+	})
+}
+
+// TestIsUndeterminedMaterializeErrorCancellation pins the predicate itself on
+// the two shapes a cancellation can take. errors.Is(err, context.Canceled)
+// covers only the sentinel; a gRPC client hands back codes.Canceled as a status
+// error, which does not unwrap to that sentinel, so without the status case a
+// merely-cancelled request would be reported to the operator as an invalid
+// credential.
+func TestIsUndeterminedMaterializeErrorCancellation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil is not undetermined", err: nil, want: false},
+		{name: "context.Canceled sentinel", err: context.Canceled, want: true},
+		{name: "cancellation as a grpc status", err: grpcstatus.Error(codes.Canceled, "context canceled"), want: true},
+		{
+			name: "cancellation status wrapped in context",
+			err:  fmt.Errorf("plugin MaterializeAccount: %w", grpcstatus.Error(codes.Canceled, "context canceled")),
+			want: true,
+		},
+		{name: "deadline as a grpc status", err: grpcstatus.Error(codes.DeadlineExceeded, "deadline"), want: true},
+		{name: "plugin restarting", err: grpcstatus.Error(codes.Unavailable, "not loaded"), want: true},
+		// Negative controls: a rendered verdict is not a cancellation.
+		{name: "provider rejected the credential", err: grpcstatus.Error(codes.PermissionDenied, "invalid"), want: false},
+		{name: "plain error", err: errors.New("malformed credential blob"), want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isUndeterminedMaterializeError(tc.err); got != tc.want {
+				t.Errorf("isUndeterminedMaterializeError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsUndeterminedLocalMaterializeError pins the codex leg's classification:
+// the store having NO credential is the one verdict, and every other way
+// MaterializeCodex can fail degrades to undetermined.
+//
+// The filesystem cases are driven from REAL os-produced errors rather than
+// hand-built ones, because they are the shapes MaterializeCodex's own dir work
+// actually returns and a fabricated value would test the fabrication. The plain
+// errors alongside them are the ones a structural *fs.PathError / *os.LinkError
+// test used to miss entirely.
+func TestIsUndeterminedLocalMaterializeError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "no-such-file")
+
+	// ENOENT on open -> *fs.PathError.
+	_, openErr := os.Open(missing)
+	if openErr == nil {
+		t.Fatal("expected opening a missing path to fail")
+	}
+
+	// A regular file used as a directory component -> ENOTDIR *fs.PathError.
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed regular file: %v", err)
+	}
+	mkdirErr := os.MkdirAll(filepath.Join(regular, "accounts", "codex"), 0o700)
+	if mkdirErr == nil {
+		t.Fatal("expected MkdirAll under a regular file to fail")
+	}
+
+	// Hard-linking a missing source -> *os.LinkError.
+	linkErr := os.Link(missing, filepath.Join(dir, "link"))
+	if linkErr == nil {
+		t.Fatal("expected linking a missing source to fail")
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil is not undetermined", err: nil, want: false},
+		{name: "ENOENT path error", err: openErr, want: true},
+		{name: "ENOTDIR from the mkdir chain", err: mkdirErr, want: true},
+		{name: "link error", err: linkErr, want: true},
+		{
+			// MaterializeCodex wraps every filesystem fault in context before it
+			// reaches us, so the predicate must see through fmt.Errorf.
+			name: "wrapped exactly as MaterializeCodex wraps it",
+			err:  fmt.Errorf("create codex account dir for %q: %w", "acct-1", mkdirErr),
+			want: true,
+		},
+		{
+			name: "wrapped twice, as the adapter would re-wrap it",
+			err:  fmt.Errorf("materialize codex account: %w", fmt.Errorf("enforce 0700 on codex dir %q: %w", dir, openErr)),
+			want: true,
+		},
+		{name: "bare permission error", err: fs.ErrPermission, want: true},
+		{name: "context cancelled", err: context.Canceled, want: true},
+		{name: "wrapped deadline exceeded", err: fmt.Errorf("materialize codex account: %w", context.DeadlineExceeded), want: true},
+
+		// The plain-error failures. None of these carries a filesystem shape, so
+		// a structural test left every one of them classified as a credential
+		// verdict and sent the operator to re-authenticate over it.
+		{
+			// The one that bites in practice: a locked or unavailable system
+			// keyring. accountcred.Store never opened it, so nothing read the
+			// credential, let alone judged it.
+			name: "keyring cannot be opened",
+			err: fmt.Errorf("load codex credential for %q: %w", "acct-1",
+				fmt.Errorf("open keyring: %w", errors.New("the collection is locked"))),
+			want: true,
+		},
+		{
+			// The other half of accountcred.Store.Load: a keyring that opened but
+			// failed the read for any reason other than a missing key.
+			name: "keyring read failed for a reason other than absence",
+			err: fmt.Errorf("load codex credential for %q: %w", "acct-1",
+				fmt.Errorf("load account credential: %w", errors.New("dbus: connection closed"))),
+			want: true,
+		},
+		{
+			// assertNoSymlinkChain refuses to WRITE into a tampered-looking tree.
+			// That is a statement about the tree, not about the credential.
+			name: "symlinked accounts tree",
+			err:  errors.New(`"/data/accounts/codex" is a symlink`),
+			want: true,
+		},
+		{
+			// validateAccountID rejects the id before any credential is reached.
+			name: "invalid account id",
+			err:  fmt.Errorf("invalid account id %q", ".."),
+			want: true,
+		},
+		{
+			// The fail-safe direction: an unrecognised failure added below this
+			// layer later must report "could not be checked", never accuse a
+			// credential nothing looked at.
+			name: "an unclassified error is undetermined",
+			err:  errors.New("boom"),
+			want: true,
+		},
+
+		// Negative controls. Absence IS a verdict about the credential, and
+		// re-authenticating is its remedy, so it keeps the invalid arm. The
+		// sentinel is what carries it — a look-alike message does not, which is
+		// why the predicate matches the value and never the text.
+		{
+			name: "credential absent from the store stays invalid",
+			err:  fmt.Errorf("load codex credential for %q: %w", "acct-1", accountcred.ErrCredentialNotFound),
+			want: false,
+		},
+		{
+			name: "absence wrapped twice, as the adapter would re-wrap it",
+			err: fmt.Errorf("materialize codex account: %w",
+				fmt.Errorf("load codex credential for %q: %w", "acct-1", accountcred.ErrCredentialNotFound)),
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isUndeterminedLocalMaterializeError(tc.err); got != tc.want {
+				t.Errorf("isUndeterminedLocalMaterializeError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaterializeAccountWrapsLocalCodexFailuresUndetermined drives the codex leg
+// end to end through a REAL credmaterialize.Materializer pointed at a temp dir.
+//
+// NewMaterializer builds that materializer against the default base dir, so the
+// adapter is constructed directly here — same package — to aim it somewhere
+// hermetic. CODEX_HOME is redirected to an empty dir so base-home projection has
+// nothing to copy and the outcome does not depend on the developer's own ~/.codex.
+func TestMaterializeAccountWrapsLocalCodexFailuresUndetermined(t *testing.T) {
+	// No t.Parallel: t.Setenv below is incompatible with it.
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	tests := []struct {
+		name             string
+		credErr          error
+		breakAccountsDir bool
+		wantUndetermined bool
+	}{
+		{
+			// A regular file where accounts/ must be makes the dir chain
+			// unusable. Nothing reads the credential, so nothing can have
+			// judged it.
+			name:             "the account home cannot be prepared",
+			breakAccountsDir: true,
+			wantUndetermined: true,
+		},
+		{
+			// The store answered, and its answer is about the credential.
+			// Re-authenticating is the remedy, so this keeps the invalid arm.
+			name:             "the credential is absent from the store",
+			credErr:          accountcred.ErrCredentialNotFound,
+			wantUndetermined: false,
+		},
+		{
+			// The store could not answer at all: accountcred.Store reports a
+			// keyring it cannot open as "open keyring: %w", a plain error with no
+			// filesystem shape. Nothing read the stored bytes, so telling the
+			// operator to re-authenticate them is an accusation with no evidence
+			// behind it.
+			name:             "the keyring is locked or unavailable",
+			credErr:          fmt.Errorf("open keyring: %w", errors.New("the collection is locked")),
+			wantUndetermined: true,
+		},
+		{
+			// The same class one layer in: the keyring opened, the read failed
+			// for a reason that is not "no such key".
+			name:             "the keyring read failed for a reason other than absence",
+			credErr:          fmt.Errorf("load account credential: %w", errors.New("dbus: connection closed")),
+			wantUndetermined: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			baseDir := t.TempDir()
+			if tc.breakAccountsDir {
+				if err := os.WriteFile(filepath.Join(baseDir, "accounts"), []byte("x"), 0o600); err != nil {
+					t.Fatalf("seed a regular file at accounts/: %v", err)
+				}
+			}
+
+			creds := &fakeCreds{blob: []byte("secret"), err: tc.credErr}
+			codex, err := credmaterialize.New(contextCredentialStore{store: creds}, zerolog.Nop(), credmaterialize.WithBaseDir(baseDir))
+			if err != nil {
+				t.Fatalf("build codex materializer: %v", err)
+			}
+			m := &materializerAdapter{
+				store: &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}},
+				creds: creds,
+				codex: codex,
+				log:   zerolog.Nop(),
+			}
+
+			env, err := m.MaterializeAccount(context.Background(), "codex-1")
+			if err == nil {
+				t.Fatal("MaterializeAccount: want an error, got nil")
+			}
+			if env != nil {
+				t.Fatalf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+			}
+			if got := errors.Is(err, account.ErrInjectionUndetermined); got != tc.wantUndetermined {
+				t.Errorf("errors.Is(err, account.ErrInjectionUndetermined) = %v, want %v (err: %v)", got, tc.wantUndetermined, err)
+			}
+			// The credential blob must never reach an error string.
+			if strings.Contains(err.Error(), "secret") {
+				t.Errorf("error text leaked the credential blob: %v", err)
+			}
+		})
+	}
+}
+
+// TestMaterializeAccountNeverReturnsSuccessWithNoEnv covers the three arms that
+// used to return (nil, nil) — a shape the resolver could only read as
+// "materialization succeeded and this account needs no environment", which
+// cleared the injection failure, bumped the LRU timestamp, and spawned on the
+// agent CLI's ambient login while every surface still reported the account as
+// bound and in force. That is the BOS-973 silent degrade reached without any
+// error ever being returned.
+//
+// Every arm here is a MISSING DEPENDENCY, so every arm must be undetermined:
+// nothing in these paths ever asked the credential anything, and telling the
+// operator to re-authenticate over an unwired daemon or an unloaded plugin is
+// the BOS-881 collapse the outcome split exists to prevent. The negative
+// control below pins the other half — a plugin that answered and rejected the
+// credential must stay invalid.
+func TestMaterializeAccountNeverReturnsSuccessWithNoEnv(t *testing.T) {
+	t.Parallel()
+
+	claudeStore := func() *spyStore {
+		return &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	}
+	codexStore := func() *spyStore {
+		return &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
+	}
+
+	tests := []struct {
+		name      string
+		adapter   func() *materializerAdapter
+		accountID string
+		wantIn    string
+	}{
+		{
+			// Built through the real constructor: a daemon wired with no
+			// account store and no credential store cannot reach the
+			// credential at all.
+			name: "daemon wired without a store",
+			adapter: func() *materializerAdapter {
+				return NewMaterializer(nil, nil, nil, zerolog.Nop()).(*materializerAdapter)
+			},
+			accountID: "a1",
+			wantIn:    "wired without an account or credential store",
+		},
+		{
+			// credmaterialize.New failed at startup, so the codex leg has no
+			// materializer. The struct is built by hand because the
+			// constructor only reaches this state through that failure.
+			name: "codex account with no codex materializer",
+			adapter: func() *materializerAdapter {
+				return &materializerAdapter{
+					clients: map[string]agent.AgentRunnerClient{},
+					store:   codexStore(),
+					creds:   &fakeCreds{blob: []byte("secret")},
+					codex:   nil,
+					log:     zerolog.Nop(),
+				}
+			},
+			accountID: "codex-1",
+			wantIn:    "no codex materializer is wired",
+		},
+		{
+			// No plugin is loaded for the account's provider — it may simply
+			// be restarting. Contrast the resolver's !SupportsRotation arm,
+			// which IS invalid: there a loaded runner gave a definite answer.
+			name: "no runner plugin loaded for the provider",
+			adapter: func() *materializerAdapter {
+				return NewMaterializer(
+					map[string]agent.AgentRunnerClient{},
+					claudeStore(),
+					&fakeCreds{blob: []byte("secret")},
+					zerolog.Nop(),
+				).(*materializerAdapter)
+			},
+			accountID: "a1",
+			wantIn:    "no runner plugin is loaded",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env, err := tc.adapter().MaterializeAccount(context.Background(), tc.accountID)
+			if err == nil {
+				t.Fatalf("MaterializeAccount must refuse, got env %v and a nil error", env)
+			}
+			if env != nil {
+				t.Errorf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+			}
+			if !errors.Is(err, account.ErrInjectionUndetermined) {
+				t.Errorf("a missing dependency must be undetermined, not invalid: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("error %q does not name the missing dependency (want it to contain %q)", err, tc.wantIn)
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Errorf("error text leaked the credential blob: %v", err)
+			}
+		})
+	}
+
+	// Negative control: a loaded plugin that answered and rejected the
+	// credential still classifies invalid, so the arms above did not widen
+	// undetermined into "every failure".
+	t.Run("loaded plugin rejecting the credential stays invalid", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewMaterializer(
+			map[string]agent.AgentRunnerClient{"claude": &fakeRotationClient{
+				matErr: grpcstatus.Error(codes.PermissionDenied, "stored credential is no longer valid"),
+			}},
+			claudeStore(),
+			&fakeCreds{blob: []byte("secret")},
+			zerolog.Nop(),
+		)
+		env, err := m.MaterializeAccount(context.Background(), "a1")
+		if err == nil {
+			t.Fatalf("MaterializeAccount must refuse, got env %v", env)
+		}
+		if errors.Is(err, account.ErrInjectionUndetermined) {
+			t.Errorf("a rendered provider verdict must stay invalid: %v", err)
+		}
+	})
 }

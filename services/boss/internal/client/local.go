@@ -340,6 +340,15 @@ func (c *LocalClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequ
 	return resp.Msg.Sessions, nil
 }
 
+// ListSessionsWithReadFailures reads one daemon, which either answers or fails
+// outright, so the read is never partial and the failure list is always empty.
+// The method exists only so a LocalClient satisfies the same seam the cloud
+// read needs; the read itself is ListSessions unchanged.
+func (c *LocalClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	sessions, err := c.ListSessions(ctx, req, opts)
+	return sessions, nil, err
+}
+
 func (c *LocalClient) AttachSession(ctx context.Context, id string) (AttachStream, error) {
 	stream, err := c.rpc.AttachSession(ctx, connect.NewRequest(&pb.AttachSessionRequest{Id: id}))
 	if err != nil {

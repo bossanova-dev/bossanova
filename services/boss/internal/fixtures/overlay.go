@@ -151,6 +151,7 @@ type OverlayRepo struct {
 	LocalPath         string `json:"localPath,omitempty"`
 	DefaultBaseBranch string `json:"defaultBaseBranch,omitempty"`
 	MergeStrategy     string `json:"mergeStrategy,omitempty"`
+	LinearAPIKey      string `json:"linearApiKey,omitempty"`
 }
 
 // Build validates required fields and defaults defaultBaseBranch="main" and
@@ -176,6 +177,7 @@ func (r OverlayRepo) Build() (*pb.Repo, error) {
 		LocalPath:         r.LocalPath,
 		DefaultBaseBranch: base,
 		MergeStrategy:     strategy,
+		LinearApiKey:      r.LinearAPIKey,
 	}, nil
 }
 

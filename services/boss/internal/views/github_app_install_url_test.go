@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEnrichGitHubAppInstallURL_TargetsRepoOwner(t *testing.T) {
@@ -94,6 +95,10 @@ func TestEnrichGitHubAppInstallURL_FallsBackWithoutGitHubRepository(t *testing.T
 }
 
 func TestLookupGitHubAppInstallTargetWithGH(t *testing.T) {
+	originalTimeout := githubAppInstallTargetLookupTimeout
+	githubAppInstallTargetLookupTimeout = 30 * time.Second
+	t.Cleanup(func() { githubAppInstallTargetLookupTimeout = originalTimeout })
+
 	dir := t.TempDir()
 	gh := filepath.Join(dir, "gh")
 	t.Setenv("PATH", dir)

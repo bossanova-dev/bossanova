@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
@@ -15,12 +16,18 @@ import (
 )
 
 type fakeCloudAccessClient struct {
-	status      *pb.CloudAccessStatus
-	statusErr   error
-	checkoutErr error
-	checkoutURL string
-	statusCalls int
-	checkouts   int
+	status        *pb.CloudAccessStatus
+	statusErr     error
+	checkoutErr   error
+	checkoutURL   string
+	organizations []*pb.Organization
+	orgErr        error
+	statusCalls   int
+	checkouts     int
+	orgCalls      int
+	// Blocks ListOrganizations for this long unless the caller's context ends
+	// first, which is the only way a deadline on that context is observable.
+	orgBlock time.Duration
 }
 
 func (f *fakeCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudAccessStatus, error) {
@@ -41,6 +48,21 @@ func (f *fakeCloudAccessClient) CreateCheckoutSession(context.Context, string, s
 
 func (f *fakeCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.CloudAccessStatus, error) {
 	return f.status, nil
+}
+
+func (f *fakeCloudAccessClient) ListOrganizations(ctx context.Context) ([]*pb.Organization, error) {
+	f.orgCalls++
+	if f.orgErr != nil {
+		return nil, f.orgErr
+	}
+	if f.orgBlock > 0 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(f.orgBlock):
+		}
+	}
+	return f.organizations, nil
 }
 
 func TestLoginCloudGate(t *testing.T) {
@@ -320,26 +342,55 @@ func TestCloudSubscribeURLAddsCLISource(t *testing.T) {
 	t.Setenv("BOSS_CLOUD_URL", "")
 	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
 
-	if got, want := cloudSubscribeURL(), "https://app.bossanova.dev/subscribe?source=cli"; got != want {
-		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	if got, want := cloudSubscribeURL(""), "https://app.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "", got, want)
 	}
 }
 
 func TestCloudSubscribeURLPreservesEnvQueryParams(t *testing.T) {
 	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://staging.example.test/subscribe?plan=cloud")
 
-	if got, want := cloudSubscribeURL(), "https://staging.example.test/subscribe?plan=cloud&source=cli"; got != want {
-		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	if got, want := cloudSubscribeURL(""), "https://staging.example.test/subscribe?plan=cloud&source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "", got, want)
 	}
 }
 
-func TestCloudSubscribeURLUsesLocalWebPort(t *testing.T) {
+func TestCloudSubscribeURLUsesLocalWebPortForLocalCloud(t *testing.T) {
 	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
 	t.Setenv("BOSS_WEB_URL", "")
 	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "http://localhost:8181")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
 
-	if got, want := cloudSubscribeURL(), "http://localhost:5151/subscribe?source=cli"; got != want {
-		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	if got, want := cloudSubscribeURL(""), "http://localhost:5151/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+// BOSS_WEB_PORT is a local web dev-server port, not an orchestrator selector:
+// .env.example ships it set, so a developer pointed at the production
+// orchestrator must still be sent to the production subscribe page.
+func TestCloudSubscribeURLIgnoresLocalWebPortForRemoteCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-k8s.bossanova.dev")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := cloudSubscribeURL(""), "https://app.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestCloudSubscribeURLIgnoresLocalWebPortForStagingCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-staging.bossanova.dev")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := cloudSubscribeURL(""), "https://app-staging.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "", got, want)
 	}
 }
 
@@ -349,8 +400,8 @@ func TestCloudSubscribeURLDefaultsToLocalWebForLocalCloud(t *testing.T) {
 	t.Setenv("BOSS_WEB_PORT", "")
 	t.Setenv("BOSS_CLOUD_URL", "http://localhost:8181")
 
-	if got, want := cloudSubscribeURL(), "http://localhost:5151/subscribe?source=cli"; got != want {
-		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	if got, want := cloudSubscribeURL(""), "http://localhost:5151/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "", got, want)
 	}
 }
 
@@ -360,8 +411,8 @@ func TestCloudSubscribeURLUsesStagingAppForStagingCloud(t *testing.T) {
 	t.Setenv("BOSS_WEB_PORT", "")
 	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-staging.bossanova.dev")
 
-	if got, want := cloudSubscribeURL(), "https://app-staging.bossanova.dev/subscribe?source=cli"; got != want {
-		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	if got, want := cloudSubscribeURL(""), "https://app-staging.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "", got, want)
 	}
 }
 
@@ -476,4 +527,199 @@ func assertCloudGateMessage(t *testing.T, got string) {
 			t.Fatalf("output %q missing %q", got, want)
 		}
 	}
+}
+
+// The web subscribe route is keyed on the bosso-local mirror id, so the CLI has
+// to translate the WorkOS id its refused status carries before it can scope the
+// URL it opens.
+func TestCloudSubscribeURLScopesPathToOrganization(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := cloudSubscribeURL("org_mirror_123"), "https://app.bossanova.dev/org_mirror_123/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestCloudSubscribeURLScopedFormPreservesEnvQueryParams(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://staging.example.test/subscribe?plan=cloud")
+
+	if got, want := cloudSubscribeURL("org_mirror_123"), "https://staging.example.test/org_mirror_123/subscribe?plan=cloud&source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestCloudSubscribeURLScopedFormUsesLocalWebPortForLocalCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "http://localhost:8181")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := cloudSubscribeURL("org_mirror_123"), "http://localhost:5151/org_mirror_123/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestCloudSubscribeURLScopedFormUsesStagingAppForStagingCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-staging.bossanova.dev")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := cloudSubscribeURL("org_mirror_123"), "https://app-staging.bossanova.dev/org_mirror_123/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+// A mirror id is opaque, so scoping must not be able to invent a second path
+// segment: the router would resolve /a/b/subscribe as some other route entirely.
+func TestCloudSubscribeURLScopedFormKeepsOrganizationInOneSegment(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://app.bossanova.dev/subscribe")
+
+	if got, want := cloudSubscribeURL("a/b"), "https://app.bossanova.dev/a%2Fb/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "a/b", got, want)
+	}
+}
+
+// A subscribe override with no path has no segment for the organization to sit
+// behind. Scoping it would emit "//org" or a bare "/org", neither of which is a
+// subscribe page, so the URL is left exactly as configured.
+func TestCloudSubscribeURLLeavesPathlessOverrideUnscoped(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://app.bossanova.dev")
+
+	if got, want := cloudSubscribeURL("org_mirror_123"), "https://app.bossanova.dev?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestResolveSubscribeOrganizationID(t *testing.T) {
+	status := &pb.CloudAccessStatus{
+		State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		WorkosOrgId: "org_01WORKOS",
+	}
+
+	t.Run("maps the WorkOS id to the mirror id", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{organizations: []*pb.Organization{
+			{Id: "mirror_other", WorkosOrgId: "org_01OTHER"},
+			{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"},
+		}}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "mirror_match" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "mirror_match")
+		}
+	})
+
+	t.Run("degrades to no organization when the list fails", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{orgErr: errors.New("organizations unavailable")}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("degrades to no organization when the mirror row is absent", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{organizations: []*pb.Organization{
+			{Id: "mirror_other", WorkosOrgId: "org_01OTHER"},
+		}}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("degrades to no organization when the lookup outruns its deadline", func(t *testing.T) {
+		// The mirror row IS present, so "" can only come from the deadline. That
+		// is also what makes the assertion non-vacuous: hand the RPC the caller's
+		// unbounded context instead of the bounded one and the fake's block ends
+		// on its own, the row is found, and this returns "mirror_match".
+		prev := subscribeOrgLookupTimeout
+		subscribeOrgLookupTimeout = 10 * time.Millisecond
+		t.Cleanup(func() { subscribeOrgLookupTimeout = prev })
+
+		fake := &fakeCloudAccessClient{
+			orgBlock:      2 * time.Second,
+			organizations: []*pb.Organization{{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"}},
+		}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("does not list organizations when the status names none", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{organizations: []*pb.Organization{
+			{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"},
+		}}
+		bare := &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, bare); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+		if fake.orgCalls != 0 {
+			t.Fatalf("ListOrganizations calls = %d, want 0", fake.orgCalls)
+		}
+	})
+}
+
+func TestLoginCloudGateOpensOrganizationScopedSubscribePage(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			WorkosOrgId: "org_01WORKOS",
+		},
+		organizations: []*pb.Organization{
+			{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"},
+		},
+	}
+
+	var opened string
+	origOpen := openCloudCheckoutURL
+	openCloudCheckoutURL = func(url string) error {
+		opened = url
+		return nil
+	}
+	defer func() { openCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	runLoginCloudGate(context.Background(), fake, &out)
+
+	if want := "https://billing.example.test/mirror_match/subscribe?source=cli"; opened != want {
+		t.Fatalf("opened URL = %q, want %q", opened, want)
+	}
+	assertCloudGateMessage(t, out.String())
+}
+
+// A failed organization read must not keep the browser shut: the unscoped
+// subscribe page is still the page the refused user needs.
+func TestLoginCloudGateOpensUnscopedSubscribePageWhenOrganizationsUnavailable(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			WorkosOrgId: "org_01WORKOS",
+		},
+		orgErr: errors.New("organizations unavailable"),
+	}
+
+	var opened string
+	origOpen := openCloudCheckoutURL
+	openCloudCheckoutURL = func(url string) error {
+		opened = url
+		return nil
+	}
+	defer func() { openCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	runLoginCloudGate(context.Background(), fake, &out)
+
+	if want := "https://billing.example.test/subscribe?source=cli"; opened != want {
+		t.Fatalf("opened URL = %q, want %q", opened, want)
+	}
+	assertCloudGateMessage(t, out.String())
 }

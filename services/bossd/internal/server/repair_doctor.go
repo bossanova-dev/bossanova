@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	bossalog "github.com/recurser/bossalib/log"
+
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -133,26 +135,45 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 	// Check 7: recent task automation failures?
 	resp.Checks = append(resp.Checks, s.recentTaskMappingFailuresCheck(ctx))
 
-	// Check 8: gh auth can update workflow files?
-	resp.Checks = append(resp.Checks, githubWorkflowScopeCheck(ctx))
+	// Check 8: can gh authenticate to GitHub AT ALL? This runs before the
+	// workflow-scope check because a scope question is meaningless when the
+	// client is anonymous, and because it is the check that must exist
+	// daemon-side: `boss daemon doctor` runs in the CLI process, which on macOS
+	// descends from the GUI login session and CAN read the keychain, so a gh
+	// probe there answers a different question and answers it reassuringly.
+	// Only bossd can observe bossd's own gh.
+	authCheck := githubAuthCheck(ctx)
+	resp.Checks = append(resp.Checks, authCheck)
 
-	// Check 9: daemon's TERM resolves a terminfo entry?
+	// Check 9: gh auth can update workflow files? Skipped with an explicit
+	// "not evaluated" when auth failed — its usual remedy (`gh auth refresh -s
+	// workflow`) is the wrong advice for a 401 and would send an operator after
+	// a scope problem they do not have.
+	resp.Checks = append(resp.Checks, githubWorkflowScopeCheckGated(ctx, authCheck.GetOk()))
+
+	// Check 10: is the daemon writing logs anywhere? Deliberately redundant with
+	// `boss daemon doctor`'s supervision check — observed from the other side of
+	// the process boundary, so it still fires when that heuristic is
+	// inconclusive.
+	resp.Checks = append(resp.Checks, daemonLogSinkCheck())
+
+	// Check 11: daemon's TERM resolves a terminfo entry?
 	resp.Checks = append(resp.Checks, terminalCheck(os.Getenv("TERM"), termnorm.Resolvable))
 
-	// Check 10: duplicate codex provider_session_ids? Self-healing: clears
+	// Check 12: duplicate codex provider_session_ids? Self-healing: clears
 	// colliding sibling chats so they re-resolve via process fd (BOS-290).
 	resp.Checks = append(resp.Checks, s.duplicateCodexProviderSessionCheck(ctx))
 
-	// Check 11: file-descriptor soft limit healthy? (BOS-465)
+	// Check 13: file-descriptor soft limit healthy? (BOS-465)
 	resp.Checks = append(resp.Checks, fileDescriptorLimitCheck(s.fileLimitSoft))
 
-	// Check 12: failover-proxy pass-through error tally (BOS-483). Purely
+	// Check 14: failover-proxy pass-through error tally (BOS-483). Purely
 	// informational — always Ok=true; it surfaces the recent per-session upstream
 	// error rate the proxy passed through un-rotated, so an operator can spot a
 	// session drowning in 5xx/overloaded errors without grepping logs.
 	resp.Checks = append(resp.Checks, passthroughStatsCheck(s.passthroughStats))
 
-	// Check 13: protected roots readable? Re-probed at invocation time, every
+	// Check 15: protected roots readable? Re-probed at invocation time, every
 	// time (BOS-725) — never a verdict cached at daemon boot, so an operator
 	// who grants TCC access (or relocates the repo) sees this clear without a
 	// daemon restart.
@@ -642,6 +663,157 @@ func terminalCheck(term string, resolvable func(string) bool) *bossanovav1.Repai
 			"  " + termnorm.InstallHint + "\n" +
 			"or set: export TERM=" + termnorm.FallbackTERM,
 	}
+}
+
+// githubAuthCheck asks whether bossd's OWN gh CLI can authenticate to GitHub.
+//
+// It has to live here, daemon-side, rather than in `boss daemon doctor`. That
+// command runs in the CLI process, which on macOS descends from the GUI login
+// session and can therefore read the login keychain; bossd, when it has been
+// started detached, cannot. A gh probe from the CLI answers a different question
+// and — on precisely the failure worth catching — answers it reassuringly.
+//
+// Probed live at every invocation (BOS-725), never cached at daemon boot, so an
+// operator who runs `gh auth login` sees this clear without restarting bossd.
+func githubAuthCheck(ctx context.Context) *bossanovav1.RepairDoctorCheck {
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(checkCtx, "gh", "api", "-i", "/user").CombinedOutput()
+	return classifyGitHubAuthProbe(string(out), err)
+}
+
+// classifyGitHubAuthProbe is githubAuthCheck's pure half, split out so the
+// verdict is testable without a gh on PATH.
+//
+// The signatures mirror isGitHubAuthFailure in
+// services/bossd/internal/vcs/github/provider.go. They are duplicated rather
+// than shared: lifting ten lines of string matching into a new common package
+// would buy a gazelle target and a build-drift hop for less than it costs to
+// keep the two in step, and this copy is referenced from that one. If you change
+// either, change both.
+func classifyGitHubAuthProbe(output string, err error) *bossanovav1.RepairDoctorCheck {
+	const name = "github auth"
+
+	// gh's combined output is included in the failure detail on purpose: when
+	// the cause is a keychain it cannot reach, gh prints the OSStatus there
+	// ("User interaction is not allowed"), and that string is the single most
+	// useful token in the whole diagnosis. Bounded to the first line so a header
+	// dump does not flood the check list.
+	first := firstLineOf(output)
+
+	lowered := strings.ToLower(output)
+	unauthenticated := strings.Contains(lowered, "http 401") ||
+		strings.Contains(lowered, "requires authentication") ||
+		strings.Contains(lowered, "bad credentials") ||
+		// The anonymous rate-limit tell. GitHub emits this parenthetical only
+		// when the request carried no credentials; an authenticated over-limit
+		// response says "for user ID N" instead. Reading the 403 at face value
+		// sends an operator after a quota problem that does not exist.
+		strings.Contains(lowered, "authenticated requests get a higher rate limit") ||
+		strings.Contains(lowered, "to get started with github cli, please run")
+
+	switch {
+	case unauthenticated:
+		return &bossanovav1.RepairDoctorCheck{
+			Name: name,
+			Ok:   false,
+			Detail: fmt.Sprintf(
+				"bossd's gh CLI is not authenticated to GitHub, so PR creation, checks and merges all fail. gh said: %s. Two causes: gh is logged out — run `gh auth login`; or this daemon was started detached and cannot reach the login keychain, so gh silently falls back to unauthenticated requests — run `boss daemon restart` and confirm with `boss daemon doctor`.",
+				first),
+		}
+	case err != nil:
+		return &bossanovav1.RepairDoctorCheck{
+			Name: name,
+			Ok:   false,
+			Detail: fmt.Sprintf(
+				"cannot reach GitHub with `gh api -i /user`: %v. gh said: %s. If gh is missing from bossd's PATH this is an install problem; otherwise check connectivity.",
+				err, first),
+		}
+	default:
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   name,
+			Ok:     true,
+			Detail: "bossd's gh CLI authenticates to GitHub.",
+		}
+	}
+}
+
+// firstLineOf bounds an embedded subprocess dump to one line for a check detail.
+func firstLineOf(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "(no output)"
+	}
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	const maxDetailRunes = 200
+	if r := []rune(s); len(r) > maxDetailRunes {
+		return string(r[:maxDetailRunes]) + "…"
+	}
+	return s
+}
+
+// daemonLogSinkCheck reports WHERE bossd's logs actually are.
+//
+// It does not judge; it answers the question that cost an hour on 2026-09-03.
+// bossd logs through a lumberjack file sink AND (via io.MultiWriter) to stderr.
+// A daemon started detached has stderr on /dev/null, so the console half is
+// discarded — but the file half is untouched and every line is still recorded.
+// The trap is that the LaunchAgent's StandardErrorPath names a DIFFERENT file,
+// bossd.stderr.log, which such a daemon never opens: it sits there stale from
+// whichever daemon launchd last started, and a stale file at the configured path
+// reads exactly like "this daemon logged nothing".
+//
+// So the useful output is the live path, not a verdict. This check is
+// informational (always Ok) on purpose: a discarded stderr is normal for a
+// service and is not a fault, and an earlier draft of this check called it one —
+// it claimed the daemon wrote "no logs at all" while 52 matching lines sat in
+// the lumberjack file.
+func daemonLogSinkCheck() *bossanovav1.RepairDoctorCheck {
+	const name = "daemon log sink"
+
+	path := bossalog.LogPath("bossd")
+	if path == "" {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   name,
+			Ok:     true,
+			Detail: "no rotated log path could be resolved; bossd is logging to stderr only.",
+		}
+	}
+
+	detail := fmt.Sprintf("bossd's live log file is %s", path)
+	if info, err := os.Stat(path); err == nil {
+		detail += fmt.Sprintf(" (%d bytes, last written %s)", info.Size(), info.ModTime().UTC().Format(time.RFC3339))
+	} else {
+		detail += fmt.Sprintf(" (not readable: %v)", err)
+	}
+
+	// Naming the discarded stream matters: it is why the plist-configured
+	// stderr file is stale, which is the wrong turn this check exists to prevent.
+	if stderrInfo, statErr := os.Stderr.Stat(); statErr == nil {
+		if devNullInfo, nullErr := os.Stat(os.DevNull); nullErr == nil && os.SameFile(stderrInfo, devNullInfo) {
+			detail += fmt.Sprintf(". Its stderr is %s, so the LaunchAgent's stderr file is stale and is NOT where this daemon logs — read the path above instead", os.DevNull)
+		}
+	}
+
+	return &bossanovav1.RepairDoctorCheck{Name: name, Ok: true, Detail: detail + "."}
+}
+
+// githubWorkflowScopeCheckGated runs the workflow-scope check only when gh could
+// authenticate at all. Its remedy (`gh auth refresh -s workflow`) is the wrong
+// advice for a 401 — it would send an operator after a scope problem they do not
+// have — so an unauthenticated gh gets an explicit "not evaluated" pointing at
+// the check that owns the real cause.
+func githubWorkflowScopeCheckGated(ctx context.Context, authOK bool) *bossanovav1.RepairDoctorCheck {
+	if !authOK {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "github workflow permission",
+			Ok:     false,
+			Detail: "not evaluated — bossd's gh CLI is not authenticated (see the \"github auth\" check); scope cannot be read from an anonymous client.",
+		}
+	}
+	return githubWorkflowScopeCheck(ctx)
 }
 
 func githubWorkflowScopeCheck(ctx context.Context) *bossanovav1.RepairDoctorCheck {

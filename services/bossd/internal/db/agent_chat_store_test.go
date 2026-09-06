@@ -82,8 +82,10 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 
 	// A resumed headless run keeps the same primary chat row but points it at
 	// its newly started agent process.
-	if err := chatStore.UpdateAgentSessionID(ctx, chat.ID, "claude-abc-123", "claude-resumed-456"); err != nil {
-		t.Fatalf("update agent session id: %v", err)
+	if err := chatStore.RebindResumedChat(ctx, "claude-abc-123", RebindResumedChatParams{
+		NewAgentSessionID: strPtr("claude-resumed-456"),
+	}); err != nil {
+		t.Fatalf("rebind resumed chat: %v", err)
 	}
 	if _, err := chatStore.GetByAgentSessionID(ctx, "claude-abc-123"); !errors.Is(err, ErrAgentChatNotFound) {
 		t.Fatalf("old agent session id lookup err = %v, want ErrAgentChatNotFound", err)
@@ -97,19 +99,18 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 	}
 }
 
-func TestAgentChatStore_UpdateAgentSessionIDMissing(t *testing.T) {
-	db := setupTestDB(t)
-	chatStore := NewAgentChatStore(db)
-
-	err := chatStore.UpdateAgentSessionID(context.Background(), "missing-chat", "missing-agent", "resumed-agent")
-	if !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("UpdateAgentSessionID error = %v, want ErrAgentChatNotFound", err)
-	}
-}
-
-// A stale agent session ID may be shared by duplicate chat rows. Resuming one
-// session must not re-route the other row to the replacement run.
-func TestAgentChatStore_UpdateAgentSessionIDScopesUpdateToChatID(t *testing.T) {
+// TestAgentChatStore_RebindResumedChatScopesUpdateToNamedRow pins that a
+// rebind moves only the row whose agent_session_id the caller named. The
+// UPDATE has no other predicate, so a WHERE clause that ever widened -- or a
+// re-key that collided with a sibling -- would silently rewrite a chat
+// belonging to a different session.
+//
+// This property was previously pinned on UpdateAgentSessionID, whose (id,
+// old_agent_session_id) CAS pair has no analogue on RebindResumedChat; the
+// half of that test which asserted an unmatched id is reported rather than
+// applied now lives in TestAgentChatStore_RebindResumedChat's "missing row is
+// reported, not silently created" subtest.
+func TestAgentChatStore_RebindResumedChatScopesUpdateToNamedRow(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
@@ -123,41 +124,52 @@ func TestAgentChatStore_UpdateAgentSessionIDScopesUpdateToChatID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create primary session: %v", err)
 	}
-	duplicateSession, err := sessionStore.Create(ctx, CreateSessionParams{
-		RepoID: repo.ID, Title: "Duplicate", WorktreePath: "/tmp/wt/duplicate", BranchName: "feat/duplicate", BaseBranch: "main",
+	siblingSession, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Sibling", WorktreePath: "/tmp/wt/sibling", BranchName: "feat/sibling", BaseBranch: "main",
 	})
 	if err != nil {
-		t.Fatalf("create duplicate session: %v", err)
+		t.Fatalf("create sibling session: %v", err)
 	}
 	primaryChat, err := chatStore.Create(ctx, CreateAgentChatParams{SessionID: primarySession.ID, AgentSessionID: "stale-agent", Title: "Primary chat"})
 	if err != nil {
 		t.Fatalf("create primary chat: %v", err)
 	}
-	duplicateChat, err := chatStore.Create(ctx, CreateAgentChatParams{SessionID: duplicateSession.ID, AgentSessionID: "stale-agent", Title: "Duplicate chat"})
+	siblingChat, err := chatStore.Create(ctx, CreateAgentChatParams{SessionID: siblingSession.ID, AgentSessionID: "sibling-agent", Title: "Sibling chat"})
 	if err != nil {
-		t.Fatalf("create duplicate chat: %v", err)
+		t.Fatalf("create sibling chat: %v", err)
 	}
 
-	if err := chatStore.UpdateAgentSessionID(ctx, primaryChat.ID, "stale-agent", "resumed-agent"); err != nil {
-		t.Fatalf("update primary chat agent session id: %v", err)
+	resumedTitle := "Primary resumed"
+	if err := chatStore.RebindResumedChat(ctx, "stale-agent", RebindResumedChatParams{
+		NewAgentSessionID: strPtr("resumed-agent"),
+		Title:             &resumedTitle,
+	}); err != nil {
+		t.Fatalf("rebind primary chat: %v", err)
 	}
 
 	primaryChats, err := chatStore.ListBySession(ctx, primarySession.ID)
 	if err != nil {
 		t.Fatalf("list primary chats: %v", err)
 	}
+	if got := primaryChats[0].ID; got != primaryChat.ID {
+		t.Fatalf("primary chat id = %q, want %q (the rebind must update in place)", got, primaryChat.ID)
+	}
 	if got := primaryChats[0].AgentSessionID; got != "resumed-agent" {
 		t.Errorf("primary chat agent session id = %q, want resumed-agent", got)
 	}
-	duplicateChats, err := chatStore.ListBySession(ctx, duplicateSession.ID)
+
+	siblingChats, err := chatStore.ListBySession(ctx, siblingSession.ID)
 	if err != nil {
-		t.Fatalf("list duplicate chats: %v", err)
+		t.Fatalf("list sibling chats: %v", err)
 	}
-	if got := duplicateChats[0].ID; got != duplicateChat.ID {
-		t.Fatalf("duplicate chat id = %q, want %q", got, duplicateChat.ID)
+	if got := siblingChats[0].ID; got != siblingChat.ID {
+		t.Fatalf("sibling chat id = %q, want %q", got, siblingChat.ID)
 	}
-	if got := duplicateChats[0].AgentSessionID; got != "stale-agent" {
-		t.Errorf("duplicate chat agent session id = %q, want stale-agent", got)
+	if got := siblingChats[0].AgentSessionID; got != "sibling-agent" {
+		t.Errorf("sibling chat agent session id = %q, want sibling-agent (an unnamed row must not move)", got)
+	}
+	if got := siblingChats[0].Title; got != "Sibling chat" {
+		t.Errorf("sibling chat title = %q, want %q (an unnamed row must not move)", got, "Sibling chat")
 	}
 }
 
@@ -963,11 +975,11 @@ func TestAgentChatStore_NullTmuxNameIsRoutableButNotTmuxListed(t *testing.T) {
 
 // TestAgentChatStore_DeleteByAgentSessionIDDropsProxyToken covers the chat half
 // of the durable registry's eviction. proxy_tokens.agent_session_id carries no
-// foreign key — agent_chats.agent_session_id is indexed but not UNIQUE, and
-// SQLite requires a unique parent key — so nothing cascades here and the chat
-// delete has to issue the DELETE itself. Without it, deleting a chat would leave
-// a row whose rebuild resolves a live pane's token to a chat that no longer
-// exists.
+// foreign key: agent_chats.agent_session_id was not a legal parent key when that
+// table was added, and 20260904000000 made it UNIQUE without adding one. Nothing
+// cascades here, so the chat delete has to issue the DELETE itself. Without it,
+// deleting a chat would leave a row whose rebuild resolves a live pane's token
+// to a chat that no longer exists.
 func TestAgentChatStore_DeleteByAgentSessionIDDropsProxyToken(t *testing.T) {
 	db := setupTestDB(t)
 	chatStore := NewAgentChatStore(db)
@@ -1024,4 +1036,168 @@ func TestAgentChatStore_DeleteByAgentSessionIDDropsProxyToken(t *testing.T) {
 	if rows, err = tokenStore.List(ctx); err != nil || len(rows) != 1 {
 		t.Errorf("rows after no-op delete = %d (err %v), want 1", len(rows), err)
 	}
+}
+
+// TestAgentChatStore_RebindResumedChat is the store-level regression test for
+// BOS-1143. Resume used to delete the chat row and Create a replacement, which
+// erased every column the caller did not re-supply -- turning an interrupted
+// codex chat into a claude one. RebindResumedChat writes only the fields set on
+// params; everything else keeps the value the row already carries.
+func TestAgentChatStore_RebindResumedChat(t *testing.T) {
+	db := setupTestDB(t)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, NewRepoStore(db))
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Rebind test",
+		WorktreePath: "/tmp/wt/rebind",
+		BranchName:   "feat/rebind",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	acct := "acct-1"
+	provider := "codex-rollout-abc"
+	chat, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:         sess.ID,
+		AgentSessionID:    "agent-old",
+		ProviderSessionID: &provider,
+		AgentName:         "codex",
+		Title:             "Original title",
+		AccountID:         &acct,
+		Model:             "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	// MarkStartFailed addresses the row by agent_session_id and ignores
+	// RowsAffected, so passing chat.ID here would match nothing and silently
+	// seed nothing -- which would make the ClearStartError assertion below pass
+	// vacuously. Assert the seed landed before relying on it.
+	if err := chatStore.MarkStartFailed(ctx, "agent-old", "prior boot failure"); err != nil {
+		t.Fatalf("mark start failed: %v", err)
+	}
+	if seeded, err := chatStore.GetByAgentSessionID(ctx, "agent-old"); err != nil {
+		t.Fatalf("read back start_error seed: %v", err)
+	} else if seeded.StartError == nil || *seeded.StartError != "prior boot failure" {
+		t.Fatalf("start_error seed did not take: %v; ClearStartError could not be observed", seeded.StartError)
+	}
+
+	t.Run("absent fields are preserved", func(t *testing.T) {
+		title := "Resumed title"
+		if err := chatStore.RebindResumedChat(ctx, "agent-old", RebindResumedChatParams{
+			Title:           &title,
+			ClearStartError: true,
+		}); err != nil {
+			t.Fatalf("rebind: %v", err)
+		}
+		got, err := chatStore.GetByAgentSessionID(ctx, "agent-old")
+		if err != nil {
+			t.Fatalf("get after rebind: %v", err)
+		}
+		if got.Title != title {
+			t.Errorf("title = %q, want %q", got.Title, title)
+		}
+		// The columns the defect erased.
+		if got.AgentName != "codex" {
+			t.Errorf("agent_name = %q, want codex preserved", got.AgentName)
+		}
+		if got.Model != "gpt-5" {
+			t.Errorf("model = %q, want gpt-5 preserved", got.Model)
+		}
+		if got.AccountID == nil || *got.AccountID != acct {
+			t.Errorf("account_id = %v, want %q preserved", got.AccountID, acct)
+		}
+		if got.ProviderSessionID == nil || *got.ProviderSessionID != provider {
+			t.Errorf("provider_session_id = %v, want %q preserved", got.ProviderSessionID, provider)
+		}
+		if got.SessionID != sess.ID {
+			t.Errorf("session_id = %q, want %q preserved", got.SessionID, sess.ID)
+		}
+		// ClearStartError replaces the implicit reset the old delete+create did:
+		// without it a previously-failed chat stays badged as failed forever.
+		if got.StartError != nil {
+			t.Errorf("start_error = %v, want cleared by ClearStartError", got.StartError)
+		}
+	})
+
+	t.Run("set fields are written", func(t *testing.T) {
+		newID := "agent-new"
+		newAgent := "claude"
+		newModel := "sonnet"
+		newAcct := "acct-2"
+		newProvider := "claude-uuid-def"
+		newAcctPtr, newProviderPtr := &newAcct, &newProvider
+		if err := chatStore.RebindResumedChat(ctx, "agent-old", RebindResumedChatParams{
+			NewAgentSessionID: &newID,
+			AgentName:         &newAgent,
+			Model:             &newModel,
+			AccountID:         &newAcctPtr,
+			ProviderSessionID: &newProviderPtr,
+		}); err != nil {
+			t.Fatalf("rebind: %v", err)
+		}
+		got, err := chatStore.GetByAgentSessionID(ctx, newID)
+		if err != nil {
+			t.Fatalf("get after re-key: %v", err)
+		}
+		if got.ID != chat.ID {
+			t.Errorf("re-key created a new row: id = %q, want %q", got.ID, chat.ID)
+		}
+		if got.AgentName != newAgent || got.Model != newModel {
+			t.Errorf("agent_name/model = %q/%q, want %q/%q", got.AgentName, got.Model, newAgent, newModel)
+		}
+		if got.AccountID == nil || *got.AccountID != newAcct {
+			t.Errorf("account_id = %v, want %q", got.AccountID, newAcct)
+		}
+		if got.ProviderSessionID == nil || *got.ProviderSessionID != newProvider {
+			t.Errorf("provider_session_id = %v, want %q", got.ProviderSessionID, newProvider)
+		}
+		if _, err := chatStore.GetByAgentSessionID(ctx, "agent-old"); !errors.Is(err, ErrAgentChatNotFound) {
+			t.Errorf("old id still resolves after re-key: err = %v", err)
+		}
+	})
+
+	t.Run("nullable columns can be cleared", func(t *testing.T) {
+		var none *string
+		if err := chatStore.RebindResumedChat(ctx, "agent-new", RebindResumedChatParams{
+			AccountID:         &none,
+			ProviderSessionID: &none,
+		}); err != nil {
+			t.Fatalf("rebind: %v", err)
+		}
+		got, err := chatStore.GetByAgentSessionID(ctx, "agent-new")
+		if err != nil {
+			t.Fatalf("get after clear: %v", err)
+		}
+		if got.AccountID != nil {
+			t.Errorf("account_id = %v, want NULL", got.AccountID)
+		}
+		if got.ProviderSessionID != nil {
+			t.Errorf("provider_session_id = %v, want NULL", got.ProviderSessionID)
+		}
+	})
+
+	t.Run("missing row is reported, not silently created", func(t *testing.T) {
+		err := chatStore.RebindResumedChat(ctx, "agent-nonexistent", RebindResumedChatParams{})
+		if !errors.Is(err, ErrAgentChatNotFound) {
+			t.Fatalf("err = %v, want ErrAgentChatNotFound", err)
+		}
+		if !strings.Contains(err.Error(), "agent-nonexistent") {
+			t.Errorf("error %q does not name the agent_session_id", err.Error())
+		}
+		// A rebind that matched nothing must not have invented a row.
+		chats, err := chatStore.ListBySession(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(chats) != 1 {
+			t.Errorf("chats = %d, want 1 (the failed rebind created nothing)", len(chats))
+		}
+	})
 }

@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "title": "BOS-1094 — one Enter defers a Linear selection until search settles and activates a filtered PR immediately",
+  "fixture": { "preset": "async-create" },
+  "scenes": [
+    {
+      "id": "armed-enter",
+      "title": "Enter arms activation while the Linear search is outstanding",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 15000,
+          "caption": "The seeded session board is ready."
+        },
+        {
+          "daemon": {
+            "action": "add_repo",
+            "repo": {
+              "id": "repo-bos1094",
+              "displayName": "aaa-linear-proof",
+              "localPath": "/tmp/aaa-linear-proof",
+              "linearApiKey": "lin_proof_bos1094"
+            }
+          },
+          "caption": "Add a Linear-enabled repo without changing the shared fixture preset."
+        },
+        {
+          "daemon": {
+            "action": "add_prs",
+            "prs": {
+              "repoId": "repo-bos1094",
+              "prs": [
+                { "number": 1094, "title": "Single-enter PR selection", "headBranch": "bos-1094" }
+              ]
+            }
+          },
+          "caption": "Seed the PR used by the sibling flow."
+        },
+        {
+          "daemon": {
+            "action": "add_tracker_issues",
+            "trackerIssues": {
+              "repoId": "repo-bos1094",
+              "issues": [{ "externalId": "OLD-1", "title": "Previously loaded result" }]
+            }
+          },
+          "caption": "Seed the stale issue page loaded before the search."
+        },
+        { "key": "n", "caption": "Open the new-session wizard." },
+        {
+          "waitFor": "Select a repository",
+          "timeoutMs": 10000,
+          "caption": "The repo picker is ready."
+        },
+        { "key": "enter", "caption": "Select aaa-linear-proof, the alphabetically first repo." },
+        {
+          "waitFor": "Work on a Linear issue",
+          "timeoutMs": 10000,
+          "caption": "The Linear-enabled session type is visible."
+        },
+        { "key": "down", "caption": "Move from new PR to existing PR." },
+        { "key": "down", "caption": "Move from existing PR to Linear issue." },
+        { "key": "enter", "caption": "Open the Linear issue picker." },
+        {
+          "waitFor": "Previously loaded result",
+          "timeoutMs": 10000,
+          "caption": "The initial server page is loaded."
+        },
+        {
+          "daemon": {
+            "action": "set_rpc_stall",
+            "stallMs": 10000,
+            "procedure": "ListTrackerIssues"
+          },
+          "caption": "Hold the next server-side issue search in flight."
+        },
+        { "key": "/", "caption": "Focus the issue filter." },
+        { "type": "BOS-1094", "caption": "Type a query absent from the loaded page." },
+        { "key": "enter", "caption": "Press Enter once while the matching search is outstanding." },
+        {
+          "waitFor": "starting when results land…",
+          "timeoutMs": 10000,
+          "caption": "The single Enter is visibly armed."
+        },
+        {
+          "expect": [
+            {
+              "text": "starting when results land…",
+              "match": "normalized",
+              "label": "armed activation status"
+            },
+            {
+              "text": "Work on a Linear issue",
+              "match": "normalized",
+              "label": "Linear issue flow"
+            },
+            { "text": "no matches", "match": "normalized", "label": "empty stale page" },
+            {
+              "text": "^(?![\\s\\S]*Previously loaded result)[\\s\\S]*starting when results land…",
+              "match": "regex",
+              "label": "the armed frame contains no stale result row"
+            }
+          ],
+          "caption": "The picker waits for the current query rather than activating stale rows."
+        }
+      ]
+    },
+    {
+      "id": "deferred-activation",
+      "title": "The matching result starts creation without another keypress",
+      "steps": [
+        {
+          "daemon": {
+            "action": "add_tracker_issues",
+            "trackerIssues": {
+              "repoId": "repo-bos1094",
+              "issues": [
+                { "externalId": "BOS-1094", "title": "BOS-1094 deferred activation result" }
+              ]
+            }
+          },
+          "caption": "Seed the issue that the stalled query will return."
+        },
+        {
+          "daemon": { "action": "set_rpc_stall", "stallMs": 0 },
+          "caption": "Release ListTrackerIssues; no keyboard step follows."
+        },
+        {
+          "waitFor": "Creating a new session…",
+          "timeoutMs": 15000,
+          "caption": "The settled result consumes the armed Enter and advances automatically."
+        },
+        {
+          "expect": [
+            { "text": "initializing", "match": "normalized", "label": "creating phase" },
+            {
+              "text": "Creating a new session…",
+              "match": "normalized",
+              "label": "session creation started"
+            },
+            {
+              "text": "BOS-1094 deferred activation result",
+              "match": "normalized",
+              "label": "selected issue title"
+            }
+          ],
+          "caption": "Deferred activation fired without a second Enter."
+        },
+        {
+          "waitFor": "Return an accepted session early",
+          "timeoutMs": 15000,
+          "caption": "Let the scripted create settle before navigating away."
+        },
+        { "key": "esc", "caption": "Detach from the newly created session." },
+        { "waitFor": "CHAT", "timeoutMs": 10000, "caption": "The session chat picker is ready." },
+        { "key": "esc", "caption": "Return from the chat picker to the board." },
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "The board is ready for the sibling PR flow."
+        }
+      ]
+    },
+    {
+      "id": "pr-single-enter",
+      "title": "Enter activates the focused PR directly from its filter",
+      "steps": [
+        { "key": "n", "caption": "Open a second new-session wizard." },
+        {
+          "waitFor": "Select a repository",
+          "timeoutMs": 10000,
+          "caption": "The repo picker is ready."
+        },
+        { "key": "enter", "caption": "Select aaa-linear-proof." },
+        {
+          "waitFor": "Work on an existing PR",
+          "timeoutMs": 10000,
+          "caption": "The type chooser is ready."
+        },
+        { "key": "down", "caption": "Focus Work on an existing PR." },
+        { "key": "enter", "caption": "Open the PR picker." },
+        {
+          "waitFor": "Single-enter PR selection",
+          "timeoutMs": 10000,
+          "caption": "The seeded PR is focused."
+        },
+        {
+          "expect": [
+            { "text": "[enter] select", "match": "normalized", "label": "PR selection action" }
+          ],
+          "caption": "The PR picker advertises direct Enter activation."
+        },
+        { "key": "/", "caption": "Focus the PR filter." },
+        { "type": "Single-enter", "caption": "Narrow to the seeded PR." },
+        { "key": "enter", "caption": "Activate the focused PR with one Enter." },
+        {
+          "waitFor": "Creating a new session…",
+          "timeoutMs": 10000,
+          "caption": "One filtered Enter starts creation."
+        },
+        {
+          "expect": [
+            { "text": "initializing", "match": "normalized", "label": "creating phase" },
+            {
+              "text": "Creating a new session…",
+              "match": "normalized",
+              "label": "PR selection activated"
+            }
+          ],
+          "caption": "The PR filter no longer consumes a separate commit Enter."
+        }
+      ]
+    }
+  ]
+}

@@ -4,6 +4,7 @@ go_library(
     name = "accountwiring",
     srcs = [
         "adapters.go",
+        "credcheck.go",
         "smoke.go",
     ],
     importpath = "github.com/recurser/bossd/internal/accountwiring",
@@ -12,7 +13,9 @@ go_library(
         "//lib/bossalib/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/models",
+        "//lib/bossalib/safego",
         "//services/bossd/internal/account",
+        "//services/bossd/internal/accountcred",
         "//services/bossd/internal/agent",
         "//services/bossd/internal/credmaterialize",
         "//services/bossd/internal/db",
@@ -29,14 +32,24 @@ go_test(
     name = "accountwiring_test",
     srcs = [
         "adapters_test.go",
+        "ambientauth_test.go",
+        "credcheck_test.go",
         "smoke_test.go",
+    ],
+    data = [
+        # Read (not imported) by TestRunnerUnavailableMarkersMatchPluginSource
+        # so the cross-boundary sentinel drift gate is live under Bazel too.
+        "//plugins/bossd-plugin-codex:unavailable.go",  # keep: cross-module source read, never a Go dep
     ],
     embed = [":accountwiring"],
     deps = [
+        "//lib/bossalib/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/models",
         "//services/bossd/internal/account",
+        "//services/bossd/internal/accountcred",
         "//services/bossd/internal/agent",
+        "//services/bossd/internal/credmaterialize",
         "//services/bossd/internal/db",
         "//services/bossd/internal/session",
         "@com_github_google_uuid//:uuid",

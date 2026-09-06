@@ -13,7 +13,7 @@ TUI, and the `bosso` server. Each one writes newline-delimited JSON to a rotated
 file, and `boss tail` reads those files for you so you never have to remember
 where they are.
 
-Agent output — what Claude or Codex actually printed in a session — is a
+Agent output (what Claude or Codex actually printed in a session) is a
 **separate** surface, stored elsewhere in a different format, so you will not
 find it in `bossd.log`. `boss tail` reads it too, but you have to ask for it by
 agent-session id. See
@@ -51,7 +51,7 @@ and only these three carry service logs:
 | `boss`  | Every `boss` command except `boss tail` itself, TUI included. It logs to file only, so this is the only place its records appear. |
 | `bosso` | The server backing the web UI.                                                                                                    |
 
-Anything else is read as an **agent-session id**, which selects one agent log —
+Anything else is read as an **agent-session id**, which selects one agent log;
 see [Agent logs](#agent-logs) below.
 
 Name a source explicitly to choose which one you read:
@@ -69,7 +69,7 @@ cli="boss tail bosso"
 />
 
 `boss tail` always reads the log files on the machine you run it from. It is not
-a daemon call, so the global `--remote` and `--host` flags do not redirect it —
+a daemon call, so the global `--remote` and `--host` flags do not redirect it;
 to read another machine's logs, run `boss tail` over there.
 
 A source that is neither a service nor a plausible agent-session id is rejected
@@ -92,7 +92,7 @@ share a timestamp are ordered `bossd`, then `boss`, then `bosso`:
 cli="boss tail --all -n 50"
 />
 
-A source and `--all` are mutually exclusive — `--all` already includes every
+A source and `--all` are mutually exclusive; `--all` already includes every
 source, so asking for both is a mistake rather than a narrowing:
 
 <CommandTabs
@@ -144,7 +144,7 @@ cli="boss tail -f | head -20"
 Both of these are in the command's own `--help` text, because both quietly
 mislead if you assume otherwise.
 
-**`-n` counts physical lines read from each source _before_ filtering.** It is
+**`-n` counts physical lines** read from each source _before_ filtering. It is
 not "show me 10 matches". `boss tail -n 10 --level error` reads the last 10
 lines and then discards the ones that are not errors, so it can legitimately
 print nothing at all even though the log is full of errors further back. When
@@ -156,7 +156,7 @@ cli="boss tail -n 2000 --level error"
 
 **Non-JSON lines always pass filters.** Anything that reaches a log file without
 being structured JSON is not parseable, so no filter can decide whether it
-matches — and hiding it would be exactly the wrong outcome. Those lines are
+matches, and hiding it would be exactly the wrong outcome. Those lines are
 always shown verbatim, marked with the source service:
 
 ```
@@ -177,7 +177,7 @@ it goes to the journal (`journalctl --user -u bossd.service`).
 report or a `grep` across a long history.
 
 The log directory is `$XDG_STATE_HOME/bossanova/logs` if `XDG_STATE_HOME` is
-set, and `~/.local/state/bossanova/logs` otherwise (on both macOS and Linux —
+set, and `~/.local/state/bossanova/logs` otherwise (on both macOS and Linux;
 `XDG_STATE_HOME` is normally unset on macOS, so the fallback is what you have).
 Each service writes `<service>.log` there:
 
@@ -192,7 +192,7 @@ log rather than an error, so `boss tail bosso` simply prints nothing and
 `--all` still works with only two of the three files present.
 
 Rotation is size-based. A log rotates when it reaches **5 MB**, and **one**
-backup is kept, uncompressed — so each service retains roughly 10 MB, and the
+backup is kept, uncompressed, so each service retains roughly 10 MB, and the
 three services together are bounded at about 30 MB. Backups are written beside
 the current file with a timestamp in the name, matching `<service>-*.log`:
 
@@ -216,7 +216,7 @@ cli="boss tail --all -n 20000 --json > /tmp/bossanova-logs.ndjson"
 ## Agent and chat logs are a different surface
 
 `bossd`, `boss` and `bosso` carry **service logs only**. They record what
-Bossanova did, never what the coding agent printed — so a service log that looks
+Bossanova did, never what the coding agent printed, so a service log that looks
 silent is not evidence that the agent is idle, only that the data lives in a
 different file. Agent output is captured separately:
 
@@ -224,27 +224,27 @@ different file. Agent output is captured separately:
   terminal capture of the agent's tmux pane, mirrored with `tmux pipe-pane`: not
   JSON, no per-line timestamps, and full of terminal escape sequences. A
   **headless** run instead writes one JSON object per output line,
-  `{"ts": "…", "text": "…"}`, covering the agent's stdout **and** stderr, with
+  `{"ts": "…", "text": "…"}`, covering the agent's stdout and stderr, with
   occasional `[runner]` diagnostics from the agent runner interleaved in the
-  same shape. The agent's own output is the opaque string in `text` — for Claude that
+  same shape. The agent's own output is the opaque string in `text`; for Claude that
   is a line of `--output-format stream-json`, so reading it means unwrapping
   twice. Neither format is the structured service record that `boss tail`
   renders.
 - There is **one file per chat**, named after the chat's agent-session UUID:
   `<agent-session-id>.log`. The same directory also holds
-  `repair-<session-id>.log` for the repair plugin's own runs — note that those
+  `repair-<session-id>.log` for the repair plugin's own runs; note that those
   are keyed by _session_ id, not agent-session id.
 - The files live in an `agent-logs` directory next to your worktree base
-  directory — the sibling of `worktree_base_dir` from your settings. The full
+  directory, the sibling of `worktree_base_dir` from your settings. The full
   path form is `<worktree_base_dir>/../agent-logs/<agent-session-id>.log`; with
   the default `worktree_base_dir` of `~/.bossanova/worktrees`, that directory is
   `~/.bossanova/agent-logs`.
-- **`boss tail` reads them too**, by agent-session id — see [Agent
+- **`boss tail` reads them too**, by agent-session id; see [Agent
   logs](#agent-logs) below.
 
 So: to see why a session failed to _start_, read `bossd.log` via `boss tail`. To
-see what the agent _said_, read the chat — attach to the session, or read the
-transcript — or point `boss tail` at the agent-session id, which is the quickest
+see what the agent _said_, read the chat (attach to the session, or read the
+transcript) or point `boss tail` at the agent-session id, which is the quickest
 route for a headless run that is still in flight.
 
 To inspect the run as telemetry instead of text, use `boss cost <session-id>`.
@@ -264,14 +264,14 @@ cli="boss tail 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607 -f"
 />
 
 `boss tail` detects which of the two formats above the file holds, **per file**,
-from its first non-empty line — the caller does not have to know whether the
+from its first non-empty line; the caller does not have to know whether the
 chat ran interactively or headless. JSON lines are unwrapped to their `text`,
 raw captures have their terminal escape sequences stripped, and either way the
 result prints as an unstructured line, so a malformed entry is shown verbatim
 rather than dropped.
 
 Because agent output carries no level, repo or plugin, it is never removed by
-`--level`, `--repo` or `--plugin` — the same rule that keeps raw diagnostics
+`--level`, `--repo` or `--plugin`, the same rule that keeps raw diagnostics
 visible. Filtering a mixed tail narrows the service records only.
 
 Naming several sources interleaves them by timestamp, which is the point when
@@ -282,8 +282,8 @@ cli="boss tail bossd 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607"
 />
 
 That raises the question of what timestamp an interactive capture has, since it
-has none of its own. The rule: **an untimestamped line inherits the last
-timestamp seen in its own file**, and a line with nothing before it inherits the
+has none of its own. The rule: an untimestamped line **inherits** the last
+timestamp seen in its own file, and a line with nothing before it inherits the
 log file's modification time. A raw line therefore sits next to the output it
 followed. It is never left at the zero time, which would sort the whole capture
 to the Unix epoch and float it ahead of every other source.
@@ -293,7 +293,7 @@ directory holds one file per agent session ever run, so merging all of them is
 not a useful default. Name the sessions you want instead.
 
 An agent-session id whose log does not exist yet is still a valid source under
-`-f` — the follower waits for the agent to create it. If the agent-logs
+`-f`; the follower waits for the agent to create it. If the agent-logs
 directory itself is absent, which is simply a Bossanova that has never run an
 agent, `boss tail` says so and exits successfully rather than failing:
 
@@ -311,7 +311,7 @@ matching field equals the value you pass. Matching is case-insensitive, and
 
 `repo_id` is always a repository ID, but the `repo` field is written by several
 subsystems and may hold the repository ID, its local path, its display name, or
-— from `bosso` — its origin URL. The rendered line shows `repo=…` for the `repo`
+(from `bosso`) its origin URL. The rendered line shows `repo=…` for the `repo`
 field only, so a record carrying just `repo_id` still matches `--repo` but
 prints no repo token at all. Use `--json` to see which of the two a given record
 actually carries before settling on a filter value.
@@ -365,7 +365,7 @@ streams its new records:
 cli="boss tail --follow -n 200 --plugin repair"
 />
 
-**Count errors by plugin.** `--json` plus `jq` handles anything the built-in
+**Count errors** by plugin. `--json` plus `jq` handles anything the built-in
 filters do not:
 
 <CommandTabs
@@ -379,7 +379,7 @@ at once, ordered by timestamp:
 cli="boss tail --all --follow -n 100"
 />
 
-**Extract just the message text** from a merged JSON stream, tagged with the
+Extract just the **message text** from a merged JSON stream, tagged with the
 service it came from:
 
 <CommandTabs

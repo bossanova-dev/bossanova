@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/accountflow"
@@ -71,6 +72,16 @@ type tuiPrompter struct {
 	ctx      context.Context
 	progress chan string
 	requests chan promptRequest
+
+	// mu guards last, which records the most recent Say line so a caller can
+	// read the flow's closing verdict without racing the render loop for it.
+	//
+	// The channel alone cannot serve that: the reader tea.Cmd may already hold
+	// the final line as an in-flight message when flowDoneMsg is processed, and
+	// a full buffer or a cancelled ctx drops a line outright. Both make the last
+	// thing the flow SAID unrecoverable from the tail it managed to render.
+	mu   sync.Mutex
+	last string
 }
 
 // progressBuffer bounds how many un-drained Say lines the bridge holds. The
@@ -147,10 +158,23 @@ func hostAwareFlowText(s string) string {
 
 func (p *tuiPrompter) Say(format string, args ...any) {
 	line := hostAwareFlowText(fmt.Sprintf(format, args...))
+	// Record before the send, so the line survives a dropped delivery.
+	p.mu.Lock()
+	p.last = line
+	p.mu.Unlock()
 	select {
 	case p.progress <- line:
 	case <-p.ctx.Done():
 	}
+}
+
+// lastSaid returns the most recent Say line, or "" when the flow said nothing.
+// Read only after the flow goroutine has returned: Say happens-before the flow
+// returns, which happens-before the flowDoneMsg that consumes this.
+func (p *tuiPrompter) lastSaid() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last
 }
 
 // ask sends req and blocks for the model's answer, honoring ctx cancellation so

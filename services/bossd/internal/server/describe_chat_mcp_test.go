@@ -110,7 +110,7 @@ func TestDescribeChatMCP_ProbeEnvMatchesSharedSpawnHelper(t *testing.T) {
 	// path does, mode included. The probe ran under skipAccountUseRecord, so a
 	// difference here would mean the account-use mode had leaked into the env
 	// derivation — which is precisely what must never happen.
-	want := srv.chatSpawnEnv(context.Background(), sess, chat, srv.defaultAccountIDForChat(context.Background(), sess, chat), "wake chat", recordAccountUse)
+	want, _ := srv.chatSpawnEnv(context.Background(), sess, chat, srv.defaultAccountIDForChat(context.Background(), sess, chat), "wake chat", recordAccountUse)
 	got := prober.gotRequest.GetProbeEnv()
 	if !maps.Equal(got, want) {
 		t.Fatalf("probe_env keys/values differ from the shared spawn helper's output\n got: %v\nwant: %v", got, want)
@@ -410,7 +410,7 @@ func TestDescribeChatMCP_DoesNotRecordAccountUse(t *testing.T) {
 	}
 
 	// The spawn/wake mode, through the same helper and the same spy, DOES record.
-	srv.chatSpawnEnv(context.Background(), sess, chat, "", "wake chat", recordAccountUse)
+	_, _ = srv.chatSpawnEnv(context.Background(), sess, chat, "", "wake chat", recordAccountUse)
 	if reg.touchCalls != 1 || reg.touchedID != accountID {
 		t.Fatalf("wake-mode chatSpawnEnv last-used = (calls=%d id=%q), want exactly one touch of %q — this half is what makes the probe assertion above non-vacuous", reg.touchCalls, reg.touchedID, accountID)
 	}

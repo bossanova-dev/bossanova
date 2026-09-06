@@ -20,7 +20,9 @@ const (
 	reasonIdleStatusNotIdle     = "idleStatusNotIdle"
 	reasonIdleNoOutputClock     = "idleNoOutputClock"
 	reasonIdleWithinWindow      = "idleWithinWindow"
-	reasonIdleNoProviderSession = "idleNoProviderSession"
+	reasonIdleAttachedClient    = "idleAttachedClient"
+	reasonIdleNoResumeSessionID = "idleNoResumeSessionID"
+	reasonIdleTranscriptOracle  = "idleTranscriptOracleMissing"
 	reasonIdleTranscriptMissing = "idleTranscriptMissing"
 	reasonIdleFirstStrike       = "idleFirstStrike"
 	reasonIdleTooLong           = "idleTooLong"
@@ -196,6 +198,16 @@ type idleReapEvidence struct {
 	// because answering it costs a plugin RPC per candidate. A nil probe fails
 	// closed: an oracle that could not be wired keeps the pane.
 	transcriptPresent func() bool
+
+	// resumeSessionID is resolved once at evidence assembly, using the same
+	// resolver a wake uses: ProviderSessionID when populated, AgentSessionID
+	// otherwise. The predicate and probe must not derive this independently.
+	resumeSessionID string
+
+	// attachedClients is tmux's own session_attached count. A quiet human
+	// reading an attached pane can produce no output for the full idle window;
+	// that is still a live pane, so it keeps before any transcript RPC.
+	attachedClients int
 }
 
 // evaluateIdleReap decides whether one resolved pane may be reaped for
@@ -236,14 +248,20 @@ func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duratio
 		return false, reasonIdleWithinWindow, idleFor
 	}
 
-	// D5. Waking a chat with no provider session id, or whose transcript is
-	// gone, yields a fresh agent with no memory of the conversation. That is
-	// context destruction, not memory reclamation, so such a chat keeps
-	// regardless of age.
-	if ev.owner.chat.ProviderSessionID == nil || *ev.owner.chat.ProviderSessionID == "" {
-		return false, reasonIdleNoProviderSession, idleFor
+	// D5, revised by BOS-1179. Waking a chat is safe when the transcript
+	// exists at the resume id the wake would actually use. A provider id is
+	// only one possible resume id and is absent by design for many Claude
+	// chats, so it is not an eligibility signal.
+	if ev.attachedClients > 0 {
+		return false, reasonIdleAttachedClient, idleFor
 	}
-	if ev.transcriptPresent == nil || !ev.transcriptPresent() {
+	if ev.resumeSessionID == "" {
+		return false, reasonIdleNoResumeSessionID, idleFor
+	}
+	if ev.transcriptPresent == nil {
+		return false, reasonIdleTranscriptOracle, idleFor
+	}
+	if !ev.transcriptPresent() {
 		return false, reasonIdleTranscriptMissing, idleFor
 	}
 

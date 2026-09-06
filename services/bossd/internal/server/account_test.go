@@ -17,6 +17,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
@@ -54,6 +55,7 @@ func (r recordingProxyRegistrar) ForgetAllBearers()                             
 func (r recordingProxyRegistrar) AdoptToken(string, string)                        {}
 func (r recordingProxyRegistrar) AdoptTokenForChat(string, string, string, string) {}
 func (r recordingProxyRegistrar) RebuildTokenRegistry(context.Context) error       { return nil }
+func (r recordingProxyRegistrar) RetargetChatToken(_, _, _, _ string)              {}
 
 // recordingSmoke logs the TestAccount live-smoke into a shared eventRecorder.
 type recordingSmoke struct{ rec *eventRecorder }
@@ -82,13 +84,31 @@ type lockedFakeCredStore struct {
 	*fakeCredStore
 	lockMu    sync.Mutex
 	lockCalls int
+	heldMu    sync.Mutex
+	held      bool
 }
 
 func (f *lockedFakeCredStore) WithCredentialLock(_ string, fn func() error) error {
 	f.lockMu.Lock()
 	defer f.lockMu.Unlock()
 	f.lockCalls++
+	f.setHeld(true)
+	defer f.setHeld(false)
 	return fn()
+}
+
+// heldMu is deliberately NOT lockMu: lockHeld is called from inside fn(), which
+// runs while lockMu is held, and sync.Mutex is not reentrant.
+func (f *lockedFakeCredStore) setHeld(v bool) {
+	f.heldMu.Lock()
+	f.held = v
+	f.heldMu.Unlock()
+}
+
+func (f *lockedFakeCredStore) lockHeld() bool {
+	f.heldMu.Lock()
+	defer f.heldMu.Unlock()
+	return f.held
 }
 
 func (f *lockedFakeCredStore) credentialLockCalls() int {
@@ -819,6 +839,65 @@ func TestRefreshAccountUsesOptionalCredentialStoreLock(t *testing.T) {
 	}
 }
 
+// authCheckClearSpy wraps the real account store so a test can observe the
+// moment ClearAuthCheck runs. It embeds db.AccountStore rather than
+// reimplementing it, so a widening of that interface cannot silently skip the
+// spy, and it forwards to the wrapped store's own authCheckClearer.
+type authCheckClearSpy struct {
+	db.AccountStore
+	observe func()
+}
+
+func (s *authCheckClearSpy) ClearAuthCheck(ctx context.Context, id string) error {
+	if s.observe != nil {
+		s.observe()
+	}
+	clearer, ok := s.AccountStore.(authCheckClearer)
+	if !ok {
+		return nil
+	}
+	return clearer.ClearAuthCheck(ctx, id)
+}
+
+// TestRefreshAccountClearsAuthCheckInsideCredentialLock pins the ordering that
+// keeps a refresh from erasing a verdict about the credential it just wrote.
+//
+// The maintainer takes its baseline credential generation under this same lock,
+// so with the clear inside it a concurrent verification either baselines before
+// the save — and is discarded as stale — or after the clear, where its verdict
+// describes the stored credential and must stand. With the clear outside the
+// lock there is a window between the two in which a verification of the
+// REPLACEMENT commits a legitimate auth_invalid verdict that the clear then
+// erases, handing a known-bad credential back to rotation until the next sweep.
+func TestRefreshAccountClearsAuthCheckInsideCredentialLock(t *testing.T) {
+	creds := &lockedFakeCredStore{fakeCredStore: newFakeCredStore()}
+	srv, accts := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "refresh-clear-under-lock", []byte("old-token"))
+
+	cleared, heldAtClear := 0, 0
+	srv.accounts = &authCheckClearSpy{AccountStore: accts, observe: func() {
+		cleared++
+		if creds.lockHeld() {
+			heldAtClear++
+		}
+	}}
+
+	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         acct.Id,
+		Credential: []byte("new-token"),
+	})); err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+
+	if cleared != 1 {
+		t.Fatalf("ClearAuthCheck calls = %d, want 1", cleared)
+	}
+	if heldAtClear != 1 {
+		t.Fatal("the auth-check clear ran outside the per-account credential lock; " +
+			"a verification of the replacement credential can commit auth_invalid in that window and be erased by this clear")
+	}
+}
+
 // TestRefreshAccountForgetsProxyBearersAfterSaveBeforeTest proves the BOS-484
 // wiring: RefreshAccount drops every sticky failover-proxy bearer AFTER the new
 // credential is saved and BEFORE the optional TestAccount live-smoke, so the
@@ -928,6 +1007,147 @@ func TestRefreshAccountRestoresFailedHealth(t *testing.T) {
 	}
 	if got.Health != models.AccountHealthOK {
 		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthOK)
+	}
+}
+
+// TestRefreshAccountClearsAuthInvalidWithoutTestAfterSave covers the CLI
+// default (test_after_save unset). Replacing the credential of an auth-invalid
+// account must withdraw the durable verdict: it describes bytes that are no
+// longer stored, and while it stands the resolver benches the account in both
+// selection tiers and refuses to materialize it.
+//
+// The assertion is against the STORE ROW on purpose. accountToProto omits
+// AuthCheck entirely when the outcome is unknown, so a response-only check
+// cannot tell "cleared" from "never populated" and would pass without the fix.
+func TestRefreshAccountClearsAuthInvalidWithoutTestAfterSave(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, accts := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "refresh-clears-auth", []byte("old-token"))
+
+	authStore, ok := accts.(*db.SQLiteAccountStore)
+	if !ok {
+		t.Fatalf("test harness store is %T, want *db.SQLiteAccountStore", accts)
+	}
+	checkedAt := time.Now().Add(-time.Minute).UTC()
+	if err := authStore.RecordAuthCheck(context.Background(), acct.Id, models.AuthCheck{
+		CheckedAt:    &checkedAt,
+		Outcome:      models.AuthCheckOutcomeAuthInvalid,
+		FailureClass: "auth_invalidated",
+	}); err != nil {
+		t.Fatalf("seed auth-invalid: %v", err)
+	}
+	if before, err := accts.Get(context.Background(), acct.Id); err != nil {
+		t.Fatalf("get: %v", err)
+	} else if !before.AuthCheck.IsAuthInvalid() {
+		t.Fatal("precondition: account should be auth-invalid before the refresh")
+	}
+
+	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         acct.Id,
+		Credential: []byte("new-token"),
+	})); err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+
+	got, err := accts.Get(context.Background(), acct.Id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.AuthCheck.IsAuthInvalid() {
+		t.Fatal("stored auth-invalid verdict survived the credential replacement; the account stays benched until the next sweep")
+	}
+	if got.AuthCheck.CheckedAt != nil {
+		t.Errorf("checked_at = %v, want nil so the replacement is verified on the next tick", got.AuthCheck.CheckedAt)
+	}
+}
+
+// TestTestAccountSurfacesUnrecordedAuthCheckAsInternal pins AC-4 at the RPC
+// boundary: a verification whose durable result could not be written must not
+// be reported to an explicit caller as a pass, and must not be written into
+// last_test_error (which would flip a working account to health=failed over a
+// transient store blip).
+func TestTestAccountSurfacesUnrecordedAuthCheckAsInternal(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{err: fmt.Errorf("%w: database is locked", accountwiring.ErrAuthCheckNotRecorded)}
+	srv, accts := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "unrecorded-auth-check", []byte("token"))
+
+	_, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	if err == nil {
+		t.Fatal("TestAccount reported success although the verification result was never recorded")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("code = %v, want %v", got, connect.CodeInternal)
+	}
+
+	got, gerr := accts.Get(context.Background(), acct.Id)
+	if gerr != nil {
+		t.Fatalf("get account: %v", gerr)
+	}
+	if got.LastTestError != "" {
+		t.Errorf("last_test_error = %q; an infrastructure failure must not be recorded as a credential failure", got.LastTestError)
+	}
+	if got.Health == models.AccountHealthFailed {
+		t.Error("account health flipped to failed over an unrecorded auth check")
+	}
+}
+
+// TestTestAccountReportsInconclusiveVerificationWithoutFailingHealth pins the
+// race degrade: a verification that ran but could not be attributed to the
+// stored credential is not evidence the credential is bad, so it must not be
+// recorded as a credential failure.
+func TestTestAccountReportsInconclusiveVerificationWithoutFailingHealth(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{err: fmt.Errorf("%w", accountwiring.ErrVerificationInconclusive)}
+	srv, accts := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "inconclusive-verify", []byte("token"))
+
+	resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	if err != nil {
+		t.Fatalf("TestAccount: %v", err)
+	}
+	if resp.Msg.GetLiveSmokeRan() {
+		t.Error("live_smoke_ran = true for a verification that could not be attributed to the stored credential")
+	}
+	if got := resp.Msg.GetDetail(); got != liveSmokeInconclusiveDetail {
+		t.Errorf("detail = %q, want %q", got, liveSmokeInconclusiveDetail)
+	}
+	got, gerr := accts.Get(context.Background(), acct.Id)
+	if gerr != nil {
+		t.Fatalf("get account: %v", gerr)
+	}
+	if got.Health == models.AccountHealthFailed {
+		t.Error("account health flipped to failed over an inconclusive verification")
+	}
+}
+
+// TestRefreshAccountWithInconclusiveTestRestoresHealth is the RefreshAccount
+// half: test_after_save must treat "no verdict" as indeterminate, not as a
+// failure, or a racing replacement would bench the very credential it saved.
+func TestRefreshAccountWithInconclusiveTestRestoresHealth(t *testing.T) {
+	creds := newFakeCredStore()
+	smoke := &fakeSmoke{err: fmt.Errorf("%w", accountwiring.ErrVerificationInconclusive)}
+	srv, accts := newAccountServer(t, creds, smoke)
+	acct := mustAddClaude(t, srv, "refresh-inconclusive", []byte("old-token"))
+	failed := models.AccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:            acct.Id,
+		Credential:    []byte("new-token"),
+		TestAfterSave: true,
+	})); err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+
+	got, err := accts.Get(context.Background(), acct.Id)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if got.Health != models.AccountHealthOK {
+		t.Fatalf("stored health = %q, want %q: an inconclusive verification must not bench the replacement", got.Health, models.AccountHealthOK)
 	}
 }
 

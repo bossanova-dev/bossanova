@@ -129,12 +129,12 @@ func TestRepoSettingsOrganization_UnmappedShowsPersonalDefault(t *testing.T) {
 }
 
 // TestRepoSettingsOrganization_ListIsExactlyTheCallersOrganizations covers AC#4.
-// The picker offers Personal plus the ListOrganizations result verbatim — same
-// entries, same order, nothing invented and nothing dropped.
+// The picker offers Personal plus exactly the ListOrganizations entries, sorted
+// for display — nothing invented and nothing dropped.
 func TestRepoSettingsOrganization_ListIsExactlyTheCallersOrganizations(t *testing.T) {
 	org := &fakeOrgClient{orgs: []*pb.Organization{
-		{Id: "org-acme", Name: "Acme"},
 		{Id: "org-recurse", Name: "Recurse"},
+		{Id: "org-acme", Name: "Acme"},
 	}}
 	m := newLoadedOrgSettings(t, org)
 
@@ -165,6 +165,119 @@ func TestRepoSettingsOrganization_ListIsExactlyTheCallersOrganizations(t *testin
 		if !strings.Contains(out, name) {
 			t.Errorf("picker does not list %q:\n%s", name, out)
 		}
+	}
+}
+
+func TestRepoSettingsOrganization_ChoicesAreSortedCaseInsensitively(t *testing.T) {
+	tests := []struct {
+		name string
+		orgs []*pb.Organization
+		want []orgChoice
+	}{
+		{
+			name: "lower-case label sorts ahead of capitals",
+			orgs: []*pb.Organization{
+				{Id: "org-m", Name: "Madverts"},
+				{Id: "org-a", Name: "alpha"},
+				{Id: "org-k", Name: "Kamikai"},
+			},
+			want: []orgChoice{
+				{label: repoSettingsNoOrgLabel},
+				{id: "org-a", label: "alpha"},
+				{id: "org-k", label: "Kamikai"},
+				{id: "org-m", label: "Madverts"},
+			},
+		},
+		{
+			name: "reporter creation order",
+			orgs: []*pb.Organization{
+				{Id: "org-p", Name: "Personal"},
+				{Id: "org-k", Name: "Kamikai"},
+				{Id: "org-m", Name: "Madverts"},
+				{Id: "org-f", Name: "FreshClaim"},
+			},
+			want: []orgChoice{
+				{label: repoSettingsNoOrgLabel},
+				{id: "org-f", label: "FreshClaim"},
+				{id: "org-k", label: "Kamikai"},
+				{id: "org-m", label: "Madverts"},
+				{id: "org-p", label: "Personal"},
+			},
+		},
+		{
+			name: "sentinel remains first",
+			orgs: []*pb.Organization{
+				{Id: "org-none", Name: repoSettingsNoOrgLabel},
+				{Id: "org-acme", Name: "Acme"},
+			},
+			want: []orgChoice{
+				{label: repoSettingsNoOrgLabel},
+				{id: "org-acme", label: "Acme"},
+				{id: "org-none", label: repoSettingsNoOrgLabel},
+			},
+		},
+		{
+			name: "same label uses id tiebreak",
+			orgs: []*pb.Organization{
+				{Id: "org-b", Name: "ACME"},
+				{Id: "org-a", Name: "Acme"},
+			},
+			want: []orgChoice{
+				{label: repoSettingsNoOrgLabel},
+				{id: "org-a", label: "Acme"},
+				{id: "org-b", label: "ACME"},
+			},
+		},
+		{
+			name: "blank name sorts by displayed id",
+			orgs: []*pb.Organization{
+				{Id: "zeta", Name: ""},
+				{Id: "org-alpha", Name: "alpha"},
+			},
+			want: []orgChoice{
+				{label: repoSettingsNoOrgLabel},
+				{id: "org-alpha", label: "alpha"},
+				{id: "zeta", label: "zeta"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newLoadedOrgSettings(t, &fakeOrgClient{orgs: tc.orgs})
+			choices := m.orgChoices()
+			if len(choices) != len(tc.want) {
+				t.Fatalf("orgChoices = %v, want %v", choices, tc.want)
+			}
+			for i := range tc.want {
+				if choices[i] != tc.want[i] {
+					t.Errorf("orgChoices[%d] = %v, want %v", i, choices[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestRepoSettingsOrganization_PickerOpensOnSortedCurrentOrganization(t *testing.T) {
+	org := &fakeOrgClient{
+		orgs: []*pb.Organization{
+			{Id: "org-z", Name: "Zulu"},
+			{Id: "org-a", Name: "alpha"},
+			{Id: "org-m", Name: "Mike"},
+		},
+		mapping: &pb.RepoOrganizationMapping{
+			RepoOriginUrl:  testRepoOrigin,
+			OrganizationId: "org-a",
+		},
+	}
+	m := newLoadedOrgSettings(t, org)
+
+	cursorToRow(t, &m, repoSettingsRowOrganization)
+	updated, _ := m.activateRow()
+	m = updated.(RepoSettingsModel)
+
+	if m.orgPickerCursor != 1 {
+		t.Errorf("picker opened at index %d, want 1 (alpha in the sorted choices)", m.orgPickerCursor)
 	}
 }
 

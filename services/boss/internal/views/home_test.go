@@ -5302,3 +5302,174 @@ func TestHomeRenameFooterReplacesTheActionBar(t *testing.T) {
 		t.Fatalf("the action bar is still on screen under the editor:\n%s", content)
 	}
 }
+
+// flattenRendered makes a wrapped, styled render matchable as prose: the
+// status-line family hard-wraps to the terminal width, so a phrase the user
+// plainly reads on screen is split across lines mid-sentence in the raw string.
+func flattenRendered(s string) string {
+	return strings.Join(strings.Fields(stripANSI(s)), " ")
+}
+
+// crossOrgReadFailure builds one OrganizationSessionReadFailure for the
+// partial-read tests below.
+func crossOrgReadFailure(id, name, reason string) *pb.OrganizationSessionReadFailure {
+	return &pb.OrganizationSessionReadFailure{OrganizationId: id, OrganizationName: name, Reason: reason}
+}
+
+// crossOrgHome builds a Home showing two sessions from different repos — the
+// shape a cross-organization union produces, since a repo origin maps to
+// exactly one organization.
+func crossOrgHome(t *testing.T, width int) HomeModel {
+	t.Helper()
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = width
+	h.sessions = []*pb.Session{
+		{Id: "sess-1", Title: "acme session", RepoDisplayName: "acme/my-app"},
+		{Id: "sess-2", Title: "globex session", RepoDisplayName: "globex/widgets"},
+	}
+	h.buildTableRows()
+	return h
+}
+
+// TestHomePartialReadNoticeCarriesReasonVerbatim is the BOS-1151 partial-read
+// pin. The cross-organization read is a fan-out: when one organization's read
+// fails the rest of the union is still served, and silence would read to the
+// user as "that organization has no sessions" — in the very view whose point is
+// seeing across them. The reason is asserted VERBATIM because re-wording the
+// server's display-safe explanation would put this view's guess on screen
+// instead of what actually happened.
+func TestHomePartialReadNoticeCarriesReasonVerbatim(t *testing.T) {
+	const reason = "sessions for this organization are temporarily unavailable"
+	h := crossOrgHome(t, 120)
+	h.sessionReadFailures = []*pb.OrganizationSessionReadFailure{
+		crossOrgReadFailure("org-2", "Globex", reason),
+	}
+
+	rendered := h.renderSessionTable()
+	flat := flattenRendered(rendered)
+	if !strings.Contains(flat, "list is incomplete") {
+		t.Errorf("partial read did not announce an incomplete list:\n%s", rendered)
+	}
+	if !strings.Contains(flat, "Globex") {
+		t.Errorf("partial read did not name the failing organization:\n%s", rendered)
+	}
+	if !strings.Contains(flat, reason) {
+		t.Errorf("server reason not passed through verbatim:\n%s", rendered)
+	}
+	// The list is degraded, not emptied: everything that WAS read is still on
+	// screen. This is the failure mode the whole child exists to avoid.
+	if !strings.Contains(flat, "acme session") || !strings.Contains(flat, "globex session") {
+		t.Errorf("partial read emptied the served session list:\n%s", rendered)
+	}
+}
+
+// TestHomePartialReadNoticeFallsBackToOrganizationID pins the label fallback:
+// an organization the server could not name is still identified, because a
+// notice that says only "an organization" tells the user their list is short
+// without telling them what is missing from it.
+func TestHomePartialReadNoticeFallsBackToOrganizationID(t *testing.T) {
+	h := crossOrgHome(t, 120)
+	h.sessionReadFailures = []*pb.OrganizationSessionReadFailure{
+		crossOrgReadFailure("org-abc123", "", "the request ended before this organization was read"),
+	}
+
+	rendered := h.renderSessionTable()
+	if !strings.Contains(flattenRendered(rendered), "org-abc123") {
+		t.Errorf("unnamed organization was not labelled with its id:\n%s", rendered)
+	}
+}
+
+// TestHomeNoPartialReadNoticeWithoutFailures pins the quiet path: a complete
+// read must spend none of Home's tight line budget, and must not claim the list
+// is incomplete when it is not.
+func TestHomeNoPartialReadNoticeWithoutFailures(t *testing.T) {
+	h := crossOrgHome(t, 120)
+
+	rendered := h.renderSessionTable()
+	if strings.Contains(flattenRendered(rendered), "list is incomplete") {
+		t.Errorf("a complete read rendered a partial-read notice:\n%s", rendered)
+	}
+	quietLines := h.sessionTableFooterLineCount()
+
+	h.sessionReadFailures = []*pb.OrganizationSessionReadFailure{
+		crossOrgReadFailure("org-2", "Globex", "sessions for this organization are temporarily unavailable"),
+	}
+	if noisyLines := h.sessionTableFooterLineCount(); noisyLines <= quietLines {
+		t.Errorf("the notice is rendered but not reserved in the table budget: %d <= %d", noisyLines, quietLines)
+	}
+}
+
+// TestHomePartialReadNoticeAtNarrowWidth is the width pin, at the same
+// 72-column terminal the committed narrow-width proof scenario uses. Home's
+// line budget is tight and the notice consumes some of it, so this asserts the
+// table still renders every served row alongside the notice and that nothing
+// overhangs the terminal.
+func TestHomePartialReadNoticeAtNarrowWidth(t *testing.T) {
+	h := crossOrgHome(t, 72)
+	h.sessionReadFailures = []*pb.OrganizationSessionReadFailure{
+		crossOrgReadFailure("org-2", "Globex", "sessions for this organization are temporarily unavailable"),
+	}
+
+	rendered := h.renderSessionTable()
+	flat := flattenRendered(rendered)
+	if !strings.Contains(flat, "list is incomplete") {
+		t.Errorf("notice missing at 72 columns:\n%s", rendered)
+	}
+	if !strings.Contains(flat, "acme session") || !strings.Contains(flat, "globex session") {
+		t.Errorf("narrow terminal dropped served session rows:\n%s", rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		if got := lipgloss.Width(line); got > h.width {
+			t.Errorf("partial-read notice line is %d columns, want <= %d: %q", got, h.width, line)
+		}
+	}
+}
+
+// TestHomeAppliesAndClearsSessionReadFailures pins the poll wiring: a successful
+// poll is the whole truth about which organizations are readable right now, so
+// a recovered organization must stop being reported rather than sticking on
+// screen forever.
+func TestHomeAppliesAndClearsSessionReadFailures(t *testing.T) {
+	h := crossOrgHome(t, 120)
+	failures := []*pb.OrganizationSessionReadFailure{
+		crossOrgReadFailure("org-2", "Globex", "sessions for this organization are temporarily unavailable"),
+	}
+
+	model, _ := h.handleSessionList(sessionListMsg{sessions: h.sessions, sessionReadFailures: failures})
+	partial, ok := model.(HomeModel)
+	if !ok {
+		t.Fatalf("handleSessionList returned %T", model)
+	}
+	if len(partial.sessionReadFailures) != 1 {
+		t.Fatalf("poll did not carry the read failures onto the model: %+v", partial.sessionReadFailures)
+	}
+	if !strings.Contains(flattenRendered(partial.renderSessionTable()), "list is incomplete") {
+		t.Error("model carrying read failures did not render the notice")
+	}
+
+	model, _ = partial.handleSessionList(sessionListMsg{sessions: partial.sessions})
+	recovered, ok := model.(HomeModel)
+	if !ok {
+		t.Fatalf("handleSessionList returned %T", model)
+	}
+	if len(recovered.sessionReadFailures) != 0 {
+		t.Fatalf("a clean poll left stale read failures on the model: %+v", recovered.sessionReadFailures)
+	}
+	if strings.Contains(flattenRendered(recovered.renderSessionTable()), "list is incomplete") {
+		t.Error("the notice survived a clean poll")
+	}
+}
+
+// TestHomeTableHasNoOrganizationColumn pins the no-attribution decision: the
+// repo-origin index is UNIQUE, so the REPO column already answers "which
+// organization" for a mapped repo, and Home's width budget is too tight to
+// spend a second column on a fact already on screen.
+func TestHomeTableHasNoOrganizationColumn(t *testing.T) {
+	h := crossOrgHome(t, 200)
+	for _, col := range h.table.Columns() {
+		if strings.EqualFold(strings.TrimSpace(col.Title), "ORG") ||
+			strings.EqualFold(strings.TrimSpace(col.Title), "ORGANIZATION") {
+			t.Fatalf("Home grew an organization column: %+v", h.table.Columns())
+		}
+	}
+}

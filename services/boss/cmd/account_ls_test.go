@@ -362,3 +362,170 @@ func TestAccountLSSurfacesInjectionFailedAccount(t *testing.T) {
 		t.Fatalf("hint must name the codex provider:\n%s", got)
 	}
 }
+
+// --- credential-check columns (BOS-1142) -----------------------------------
+
+func TestFmtAuthCheckSeparatesNeverCheckedFromCheckedAndClean(t *testing.T) {
+	if got := fmtAuthCheck(nil); got != "never" {
+		t.Errorf("fmtAuthCheck(nil) = %q, want never", got)
+	}
+	if got := fmtAuthCheck(&pb.AuthCheck{}); got != "never" {
+		t.Errorf("fmtAuthCheck(zero) = %q, want never", got)
+	}
+	if got := fmtAuthCheck(&pb.AuthCheck{Outcome: "healthy", CheckedAt: timestamppb.Now()}); got != "ok" {
+		t.Errorf("fmtAuthCheck(healthy) = %q, want ok", got)
+	}
+	// The whole point: the two must not render the same string.
+	if fmtAuthCheck(nil) == fmtAuthCheck(&pb.AuthCheck{Outcome: "healthy"}) {
+		t.Fatal("never-checked and checked-and-clean render identically")
+	}
+}
+
+// TestFmtAuthCheckKeepsRefreshChainUnprovenWithinTheCheckBudget pins the third,
+// previously UNPINNED mirror of the credential-check label (BOS-1174). The TUI
+// list and the web pill both had tests; the `boss account ls` renderer did not,
+// which is exactly why it shipped as the generic default arm rendering
+// "refresh_chain_unproven:refresh_not_observed" — 43 columns into a CHECK column
+// budgeted at 24 (see the rebuildTable column spec), so the truncation ate the
+// identifying half and every unproven row read as a smear of "refresh_chain_un".
+//
+// The assertion is deliberately BOTH halves: the exact string, and that it fits.
+// Pinning only the string would let a later widening of the column silently
+// reintroduce a pair nobody can read at the default width.
+func TestFmtAuthCheckKeepsRefreshChainUnprovenWithinTheCheckBudget(t *testing.T) {
+	const checkColumnBudget = 24 // rebuildTable's CHECK column max width.
+
+	got := fmtAuthCheck(&pb.AuthCheck{
+		Outcome:      "refresh_chain_unproven",
+		FailureClass: "refresh_not_observed",
+	})
+	if got != "refresh_chain_unproven" {
+		t.Fatalf("fmtAuthCheck(refresh_chain_unproven) = %q, want the bare outcome token", got)
+	}
+	if len(got) > checkColumnBudget {
+		t.Fatalf("fmtAuthCheck(refresh_chain_unproven) = %q (%d cols), want <= %d — it will be truncated in the CHECK column",
+			got, len(got), checkColumnBudget)
+	}
+	// The pair the generic default arm would have produced is what must never
+	// come back; assert it is genuinely over budget so the guard above is not
+	// vacuous.
+	if pair := "refresh_chain_unproven:refresh_not_observed"; len(pair) <= checkColumnBudget {
+		t.Fatalf("the outcome:class pair is %d cols, which no longer exceeds the %d-col budget this test guards", len(pair), checkColumnBudget)
+	}
+}
+
+// TestFmtAuthCheckKeepsUnrecognizedOutcomesQualified pins the other side of the
+// same switch: refresh_chain_unproven drops its class BY DESIGN, so the default
+// arm's outcome:class form has to stay proven for everything else. Without this
+// the budget test above could be satisfied by a renderer that silently stopped
+// qualifying every outcome.
+func TestFmtAuthCheckKeepsUnrecognizedOutcomesQualified(t *testing.T) {
+	for _, tc := range []struct {
+		outcome string
+		class   string
+		want    string
+	}{
+		{"unavailable", "runner_unavailable", "unavailable:runner_unavailable"},
+		{"transient", "transient_provider", "transient:transient_provider"},
+		{"some_future_outcome", "", "some_future_outcome"},
+	} {
+		got := fmtAuthCheck(&pb.AuthCheck{Outcome: tc.outcome, FailureClass: tc.class})
+		if got != tc.want {
+			t.Errorf("fmtAuthCheck(%q/%q) = %q, want %q", tc.outcome, tc.class, got, tc.want)
+		}
+	}
+}
+
+func TestFmtAuthCheckCarriesTheFailureClass(t *testing.T) {
+	got := fmtAuthCheck(&pb.AuthCheck{Outcome: "auth_invalid", FailureClass: "auth_invalidated"})
+	if got != "failed:auth_invalidated" {
+		t.Fatalf("fmtAuthCheck(auth_invalid) = %q, want failed:auth_invalidated", got)
+	}
+	if got := fmtAuthCheck(&pb.AuthCheck{Outcome: "auth_invalid"}); got != "failed" {
+		t.Fatalf("fmtAuthCheck(auth_invalid, no class) = %q, want failed", got)
+	}
+	// Transient is not a credential failure and must not read as one.
+	if got := fmtAuthCheck(&pb.AuthCheck{Outcome: "transient", FailureClass: "rate_limited"}); got != "transient:rate_limited" {
+		t.Fatalf("fmtAuthCheck(transient) = %q, want transient:rate_limited", got)
+	}
+	if strings.HasPrefix(fmtAuthCheck(&pb.AuthCheck{Outcome: "unavailable"}), "failed") {
+		t.Fatal("an unavailable check must not render as a failure")
+	}
+}
+
+func TestFmtAuthCheckAgeHasNoAgeForACheckThatNeverRan(t *testing.T) {
+	if got := fmtAuthCheckAge(&pb.AuthCheck{Outcome: "healthy"}); got != "-" {
+		t.Fatalf("fmtAuthCheckAge without checked_at = %q, want -", got)
+	}
+	got := fmtAuthCheckAge(&pb.AuthCheck{CheckedAt: timestamppb.New(time.Now().Add(-2 * time.Hour))})
+	if got == "-" || got == "" {
+		t.Fatalf("fmtAuthCheckAge with checked_at = %q, want an age", got)
+	}
+}
+
+func TestAccountLSRendersTheCredentialCheckColumns(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	stub := &accountLSStub{accounts: []*pb.Account{
+		{
+			Id: "acct-codex-1", Provider: "codex", Label: "codex-one",
+			Status: "active", Health: "failed",
+			AuthCheck: &pb.AuthCheck{
+				Outcome: "auth_invalid", FailureClass: "auth_invalidated",
+				CheckedAt: timestamppb.New(time.Now().Add(-30 * time.Minute)),
+			},
+		},
+		{Id: "acct-codex-2", Provider: "codex", Label: "codex-two", Status: "active", Health: "ok"},
+	}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"CHECK", "CHECKED", "failed:auth_invalidated", "never"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("ls output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestAccountLSJSONCarriesTheCredentialCheckFields(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	if err := ls.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
+	checkedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	stub := &accountLSStub{accounts: []*pb.Account{
+		{
+			Id: "acct-codex-1", Provider: "codex",
+			AuthCheck: &pb.AuthCheck{
+				Outcome: "auth_invalid", FailureClass: "auth_invalidated",
+				CheckedAt: timestamppb.New(checkedAt),
+			},
+		},
+		{Id: "acct-codex-2", Provider: "codex"},
+	}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	var rows []accountJSON
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	if rows[0].AuthCheckOutcome != "auth_invalid" || rows[0].AuthCheckFailureClass != "auth_invalidated" {
+		t.Fatalf("row 0 check state = %+v", rows[0])
+	}
+	if rows[0].AuthCheckedAt == "" {
+		t.Fatal("row 0 has no auth_checked_at")
+	}
+	// Never checked: an empty outcome AND an empty timestamp, so a consumer can
+	// tell "no check" from "check found nothing".
+	if rows[1].AuthCheckOutcome != "" || rows[1].AuthCheckedAt != "" {
+		t.Fatalf("row 1 should be never-checked, got %+v", rows[1])
+	}
+}

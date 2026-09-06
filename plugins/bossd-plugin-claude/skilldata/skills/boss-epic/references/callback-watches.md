@@ -128,6 +128,7 @@ generic `boss callback` CLI and carries the watch policy:
 | `removeWatch`   | `boss callback remove`  | Tear a stale/duplicate watch down by id when a child settles.                 |
 
 `policy.defaultExpiresIn` = `24h`. `policy.fallbackPoll` = `gh pr checks --watch --fail-fast`.
+`policy.availableTriggers` names all six triggers accepted by the CLI.
 `registerWatch` and `listWatches` require both `--chat "$CALLBACK_CHAT"` and
 `--repo "$CALLBACK_REPO"`.
 The generic `removeWatch` CLI accepts `--chat` but not `--repo`: use the prior scoped list to obtain
@@ -136,8 +137,9 @@ the callback id, then remove that returned id with `--chat`.
 ## Trigger policy: draft-aware, never bare `checks_passed`
 
 `policy.watchTriggers` carries the generic default (`checks_passed`, `checks_failed`, `merged`).
-**boss-epic overrides the green trigger** and arms the draft-aware set below instead. It does not
-change the shared policy, because other drivers wait on PRs they did not open as drafts.
+**boss-epic reads `policy.draftAwareTriggers` instead.** That policy-owned set replaces the green
+trigger without changing the generic default, because other drivers wait on PRs they did not open
+as drafts.
 
 | Trigger               | Fires when                             | boss-epic use                                      |
 | --------------------- | -------------------------------------- | -------------------------------------------------- |
@@ -149,12 +151,13 @@ change the shared policy, because other drivers wait on PRs they did not open as
 
 **Why bare `checks_passed` is wrong here.** boss-build opens its PR as a **draft** and CI runs on
 drafts, so `checks_passed` is satisfied by the first green draft commit. Callbacks are one-shot and
-are evaluated on PR **state**, not on transitions — so arming `checks_passed` against an
+state-matching is the default — so arming `checks_passed` against an
 already-green draft fires on the very next evaluation, consuming the watch at a moment that can
 never be merge-eligible (Phase 3c requires a non-draft PR). The driver then wakes, reconciles, finds
 nothing to do, and must re-arm; repeat for every draft commit. `checks_passed_ready` collapses that
 whole class of premature fires into the single wake that matters. Green on a draft PR is expected
-CI noise, not merge-eligibility.
+CI noise, not merge-eligibility. A consumer that truly needs an edge can pass `--on-transition`
+through `registerWatch.args.onTransition`; boss-epic's draft-aware state watch does not.
 
 A callback remains a **wake signal, not proof**: the daemon merge gate plus the Phase 3b settled-chat
 read are the authoritative filter, and both run again on every wake regardless of which trigger fired.
@@ -188,7 +191,18 @@ read are the authoritative filter, and both run again on every wake regardless o
    # checks_passed_ready, NOT checks_passed: the child PR is a draft until boss-build
    # readies it, and a bare green-on-draft fire would burn the one-shot watch.
    if [ -n "$CALLBACK_CHAT" ] && [ -n "$CALLBACK_REPO" ]; then
-     for T in checks_passed_ready checks_failed merged; do
+     BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+     if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+     BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
+     export BOSS_EPIC_TOOLBOX
+     DRAFT_AWARE_TRIGGERS="$(
+       node --input-type=module -e '
+         import{pathToFileURL as u}from"node:url"
+         const {resolveCallbackAdapter}=await import(u(process.env.BOSS_EPIC_TOOLBOX+"/callback/adapter.mjs").href)
+         process.stdout.write(resolveCallbackAdapter(process.env).policy.draftAwareTriggers.join(" "))
+       '
+     )"
+     for T in $DRAFT_AWARE_TRIGGERS; do
        boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
      done
    fi

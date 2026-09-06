@@ -23,11 +23,11 @@ The resolved version is echoed back on the response.
 - A request that negotiates the **Current** version runs zero transforms.
 - A request pinned to an older version has the ordered chain of down-convert
   transforms applied so it observes the behavior that shipped with its version.
-- A **header-less** caller pins to the **Baseline** — the oldest supported
-  version — so it never silently shifts onto newer behavior. This matches the
+- A **header-less** caller pins to the **Baseline** (the oldest supported
+  version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-04**. The engineering procedure for adding a new
+The current version is **2026-09-14**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -46,8 +46,8 @@ beyond those introduced by later versions.
 
 The OrchestratorService began serving `SessionState` value
 `SESSION_STATE_ORPHANED` on `Session.state`, a terminal state for a headless run
-that was killed by a daemon restart. Clients pinned to an older version — which
-were built before this value existed — are down-converted to
+that was killed by a daemon restart. Clients pinned to an older version, which
+were built before this value existed, are down-converted to
 `SESSION_STATE_IMPLEMENTING_PLAN`, the prior observable behavior.
 
 ### 2026-07-05 — Agent auth-failed attention reason
@@ -67,8 +67,7 @@ Two transforms shipped in this version:
   the unbound rotation account.
 - **Limited chat status** — maps `CHAT_STATUS_LIMITED` and the derived
   "usage-limited…" session display shape back to the prior idle-style behavior for
-  older clients. In other words, the new **chat status** value is hidden from
-  clients that predate it.
+  older clients.
 
 ### 2026-07-11 — No-eligible-account rotation outcome
 
@@ -87,9 +86,9 @@ orphaned/blocked sessions on `Session.display_label` / `display_intent` /
 and spinner (a live "working" spinner, a pending "? question") but has its intent
 recolored to `DISPLAY_INTENT_DANGER` so the error stays visible; a legitimate
 terminal muted PR ("✓ merged" / "closed") is exempt and stays muted. Clients
-pinned to an older version were built against the prior shapes — a fixed
+pinned to an older version were built against the prior shapes (a fixed
 "orphaned"/`DANGER`/no-spinner tuple for orphaned sessions and an un-recolored
-base cascade for blocked sessions — so they are down-converted back to those.
+base cascade for blocked sessions), so they are down-converted back to those.
 
 ### 2026-07-23 — Respawn-in-place rotation outcomes
 
@@ -107,7 +106,7 @@ Clients pinned to an older version are down-converted back to
 The OrchestratorService began serving `AttentionReason` value
 `ATTENTION_REASON_AGENT_STALLED` on `Session.attention_status.reason`, a new
 attention reason raised when a chat reports `CHAT_STATUS_WORKING` while its agent
-has made no semantic progress for longer than its phase's threshold — a silently
+has made no semantic progress for longer than its phase's threshold, a silently
 dead turn behind a still-animating spinner. Like the auth-failed reason it is
 only raised where the session had no other attention, so clients pinned to an
 older version are down-converted back to no attention reason, the prior
@@ -118,8 +117,8 @@ older version are down-converted back to no attention reason, the prior
 The OrchestratorService began serving `ChatStatus` value `CHAT_STATUS_WAITING`
 on `ChatStatusEntry.status`, `ChatStatusDelta.status` and
 `SessionStatusEntry.status`, alongside a new `waiting_reason` string on each of
-those messages. A chat is waiting when it is blocked on an external event — a
-registered GitHub callback, a background poll tick — rather than computing, and
+those messages. A chat is waiting when it is blocked on an external event (a
+registered GitHub callback, a background poll tick) rather than computing, and
 `waiting_reason` carries a short human-readable explanation such as
 `awaiting checks_passed_ready on owner/repo#123` (it is empty for every other
 status). Before this version such a chat reported `CHAT_STATUS_WORKING`, so
@@ -132,7 +131,7 @@ The OrchestratorService stopped letting a session-level draft-PR-creation failur
 claim the session's primary display composite while a chat is live. The
 `? PR failed` label used to outrank every branch except a pending question and a
 usage-limit banner, so a row could read `? PR failed` while the chat underneath it
-read `working` — two contradictory presents on one row. That branch now sits
+read `working`, two contradictory presents on one row. That branch now sits
 immediately below the working branch, so `Session.display_label`,
 `Session.display_intent` and `Session.display_spinner` carry the live label
 (`working`, `waiting`, `initializing`, `merging`, `archiving`) whenever one
@@ -157,7 +156,7 @@ A gate that could not run now serves `CronJob.last_run_outcome` `gate_failed` an
 derives `CronJob.last_run_status` `CRON_JOB_STATUS_FAILED`, and `RunCronJobNow`
 returns the matching `gate_failed` skip reason. A gate that ran and exited
 non-zero for any other code keeps `gated` / `CRON_JOB_STATUS_GATED`, and still
-blocks the fire. **No new `CronJobStatus` enum value was added** — the new outcome
+blocks the fire. **No new `CronJobStatus` enum value was added**; the new outcome
 reuses the existing `CRON_JOB_STATUS_FAILED`, so this is a change in the value
 served rather than in the schema.
 
@@ -171,7 +170,7 @@ The OrchestratorService began distinguishing a session account switch that **ran
 out of time** from one that **failed for an unknown reason**. Previously the
 daemon had no wire value for "a deadline stopped this", so a switch ended by its
 own daemon-side respawn budget came back with no typed error code and
-`ProxySwitchSessionAccount` answered `ABORTED` — the historical fallback for an
+`ProxySwitchSessionAccount` answered `ABORTED`, the historical fallback for an
 unmodelled failure.
 
 `ABORTED` was not merely vaguer; it was actively misleading. It invites a retry,
@@ -182,13 +181,13 @@ first one may have partially completed.
 
 A switch ended by its daemon-side budget now answers `DEADLINE_EXCEEDED`. A new
 `CommandResult.ErrorCode` value, `ERROR_CODE_DEADLINE_EXCEEDED`, carries the
-distinction over the daemon stream. **No procedure or message field was added** —
+distinction over the daemon stream. **No procedure or message field was added**;
 this is a change in the status code served on an existing procedure rather than
 in the schema.
 
 The change is scoped to the account switch alone. Other commands that fail with
 an expired context are unaffected and still answer `ABORTED`. `ProxySwitchSessionAccount`'s
-**own** relay timeout — the orchestrator giving up waiting for the daemon — has
+**own** relay timeout (the orchestrator giving up waiting for the daemon) has
 always answered `DEADLINE_EXCEEDED` and is unchanged at every version, including
 for older clients.
 
@@ -209,7 +208,7 @@ completed first attempt.
 
 A switch canceled by its caller now answers `CANCELED`. A new
 `CommandResult.ErrorCode` value, `ERROR_CODE_CANCELED`, carries the distinction
-over the daemon stream. **No procedure or message field was added** — this is a
+over the daemon stream. **No procedure or message field was added**; this is a
 change in the status code served on an existing procedure rather than in the
 schema.
 
@@ -273,7 +272,7 @@ Current clients receive `UNIMPLEMENTED` with retirement guidance naming AuthKit
 the legacy `organization management is not implemented` message while keeping
 `UNIMPLEMENTED`.
 
-### 2026-09-04 — Abandoned checkout no longer reports an activating subscription (Current)
+### 2026-09-04 — Abandoned checkout no longer reports an activating subscription
 
 An account that opened a Stripe Checkout session and never completed it was
 previously reported as `CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH` with the
@@ -283,8 +282,8 @@ which left clients polling forever for an activation that would never arrive.
 Current clients receive `CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION` with
 `checkout_started=true`, `can_create_checkout=true`,
 `denial_reason="subscription_required"` and a message inviting the user to
-resume checkout. Only an account that has actually paid — one awaiting its
-entitlement refresh — still reports the activating shape.
+resume checkout. Only an account that has actually paid (one awaiting its
+entitlement refresh) still reports the activating shape.
 
 No field or enum member was added: the change is in the values served on
 `CloudAccessStatus`, carried on `GetCloudAccessStatus`,
@@ -298,6 +297,220 @@ a hosted URL. A down-convert transform can only rewrite a response, never turn a
 success back into an error, and re-introducing the refusal for pinned clients
 would restore the dead end this version exists to remove. Pinned clients see the
 old _status_ shape but the new _checkout_ behavior.
+
+### 2026-09-05 — Repository and daemon listings span every organization you belong to
+
+`ProxyListReposAggregated` and `ListDaemons` used to answer for a single
+organization, resolved from the caller's own session claim. A repository or
+daemon registered under another organization the caller belongs to was simply
+absent from the reply, and nothing in the response said so.
+
+Current clients receive the union across every organization they belong to,
+while daemon-authenticated callers retain the single-organization inventory.
+Repository rows remain deduplicated by origin URL exactly as before, and daemon
+inventory remains acting-user scoped: organization membership never exposes
+another member's machine or hostname.
+
+Two additions carry the change. The request gains an optional `organization_id`:
+set it to narrow the read to one organization (the previous behavior, now
+stated in the request rather than inherited from the claim), and leave it unset
+for the union. Each response gains `failed_organizations`, naming any
+organization whose read failed, so a partial answer is reported as partial
+instead of returned as a shorter list. An organization with no live machines is
+not a failure and is not listed. A narrowed read never reports partial results:
+one unavailable organization is the whole request failing. `DaemonInfo` also
+gains `organization_id`, allowing clients to attribute each inventory row.
+
+Clients pinned to an older version keep the single-organization read and always
+see `failed_organizations` empty, because the path that fills it does not run for
+them. This is one of the changes that cannot be expressed as a down-convert
+transform (restoring "the one organization this particular caller's claim named"
+requires the request, which a response transform never sees), so the older
+behavior is served by the handler itself rather than by the transform chain.
+
+### 2026-09-06 — Cloud access resolves across every organization the caller belongs to
+
+Cloud access used to be decided from the organization the caller claimed on the
+request alone. A user who belongs to several WorkOS organizations, whose
+subscription lives on one of them, was refused whenever they arrived claiming a
+different one: the same person, the same paid seat, a different claim.
+
+Current clients have their access resolved across **every** organization they
+belong to: the claimed organization is judged first, and if it cannot grant
+access on its own the server folds over the caller's other member organizations
+and grants `CLOUD_ACCESS_STATE_ACTIVE` when one of them is entitled. Clients
+pinned to an older version keep the claimed-organization-only verdict.
+
+No field or enum member was added: the change is in the values served on
+`CloudAccessStatus`, carried on `GetCloudAccessStatus`, `CreateCheckoutSession`,
+and `RefreshCloudEntitlements`.
+
+This version registers **no down-convert transform**, deliberately. The verdict
+is caller-relative (the same `CloudAccessStatus` message is correct for one
+caller and wrong for another, depending on which organization earned it), and a
+`TransformResponse` receives only the method name and the response message,
+never the request. It therefore cannot tell an `ACTIVE` earned by the caller's
+own organization from one earned by a sibling. The compatibility seam is instead
+the handler-level version gate that `docs/api-versioning.md` names as the
+sanctioned escape hatch for changes the transform layer cannot express: the
+handlers serving these three RPCs restrict the caller to their claimed
+organization when the negotiated version resolves older than 2026-09-06.
+
+### 2026-09-07 — Cloud access status names your organization
+
+`CloudAccessStatus.workos_org_id` is now populated with the WorkOS organization
+the caller is acting as. The field has existed since cloud subscription gating
+shipped, but nothing ever filled it, so every client that read it saw an empty
+string on every response.
+
+Current clients receive the organization resolved for the request: the caller's
+verified organization scope, falling back to the `org_id` claim on the session.
+A daemon caller, which has no organization of its own, still receives an empty
+value. The field is populated on `GetCloudAccessStatus`, `CreateCheckoutSession`
+and `RefreshCloudEntitlements` alike, and it describes who asked rather than what
+the answer was, so it is present regardless of the access state.
+
+This is what lets a command-line client send a refused cloud login to the
+organization it was actually refused for: it matches the id against the caller's
+organization list and opens the organization-scoped subscribe page instead of the
+unscoped one.
+
+No field or message was added; only the value served changed, so clients pinned
+to an older version, which were built when this field could only be empty, are
+down-converted back to an empty `workos_org_id`.
+
+### 2026-09-08 — Session commands route across every organization you belong to
+
+Session listings already span every organization the caller belongs to, but
+commands used to resolve their target only in the active organization. A caller
+could therefore see and open a session filed in another member organization,
+then receive `NOT_FOUND` when trying to stop or otherwise act on it.
+
+Current clients retry a missed session-owner lookup across the caller's member
+organizations. The caller must already belong to every organization considered,
+and each candidate is rechecked against the authorized membership scope.
+Sessions held by non-member organizations remain indistinguishable from unknown
+session ids: both return `NOT_FOUND`, and neither dispatches a command.
+
+Clients pinned to an older version keep the active-organization-only command
+routing behavior. This version registers no down-convert transform because the
+change turns an error into a success: an error transform never sees the success
+path, and a response transform cannot recreate the prior `NOT_FOUND`. The
+compatibility branch therefore lives in the handler.
+
+### 2026-09-09 — Owner-resolution outages no longer look like empty results
+
+`ProxyListSessions` now distinguishes an unavailable session-ownership store
+from a session that is legitimately outside the caller's organization. A
+missing owner remains a silent, privacy-preserving skip. Any other ownership
+lookup failure returns `UNAVAILABLE` with a stable public message instead of a
+successful but silently shortened list; the underlying dependency error remains
+in server logs only.
+
+Clients pinned to an older version retain the legacy successful short-list
+response. The server continues scanning after the failed lookup, so that legacy
+response contains every session whose ownership could still be resolved rather
+than stopping at the first outage.
+
+### 2026-09-10 — Fleet reads span every organization you belong to
+
+An unset `ProxyListCronJobsRequest.organization_id` now returns the union across
+every organization the caller belongs to. Each row carries its owning
+organization, and `failed_organizations` makes a partial fleet read explicit.
+Setting `organization_id` still narrows the request to one authorized organization.
+
+Clients pinned to 2026-09-09 or older keep the claimed-organization-only list.
+This compatibility behavior lives in the handler because reconstructing the
+organization named by a caller's claim requires request context unavailable to a
+response transform.
+
+Seven additional fleet-wide reads now query the caller's own Ready daemons
+across every organization they belong to. Each request accepts an
+`organization_id` filter to narrow the read after a membership check, and each
+response reports organizations whose fleet could not be read. `ProxyEmptyTrash`
+additionally reports its deletion count per organization. Clients pinned to
+older versions retain the former single-organization behavior.
+
+Repository lists now also fail explicitly when organization-holder enrichment
+is unavailable, instead of returning blank holder values that look like
+unclaimed repositories. Clients pinned to 2026-09-09 or older retain the legacy
+successful repository list without organization stamps for that failure. The
+response-aware compatibility transform recovers only the typed holder-store
+failure; other repository-list errors remain errors at every version.
+
+### 2026-09-11 — Invitation lifecycle completion
+
+`RemoveOrganizationMember` now accepts `invitation_id` to revoke an
+organization-owned pending invitation. The operation uses an
+organization-scoped lookup before revoking, so another organization's invitation
+remains indistinguishable from an unknown id.
+
+Clients pinned to 2026-09-10 or older keep the prior `INVALID_ARGUMENT`
+behavior. This compatibility boundary lives in the handler because a successful
+empty response cannot be transformed back into an error after the revoke side
+effect has occurred.
+
+`ListOrganizationMembers` now returns an invitation-only row while WorkOS has
+accepted an invitation but its user has not yet landed as a local member. The
+row sets `is_invite_accepted` and `invitation_id`; local user and membership ids
+remain empty. Clients pinned to 2026-09-10 or older do not receive this row.
+
+Membership reconciliation also corrects Stripe seat quantity after an insert or
+removal changes local membership cardinality. This best-effort billing repair is
+not version-gated: response transforms cannot undo an external Stripe write,
+and preserving a stale quantity would preserve the billing defect.
+
+### 2026-09-12 — Session listings span every organization you belong to
+
+`ProxyListSessions` now returns the union across every organization the caller
+belongs to when `organization_id` is unset. Set `organization_id` to narrow the
+read to one organization after a membership check. Sessions remain attributed
+with `organization_id`, and `failed_organizations` reports any organization
+whose slice could not be read without discarding the rest of the union.
+
+Clients pinned to 2026-09-11 or older keep the former single-organization read,
+resolved from their active organization claim. Header-less callers also keep
+that legacy behavior because an absent version header resolves to the Baseline.
+This compatibility boundary lives in the handler: a response transform cannot
+inspect the request or reconstruct the caller-relative claimed organization.
+
+The deprecated `ProxyListSessionsAcrossOrganizations` RPC remains served for
+older clients, but new callers should use `ProxyListSessions`.
+
+### 2026-09-13 — A healthy account check reports a superseded credential
+
+`AuthCheck.failure_class` now carries `credential_superseded` alongside
+`outcome` `healthy`. It means an ambient `codex login` for the same provider
+account holds a different refresh token, so the refresh chain behind the stored
+credential is dead even though the provider still accepts the stored access
+token. The account stays eligible, which is why the outcome remains healthy —
+the class is a warning about the future, not a failure.
+
+Before this version a healthy check always carried an empty `failure_class`.
+Clients pinned to 2026-09-12 or older are down-converted back to that empty
+value on every response that carries an `Account`: `ProxyListAccounts`,
+`ProxyManageListAccounts`, `ProxyAddAccount` and `ProxyRefreshAccount`. A class
+on a non-healthy outcome is untouched — that shape predates this version.
+
+### 2026-09-14 — Unproven credential refresh chain (Current)
+
+`Account.auth_check.outcome` began serving `refresh_chain_unproven` (with
+`failure_class` `refresh_not_observed`) for a credential check that completed
+with no provider error, on a credential whose own access token says a token
+refresh should already have happened, and whose run observed no credential
+write. That is a live access token sitting above a refresh chain nothing has
+proven still works: the check keeps passing until the access token expires, then
+fails hard with no prior warning.
+
+It is a warning, not an accusation. `auth_invalid` remains the only outcome
+that removes an account from selection, and an account reporting
+`refresh_chain_unproven` stays selectable.
+
+Before this version the identical clean run served `healthy` with an empty
+`failure_class`. `auth_check.outcome` is a plain string that clients switch on
+to choose a severity, so clients pinned to 2026-09-13 or older are
+down-converted back to that pair rather than being shown a token they were never
+built to read.
 
 ## See also
 

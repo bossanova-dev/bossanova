@@ -163,6 +163,7 @@ func TestProofEnvAllowedKeys(t *testing.T) {
 		"BOSS_PROOF_SETTINGS_EVENT_TRACING",
 		"BOSS_PROOF_SETTINGS_POSTHOG_HOST",
 		"BOSS_PROOF_SETTINGS_SAVE_FAILURE",
+		"BOSS_PROOF_CODEX_REAUTH",
 	}
 	if !reflect.DeepEqual(ProofEnvAllowedKeys, want) {
 		t.Fatalf("ProofEnvAllowedKeys = %v, want %v", ProofEnvAllowedKeys, want)

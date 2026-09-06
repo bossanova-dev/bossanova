@@ -199,8 +199,7 @@ func TestStartFlowWiresHandoffOnlyWhereItSpawns(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
 			m.remoteHost = tc.remote
-			upd, _ := m.startFlow(tc.provider)
-			got := upd.(AccountRegisterModel)
+			got, _ := m.startFlow(tc.provider)
 			// startFlow spawns the real flow goroutine, and that goroutine reads
 			// package-level --host state on its way to the first prompt
 			// (isRemoteHost, via the prompter's hostAwareFlowText). Cancelling it

@@ -489,3 +489,31 @@ func TestLocalClientMergeSessionReturnsDetail(t *testing.T) {
 		t.Fatalf("detail = %q, want %q", detail, fakeMergeDetail)
 	}
 }
+
+// TestLocalClient_ListSessionsWithReadFailuresNeverPartial pins the local half
+// of the BOS-1151 seam: a LocalClient reads one daemon, which either answers or
+// fails outright, so the sibling read must return the same sessions ListSessions
+// does and an empty failure list. A LocalClient that invented failures would put
+// a "this list is incomplete" notice on a list that is complete.
+func TestLocalClient_ListSessionsWithReadFailuresNeverPartial(t *testing.T) {
+	t.Parallel()
+	fake := &fakeDaemonRPC{}
+	c := &LocalClient{rpc: fake}
+
+	sessions, failures, err := c.ListSessionsWithReadFailures(context.Background(), &pb.ListSessionsRequest{}, SessionReadOptions{})
+	if err != nil {
+		t.Fatalf("ListSessionsWithReadFailures: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].GetId() != fakeSessionID {
+		t.Fatalf("unexpected sessions: %+v", sessions)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("a local read is never partial, got %d failures", len(failures))
+	}
+
+	// A real failure is still an error, not a partial read.
+	errClient := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
+	if _, _, err := errClient.ListSessionsWithReadFailures(context.Background(), &pb.ListSessionsRequest{}, SessionReadOptions{}); err == nil {
+		t.Fatal("a failed local read must return an error, not an empty partial result")
+	}
+}

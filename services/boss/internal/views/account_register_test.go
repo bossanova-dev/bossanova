@@ -138,6 +138,10 @@ func (c *regAcctClient) AddAccount(_ context.Context, req *pb.AddAccountRequest)
 	return &pb.Account{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel()}, nil
 }
 
+func (c *regAcctClient) RefreshAccount(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	return &pb.RefreshAccountResponse{Account: &pb.Account{Id: req.GetId()}}, nil
+}
+
 func (c *regAcctClient) TestAccount(_ context.Context, _ string) (*pb.TestAccountResponse, error) {
 	if c.testErr != nil {
 		return nil, c.testErr
@@ -696,7 +700,7 @@ func TestAccountRegisterCodexRefusalRendersOnTheErrorScreen(t *testing.T) {
 		m.prompter.progress <- line
 	}
 
-	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid")})
+	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid", "")})
 	m = upd.(AccountRegisterModel)
 
 	content := stripANSI(m.View().Content)
@@ -729,7 +733,7 @@ func TestAccountRegisterHostRefusalIsNotAFailedAdd(t *testing.T) {
 	m.provider = "codex"
 	m.state = registerStateProgress
 
-	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid")})
+	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid", "")})
 	if upd.(AccountRegisterModel).state != registerStateError {
 		t.Fatal("precondition: the refusal should land on the error screen")
 	}
@@ -1038,5 +1042,42 @@ func pumpToTextPrompt(t *testing.T, m AccountRegisterModel) AccountRegisterModel
 			t.Fatalf("flow finished before reaching a text prompt: %v", m.err)
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+// TestAccountRegisterBeginReauthSkipsTheProviderChooser pins the reauth entry
+// point BOS-1142 added. Reauthentication is not "add an account again": the
+// account already exists and its provider is already known, so presenting the
+// provider chooser would invite an operator to reauthenticate a codex account
+// as claude. beginReauth therefore starts the codex flow directly, and the
+// screen must name the account being repaired so a mis-selected row is visible
+// before a device login is started rather than after.
+func TestAccountRegisterBeginReauthSkipsTheProviderChooser(t *testing.T) {
+	dir := t.TempDir()
+	client := &regAcctClient{listResult: []*pb.Account{{Id: "acct-codex-1", Provider: "codex"}}}
+	ex := &regExec{proc: newRegScriptedProc(
+		[]string{"Open https://auth.openai.com/codex/device and enter code ABCD-EFGH1"},
+		nil,
+	)}
+	m := newRegisterModel(t, client, ex)
+	m.homeDir = func() (string, error) { return dir, nil }
+
+	m, _ = m.beginReauth("acct-codex-1")
+
+	if m.state == registerStateProvider {
+		t.Fatalf("reauth must not present the provider chooser; state=%d", m.state)
+	}
+	if m.provider != "codex" {
+		t.Fatalf("provider = %q, want codex", m.provider)
+	}
+	if m.reauthAccountID != "acct-codex-1" {
+		t.Fatalf("reauthAccountID = %q, want acct-codex-1", m.reauthAccountID)
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "Reauthenticate") {
+		t.Fatalf("view does not name the reauth action:\n%s", view)
+	}
+	if !strings.Contains(view, "acct-codex-1") {
+		t.Fatalf("view does not name the account being reauthenticated:\n%s", view)
 	}
 }

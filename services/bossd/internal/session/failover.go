@@ -138,6 +138,17 @@ type proxyTokenRegistrar interface {
 	// It lives on this interface rather than being called directly on the proxy
 	// so the session package still never imports server.
 	RebuildTokenRegistry(ctx context.Context) error
+	// RetargetChatToken re-points the chat token minted for priorAgentSessionID
+	// at newAgentSessionID, keeping the SAME token so an already-spawned process
+	// whose ANTHROPIC_BASE_URL is frozen keeps resolving. It exists for the one
+	// handoff that moves a chat row's agent_session_id after the replacement
+	// process is already up (the orphan resume, BOS-1135): the token was
+	// necessarily minted against the prior id, and once the row carries the new
+	// one, chatProxyBinding's GetByAgentSessionID(prior) finds nothing and the
+	// resumed process silently loses its bearer. It NEVER mints — a chat with no
+	// registered token is a no-op, which is also what a disabled proxy looks
+	// like. Secret; never logged.
+	RetargetChatToken(sessionID, priorAgentSessionID, newAgentSessionID, accountID string)
 }
 
 // rebuildProxyTokenRegistry restores the failover proxy's path-token registry
@@ -164,6 +175,43 @@ func (l *Lifecycle) forgetProxyBearer(sessionID string) {
 		return
 	}
 	l.proxyRegistrar.ForgetBearer(sessionID)
+}
+
+// retargetChatProxyToken moves the chat-scoped failover-proxy token that the
+// spawn env was built with onto the agent session id the chat row now carries.
+//
+// It closes the one gap chat-scoped proxy targets open on a resume that REKEYS
+// the row (BOS-1135). The env is materialized before the replacement run
+// exists, so resolveAccountEnvForChat can only key the token on the chat's
+// CURRENT (prior) id; the replacement process then bakes that URL into its
+// environment permanently. Once syncResumedPrimaryChat moves the row to the new
+// id, the frozen URL resolves to a target no row answers to: chatProxyBinding
+// returns not-found, currentBearerForChat returns no bearer, and the proxy
+// forwards the sentinel API key, which upstream rejects. Re-pointing the SAME
+// token — rather than minting a second one the running process could never
+// learn — is what keeps the resumed run authenticated.
+//
+// Call it only AFTER the rekey has been persisted: until then the prior id is
+// still the correct target, so the ordering leaves no window in which neither
+// id resolves. Guarded on the same discriminator resolveAccountEnvForChat uses,
+// so a spawn that never took the chat-scoped branch never retargets; the
+// registrar is a no-op for an unregistered chat either way.
+//
+// priorAgentSessionID is taken from the caller rather than read back off chat.
+// The chat is only the ACCOUNT authority here: by the time this runs the rekey
+// has already happened, and a store that hands out a pointer into its own row
+// (the in-memory test store does) would have mutated chat.AgentSessionID to the
+// new id underneath us — silently turning the retarget into a no-op against
+// exactly the store shape the test uses to prove it.
+func (l *Lifecycle) retargetChatProxyToken(sessionID string, chat *models.AgentChat, priorAgentSessionID, newAgentSessionID string) {
+	if l.proxyRegistrar == nil || chat == nil || chat.AccountID == nil {
+		return
+	}
+	if sessionID == "" || priorAgentSessionID == "" || newAgentSessionID == "" ||
+		priorAgentSessionID == newAgentSessionID {
+		return
+	}
+	l.proxyRegistrar.RetargetChatToken(sessionID, priorAgentSessionID, newAgentSessionID, *chat.AccountID)
 }
 
 // ForgetAllProxyBearers clears every session's sticky failover-proxy bearer

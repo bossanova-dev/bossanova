@@ -59,7 +59,8 @@ session or chat and you'll land in the same view, auth permitting.
    This kicks off a WorkOS device-code flow. Approve in the browser
    and `bossd` registers itself with Boss Cloud under its
    `daemon_id` (set via the `BOSSD_DAEMON_ID` env var; defaults to
-   the machine hostname).
+   the machine hostname). For what the command prints and how to
+   approve it, see [Signing In](./login.md#cli).
 
 3. **Open the web app.** Your daemon should now appear under
    **Daemons**, and any sessions it's running should show up in

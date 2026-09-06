@@ -61,6 +61,12 @@ type cloudAccessClient interface {
 	GetCloudAccessStatus(ctx context.Context) (*pb.CloudAccessStatus, error)
 	CreateCheckoutSession(ctx context.Context, returnURL, cancelURL string) (string, error)
 	RefreshCloudEntitlements(ctx context.Context) (*pb.CloudAccessStatus, error)
+	// ListOrganizations translates the WorkOS organization id a refused status
+	// carries into the bosso-local mirror id the web subscribe route is keyed on.
+	// It is declared here rather than reached for with a type assertion on the
+	// concrete client: a client that cannot answer should fail to compile, not
+	// silently send every refused login to the unscoped subscribe page.
+	ListOrganizations(ctx context.Context) ([]*pb.Organization, error)
 }
 
 type appCloudAccessClient interface {
@@ -492,7 +498,7 @@ func checkLoginCloudGateWithTelemetry(
 		_, _ = fmt.Fprintln(out, cloudGateMessage)
 		return false
 	}
-	subscribeURL := cloudSubscribeURL()
+	subscribeURL := cloudSubscribeURL(resolveSubscribeOrganizationID(ctx, c, status))
 	if subscribeURL != "" {
 		if err := openCloudCheckoutURL(subscribeURL); err != nil {
 			_, _ = fmt.Fprintf(out, "Open subscription page: %s\n", subscribeURL)
@@ -592,17 +598,85 @@ func cloudCancelURL() string {
 	return cloudURLWithSource(envOr("BOSS_CLOUD_CANCEL_URL", "https://app.bossanova.dev/subscribe/canceled"), "cli")
 }
 
-func cloudSubscribeURL() string {
-	return cloudURLWithSource(envOr("BOSS_CLOUD_SUBSCRIBE_URL", defaultCloudSubscribeURL()), "cli")
+// cloudSubscribeURL builds the subscribe page URL for a refused login. When
+// orgID names an organization the path is scoped to it, so the browser opens the
+// subscribe page for the organization that was actually refused rather than for
+// whichever one the web app happens to have active. An empty orgID yields the
+// unscoped URL unchanged.
+func cloudSubscribeURL(orgID string) string {
+	base := envOr("BOSS_CLOUD_SUBSCRIBE_URL", defaultCloudSubscribeURL())
+	return cloudURLWithSource(scopeSubscribeURL(base, orgID), "cli")
+}
+
+// resolveSubscribeOrganizationID maps the WorkOS organization id on a refused
+// status onto the bosso-local mirror id the web routes use. Every failure path
+// returns "": the unscoped subscribe page still works, so a list that errors, a
+// status with no organization, or an organization this caller cannot see must
+// degrade to the unscoped URL rather than keep the browser closed.
+// A var rather than a const so a test can shrink it: the bound is only
+// observable through a lookup slow enough to hit it, and a five-second test is
+// not one worth having.
+var subscribeOrgLookupTimeout = 5 * time.Second
+
+func resolveSubscribeOrganizationID(ctx context.Context, c cloudAccessClient, status *pb.CloudAccessStatus) string {
+	workosOrgID := status.GetWorkosOrgId()
+	if workosOrgID == "" {
+		return ""
+	}
+	// Bounded on purpose: this lookup only decides which organization the
+	// subscribe page is scoped to, so a slow orchestrator must lose the race
+	// rather than hold the browser shut. A deadline error degrades through the
+	// same unscoped path as any other list failure.
+	lookupCtx, cancel := context.WithTimeout(ctx, subscribeOrgLookupTimeout)
+	defer cancel()
+	orgs, err := c.ListOrganizations(lookupCtx)
+	if err != nil {
+		return ""
+	}
+	for _, org := range orgs {
+		if org.GetWorkosOrgId() == workosOrgID {
+			return org.GetId()
+		}
+	}
+	return ""
+}
+
+// scopeSubscribeURL inserts orgID as the path segment ahead of the subscribe
+// segment, so "/subscribe" becomes "/<org>/subscribe" while any prefix and query
+// string BOSS_CLOUD_SUBSCRIBE_URL carries survive untouched. Splitting the parsed
+// path rather than concatenating strings is what keeps that promise. A URL that
+// will not parse, or one with no path segment to sit behind, is returned
+// unchanged: an unscoped subscribe page loads, a malformed one does not.
+func scopeSubscribeURL(rawURL, orgID string) string {
+	if orgID == "" {
+		return rawURL
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	decoded := strings.TrimRight(parsed.Path, "/")
+	escaped := strings.TrimRight(parsed.EscapedPath(), "/")
+	decodedCut := strings.LastIndex(decoded, "/")
+	escapedCut := strings.LastIndex(escaped, "/")
+	if decodedCut < 0 || escapedCut < 0 {
+		return rawURL
+	}
+	// Both halves are set on purpose. Path carries the decoded id, RawPath the
+	// escaped one, and String() prefers RawPath once it round-trips — which is
+	// what keeps an id containing a slash a single path segment instead of two.
+	parsed.Path = decoded[:decodedCut] + "/" + orgID + decoded[decodedCut:]
+	parsed.RawPath = escaped[:escapedCut] + "/" + url.PathEscape(orgID) + escaped[escapedCut:]
+	return parsed.String()
 }
 
 func defaultCloudSubscribeURL() string {
 	if web := os.Getenv("BOSS_WEB_URL"); web != "" {
 		return strings.TrimRight(web, "/") + "/subscribe"
 	}
-	if port := os.Getenv("BOSS_WEB_PORT"); port != "" {
-		return "http://localhost:" + port + "/subscribe"
-	}
+	// BOSS_WEB_PORT only moves the local web dev server off its default port;
+	// it says nothing about which orchestrator this CLI talks to. Consult it
+	// below, once the remote is known to be local.
 	remote := envOr("BOSS_CLOUD_URL", envOr("BOSSD_ORCHESTRATOR_URL", ""))
 	if strings.Contains(remote, "localhost") || strings.Contains(remote, "127.0.0.1") {
 		port := os.Getenv("BOSS_WEB_PORT")

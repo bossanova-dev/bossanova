@@ -176,8 +176,12 @@ type fakeAccountClient struct {
 
 	removeErr error
 
+	refreshResult *pb.RefreshAccountResponse
+	refreshErr    error
+
 	listProviders []string
 	addReqs       []*pb.AddAccountRequest
+	refreshReqs   []*pb.RefreshAccountRequest
 	removedIDs    []string
 }
 
@@ -195,6 +199,17 @@ func (c *fakeAccountClient) AddAccount(_ context.Context, req *pb.AddAccountRequ
 		return c.addResult, nil
 	}
 	return &pb.Account{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel()}, nil
+}
+
+func (c *fakeAccountClient) RefreshAccount(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	c.refreshReqs = append(c.refreshReqs, req)
+	if c.refreshErr != nil {
+		return nil, c.refreshErr
+	}
+	if c.refreshResult != nil {
+		return c.refreshResult, nil
+	}
+	return &pb.RefreshAccountResponse{Account: &pb.Account{Id: req.GetId()}}, nil
 }
 
 func (c *fakeAccountClient) TestAccount(_ context.Context, id string) (*pb.TestAccountResponse, error) {

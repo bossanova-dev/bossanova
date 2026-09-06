@@ -22,6 +22,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dotenv"
@@ -313,7 +314,7 @@ func (s *HostServiceServer) resolveProofEnv() map[string]string {
 // accountwiring.SpawnEnvResolver; the interface keeps the host service testable
 // and dependency-light.
 type accountEnvResolver interface {
-	Resolve(ctx context.Context, sess *models.Session) map[string]string
+	Resolve(ctx context.Context, sess *models.Session) (map[string]string, error)
 }
 
 // SetAccountEnvResolver overrides the account env resolver. Safe to leave unset
@@ -323,14 +324,15 @@ func (s *HostServiceServer) SetAccountEnvResolver(r accountEnvResolver) { s.acco
 // resolveAccountEnv returns the account env overlay for sess, or nil when no
 // resolver is wired or the session is unbound. Never logs values.
 //
-// The degrade-to-nil (and its ERROR log naming the account id and provider —
-// this path's spawn silently falls back to the agent CLI's ambient login,
-// BOS-973) both live in the concrete resolver,
-// accountwiring.SpawnEnvResolver.Resolve. Keeping them there rather than
-// duplicating a log here is why all four degrade sites report identically.
-func (s *HostServiceServer) resolveAccountEnv(ctx context.Context, sess *models.Session) map[string]string {
+// BOS-973 recorded the injection failure; BOS-1142 stopped swallowing it. The
+// refusal and its ERROR log both live in the concrete resolver,
+// accountwiring.SpawnEnvResolver.Resolve — keeping them there rather than
+// duplicating a log here is why every propagating site reports identically.
+// An error here refuses the spawn instead of downgrading it to the agent CLI's
+// ambient login.
+func (s *HostServiceServer) resolveAccountEnv(ctx context.Context, sess *models.Session) (map[string]string, error) {
 	if s.accountEnv == nil {
-		return nil
+		return nil, nil
 	}
 	return s.accountEnv.Resolve(ctx, sess)
 }
@@ -1227,12 +1229,22 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 	// repo lookup is non-fatal: OverlayWithRepo(nil) still guarantees
 	// LINEAR_API_KEY is present so the daemon's ambient value cannot leak.
 	repo := session.RepoForSessionEnv(ctx, s.repoStore, sess.RepoID, sess.ID, "repair run", log.Logger)
+	// BOS-1142: a bound account whose credentials cannot be injected refuses the
+	// repair run rather than dispatching it on the agent CLI's ambient login.
+	// Unlocks on the way out, mirroring the StartRun failure below — the run was
+	// never recorded, so there is nothing else to undo.
+	accountEnv, accountErr := s.resolveAccountEnv(ctx, sess)
+	if accountErr != nil {
+		s.runMu.Unlock()
+		// Redacted: this string becomes an RPC message an operator reads.
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "resolve account env: %s", account.RedactedMessage(accountErr))
+	}
 	startReq := &bossanovav1.StartAgentRunRequest{
 		WorkDir:  sess.WorktreePath,
 		Plan:     req.GetPrompt(),
 		LogPath:  bossalog.AgentLogFile(s.agentLogsDir, "repair-"+sessionID),
 		Model:    sess.Model,
-		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnv(), s.resolveAccountEnv(ctx, sess)), sess.WorktreePath, repo),
+		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnv(), accountEnv), sess.WorktreePath, repo),
 	}
 	startedAt := time.Now()
 	startResp, err := client.StartRun(context.Background(), startReq)

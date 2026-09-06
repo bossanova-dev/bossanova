@@ -61,6 +61,7 @@ resumed**, not a stop condition; only foreign real work or a live concurrent wri
 - CI/PR waits arm **one-shot GitHub callbacks** via `resolveCallbackAdapter(env)`
   (`toolbox/callback/adapter.mjs`, default `CALLBACK=boss`). The boss reference maps
   `registerWatch`/`listWatches`/`removeWatch` onto `boss callback add|list|remove`;
+  `policy.availableTriggers` names all six CLI triggers, while
   `policy.watchTriggers` = `checks_passed`/`checks_failed`/`merged` (per-trigger **groups**).
   Every wake **reconciles against real PR state before acting**, re-arms while waiting, and dedups by
   callback id (`policy.dedupById`).
@@ -1091,18 +1092,22 @@ An extension commits a knowledge artifact to this branch, so Step 7 must capture
 
 ## Step 7: PR gate (create/reuse)
 
-After committed work passes review, first run the **retry/rebase/rescue procedure** in
+After review, capture the reviewed tip per §Reviewed-tip confirmation, then run the
+**retry/rebase/rescue procedure** in
 [`references/review-stack.md`](references/review-stack.md) §BLOCKED-route publication to persist
 `$SESSION_BRANCH`. It is the required push procedure here too — never replace it with a one-shot
 push. Continue only when it sets `PUSHED=yes`; `PUSHED=rescue` or `PUSHED=no` means the session
 branch cannot safely back a PR, so record the procedure's result and **Stop cleanly** `BLOCKED`.
 
-**`PUSHED=yes` is not proof the reviewed tree is the tree that ships.** Run §Reviewed-tip
-confirmation in [`references/review-stack.md`](references/review-stack.md): capture the reviewed tip
-before the procedure, compare it against the remote tip after, and on any difference take one of the
-exactly two routes that section names; a moved tip is not itself a `BLOCKED` cause.
+**`PUSHED=yes` is not proof the reviewed tree is the tree that ships.** The §Reviewed-tip
+confirmation in [`references/review-stack.md`](references/review-stack.md) selects a route; it never
+stops the run. Compare that reviewed tip with remote tip after the procedure. On a
+match, continue with full coverage. On any difference, including `unknown`, take
+one of the exactly two routes that section names: re-run the Step 5 gates and Step 6 review against
+the new tip, or continue through §REVIEW_READY-with-findings publication with its reduced coverage
+token. A moved tip is not itself a `BLOCKED` cause.
 
-Once `PUSHED=yes` and that comparison matches, **create or reuse** the PR per the Step 2.5 mode.
+Once `PUSHED=yes`, **create or reuse** the PR per the Step 2.5 mode and the selected route.
 Write the body to a temp file **outside** the worktree so it never trips the change gate:
 
 ```bash
@@ -1133,11 +1138,16 @@ Step 6 rendered `boss-review` report when it exists (it carries the marker); whe
 skipped or errored, post an honest **fallback note** under the same marker — what ran, why it was
 unavailable, and a pointer to the PR-body `## Review coverage` and `## Cross-model review` sections
 — so every run leaves a visible review trace. Write the body to a temp file outside the worktree and:
+Anchor the selector because a body that merely quotes the marker must not match.
 
 ```bash
 BS_REVIEW_BODY="$(mktemp)"   # boss-review report, or the honest fallback note — both lead with <!-- bs-review -->
+ME="$(gh api user --jq '.login' 2>/dev/null || true)"
 CID=$(gh pr view "$PR_NUMBER" --json comments \
-  --jq '[.comments[] | select(.body | contains("<!-- bs-review -->")) | .url][-1] // ""')
+  | jq -r --arg me "$ME" '[.comments[]
+      | select(.body | startswith("<!-- bs-review -->"))
+      | select($me == "" or (.author.login // "") == $me)
+      | .url][-1] // ""')
 if [ -n "$CID" ]; then
   gh api -X PATCH "repos/{owner}/{repo}/issues/comments/${CID##*-}" -F body=@"$BS_REVIEW_BODY"
 else

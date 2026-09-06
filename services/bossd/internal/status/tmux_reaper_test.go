@@ -132,6 +132,13 @@ type reaperFixture struct {
 	// candidates every cheaper gate has already passed.
 	transcriptExists bool
 	transcriptProbes int
+	transcriptArgs   []transcriptProbe
+}
+
+type transcriptProbe struct {
+	agentName      string
+	workDir        string
+	agentSessionID string
 }
 
 // reaperConfig builds a TmuxReaperConfig with every tri-state boolean set
@@ -165,8 +172,13 @@ const reaperTestIdleThreshold = 8 * time.Hour
 // both control the answer and count the calls.
 type fixtureTranscriptOracle struct{ fx *reaperFixture }
 
-func (o fixtureTranscriptOracle) TranscriptExists(_ context.Context, _, _, _ string) bool {
+func (o fixtureTranscriptOracle) TranscriptExists(_ context.Context, agentName, workDir, agentSessionID string) bool {
 	o.fx.transcriptProbes++
+	o.fx.transcriptArgs = append(o.fx.transcriptArgs, transcriptProbe{
+		agentName:      agentName,
+		workDir:        workDir,
+		agentSessionID: agentSessionID,
+	})
 	return o.fx.transcriptExists
 }
 
@@ -201,6 +213,7 @@ func newReaperFixtureWithIdle(t *testing.T, cfg config.TmuxReaperConfig, idleCfg
 			killed:   map[string]bool{},
 			created:  map[string]time.Time{},
 			env:      map[string]map[string]string{},
+			attached: map[string]int{},
 		},
 		chats:    &reaperChatStore{mockChatStore: &mockChatStore{chats: map[string]*models.AgentChat{}}},
 		sessions: &reaperSessionStore{mockSessionStore: &mockSessionStore{sessions: map[string]*models.Session{}}},
@@ -268,11 +281,17 @@ func (fx *reaperFixture) addLivePane(name string, age time.Duration, stamp *stri
 	}
 }
 
+func (fx *reaperFixture) setAttached(name string, clients int) {
+	fx.tmuxFake.mu.Lock()
+	defer fx.tmuxFake.mu.Unlock()
+	fx.tmuxFake.attached[name] = clients
+}
+
 // addSession registers a session row. recordedPane may be nil to model a row
 // whose tmux_session_name was never written.
 func (fx *reaperFixture) addSession(id string, recordedPane *string) {
 	fx.sessions.all = append(fx.sessions.all, &models.Session{
-		ID: id, RepoID: reaperRepoID, TmuxSessionName: recordedPane,
+		ID: id, RepoID: reaperRepoID, WorktreePath: "/tmp/reaper-worktree", TmuxSessionName: recordedPane,
 	})
 	if recordedPane != nil && *recordedPane != "" {
 		fx.sessions.recordedNames = append(fx.sessions.recordedNames, *recordedPane)
@@ -289,15 +308,19 @@ func (fx *reaperFixture) addChat(agentSessionID string, recordedPane *string) {
 	})
 }
 
-// addResumableChat registers reaperIdleChatID as a chat that could still be
-// woken with its history intact: it carries a provider session id, D5's first
-// requirement for ever reaping a chat's pane.
+// addResumableChat registers reaperIdleChatID as a chat with the default
+// provider-backed shape used by the older idle-reaper tests.
 func (fx *reaperFixture) addResumableChat(recordedPane *string) {
+	fx.addAgentChat(reaperIdleChatID, "claude", recordedPane, ptr("provider-"+reaperIdleChatID))
+}
+
+func (fx *reaperFixture) addAgentChat(agentSessionID, agentName string, recordedPane, providerSessionID *string) {
 	fx.chats.all = append(fx.chats.all, &models.AgentChat{
-		ID: "chat-" + reaperIdleChatID, SessionID: reaperSessionID,
-		AgentSessionID:    reaperIdleChatID,
+		ID: "chat-" + agentSessionID, SessionID: reaperSessionID,
+		AgentSessionID:    agentSessionID,
+		AgentName:         agentName,
 		TmuxSessionName:   recordedPane,
-		ProviderSessionID: ptr("provider-" + reaperIdleChatID),
+		ProviderSessionID: providerSessionID,
 	})
 }
 
@@ -309,7 +332,11 @@ func (fx *reaperFixture) addResumableChat(recordedPane *string) {
 // test seeds inline rather than pre-seeding and then advancing fx.now: the
 // fixture clock may jump hours, but the entry must stay fresh.
 func (fx *reaperFixture) markIdle(idleFor time.Duration) {
-	fx.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_IDLE, fx.now.Add(-idleFor))
+	fx.markIdleChat(reaperIdleChatID, idleFor)
+}
+
+func (fx *reaperFixture) markIdleChat(agentSessionID string, idleFor time.Duration) {
+	fx.tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_IDLE, fx.now.Add(-idleFor))
 }
 
 func ptr(s string) *string { return &s }
@@ -542,6 +569,195 @@ func TestTmuxReaper_KeepsAccountedForPanes(t *testing.T) {
 			t.Fatalf("orphan kill seam ran for %v; an idle reap must use the chat teardown", fx.killed)
 		}
 	})
+}
+
+func TestTmuxReaper_IdleTranscriptProbeUsesResolvedResumeID(t *testing.T) {
+	tests := []struct {
+		name        string
+		agent       string
+		provider    *string
+		wantProbeID string
+	}{
+		{
+			name:        "claude without provider session id probes the agent session id",
+			agent:       "claude",
+			wantProbeID: reaperIdleChatID,
+		},
+		{
+			name:        "claude with provider session id probes the provider session id",
+			agent:       "claude",
+			provider:    ptr("claude-provider"),
+			wantProbeID: "claude-provider",
+		},
+		{
+			name:        "codex without provider session id probes the agent session id",
+			agent:       "codex",
+			wantProbeID: reaperIdleChatID,
+		},
+		{
+			name:        "codex with provider session id probes the rollout id",
+			agent:       "codex",
+			provider:    ptr("codex-rollout"),
+			wantProbeID: "codex-rollout",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := armedFixture(t, false)
+			fx.addAgentChat(reaperIdleChatID, tc.agent, ptr(reaperIdleChatPane), tc.provider)
+			fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+			fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+			if n := fx.sweep(); n != 0 {
+				t.Fatalf("first sweep reaped %d, want 0 before the confirming sighting", n)
+			}
+			if fx.transcriptProbes != 1 {
+				t.Fatalf("transcript probes = %d, want 1", fx.transcriptProbes)
+			}
+			got := fx.transcriptArgs[0]
+			if got.agentName != tc.agent || got.workDir != "/tmp/reaper-worktree" || got.agentSessionID != tc.wantProbeID {
+				t.Fatalf("transcript probe = %+v, want agent=%q workDir=/tmp/reaper-worktree session=%q", got, tc.agent, tc.wantProbeID)
+			}
+		})
+	}
+}
+
+func TestTmuxReaper_IdleReapsClaudeWithoutProviderSessionWhenTranscriptExists(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.wantsChatTeardown = true
+	fx.addAgentChat(reaperIdleChatID, "claude", ptr(reaperIdleChatPane), nil)
+	fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+	fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+	if n := fx.sweep(); n != 0 {
+		t.Fatalf("first sweep reaped %d, want 0 before confirmation", n)
+	}
+	fx.now = fx.now.Add(time.Nanosecond)
+	if n := fx.sweep(); n != 1 {
+		t.Fatalf("second sweep reaped %d, want 1", n)
+	}
+	if len(fx.killedChats) != 1 || fx.killedChats[0] != reaperSessionID+"/"+reaperIdleChatID+"/"+reaperIdleChatPane {
+		t.Fatalf("killedChats = %v, want the idle Claude chat pane", fx.killedChats)
+	}
+}
+
+func TestTmuxReaper_IdleKeepsClaudeWithoutProviderSessionWhenTranscriptMissing(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.transcriptExists = false
+	fx.addAgentChat(reaperIdleChatID, "claude", ptr(reaperIdleChatPane), nil)
+	fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+	fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+	if n := fx.sweep(); n != 0 {
+		t.Fatalf("sweep reaped %d, want 0 without transcript", n)
+	}
+	if fx.transcriptProbes != 1 {
+		t.Fatalf("transcript probes = %d, want 1", fx.transcriptProbes)
+	}
+	assertLogged(t, fx.logs, `"reason":"idleTranscriptMissing"`)
+}
+
+func TestTmuxReaper_IdleKeepsCodexWithoutProviderSessionWhenTranscriptMissing(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.transcriptExists = false
+	fx.addAgentChat(reaperIdleChatID, "codex", ptr(reaperIdleChatPane), nil)
+	fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+	fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+	if n := fx.sweep(); n != 0 {
+		t.Fatalf("sweep reaped %d, want 0 for unbound codex chat", n)
+	}
+	if fx.transcriptProbes != 1 {
+		t.Fatalf("transcript probes = %d, want 1", fx.transcriptProbes)
+	}
+	if got := fx.transcriptArgs[0].agentSessionID; got != reaperIdleChatID {
+		t.Fatalf("codex probe session id = %q, want bare agent session id %q", got, reaperIdleChatID)
+	}
+	assertLogged(t, fx.logs, `"reason":"idleTranscriptMissing"`)
+}
+
+func TestTmuxReaper_IdleReapsCodexWithProviderSessionWhenTranscriptExists(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.wantsChatTeardown = true
+	fx.addAgentChat(reaperIdleChatID, "codex", ptr(reaperIdleChatPane), ptr("codex-rollout"))
+	fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+	fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+	fx.sweep()
+	if got := fx.transcriptArgs[0].agentSessionID; got != "codex-rollout" {
+		t.Fatalf("codex probe session id = %q, want provider rollout id", got)
+	}
+	if len(fx.killedChats) != 0 {
+		t.Fatalf("first sweep killed %v, want confirmation first", fx.killedChats)
+	}
+	if n := fx.sweep(); n != 1 {
+		t.Fatalf("second sweep reaped %d, want 1", n)
+	}
+}
+
+func TestTmuxReaper_IdleKeepsDistinctTranscriptEvidenceFailures(t *testing.T) {
+	t.Run("unresolvable resume id keeps without probing", func(t *testing.T) {
+		fx := armedFixture(t, false)
+		fx.addAgentChat("", "claude", ptr(reaperIdleChatPane), nil)
+		fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+		fx.markIdleChat("", reaperTestIdleThreshold+time.Hour)
+
+		if n := fx.sweep(); n != 0 {
+			t.Fatalf("sweep reaped %d, want 0 with empty resume id", n)
+		}
+		if fx.transcriptProbes != 0 {
+			t.Fatalf("transcript probes = %d, want 0 with empty resume id", fx.transcriptProbes)
+		}
+		assertLogged(t, fx.logs, `"reason":"idleNoResumeSessionID"`)
+	})
+
+	t.Run("unwired oracle keeps with its own reason", func(t *testing.T) {
+		fx := armedFixture(t, false)
+		fx.reaper.idle.Transcripts = nil
+		fx.addAgentChat(reaperIdleChatID, "claude", ptr(reaperIdleChatPane), nil)
+		fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+		fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+		if n := fx.sweep(); n != 0 {
+			t.Fatalf("sweep reaped %d, want 0 with no oracle", n)
+		}
+		if fx.transcriptProbes != 0 {
+			t.Fatalf("transcript probes = %d, want 0 with no oracle", fx.transcriptProbes)
+		}
+		assertLogged(t, fx.logs, `"reason":"idleTranscriptOracleMissing"`)
+	})
+
+	t.Run("missing transcript keeps with its own reason", func(t *testing.T) {
+		fx := armedFixture(t, false)
+		fx.transcriptExists = false
+		fx.addAgentChat(reaperIdleChatID, "claude", ptr(reaperIdleChatPane), nil)
+		fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+		fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+		if n := fx.sweep(); n != 0 {
+			t.Fatalf("sweep reaped %d, want 0 with missing transcript", n)
+		}
+		if fx.transcriptProbes != 1 {
+			t.Fatalf("transcript probes = %d, want 1", fx.transcriptProbes)
+		}
+		assertLogged(t, fx.logs, `"reason":"idleTranscriptMissing"`)
+	})
+}
+
+func TestTmuxReaper_IdleKeepsAttachedPaneWithoutTranscriptProbe(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.addAgentChat(reaperIdleChatID, "claude", ptr(reaperIdleChatPane), nil)
+	fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+	fx.setAttached(reaperIdleChatPane, 1)
+	fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+	if n := fx.sweep(); n != 0 {
+		t.Fatalf("sweep reaped %d, want 0 while a client is attached", n)
+	}
+	if fx.transcriptProbes != 0 {
+		t.Fatalf("transcript probes = %d, want 0 for attached pane", fx.transcriptProbes)
+	}
+	assertLogged(t, fx.logs, `"reason":"idleAttachedClient"`)
 }
 
 func TestTmuxReaper_StrikeClearedWhenCandidateBecomesAccountedFor(t *testing.T) {

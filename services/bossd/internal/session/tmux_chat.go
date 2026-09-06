@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,11 +12,13 @@ import (
 
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -28,9 +31,28 @@ import (
 
 const defaultAgentCommandPrefix = "/"
 
-const (
+// Launch-path provider-session-id discovery budgets. These are vars rather
+// than consts so tests can shrink them to milliseconds instead of paying real
+// wall-clock seconds; production never reassigns them.
+var (
 	freshProviderSessionIDResolveDeadline = 2 * time.Second
 	freshProviderSessionIDResolveInterval = 100 * time.Millisecond
+
+	// backgroundProviderSessionIDResolve* bound the retry that continues past
+	// the foreground deadline. Codex opens its rollout fd some way into
+	// startup, so a cold worktree routinely misses the 2s foreground window —
+	// and the launch must not block on it. Rather than leave the chat
+	// permanently unbound (the BOS-1144 defect), discovery continues in a
+	// bounded background loop that binds the id when the fd appears. Mirrors
+	// the attach path's providerSessionIDBackgroundDiscovery* budgets in
+	// internal/server.
+	backgroundProviderSessionIDResolveTimeout  = time.Minute
+	backgroundProviderSessionIDResolveInterval = time.Second
+
+	// providerSessionIDPersistTimeout bounds the store re-read plus write once
+	// an id has been found. Deliberately NOT the discovery budget — see
+	// bindProviderSessionID.
+	providerSessionIDPersistTimeout = 5 * time.Second
 )
 
 var (
@@ -94,6 +116,50 @@ type ChatInput struct {
 	// zero value). Intent is derived from session provenance at the call site,
 	// never guessed from the payload's content.
 	Delivery DeliveryIntent
+	// DeliveryOptional marks the payload as INFORMATIONAL: a delivery or submit
+	// failure the SUBMIT VERIFIER classified is logged and the launch still
+	// reports success, instead of stamping the chat "(failed to start)" and
+	// failing the caller. Set it only for a payload whose loss leaves a correct,
+	// usable pane behind — the account-switch notice (BOS-1135) is the first:
+	// the account is already rebound and the pane is already up, so failing the
+	// switch over a cosmetic line would make a completed switch read as failed.
+	// The zero value (false) keeps every existing caller's loud behaviour.
+	//
+	// Scope: it is honoured by StartTmuxChat's launch-time injection only, and
+	// it never softens an OutcomeUnclassified failure — a pane that never became
+	// ready still fails loudly. It is not a general "ignore delivery errors"
+	// flag, and no other injection site consults it.
+	DeliveryOptional bool
+	// AccountID, when non-nil, is an EXPLICIT account override for this spawn,
+	// preferred over the session's AccountID seed. It exists for the respawn
+	// after a chat-scoped account switch that could not resume: no resumedChat
+	// is loaded on that path, so without it the fresh chat row is created — and
+	// its credentials resolved — from sessions.account_id, i.e. the account the
+	// operator just switched AWAY from (BOS-1135).
+	//
+	// Explicit only. Do NOT widen this into "infer the account from the chat we
+	// just killed": that reintroduces the same implicit-authority bug one layer
+	// out. A resumed chat's own binding still wins over it; it only displaces
+	// the session seed. A non-nil pointer to "" is the system-default account 0,
+	// exactly as elsewhere.
+	AccountID *string
+	// AgentName and Model, when non-nil and non-empty, are EXPLICIT provider and
+	// model overrides for this spawn, preferred over the session's seed. They are
+	// the exact counterparts of AccountID and exist for the same respawn: a
+	// chat-scoped account switch that could not resume loads no resumedChat, so
+	// without them the fresh row is created — and its runner, credentials and
+	// preflight resolved — from the SESSION's agent_name/model. For a cross-agent
+	// chat (a Codex chat inside a Claude session) that pairs the switched-to Codex
+	// account with a Claude spawn: the Claude runner builds argv while account
+	// materialization dispatches on the account's own provider, handing Codex env
+	// to a Claude process (BOS-1135).
+	//
+	// Carrying them is what makes the fresh path agree with the resumable one,
+	// which already reads provider and model off the chat row. Explicit only, and
+	// bounded by the same rule as AccountID: a resumed chat's own binding still
+	// wins: these only displace the session seed.
+	AgentName *string
+	Model     *string
 	// ResumeAgentSessionID, when set, resumes this prior agent session instead
 	// of minting a fresh one (claude `--resume <id>`), preserving the agent's
 	// memory of earlier attempts. The id is reused as the bossd correlation key
@@ -358,6 +424,12 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// next repair iteration should send the resumed command into that same
 	// pane instead of tripping the generic duplicate-chat guard.
 	resuming := input.ResumeAgentSessionID != ""
+	// resumeTargetID is the id the CALLER named. It may be bossd's durable
+	// agent_session_id or a provider session id, so it is kept verbatim for the
+	// live-pane match and for the provider-facing BuildInteractiveCommand on
+	// that path, while agentSessionID below is re-bound to the row's own
+	// durable id once a row is found.
+	resumeTargetID := input.ResumeAgentSessionID
 	agentSessionID := input.ResumeAgentSessionID
 	providerSessionID := agentSessionID
 	var resumedChat *models.AgentChat
@@ -366,13 +438,33 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// OpenCode mint a different session id, which is the only value their
 		// resume flag accepts. Keep the former for rows/logs/hooks, but send the
 		// latter to BuildInteractiveCommand when it is already known.
-		if existing, getErr := l.agentChats.GetByAgentSessionID(ctx, agentSessionID); getErr == nil && existing != nil {
+		existing, getErr := l.agentChats.GetByAgentSessionID(ctx, resumeTargetID)
+		switch {
+		case getErr == nil && existing != nil:
 			resumedChat = existing
-			if existing.ProviderSessionID != nil && *existing.ProviderSessionID != "" {
-				providerSessionID = *existing.ProviderSessionID
+		case getErr != nil && !errors.Is(getErr, db.ErrAgentChatNotFound):
+			return "", fmt.Errorf("get prior agent chat %s: %w", resumeTargetID, getErr)
+		default:
+			// No row keys on this id as an agent_session_id. It may still be a
+			// PROVIDER session id: the repair plugin resumes a codex iteration by
+			// exactly that (repairResumeSessionID). Resolve it here so a resume
+			// whose pane has already exited is not refused — the live-pane branch
+			// below accepts a provider id too, but only while a pane survives.
+			match, matchErr := l.chatByProviderSessionID(ctx, sessionID, resumeTargetID)
+			if matchErr != nil {
+				return "", matchErr
 			}
-		} else if getErr != nil && !errors.Is(getErr, db.ErrAgentChatNotFound) {
-			return "", fmt.Errorf("get prior agent chat %s: %w", agentSessionID, getErr)
+			resumedChat = match
+		}
+		if resumedChat != nil {
+			// Stay keyed on the row's OWN agent_session_id so rows, logs, hooks
+			// and tmux names all address bossd's durable id even when the caller
+			// resumed by a provider id.
+			agentSessionID = resumedChat.AgentSessionID
+			providerSessionID = agentSessionID
+			if resumedChat.ProviderSessionID != nil && *resumedChat.ProviderSessionID != "" {
+				providerSessionID = *resumedChat.ProviderSessionID
+			}
 		}
 	}
 
@@ -386,8 +478,8 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		if existing, found, idemErr := l.findLiveTmuxChat(ctx, sessionID); idemErr != nil {
 			return "", idemErr
 		} else if found {
-			if resuming && liveChatMatchesResumeTarget(existing, agentSessionID) {
-				return l.sendInputToLiveTmuxChat(ctx, sess, client, input, existing, agentSessionID, hookOpts)
+			if resuming && liveChatMatchesResumeTarget(existing, resumeTargetID) {
+				return l.sendInputToLiveTmuxChat(ctx, sess, client, input, existing, resumeTargetID, hookOpts)
 			}
 			// Return the existing agent_session_id in the success-shaped string
 			// slot alongside the typed AlreadyExists error so callers can read
@@ -395,6 +487,19 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			return existing.AgentSessionID, grpcstatus.Errorf(codes.AlreadyExists,
 				"tmux chat already active for session %s", sessionID)
 		}
+	}
+
+	// Step 3b: a resume that reaches here must have a row to resume into.
+	// Reconstructing one from the parent session's defaults is what turned an
+	// interrupted codex chat into a fresh claude chat (BOS-1143), and re-keying
+	// a provider id onto a new row is the duplicate-live-chat hazard
+	// switchResumeID documents. Refuse instead — and refuse HERE, ahead of the
+	// tmux launch, so the refusal costs no pane and no agent process. Step 2
+	// already resolved the row under EITHER key — bossd's agent_session_id, then
+	// this session's provider_session_id — and a live pane returned above, so
+	// what lands here is a resume naming an id no row of this session carries.
+	if resuming && resumedChat == nil {
+		return "", &ResumedChatMissingError{AgentSessionID: resumeTargetID}
 	}
 
 	// Step 4: resolve the agent session id. A resume request reuses the prior
@@ -415,16 +520,68 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// than the session's stale seed. A chat that never bound its own account
 	// (nil) or model ("") inherits the session's mirrored value.
 	spawnAgentName, spawnModel, spawnAccountID := sess.AgentName, sess.Model, sess.AccountID
+	// chatBoundAccount records WHICH layer supplied spawnAccountID, because that
+	// — not the value — decides whether the failover-proxy target below is
+	// chat-scoped or session-scoped (BOS-1135). Deriving it from the value would
+	// be wrong in the common case where a chat's account happens to equal the
+	// session's.
+	chatBoundAccount := false
+	// modelBound records whether a layer ABOVE the session seed supplied
+	// spawnModel, because only a seeded model may be reset across agents
+	// below. Deriving it from the value would be wrong when a chat's model
+	// happens to equal the session's.
+	modelBound := false
 	if resumedChat != nil {
 		if resumedChat.AgentName != "" {
 			spawnAgentName = resumedChat.AgentName
 		}
 		if resumedChat.Model != "" {
 			spawnModel = resumedChat.Model
+			modelBound = true
 		}
 		if resumedChat.AccountID != nil {
 			spawnAccountID = resumedChat.AccountID
+			chatBoundAccount = true
 		}
+	}
+	// An explicit caller override displaces the SESSION seed but never a resumed
+	// chat's own binding — the row is the durable authority whenever it carries
+	// one. Its only production setter is the account switch's non-resumable
+	// respawn, which has no row to read.
+	if !chatBoundAccount && input.AccountID != nil {
+		spawnAccountID = input.AccountID
+		chatBoundAccount = true
+	}
+	// Provider and model follow the SAME rule, mirroring the resumedChat guards
+	// above: a row that carried its own value has already won, so an explicit
+	// override displaces only the session seed. Without them the non-resumable
+	// switch respawn would come back up under the parent session's provider while
+	// persisting the switched-to account, pairing one provider's credentials with
+	// another's runner (BOS-1135).
+	//
+	// Both must land BEFORE spawnEffort and the runner re-selection below, which
+	// read spawnAgentName to pick the effort scale and the runner plugin.
+	if resumedChat == nil || resumedChat.AgentName == "" {
+		if input.AgentName != nil && *input.AgentName != "" {
+			spawnAgentName = *input.AgentName
+		}
+	}
+	if resumedChat == nil || resumedChat.Model == "" {
+		if input.Model != nil && *input.Model != "" {
+			spawnModel = *input.Model
+			modelBound = true
+		}
+	}
+	// A cross-agent spawn must never inherit the SESSION's model: model ids are
+	// provider-scoped, so a codex chat under a claude session would come back up
+	// as `codex --model <claude model id>` and fail — after the account switch
+	// already killed its old pane, leaving the chat dead rather than degraded.
+	// Only the session SEED is reset; a model the chat row or an explicit
+	// override supplied has already won above. Mirrors EffectiveEffortForAgent
+	// on the next line, which resets effort across agents the same way, and must
+	// land after the spawnAgentName resolution it reads (BOS-1135).
+	if !modelBound {
+		spawnModel = EffectiveModelForAgent(sess.AgentName, sess.Model, spawnAgentName)
 	}
 	spawnEffort := EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, spawnAgentName)
 	// Re-select the runner plugin when the chat's provider differs from the
@@ -467,7 +624,36 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// Resolve the launch environment before building argv. Plugins that prepare
 	// an isolated config home must use the same home selection as the tmux child.
 	repo := RepoForSessionEnv(ctx, l.repos, sess.RepoID, sess.ID, "start tmux chat", l.logger)
-	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), sess.WorktreePath, repo), sess.WorktreePath)
+	// The account authority decides the failover-proxy target: a chat-bound
+	// account gets a CHAT-scoped token (resolved through agent_chats.account_id),
+	// a session-seeded one keeps the session-scoped token it always had. The chat
+	// view is synthesized rather than read back because on a fresh respawn the
+	// agent_chats row does not exist until Step 7. TokenForChat carries the
+	// account id as its target's fallback, but that fallback is only reached
+	// once the row EXISTS and carries no account of its own: chatProxyBinding
+	// returns no binding at all while GetByAgentSessionID reports not-found,
+	// before the fallback is ever read. The Step 6 -> Step 7 gap is therefore
+	// NOT covered by it.
+	var spawnChat *models.AgentChat
+	if chatBoundAccount {
+		spawnChat = &models.AgentChat{
+			SessionID:      sessionID,
+			AgentSessionID: agentSessionID,
+			AgentName:      spawnAgentName,
+			AccountID:      spawnAccountID,
+		}
+	}
+	// BOS-1142: resolved before argv and before any pane exists, so a bound
+	// account whose credentials cannot be injected refuses the chat rather than
+	// starting it on the agent CLI's ambient login.
+	chatAccountEnv, accountErr := l.resolveAccountEnvForChat(ctx, spawnSess, spawnChat)
+	if accountErr != nil {
+		// Wrapped, not flattened: redactedInjection keeps the message masked for
+		// the start RPC while leaving Unwrap intact so the typed injection
+		// outcome survives this seam.
+		return "", fmt.Errorf("resolve account env for session %s: %w", sessionID, redactedInjection(accountErr))
+	}
+	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), chatAccountEnv, l.resolveProofEnv()), sess.WorktreePath, repo), sess.WorktreePath)
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
@@ -550,6 +736,12 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	//
 	// A repo lookup failure is non-fatal: OverlayWithRepo(nil) still guarantees
 	// LINEAR_API_KEY is present so the daemon's ambient value can never leak.
+	//
+	// launchedAt is stamped immediately before the spawn because it is the
+	// floor of the provider-session-id time-window scan: a rollout written
+	// before this instant cannot belong to this chat. Stamping it after the
+	// spawn returns would exclude a fast provider's own rollout.
+	launchedAt := time.Now().UTC()
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
@@ -595,20 +787,37 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		Str("worktree", sess.WorktreePath).
 		Msg("started agent inside tmux")
 
-	// On resume the prior chat row still exists (findLiveTmuxChat preserves it,
-	// only clearing its tmux pointer) and agent_session_id is not unique, so a
-	// fresh Create would insert a duplicate row. Delete the stale row first so
-	// exactly one row carries the reused id.
-	if resuming {
-		if err := l.agentChats.DeleteByAgentSessionID(ctx, agentSessionID); err != nil {
-			l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
-			return "", fmt.Errorf("delete stale agent_chats row for resume of session %s: %w", sessionID, err)
-		}
-	}
-
 	// Step 7: persist the agent_chats row. Failure here orphans the tmux
 	// session so we tear it back down before returning.
-	if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
+	//
+	// On resume the prior row still exists (findLiveTmuxChat preserves it, only
+	// clearing its tmux pointer), so it is updated in place. It must NOT be
+	// deleted and re-created: the re-create dropped provider_session_id and
+	// re-derived agent_name/model/account_id from the parent session, which is
+	// how an interrupted codex chat came back as a claude one (BOS-1143). The
+	// spawn* values written here are already the row's own values whenever it
+	// carries them, so this is a no-op for a bound chat and a session fill-in
+	// for a legacy row that never bound its own — matching what Create did.
+	if resuming {
+		rebind := db.RebindResumedChatParams{
+			SessionID: &sessionID,
+			Title:     &title,
+			AccountID: &spawnAccountID,
+			// The delete+create cleared start_error implicitly; a successful
+			// relaunch must still drop the "(failed to start)" badge.
+			ClearStartError: true,
+		}
+		if spawnAgentName != "" {
+			rebind.AgentName = &spawnAgentName
+		}
+		if spawnModel != "" {
+			rebind.Model = &spawnModel
+		}
+		if err := l.rebindResumedChat(ctx, agentSessionID, rebind); err != nil {
+			l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
+			return "", fmt.Errorf("rebind agent_chats row for resume of session %s: %w", sessionID, err)
+		}
+	} else if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,
 		AgentName:      spawnAgentName,
@@ -645,7 +854,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	}
 
 	if cmdResp.GetConsumesInitialInput() {
-		l.persistFreshProviderSessionID(ctx, client, sess.WorktreePath, agentSessionID, resuming)
+		l.persistFreshProviderSessionID(ctx, client, sess.WorktreePath, agentSessionID, tmuxName, launchedAt, resuming)
 		return agentSessionID, nil
 	}
 
@@ -658,15 +867,94 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// so the operator can see exactly what was attempted even when the
 	// agent never came up.
 	if err := l.injectTmuxChatInput(ctx, tmuxName, input, cmdResp, client, spawnAgentName); err != nil {
+		// An INFORMATIONAL payload never fails a launch that otherwise
+		// succeeded: the pane is up and correctly wired, and stamping
+		// "(failed to start)" on it would mislabel a healthy chat — worse,
+		// failStartBestEffort KILLS the pane, so failing here would destroy a
+		// working chat over an undelivered cosmetic line. Degrade to "pane up,
+		// no notice" and say so loudly in the log (BOS-1135).
+		//
+		// Gated on the delivery being CLASSIFIED, which is the line between the
+		// two failures this branch must not confuse. Every classified outcome was
+		// reached against a pane that came UP and rendered something a classifier
+		// could read: not-submitted, unconfirmed and queued are submit-verifier
+		// verdicts on a live composer, and blocked-by-modal is the readiness
+		// gate's refusal on a pane showing a menu instead (tmux_modal.go). Either
+		// way the launch worked and only the payload did not land.
+		// OutcomeUnclassified is every error neither of those produced — a
+		// ready-marker timeout, a delivery command that failed to run, an empty
+		// session name (tmux_submit_verify.go:55-59). There nothing ever came up,
+		// the respawn genuinely failed, and the loud path below must still stamp
+		// the row and reap the never-ready pane. Note the boundary is
+		// classification, NOT liveness: a context cancelled DURING verification is
+		// OutcomeUnconfirmed, i.e. classified and swallowed, because the pane was
+		// already up when it happened.
+		//
+		// Degrading falls THROUGH to the single success tail below rather than
+		// returning here, so any step later added to that tail cannot be
+		// silently skipped on this path.
 		reason := "send plan failed: " + err.Error()
 		if input.Command != "" {
 			reason = "send command failed: " + err.Error()
 		}
-		l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason)
-		return "", err
+		if !input.DeliveryOptional || tmux.OutcomeOf(err) == tmux.OutcomeUnclassified {
+			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason)
+			return "", err
+		}
+		// A classified outcome proves the pane was up when it was CLASSIFIED, not
+		// that it still is. TWO verdicts can be minted from evidence that is a tmux
+		// call which FAILED rather than a pane that was read: every
+		// OutcomeUnconfirmed, and the OutcomeNotSubmitted sites where the snapshot,
+		// the C-u, the post-clear capture, the re-read, the re-delivery or the
+		// Enter itself errored (tmux_submit_verify.go:233, :266, :274, :298, :313,
+		// :359). That second half is easy to miss because the retry is entered only
+		// after a CONFIRMED-PENDING verdict, so a pane that dies during the
+		// clear/redeliver/Enter dance is classified not-submitted — deliberately,
+		// since C-u cannot submit — rather than unconfirmed.
+		//
+		// A pane whose process exited after NewSession produces exactly those
+		// failures, and this spawn path does not arm RemainOnExit, so such an exit
+		// collapses the session outright rather than leaving a readable zombie.
+		// Classification therefore cannot tell "up but unreadable" from "gone" for
+		// EITHER verdict, which is why both are gated here: ask tmux itself, or the
+		// switch returns success while the row keeps a tmux_session_name pointing
+		// at nothing.
+		//
+		// This runs BEFORE the clear below on purpose. On a definite miss the
+		// branch returns, so no C-u is sent at a session that no longer exists —
+		// that would be a guaranteed-failing tmux call plus a warning claiming the
+		// notice may still be pending in a composer that is gone — and
+		// failStartBestEffort reaps the pane regardless.
+		if outcome := tmux.OutcomeOf(err); (outcome == tmux.OutcomeUnconfirmed || outcome == tmux.OutcomeNotSubmitted) &&
+			l.confirmPaneVanished(ctx, tmuxName) {
+			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason)
+			return "", err
+		}
+		// "Not delivered" must not mean "left at the prompt". OutcomeNotSubmitted
+		// is the verifier's verdict that nothing was submitted while a composer
+		// was drawn and holding the payload — which for the account-switch notice
+		// is precisely the pending composer line BOS-1135 exists to remove, and
+		// worse, the next Enter anyone presses would submit a stale housekeeping
+		// message. So clear it before accepting the launch. Reaching here means the
+		// probe above did not prove the pane gone, so there is still a composer
+		// worth clearing.
+		//
+		// Only that outcome. Queued and blocked-by-modal leave nothing at the
+		// prompt (the payload is in the agent's queue; nothing was typed at all),
+		// and unconfirmed means the pane state is UNKNOWN — the payload may
+		// already be running, and C-u into that is a stray keystroke into a pane
+		// this code cannot see.
+		if tmux.OutcomeOf(err) == tmux.OutcomeNotSubmitted {
+			l.clearUndeliveredNotice(ctx, sessionID, agentSessionID, tmuxName, input.render(cmdResp.GetCommandPrefix()))
+		}
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("agentSessionID", agentSessionID).
+			Str("tmuxSession", tmuxName).
+			Msg("optional chat notice not delivered; the pane was not proven gone and the launch stands")
 	}
 
-	l.persistFreshProviderSessionID(ctx, client, sess.WorktreePath, agentSessionID, resuming)
+	l.persistFreshProviderSessionID(ctx, client, sess.WorktreePath, agentSessionID, tmuxName, launchedAt, resuming)
 	return agentSessionID, nil
 }
 
@@ -675,9 +963,30 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 // best-effort: the pane is usable even when an agent's local session store is
 // temporarily unavailable, and a failure to discover it must not turn a
 // successful launch into an orphaned or failed chat.
-func (l *Lifecycle) persistFreshProviderSessionID(ctx context.Context, client agent.AgentRunnerClient, worktreePath, agentSessionID string, resuming bool) {
+func (l *Lifecycle) persistFreshProviderSessionID(ctx context.Context, client agent.AgentRunnerClient, worktreePath, agentSessionID, tmuxName string, launchedAt time.Time, resuming bool) {
 	if resuming || client == nil {
 		return
+	}
+
+	// Resolve against THIS chat's own pane. Without a pane pid the codex plugin
+	// can only run its (work_dir, launched_after) time-window scan, which goes
+	// ambiguous the moment a sibling chat exists in the same worktree — the
+	// ambiguity that left two thirds of codex chats with no provider id, so
+	// every reopen silently started a fresh conversation (BOS-1144). A tmux
+	// failure or a zero pid leaves PanePid unset and the scan runs exactly as
+	// before: weaker resolution, never a failed launch.
+	panePID := 0
+	if l.tmux != nil && tmuxName != "" {
+		pid, err := l.tmux.PanePID(ctx, tmuxName)
+		switch {
+		case err != nil:
+			l.logger.Debug().Err(err).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("pane pid unavailable; provider session id resolution falls back to the time-window scan")
+		case pid > 0:
+			panePID = pid
+		}
 	}
 
 	// tmux reports a detached pane as soon as it starts, but providers such as
@@ -688,16 +997,12 @@ func (l *Lifecycle) persistFreshProviderSessionID(ctx context.Context, client ag
 	defer cancel()
 
 	for {
-		resp, err := client.ResolveInteractiveSessionID(resolveCtx, &bossanovav1.ResolveInteractiveSessionIDRequest{
-			WorkDir:            worktreePath,
-			RequestedSessionId: agentSessionID,
-		})
+		resp, err := client.ResolveInteractiveSessionID(resolveCtx,
+			newResolveInteractiveSessionIDRequest(worktreePath, agentSessionID, panePID, launchedAt))
 		if err == nil {
 			providerSessionID := resp.GetSessionId()
 			if resp != nil && resp.GetFound() && providerSessionID != "" && providerSessionID != agentSessionID {
-				if err := l.agentChats.UpdateProviderSessionID(ctx, agentSessionID, &providerSessionID); err != nil {
-					l.logger.Warn().Err(err).Str("agentSessionID", agentSessionID).Str("providerSessionID", providerSessionID).Msg("persist fresh provider session id failed")
-				}
+				l.bindProviderSessionID(ctx, agentSessionID, providerSessionID)
 				return
 			}
 		}
@@ -707,9 +1012,154 @@ func (l *Lifecycle) persistFreshProviderSessionID(ctx context.Context, client ag
 			if err != nil && !errors.Is(resolveCtx.Err(), context.Canceled) {
 				l.logger.Warn().Err(err).Str("agentSessionID", agentSessionID).Msg("resolve fresh provider session id failed")
 			}
+			// Only the foreground budget running out earns a background retry.
+			// A cancelled parent means the caller (or the daemon) is going
+			// away, and spawning a minute-long poller into that is noise.
+			if errors.Is(resolveCtx.Err(), context.DeadlineExceeded) {
+				l.startBackgroundProviderSessionIDDiscovery(client, worktreePath, agentSessionID, tmuxName, panePID, launchedAt)
+			}
 			return
 		case <-time.After(freshProviderSessionIDResolveInterval):
 		}
+	}
+}
+
+// newResolveInteractiveSessionIDRequest builds the launch-path resolution
+// request. Both discovery fields are conditional on purpose: a zero PanePid and
+// a nil LaunchedAfter are the "no pane, scan the whole window" shape the legacy
+// callers already send, so a tmux miss degrades to the old behaviour rather
+// than sending a pid of 0 that reads as a real pid.
+func newResolveInteractiveSessionIDRequest(worktreePath, agentSessionID string, panePID int, launchedAt time.Time) *bossanovav1.ResolveInteractiveSessionIDRequest {
+	req := &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:            worktreePath,
+		RequestedSessionId: agentSessionID,
+	}
+	if panePID > 0 && panePID <= math.MaxInt32 {
+		req.PanePid = int32(panePID)
+	}
+	if !launchedAt.IsZero() {
+		req.LaunchedAfter = timestamppb.New(launchedAt)
+	}
+	return req
+}
+
+// bindProviderSessionID persists a discovered provider session id under the
+// BOS-290 never-overwrite invariant.
+func (l *Lifecycle) bindProviderSessionID(ctx context.Context, agentSessionID, providerSessionID string) {
+	if l.agentChats == nil {
+		return
+	}
+	// Fresh context for the persist: ctx here is the discovery budget, which
+	// the resolution that produced this id may have all but spent. Throwing
+	// away a found id because the budget that bounded the search also bounded
+	// the write is exactly the failure this avoids (the same reasoning as
+	// server.backfillCodexProviderSessionID).
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDPersistTimeout)
+	defer cancel()
+
+	// Never overwrite an id another path (wake, attach-time discovery, legacy
+	// backfill) may have bound while this one was resolving — the BOS-290
+	// invariant the other write sites enforce. Re-read the row from the store
+	// rather than trusting a pointer captured before the poll.
+	//
+	// A read error is deliberately NOT a reason to skip the write: the id in
+	// hand is still the best anyone has, and dropping it because of a transient
+	// store error would recreate the unbound-chat defect this fixes.
+	if current, err := l.agentChats.GetByAgentSessionID(persistCtx, agentSessionID); err == nil &&
+		current != nil && current.ProviderSessionID != nil && *current.ProviderSessionID != "" {
+		return
+	}
+
+	if err := l.agentChats.UpdateProviderSessionID(persistCtx, agentSessionID, &providerSessionID); err != nil {
+		l.logger.Warn().Err(err).
+			Str("agentSessionID", agentSessionID).
+			Str("providerSessionID", providerSessionID).
+			Msg("persist fresh provider session id failed")
+	}
+}
+
+// startBackgroundProviderSessionIDDiscovery continues launch-path discovery
+// past the foreground deadline. It runs under safego.Go so a panic in the loop
+// cannot take the daemon down, and the returned done channel is retained on the
+// Lifecycle so callers (and tests) can join the goroutine deterministically
+// instead of sleeping.
+func (l *Lifecycle) startBackgroundProviderSessionIDDiscovery(client agent.AgentRunnerClient, worktreePath, agentSessionID, tmuxName string, panePID int, launchedAt time.Time) {
+	timeout := backgroundProviderSessionIDResolveTimeout
+	interval := backgroundProviderSessionIDResolveInterval
+	if client == nil || timeout <= 0 || interval <= 0 {
+		return
+	}
+
+	done := safego.Go(l.logger, func() {
+		// Detached from the launch context on purpose: StartTmuxChat returns as
+		// soon as the pane is usable, and its ctx is cancelled with the RPC.
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		lastReason := ""
+		for {
+			resp, err := client.ResolveInteractiveSessionID(ctx,
+				newResolveInteractiveSessionIDRequest(worktreePath, agentSessionID, panePID, launchedAt))
+			if err != nil {
+				if ctx.Err() == nil {
+					l.logger.Warn().Err(err).
+						Str("agentSessionID", agentSessionID).
+						Str("tmuxSession", tmuxName).
+						Msg("background provider session id discovery failed")
+				}
+				return
+			}
+			if providerSessionID := resp.GetSessionId(); resp.GetFound() && providerSessionID != "" && providerSessionID != agentSessionID {
+				l.bindProviderSessionID(ctx, agentSessionID, providerSessionID)
+				return
+			}
+			if resp.GetAmbiguous() {
+				l.logger.Warn().
+					Str("agentSessionID", agentSessionID).
+					Str("tmuxSession", tmuxName).
+					Str("reason", resp.GetReason()).
+					Msg("background provider session id discovery ambiguous")
+				return
+			}
+			if reason := resp.GetReason(); reason != "" {
+				lastReason = reason
+			}
+
+			select {
+			case <-ctx.Done():
+				l.logger.Warn().
+					Str("agentSessionID", agentSessionID).
+					Str("tmuxSession", tmuxName).
+					Str("reason", lastReason).
+					Msg("background provider session id discovery timed out")
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+
+	l.providerSessionIDDiscoveryMu.Lock()
+	l.providerSessionIDDiscoveryDone = done
+	l.providerSessionIDDiscoveryMu.Unlock()
+}
+
+// WaitForBackgroundProviderSessionIDDiscovery blocks until the most recently
+// started launch-path background discovery goroutine has exited, or until ctx
+// is done. It is a no-op when no such goroutine has been started. This is what
+// makes the retry a tracked step rather than fire-and-forget.
+func (l *Lifecycle) WaitForBackgroundProviderSessionIDDiscovery(ctx context.Context) {
+	l.providerSessionIDDiscoveryMu.Lock()
+	done := l.providerSessionIDDiscoveryDone
+	l.providerSessionIDDiscoveryMu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -760,6 +1210,47 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 		return "", err
 	}
 	return agentSessionID, nil
+}
+
+// chatByProviderSessionID resolves a resume target named by a PROVIDER session
+// id instead of by bossd's own agent_session_id, for this session only.
+//
+// GetByAgentSessionID keys on agent_session_id alone, so it cannot see a
+// provider id; liveChatMatchesResumeTarget does accept one, but it is only
+// consulted once a live pane has been found. Callers that resume by provider id
+// — repairResumeSessionID hands the repair plugin's codex iterations exactly
+// that — therefore had no way to name their own chat once its pane had exited.
+//
+// The scan is deliberately scoped to the session: provider_session_id is
+// indexed but NOT unique and is nullable (20260511120000_add_agent_chat_-
+// provider_session_id), so an unscoped lookup could straddle sessions. More than
+// one match even inside one session is refused rather than guessed at — picking
+// one is the duplicate-live-chat hazard switchResumeID documents. Returns
+// (nil, nil) when nothing matches, which the caller turns into the Step 3b
+// refusal.
+func (l *Lifecycle) chatByProviderSessionID(ctx context.Context, sessionID, providerSessionID string) (*models.AgentChat, error) {
+	if providerSessionID == "" {
+		return nil, nil
+	}
+	chats, err := l.agentChats.ListBySession(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list chats for session %s: %w", sessionID, err)
+	}
+	var match *models.AgentChat
+	matches := 0
+	for _, chat := range chats {
+		if chat == nil || chat.ProviderSessionID == nil || *chat.ProviderSessionID != providerSessionID {
+			continue
+		}
+		matches++
+		match = chat
+	}
+	if matches > 1 {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition,
+			"session %s has %d chats carrying provider session id %s; refusing to guess which one to resume",
+			sessionID, matches, providerSessionID)
+	}
+	return match, nil
 }
 
 func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string) bool {
@@ -872,6 +1363,66 @@ func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client
 		return false, fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
 	}
 	return resp.GetIsSupported(), nil
+}
+
+// clearUndeliveredNotice wipes an optional payload the submit verifier proved
+// was never submitted off the live composer, so the pane comes back genuinely
+// empty rather than pre-loaded with a housekeeping line nobody asked for.
+//
+// It is best-effort by design, and the failure it tolerates is narrow: the only
+// way the clear can fail is that C-u could not empty a composer the verifier's
+// OWN bounded clear dance already failed to empty, or that the pane could not be
+// read. The alternative on that path — treating it as fatal — would run
+// failStartBestEffort, which KILLS a pane that is up, correctly wired, and bound
+// to the account the switch just moved it to. A stray line in a working
+// composer is strictly less harm than destroying a completed switch, and the
+// non-fatal contract is itself a named acceptance criterion of BOS-1135. So it
+// logs loudly and lets the launch stand.
+//
+// It runs on a detached, bounded context for the same reason failStartBestEffort
+// does: this path is most often reached because the caller's own budget expired
+// during the submit verification, and a clear issued on that dead context would
+// be an instant no-op precisely when it is needed.
+func (l *Lifecycle) clearUndeliveredNotice(ctx context.Context, sessionID, agentSessionID, tmuxName, payload string) {
+	if l.tmux == nil || tmuxName == "" || payload == "" {
+		return
+	}
+	detach.Cleanup(ctx, detach.CleanupBudget, func(clearCtx context.Context) {
+		if err := l.tmux.ClearComposer(clearCtx, tmuxName, payload); err != nil {
+			l.logger.Warn().Err(err).
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("undelivered chat notice could not be cleared; it may still be pending in the composer")
+		}
+	})
+}
+
+// confirmPaneVanished asks tmux directly whether the pane is still there, and
+// answers true ONLY on a definite "no such session".
+//
+// An indeterminate probe answers false, deliberately. The readiness gate already
+// sets that discipline (ready_marker.go acts only on probeErr == nil && !alive):
+// the caller's remedy on this path is failStartBestEffort, which KILLS the pane,
+// so a tmux hiccup that merely failed to answer must never be promoted into
+// destroying a chat that is working. Under-reacting here costs a stale row that
+// the status poller already hides; over-reacting costs a completed switch.
+//
+// It runs on a detached, bounded context for the same reason its two neighbours
+// do: this path is most often reached because the caller's own budget expired
+// during verification, and a probe issued on that dead context would report
+// nothing precisely when it is needed.
+func (l *Lifecycle) confirmPaneVanished(ctx context.Context, tmuxName string) bool {
+	if l.tmux == nil || tmuxName == "" {
+		return false
+	}
+	vanished := false
+	detach.Cleanup(ctx, detach.CleanupBudget, func(probeCtx context.Context) {
+		if alive, probeErr := l.tmux.HasSessionStatus(probeCtx, tmuxName); probeErr == nil && !alive {
+			vanished = true
+		}
+	})
+	return vanished
 }
 
 // failStartBestEffort tears down a tmux session created by a failing
@@ -1875,8 +2426,11 @@ func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName str
 // context expiring — the switch route reaches StartTmuxChat under the switch's
 // respawn budget, and a readiness wait that spends it fails exactly that way —
 // so on the caller's context the kill fails immediately, leaking precisely the
-// pane this exists to reclaim. Chat panes are spawned with
-// RemainOnExit and never self-reap, so a leaked one lasts the host's lifetime.
+// pane this exists to reclaim. A leaked pane whose agent process is still
+// running lasts the host's lifetime. Panes spawned through the server-side chat
+// spawner additionally arm RemainOnExit (spawn_chat_tmux.go) and so outlive even
+// their process exiting; StartTmuxChat's own spawn above does NOT, which is why
+// an exit on this path collapses the session and leaves capture-pane failing.
 func (l *Lifecycle) killTmuxChatBestEffort(ctx context.Context, sessionID, agentSessionID, tmuxName string) {
 	if l.tmux == nil {
 		return

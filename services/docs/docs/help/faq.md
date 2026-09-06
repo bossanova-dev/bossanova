@@ -105,6 +105,9 @@ It does **not** send the contents of your worktrees: no source code, no
 diffs, no commit messages, no agent transcripts. The full inventory and the
 opt-out paths are in [Privacy](../reference/privacy.md).
 
+Signing in is a device-code flow; see [Signing In](../guides/login.md#cli) for
+how to run it.
+
 ### Can I run Bossanova fully local with no cloud?
 
 Yes. Set `cloud.orchestrator_url` to the empty string in your

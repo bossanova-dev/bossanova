@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 
 	"github.com/recurser/boss/internal/auth"
 )
@@ -227,6 +228,52 @@ func (h HomeModel) logoutErrorLine() string {
 	return renderError(message, h.statusWrapWidth())
 }
 
+// sessionReadFailureName is the display label for one failed organization: its
+// name, or its id when the server sent no name. Mirrors the web's own
+// readFailureName (services/web/src/pages/Sessions.tsx) so the two surfaces
+// label the same failure the same way — an unlabelled failure would tell the
+// user the list is short without telling them what is missing from it.
+func sessionReadFailureName(f *pb.OrganizationSessionReadFailure) string {
+	if name := f.GetOrganizationName(); name != "" {
+		return name
+	}
+	return f.GetOrganizationId()
+}
+
+// sessionReadFailureLine renders Home's partial-read notice, or "" when the
+// last poll read every organization. A cloud session read fans out across every
+// organization the caller belongs to and serves what it could get, so without
+// this the missing organization's sessions simply are not there — which reads
+// as "that organization has no sessions", in the very view whose point is
+// seeing across them.
+//
+// The server's reason is passed through VERBATIM: the proto guarantees it is
+// display-safe and carries no credentials, and re-wording it here would put
+// this view's guess in front of the user instead of what actually happened.
+// Copy mirrors the web's SessionsPartialFailureNotice.
+func (h HomeModel) sessionReadFailureLine() string {
+	if len(h.sessionReadFailures) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(h.sessionReadFailures) == 1 {
+		failure := h.sessionReadFailures[0]
+		b.WriteString("Sessions from " + sessionReadFailureName(failure) + " could not be loaded, so this list is incomplete.")
+		if reason := failure.GetReason(); reason != "" {
+			b.WriteString("\n" + reason)
+		}
+	} else {
+		fmt.Fprintf(&b, "Sessions from %d organizations could not be loaded, so this list is incomplete.", len(h.sessionReadFailures))
+		for _, failure := range h.sessionReadFailures {
+			b.WriteString("\n" + sessionReadFailureName(failure))
+			if reason := failure.GetReason(); reason != "" {
+				b.WriteString(": " + reason)
+			}
+		}
+	}
+	return h.statusLine(colorWarning, b.String())
+}
+
 func (h HomeModel) renderDaemonError() string {
 	remediation := h.daemonRemediation
 	if remediation == "" {
@@ -292,6 +339,13 @@ func (h HomeModel) renderEmptyState() string {
 	}
 	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
 		content += "\n" + logoutErr
+	}
+	if readFailures := h.sessionReadFailureLine(); readFailures != "" {
+		// Reachable on the empty state too: every organization that WAS read can
+		// legitimately have no sessions, and then the only thing on screen is
+		// "no active sessions" — which is a lie about the organization that
+		// failed unless the notice comes with it.
+		content += "\n" + readFailures
 	}
 	if gate := h.cloudGateLine(); gate != "" {
 		content += "\n" + gate
@@ -427,6 +481,10 @@ func (h HomeModel) renderSessionTableFooter() string {
 		b.WriteString("\n")
 		b.WriteString(logoutErr)
 	}
+	if readFailures := h.sessionReadFailureLine(); readFailures != "" {
+		b.WriteString("\n")
+		b.WriteString(readFailures)
+	}
 	if gate := h.cloudGateLine(); gate != "" {
 		b.WriteString("\n")
 		b.WriteString(gate)
@@ -463,6 +521,13 @@ func (h HomeModel) sessionTableFooterLineCount() int {
 		// The logout error follows the action bar (and any re-login warning),
 		// with a separator that is also a rendered row.
 		lines += 1 + strings.Count(logoutErr, "\n") + 1
+	}
+	if readFailures := h.sessionReadFailureLine(); readFailures != "" {
+		// Reserved like the re-login warning above, and for the same reason: the
+		// notice wraps at statusWrapWidth and carries a server-supplied reason of
+		// no bounded length, so an assumed single row would push the table past
+		// the terminal exactly when the user most needs to read both.
+		lines += 1 + lipgloss.Height(readFailures)
 	}
 	return lines
 }

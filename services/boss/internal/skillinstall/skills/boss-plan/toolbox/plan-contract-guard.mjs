@@ -37,10 +37,12 @@ import {
   classifyCheckCommand,
   DEFAULT_CONFIG,
   loadSkillConfig,
+  markdownH2Heading,
   parseAcceptanceCriteria,
   parsePremises,
+  planFileFloor,
   planDescriptionSections,
-  planSections,
+  planSectionsForDescriptionMode,
   scanFences,
   tokenizeSimpleShell,
   validatePlanDescription,
@@ -96,9 +98,12 @@ const SCAFFOLDING_CLOSING_TAG = new RegExp(
   'i',
 )
 
-// A minimum plausible size for a real plan description. A whole-field self-describing placeholder
-// ("the full markdown plan description") and a three-line paraphrase both land well under this.
+// Minimum plausible sizes for real plan descriptions. Epic parents have only four required
+// sections, so the child-plan floor would reject the terse but valid parent overview shape.
 const MIN_DESCRIPTION_BYTES = 200
+const MIN_EPIC_PARENT_DESCRIPTION_BYTES = 80
+const DESCRIPTION_MODES = new Set(['child-plan', 'epic-parent'])
+const PLAN_FILE_EXEMPTIONS = new Set(['epic-parent-overview', 'adopted-child-redraft', 'consumer'])
 const PREMISES_HEADING = '## Premises'
 const ACCEPTANCE_HEADING = '## Acceptance criteria'
 const CITATION_PATTERN = String.raw`(?<![\w:/.-])((?:\.{1,2}\/)?(?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9_-]+):(\d+)(?![\w.-])`
@@ -113,6 +118,10 @@ function violation(code, message) {
 
 function couldNotEvaluate(code, message) {
   return { code, message: `plan-contract-guard: ${message}` }
+}
+
+function minimumDescriptionBytesForMode(mode) {
+  return mode === 'epic-parent' ? MIN_EPIC_PARENT_DESCRIPTION_BYTES : MIN_DESCRIPTION_BYTES
 }
 
 /** Every line of `text` as `{ line, index }` (0-based), fences and all. */
@@ -142,16 +151,16 @@ export function hasUnterminatedFence(text) {
  * Off-contract headings are excluded: `unknown-section` already reports those, and letting them
  * participate here would make one mistake trip two codes.
  */
-export function emittedContractHeadings(config, description) {
-  const recognised = new Set(planSections(config).map((s) => s.heading))
-  return planDescriptionSections(config, description)
+export function emittedContractHeadings(config, description, { mode = 'child-plan' } = {}) {
+  const recognised = new Set(planSectionsForDescriptionMode(config, mode).map((s) => s.heading))
+  return planDescriptionSections(config, description, { mode })
     .map((s) => s.heading)
     .filter((heading) => recognised.has(heading))
 }
 
 /** True when `headings` appear in the same relative order as the contract's section list. */
-export function isContractOrdered(config, headings) {
-  const order = planSections(config).map((s) => s.heading)
+export function isContractOrdered(config, headings, { mode = 'child-plan' } = {}) {
+  const order = planSectionsForDescriptionMode(config, mode).map((s) => s.heading)
   let cursor = 0
   for (const heading of headings) {
     const at = order.indexOf(heading, cursor)
@@ -182,9 +191,9 @@ export function isContractOrdered(config, headings) {
  * A BARE token in ordinary prose is still residue: at that point nothing distinguishes it from an
  * unsubstituted template slot, which is the defect this check exists for.
  */
-export function placeholderResidue(config, description) {
-  const sections = planDescriptionSections(config, description)
-  const contractSections = planSections(config)
+export function placeholderResidue(config, description, { mode = 'child-plan' } = {}) {
+  const sections = planDescriptionSections(config, description, { mode })
+  const contractSections = planSectionsForDescriptionMode(config, mode)
   const terminalHeading = contractSections[contractSections.length - 1]?.heading
   const terminalIndex = sections.findIndex((s) => s.heading === terminalHeading)
   const scanned = terminalIndex < 0 ? sections : sections.slice(0, terminalIndex)
@@ -233,19 +242,155 @@ export function planFileResidue(plan) {
   return null
 }
 
-function sectionText(config, description, heading) {
-  const section = planDescriptionSections(config, description).find((s) => s.heading === heading)
+function planFileHeadingSections(plan) {
+  const scan = scanFences(plan)
+  const sourceLines = allLines(plan)
+  const outside = new Set(scan.lines.map(({ index }) => index))
+  const sections = []
+  let current = null
+  let inTerminal = false
+  for (const { line, index } of sourceLines) {
+    const heading = markdownH2Heading(line)
+    if (!inTerminal && outside.has(index) && heading) {
+      current = { heading, bodyLines: [] }
+      sections.push(current)
+      if (heading === '## Original notes') inTerminal = true
+      continue
+    }
+    if (current) current.bodyLines.push(line)
+  }
+  return { sections, unterminated: scan.unterminated }
+}
+
+function planFileSectionHasBody(section) {
+  return section.bodyLines.some((line) => line.replace(INLINE_CODE_SPAN, '').trim().length > 0)
+}
+
+/**
+ * Producer-side plan-file structure floor.
+ *
+ * This rule rejects a promoted single-ticket plan file that has been flattened into the plan
+ * description's contract headings. This check reads only the plan attachment body supplied to
+ * `checkPlanContract`, not any drafter report about that body. Accepted false negative: a drafter
+ * can satisfy the structural floor with a junk extra heading; content quality belongs to review.
+ */
+export function checkPlanFileStructure(config, plan, { exemption = null } = {}) {
+  if (exemption !== null && exemption !== undefined) {
+    if (!PLAN_FILE_EXEMPTIONS.has(exemption)) {
+      return {
+        ok: false,
+        headingsInspected: 0,
+        violations: [
+          violation(
+            'plan-file-structure-exemption',
+            `unrecognised plan-file structure exemption "${exemption}" — expected one of ${[
+              ...PLAN_FILE_EXEMPTIONS,
+            ].join(', ')}`,
+          ),
+        ],
+      }
+    }
+    return { ok: true, headingsInspected: 0, violations: [] }
+  }
+
+  const floor = planFileFloor(config)
+  const scan = planFileHeadingSections(plan)
+  const sections = scan.sections
+  const headings = sections.map((section) => section.heading)
+  const headingsInspected = headings.length
+  const violations = []
+  const describedHeadings = new Set(
+    planSectionsForDescriptionMode(config, 'child-plan').map((s) => s.heading),
+  )
+  const additional = headings.filter((heading) => !describedHeadings.has(heading))
+
+  if (headingsInspected === 0) {
+    violations.push(
+      violation(
+        'plan-file-structure',
+        'plan file structure inspected 0 heading(s); expected contract headings plus the configured plan-file floor',
+      ),
+    )
+  }
+
+  if (scan.unterminated) {
+    violations.push(
+      violation(
+        'plan-file-structure',
+        `plan file structure inspected ${headingsInspected} heading(s) but contains an unterminated fenced code block`,
+      ),
+    )
+  }
+
+  const present = new Map(sections.map((section) => [section.heading, section]))
+  const missingContract = planSectionsForDescriptionMode(config, 'child-plan')
+    .filter((section) => section.required === 'always')
+    .map((section) => section.heading)
+    .filter((heading) => !present.has(heading))
+  if (missingContract.length > 0) {
+    violations.push(
+      violation(
+        'plan-file-structure',
+        `plan file structure inspected ${headingsInspected} heading(s) but is missing contract section(s): ${missingContract.join(', ')}`,
+      ),
+    )
+  }
+
+  for (const heading of floor.requiredHeadings) {
+    const section = present.get(heading)
+    if (!section) {
+      violations.push(
+        violation(
+          'plan-file-structure',
+          `plan file structure inspected ${headingsInspected} heading(s) but is missing required plan-file heading "${heading}"`,
+        ),
+      )
+      continue
+    }
+    if (!planFileSectionHasBody(section)) {
+      violations.push(
+        violation(
+          'plan-file-structure',
+          `plan file structure inspected ${headingsInspected} heading(s) but required plan-file heading "${heading}" is empty`,
+        ),
+      )
+    }
+  }
+
+  if (additional.length < floor.minimumAdditionalHeadings) {
+    violations.push(
+      violation(
+        'plan-file-structure',
+        `plan file structure inspected ${headingsInspected} heading(s) with ${additional.length} heading(s) outside planContract.sections; expected at least ${floor.minimumAdditionalHeadings}`,
+      ),
+    )
+  }
+
+  return {
+    ok: violations.length === 0,
+    headingsInspected,
+    additionalHeadingCount: additional.length,
+    violations,
+  }
+}
+
+function sectionText(config, description, heading, mode) {
+  const section = planDescriptionSections(config, description, { mode }).find(
+    (s) => s.heading === heading,
+  )
   return section ? section.bodyLines.join('\n') : ''
 }
 
-function scanCitationSections(config, description) {
+function scanCitationSections(config, description, mode) {
   return [PREMISES_HEADING, ACCEPTANCE_HEADING]
     .flatMap((heading) =>
-      linesOutsideFences(sectionText(config, description, heading)).map(({ line, index }) => ({
-        heading,
-        line,
-        index,
-      })),
+      linesOutsideFences(sectionText(config, description, heading, mode)).map(
+        ({ line, index }) => ({
+          heading,
+          line,
+          index,
+        }),
+      ),
     )
     .flatMap(({ heading, line, index }) => {
       const hits = []
@@ -299,7 +444,7 @@ function resolveCitationPath(root, file) {
 export function checkPlanCitations(
   config,
   description,
-  { cwd = undefined, fs = { readFileSync } } = {},
+  { cwd = undefined, fs = { readFileSync }, mode = 'child-plan' } = {},
 ) {
   const violations = []
   const couldNotEvaluateItems = []
@@ -324,7 +469,7 @@ export function checkPlanCitations(
     )
     return { violations, couldNotEvaluate: couldNotEvaluateItems }
   }
-  for (const hit of scanCitationSections(config, description)) {
+  for (const hit of scanCitationSections(config, description, mode)) {
     const resolved = resolveCitationPath(root, hit.file)
     if (!resolved) {
       violations.push(
@@ -429,6 +574,8 @@ export function checkPlanContract({
   description,
   plan = null,
   config = DEFAULT_CONFIG,
+  mode = 'child-plan',
+  planFileExemption = null,
   citationCwd = undefined,
   citationFs = undefined,
 } = {}) {
@@ -458,7 +605,7 @@ export function checkPlanContract({
 
   // Delegates the argument-order guard: a swapped call throws the validator's named error rather
   // than being reported as a contract violation of the plan.
-  const result = validatePlanDescription(config, description)
+  const result = validatePlanDescription(config, description, { mode })
 
   if (!result.ok && !unterminated) {
     if (result.missing.length > 0) {
@@ -488,13 +635,14 @@ export function checkPlanContract({
     )
   }
 
-  const emitted = unterminated ? [] : emittedContractHeadings(config, description)
-  if (!unterminated && !isContractOrdered(config, emitted)) {
+  const emitted = unterminated ? [] : emittedContractHeadings(config, description, { mode })
+  if (!unterminated && !isContractOrdered(config, emitted, { mode })) {
     violations.push(
       violation(
         'section-order',
-        `contract sections are out of order: emitted ${emitted.join(' → ')}; expected the relative order of ${planSections(
+        `contract sections are out of order: emitted ${emitted.join(' → ')}; expected the relative order of ${planSectionsForDescriptionMode(
           config,
+          mode,
         )
           .map((s) => s.heading)
           .join(' → ')}`,
@@ -502,7 +650,7 @@ export function checkPlanContract({
     )
   }
 
-  for (const token of placeholderResidue(config, description)) {
+  for (const token of placeholderResidue(config, description, { mode })) {
     violations.push(
       violation(
         'placeholder-residue',
@@ -511,7 +659,7 @@ export function checkPlanContract({
     )
   }
 
-  const firstHeading = planSections(config)[0]?.heading
+  const firstHeading = planSectionsForDescriptionMode(config, mode)[0]?.heading
   if (firstHeading && !description.replace(/^\s+/, '').startsWith(firstHeading)) {
     violations.push(
       violation(
@@ -521,11 +669,12 @@ export function checkPlanContract({
     )
   }
   const bytes = Buffer.byteLength(description, 'utf8')
-  if (bytes < MIN_DESCRIPTION_BYTES) {
+  const minimumDescriptionBytes = minimumDescriptionBytesForMode(mode)
+  if (bytes < minimumDescriptionBytes) {
     violations.push(
       violation(
         'not-a-description',
-        `description is ${bytes} bytes, under the ${MIN_DESCRIPTION_BYTES}-byte floor — it is a placeholder or a paraphrase, not the plan`,
+        `description is ${bytes} bytes, under the ${minimumDescriptionBytes}-byte floor — it is a placeholder or a paraphrase, not the plan`,
       ),
     )
   }
@@ -533,11 +682,14 @@ export function checkPlanContract({
   if (plan !== null && plan !== undefined) {
     const residue = planFileResidue(plan)
     if (residue) violations.push(violation('plan-file-residue', residue))
+    const structure = checkPlanFileStructure(config, plan, { exemption: planFileExemption })
+    violations.push(...structure.violations)
   }
 
   violations.push(...checkSelfFalsifiedLiteralSearch(config, description))
   const citation = checkPlanCitations(config, description, {
     cwd: citationCwd,
+    mode,
     ...(citationFs ? { fs: citationFs } : {}),
   })
   violations.push(...citation.violations)
@@ -553,13 +705,35 @@ export function checkPlanContract({
 }
 
 export function parseContractGuardArgs(argv) {
-  const args = { description: null, plan: null }
+  const args = { description: null, plan: null, mode: 'child-plan', planFileExemption: null }
+  const readFlagValue = (flag, index) => {
+    const value = argv[index + 1]
+    if (!value || value.startsWith('--')) {
+      throw new Error(`${flag} <value> is required`)
+    }
+    return value
+  }
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
     if (flag === '--description') {
-      args.description = argv[(i += 1)]
+      args.description = readFlagValue(flag, i)
+      i += 1
     } else if (flag === '--plan') {
-      args.plan = argv[(i += 1)]
+      args.plan = readFlagValue(flag, i)
+      i += 1
+    } else if (flag === '--mode') {
+      args.mode = readFlagValue(flag, i)
+      if (!DESCRIPTION_MODES.has(args.mode)) {
+        throw new Error(
+          `--mode must be one of ${[...DESCRIPTION_MODES].join(', ')}; got "${args.mode}"`,
+        )
+      }
+      i += 1
+    } else if (flag === '--plan-file-exemption') {
+      args.planFileExemption = readFlagValue(flag, i)
+      i += 1
+    } else {
+      throw new Error(`unknown argument: ${flag}`)
     }
   }
   if (!args.description) {
@@ -569,7 +743,9 @@ export function parseContractGuardArgs(argv) {
 }
 
 function main() {
-  const { description, plan } = parseContractGuardArgs(process.argv.slice(2))
+  const { description, plan, mode, planFileExemption } = parseContractGuardArgs(
+    process.argv.slice(2),
+  )
   // A file we cannot read is itself a violation, never a pass: an unreadable input is exactly the
   // state a broken upstream extraction produces, and that is the input a vacuous gate blesses.
   let descriptionText
@@ -600,6 +776,8 @@ function main() {
     description: descriptionText,
     plan: planText,
     config,
+    mode,
+    planFileExemption,
     citationCwd: process.env.PLAN_CONTRACT_GUARD_CWD,
   })
   for (const { code, message } of couldNotEvaluate) {

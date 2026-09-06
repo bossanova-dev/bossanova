@@ -41,6 +41,16 @@ var ReleasedVersions = []Version{
 	"2026-09-02", // V20260902 — organization-scoped visibility handler gate.
 	"2026-09-03", // V20260903 — SwitchActiveOrganization retired in favor of AuthKit switchToOrganization.
 	"2026-09-04", // V20260904 — AbandonedCheckoutStatusChange (BOS-1076 abandoned checkout no longer reports an activating subscription).
+	"2026-09-05", // V20260905 — cross-organization repository and daemon reads (BOS-1157, BOS-1159; each spans every membership and takes an organization_id filter).
+	"2026-09-06", // V20260906 — cloud access resolves across every organization the caller belongs to (BOS-1152), handler-gated.
+	"2026-09-07", // V20260907 — CloudAccessOrganizationChange (BOS-1155 CloudAccessStatus.workos_org_id is populated).
+	"2026-09-08", // V20260908 — session commands route across every organization the caller belongs to (BOS-1166), handler-gated.
+	"2026-09-09", // V20260909 — ProxyListSessionsOwnerResolutionChange (BOS-1169 owner-store outages no longer look like empty results).
+	"2026-09-10", // V20260910 — cross-organization cron/fleet reads, ProxyListReposHolderResolutionChange, and PendingInvitationResponseChange (BOS-1158, BOS-1161, BOS-1162, BOS-1122, BOS-1123).
+	"2026-09-11", // V20260911 — AcceptedInvitationResponseChange (BOS-1124 accepted invitation placeholders).
+	"2026-09-12", // V20260912 — cross-organization session reads (BOS-1165, optional organization_id filter).
+	"2026-09-13", // V20260913 — SupersededCredentialClassChange (BOS-1175 AuthCheck.failure_class "credential_superseded" alongside a healthy outcome).
+	"2026-09-14", // V20260914 — RefreshChainUnprovenOutcomeChange (BOS-1174 clean check that could not prove the refresh chain).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

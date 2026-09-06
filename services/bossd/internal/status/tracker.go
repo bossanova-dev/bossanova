@@ -210,6 +210,27 @@ type Tracker struct {
 	// CHAT_STATUS_WAITING. Gating on the change is what keeps a PR that sits in
 	// CI for forty minutes from emitting one delta per recompute.
 	onWaitingChange func(agentSessionID string)
+
+	// onEntriesEvicted, when non-nil, is invoked with every agent_session_id
+	// whose entries row was destroyed — by Cleanup collecting a chat that
+	// stopped heartbeating past StaleThreshold, or by an explicit Remove.
+	// It exists because eviction is the one input to a session's display
+	// composite that was never an edge (BOS-1096): Recompute fires on status
+	// TRANSITIONS, and a chat that simply goes quiet never transitions, so the
+	// session's persisted display_label stood at whatever the last edge wrote
+	// until a daemon restart ran the boot backfill. Get already returns nil past
+	// StaleThreshold, so the composition cascade reaches the right answer
+	// unaided — the only thing missing was something to trigger it.
+	//
+	// Unlike its six siblings this hook takes the whole BATCH rather than one
+	// id, because it is the only one whose consumer must dedupe: several chats
+	// of one session go stale on the same tick, and a hook fired inside the
+	// deletion loop has no view of the tick's other evictions, so that session
+	// would pay a full Recompute read-set per evicted chat. Recompute's
+	// write-gate bounds the writes, not the reads.
+	//
+	// Fired after t.mu is released, like every other hook here (BOS-353).
+	onEntriesEvicted func(agentSessionIDs []string)
 }
 
 // NewTracker creates a new empty Tracker.
@@ -630,6 +651,27 @@ func (t *Tracker) SetOnStalledChange(fn func(agentSessionID string)) {
 	t.onStalledChange = fn
 }
 
+// SetOnEntriesEvicted wires a callback handed every agent_session_id whose
+// entries row was destroyed, from both deleting paths (Cleanup's staleness
+// sweep and Remove). The wiring lives in cmd/main.go, which resolves the ids to
+// their sessions and recomputes each one once (BOS-1096). It is never called
+// with an empty batch. Tests usually leave this nil.
+func (t *Tracker) SetOnEntriesEvicted(fn func(agentSessionIDs []string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onEntriesEvicted = fn
+}
+
+// HasOnEntriesEvicted reports whether an eviction hook is installed. It exists
+// for the daemon's startup seam probe: asserting a local "we called the setter"
+// bool would only prove the line is still in main.go, whereas this proves the
+// tracker the daemon actually runs is holding the callback.
+func (t *Tracker) HasOnEntriesEvicted() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.onEntriesEvicted != nil
+}
+
 // Get returns the cached entry for the given claude ID, or nil if not found
 // or stale (older than StaleThreshold).
 func (t *Tracker) Get(agentSessionID string) *Entry {
@@ -710,6 +752,12 @@ func (t *Tracker) Remove(agentSessionID string) {
 	_, hadTransientMarker := t.transientAPIError[agentSessionID]
 	_, hadStalledMarker := t.stalled[agentSessionID]
 	_, hadWaitingMarker := t.waiting[agentSessionID]
+	// Gate the eviction hook on the entry having actually been there, the same
+	// way the marker hooks below gate on "had a marker worth reporting". A
+	// removal that deletes nothing — an already-absent key, e.g. losing the race
+	// to a concurrent Cleanup that just collected the same id — must not fire a
+	// second recompute for an eviction that already reported itself.
+	_, hadEntry := t.entries[agentSessionID]
 	delete(t.entries, agentSessionID)
 	delete(t.authFailed, agentSessionID)
 	delete(t.transientAPIError, agentSessionID)
@@ -721,6 +769,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	transientHook := t.onTransientAPIErrorChange
 	stalledHook := t.onStalledChange
 	waitingHook := t.onWaitingChange
+	evictedHook := t.onEntriesEvicted
 	t.mu.Unlock()
 
 	if hook != nil && hadAuthMarker && authMarker.consecutive >= AuthFailedConsecutivePollsRequired {
@@ -735,6 +784,9 @@ func (t *Tracker) Remove(agentSessionID string) {
 	if waitingHook != nil && hadWaitingMarker {
 		waitingHook(agentSessionID)
 	}
+	if evictedHook != nil && hadEntry {
+		evictedHook([]string{agentSessionID})
+	}
 }
 
 // Cleanup removes all stale entries (older than StaleThreshold).
@@ -742,9 +794,15 @@ func (t *Tracker) Cleanup() {
 	t.mu.Lock()
 	now := time.Now()
 	var clearedWaitingMarkers []string
+	var evictedEntries []string
 	for id, e := range t.entries {
 		if now.Sub(e.ReceivedAt) > StaleThreshold {
 			delete(t.entries, id)
+			// BOS-1096: the deletion itself is the edge. Accumulate here under
+			// the lock and hand the whole batch to the hook after unlocking, so
+			// the consumer can dedupe several chats of one session into a single
+			// Recompute instead of one per evicted chat.
+			evictedEntries = append(evictedEntries, id)
 			// The captured tail (BOS-477) is set alongside the STOPPED heartbeat
 			// at pane death, so once that entry goes stale its ephemeral
 			// diagnostic is stale too — drop it here rather than leak it for the
@@ -791,6 +849,7 @@ func (t *Tracker) Cleanup() {
 	transientHook := t.onTransientAPIErrorChange
 	stalledHook := t.onStalledChange
 	waitingHook := t.onWaitingChange
+	evictedHook := t.onEntriesEvicted
 	t.mu.Unlock()
 
 	if hook != nil {
@@ -812,5 +871,11 @@ func (t *Tracker) Cleanup() {
 		for _, id := range clearedStalledMarkers {
 			stalledHook(id)
 		}
+	}
+	// Fired last, and only when something was actually destroyed: an idle daemon
+	// runs this sweep every 30s forever, and an empty batch would make the
+	// wiring take a pointless pass on every one of them.
+	if evictedHook != nil && len(evictedEntries) > 0 {
+		evictedHook(evictedEntries)
 	}
 }

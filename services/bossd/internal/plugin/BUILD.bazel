@@ -26,6 +26,7 @@ go_library(
         "//lib/bossalib/plugin",
         "//lib/bossalib/safego",
         "//lib/bossalib/vcs",
+        "//services/bossd/internal/account",
         "//services/bossd/internal/agent",
         "//services/bossd/internal/db",
         "//services/bossd/internal/dotenv",

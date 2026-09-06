@@ -273,6 +273,218 @@ const V20260903 Version = "2026-09-03"
 // regression introduced by the compatibility layer itself.
 const V20260904 Version = "2026-09-04"
 
+// V20260905 makes the orchestrator's fleet-wide repository and daemon reads
+// span every organization the caller belongs to, and gives each an explicit
+// filter for callers that want one (BOS-1157, BOS-1159).
+//
+// ProxyListReposAggregated used to resolve ONE organization from the caller's
+// claim and fan out only over that organization's daemons. A repository
+// registered on a machine that authenticated into another of the caller's own
+// organizations was therefore absent, and the response said nothing about the
+// omission — the web repository settings page rendered "No repositories are
+// registered" to a user whose machine was registered and live.
+//
+// From V20260905 an unset ProxyListReposAggregatedRequest.organization_id means
+// the union across the caller's memberships, with any unreadable organization
+// reported in the new failed_organizations rather than silently dropped. Setting
+// the field asks for one organization, which is the pre-cutover behavior made
+// explicit rather than inherited from the session claim.
+//
+// There is no transform for this and there cannot be one: down-converting a
+// union back to "the organization this particular caller's claim named" needs
+// the request, and TransformResponse never sees it. That is the same seam
+// IsOrgScopedVisibility (V20260902) documents, so the compatibility branch lives
+// in the handler — see IsCrossOrgRepoReads. A client pinned older keeps the
+// single-organization read AND keeps failed_organizations empty, because the
+// path that populates it does not run for them.
+const V20260905 Version = "2026-09-05"
+
+// V20260906 ships cloud access resolved across every organization the caller
+// belongs to (BOS-1152). The compatibility behavior is handler-gated rather
+// than registered as a VersionChange, for the same reason as V20260902: the
+// verdict is caller-relative and TransformResponse never sees the request.
+//
+// Cloud access used to be decided from the single account the caller's ACTIVE
+// organization claim resolved to. A user who belonged to a subscribed
+// organization but was acting under an unsubscribed one was served
+// CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION even though their membership already
+// paid for access. From V20260906 a claim that fails to authorise folds over
+// the caller's other member organizations, and any one of them that is
+// entitled reports CLOUD_ACCESS_STATE_ACTIVE.
+//
+// No field or enum member was added: the change is in the VALUES served on
+// GetCloudAccessStatus, CreateCheckoutSession and RefreshCloudEntitlements, and
+// in whether the RPCs guarded by CloudAccessPolicy.Require admit the caller at
+// all. CloudAccessStatus does carry account_id and workos_org_id, so a response
+// names which account decided it — but a transform cannot compare that to the
+// caller's OWN organization, because TransformResponse receives only
+// (method, msg) and never the request. Down-converting therefore requires the
+// caller, which puts it in the handler: at an older resolved version
+// CloudAccessPolicy.Check skips the fan-out entirely and serves the
+// claim-only answer byte-for-byte.
+const V20260906 Version = "2026-09-06"
+
+// V20260907 ships CloudAccessOrganizationChange: CloudAccessStatus.workos_org_id
+// is now populated with the WorkOS organization the caller is acting as
+// (BOS-1155).
+//
+// The field has existed on the wire since the original Stripe subscription
+// gating, but no producer ever assigned it: billing.CloudAccessPolicy.Check and
+// decorateCloudAccessStatus both left it at "", so every client that read it
+// observed the empty string on every response. From V20260907
+// decorateCloudAccessStatus -- the single chokepoint every CloudAccessStatus
+// bosso serves passes through -- fills it from the caller's resolved
+// organization scope, falling back to the raw org_id claim. A daemon caller,
+// which has no organization of its own, still reports "".
+//
+// No field or enum member was added: the change is purely in the VALUE served on
+// GetCloudAccessStatus, CreateCheckoutSession and RefreshCloudEntitlements. That
+// is what makes it a behavioral change rather than an additive one -- a client
+// built before this version was built when the field could only be empty, so it
+// is down-converted back to "" (see CloudAccessOrganizationChange in
+// transform.go).
+//
+// The consumer is the boss CLI's cloud login gate: it looks the id up in
+// ListOrganizations to find the matching mirror row and opens the refused login
+// at the organization-scoped `/:orgId/subscribe` instead of the unscoped page.
+// Without a populated field that lookup was never reached and the scoped URL was
+// unreachable in production.
+const V20260907 Version = "2026-09-07"
+
+// V20260908 lets session commands resolve an owning daemon across every
+// organization the caller belongs to (BOS-1166). Older clients retain the
+// active-organization-only lookup.
+//
+// There is no transform for this and there cannot be one: the change turns a
+// NotFound into success, TransformError never runs on the success path, and no
+// TransformResponse can turn the returned session back into an error. The
+// compatibility branch therefore lives in the handler; see
+// IsCrossOrgSessionCommands.
+const V20260908 Version = "2026-09-08"
+
+// V20260909 ships ProxyListSessionsOwnerResolutionChange: a daemon-filtered
+// session list now distinguishes an unavailable ownership store from a
+// legitimately empty result (BOS-1169).
+//
+// Before this version ProxyListSessions silently skipped every session whose
+// owner could not be resolved, regardless of whether the session was outside
+// the caller's scope or the ownership store was unavailable. From V20260909 a
+// non-NotFound owner-resolution failure returns CodeUnavailable, while
+// NotFound remains a privacy-preserving skip. Clients pinned to an older
+// version are down-converted to the complete legacy short-list response (see
+// ProxyListSessionsOwnerResolutionChange in transform.go).
+const V20260909 Version = "2026-09-09"
+
+// V20260910 makes the orchestrator's cron-job and remaining fleet reads span
+// every organization the caller belongs to, with an optional organization
+// filter where supported (BOS-1158, BOS-1161), and makes
+// ProxyListReposAggregated fail when repository-holder enrichment is unavailable
+// (BOS-1162). It also ships real WorkOS invitations from
+// InviteOrganizationMember (BOS-1122) and surfaces pending invitations in
+// ListOrganizationMembers (BOS-1123). Older clients retain their
+// single-organization fleet behavior and the successful unstamped repository
+// list; PendingInvitationResponseChange clears invitation-only fields on the
+// invite response and removes pending rows from the member list.
+//
+// Compatibility is handler-gated because the response transform has neither
+// the request nor the caller's membership set; see IsCrossOrgCronReads and
+// IsCrossOrgFleetReads. Repository-list
+// compatibility uses ProxyListReposHolderResolutionChange because its complete
+// legacy response can be returned alongside a typed error for recovery.
+//
+// The invitation success response carries a pending OrganizationMember:
+// user_id and workos_membership_id are empty, email and role identify the invite,
+// and is_invite_pending is true. PendingInvitationResponseChange clears that new
+// marker for clients pinned below this version.
+//
+// The larger error-to-success behavior change cannot be restored by a response
+// transform: an unregistered address formerly returned NotFound, while a WorkOS
+// invitation now succeeds, and TransformError never sees a success response.
+// As with the V20260904 checkout success-path asymmetry, the working behavior is
+// deliberately served to pinned clients rather than frozen behind a handler gate.
+const V20260910 Version = "2026-09-10"
+
+// V20260911 lets RemoveOrganizationMember revoke a pending invitation when
+// invitation_id is set (BOS-1125). That success performs a side effect and has
+// an empty response, so neither response nor error transforms can restore the
+// prior InvalidArgument result. IsInvitationRevocation is the narrow handler
+// gate that keeps older clients on the pre-field behavior.
+//
+// V20260911 surfaces an accepted WorkOS invitation in
+// ListOrganizationMembers until its WorkOS user lands as a local membership.
+// The additive is_invite_accepted field lets current clients render that
+// short-lived state without treating it as an actionable active member. Older
+// clients never observed accepted invitation-only rows, so
+// AcceptedInvitationResponseChange removes them.
+//
+// Reconciliation also restores Stripe seat quantity whenever the local mirror's
+// membership cardinality changes. That side effect is intentionally not gated:
+// it repairs billing truth after WorkOS membership changes, and serving stale
+// seat quantities to an older caller would perpetuate the defect. A response
+// transform cannot undo an external billing write.
+const V20260911 Version = "2026-09-11"
+
+// V20260912 folds the cross-organization session union into
+// ProxyListSessions (BOS-1165). An unset organization_id spans every
+// organization the caller belongs to, while setting it narrows the read after
+// a membership check. Older clients retain the claimed-organization read.
+//
+// This compatibility boundary is handler-gated because the result set depends
+// on both the request and the caller's memberships, neither of which is
+// available to TransformResponse. See IsCrossOrgSessionReads.
+const V20260912 Version = "2026-09-12"
+
+// V20260913 ships SupersededCredentialClassChange: AuthCheck.failure_class now
+// carries "credential_superseded" ALONGSIDE a "healthy" outcome (BOS-1175).
+//
+// The daemon detects that an ambient `codex login` for the same provider account
+// holds a different refresh token, so the refresh chain behind the stored
+// credential is dead even though the provider still accepts the stored access
+// token. That is a warning about the future, not a failure: the account stays
+// eligible and its probe still reports outcome "healthy".
+//
+// No field or enum member was added: the change is purely in the VALUE served on
+// AuthCheck.failure_class, which is embedded in Account and reaches clients on
+// ProxyListAccounts, ProxyManageListAccounts, ProxyAddAccount and
+// ProxyRefreshAccount. What makes it behavioral rather than additive is the
+// invariant it breaks — before this version a "healthy" check ALWAYS carried an
+// empty failure_class, so a client built against it may render an unhealthy row,
+// a raw token, or nothing at all for a class it cannot interpret. Clients pinned
+// to an older version are therefore down-converted back to the empty
+// failure_class they were built against (see SupersededCredentialClassChange in
+// transform.go). Only the healthy pairing is blanked: a
+// "credential_superseded" class on a non-healthy outcome is not a shape this
+// version introduced, and no such producer exists.
+
+// V20260914 ships RefreshChainUnprovenOutcomeChange: Account.auth_check.outcome
+// began serving "refresh_chain_unproven" (with failure_class
+// "refresh_not_observed") for a credential check that COMPLETED CLEANLY on a
+// credential whose own access token says a token refresh should already have
+// happened and whose run observed no credential write (BOS-1174). Before this
+// change that identical clean run served outcome "healthy" with an empty
+// failure_class.
+//
+// No enum member was added — auth_check.outcome is a plain string — so the
+// behavior change is in the VALUE served, exactly like GateFailedOutcomeChange
+// (V20260816) and StaleCheckStateChange (V20260825). It matters because clients
+// switch on that string: the web account list and the boss TUI both map a known
+// outcome to a severity, and a deployed older build that has never seen
+// "refresh_chain_unproven" would flip a green "healthy" pill to an
+// undetermined/warning one for an account whose behavior did not change.
+//
+// For any request resolved older than V20260914 the transform restores the
+// prior observable pair: outcome "healthy", failure_class "". It is applied to
+// every OrchestratorService procedure that can carry an Account.
+//
+// NOTE (branch/main skew): this constant is deliberately NOT added to
+// ReleasedVersions. It is the single trailing UNRELEASED Current contract that
+// released.go's ledger and TestReleasedVersions_AreRegistryPrefix explicitly
+// allow, which also keeps the immutable ledger free of a merge conflict with
+// the 2026-09-12 entry main shipped in parallel.
+const V20260913 Version = "2026-09-13"
+
+const V20260914 Version = "2026-09-14"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -292,7 +504,7 @@ func Parse(s string) (Version, error) {
 func (v Version) String() string { return string(v) }
 
 // Registry holds an ordered (oldest→newest) slice of registered API versions,
-// the current (latest released) version, and the default version used when a
+// the current (latest known) version, and the default version used when a
 // request carries no Bossanova-Version header.
 //
 // By policy the default is the oldest supported version so that a header-less
@@ -348,7 +560,7 @@ func (r *Registry) All() []Version {
 	return cp
 }
 
-// Current returns the latest released API version.
+// Current returns the latest known API version.
 func (r *Registry) Current() Version { return r.current }
 
 // Default returns the version assumed when a request carries no
@@ -375,11 +587,13 @@ func (r *Registry) Newer(a, b Version) bool {
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
 // V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816,
-// V20260820, V20260821, V20260825, V20260902, V20260903, and V20260904. Current
-// is V20260904 (the newest released behavior) while
-// Default stays Baseline (the oldest supported version), so a header-less caller
-// is pinned to Baseline and is down-converted by ProductionChanges, and a client
-// that negotiates V20260904 runs zero transforms.
+// V20260820, V20260821, V20260825, V20260902, V20260903, V20260904,
+// V20260905, V20260906, V20260907, V20260908, V20260909, V20260910,
+// V20260911, V20260912, V20260913, and V20260914. Current is V20260914 (the
+// newest behavior) while Default
+// stays Baseline (the oldest supported version), so a
+// header-less caller is pinned to Baseline and is down-converted by
+// ProductionChanges, and a client that negotiates V20260913 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -390,8 +604,8 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825, V20260902, V20260903, V20260904},
-		V20260904,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825, V20260902, V20260903, V20260904, V20260905, V20260906, V20260907, V20260908, V20260909, V20260910, V20260911, V20260912, V20260913, V20260914},
+		V20260914,
 		Baseline,
 	)
 	if err != nil {
@@ -411,4 +625,86 @@ func DefaultRegistry() *Registry {
 // outside the transform mechanism.
 func IsOrgScopedVisibility(ctx context.Context) bool {
 	return !DefaultRegistry().Newer(V20260902, ResolvedVersion(ctx))
+}
+
+// IsCrossOrgRepoReads reports whether the version resolved for ctx observes the
+// cross-organization repository read (V20260905 and newer). Callers that resolve
+// older must keep serving the pre-cutover, single-organization view.
+//
+// Handler-level for the same reason as IsOrgScopedVisibility: the change is in
+// WHICH organizations the response covers, which is relative to the requesting
+// caller, and TransformResponse never sees the request.
+func IsCrossOrgRepoReads(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260905, ResolvedVersion(ctx))
+}
+
+// IsCrossOrgSessionReads reports whether the resolved version observes the
+// cross-organization default for ProxyListSessions. Older callers remain
+// scoped to the organization in their active claim.
+//
+// This is handler-level because the result set depends on the request and the
+// caller's membership set, which TransformResponse cannot inspect.
+func IsCrossOrgSessionReads(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260912, ResolvedVersion(ctx))
+}
+
+// IsCrossOrgCronReads reports whether the version resolved for ctx observes the
+// cross-organization cron-job read (V20260910 and newer). Older callers remain
+// scoped to the organization in their active claim.
+//
+// This is a handler-level gate because the result set is caller-relative and
+// TransformResponse does not receive the request context needed to reconstruct
+// the previous claimed-organization result.
+func IsCrossOrgCronReads(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260910, ResolvedVersion(ctx))
+}
+
+// IsCrossOrgFleetReads reports whether the version resolved for ctx observes
+// the remaining fleet reads across every organization the caller belongs to.
+// Older callers retain the former single-organization behavior.
+func IsCrossOrgFleetReads(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260910, ResolvedVersion(ctx))
+}
+
+// IsInvitationRevocation reports whether the resolved version may interpret
+// RemoveOrganizationMemberRequest.invitation_id as a pending invitation revoke.
+// Older callers retain the prior invalid-request behavior because an empty
+// success response cannot be down-converted into that error after the side
+// effect has already happened.
+func IsInvitationRevocation(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260911, ResolvedVersion(ctx))
+}
+
+// IsCrossOrgSessionCommands reports whether the version resolved for ctx may
+// route a session command through any organization the caller belongs to
+// (V20260908 and newer). Older callers remain scoped to the active organization.
+//
+// This is a handler-level gate because a member-organization lookup changes a
+// NotFound into success. TransformError never sees the success path, and
+// TransformResponse cannot recreate the prior error.
+func IsCrossOrgSessionCommands(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260908, ResolvedVersion(ctx))
+}
+
+// IsCrossOrgDaemonReads reports whether the version resolved for ctx observes
+// the cross-organization daemon inventory (V20260905 and newer). Callers that
+// resolve older retain the pre-cutover, single-organization read.
+//
+// This is daemon-specific rather than reusing IsCrossOrgRepoReads: both share a
+// release cutover, but they guard independent request-relative API behaviors.
+func IsCrossOrgDaemonReads(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260905, ResolvedVersion(ctx))
+}
+
+// IsMemberOrgCloudAccess reports whether the version resolved for ctx observes
+// cloud access folded across every organization the caller belongs to
+// (V20260906 and newer). Callers that resolve older must keep being judged from
+// their claimed organization alone.
+//
+// This is the sanctioned handler-level gate for a change the transform seam
+// cannot express. The verdict is caller-relative: whether an ACTIVE answer came
+// from the caller's own organization or from a sibling is only decidable
+// against the request, and TransformResponse/TransformError never see it.
+func IsMemberOrgCloudAccess(ctx context.Context) bool {
+	return !DefaultRegistry().Newer(V20260906, ResolvedVersion(ctx))
 }

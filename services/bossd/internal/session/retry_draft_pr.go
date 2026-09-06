@@ -238,6 +238,22 @@ func (l *Lifecycle) shouldRetryDraftPR(sess *models.Session, now time.Time) bool
 	if !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
 		return false
 	}
+	// An auth failure is terminal, and it is terminal in a way this sweep cannot
+	// clear: gh has no usable credentials, so every re-attempt reissues the same
+	// unauthenticated request and fails identically. Retrying it is not merely
+	// wasted budget — it contradicts the reason string's own remedy ("run 'boss
+	// repair doctor'") by implying the daemon is still making progress, and it
+	// burns the attempt ladder so a LATER recoverable failure on the same
+	// session arrives with no budget left.
+	//
+	// Placed after the IsDraftPRCreationFailure gate rather than replacing it:
+	// the auth marker NESTS inside the failure prefix (see sessionreason's
+	// authMarker), so an auth reason satisfies both predicates and only the
+	// narrower one distinguishes it. Transient failures are deliberately NOT
+	// excluded here — a flapping remote is exactly what the sweep is for.
+	if sessionreason.IsDraftPRCreationAuthFailure(sess.BlockedReason) {
+		return false
+	}
 	if l.hasBackgroundDraftPR(sess.ID) {
 		return false
 	}

@@ -1612,6 +1612,40 @@ func (p *ProxyServer) AdoptTokenForChat(sessionID, agentSessionID, accountID, to
 	p.persistProxyTokenLocked(chatProxyTokenRecord(token, sessionID, agentSessionID, accountID))
 }
 
+// RetargetChatToken re-points an EXISTING chat token at a new agent session id,
+// keeping the token itself unchanged. Implements session.proxyTokenRegistrar.
+//
+// It serves the resume that rekeys a chat row after its replacement process is
+// already running (BOS-1135): the process baked /s/<token> into its environment
+// before the new id existed, so the only way to keep it resolving is to move the
+// target under the token it already holds. Minting a second token would be
+// worthless — the running process can never learn it.
+//
+// It NEVER mints: a chat with no registered token (proxy disabled, or a spawn
+// that took the session-scoped branch) is a silent no-op. The prior target's
+// sticky failover bearer is dropped with it, since nothing can address that
+// target any more. Secret; never logged.
+func (p *ProxyServer) RetargetChatToken(sessionID, priorAgentSessionID, newAgentSessionID, accountID string) {
+	if sessionID == "" || priorAgentSessionID == "" || newAgentSessionID == "" ||
+		priorAgentSessionID == newAgentSessionID {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	tok, ok := p.chatToToken[priorAgentSessionID]
+	if !ok {
+		return
+	}
+	delete(p.chatToToken, priorAgentSessionID)
+	p.chatToToken[newAgentSessionID] = tok
+	// registerTargetLocked overwrites this digest's entry in place, so the old
+	// target stops resolving in the same statement that installs the new one —
+	// there is never a moment where both are live.
+	p.registerTargetLocked(proxyTokenHash(tok), sessionID, session.ProxyTargetForChat(newAgentSessionID, accountID))
+	delete(p.sessionBearer, session.ProxyTargetForChat(priorAgentSessionID, accountID))
+	p.persistProxyTokenLocked(chatProxyTokenRecord(tok, sessionID, newAgentSessionID, accountID))
+}
+
 // bearerForSession returns the session's sticky swapped bearer, or "" before
 // any failover has committed for it. The value is a secret and is never logged.
 func (p *ProxyServer) bearerForSession(sessionID string) string {

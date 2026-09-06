@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -290,6 +291,16 @@ func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*v
 
 		if isPRAlreadyExists(err) {
 			return nil, fmt.Errorf("create PR: %w: %v", vcs.ErrPRAlreadyExists, err)
+		}
+
+		// Before the repo-not-ready test: a 401 is not a readiness problem, and
+		// letting it fall through to the generic wrap below is what produced the
+		// opaque "create draft PR: creat…" the TUI truncated to nothing. The
+		// %w: %v shape matches ErrPRAlreadyExists above — the sentinel is what
+		// callers branch on, while gh's raw text (including any keychain
+		// OSStatus it printed) survives into the persisted blocked reason.
+		if isGitHubAuthFailure(err) {
+			return nil, fmt.Errorf("create PR: %w: %v", vcs.ErrGitHubAuthUnavailable, err)
 		}
 
 		if !isRepoNotReady(err) {
@@ -1031,7 +1042,7 @@ func isRepoNotReady(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	msg := ghResponseText(err)
 	return strings.Contains(msg, "Head sha can't be blank") ||
 		strings.Contains(msg, "Base sha can't be blank") ||
 		strings.Contains(msg, "No commits between")
@@ -1043,8 +1054,9 @@ func isPRAlreadyExists(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "a pull request for branch") &&
-		strings.Contains(err.Error(), "already exists")
+	msg := ghResponseText(err)
+	return strings.Contains(msg, "a pull request for branch") &&
+		strings.Contains(msg, "already exists")
 }
 
 // isNoChecksReported reports whether a gh error indicates the PR's head commit
@@ -1053,7 +1065,62 @@ func isPRAlreadyExists(err error) bool {
 // state — not a failure. Treating it as an error would freeze a PR's display
 // status (e.g. a stale "draft") because the poller bails before recomputing.
 func isNoChecksReported(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "no checks reported on the")
+	return err != nil && strings.Contains(ghResponseText(err), "no checks reported on the")
+}
+
+// ghError is the error defaultRunGH returns for a failed gh invocation. It
+// keeps gh's OWN response (its stderr and the process error) addressable
+// separately from the echoed command line, which is what every classifier in
+// this file actually wants to read.
+//
+// # Why the separation is load-bearing
+//
+// Error() embeds strings.Join(args, " "), and for `gh pr create` those args
+// carry the caller's arbitrary --title and --body values. Classifying the
+// flattened message therefore lets PR PROSE decide control flow: a PR whose
+// body happens to contain "requires authentication" or "bad credentials" made
+// isGitHubAuthFailure true for ANY failure of that command, so a repo-not-ready
+// error skipped its retry ladder and was persisted as ErrGitHubAuthUnavailable —
+// sending an operator after credentials that were never the problem. The
+// converse is just as reachable: a title mentioning a rate limit could route a
+// genuine auth failure into the transient retry path.
+//
+// Error()'s text is UNCHANGED — the args stay in the human-readable message,
+// where they are useful for debugging. Only the classification input narrows.
+type ghError struct {
+	args   []string
+	stderr string
+	err    error
+}
+
+// Error preserves the exact "gh <args>: <err>: <stderr>" shape this package has
+// always produced, so persisted blocked reasons and log lines do not shift.
+func (e *ghError) Error() string {
+	return fmt.Sprintf("gh %s: %v: %s", strings.Join(e.args, " "), e.err, e.stderr)
+}
+
+// Unwrap exposes the underlying exec error so errors.Is/As keep working through
+// this type (e.g. for *exec.ExitError or context errors).
+func (e *ghError) Unwrap() error { return e.err }
+
+// ghResponseText returns the text a classifier may match against: gh's own
+// stderr plus the process error, and NEVER the echoed arguments.
+//
+// The fallback matters as much as the narrowing. Errors reaching these
+// classifiers do not all come from defaultRunGH — test fakes installed with
+// WithRunGH return plain errors, and callers wrap with fmt.Errorf. errors.As
+// finds a *ghError through any number of %w wraps; anything else falls back to
+// the whole message, which is exactly today's behaviour. So this is strictly a
+// narrowing for real gh invocations and a no-op for everything else.
+func ghResponseText(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ge *ghError
+	if errors.As(err, &ge) {
+		return ge.stderr + "\n" + ge.err.Error()
+	}
+	return err.Error()
 }
 
 // defaultRunGH executes a gh CLI command and returns stdout.
@@ -1064,7 +1131,7 @@ func defaultRunGH(ctx context.Context, args ...string) (string, error) {
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = ghWaitDelay
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return "", &ghError{args: args, stderr: strings.TrimSpace(stderr.String()), err: err}
 	}
 	return stdout.String(), nil
 }
@@ -1106,11 +1173,59 @@ func (p *Provider) runGHWithTransientRetry(ctx context.Context, op string, args 
 	return "", lastErr
 }
 
+// isGitHubAuthFailure reports whether a gh error means the CLI could not
+// authenticate to GitHub at all, as opposed to being authenticated and refused.
+//
+// Two shapes, and the second is the one that misleads. A gh with no usable
+// credentials does not announce itself: it silently issues UNAUTHENTICATED
+// requests, so a write path returns 401 "Requires authentication" while a read
+// path instead hits the anonymous 60/hr per-IP limit and returns a 403 whose
+// text is about RATE LIMITING. Reading that second form at face value sends an
+// operator to look for a quota problem that does not exist.
+//
+// The anonymous limit is distinguished by GitHub's own parenthetical — it is
+// emitted only when the request carried no credentials, and an authenticated
+// over-limit response says "for user ID N" and carries no such sentence. Match
+// that sentence rather than the bare "api rate limit", and do NOT try to match
+// "rate limit exceeded for" while excluding "for user": that inverts a
+// fail-safe into a fail-open the moment GitHub rewords the user-scoped form.
+func isGitHubAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(ghResponseText(err))
+	authFragments := []string{
+		"http 401",
+		"requires authentication",
+		"bad credentials",
+		// The anonymous rate-limit tell. See the comment above.
+		"authenticated requests get a higher rate limit",
+		// gh's own logged-out banner.
+		"to get started with github cli, please run",
+	}
+	for _, fragment := range authFragments {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func isGitHubTransient(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
+	// Precedence, and it belongs here rather than at the call sites so every
+	// present and future caller inherits it. An auth failure is never transient:
+	// it persists until an operator fixes credentials, so retrying it burns the
+	// backoff ladder and then reports whichever error the LAST attempt produced
+	// — for the anonymous-rate-limit shape, a quota message, which is the wrong
+	// cause. Without this guard the "api rate limit" fragment below would claim
+	// exactly that shape.
+	if isGitHubAuthFailure(err) {
+		return false
+	}
+	msg := strings.ToLower(ghResponseText(err))
 	transientFragments := []string{
 		"api rate limit",
 		"secondary rate limit",

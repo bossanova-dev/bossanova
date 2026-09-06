@@ -97,6 +97,10 @@ func (f *fakeProxyTokenStore) DeleteBySessionID(_ context.Context, sessionID str
 	return nil
 }
 
+func (f *fakeProxyTokenStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+	return nil
+}
+
 func (f *fakeProxyTokenStore) DeleteByAgentSessionID(_ context.Context, agentSessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -451,5 +455,53 @@ func TestPersistNeverStoresRawToken(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestRetargetChatToken_movesTheLiveTargetAndTheRow covers the handoff that
+// rekeys a chat row after its replacement process is already running: the
+// process baked /s/<token> into its env against the PRIOR agent session id, so
+// the target has to move under the token it already holds. A fresh mint would
+// be unreachable, and leaving the target behind makes every later resolution
+// miss the row entirely.
+func TestRetargetChatToken_movesTheLiveTargetAndTheRow(t *testing.T) {
+	store := newFakeProxyTokenStore()
+	var buf bytes.Buffer
+	ps := newPersistProxy(t, store, &buf)
+
+	tok := ps.TokenForChat("sess-1", "agent-old", "acct-1")
+	ps.RetargetChatToken("sess-1", "agent-old", "agent-new", "acct-1")
+
+	// Same token: the running process can never learn a new one.
+	if again := ps.TokenForChat("sess-1", "agent-new", "acct-1"); again != tok {
+		t.Errorf("TokenForChat after retarget minted a new token %q, want the pane's own %q", again, tok)
+	}
+	wantTarget := session.ProxyTargetForChat("agent-new", "acct-1")
+	if got, ok := ps.sessionForToken(tok); !ok || got != wantTarget {
+		t.Errorf("live target = %q (ok=%v), want %q", got, ok, wantTarget)
+	}
+	// The durable row has to agree, or a restart rebuild resolves the pane to
+	// an id no chat row answers to — the exact failure this closes.
+	rec := requireRow(t, store, tok)
+	if !rec.IsChatShaped || rec.SessionID != "sess-1" || rec.AgentSessionID != "agent-new" || rec.AccountID != "acct-1" {
+		t.Errorf("persisted row = %+v, want chat-shaped sess-1/agent-new/acct-1", rec)
+	}
+}
+
+// TestRetargetChatToken_neverMints pins the never-mint half of the contract: a
+// chat with no registered token (the proxy is off, or the spawn took the
+// session-scoped branch) must leave the registry untouched rather than inventing
+// a registration for a process that holds no token at all.
+func TestRetargetChatToken_neverMints(t *testing.T) {
+	store := newFakeProxyTokenStore()
+	var buf bytes.Buffer
+	ps := newPersistProxy(t, store, &buf)
+
+	ps.RetargetChatToken("sess-1", "agent-old", "agent-new", "acct-1")
+	if got := store.upsertCount(); got != 0 {
+		t.Errorf("upserts = %d, want 0 (an unregistered chat must not mint)", got)
+	}
+	if tok := ps.TokenForChat("sess-1", "agent-new", "acct-1"); tok == "" {
+		t.Fatal("TokenForChat returned an empty token after a no-op retarget")
 	}
 }

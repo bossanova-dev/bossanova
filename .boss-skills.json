@@ -166,6 +166,10 @@
       { "heading": "## Open Questions", "required": "open-questions" },
       { "heading": "## Planning", "required": "always" },
       { "heading": "## Original notes", "required": "always" }
-    ]
+    ],
+    "planFile": {
+      "requiredHeadings": ["## Problem Frame", "## Requirements", "## Implementation Units"],
+      "minimumAdditionalHeadings": 1
+    }
   }
 }

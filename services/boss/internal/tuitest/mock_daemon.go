@@ -2589,8 +2589,29 @@ func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.R
 	if req.Msg.TestAfterSave {
 		acct.LastTestOkAt = timestamppb.Now()
 		acct.LastTestError = ""
+		// Mirror what the real daemon does once post-save verification passes:
+		// restoreAccountHealth flips health back to ok and
+		// clearAuthCheckAfterRefresh withdraws the durable verdict that belonged
+		// to the credential just replaced (BOS-1142). Leaving either behind would
+		// make this double report a recovered account as still broken, so a
+		// caller could not tell a genuine still-failing reauth from the mock
+		// simply not having moved.
+		acct.Health = "ok"
+		acct.AuthCheck = nil
 		resp.Account = cloneMsg(acct)
-		resp.Detail = "credential validated (provider verification unavailable in mock)"
+		// live_smoke_ran reports whether a verification actually RAN, and this
+		// branch is modelling the case where it ran and passed — that is what the
+		// four field writes above mean. Leaving it false contradicted them: the
+		// account state said "verified" while the envelope said "no check
+		// happened", and accountflow.classifyTest reads the envelope, so the flow
+		// reported the honest-but-wrong "Verification couldn't run right now".
+		//
+		// This is not the mock claiming a smoke it did not run. TestAccount below
+		// models the nil-runner degrade and correctly keeps live_smoke_ran false
+		// with the sentinel detail; the difference is that a caller passing
+		// test_after_save is asking this fixture for the verified outcome.
+		resp.LiveSmokeRan = true
+		resp.Detail = "credential validated"
 	}
 	return connect.NewResponse(resp), nil
 }

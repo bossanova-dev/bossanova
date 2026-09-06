@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-04'
+  version: '2026-09-14'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -219,6 +219,45 @@ paths:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.CreateWebhookConfigResponse'
   /bossanova.v1.OrchestratorService/DaemonStream: {}
+  /bossanova.v1.OrchestratorService/DeleteOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: DeleteOrganization
+      description: |-
+        DeleteOrganization removes an organization the caller owns. Refused unless
+         the organization is empty: no sessions, no entitled cloud account, no other
+         members. The personal organization can never be deleted.
+      operationId: bossanova.v1.OrchestratorService.DeleteOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.DeleteOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.DeleteOrganizationResponse'
   /bossanova.v1.OrchestratorService/DeleteWebhookConfig:
     post:
       tags:
@@ -505,6 +544,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.IssueAttachTokenResponse'
+  /bossanova.v1.OrchestratorService/LeaveOrganization:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: LeaveOrganization
+      description: |-
+        LeaveOrganization removes the CALLER's own membership. Any member may
+         leave; the last owner of an organization that still has members may not,
+         and nobody may leave their personal organization.
+      operationId: bossanova.v1.OrchestratorService.LeaveOrganization
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.LeaveOrganizationRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.LeaveOrganizationResponse'
   /bossanova.v1.OrchestratorService/ListDaemons:
     post:
       tags:
@@ -1800,8 +1878,9 @@ paths:
         - bossanova.v1.OrchestratorService
       summary: ProxyListReposAggregated
       description: |-
-        Aggregates repos across all of the caller's live daemons, deduped by
-         origin URL, with the serving daemon IDs unioned per repo.
+        Aggregates repos across the caller's live daemons, deduped by origin URL,
+         with the serving daemon IDs unioned per repo. Spans every organization the
+         caller belongs to unless the request narrows it to one.
       operationId: bossanova.v1.OrchestratorService.ProxyListReposAggregated
       parameters:
         - name: Connect-Protocol-Version
@@ -1874,11 +1953,8 @@ paths:
         - bossanova.v1.OrchestratorService
       summary: ProxyListSessionsAcrossOrganizations
       description: |-
-        Union of sessions across EVERY organization the caller is a member of.
-         A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
-         keep failing when the caller's scope resolves to no single organization,
-         because that error is how a caller learns to claim one. This read must
-         succeed exactly then.
+        Deprecated: use ProxyListSessions with organization_id unset for the union,
+         or set organization_id to narrow the read.
       operationId: bossanova.v1.OrchestratorService.ProxyListSessionsAcrossOrganizations
       parameters:
         - name: Connect-Protocol-Version
@@ -1909,6 +1985,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListSessionsAcrossOrganizationsResponse'
+      deprecated: true
   /bossanova.v1.OrchestratorService/ProxyListTrackerIssues:
     post:
       tags:
@@ -3285,8 +3362,15 @@ components:
           title: usage
           description: |-
             Cached per-account rate-limit usage snapshot (BOS-297). METADATA ONLY —
-             never a credential. Absent = never probed. NO credential field. Ever.
+             never a credential. Absent = never probed.
           $ref: '#/components/schemas/bossanova.v1.UsageSnapshot'
+        authCheck:
+          title: auth_check
+          description: |-
+            Durable, redacted credential-verification state (BOS-1141). METADATA
+             ONLY — a classification token, a timestamp, and a retry instant. Absent
+             = never verified. NO credential field. Ever.
+          $ref: '#/components/schemas/bossanova.v1.AuthCheck'
       title: Account
       additionalProperties: false
       description: |-
@@ -3690,6 +3774,13 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.DaemonRepoRef'
           title: daemons
+        organizationId:
+          type: string
+          title: organization_id
+          description: |-
+            Organization that holds this origin, but only when the caller is a member
+             of that organization. Empty also covers a holder outside the caller's
+             memberships, so it does not mean the origin is unclaimed.
       title: AggregatedRepo
       additionalProperties: false
       description: |-
@@ -3874,6 +3965,55 @@ components:
       title: AttentionStatus
       additionalProperties: false
       description: AttentionStatus represents whether and why a session needs human attention.
+    bossanova.v1.AuthCheck:
+      type: object
+      properties:
+        outcome:
+          type: string
+          title: outcome
+          description: |-
+            "" (never checked) | "healthy" | "auth_invalid" | "transient" |
+             "unavailable" | "refresh_chain_unproven"
+
+             "refresh_chain_unproven" (BOS-1174) is a clean verification on a credential
+             whose own access token says a token refresh should already have happened
+             and which produced no credential write — a live access token above a
+             possibly dead refresh chain. It is a WARNING, not an accusation:
+             "auth_invalid" remains the only outcome that removes an account from
+             selection. The field is a plain string, so a client that predates a value
+             must treat an unrecognized outcome as undetermined — never as invalid, and
+             never as healthy.
+        failureClass:
+          type: string
+          title: failure_class
+          description: |-
+            Short redacted classification token; "" when there is nothing to classify
+             (e.g. "auth_invalidated", "rate_limited", "transient_provider",
+             "runner_unavailable", "refresh_not_observed").
+
+             It normally qualifies a non-healthy outcome. The one exception is
+             "credential_superseded", which the daemon writes ALONGSIDE a "healthy"
+             outcome: an ambient `codex login` for the same provider account holds a
+             different refresh token, so the stored refresh chain is dead even though the
+             provider still accepts the stored access token. It is a warning about the
+             future and does NOT affect eligibility. A client that does not know the token
+             must render the outcome alone rather than a class it cannot interpret.
+        checkedAt:
+          title: checked_at
+          description: when the verification completed
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        nextRetryAt:
+          title: next_retry_at
+          description: earliest next scheduled check
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: AuthCheck
+      additionalProperties: false
+      description: |-
+        AuthCheck is the durable record of the last daemon-owned credential
+         verification for one account (BOS-1141). Every field is redacted metadata:
+         a closed-set outcome, a closed-set failure-class token, the check time, and
+         the next retry instant. It NEVER contains a credential, provider log text,
+         or anything derived from credential bytes.
     bossanova.v1.AuthKind:
       type: string
       title: AuthKind
@@ -5349,6 +5489,21 @@ components:
         returnUrl:
           type: string
           title: return_url
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Organization whose billing portal to open, as the internal organization id
+             (the same flavour ListOrganizationMembers and InviteOrganizationMember
+             take), NOT the WorkOS organization id.
+
+             Absent or empty keeps the pre-existing behaviour exactly: the portal is
+             minted for the cloud account the caller's own claim resolves to. Set, it
+             targets the named organization instead, which bosso authorizes with a
+             per-organization owner check — so a user who cannot re-scope their session
+             to an organization can still cancel its subscription.
       title: CreateBillingPortalSessionRequest
       additionalProperties: false
     bossanova.v1.CreateBillingPortalSessionResponse:
@@ -6203,6 +6358,12 @@ components:
         daemonHostname:
           type: string
           title: daemon_hostname
+        organizationId:
+          type: string
+          title: organization_id
+          description: |-
+            Organization whose fleet read produced this row. Always populated from
+             V20260905 on; older clients ignore the additive field.
       title: CronJobWithDaemon
       additionalProperties: false
       description: |-
@@ -6369,6 +6530,10 @@ components:
         online:
           type: boolean
           title: online
+        organizationId:
+          type: string
+          title: organization_id
+          description: Organization whose daemon inventory read produced this row.
       title: DaemonInfo
       additionalProperties: false
     bossanova.v1.DaemonOffline:
@@ -6613,6 +6778,18 @@ components:
     bossanova.v1.DeleteNoteResponse:
       type: object
       title: DeleteNoteResponse
+      additionalProperties: false
+    bossanova.v1.DeleteOrganizationRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: DeleteOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.DeleteOrganizationResponse:
+      type: object
+      title: DeleteOrganizationResponse
       additionalProperties: false
     bossanova.v1.DeleteWebhookConfigRequest:
       type: object
@@ -8022,6 +8199,18 @@ components:
           title: is_user
       title: LastTurnIsUserResponse
       additionalProperties: false
+    bossanova.v1.LeaveOrganizationRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: LeaveOrganizationRequest
+      additionalProperties: false
+    bossanova.v1.LeaveOrganizationResponse:
+      type: object
+      title: LeaveOrganizationResponse
+      additionalProperties: false
     bossanova.v1.LinkSessionPRCommand:
       type: object
       properties:
@@ -8391,6 +8580,17 @@ components:
       additionalProperties: false
     bossanova.v1.ListDaemonsRequest:
       type: object
+      properties:
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Otherwise a user-scoped
+             caller on V20260905 or newer receives the union across every organization
+             they belong to. Older clients and daemon-authenticated callers retain the
+             legacy single-organization resolution.
       title: ListDaemonsRequest
       additionalProperties: false
     bossanova.v1.ListDaemonsResponse:
@@ -8401,6 +8601,15 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.DaemonInfo'
           title: daemons
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationDaemonReadFailure'
+          title: failed_organizations
+          description: |-
+            Organizations whose daemon inventory could not be read. Their daemons are
+             absent from `daemons`; the rest of the union is still served. Always empty
+             for explicitly narrowed, legacy-version, and daemon-authenticated reads.
       title: ListDaemonsResponse
       additionalProperties: false
     bossanova.v1.ListGitHubAppReposRequest:
@@ -9883,13 +10092,72 @@ components:
           $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: Organization
       additionalProperties: false
+    bossanova.v1.OrganizationCronJobReadFailure:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        organizationName:
+          type: string
+          title: organization_name
+        reason:
+          type: string
+          title: reason
+          description: |-
+            Human-readable cause, safe to display. Never carries credentials or
+             internal identifiers beyond the organization id above.
+      title: OrganizationCronJobReadFailure
+      additionalProperties: false
+      description: |-
+        One organization whose fleet could not be read during a cross-organization
+         cron-job fan-out. This read has its own failure vocabulary rather than
+         reusing another response family's message.
+    bossanova.v1.OrganizationDaemonReadFailure:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        organizationName:
+          type: string
+          title: organization_name
+        reason:
+          type: string
+          title: reason
+          description: |-
+            Human-readable cause, safe to display. Never carries credentials or
+             internal identifiers beyond the organization id above.
+      title: OrganizationDaemonReadFailure
+      additionalProperties: false
+      description: |-
+        One organization whose daemon inventory could not be read during a
+         cross-organization fan-out.
+    bossanova.v1.OrganizationFleetReadFailure:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        organizationName:
+          type: string
+          title: organization_name
+        reason:
+          type: string
+          title: reason
+      title: OrganizationFleetReadFailure
+      additionalProperties: false
+      description: |-
+        One organization whose fleet could not be read while serving one of the
+         cross-organization fleet reads. The reason is safe to display and never
+         contains credentials or internal identifiers.
     bossanova.v1.OrganizationMember:
       type: object
       properties:
         userId:
           type: string
           title: user_id
-          description: bosso-local users.id; empty while an invite is unaccepted.
+          description: bosso-local users.id; empty for invitation-only rows.
         workosMembershipId:
           type: string
           title: workos_membership_id
@@ -9908,8 +10176,40 @@ components:
         joinedAt:
           title: joined_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        invitationId:
+          type: string
+          title: invitation_id
+          description: WorkOS invitation id; set for invitation-only rows.
+        isInviteAccepted:
+          type: boolean
+          title: is_invite_accepted
+          description: |-
+            True after WorkOS accepted the invitation but before the accepted user has
+             landed as a local organization member through sign-in reconciliation.
       title: OrganizationMember
       additionalProperties: false
+    bossanova.v1.OrganizationRepoReadFailure:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        organizationName:
+          type: string
+          title: organization_name
+        reason:
+          type: string
+          title: reason
+          description: |-
+            Human-readable cause, safe to display. Never carries credentials or
+             internal identifiers beyond the organization id above.
+      title: OrganizationRepoReadFailure
+      additionalProperties: false
+      description: |-
+        One organization whose fleet could not be read during a cross-organization
+         repository fan-out. Mirrors OrganizationSessionReadFailure rather than
+         reusing it: the two reads fail for different reasons and a shared message
+         would tie their vocabularies together.
     bossanova.v1.OrganizationSessionReadFailure:
       type: object
       properties:
@@ -9928,6 +10228,21 @@ components:
       title: OrganizationSessionReadFailure
       additionalProperties: false
       description: One organization that could not be read during a cross-organization fan-out.
+    bossanova.v1.OrganizationTrashDeletion:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        organizationName:
+          type: string
+          title: organization_name
+        deletedCount:
+          type: integer
+          title: deleted_count
+          format: int32
+      title: OrganizationTrashDeletion
+      additionalProperties: false
     bossanova.v1.OutputLine:
       type: object
       properties:
@@ -10849,6 +11164,16 @@ components:
             - $ref: '#/components/schemas/google.protobuf.Timestamp'
             - type: "null"
           title: older_than
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Absent queries every
+             organization the caller belongs to. Set narrows after a membership check;
+             a non-member organization is denied rather than quietly widened. Before
+             V20260910 there was no field and this read resolved one organization.
       title: ProxyEmptyTrashRequest
       additionalProperties: false
       description: |-
@@ -10862,6 +11187,16 @@ components:
           type: integer
           title: deleted_count
           format: int32
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
+          title: failed_organizations
+        deletions:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationTrashDeletion'
+          title: deletions
       title: ProxyEmptyTrashResponse
       additionalProperties: false
     bossanova.v1.ProxyGetChatStatusesRequest:
@@ -10936,6 +11271,16 @@ components:
         id:
           type: string
           title: id
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Absent queries every
+             organization the caller belongs to. Set narrows after a membership check;
+             a non-member organization is denied rather than quietly widened. Before
+             V20260910 there was no field and this read resolved one organization.
       title: ProxyGetCronJobRequest
       additionalProperties: false
       description: |-
@@ -10947,6 +11292,11 @@ components:
         cronJob:
           title: cron_job
           $ref: '#/components/schemas/bossanova.v1.CronJob'
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
+          title: failed_organizations
       title: ProxyGetCronJobResponse
       additionalProperties: false
     bossanova.v1.ProxyGetNoteRequest:
@@ -11074,6 +11424,17 @@ components:
       additionalProperties: false
     bossanova.v1.ProxyListAgentsAggregatedRequest:
       type: object
+      properties:
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Absent queries every
+             organization the caller belongs to. Set narrows after a membership check;
+             a non-member organization is denied rather than quietly widened. Before
+             V20260910 there was no field and this read resolved one organization.
       title: ProxyListAgentsAggregatedRequest
       additionalProperties: false
       description: |-
@@ -11088,6 +11449,11 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.AgentInfo'
           title: agents
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
+          title: failed_organizations
       title: ProxyListAgentsAggregatedResponse
       additionalProperties: false
     bossanova.v1.ProxyListAgentsRequest:
@@ -11156,6 +11522,20 @@ components:
       additionalProperties: false
     bossanova.v1.ProxyListCronJobsRequest:
       type: object
+      properties:
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Otherwise the orchestrator
+             queries every organization the caller belongs to. Set narrows the read
+             after a membership check; an organization outside the caller's membership
+             is denied rather than quietly widened.
+
+             Before V20260910 the read resolved one organization from the caller's own
+             claim. A client pinned older keeps that behavior.
       title: ProxyListCronJobsRequest
       additionalProperties: false
     bossanova.v1.ProxyListCronJobsResponse:
@@ -11166,6 +11546,15 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.CronJobWithDaemon'
           title: jobs
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationCronJobReadFailure'
+          title: failed_organizations
+          description: |-
+            Organizations whose fleets could not be read. Their jobs are absent while
+             the rest of the union is still served. Always empty when organization_id
+             narrows the read to one organization, which fails whole instead.
       title: ProxyListCronJobsResponse
       additionalProperties: false
     bossanova.v1.ProxyListGithubCallbacksRequest:
@@ -11202,6 +11591,16 @@ components:
             - string
             - "null"
           title: state
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Absent queries every
+             organization the caller belongs to. Set narrows after a membership check;
+             a non-member organization is denied rather than quietly widened. Before
+             V20260910 there was no field and this read resolved one organization.
       title: ProxyListGithubCallbacksRequest
       additionalProperties: false
     bossanova.v1.ProxyListGithubCallbacksResponse:
@@ -11212,6 +11611,11 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.GithubCallback'
           title: github_callbacks
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
+          title: failed_organizations
       title: ProxyListGithubCallbacksResponse
       additionalProperties: false
     bossanova.v1.ProxyListNotesRequest:
@@ -11271,6 +11675,16 @@ components:
              notes ACROSS THE DAEMONS THAT ANSWERED: the fan-out is fail-soft, so a
              daemon that is offline or times out contributes nothing and is skipped
              rather than failing the call.
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Absent queries every
+             organization the caller belongs to. Set narrows after a membership check;
+             a non-member organization is denied rather than quietly widened. Before
+             V20260910 there was no field and this read resolved one organization.
       title: ProxyListNotesRequest
       additionalProperties: false
       description: |-
@@ -11288,10 +11702,26 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.Note'
           title: notes
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
+          title: failed_organizations
       title: ProxyListNotesResponse
       additionalProperties: false
     bossanova.v1.ProxyListPluginsRequest:
       type: object
+      properties:
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Absent queries every
+             organization the caller belongs to. Set narrows after a membership check;
+             a non-member organization is denied rather than quietly widened. Before
+             V20260910 there was no field and this read resolved one organization.
       title: ProxyListPluginsRequest
       additionalProperties: false
       description: |-
@@ -11305,6 +11735,11 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.InstalledPlugin'
           title: plugins
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
+          title: failed_organizations
       title: ProxyListPluginsResponse
       additionalProperties: false
     bossanova.v1.ProxyListRepoPRsRequest:
@@ -11330,6 +11765,25 @@ components:
       additionalProperties: false
     bossanova.v1.ProxyListReposAggregatedRequest:
       type: object
+      properties:
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Otherwise the orchestrator
+             queries every organization the caller belongs to — the same shape as
+             ProxyListSessionsRequest.daemon_id one axis up.
+
+             Absent is a defined answer ("all of them"), not an unresolved scope, so
+             this read never raises the ambiguous-scope FailedPrecondition that
+             ProxyListSessions raises. Set narrows to that organization after a
+             membership check; an organization the caller does not belong to is denied
+             rather than quietly widened.
+
+             Before V20260905 there was no field, and the read resolved ONE organization
+             from the caller's own claim. A client pinned older keeps that behavior.
       title: ProxyListReposAggregatedRequest
       additionalProperties: false
     bossanova.v1.ProxyListReposAggregatedResponse:
@@ -11340,6 +11794,20 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.AggregatedRepo'
           title: repos
+          description: |-
+            Deduped by normalized origin URL, with the serving daemon refs unioned. A
+             repo registered on daemons in two organizations is ONE entry naming both.
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationRepoReadFailure'
+          title: failed_organizations
+          description: |-
+            Organizations whose fleet could not be read. Their repos are absent from
+             `repos`; the rest of the union is still served, so a client showing an
+             "all organizations" view should surface this as a partial result. Always
+             empty when `organization_id` narrowed the read to one organization, which
+             fails whole instead.
       title: ProxyListReposAggregatedResponse
       additionalProperties: false
     bossanova.v1.ProxyListSessionsAcrossOrganizationsRequest:
@@ -11372,6 +11840,7 @@ components:
           description: Target daemon, if known. Otherwise orchestrator queries all.
       title: ProxyListSessionsAcrossOrganizationsRequest
       additionalProperties: false
+      description: 'Deprecated: use ProxyListSessions with organization_id instead.'
     bossanova.v1.ProxyListSessionsAcrossOrganizationsResponse:
       type: object
       properties:
@@ -11405,6 +11874,7 @@ components:
              "all organizations" view should surface this as a partial result.
       title: ProxyListSessionsAcrossOrganizationsResponse
       additionalProperties: false
+      description: 'Deprecated: use ProxyListSessionsResponse instead.'
     bossanova.v1.ProxyListSessionsRequest:
       type: object
       properties:
@@ -11427,6 +11897,15 @@ components:
             - "null"
           title: daemon_id
           description: Target daemon, if known. Otherwise orchestrator queries all.
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Unset means every organization the caller belongs to. Set narrows to that
+             organization after a membership check. Clients pinned below 2026-09-12
+             retain the former single-organization behavior when this is unset.
       title: ProxyListSessionsRequest
       additionalProperties: false
     bossanova.v1.ProxyListSessionsResponse:
@@ -11437,6 +11916,14 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.Session'
           title: sessions
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationSessionReadFailure'
+          title: failed_organizations
+          description: |-
+            Organizations whose read failed. Their sessions are absent from
+             `sessions`; the rest of the union is still served.
       title: ProxyListSessionsResponse
       additionalProperties: false
     bossanova.v1.ProxyListTrackerIssuesRequest:
@@ -11659,6 +12146,17 @@ components:
       additionalProperties: false
     bossanova.v1.ProxyRepairDoctorRequest:
       type: object
+      properties:
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Target organization, if the caller needs one. Absent queries every
+             organization the caller belongs to. Set narrows after a membership check;
+             a non-member organization is denied rather than quietly widened. Before
+             V20260910 there was no field and this read resolved one organization.
       title: ProxyRepairDoctorRequest
       additionalProperties: false
       description: |-
@@ -11678,6 +12176,11 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.RepairLogSnapshot'
           title: recent_logs
+        failedOrganizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
+          title: failed_organizations
       title: ProxyRepairDoctorResponse
       additionalProperties: false
     bossanova.v1.ProxyReportChatStatusRequest:
@@ -12751,9 +13254,15 @@ components:
         userId:
           type: string
           title: user_id
+          description: |-
+            Exactly one member identifier or invitation_id must be set. invitation_id
+             revokes a pending invitation instead of removing an active membership.
         workosMembershipId:
           type: string
           title: workos_membership_id
+        invitationId:
+          type: string
+          title: invitation_id
       title: RemoveOrganizationMemberRequest
       additionalProperties: false
     bossanova.v1.RemoveOrganizationMemberResponse:

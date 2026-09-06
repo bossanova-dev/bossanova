@@ -255,7 +255,7 @@ func TestIsTailInvocation(t *testing.T) {
 
 func TestRequireLocalRegistration(t *testing.T) {
 	t.Run("rejects remote", func(t *testing.T) {
-		err := requireLocalRegistration(remoteTestCommand(t), false)
+		err := requireLocalRegistration(remoteTestCommand(t), addRegistration(false))
 		if err == nil || !strings.Contains(err.Error(), "--remote") {
 			t.Fatalf("error = %v, want a message naming --remote", err)
 		}
@@ -266,14 +266,14 @@ func TestRequireLocalRegistration(t *testing.T) {
 	// orchestrator that the operator could have minted the token on, so allowing
 	// it there is a different design question than the --host one (BOS-847).
 	t.Run("rejects remote even for a pasted token", func(t *testing.T) {
-		err := requireLocalRegistration(remoteTestCommand(t), true)
+		err := requireLocalRegistration(remoteTestCommand(t), addRegistration(true))
 		if err == nil || !strings.Contains(err.Error(), "--remote") {
 			t.Fatalf("error = %v, want a message naming --remote", err)
 		}
 	})
 
 	t.Run("rejects host", func(t *testing.T) {
-		err := requireLocalRegistration(hostTestCommand(t), false)
+		err := requireLocalRegistration(hostTestCommand(t), addRegistration(false))
 		if err == nil {
 			t.Fatal("expected boss account add against --host to be refused")
 		}
@@ -301,13 +301,13 @@ func TestRequireLocalRegistration(t *testing.T) {
 	// already exists and stores it through the tunnelled client, so the
 	// credential lands on the remote daemon the operator asked for (BOS-847).
 	t.Run("allows host for a pasted token", func(t *testing.T) {
-		if err := requireLocalRegistration(hostTestCommand(t), true); err != nil {
+		if err := requireLocalRegistration(hostTestCommand(t), addRegistration(true)); err != nil {
 			t.Fatalf("claude --token-stdin under --host: %v", err)
 		}
 	})
 
 	t.Run("allows local", func(t *testing.T) {
-		if err := requireLocalRegistration(&cobra.Command{Use: "boss"}, false); err != nil {
+		if err := requireLocalRegistration(&cobra.Command{Use: "boss"}, addRegistration(false)); err != nil {
 			t.Fatalf("plain local command: %v", err)
 		}
 	})

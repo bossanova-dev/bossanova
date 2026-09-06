@@ -113,8 +113,8 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
 - **Callback notifier** — `resolveCallbackAdapter(env)`
   (`toolbox/callback/adapter.mjs`). One-shot GitHub PR-event watches
   (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
-add|list|remove`); `policy.watchTriggers` = `checks_passed` / `checks_failed`
-  / `merged`, armed under per-trigger groups **when
+add|list|remove`); `policy.availableTriggers` names the full CLI vocabulary and
+  `policy.watchTriggers` keeps the generic green/red/merged default, armed under per-trigger groups **when
   `callbacksAvailable(env)`** and `selectEpicCallbackTarget` returns a verified
   target. Register, re-arm, and list use that target's `--chat` plus the child
   PR's `--repo`; `remove` accepts `--chat` but not `--repo`, so cleanup first uses
@@ -574,10 +574,10 @@ name_; dedup by callback id, and re-arm the child's consumed watches while it is
 **Never arm bare `checks_passed` on a child PR.** boss-build opens its PR as a **draft**
 and CI runs on drafts, so bare `checks_passed` fires on the first green draft commit —
 each premature fire consumes the one-shot watch at a moment that can never be
-merge-eligible. Arm **`checks_passed_ready`** (green **and** not a draft — the
-merge-eligibility moment) together with `checks_failed` and `merged`, plus optionally
-**`ready_for_review`** for the un-draft flip itself; this draft-aware set replaces the
-generic `policy.watchTriggers` default for boss-epic's in-flight watch. The daemon merge
+merge-eligible. Arm `policy.draftAwareTriggers`: its green member is
+**`checks_passed_ready`** (green **and** not a draft — the merge-eligibility moment),
+plus optionally **`ready_for_review`** for the un-draft flip itself. This policy-owned
+draft-aware set replaces generic `policy.watchTriggers` for boss-epic's in-flight watch. The daemon merge
 gate stays authoritative — a wake is a signal, not proof. Re-arm consumed or expired watches,
 keeping one `group` per trigger so re-arm cancels only same-trigger siblings.
 

@@ -26,7 +26,7 @@ A callback is one of two chat-notification primitives:
 ## Triggers
 
 `<trigger>` is one of six values. Pick the one that matches the PR state you
-actually care about — they are evaluated independently, so nothing stops you
+actually care about; they are evaluated independently, so nothing stops you
 registering several against the same PR.
 
 | Trigger               | Fires when                                                                                           |
@@ -40,9 +40,9 @@ registering several against the same PR.
 
 Two things worth knowing before you pick one:
 
-- **Triggers match on PR state, not on transitions.** Arming a callback
+- Triggers match on **PR state**, not on **transitions**. Arming a callback
   against a PR that already satisfies its trigger fires on the next
-  evaluation — you don't need a fresh webhook event to land first. Registering
+  evaluation; you don't need a fresh webhook event to land first. Registering
   it does not itself evaluate anything, though, so "the next evaluation" means
   the next webhook that lands for that PR, or the periodic reconcile described
   in [How it fires](#how-it-fires) if the PR has already gone quiet. Arm
@@ -50,7 +50,7 @@ Two things worth knowing before you pick one:
   within a reconcile pass, not instantly.
 - **`checks_passed` is not "all checks finished."** It requires that at least
   one check exists, that none is currently pending, and that none has
-  failed — which can be true even while GitHub's own checks view shows more
+  failed, which can be true even while GitHub's own checks view shows more
   checks still coming, if those additional checks haven't been created yet and
   so aren't part of the set being evaluated at all. The "at least one" clause
   cuts the other way too: a PR whose CI is entirely path-filtered away, with no
@@ -63,11 +63,11 @@ Two things worth knowing before you pick one:
 ## Delivery is a signal, not a guarantee
 
 The prompt a callback delivers only says the trigger evaluated true at
-evaluation time — it is not a snapshot of the PR you can act on blindly. State
+evaluation time; it is not a snapshot of the PR you can act on blindly. State
 can move between evaluation and delivery (another push, a force-merge, a
 reopened PR), and a crash after sending the prompt can cause a repeat (see
 [How it fires](#how-it-fires)). Before doing anything consequential with a
-delivered callback — merging, closing out a session, notifying someone else —
+delivered callback (merging, closing out a session, notifying someone else),
 re-check the PR's actual current state. Treat the callback as "go look," not
 as "this already happened."
 
@@ -86,13 +86,13 @@ state:
 | `expired`   | Past its expiry without a recorded successful delivery. Terminal (swept lazily, not the instant expiry hits).                                                                                                                                   |
 
 Creation starts a callback `active`. Once the evaluator confirms the
-trigger against authoritative GitHub state it moves to `triggered` — and, if
+trigger against authoritative GitHub state it moves to `triggered`. If
 the callback belongs to a `--group`, every sibling in that group on the same
 daemon that is still waiting on its own trigger moves straight to `canceled` at
 the same moment. A
 `triggered` callback gets picked up by the delivery worker, which records its
 claim as a lease (`lease_owner` / `lease_deadline_at`) on the row without
-changing its state — it stays `triggered` while an attempt is in flight;
+changing its state: it stays `triggered` while an attempt is in flight;
 success moves it to `delivered`; failure schedules a retry with a backoff
 timer, leaving it `triggered`. A crash after the send call returns success but
 before the daemon records `delivered` can cause redelivery, not loss; consumers
@@ -100,7 +100,7 @@ dedup on callback id. A callback without a recorded successful delivery by its
 expiry is swept to `expired` the next time the expiry check runs.
 
 **Expiry** defaults to 24 hours from creation and cannot be set beyond a 30-day
-ceiling — pass `--expires-in` to change it within that range (see
+ceiling; pass `--expires-in` to change it within that range (see
 [Using it from the CLI](#using-it-from-the-cli)).
 
 **`--group`** ties callbacks on one daemon together: when one member is
@@ -148,12 +148,12 @@ authoritative state, so a missed webhook self-heals on the next reconcile pass
 instead of stranding the callback forever. That recovery only covers trigger
 states that still hold when the pass runs: reconciliation reads the PR's
 current state, not a history of events. A state that came and went in between
-— checks that failed and then went green on a rerun — no longer satisfies
+(checks that failed and then went green on a rerun) no longer satisfies
 `checks_failed` by the time reconciliation looks, so a callback whose only
 webhook was missed that way stays `active`.
 
 The following numbers are today's defaults, set in
-`services/bossd/internal/callback/worker.go` — re-check that file if you need
+`services/bossd/internal/callback/worker.go`; re-check that file if you need
 the current values, since they're tuning constants and not a stable contract:
 
 - The delivery worker polls for deliverable callbacks every **15 seconds**
@@ -167,7 +167,7 @@ the current values, since they're tuning constants and not a stable contract:
   callback that exhausts its attempts is left to expire rather than retried
   further.
 - A full reconcile safety net runs every 20 worker ticks
-  (`reconcileEveryTicks`) — roughly every 5 minutes at the default poll
+  (`reconcileEveryTicks`), roughly every 5 minutes at the default poll
   interval.
 
 Delivery uses bounded best-effort retries: a crash between sending the prompt
@@ -185,7 +185,7 @@ Three subcommands: `boss callback add`, `boss callback list`
 
 `<pr>` accepts either a bare PR number, resolved against the current
 repository, or a full `https://github.com/owner/repo/pull/N` URL. `--message`
-is required — it's the prompt delivered to the chat when the callback fires
+is required; it's the prompt delivered to the chat when the callback fires
 (see [The message is a secret](#the-message-is-a-secret)).
 
 Flags:
@@ -198,7 +198,7 @@ Flags:
   owner/repo and doesn't need this. A URL that disagrees with the repository
   you're standing in is rejected rather than silently preferred, so run it
   from that repository or from outside a registered one. That default is
-  local-daemon-only — a CLI connected with `--remote` can't resolve the
+  local-daemon-only: a CLI connected with `--remote` can't resolve the
   repository you're standing in, so pass `--repo owner/repo` or a full PR URL
   there.
 - `--expires-in` — expiry as a duration (`30m`, `24h`, `7d`, `2w`). Default
@@ -233,7 +233,7 @@ cli={`boss callback add https://github.com/acme/widget/pull/123 checks_failed \\
 mcp="register_github_callback"
 />
 
-To be notified either way — merged or closed — register both mutually exclusive
+To be notified either way (merged or closed), register both mutually exclusive
 triggers against the same daemon-local `--group`, so at most one delivers:
 
 <CommandTabs
@@ -302,7 +302,7 @@ remote (bosso) client; it's ignored for a local daemon and defaults to
 
 ## Using it from an agent (MCP)
 
-The same three operations are exposed as MCP tools — see the
+The same three operations are exposed as MCP tools; see the
 [MCP guide](./mcp.md) for how to connect an agent to Bossanova's MCP server in
 the first place.
 

@@ -21,7 +21,8 @@ name points Homebrew at the Bossanova tap during install.
   [Claude Code CLI](https://claude.ai/download); the bundled `codex`
   plugin requires the
   [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started).
-  `opencode` remains on the roadmap.
+  The `opencode` plugin is installed too, but it is experimental and stays off
+  until you opt in via `experimental_plugins` in `settings.json`.
 - [GitHub CLI](https://cli.github.com/): required for PR operations.
 
 ## Manual installation via curl
@@ -33,7 +34,7 @@ curl -fsSL https://bossanova.dev/install.sh | sh
 The install script downloads the latest GitHub Release binaries for macOS
 (`darwin-amd64`, `darwin-arm64`) and Linux (`linux-amd64`), configures the bundled
 plugins, and registers the daemon (launchd on macOS, systemd on Linux). It currently
-requires the Claude Code CLI, GitHub CLI, and a SHA-256 tool before installing — if you
+requires the Claude Code CLI, GitHub CLI, and a SHA-256 tool before installing. If you
 use a different agent plugin, install via Homebrew instead.
 
 ## Build from source

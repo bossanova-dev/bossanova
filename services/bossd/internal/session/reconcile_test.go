@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -35,6 +37,10 @@ type reconcileMockProvider struct {
 	openDelay       time.Duration
 	openInFlight    int
 	maxOpenInFlight int
+	// openHook, when set, runs inside ListOpenPRs after the call is recorded
+	// and with the mutex released. It lets a test hold a listing open until
+	// every concurrent caller has provably reached the provider.
+	openHook func()
 }
 
 func TestNeedsPRAssociation(t *testing.T) {
@@ -129,9 +135,14 @@ func (m *reconcileMockProvider) ListOpenPRs(ctx context.Context, repoPath string
 		m.maxOpenInFlight = m.openInFlight
 	}
 	delay := m.openDelay
+	hook := m.openHook
 	err := m.openErr[repoPath]
 	prs := m.openPRs[repoPath]
 	m.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
 
 	if delay > 0 {
 		select {
@@ -1640,5 +1651,425 @@ func TestConstructPRURL(t *testing.T) {
 				t.Errorf("constructPRURL(%q, %d) = %q, want %q", tt.originURL, tt.prNumber, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- negative cache for failed PR listings (see defaultPRAssociationFailureTTL) ---
+
+// newFailingListingFixture builds one repo with sessionCount PR-less sessions
+// on it and a provider whose ListOpenPRs fails, which is the shape that used to
+// cost one provider call per session on every pass.
+func newFailingListingFixture(t *testing.T, sessionCount int) (
+	*reconcileMockSessionStore, *mockRepoStore, *reconcileMockProvider,
+) {
+	t.Helper()
+
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo",
+	}
+	for i := 0; i < sessionCount; i++ {
+		sessions.addSession(&models.Session{
+			ID:         fmt.Sprintf("sess-%d", i),
+			RepoID:     "repo-1",
+			BranchName: fmt.Sprintf("feature-%d", i),
+			State:      machine.AwaitingChecks,
+		})
+	}
+	provider.openErr["https://github.com/owner/repo"] = errors.New("gh pr list: signal: killed")
+
+	return sessions, repos, provider
+}
+
+// TestPRsForRepo_NegativeCacheCollapsesFailuresWithinAPass pins the fix for the
+// amplification: N sessions on a repo whose listing fails must cost ONE
+// provider call, not N. It also pins the log-volume half — the repeats are
+// demoted to Debug so a failing repo produces one Warn, not one per session.
+func TestPRsForRepo_NegativeCacheCollapsesFailuresWithinAPass(t *testing.T) {
+	const sessionCount = 4
+
+	ctx := context.Background()
+	sessions, repos, provider := newFailingListingFixture(t, sessionCount)
+
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.DebugLevel)
+
+	resolver := NewPRAssociationResolver(sessions, repos, provider, logger)
+
+	updated, err := resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("updated = %d, want 0 (every listing failed)", updated)
+	}
+
+	if got := len(provider.listOpenCalls); got != 1 {
+		t.Fatalf("ListOpenPRs calls = %d, want 1 for %d sessions on one failing repo", got, sessionCount)
+	}
+
+	warns, debugs := countReconcileFindPRLines(t, logs.String())
+	if warns != 1 {
+		t.Errorf("Warn lines = %d, want exactly 1 per repo per failure window", warns)
+	}
+	if debugs != sessionCount-1 {
+		t.Errorf("Debug lines = %d, want %d (the cached repeats)", debugs, sessionCount-1)
+	}
+}
+
+// countReconcileFindPRLines counts the "reconcile: find PR for session" lines
+// in captured zerolog JSON output, split by level.
+func countReconcileFindPRLines(t *testing.T, out string) (warns, debugs int) {
+	t.Helper()
+
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Level   string `json:"level"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("parse log line %q: %v", line, err)
+		}
+		if entry.Message != "reconcile: find PR for session" {
+			continue
+		}
+		switch entry.Level {
+		case "warn":
+			warns++
+		case "debug":
+			debugs++
+		default:
+			t.Fatalf("unexpected level %q on a find-PR line", entry.Level)
+		}
+	}
+	return warns, debugs
+}
+
+// TestPRsForRepo_NegativeCacheExpiresAfterFailureTTL verifies the remembered
+// failure is short-lived: a pass inside the window reuses it, and the first
+// pass after it expires calls the provider again. The window is read from
+// defaultPRAssociationFailureTTL so a change to that constant lands here.
+func TestPRsForRepo_NegativeCacheExpiresAfterFailureTTL(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, provider := newFailingListingFixture(t, 2)
+
+	t0 := time.Date(2026, 9, 3, 17, 0, 0, 0, time.UTC)
+	current := t0
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	resolver.SetNowForTest(func() time.Time { return current })
+
+	if _, err := resolver.Reconcile(ctx); err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	if got := len(provider.listOpenCalls); got != 1 {
+		t.Fatalf("first pass: ListOpenPRs calls = %d, want 1", got)
+	}
+
+	// Just inside the failure window: the remembered failure is reused.
+	current = t0.Add(defaultPRAssociationFailureTTL - time.Second)
+	if _, err := resolver.Reconcile(ctx); err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+	if got := len(provider.listOpenCalls); got != 1 {
+		t.Fatalf("inside failure TTL (%s): ListOpenPRs calls = %d, want 1 (cache hit)",
+			defaultPRAssociationFailureTTL, got)
+	}
+
+	// Past the window: the provider is retried.
+	current = t0.Add(defaultPRAssociationFailureTTL + time.Second)
+	if _, err := resolver.Reconcile(ctx); err != nil {
+		t.Fatalf("third Reconcile: %v", err)
+	}
+	if got := len(provider.listOpenCalls); got != 2 {
+		t.Fatalf("past failure TTL (%s): ListOpenPRs calls = %d, want 2 (retried)",
+			defaultPRAssociationFailureTTL, got)
+	}
+}
+
+// TestPRsForRepo_NegativeCacheDoesNotOutliveRecovery verifies a repo that
+// recovers is associated on the first pass after the window, rather than being
+// held back by the remembered failure.
+func TestPRsForRepo_NegativeCacheDoesNotOutliveRecovery(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, provider := newFailingListingFixture(t, 1)
+
+	t0 := time.Date(2026, 9, 3, 17, 0, 0, 0, time.UTC)
+	current := t0
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	resolver.SetNowForTest(func() time.Time { return current })
+
+	if updated, err := resolver.Reconcile(ctx); err != nil || updated != 0 {
+		t.Fatalf("failing pass: updated = %d, err = %v; want 0, nil", updated, err)
+	}
+
+	// The provider recovers, and the window lapses.
+	provider.mu.Lock()
+	delete(provider.openErr, "https://github.com/owner/repo")
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 42, HeadBranch: "feature-0", State: vcs.PRStateOpen, Title: "recovered"},
+	}
+	provider.mu.Unlock()
+	current = t0.Add(defaultPRAssociationFailureTTL + time.Second)
+
+	updated, err := resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("recovered pass: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("recovered pass: updated = %d, want 1", updated)
+	}
+	sess, err := sessions.Get(ctx, "sess-0")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if sess.PRNumber == nil || *sess.PRNumber != 42 {
+		t.Fatalf("PRNumber = %v, want 42", sess.PRNumber)
+	}
+}
+
+// TestPRsForRepo_DoesNotRememberFailureFromCallerTimeout pins the deliberate
+// exception in rememberListingFailure: a listing killed by the CALLER's expired
+// budget says nothing about the repo, so it must not be cached. Otherwise one
+// exhausted 10s ListSessions budget would suppress the 60s periodic sweep's
+// attempt for the whole failure window.
+//
+// This reproduces the reported incident directly — a `gh pr list` still running
+// when the caller's deadline lands — and then proves the SAME resolver retries.
+func TestPRsForRepo_DoesNotRememberFailureFromCallerTimeout(t *testing.T) {
+	sessions, repos, provider := newFailingListingFixture(t, 2)
+
+	// The listing succeeds eventually, but not before the caller's budget ends.
+	provider.mu.Lock()
+	delete(provider.openErr, "https://github.com/owner/repo")
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 7, HeadBranch: "feature-0", State: vcs.PRStateOpen, Title: "slow listing"},
+	}
+	provider.openDelay = 250 * time.Millisecond
+	provider.mu.Unlock()
+
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+
+	// 100ms, not 20ms. Both assertions below depend on the pass actually
+	// REACHING provider.ListOpenPRs before the budget expires; under scheduling
+	// delay on a loaded CI the top-of-loop ctx.Err() check can win first,
+	// recording 0 calls and failing a test that is not about scheduling. 100ms
+	// is comfortably above that noise and still far below the 250ms listing
+	// delay, so the call is still interrupted mid-flight, which is the state
+	// under test.
+	tightCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if _, err := resolver.Reconcile(tightCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pass under an expiring budget: err = %v, want context.DeadlineExceeded", err)
+	}
+	if got := len(provider.listOpenCalls); got != 1 {
+		t.Fatalf("timed-out pass: ListOpenPRs calls = %d, want 1", got)
+	}
+
+	// The provider is healthy again. Nothing about wall-clock time has changed —
+	// the failure window is 15s and this test runs in milliseconds — so if the
+	// timeout had been remembered, this pass would be served from the negative
+	// cache and make no second call.
+	provider.mu.Lock()
+	provider.openDelay = 0
+	provider.mu.Unlock()
+
+	updated, err := resolver.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("retry pass: %v", err)
+	}
+	if got := len(provider.listOpenCalls); got != 2 {
+		t.Fatalf("retry pass: ListOpenPRs calls = %d, want 2 (a caller timeout must not be cached)", got)
+	}
+	if updated != 1 {
+		t.Fatalf("retry pass: updated = %d, want 1", updated)
+	}
+}
+
+// TestReconcileSessions_StopsWhenCallerBudgetExpires pins the other half of the
+// reported log spam: on a dead context the pass stops outright instead of
+// walking every remaining session and logging a Warn for each one — those
+// warnings blamed PR discovery for what is really a local repo read failing on
+// an already-expired context.
+func TestReconcileSessions_StopsWhenCallerBudgetExpires(t *testing.T) {
+	sessions, repos, provider := newFailingListingFixture(t, 5)
+
+	active, err := sessions.ListActive(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(active) != 5 {
+		t.Fatalf("fixture: active = %d, want 5", len(active))
+	}
+
+	var logs bytes.Buffer
+	resolver := NewPRAssociationResolver(sessions, repos, provider,
+		zerolog.New(&logs).Level(zerolog.DebugLevel))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	updated, err := resolver.ReconcileSessions(ctx, active)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if updated != 0 {
+		t.Fatalf("updated = %d, want 0", updated)
+	}
+
+	// Nothing was attempted: not the local repo read, not the provider.
+	if got := repos.getCalls.Load(); got != 0 {
+		t.Errorf("repo Get calls = %d, want 0 (pass must stop before any work)", got)
+	}
+	if got := len(provider.listOpenCalls); got != 0 {
+		t.Errorf("ListOpenPRs calls = %d, want 0", got)
+	}
+
+	warns, debugs := countReconcileFindPRLines(t, logs.String())
+	if warns != 0 || debugs != 0 {
+		t.Errorf("find-PR log lines = %d warn / %d debug, want 0/0", warns, debugs)
+	}
+}
+
+// TestPRsForRepo_ConcurrentMissesShareOneProviderCall pins the coordination the
+// negative cache alone cannot provide. main.go shares one resolver between
+// ListSessions and the periodic reconciler, so two passes can both read a miss
+// before either writes — and a FAILING repo then costs one gh call per
+// concurrent pass, which is the per-call cost this whole mechanism exists to
+// remove.
+//
+// # Why the assertion is taken WHILE the flight is open
+//
+// The obvious shape — launch N goroutines, join them, then assert one call —
+// is racy, and it flaked in CI. A goroutine can signal "started" and then be
+// descheduled before it reaches the flight; if the flight has completed and
+// left the singleflight map by the time it arrives, it correctly opens a NEW
+// flight and makes a second provider call. That is singleflight behaving as
+// designed, not the defect under test, so an assertion taken after everyone
+// has finished is measuring scheduling luck.
+//
+// The invariant that is actually true, and testable without timing luck, is:
+// WHILE one flight is open, no number of additional callers may produce a
+// second provider call. So the winner is pinned inside the provider, the count
+// is captured before anything is released, and only then is the flight let go.
+// Late arrivals after the release are irrelevant to the invariant and no longer
+// break the test.
+//
+// The guard is still non-vacuous: the fake records each call BEFORE it blocks,
+// so with the singleflight removed all `callers` goroutines append and the
+// captured count is `callers`, not 1.
+func TestPRsForRepo_ConcurrentMissesShareOneProviderCall(t *testing.T) {
+	sessions, repos, provider := newFailingListingFixture(t, 2)
+
+	const callers = 8
+
+	// entered is signalled by every provider entry; release pins them there.
+	entered := make(chan struct{}, callers)
+	release := make(chan struct{})
+	provider.mu.Lock()
+	provider.openHook = func() {
+		entered <- struct{}{}
+		<-release
+	}
+	provider.mu.Unlock()
+
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+
+	arrived := make(chan struct{}, callers)
+
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			arrived <- struct{}{}
+			_, errs[i] = resolver.prsForRepo(context.Background(), "repo-1", "https://github.com/owner/repo")
+		}()
+	}
+
+	// The flight is provably open once the winner is inside the provider.
+	<-entered
+	for range callers {
+		<-arrived
+	}
+	// The load-bearing barrier, and it must establish that callers are INSIDE
+	// singleflight.Do — not merely close to it. Arrival on the channel above
+	// happens just before the call, so on a loaded scheduler every signal can be
+	// drained while followers are still descheduled; a fixed settle would then
+	// expire with only the winner having reached the provider, leaving
+	// `during == 1` and passing VACUOUSLY, since that is equally true with the
+	// singleflight removed. singleflight parks its waiters on an unexported
+	// WaitGroup, so a stack dump is the available signal — the same reasoning,
+	// and the same helper, as TestPrepareFailover_ConcurrentProbesCoalesce.
+	waitForCallersInFlight(t, callers)
+
+	provider.mu.Lock()
+	during := len(provider.listOpenCalls)
+	provider.mu.Unlock()
+
+	close(release)
+	wg.Wait()
+
+	if during != 1 {
+		t.Fatalf("ListOpenPRs calls while one flight was open = %d, want 1: %d concurrent misses must collapse onto one flight", during, callers)
+	}
+	// Every caller must still receive the failure — collapsing the call must not
+	// silently succeed for the joiners.
+	for i, err := range errs {
+		if err == nil {
+			t.Fatalf("caller %d got nil error; the shared flight failed", i)
+		}
+	}
+}
+
+// TestPRsForRepo_LateFailureDoesNotEvictAFreshSuccess is the ordering interlock.
+// A success is valid for its own TTL no matter what a later call observed;
+// replacing it with a cached error would suppress every valid PR association
+// for the failure window on a repo that is demonstrably reachable.
+func TestPRsForRepo_LateFailureDoesNotEvictAFreshSuccess(t *testing.T) {
+	sessions, repos, provider := newFailingListingFixture(t, 2)
+
+	provider.mu.Lock()
+	delete(provider.openErr, "https://github.com/owner/repo")
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 7, HeadBranch: "feature-0", State: vcs.PRStateOpen, Title: "good listing"},
+	}
+	provider.mu.Unlock()
+
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+
+	// Install a fresh, unexpired success.
+	if _, err := resolver.prsForRepo(context.Background(), "repo-1", "https://github.com/owner/repo"); err != nil {
+		t.Fatalf("seed success: %v", err)
+	}
+
+	// A slower call that started earlier now resolves as a failure and tries to
+	// record it. Reached directly, because reproducing the interleaving through
+	// the public path is exactly the race the flight now prevents.
+	resolver.rememberListingFailure(
+		context.Background(),
+		"repo-1",
+		errors.New("list open PRs for repo \"repo-1\": gh: connection reset"),
+	)
+
+	// The cached success must survive, and must still be served without a call.
+	before := len(provider.listOpenCalls)
+	prs, err := resolver.prsForRepo(context.Background(), "repo-1", "https://github.com/owner/repo")
+	if err != nil {
+		t.Fatalf("a late failure evicted a fresh success: %v", err)
+	}
+	if len(prs) != 1 || prs[0].Number != 7 {
+		t.Fatalf("prs = %+v, want the cached successful listing", prs)
+	}
+	if got := len(provider.listOpenCalls); got != before {
+		t.Fatalf("ListOpenPRs calls = %d, want %d: the success should still be cached", got, before)
 	}
 }

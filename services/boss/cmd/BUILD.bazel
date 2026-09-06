@@ -13,6 +13,7 @@ go_library(
         "cloud_access_prod.go",
         "cost.go",
         "cron.go",
+        "crossorgsessions_prod.go",
         "daemon_doctor.go",
         "daemon_rotate_token.go",
         "env.go",
@@ -100,6 +101,7 @@ go_test(
     srcs = [
         "account_add_test.go",
         "account_ls_test.go",
+        "account_reauth_guard_test.go",
         "account_refresh_test.go",
         "account_switch_test.go",
         "agents_test.go",

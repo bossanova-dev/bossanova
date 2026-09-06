@@ -30,6 +30,12 @@ const (
 	// rotation engine sidelines it and session creation refuses to bind it, so a
 	// manual switch refuses it too (mirroring checkAccountEligible).
 	AccountFailed
+	// AccountAuthInvalid is an account whose last credential verification found
+	// the credential itself rejected. It is distinct from AccountFailed because
+	// recording that verdict deliberately leaves Health untouched, so nothing
+	// else in this switch would catch it, and because the operator action
+	// differs: re-authenticate, rather than investigate a health failure.
+	AccountAuthInvalid
 )
 
 // switchAccount is the switch's internal, provider-agnostic view of a target
@@ -135,6 +141,9 @@ var (
 	ErrAccountCooling = errors.New("target account is cooling")
 	// ErrAccountFailed means the target account's last-known health check failed.
 	ErrAccountFailed = errors.New("target account failed its last health check")
+	// ErrAccountAuthInvalid means the target account's credential was rejected
+	// by its last verification and must be re-authenticated.
+	ErrAccountAuthInvalid = errors.New("target account failed its last credential verification")
 	// ErrChatMidTurn means the chat is WORKING and Force was not set.
 	ErrChatMidTurn = errors.New("chat is mid-turn")
 	// ErrSwitchNotAttempted marks a refusal returned BEFORE the switch touched the
@@ -242,6 +251,10 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	}
 	if target.Status == AccountFailed {
 		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q", ErrAccountFailed, target.Label))
+	}
+	if target.Status == AccountAuthInvalid {
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q; re-authenticate it before switching",
+			ErrAccountAuthInvalid, target.Label))
 	}
 	if target.Status == AccountCooling || (target.CooldownUntil != nil && target.CooldownUntil.After(l.switchNow())) {
 		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q is cooling until %s",
@@ -391,12 +404,74 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	l.forgetProxyBearer(p.SessionID)
 
 	// 8. RESPAWN the chat under the new account. Resume reuses the prior id
-	// (StartTmuxChat adds --resume); a fresh switch mints a new id. Never a
-	// prompt/command — the interrupted prompt is not resent (D12), so the zero
-	// DeliveryPrefillOnly intent is correct.
+	// (StartTmuxChat adds --resume); a fresh switch mints a new id. The
+	// interrupted prompt is still never resent (D12) — what IS delivered is the
+	// short account-switch notice composed in step 6, which is new text, not a
+	// replay.
 	respawn := ChatInput{}
 	if resumable {
 		respawn.ResumeAgentSessionID = resumeID
+	}
+	// Carry the target account explicitly. On the resumable path the rebind in
+	// step 7 has already written it onto the chat row, which StartTmuxChat reads
+	// and prefers; on the NON-resumable path there is no row to read — a fresh id
+	// is minted — so without this the respawn would seed its account from
+	// sessions.account_id and come back up on the account we just switched away
+	// from, persisting that stale binding onto the new chat row (BOS-1135).
+	respawn.AccountID = &p.TargetAccountID
+	// Carry the chat's OWN provider and model alongside it. The resumable path
+	// reads both off the row StartTmuxChat loads; the fresh path has no row, so
+	// without them the respawn dispatches under the parent SESSION's agent and
+	// model. For a cross-agent chat — a Codex chat inside a Claude session, which
+	// reaches this path ROUTINELY because its provider rollout id defeats the
+	// transcript probe (see switchResumeID) — that relaunches the chat as Claude
+	// while persisting the Codex account onto the new row: the Claude runner builds
+	// argv, and account materialization dispatches on the account's own provider
+	// and hands that Claude process Codex env. Sending the chat's own values makes
+	// the fresh path agree with the resumable one (BOS-1135).
+	if chat.AgentName != "" {
+		respawn.AgentName = &chat.AgentName
+	}
+	if chat.Model != "" {
+		respawn.Model = &chat.Model
+	}
+	// Deliver the notice INTO the pane and submit it, so the chat comes back
+	// visibly running instead of idling behind a pending composer line — the
+	// reporter's actual complaint. Submitting starts a turn on the freshly-bound
+	// account, which is the intended cost.
+	//
+	// The automatic ROTATION path submits too: it is reached from a chat the
+	// rotator found usage-LIMITED, i.e. already stalled with its turn cut off and
+	// never resent, so a silent respawn would leave an unattended run parked at an
+	// idle composer forever. Same behaviour manual and automatic, one delivery
+	// path, one test surface.
+	//
+	// The respawn-in-place (BOS-482) is the deliberate exception and gets NO
+	// payload at all: nothing changed for the operator to be told about, it can
+	// fire for many chats at once after a daemon restart, and both alternatives
+	// are worse than silence — submitting burns a turn per chat on pure
+	// housekeeping, prefilling leaves the pending composer line this ticket
+	// exists to remove.
+	//
+	// Keyed on the caller's INTENT (p.RespawnSameAccount) rather than on
+	// isSameAccountRespawn, which additionally requires current == TargetAccountID.
+	// Those two account values are derived by DIFFERENT rules: the rotator builds
+	// its target from ChatContext.AccountID, which falls back to sessions.account_id
+	// for a chat row with a NULL account_id (cmd/main.go), while the `current` side
+	// reads chatAccountBinding.SessionAccount, which returns "" for that same row
+	// and never consults the session. So an auth-refresh respawn of a NULL-bound
+	// chat compares "" against the session's account, fails the conjunct, and would
+	// submit a "switched to <label>" turn into a pane whose account did not change —
+	// unattended (Auto), and once per chat after a daemon restart. Intent cannot
+	// disagree with itself, so it is the safe key here; the value comparison stays
+	// where it belongs, guarding the resume and wording branches above.
+	if !p.RespawnSameAccount {
+		respawn.Prompt = notice
+		respawn.Delivery = DeliverySubmit
+		// Cosmetic: the account is rebound and the pane is up before this is
+		// delivered, so a failed submit degrades to "no in-chat notice" rather
+		// than reporting a completed switch as failed.
+		respawn.DeliveryOptional = true
 	}
 	// Switching keeps the session's unattended provenance even though the
 	// replacement run is tmux-hosted. Repair chats also carry an explicit
@@ -406,12 +481,12 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	respawnOpts := StartSessionOpts{IsTmuxUnattended: isUnattendedSession(session)}
 	resolvedProvider := l.resolveAgentName(provider)
 	// This site computes the profile explicitly rather than deferring to
-	// StartTmuxChat's AutonomousRun seam: the profile has to key on the account
-	// being switched TO, and the respawn does not publish that provider anywhere
-	// the seam can read it. The seam reads the chat row's agent_name, which is
-	// written only by Create (agent_chat_store has no UpdateAgentName), so a
-	// non-resumable cross-agent switch would fall back to the session's stale
-	// provider and silently drop the gate.
+	// StartTmuxChat's AutonomousRun seam: the profile has to key on the provider of
+	// the account being switched TO, and that is not what the seam reads. The seam
+	// keys on the chat row's agent_name — the chat's own provider, which the
+	// respawn above now carries explicitly — and the two diverge whenever the
+	// target account's provider differs from the chat's. Computing it here keeps
+	// the gate keyed on the account.
 	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, respawnOpts)
 	if capabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED &&
 		IsRepairChatTitle(chat.Title) {
@@ -614,6 +689,10 @@ func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (
 		sa.Status = AccountDisabled
 	case acct.Health == models.AccountHealthFailed:
 		sa.Status = AccountFailed
+	case acct.IsAuthInvalid():
+		// Above Cooling: a credential confirmed rejected is not a
+		// time-bounded bench, and waiting out a cooldown would not fix it.
+		sa.Status = AccountAuthInvalid
 	case acct.CooldownUntil != nil && acct.CooldownUntil.After(time.Now()):
 		sa.Status = AccountCooling
 	}

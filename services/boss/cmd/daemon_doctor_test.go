@@ -518,6 +518,12 @@ func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
 	previous := daemonDoctorGOOS
 	daemonDoctorGOOS = "linux"
 	t.Cleanup(func() { daemonDoctorGOOS = previous })
+	// This test asserts the platform early return, not supervision, and writes no
+	// state record — so an unstubbed supervision check would read the developer's
+	// REAL service manager and REAL bossd state, and fail on any machine whose
+	// daemon happens to be running detached. Disabling the probe is the accurate
+	// way to say "not under test here".
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -908,6 +914,7 @@ func writeDaemonDoctorState(t *testing.T, executablePath string, probeCompleted 
 	// Doctor now probes the recorded PID (BOS-864). Picking a real PID would be
 	// flaky, so every state fixture pins the liveness answer.
 	stubDaemonDoctorProcess(t, nil)
+	stubDaemonDoctorSupervision(t)
 }
 
 // writeDaemonDoctorStateStartedAt writes a healthy-probe state record whose
@@ -927,6 +934,29 @@ func writeDaemonDoctorStateStartedAt(t *testing.T, executablePath string, starte
 		t.Fatalf("daemonstate.Write: %v", err)
 	}
 	stubDaemonDoctorProcess(t, nil)
+	stubDaemonDoctorSupervision(t)
+}
+
+// stubDaemonDoctorSupervision pins the SERVICE-manager view the same way, and
+// for the same reason, that stubDaemonDoctorProcess pins process liveness.
+//
+// The supervision check compares what the service manager owns against the
+// recorded PID. Left unstubbed it reads the developer's real launchd/systemd,
+// so an unrelated doctor test would pass or fail depending on whether the
+// engineer running it happens to have bossd loaded — and would FAIL on any
+// machine where it is not, since the fixtures write a live recorded PID.
+//
+// A test that wants to exercise supervision overrides daemonGetStatus after
+// calling the fixture, which wins.
+func stubDaemonDoctorSupervision(t *testing.T) {
+	t.Helper()
+	previous := daemonGetStatus
+	daemonGetStatus = func() (*daemon.Status, error) {
+		// Matches the PID the state fixtures write, so supervision reads "ok"
+		// and perturbs no unrelated assertion.
+		return &daemon.Status{Installed: true, Running: true, PID: 4242}, nil
+	}
+	t.Cleanup(func() { daemonGetStatus = previous })
 }
 
 // stubDaemonDoctorProcess makes doctor's signal-0 liveness probe deterministic.
@@ -1023,6 +1053,8 @@ func TestRunDaemonDoctorReportsServicePathOnNonDarwin(t *testing.T) {
 	previous := daemonDoctorGOOS
 	daemonDoctorGOOS = "linux"
 	t.Cleanup(func() { daemonDoctorGOOS = previous })
+	// Asserts the service-PATH line, not supervision — see the sibling test.
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -1705,4 +1737,173 @@ func TestSanitizeDaemonDoctorField(t *testing.T) {
 			t.Errorf("truncation is unmarked, so a cut value reads as the whole value: %q", got)
 		}
 	})
+}
+
+// TestReportDaemonSupervisionFlagsADetachedDaemon is the 2026-09-03 incident as
+// a unit test. bossd was alive at its recorded PID, its executable matched the
+// LaunchAgent, its staged binary was current — and it was not launchd's. Every
+// other check in this file passed; doctor exited 0 while the daemon could not
+// authenticate to GitHub and logged to /dev/null.
+func TestReportDaemonSupervisionFlagsADetachedDaemon(t *testing.T) {
+	previous := daemonGetStatus
+	t.Cleanup(func() { daemonGetStatus = previous })
+	daemonGetStatus = func() (*daemon.Status, error) {
+		// Installed, but the service manager is not running it.
+		return &daemon.Status{Installed: true, Running: false}, nil
+	}
+	stubDaemonDoctorProcess(t, nil) // the recorded PID IS alive
+
+	var out strings.Builder
+	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
+
+	if !unhealthy || !remediation {
+		t.Fatalf("unhealthy=%v remediation=%v, want both true\n%s", unhealthy, remediation, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "FAIL") {
+		t.Fatalf("no FAIL in output:\n%s", got)
+	}
+	// The line has to name the consequences, not just the condition: the whole
+	// point is that an operator reading it understands why gh broke.
+	for _, fragment := range []string{"14350", "keychain", "unauthenticated"} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("output does not mention %q:\n%s", fragment, got)
+		}
+	}
+}
+
+// TestReportDaemonSupervisionFlagsAPIDMismatch is the other half: the service
+// manager owns one process and the state record names another.
+func TestReportDaemonSupervisionFlagsAPIDMismatch(t *testing.T) {
+	previous := daemonGetStatus
+	t.Cleanup(func() { daemonGetStatus = previous })
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 999}, nil
+	}
+	stubDaemonDoctorProcess(t, nil)
+
+	var out strings.Builder
+	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if !unhealthy || !remediation {
+		t.Fatalf("unhealthy=%v remediation=%v, want both true\n%s", unhealthy, remediation, out.String())
+	}
+	if !strings.Contains(out.String(), "999") || !strings.Contains(out.String(), "14350") {
+		t.Fatalf("output does not name both PIDs:\n%s", out.String())
+	}
+}
+
+// TestReportDaemonSupervisionPassesWhenSupervised is the anti-vacuity guard: a
+// check that only ever fails would satisfy the tests above while being useless.
+func TestReportDaemonSupervisionPassesWhenSupervised(t *testing.T) {
+	previous := daemonGetStatus
+	t.Cleanup(func() { daemonGetStatus = previous })
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 14350}, nil
+	}
+	stubDaemonDoctorProcess(t, nil)
+
+	var out strings.Builder
+	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if unhealthy || remediation {
+		t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+	}
+	if !strings.Contains(out.String(), "ok") {
+		t.Fatalf("output does not report ok:\n%s", out.String())
+	}
+}
+
+// TestReportDaemonSupervisionIsUnknownNotUnhealthyOnInconclusiveInput pins the
+// fail-safe. This check runs on developer machines and in CI, where the service
+// view is meaningless (BOSS_DAEMON_SKIP_LAUNCHCTL) or there is no state record
+// at all. A false FAIL there teaches operators to ignore the line that matters
+// on a real host, so every inconclusive input must read "unknown" and return
+// healthy.
+func TestReportDaemonSupervisionIsUnknownNotUnhealthyOnInconclusiveInput(t *testing.T) {
+	previous := daemonGetStatus
+	t.Cleanup(func() { daemonGetStatus = previous })
+
+	tests := []struct {
+		name        string
+		status      *daemon.Status
+		statusErr   error
+		metadata    daemonstate.Metadata
+		metadataErr error
+		signalErr   error
+	}{
+		{name: "status unavailable", statusErr: errors.New("launchctl exploded"), metadata: daemonstate.Metadata{PID: 1}},
+		{name: "no state record", status: &daemon.Status{Installed: true}, metadataErr: errors.New("no such file")},
+		{name: "not installed", status: &daemon.Status{Installed: false}, metadata: daemonstate.Metadata{PID: 1}},
+		{name: "no recorded PID", status: &daemon.Status{Installed: true}, metadata: daemonstate.Metadata{PID: 0}},
+		{name: "recorded PID is gone", status: &daemon.Status{Installed: true}, metadata: daemonstate.Metadata{PID: 1}, signalErr: syscall.ESRCH},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemonGetStatus = func() (*daemon.Status, error) { return tt.status, tt.statusErr }
+			stubDaemonDoctorProcess(t, tt.signalErr)
+
+			var out strings.Builder
+			unhealthy, remediation := reportDaemonSupervision(&out, tt.metadata, tt.metadataErr)
+			if unhealthy || remediation {
+				t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+			}
+			if !strings.Contains(out.String(), "unknown") {
+				t.Fatalf("output does not say unknown:\n%s", out.String())
+			}
+		})
+	}
+}
+
+// TestReportDaemonSupervisionIsUnknownWhenProbingIsDisabled pins the
+// BOSS_DAEMON_SKIP_LAUNCHCTL guard. Under that variable platformGetStatus
+// returns Installed=true, Running=false WITHOUT asking the service manager —
+// byte-identical to the detached-daemon shape this check flags. Interpreting it
+// would make every test harness and CI run fail, which is how a diagnostic gets
+// ignored on the host where it is telling the truth.
+func TestReportDaemonSupervisionIsUnknownWhenProbingIsDisabled(t *testing.T) {
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+
+	previous := daemonGetStatus
+	t.Cleanup(func() { daemonGetStatus = previous })
+	// The shape platformGetStatus really returns under the skip.
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: false}, nil
+	}
+	stubDaemonDoctorProcess(t, nil)
+
+	var out strings.Builder
+	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if unhealthy || remediation {
+		t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+	}
+	if !strings.Contains(out.String(), "unknown") {
+		t.Fatalf("output does not say unknown:\n%s", out.String())
+	}
+}
+
+// TestReportDaemonSupervisionRefusesToCertifyWithoutAServicePID. A service
+// manager can report running without yielding a PID — systemd when the MainPID
+// read fails, launchd when its output will not parse. Falling through to "ok"
+// there would emit a false healthy verdict from the very check added to detect
+// an ownership mismatch.
+func TestReportDaemonSupervisionRefusesToCertifyWithoutAServicePID(t *testing.T) {
+	previous := daemonGetStatus
+	t.Cleanup(func() { daemonGetStatus = previous })
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 0}, nil
+	}
+	stubDaemonDoctorProcess(t, nil)
+
+	var out strings.Builder
+	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if unhealthy || remediation {
+		t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "unknown") {
+		t.Fatalf("output does not say unknown:\n%s", got)
+	}
+	if strings.Contains(got, "ok (") {
+		t.Fatalf("output certified ownership without a service PID:\n%s", got)
+	}
 }

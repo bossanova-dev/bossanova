@@ -1,0 +1,22 @@
+extends: existence
+message: "Bold the meaningful term, not the function word '%s'."
+level: warning
+scope: strong
+ignorecase: true
+tokens:
+  - a
+  - an
+  - and
+  - as
+  - at
+  - but
+  - by
+  - for
+  - from
+  - in
+  - of
+  - on
+  - or
+  - the
+  - to
+  - with

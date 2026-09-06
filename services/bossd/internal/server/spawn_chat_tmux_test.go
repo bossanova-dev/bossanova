@@ -337,8 +337,8 @@ func TestSpawnChatTmux_ForwardsConfigHomeEnvBeforeArgvBuild(t *testing.T) {
 		Chat:         newTestChat(t),
 		WorktreePath: t.TempDir(),
 		TmuxName:     "boss-agent-session-1",
-		SessionEnvFunc: func() map[string]string {
-			return map[string]string{"CODEX_HOME": "/selected/codex", "HOME": "/selected/home", "API_KEY": "secret"}
+		SessionEnvFunc: func() (map[string]string, error) {
+			return map[string]string{"CODEX_HOME": "/selected/codex", "HOME": "/selected/home", "API_KEY": "secret"}, nil
 		},
 	})
 	if err != nil {
@@ -364,8 +364,8 @@ func TestSpawnChatTmux_ResolvesRelativeConfigHomesBeforeArgvBuild(t *testing.T) 
 		Chat:         newTestChat(t),
 		WorktreePath: worktree,
 		TmuxName:     "boss-agent-session-1",
-		SessionEnvFunc: func() map[string]string {
-			return map[string]string{"CODEX_HOME": ".codex-account", "HOME": ".home-account"}
+		SessionEnvFunc: func() (map[string]string, error) {
+			return map[string]string{"CODEX_HOME": ".codex-account", "HOME": ".home-account"}, nil
 		},
 	})
 	if err != nil {
@@ -802,9 +802,9 @@ func TestSpawnChatTmux_SessionEnvFuncDeferredUntilSpawn(t *testing.T) {
 			Chat:         newTestChat(t),
 			WorktreePath: t.TempDir(),
 			TmuxName:     "boss-agent-session-1",
-			SessionEnvFunc: func() map[string]string {
+			SessionEnvFunc: func() (map[string]string, error) {
 				calls++
-				return map[string]string{"ANTHROPIC_API_KEY": "sk-default"}
+				return map[string]string{"ANTHROPIC_API_KEY": "sk-default"}, nil
 			},
 		})
 		if err != nil {
@@ -826,9 +826,9 @@ func TestSpawnChatTmux_SessionEnvFuncDeferredUntilSpawn(t *testing.T) {
 			Chat:         newTestChat(t),
 			WorktreePath: t.TempDir(),
 			TmuxName:     "boss-agent-session-1",
-			SessionEnvFunc: func() map[string]string {
+			SessionEnvFunc: func() (map[string]string, error) {
 				calls++
-				return map[string]string{"ANTHROPIC_API_KEY": "sk-default"}
+				return map[string]string{"ANTHROPIC_API_KEY": "sk-default"}, nil
 			},
 		})
 		if err != nil {

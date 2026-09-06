@@ -584,8 +584,8 @@ func TestTUI_NewSessionView_PRSelect_FilterNoMatches(t *testing.T) {
 
 // TestTUI_NewSessionView_PRSelect_FilterSelectsCorrectPR is the load-bearing
 // coverage for the indexing fix in startCreating: after filter narrows the list
-// to a single match, pressing enter must create a session for that PR's
-// original number, not the first PR in the unfiltered slice.
+// to a single match, one Enter from the active filter must create a session for
+// that PR's original number, not the first PR in the unfiltered slice.
 func TestTUI_NewSessionView_PRSelect_FilterSelectsCorrectPR(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
@@ -606,14 +606,7 @@ func TestTUI_NewSessionView_PRSelect_FilterSelectsCorrectPR(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "1 of 5"); err != nil {
 		t.Fatal(err)
 	}
-	// Commit the filter.
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "[/] edit filter"); err != nil {
-		t.Fatalf("expected applied-filter action bar; screen:\n%s", h.Driver.Screen())
-	}
-	// Now press enter again to select the single matching PR.
+	// Select the single matching PR directly from the active filter.
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}

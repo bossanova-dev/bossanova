@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -629,64 +630,155 @@ func TestResolveSpawnEnvTouchErrorStillReturnsEnv(t *testing.T) {
 	}
 }
 
-func TestResolveSpawnEnvNoRotationDegrades(t *testing.T) {
+// The four tests below used to pin the degrade-to-account-0 policy: each named
+// a way a BOUND account's credentials could not be produced, and each asserted
+// the spawn quietly continued on the agent CLI's ambient login. BOS-1142
+// repealed that policy, so they are inverted here — same four situations, and
+// the assertion is now that the resolver refuses. Their classification is what
+// makes the refusals actionable: three of them KNOW the binding is unusable
+// (invalid), one only knows it could not look (undetermined), and a fail-closed
+// guard that cannot tell those apart reports an outage as a dead credential.
+
+// TestResolveSpawnEnvNoRotationRefuses: the provider's runner cannot serve a
+// managed account at all, so the answer IS known — invalid, not undetermined.
+func TestResolveSpawnEnvNoRotationRefuses(t *testing.T) {
 	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
 	mat := &stubMaterializer{supports: false}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
 	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", time.Now())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatalf("no-rotation plugin must refuse a bound account, got env %v", env)
 	}
 	if env != nil {
-		t.Fatalf("no-rotation plugin should degrade to nil env, got %v", env)
+		t.Fatalf("a refusal must carry no env, got %v", env)
+	}
+	if !IsInjectionInvalid(err) {
+		t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeInvalid)
 	}
 	if mat.materializeCall != 0 {
 		t.Fatalf("no-rotation plugin must not materialize, got %d calls", mat.materializeCall)
 	}
 	if reg.touchCalls != 0 {
-		t.Fatalf("no-rotation degrade must not touch last-used, got %d", reg.touchCalls)
+		t.Fatalf("a refusal must not touch last-used, got %d", reg.touchCalls)
 	}
 }
 
-func TestResolveSpawnEnvNilMaterializerDegrades(t *testing.T) {
+// TestResolveSpawnEnvRotationProbeFailureRefusesUndetermined pins the other
+// half of the pairing above: the ANSWER "this runner has no rotation" is
+// invalid, but the ERROR from asking is undetermined. The distinction is the
+// whole point of the third outcome — a plugin that was restarting must not be
+// reported to an operator as an account to re-authenticate.
+//
+// This assertion was vacuous until the materializer stopped collapsing
+// non-Unimplemented RotationCapability failures into (false, nil): with the
+// error erased upstream, every outage arrived here as !supports and this branch
+// could not be reached however the resolver behaved.
+func TestResolveSpawnEnvRotationProbeFailureRefusesUndetermined(t *testing.T) {
+	probeErr := errors.New("rotation capability probe for provider \"claude\": plugin restarting")
+	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
+	mat := &stubMaterializer{supportsErr: probeErr}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", time.Now())
+	if err == nil {
+		t.Fatalf("an undetermined rotation probe must refuse, got env %v", env)
+	}
+	if env != nil {
+		t.Fatalf("a refusal must carry no env, got %v", env)
+	}
+	if !IsInjectionUndetermined(err) {
+		t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeUndetermined)
+	}
+	if IsInjectionInvalid(err) {
+		t.Fatal("a failed capability probe must not be reported as an invalid credential")
+	}
+	if !errors.Is(err, probeErr) {
+		t.Error("the probe failure must stay unwrappable for the daemon log")
+	}
+	if mat.materializeCall != 0 {
+		t.Fatalf("an undetermined probe must not materialize, got %d calls", mat.materializeCall)
+	}
+	if reg.touchCalls != 0 {
+		t.Fatalf("a refusal must not touch last-used, got %d", reg.touchCalls)
+	}
+}
+
+// TestResolveSpawnEnvNilMaterializerRefusesUndetermined: a daemon wired without
+// a materializer cannot answer the credential question for ANY account, so this
+// says nothing about acct-1's credential — undetermined, and it must never be
+// reported to an operator as a re-authenticate.
+func TestResolveSpawnEnvNilMaterializerRefusesUndetermined(t *testing.T) {
 	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
 	r := NewResolver(reg, nil, zerolog.Nop())
 
 	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", time.Now())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatalf("nil materializer must refuse a bound account, got env %v", env)
 	}
 	if env != nil {
-		t.Fatalf("nil materializer should degrade to nil env, got %v", env)
+		t.Fatalf("a refusal must carry no env, got %v", env)
+	}
+	if !IsInjectionUndetermined(err) {
+		t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeUndetermined)
+	}
+	if IsInjectionInvalid(err) {
+		t.Fatal("a missing materializer must not be reported as an invalid credential")
 	}
 }
 
-func TestResolveSpawnEnvUnknownAccountTreatedAsZero(t *testing.T) {
+// TestResolveSpawnEnvUnknownAccountRefuses: the binding names a row that does
+// not exist. Previously this was the most dangerous degrade of the four — a
+// stale or mistyped id silently ran on the ambient login.
+func TestResolveSpawnEnvUnknownAccountRefuses(t *testing.T) {
 	reg := &stubRegistry{accounts: nil}
 	mat := &stubMaterializer{supports: true, env: map[string]string{"K": "V"}}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
 	env, err := r.ResolveSpawnEnv(context.Background(), "ghost", "claude", time.Now())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatalf("unknown account must refuse, got env %v", env)
 	}
 	if env != nil {
-		t.Fatalf("unknown account should degrade to nil env, got %v", env)
+		t.Fatalf("a refusal must carry no env, got %v", env)
+	}
+	if !IsInjectionInvalid(err) {
+		t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeInvalid)
 	}
 	if mat.materializeCall != 0 {
 		t.Fatalf("unknown account must not materialize, got %d", mat.materializeCall)
 	}
 }
 
-func TestResolveSpawnEnvNilRegistryDoesNotPanic(t *testing.T) {
+// TestResolveSpawnEnvNilRegistryRefusesWithoutPanicking keeps the original
+// no-panic guarantee and adds the policy: with no registry the resolver cannot
+// look the binding up, which is undetermined, not a bad credential.
+func TestResolveSpawnEnvNilRegistryRefusesWithoutPanicking(t *testing.T) {
 	r := NewResolver(nil, &stubMaterializer{supports: true}, zerolog.Nop())
 	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", time.Now())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatalf("nil registry must refuse a bound account, got env %v", env)
 	}
 	if env != nil {
-		t.Fatalf("nil registry should degrade to nil env, got %v", env)
+		t.Fatalf("a refusal must carry no env, got %v", env)
+	}
+	if !IsInjectionUndetermined(err) {
+		t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeUndetermined)
+	}
+}
+
+// TestResolveSpawnEnvNilResolverStillDegrades is the boundary the repeal did
+// NOT move: a resolver that was never constructed has no binding to honour, so
+// it returns the account-0 shape rather than a refusal. Without this a daemon
+// built without managed accounts could not spawn at all.
+func TestResolveSpawnEnvNilResolverStillDegrades(t *testing.T) {
+	var r *Resolver
+	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", time.Now())
+	if err != nil {
+		t.Fatalf("a nil resolver must degrade, not refuse: %v", err)
+	}
+	if env != nil {
+		t.Fatalf("nil resolver env = %v, want nil", env)
 	}
 }
 
@@ -807,10 +899,19 @@ func TestResolveSpawnEnvRecordsInjectionFailure(t *testing.T) {
 	r := NewResolver(reg, mat, zerolog.Nop())
 
 	env, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now)
-	// The degrade POLICY is unchanged: the error is still returned verbatim to
-	// the caller, which decides to fall back to the ambient login.
+	// This comment used to read "the degrade POLICY is unchanged: the error is
+	// still returned verbatim to the caller, which decides to fall back to the
+	// ambient login." BOS-973 deliberately stopped short of changing that; this
+	// revision IS that policy edit. The caller no longer decides to fall back,
+	// because there is no fall back — the refusal is typed invalid and every
+	// caller propagates it. The underlying materialize error stays reachable
+	// through errors.Is (see TestResolveSpawnEnvWithoutRecorderIsUnchanged), so
+	// context-cancellation checks downstream still see through the wrapper.
 	if err == nil {
-		t.Fatal("ResolveSpawnEnv: want the materialize error returned unchanged")
+		t.Fatal("ResolveSpawnEnv: want the materialize error returned")
+	}
+	if !IsInjectionInvalid(err) {
+		t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeInvalid)
 	}
 	if env != nil {
 		t.Fatalf("env = %v, want nil", env)
@@ -967,5 +1068,286 @@ func TestResolveSpawnEnvRecordErrorDoesNotMaskMaterializeError(t *testing.T) {
 	mat.env = map[string]string{"CODEX_HOME": "/tmp/a1"}
 	if _, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now); err != nil {
 		t.Fatalf("a failing clear must not fail the resolve: %v", err)
+	}
+}
+
+// --- BOS-1141: durable auth-invalid state gates selection -------------------
+
+// TestDefaultAccountIDSkipsAuthInvalid proves a confirmed auth-invalid managed
+// Codex account is removed from BOTH selection tiers — including the cooling
+// fallback tier, which otherwise accepts an account in any health.
+func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	fresh := now.Add(-time.Minute)
+	cooling := now.Add(time.Hour)
+
+	t.Run("preferred tier", func(t *testing.T) {
+		reg := &stubRegistry{accounts: []AccountMeta{
+			// "bad" outranks "good" on every ordinary tie-breaker, so only the
+			// auth-invalid guard can keep it from being selected.
+			{ID: "bad", Provider: "codex", Status: "active", Health: "ok", Priority: 1, LastUsedAt: ptrTime(fresh), AuthInvalid: true},
+			{ID: "good", Provider: "codex", Status: "active", Health: "ok", Priority: 100, LastUsedAt: ptrTime(fresh)},
+		}}
+		r := NewResolver(reg, nil, zerolog.Nop())
+		got, err := r.DefaultAccountID(context.Background(), "codex", now)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "good" {
+			t.Fatalf("selected %q, want the healthy account despite its worse priority", got)
+		}
+	})
+
+	t.Run("fallback tier", func(t *testing.T) {
+		reg := &stubRegistry{accounts: []AccountMeta{
+			{ID: "bad", Provider: "codex", Status: "active", Health: "ok", CoolingUntil: ptrTime(cooling), AuthInvalid: true},
+		}}
+		r := NewResolver(reg, nil, zerolog.Nop())
+		got, err := r.DefaultAccountID(context.Background(), "codex", now)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != SystemDefaultAccountID {
+			t.Fatalf("selected %q, want the system default; an auth-invalid account must not be the cooling fallback", got)
+		}
+	})
+}
+
+// TestDefaultAccountIDTransientStateStaysEligible is AC-5's eligibility half:
+// only a confirmed auth failure benches an account, so a transient result
+// leaves the account selectable.
+func TestDefaultAccountIDTransientStateStaysEligible(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok", LastUsedAt: ptrTime(now.Add(-time.Minute))},
+	}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	got, err := r.DefaultAccountID(context.Background(), "codex", now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "acct-1" {
+		t.Fatalf("selected %q, want acct-1; a transient verification must not bench an account", got)
+	}
+}
+
+// TestResolveSpawnEnvRejectsAuthInvalidBeforeMaterializing is AC-4's
+// "prevents selection before worktree creation": the resolver refuses the
+// bound account without ever reaching the materializer, so no credential is
+// written into a worktree for a credential known to be dead.
+func TestResolveSpawnEnvRejectsAuthInvalidBeforeMaterializing(t *testing.T) {
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok", AuthInvalid: true},
+	}}
+	mat := &stubMaterializer{supports: true, env: map[string]string{"CODEX_HOME": "/tmp/x"}}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "codex", time.Now())
+	// BOS-1141 refused this account by returning nil env; BOS-1142 makes the
+	// refusal explicit so the caller cannot mistake it for account 0. The
+	// classification is invalid: verification CONFIRMED the credential is dead,
+	// which is exactly the case whose remedy is re-authentication.
+	if err == nil {
+		t.Fatalf("auth-invalid account must refuse, got env %v", env)
+	}
+	if !IsInjectionInvalid(err) {
+		t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeInvalid)
+	}
+	if env != nil {
+		t.Fatalf("auth-invalid account must not produce spawn env, got %v", env)
+	}
+	if mat.materializeCall != 0 {
+		t.Fatalf("auth-invalid account must be refused before materializing, got %d calls", mat.materializeCall)
+	}
+	if mat.supportsCalls != 0 {
+		t.Fatalf("auth-invalid account must be refused before probing rotation support, got %d calls", mat.supportsCalls)
+	}
+	if reg.touchCalls != 0 {
+		t.Fatalf("a refusal must not touch last-used, got %d", reg.touchCalls)
+	}
+}
+
+// TestResolveSpawnEnvAllowsAccountWithoutAuthInvalid is the negative control
+// for the guard above.
+func TestResolveSpawnEnvAllowsAccountWithoutAuthInvalid(t *testing.T) {
+	reg := &stubRegistry{accounts: []AccountMeta{
+		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok"},
+	}}
+	mat := &stubMaterializer{supports: true, env: map[string]string{"CODEX_HOME": "/tmp/x"}}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "codex", time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env["CODEX_HOME"] != "/tmp/x" {
+		t.Fatalf("expected materialized env, got %v", env)
+	}
+}
+
+// A materialize failure that never reached a verdict must refuse the spawn as
+// undetermined, not invalid. Both outcomes fail closed, so the spawn is refused
+// either way and no test here relaxes that; what differs is what the operator is
+// told. "invalid" means "re-authenticate this credential", and sending that for
+// a plugin restart or an expired deadline is the BOS-881 collapse — it points a
+// human at a credential nothing ever looked at.
+//
+// The transport-shaped causes arrive already wrapped with
+// ErrInjectionUndetermined by accountwiring, which is the layer holding the gRPC
+// status; the grpc-code half of this contract is pinned in that package's
+// TestMaterializeAccountMarksTransportFailuresUndetermined. Context errors are
+// listed separately because the caller's own context can raise them without ever
+// crossing that layer.
+func TestResolveSpawnEnvUndeterminedMaterializeFailure(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+
+	credentialShaped := errors.New("provider rejected the stored credential")
+
+	tests := []struct {
+		name  string
+		cause error
+		// want reads as the operator-facing verdict, and each case asserts BOTH
+		// predicates: a bug that returned an outcome matching neither, or an
+		// error that was not an *InjectionError at all, would satisfy a
+		// single-sided assertion.
+		wantUndetermined bool
+	}{
+		{
+			name:             "wrapped sentinel from the wiring layer",
+			cause:            fmt.Errorf("plugin MaterializeAccount: %w: %w", ErrInjectionUndetermined, errors.New("agent \"codex\" is not currently loaded")),
+			wantUndetermined: true,
+		},
+		{
+			name:             "bare sentinel",
+			cause:            ErrInjectionUndetermined,
+			wantUndetermined: true,
+		},
+		{
+			name:             "spawn context cancelled",
+			cause:            context.Canceled,
+			wantUndetermined: true,
+		},
+		{
+			name:             "spawn context deadline exceeded",
+			cause:            fmt.Errorf("materialize codex account: %w", context.DeadlineExceeded),
+			wantUndetermined: true,
+		},
+		{
+			// Negative control. Without this the test would pass just as well
+			// against a resolver that called EVERY materialize failure
+			// undetermined, which would reopen the opposite half of BOS-1142:
+			// a genuinely dead credential reported as "could not evaluate"
+			// never prompts the operator to re-authenticate.
+			name:             "credential-shaped failure stays invalid",
+			cause:            credentialShaped,
+			wantUndetermined: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+			mat := &stubMaterializer{supports: true, materializeErr: tc.cause}
+			r := NewResolver(reg, mat, zerolog.Nop())
+
+			env, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now)
+			if err == nil {
+				t.Fatal("ResolveSpawnEnv: want the spawn refused, got nil error")
+			}
+			// Fail-closed is the invariant both outcomes share: an undetermined
+			// refusal must not hand back an env that would spawn on the ambient
+			// login, which is the degrade this whole branch closes.
+			if env != nil {
+				t.Fatalf("ResolveSpawnEnv returned env %v on a refusal; must be nil", env)
+			}
+			if got := IsInjectionUndetermined(err); got != tc.wantUndetermined {
+				t.Errorf("IsInjectionUndetermined = %v, want %v (err: %v)", got, tc.wantUndetermined, err)
+			}
+			if got := IsInjectionInvalid(err); got != !tc.wantUndetermined {
+				t.Errorf("IsInjectionInvalid = %v, want %v (err: %v)", got, !tc.wantUndetermined, err)
+			}
+			// The cause must stay reachable through Unwrap: callers already
+			// match on context cancellation through this error.
+			if !errors.Is(err, tc.cause) {
+				t.Errorf("errors.Is(err, cause) = false; the underlying cause must survive wrapping")
+			}
+		})
+	}
+}
+
+// recordInjectionFailure tracks whether injection WORKED, which is a different
+// question from whether the credential is GOOD. It must therefore fire on the
+// undetermined arm too — and be withdrawn on the next success — or an operator
+// surface would show a bound account as cleanly injecting while every spawn on
+// it was being refused.
+func TestResolveSpawnEnvRecordsInjectionFailureWhenUndetermined(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	mat := &stubMaterializer{supports: true, materializeErr: ErrInjectionUndetermined}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	err := func() error {
+		_, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now)
+		return err
+	}()
+	if !IsInjectionUndetermined(err) {
+		t.Fatalf("precondition: want an undetermined refusal, got %v", err)
+	}
+	if len(reg.recorded) != 1 {
+		t.Fatalf("recorded %d injection failures on an undetermined refusal, want exactly 1", len(reg.recorded))
+	}
+}
+
+// TestResolveSpawnEnvEmptyMaterializationRefusesUndetermined covers the shape a
+// materializer reaches when a dependency is missing rather than broken: it
+// returns no error at all, and no environment either. Read literally that is
+// "materialization succeeded and this account needs nothing", so the resolver
+// used to clear the injection failure, touch the LRU timestamp, and hand the
+// spawn an empty env — which the agent CLI serves from its ambient login while
+// every surface still reports the account as bound. It is the BOS-973 degrade
+// reached without any error being returned, which is why the resolver refuses
+// an empty env on its own rather than trusting the seam's implementations.
+func TestResolveSpawnEnvEmptyMaterializationRefusesUndetermined(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+	}{
+		{name: "nil_env", env: nil},
+		{name: "empty_env", env: map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := newRecordingRegistry(AccountMeta{ID: "acct-1", Provider: "claude", Status: "active"})
+			mat := &stubMaterializer{supports: true, env: tc.env}
+			r := NewResolver(reg, mat, zerolog.Nop())
+
+			env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", time.Now())
+			if err == nil {
+				t.Fatalf("an empty materialization must refuse, got env %v", env)
+			}
+			if env != nil {
+				t.Fatalf("a refusal must carry no env, got %v", env)
+			}
+			// Undetermined, not invalid: nothing on this path examined the
+			// credential, so re-authenticating is not the remedy.
+			if !IsInjectionUndetermined(err) {
+				t.Fatalf("outcome = %q, want %q", InjectionOutcomeOf(err), InjectionOutcomeUndetermined)
+			}
+			if IsInjectionInvalid(err) {
+				t.Fatal("an empty materialization must not be reported as an invalid credential")
+			}
+			// The two writes the old fall-through performed are the reason this
+			// degrade was invisible: clearing the failure erased the previous
+			// round's evidence, and touching last-used made the account look
+			// freshly exercised.
+			if reg.clearCalls != 0 {
+				t.Errorf("clear called %d times on the refusal path, want 0", reg.clearCalls)
+			}
+			if reg.touchCalls != 0 {
+				t.Errorf("TouchLastUsed called %d times on the refusal path, want 0", reg.touchCalls)
+			}
+			if len(reg.recorded) != 1 {
+				t.Fatalf("recorded %d injection failures, want 1", len(reg.recorded))
+			}
+		})
 	}
 }

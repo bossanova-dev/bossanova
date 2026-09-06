@@ -32,6 +32,7 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -182,6 +183,12 @@ type mockSessionStore struct {
 	orphanResumeCommitHook func(id string)
 	orphanResumeCommitErr  error
 	orphanResumeReparkErr  error
+
+	// Orphan-resume claim/release call counts. A permanently unresumable orphan
+	// must cost ZERO of both: claiming and releasing it every sweep tick is the
+	// churn loop BOS-1143's pre-claim refusal exists to prevent.
+	claimOrphanCalls        int
+	releaseOrphanClaimCalls int
 }
 
 type mockSessionUpdate struct {
@@ -605,6 +612,7 @@ func (m *mockSessionStore) ClaimUnarchivedOrphan(_ context.Context, id, reason s
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.claimOrphanCalls++
 	s, ok := m.sessions[id]
 	if !ok || s.State != machine.Orphaned || s.ArchivedAt != nil || s.BlockedReason == nil || *s.BlockedReason != reason {
 		return false, nil
@@ -634,6 +642,7 @@ func (m *mockSessionStore) CommitOrphanResume(_ context.Context, id, reason stri
 func (m *mockSessionStore) ReleaseOrphanResumeClaim(_ context.Context, id, reason string, priorAgentSession *string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.releaseOrphanClaimCalls++
 	s, ok := m.sessions[id]
 	if !ok || s.State != machine.ImplementingPlan || s.ArchivedAt != nil || (s.BlockedReason != nil && *s.BlockedReason != reason) || !sameAgentSessionID(s.AgentSessionID, priorAgentSession) {
 		return false, nil
@@ -764,16 +773,17 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 type mockAgentChatStore struct {
 	mu                       sync.Mutex
 	createCalls              []db.CreateAgentChatParams
-	agentSessionIDUpdates    []agentSessionIDUpdate
 	tmuxNameUpdates          []tmuxNameUpdate
 	accountIDUpdates         []accountIDUpdate
 	providerSessionIDUpdates []providerSessionIDUpdate
+	rebindCalls              []rebindResumedChatCall
 	deletedAgentSessionIDs   []string
 	markStartFailedCalls     []markStartFailedCall
 	chatsBySession           map[string][]*models.AgentChat // returned by ListBySession when set
 	chatsWithTmux            []*models.AgentChat            // returned by ListWithTmuxSession when set
 	createErr                error
 	updateTmuxNameErr        error
+	rebindErr                error
 	deleteErr                error
 	listBySessionErr         error // when non-nil, ListBySession returns it
 	listWithTmuxErr          error // when non-nil, ListWithTmuxSession returns it
@@ -805,12 +815,6 @@ type tmuxNameUpdate struct {
 	name           *string
 }
 
-type agentSessionIDUpdate struct {
-	id                string
-	oldAgentSessionID string
-	newAgentSessionID string
-}
-
 type accountIDUpdate struct {
 	agentSessionID string
 	accountID      *string
@@ -819,6 +823,11 @@ type accountIDUpdate struct {
 type providerSessionIDUpdate struct {
 	agentSessionID    string
 	providerSessionID *string
+}
+
+type rebindResumedChatCall struct {
+	agentSessionID string
+	params         db.RebindResumedChatParams
 }
 
 func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
@@ -835,6 +844,27 @@ func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChat
 		ProviderSessionID: params.ProviderSessionID,
 		Title:             params.Title,
 	}, nil
+}
+
+// seedChat makes a row visible to GetByAgentSessionID under the store's own
+// lock. Chats created through Create are deliberately NOT added to
+// chatsBySession, so a test that needs a launched chat to be readable back —
+// the never-overwrite re-read, for one — has to say so explicitly.
+func (m *mockAgentChatStore) seedChat(sessionID string, chat *models.AgentChat) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.chatsBySession == nil {
+		m.chatsBySession = map[string][]*models.AgentChat{}
+	}
+	m.chatsBySession[sessionID] = append(m.chatsBySession[sessionID], chat)
+}
+
+// snapshotProviderSessionIDUpdates copies the recorded writes under the lock,
+// so a test can read them while a background goroutine may still be writing.
+func (m *mockAgentChatStore) snapshotProviderSessionIDUpdates() []providerSessionIDUpdate {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]providerSessionIDUpdate(nil), m.providerSessionIDUpdates...)
 }
 
 func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*models.AgentChat, error) {
@@ -885,25 +915,6 @@ func (m *mockAgentChatStore) UpdateTitle(_ context.Context, _, _ string) error {
 }
 
 func (m *mockAgentChatStore) UpdateTitleByAgentSessionID(_ context.Context, _, _ string) error {
-	return nil
-}
-
-func (m *mockAgentChatStore) UpdateAgentSessionID(_ context.Context, id, oldAgentSessionID, newAgentSessionID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.agentSessionIDUpdates = append(m.agentSessionIDUpdates, agentSessionIDUpdate{id: id, oldAgentSessionID: oldAgentSessionID, newAgentSessionID: newAgentSessionID})
-	for _, chats := range m.chatsBySession {
-		for _, chat := range chats {
-			if chat.ID == id && chat.AgentSessionID == oldAgentSessionID {
-				chat.AgentSessionID = newAgentSessionID
-			}
-		}
-	}
-	for _, chat := range m.chatsWithTmux {
-		if chat.ID == id && chat.AgentSessionID == oldAgentSessionID {
-			chat.AgentSessionID = newAgentSessionID
-		}
-	}
 	return nil
 }
 
@@ -1006,6 +1017,66 @@ func (m *mockAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID
 			chat.TmuxSessionName = nil
 			chat.StartError = &reason
 		}
+	}
+	return nil
+}
+
+func (m *mockAgentChatStore) RebindResumedChat(_ context.Context, agentSessionID string, params db.RebindResumedChatParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rebindCalls = append(m.rebindCalls, rebindResumedChatCall{agentSessionID: agentSessionID, params: params})
+	if m.rebindErr != nil {
+		return m.rebindErr
+	}
+	found := false
+	apply := func(chat *models.AgentChat) {
+		if chat.AgentSessionID != agentSessionID {
+			return
+		}
+		found = true
+		if params.SessionID != nil {
+			chat.SessionID = *params.SessionID
+		}
+		if params.Title != nil {
+			chat.Title = *params.Title
+		}
+		if params.AgentName != nil {
+			chat.AgentName = *params.AgentName
+		}
+		if params.Model != nil {
+			chat.Model = *params.Model
+		}
+		if params.AccountID != nil {
+			chat.AccountID = *params.AccountID
+		}
+		if params.ProviderSessionID != nil {
+			chat.ProviderSessionID = *params.ProviderSessionID
+		}
+		if params.ClearStartError {
+			chat.StartError = nil
+		}
+		// Re-key last so the matcher above still sees the old id.
+		if params.NewAgentSessionID != nil {
+			chat.AgentSessionID = *params.NewAgentSessionID
+		}
+	}
+	seen := map[*models.AgentChat]bool{}
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if !seen[chat] {
+				seen[chat] = true
+				apply(chat)
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if !seen[chat] {
+			seen[chat] = true
+			apply(chat)
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w for agent_session_id %q", db.ErrAgentChatNotFound, agentSessionID)
 	}
 	return nil
 }
@@ -2123,6 +2194,84 @@ func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
 		}
 		if len(sessions.updates) != 1 {
 			t.Fatalf("session updates = %d, want creating state only", len(sessions.updates))
+		}
+	})
+
+	// BOS-1142. The post-setup preflight is the first place a bound account is
+	// resolved, and by then the worktree and the fresh branch already exist. A
+	// refusal there must undo BOTH — otherwise the next attempt collides with
+	// the leftovers of a session that never started, and the operator is left
+	// reconciling artifacts for work that was refused on purpose.
+	t.Run("a refused account rolls back the worktree and the fresh branch", func(t *testing.T) {
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		setupCalls := 0
+		worktrees := &mockWorktreeManager{onSetupScript: func() { setupCalls++ }}
+		runner := newMockAgentRunner()
+		provider := newMockVCSProvider()
+		setupScript := "run setup"
+		repos.repos["repo-1"] = &models.Repo{
+			ID:                "repo-1",
+			LocalPath:         "/tmp/repo",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/worktrees",
+			SetupScript:       &setupScript,
+		}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:         "sess-1",
+			RepoID:     "repo-1",
+			Title:      "Profiled",
+			Plan:       "attach a tracker plan",
+			BaseBranch: "main",
+			AgentName:  "codex",
+			Model:      "gpt-5-codex",
+			State:      machine.CreatingWorktree,
+		}
+		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, zerolog.Nop())
+		accountErr := &account.InjectionError{
+			AccountID: "acct-codex-2",
+			Provider:  "codex",
+			Outcome:   account.InjectionOutcomeInvalid,
+			Reason:    "credential verification reported the stored credential invalid; re-authenticate the account",
+		}
+		lifecycle.SetAccountEnvResolver(&fakeAccountEnvResolver{err: accountErr})
+
+		opts := StartSessionOpts{
+			Detach:                    true,
+			HeadlessCapabilityProfile: pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		}
+		err := lifecycle.StartSession(ctx, "sess-1", opts)
+
+		if err == nil || !strings.Contains(err.Error(), "re-authenticate the account") {
+			t.Fatalf("StartSession error = %v, want the account refusal reason", err)
+		}
+		if !strings.Contains(err.Error(), "acct-codex-2") {
+			t.Fatalf("StartSession error = %v, want the refused account named", err)
+		}
+		// The worktree existed before the refusal, so both artifacts must be gone.
+		if len(worktrees.created) != 1 {
+			t.Fatalf("worktree creates = %d, want 1 (the refusal must happen AFTER creation)", len(worktrees.created))
+		}
+		if setupCalls != 1 {
+			t.Fatalf("setup script calls = %d, want 1", setupCalls)
+		}
+		if len(worktrees.archived) != 1 {
+			t.Fatalf("archived worktrees = %v, want one rollback", worktrees.archived)
+		}
+		if got := worktrees.deletedLocalBranches; !reflect.DeepEqual(got, []string{"test-session"}) {
+			t.Fatalf("deleted local branches = %v, want [test-session]", got)
+		}
+		// Refused before the probe: preflighting under the ambient login would
+		// answer a question about the wrong identity.
+		if runner.preflightCalls != 0 {
+			t.Fatalf("preflight calls = %d, want 0 — the account was refused first", runner.preflightCalls)
+		}
+		if len(runner.started) != 0 {
+			t.Fatalf("agent starts = %d, want 0", len(runner.started))
+		}
+		if updates := sessions.updatesFor("worktree_path"); len(updates) != 0 {
+			t.Fatalf("worktree_path updates = %d, want 0", len(updates))
 		}
 	})
 
@@ -7212,7 +7361,20 @@ type fakeTmux struct {
 	failSubcommand    map[string]bool // subcommand → return non-zero
 	failStderr        map[string]string
 	capturePaneOutput string // output for capture-pane stdout
-	available         bool   // controls whether `tmux -V` succeeds
+	// capturePaneFunc, when set, computes capture-pane stdout from the calls
+	// recorded so far instead of returning the static capturePaneOutput. It is
+	// what lets a test model a composer that actually REACTS to the keys sent
+	// into it — a payload that lands on a paste, a C-u that empties it, an Enter
+	// the TUI swallows — which is the only way to exercise the submit verifier's
+	// retry dance and what follows it. It is called with f.mu held, so it must
+	// read the supplied slice and never touch the fake's own methods.
+	capturePaneFunc func(calls []recordedTmuxCall) string
+	available       bool // controls whether `tmux -V` succeeds
+	// listPanesOutput is the stdout `tmux list-panes` returns, which is how
+	// tmux.Client.PanePID reports a pane pid. Empty (the default) leaves
+	// list-panes exiting 0 with no output, which PanePID reports as an error —
+	// the "pane pid unavailable" degrade path.
+	listPanesOutput string
 }
 
 func newFakeTmux() *fakeTmux {
@@ -7253,8 +7415,15 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 		}
 		return exec.CommandContext(ctx, "false")
 	}
+	if subcommand == "list-panes" && f.listPanesOutput != "" {
+		return exec.CommandContext(ctx, "printf", "%s", f.listPanesOutput)
+	}
 	if subcommand == "capture-pane" {
-		return exec.CommandContext(ctx, "printf", "%s", f.capturePaneOutput)
+		out := f.capturePaneOutput
+		if f.capturePaneFunc != nil {
+			out = f.capturePaneFunc(f.calls)
+		}
+		return exec.CommandContext(ctx, "printf", "%s", out)
 	}
 	return exec.CommandContext(ctx, "true")
 }
@@ -9948,5 +10117,87 @@ func TestStartHeadlessReplacementRunCarriesSessionAttribution(t *testing.T) {
 	}
 	if got.resume == nil || *got.resume != "agent-prior" || got.env["A"] != "B" {
 		t.Fatalf("start call = %#v, want resume/env preserved", got)
+	}
+}
+
+// TestDraftPRBlockedReasonPrefersAuthOverTransient pins the one ordering
+// decision in draftPRBlockedReason.
+//
+// EnsurePR pushes the branch before it calls gh, so a single wrapped error can
+// carry BOTH a git transport signature and gh's auth signature — and
+// gitremote.IsTransient is a substring test over the whole chain, so it would
+// happily claim such an error. Marking it transient promises a recovery that
+// cannot happen: an auth outage does not heal on its own, and the TUI would
+// render "PR retrying" while nothing retries to any purpose. Auth must win.
+func TestDraftPRBlockedReasonPrefersAuthOverTransient(t *testing.T) {
+	// Both signatures present at once: the push half looks transient, the gh half
+	// is the sentinel-wrapped auth failure.
+	err := fmt.Errorf(
+		"create draft PR: push branch: remote end hung up unexpectedly: create PR: %w: HTTP 401: Requires authentication",
+		vcs.ErrGitHubAuthUnavailable,
+	)
+
+	reason := draftPRBlockedReason(err)
+	if !sessionreason.IsDraftPRCreationAuthFailure(&reason) {
+		t.Fatalf("reason = %q, want the auth marker to win over the transient signature", reason)
+	}
+	if sessionreason.IsDraftPRCreationTransientFailure(&reason) {
+		t.Fatalf("reason = %q, want it not to also claim transient", reason)
+	}
+	if !sessionreason.IsDraftPRCreationFailure(&reason) {
+		t.Fatalf("reason = %q, want the nested marker to still satisfy the outer predicate", reason)
+	}
+
+	// And a transient error with no auth sentinel is untouched by the new branch.
+	transientOnly := errors.New("create draft PR: push branch: remote end hung up unexpectedly")
+	got := draftPRBlockedReason(transientOnly)
+	if !sessionreason.IsDraftPRCreationTransientFailure(&got) {
+		t.Fatalf("reason = %q, want transient classification to survive", got)
+	}
+	if sessionreason.IsDraftPRCreationAuthFailure(&got) {
+		t.Fatalf("reason = %q, want no auth marker", got)
+	}
+}
+
+// BOS-1142: the credential-injection refusal crosses several internal seams in
+// this package before anything renders it. Those seams used to flatten it with
+// %s + account.RedactedMessage, which kept the message masked but severed
+// Unwrap — errors.Is and account.AsInjectionError both went false, leaving a
+// caller with error-text matching as its only discriminator, which is exactly
+// what the typed outcome exists to remove. redactedInjection must deliver both:
+// the same masked text, and an intact chain.
+func TestRedactedInjectionKeepsTypedOutcomeAndMasksText(t *testing.T) {
+	inner := &account.InjectionError{
+		AccountID: "a1",
+		Provider:  "codex",
+		Outcome:   account.InjectionOutcomeUndetermined,
+		Reason:    "could not read the bound account",
+		Err:       context.Canceled,
+	}
+	wrapped := fmt.Errorf("resolve account env for agent %q: %w", "codex", redactedInjection(inner))
+
+	if !errors.Is(wrapped, context.Canceled) {
+		t.Error("errors.Is(context.Canceled) = false; the Unwrap chain was severed")
+	}
+	ie, ok := account.AsInjectionError(wrapped)
+	if !ok {
+		t.Fatal("account.AsInjectionError = false; the typed refusal did not survive the seam")
+	}
+	if ie.Outcome != account.InjectionOutcomeUndetermined {
+		t.Errorf("Outcome = %q, want %q", ie.Outcome, account.InjectionOutcomeUndetermined)
+	}
+	if !account.IsInjectionUndetermined(wrapped) || account.IsInjectionInvalid(wrapped) {
+		t.Error("classification helpers disagree with the carried outcome")
+	}
+
+	// The rendered text is byte-identical to the flattened form it replaced, so
+	// no operator-facing message regressed and no raw provider body leaks.
+	want := "resolve account env for agent \"codex\": " + account.RedactedMessage(inner)
+	if got := wrapped.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+
+	if redactedInjection(nil) != nil {
+		t.Error("redactedInjection(nil) must stay nil")
 	}
 }

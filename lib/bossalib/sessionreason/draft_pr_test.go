@@ -158,3 +158,62 @@ func TestIsDraftPRCreationFailure(t *testing.T) {
 		t.Fatal("IsDraftPRCreationFailure(nil) = true, want false")
 	}
 }
+
+// TestDraftPRCreationAuthFailureNestsInsideTheFailurePrefix pins the nesting
+// contract authMarker documents. IsDraftPRCreationFailure is the HasPrefix test
+// that gates displaystatus's "? PR failed" label, the TUI hint, and the
+// apiversion down-convert transform; a marker that replaced the prefix rather
+// than nesting inside it would make all three silently stop matching on exactly
+// the failures an operator most needs surfaced.
+func TestDraftPRCreationAuthFailureNestsInsideTheFailurePrefix(t *testing.T) {
+	reason := DraftPRCreationAuthFailure(errors.New("create PR: HTTP 401: Requires authentication"))
+	if reason == "" {
+		t.Fatal("DraftPRCreationAuthFailure() = empty string")
+	}
+	if !IsDraftPRCreationAuthFailure(&reason) {
+		t.Fatalf("IsDraftPRCreationAuthFailure(%q) = false, want true", reason)
+	}
+	if !IsDraftPRCreationFailure(&reason) {
+		t.Fatalf("IsDraftPRCreationFailure(%q) = false, want true — the auth marker must nest", reason)
+	}
+	if !strings.Contains(reason, "Requires authentication") {
+		t.Fatalf("reason %q dropped the raw gh error the operator needs", reason)
+	}
+}
+
+// TestDraftPRCreationAuthAndTransientAreMutuallyExclusive pins the invariant
+// authMarker adds to this file: both markers are anchored immediately after the
+// shared prefix and each constructor writes prefix+marker+err, so a reason can
+// carry at most one. views.draftPRFailureHint relies on this to treat the order
+// of its two narrow branches as cosmetic.
+func TestDraftPRCreationAuthAndTransientAreMutuallyExclusive(t *testing.T) {
+	auth := DraftPRCreationAuthFailure(errors.New("HTTP 401: Requires authentication"))
+	transient := DraftPRCreationTransientFailure(errors.New("remote end hung up"))
+
+	if IsDraftPRCreationTransientFailure(&auth) {
+		t.Fatalf("auth reason %q also reports transient", auth)
+	}
+	if IsDraftPRCreationAuthFailure(&transient) {
+		t.Fatalf("transient reason %q also reports auth", transient)
+	}
+	// A plain terminal reason is neither, even when its raw text quotes the
+	// marker mid-sentence: both predicates are anchored, not substring tests.
+	quoting := DraftPRCreationFailure(errors.New("git said: bossd's gh CLI could not authenticate to GitHub — run 'boss repair doctor': nope"))
+	if IsDraftPRCreationAuthFailure(&quoting) {
+		t.Fatalf("a reason merely quoting the marker matched: %q", quoting)
+	}
+	if !IsDraftPRCreationFailure(&quoting) {
+		t.Fatalf("IsDraftPRCreationFailure(%q) = false, want true", quoting)
+	}
+}
+
+// TestDraftPRCreationAuthFailureNilContract matches the sibling constructors:
+// no error, no reason.
+func TestDraftPRCreationAuthFailureNilContract(t *testing.T) {
+	if got := DraftPRCreationAuthFailure(nil); got != "" {
+		t.Fatalf("DraftPRCreationAuthFailure(nil) = %q, want empty", got)
+	}
+	if IsDraftPRCreationAuthFailure(nil) {
+		t.Fatal("IsDraftPRCreationAuthFailure(nil) = true, want false")
+	}
+}

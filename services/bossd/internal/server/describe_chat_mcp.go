@@ -10,6 +10,7 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 )
 
@@ -105,7 +106,19 @@ func (s *Server) DescribeChatMCP(ctx context.Context, req *connect.Request[pb.De
 	// last-used timestamp is left alone — that timestamp is the LRU key account
 	// selection reads, so probing must not change which account the NEXT session
 	// is handed.
-	probeEnv := s.chatSpawnEnv(ctx, sess, chat, s.defaultAccountIDForChat(ctx, sess, chat), "describe chat mcp", skipAccountUseRecord)
+	//
+	// BOS-1142: if the chat is bound to a managed account whose credentials
+	// cannot be injected, the probe fails rather than falling back to the
+	// ambient CLI login. Reporting on an environment the real chat would never
+	// receive is the same misdiagnosis this shared chain exists to prevent, and
+	// the refusal itself is the answer the operator needs.
+	probeEnv, err := s.chatSpawnEnv(ctx, sess, chat, s.defaultAccountIDForChat(ctx, sess, chat), "describe chat mcp", skipAccountUseRecord)
+	if err != nil {
+		// Redacted: this string becomes an RPC message an operator reads, and the
+		// wrapped materialize error can embed a provider response body.
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("resolve chat account credentials: %s", account.RedactedMessage(err)))
+	}
 
 	// Key names only, never values: probe_env carries the chat's credentials.
 	// The response below carries no environment at all.

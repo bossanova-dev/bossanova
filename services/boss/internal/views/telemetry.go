@@ -36,6 +36,7 @@ const (
 	tuiActionAccountDisabled  tuiAction = "account_disabled"
 	tuiActionAccountEnabled   tuiAction = "account_enabled"
 	tuiActionAccountRefreshed tuiAction = "account_refreshed"
+	tuiActionAccountReauthed  tuiAction = "account_reauthenticated"
 	tuiActionAccountSwitched  tuiAction = "account_switched"
 
 	tuiActionCronJobCreated tuiAction = "cron_job_created"

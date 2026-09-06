@@ -26,12 +26,14 @@
 --     notes.session_id one: notes deliberately outlive their session, a path
 --     token deliberately does not. The connection runs PRAGMA foreign_keys=ON.
 --
---   * agent_session_id takes NO FK, and this is a schema limitation rather than
---     a lifecycle choice: agent_chats.agent_session_id is INDEXED BUT NOT
---     UNIQUE, and SQLite requires a parent key to be unique. So the chat-only
---     delete path (agent_chat_store.go DeleteByAgentSessionID) cannot rely on a
---     cascade and issues an explicit DELETE against this table instead. Keep the
---     two together: dropping the explicit delete silently leaks chat rows.
+--   * agent_session_id takes NO FK. At the time this table was added,
+--     agent_chats.agent_session_id was indexed but not unique, so SQLite could
+--     not accept it as a parent key at all; 20260904000000 later made it UNIQUE
+--     without adding the FK, so the absence is now a deliberate choice rather
+--     than a limitation. Either way the chat-only delete path
+--     (agent_chat_store.go DeleteByAgentSessionID) gets no cascade and issues an
+--     explicit DELETE against this table instead. Keep the two together:
+--     dropping the explicit delete silently leaks chat rows.
 --
 -- is_chat_shaped records which of the two proxy target shapes to rebuild:
 -- 0 is a bare sessionID target, 1 is session.ProxyTargetForChat's
@@ -53,7 +55,7 @@
 CREATE TABLE proxy_tokens (
     token_sha256     TEXT PRIMARY KEY,           -- hex(sha256(token)); never the token
     session_id       TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    agent_session_id TEXT,                       -- chat-shaped only; no FK (parent key is not unique)
+    agent_session_id TEXT,                       -- chat-shaped only; no FK (deliberate; see header)
     account_id       TEXT,                       -- chat-shaped fallback account at mint/refresh time
     is_chat_shaped   INTEGER NOT NULL DEFAULT 0, -- boolean: 0 = session target, 1 = chat target
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

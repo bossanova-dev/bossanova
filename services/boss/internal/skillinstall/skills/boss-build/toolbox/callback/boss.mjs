@@ -16,11 +16,23 @@ export const bossCallbackOperationMap = {
     // triggers, where at most one can ever hold for the PR, such as merged vs closed.
     // Non-exclusive waits such as green / red / merged use a separate group per
     // trigger so one state does not cancel the other still-needed watches.
+    // Triggers are state-matched by default. Pass onTransition (the CLI's
+    // --on-transition flag) only when the watch must be transition-matched.
     // --message is the wake payload delivered to the target chat; it is a SECRET —
     // never echoed back by `list`, so it is deliberately absent from every response
     // below. --expires-in bounds the durable watch; --repo/--chat scope it; --json
     // emits the stable githubCallbackJSON row.
-    args: ['pr', 'trigger', 'group', 'message', 'expiresIn', 'repo', 'chat', 'json'],
+    args: [
+      'pr',
+      'trigger',
+      'group',
+      'message',
+      'expiresIn',
+      'onTransition',
+      'repo',
+      'chat',
+      'json',
+    ],
     // The generic CLI supports both scopes for registration. The caller must
     // use the verified target's chat and the child PR's repository together.
     scope: { chat: true, repo: true },
@@ -53,10 +65,21 @@ export const bossCallbackOperationMap = {
 // the register/reconcile/re-arm/fallback behaviour is named in one place rather than
 // re-derived in prose. Frozen so a consumer can read but not mutate it.
 export const bossCallbackPolicy = Object.freeze({
+  // Every trigger accepted by the generic boss callback CLI, in its stable order.
+  availableTriggers: Object.freeze([
+    'merged',
+    'closed',
+    'checks_passed',
+    'checks_failed',
+    'ready_for_review',
+    'checks_passed_ready',
+  ]),
   // The default one-shot triggers registered when a PR/CI wait begins. Group only
   // mutually exclusive triggers; checks_passed, checks_failed, and merged are not
   // mutually exclusive over a PR's lifetime, so callers register them in separate groups.
   watchTriggers: Object.freeze(['checks_passed', 'checks_failed', 'merged']),
+  // Draft-aware waits replace bare checks_passed with the merge-eligibility trigger.
+  draftAwareTriggers: Object.freeze(['checks_passed_ready', 'checks_failed', 'merged']),
   // Durable-watch lifetime; bounded so an abandoned run's watch self-expires rather
   // than lingering for the 30d hard cap.
   defaultExpiresIn: '24h',
@@ -71,7 +94,8 @@ export const bossCallbackPolicy = Object.freeze({
   // state, so a duplicate delivery is a no-op.
   dedupById: true,
   // Bounded fallback when the callback interface is unavailable (no daemon, older
-  // host): degrade to polling the same terminal signal directly.
+  // host). fallbackPoll's only sanctioned invocation is the consuming workflow's
+  // Protocol step 5 bounded loop (or equivalent bounded watch loop); never run it unbounded.
   fallbackPoll: 'gh pr checks --watch --fail-fast',
 })
 

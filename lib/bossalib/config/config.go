@@ -1151,6 +1151,105 @@ func isNonDiscoverablePlugin(name string) bool {
 	return slices.Contains(nonDiscoverablePlugins, name)
 }
 
+// experimentalPlugins lists plugin binaries that ship installed but stay OFF
+// until the user names them in the `experimental_plugins` settings key.
+//
+// This is a GATE, not a filter, and the distinction from nonDiscoverablePlugins
+// above is the whole point. A non-discoverable plugin is removed from the
+// config outright and has no opt-in path; an experimental plugin stays
+// discoverable, listable, and path-healed while it is off, so a user can turn
+// it on without hand-authoring a plugins[] entry. Re-listing a plugin here in
+// nonDiscoverablePlugins instead would make it unreachable — and for
+// bossd-plugin-opencode specifically it would revert BOS-437 and fail
+// TestFilterNonDiscoverablePluginsKeepsOpencode.
+//
+// bossd-plugin-opencode is installed for every user (infra/install.sh,
+// infra/homebrew/bossanova.rb) and was auto-enabled by discovery, so a
+// very-alpha agent runner loaded on every daemon unasked (BOS-1145).
+var experimentalPlugins = []string{
+	"bossd-plugin-opencode",
+}
+
+// IsExperimentalPlugin reports whether shortName names an experimental plugin
+// (see experimentalPlugins). It accepts the un-prefixed PluginConfig.Name
+// spelling — the canonical one, and what `plugins[].name` and
+// `experimental_plugins` both use — and also tolerates the full
+// "bossd-plugin-" binary spelling, because settings.json has no validation
+// feedback: an opt-in written the other way would otherwise fail silently and
+// look exactly like a broken gate.
+func IsExperimentalPlugin(shortName string) bool {
+	if shortName == "" {
+		return false
+	}
+	return slices.Contains(experimentalPlugins, pluginPrefix+strings.TrimPrefix(shortName, pluginPrefix))
+}
+
+// ApplyExperimentalPluginGate returns cfgs with every experimentalPlugins
+// member's Enabled flag set from optIn (the `experimental_plugins` settings
+// key), plus the names of members it turned OFF that were previously on.
+//
+// For a registry member the gate is AUTHORITATIVE IN BOTH DIRECTIONS: listed in
+// optIn means Enabled:true, absent means Enabled:false, regardless of the
+// persisted plugins[].enabled value. Overriding the persisted flag is what
+// repairs the existing installed base, whose settings.json already carries
+// {"name":"opencode","enabled":true} from a daemon that auto-enabled it — a
+// discovery-default change alone can never reach those users. The consequence,
+// which the settings reference documents, is that plugins[].enabled is inert
+// for a registry member.
+//
+// Plugins outside the registry are never touched in either direction, so an
+// ordinary user enable/disable is preserved. An optIn entry naming a plugin
+// that is not present (or not a registry member) is ignored; no entry is ever
+// invented. The input slice is not mutated, matching MergeDiscoveredPlugins and
+// HealPluginPaths.
+func ApplyExperimentalPluginGate(cfgs []PluginConfig, optIn []string) ([]PluginConfig, []string) {
+	out := make([]PluginConfig, 0, len(cfgs))
+	var disabled []string
+	for _, c := range cfgs {
+		if !IsExperimentalPlugin(c.Name) {
+			out = append(out, c)
+			continue
+		}
+		wantEnabled := slices.ContainsFunc(optIn, func(name string) bool {
+			return strings.TrimPrefix(name, pluginPrefix) == strings.TrimPrefix(c.Name, pluginPrefix)
+		})
+		if c.Enabled && !wantEnabled {
+			disabled = append(disabled, c.Name)
+		}
+		c.Enabled = wantEnabled
+		out = append(out, c)
+	}
+	return out, disabled
+}
+
+// PluginEnabledForSettings reports a plugin's EFFECTIVE enabled state — the
+// value the daemon's plugin host actually acts on — for a settings consumer
+// that has one plugin name rather than the whole slice the gate operates on.
+//
+// For a registry member experimental_plugins is authoritative, because
+// ApplyExperimentalPluginGate overrides plugins[].enabled in both directions
+// and the daemon deliberately does not persist the result. Reading
+// plugins[].enabled directly therefore hides a plugin the user opted into and
+// the daemon has loaded, which is what kept an opted-in OpenCode out of the
+// agent pickers. The opt-in comparison reuses the gate's trim-both-sides form
+// so the tolerated "bossd-plugin-opencode" spelling behaves identically here.
+//
+// A plugin with no entry at all is not enabled, matching the callers this
+// replaces.
+func PluginEnabledForSettings(s Settings, name string) bool {
+	if IsExperimentalPlugin(name) {
+		return slices.ContainsFunc(s.ExperimentalPlugins, func(optIn string) bool {
+			return strings.TrimPrefix(optIn, pluginPrefix) == strings.TrimPrefix(name, pluginPrefix)
+		})
+	}
+	for _, p := range s.Plugins {
+		if p.Name == name {
+			return p.Enabled
+		}
+	}
+	return false
+}
+
 // FilterNonDiscoverablePlugins drops any entry that names a non-discoverable
 // plugin (see nonDiscoverablePlugins), returning the filtered slice and the
 // names that were removed. PluginConfig.Name holds the binary name without the
@@ -1252,7 +1351,10 @@ func scanForPlugins(dir string, policy discoveryPolicy) ([]PluginConfig, []Plugi
 				continue
 			}
 		}
-		plugins = append(plugins, PluginConfig{Name: shortName, Path: path, Enabled: true})
+		// Experimental plugins are discovered but arrive disabled, so the
+		// persisted settings.json agrees with the gate bossd applies at load
+		// rather than showing a misleading "enabled": true (BOS-1145).
+		plugins = append(plugins, PluginConfig{Name: shortName, Path: path, Enabled: !IsExperimentalPlugin(shortName)})
 	}
 	return plugins, rejections
 }
@@ -1365,32 +1467,38 @@ func loadWithoutSideEffects() (Settings, error) {
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
-	WorktreeBaseDir                string                `json:"worktree_base_dir"`
-	AppDataDir                     string                `json:"app_data_dir,omitempty"`
-	SocketPath                     string                `json:"socket_path,omitempty"`
-	DefaultAgent                   string                `json:"default_agent,omitempty"`
-	InstalledAt                    time.Time             `json:"installed_at,omitzero"`
-	BossCloudGuestOfferHidden      bool                  `json:"boss_cloud_guest_offer_hidden,omitempty"`
-	BossCloudValueDeliveredAt      time.Time             `json:"boss_cloud_value_delivered_at,omitzero"`
-	SkillsDeclined                 bool                  `json:"skills_declined,omitempty"`
-	SkillsDeclinedByAgent          map[string]bool       `json:"skills_declined_by_agent,omitempty"`
-	SkillsDeclinedManifestByAgent  map[string]string     `json:"skills_declined_manifest_by_agent,omitempty"`
-	SkillsInstalledManifestByAgent map[string]string     `json:"skills_installed_manifest_by_agent,omitempty"`
-	PollIntervalSeconds            int                   `json:"poll_interval_seconds,omitempty"`
-	NotificationsEnabled           *bool                 `json:"notifications_enabled,omitempty"`
-	EventTracingEnabled            bool                  `json:"event_tracing_enabled,omitempty"`
-	ErrorTrackingEnabled           bool                  `json:"error_tracking_enabled,omitempty"`
-	PostHogProjectToken            string                `json:"posthog_project_token,omitempty"`
-	PostHogHost                    string                `json:"posthog_host,omitempty"`
-	Plugins                        []PluginConfig        `json:"plugins,omitempty"`
-	Repair                         RepairConfig          `json:"repair,omitzero"`
-	StallDetection                 StallDetectionConfig  `json:"stall_detection,omitzero"`
-	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
-	TmuxReaper                     TmuxReaperConfig      `json:"tmux_reaper,omitzero"`
-	TmuxIdleReap                   TmuxIdleReapConfig    `json:"tmux_idle_reap,omitzero"`
-	TmuxDelivery                   TmuxDeliveryConfig    `json:"tmux_delivery,omitzero"`
-	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
-	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`
+	WorktreeBaseDir                string            `json:"worktree_base_dir"`
+	AppDataDir                     string            `json:"app_data_dir,omitempty"`
+	SocketPath                     string            `json:"socket_path,omitempty"`
+	DefaultAgent                   string            `json:"default_agent,omitempty"`
+	InstalledAt                    time.Time         `json:"installed_at,omitzero"`
+	BossCloudGuestOfferHidden      bool              `json:"boss_cloud_guest_offer_hidden,omitempty"`
+	BossCloudValueDeliveredAt      time.Time         `json:"boss_cloud_value_delivered_at,omitzero"`
+	SkillsDeclined                 bool              `json:"skills_declined,omitempty"`
+	SkillsDeclinedByAgent          map[string]bool   `json:"skills_declined_by_agent,omitempty"`
+	SkillsDeclinedManifestByAgent  map[string]string `json:"skills_declined_manifest_by_agent,omitempty"`
+	SkillsInstalledManifestByAgent map[string]string `json:"skills_installed_manifest_by_agent,omitempty"`
+	PollIntervalSeconds            int               `json:"poll_interval_seconds,omitempty"`
+	NotificationsEnabled           *bool             `json:"notifications_enabled,omitempty"`
+	EventTracingEnabled            bool              `json:"event_tracing_enabled,omitempty"`
+	ErrorTrackingEnabled           bool              `json:"error_tracking_enabled,omitempty"`
+	PostHogProjectToken            string            `json:"posthog_project_token,omitempty"`
+	PostHogHost                    string            `json:"posthog_host,omitempty"`
+	Plugins                        []PluginConfig    `json:"plugins,omitempty"`
+	// ExperimentalPlugins opts into plugins that ship installed but stay off
+	// by default (see experimentalPlugins / ApplyExperimentalPluginGate).
+	// Entries are un-prefixed plugin names, e.g. "opencode". For a plugin in
+	// that registry this key is the SOLE enable switch: listed means loaded,
+	// absent means not loaded, and its plugins[].enabled value is inert.
+	ExperimentalPlugins   []string              `json:"experimental_plugins,omitempty"`
+	Repair                RepairConfig          `json:"repair,omitzero"`
+	StallDetection        StallDetectionConfig  `json:"stall_detection,omitzero"`
+	ManagedAccounts       ManagedAccountsConfig `json:"managed_accounts,omitzero"`
+	TmuxReaper            TmuxReaperConfig      `json:"tmux_reaper,omitzero"`
+	TmuxIdleReap          TmuxIdleReapConfig    `json:"tmux_idle_reap,omitzero"`
+	TmuxDelivery          TmuxDeliveryConfig    `json:"tmux_delivery,omitzero"`
+	ProvidersAcknowledged bool                  `json:"providers_acknowledged,omitempty"`
+	KnownAgentProviders   []string              `json:"known_agent_providers,omitempty"`
 	// DaemonName is an optional, operator-chosen display name for this
 	// daemon. It is PRESENTATION METADATA ONLY: it feeds the self-reported
 	// hostname bossd advertises to the orchestrator, and never the daemon's

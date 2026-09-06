@@ -198,11 +198,12 @@ runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath`
   Tier 3 — the drafting layer is never silently dropped.
 
 - **Tier 2:** if no extension succeeded under the draft success predicate and the host exposes a native drafting command, such as
-  Claude Code plan mode, delegate to it, then normalize the output to the planContract sections
-  from `references/headless-drafting-brief.md` **Step 7**.
+  Claude Code plan mode, delegate to it, preserve the resulting plan structure while adding the
+  shared Step 5 plan-body requirements, and compose a separate `descriptionSummary` from
+  `references/headless-drafting-brief.md` **Step 7**.
 - **Tier 3:** if no extension succeeded under the draft success predicate and no host built-in exists, run the inline drafting prompt in
-  Phase 5: work the review dimensions, follow the shared Step 5/Step 7 sections, and write a
-  planContract-compliant plan with no external skill dependency.
+  Phase 5: work the review dimensions, follow the shared Step 5 plan-body requirements, and write a
+  plan plus its separate Step 7 description projection with no external skill dependency.
 
 If the ticket is TRIVIAL, keep your interview answers and follow-ups proportionate; do not
 manufacture complexity.
@@ -227,7 +228,7 @@ _shape_, not the drafts, so Phase 2.5 step 3's confirmation and step 4's create-
 orchestrator-owned. Give the worker the run scratch and require it to write, for each child `key` in
 the approved spec:
 
-- `<runTmp>/batch-draft/<key>.md` — that child's planContract-v1 plan.
+- `<runTmp>/batch-draft/<key>.md` — that child's full plan document.
 - `<runTmp>/batch-draft/<key>.description.md` — that child's ticket description.
 - `<runTmp>/batch-draft/<PARENT-ISSUE-ID>.batch-metadata.json` — ONE bounded file for the whole
   batch: `{ "parentId": "<ISSUE-ID>", "children": { "<key>": { … } } }`, keyed by spec key. Each
@@ -267,6 +268,10 @@ Follow the resident **## Phase 3 — Plan requirements** section in SKILL.md plu
 details in `references/headless-drafting-brief.md` **Step 5** and **Step 7** (plan-body requirements
 and the description summary template). Write to `.linear-plans/<ISSUE-ID>-<slug>.md` and stop after
 saving the plan file. Do not continue into subagent-driven-development or executing-plans.
+The single-ticket plan file must retain the shared plan-file floor from that brief: required
+description-contract headings, `## Problem Frame`, `## Requirements`, `## Implementation Units`, and
+at least one heading outside `planContract.sections`. Epic-parent overviews and adopted-child
+redrafts use explicit exemption reasons; consumers do not require this structure.
 
 **Preserve `## Original notes` VERBATIM** (all interactive tiers). When composing
 `## Original notes`, copy the ticket's prior description byte-for-byte from

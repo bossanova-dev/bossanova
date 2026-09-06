@@ -27,6 +27,17 @@
   ],
   "recipes": [
     {
+      "id": "web-sessions-long-error-truncated",
+      "surface": "web",
+      "title": "Web Sessions (long error truncated)",
+      "description": "BOS-1133: the sessions list at desktop width includes a row with a long session name and a long 'draft PR creation failed' attention hint, while the PR and Status column headers plus that row's status pill remain visible inside the table frame.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "cropToSelector": ".data-table-wrap",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-sessions",
       "surface": "web",
       "title": "Web Sessions",
@@ -137,7 +148,7 @@
       "id": "web-sessions-org-filter-flow",
       "surface": "web",
       "title": "Web Sessions Organization Filter Flow",
-      "description": "Choosing an organization in the sessions-list organization filter narrows the table across every daemon and repository: 'Proof session' is listed before the selection and gone after it, leaving only Globex's 'Proof quick chat' row while 'Globex' shows as the selected value.",
+      "description": "Choosing an organization in the sessions-list organization filter narrows the table across every daemon and repository: 'Proof session' is listed before the selection and gone after it, leaving only Globex's 'Proof quick chat' row while 'Globex' shows as the selected value. In both states, each row's Repository cell shows the repository name on a single line with nothing beneath it.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -171,17 +182,6 @@
       ]
     },
     {
-      "id": "web-sessions-org-filter-row-attribution",
-      "surface": "web",
-      "title": "Web Sessions Organization Row Attribution",
-      "description": "Sessions table for a caller who belongs to two organizations with 'All organizations' selected: each row carries the owning organization's name as a muted second line under the repository name in the Repository cell — 'Acme' on the Proof daemon's rows and 'Globex' on the 'Proof quick chat' row — so a cross-organization list is never ambiguous about which organization a session belongs to.",
-      "privacy": "fixture",
-      "capture": "still",
-      "route": "/",
-      "cropToSelector": ".data-table-wrap",
-      "viewport": { "width": 1440, "height": 1000 }
-    },
-    {
       "id": "web-notification-permission-modal",
       "surface": "web",
       "title": "Web Notification Permission Modal",
@@ -199,7 +199,7 @@
       "description": "Appearance settings showing the notifications on/off toggle beside the theme control, plus the browser-blocked note (permission forced denied).",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/appearance",
+      "route": "/settings/appearance",
       "cropToSelector": ".settings-card",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -209,7 +209,7 @@
       "title": "Web Account Settings",
       "description": "Product web account settings page in the ACTIVE subscription state, showing the Manage subscription button.",
       "privacy": "fixture",
-      "route": "/org-e2e/settings/account",
+      "route": "/settings/account",
       "cropToSelector": ".account-billing",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -245,6 +245,17 @@
       "route": "/subscribe",
       "selector": ".subscribe-page",
       "cropToSelector": ".subscribe-page",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-subscribe-active-redirect",
+      "surface": "web",
+      "title": "Web Subscribe Routes An Active Account Onward",
+      "description": "Signed-in Subscribe page opened by an account whose cloud access is already ACTIVE: no checkout offer is rendered and the route lands on the sessions list instead of looping the paying customer back to /subscribe.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/subscribe",
+      "cropToSelector": ".data-table-wrap",
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
@@ -519,15 +530,15 @@
       "description": "Repositories settings page at desktop width: the Settings / Repositories sub-header carries a drop-down reading 'All daemons', and below it one unified, heading-less list of registered repos with a per-row edit icon and no separate 'GitHub App' section. Rows are alphabetical — 'Proof repository' (Proof daemon) before 'Proof web repository' (Standby daemon) — and each names its serving daemon in the Daemon column.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/repos",
+      "route": "/settings/repos",
       "cropToSelector": "[data-testid='repositories-section']",
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
       "id": "web-repositories-daemon-filter-flow",
       "surface": "web",
-      "title": "Web Repositories Daemon Filter Flow",
-      "description": "Choosing a daemon in the repository-settings header filter narrows the table and the user chooses when to leave it: both repositories are listed before the selection, only 'Proof web repository' remains while 'Standby daemon' shows as the selected label, and selecting 'All daemons' again restores the full list. Nothing resets the selection on the page's behalf.",
+      "title": "Web Repositories Daemon and Organization Filter Flow",
+      "description": "Choosing a daemon in the repository-settings header filter narrows the table and the user chooses when to leave it: both repositories are listed before the selection, only 'Proof web repository' remains while 'Standby daemon' shows as the selected label, and selecting 'All daemons' again restores the full list. The flow then shows All organizations before selecting Initech, an organization with no matching repositories, and reports that no repositories belong to the selected organization. Nothing resets either selection on the page's behalf.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -535,7 +546,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/repos",
+          "route": "/settings/repos",
           "label": "Open repository settings",
           "caption": "Open repository settings"
         },
@@ -570,6 +581,26 @@
           "selector": "text=Proof repository",
           "label": "Full list restored",
           "caption": "Every repository is listed again"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"repository-organization-filter\"]",
+          "value": "",
+          "label": "All organizations",
+          "caption": "All organizations are included"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"repository-organization-filter\"]",
+          "value": "org-proof-initech",
+          "label": "Choose an organization with no repositories",
+          "caption": "Filter to an organization with no matching repositories"
+        },
+        {
+          "action": "wait",
+          "selector": "text=No repositories belong to the selected organization",
+          "label": "Narrowed organization empty state",
+          "caption": "No repositories belong to the selected organization"
         }
       ]
     },
@@ -585,7 +616,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/repos",
+          "route": "/settings/repos",
           "label": "Open repository settings",
           "caption": "Open repository settings"
         },
@@ -616,6 +647,61 @@
       ]
     },
     {
+      "id": "web-repository-organization-refusal",
+      "surface": "web",
+      "title": "Web Repository Organization Refusal",
+      "description": "BOS-1114: the repo edit page's Organization control, at rest and then refused. Open /settings/repos, open a repository, and the Organization field reads 'No organization' above the helper line 'Sessions for this repository belong to the chosen organization'. Choosing 'E2E Organization' -- an organization the picker itself offered, so one the caller is a member of -- is refused by the server with PermissionDenied, and the field explains it as 'Bossanova refused the mapping to E2E Organization. You are a member of it, so check that your Bossanova Cloud subscription is active.' while the select snaps back to its previous value. NEGATIVE EVIDENCE, and the point of the ticket: the phrase 'not a member' must NOT appear anywhere in this capture. The picker offers only organizations the caller belongs to, so a non-membership claim here would be certainly wrong and would send the user to the one thing they cannot fix; bosso raises the same code for an entitlement lapse and cannot tell the two apart. Grade the capture as failing if 'not a member' or the server's raw 'organization membership required' text is on screen.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/repos",
+          "label": "Open repository settings",
+          "caption": "Open repository settings"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"repo-row\"]",
+          "label": "Repository row",
+          "caption": "One unified list of registered repositories"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"repo-row\"]",
+          "label": "Open repository",
+          "caption": "Open the repository for editing"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"repo-organization\"]",
+          "label": "Organization control",
+          "caption": "The repository has no organization yet"
+        },
+        {
+          "action": "wait",
+          "selector": "text=Sessions for this repository belong to the chosen organization",
+          "label": "Helper text",
+          "caption": "The setting says what it does, not just what it is"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"repo-organization\"]",
+          "value": "org-e2e",
+          "label": "Choose an offered organization",
+          "caption": "Choose an organization the picker offered"
+        },
+        {
+          "action": "wait",
+          "selector": "text=check that your Bossanova Cloud subscription is active",
+          "label": "Refusal explained",
+          "caption": "A member is sent to their subscription, not to membership"
+        }
+      ]
+    },
+    {
       "id": "web-repository-removal",
       "surface": "web",
       "title": "Web Repository Removal Confirmation",
@@ -627,7 +713,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/repos",
+          "route": "/settings/repos",
           "label": "Open repository settings",
           "caption": "Open repository settings"
         },
@@ -670,7 +756,7 @@
       "description": "Cron Jobs settings page (/settings/cron): the table with Name, Repo, Daemon, and Status column headers and no run-timing columns, populated with fixture jobs from two daemons sorted ascending by name, including an enabled Running job and a failed job.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/cron",
+      "route": "/settings/cron",
       "cropToSelector": "[data-testid='cron-jobs-section']",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -681,9 +767,70 @@
       "description": "Cron Jobs at 390px: the job name and its four action buttons share the top row, the owning daemon and the right-aligned status badge form the second row, and Repo is hidden.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/cron",
+      "route": "/settings/cron",
       "cropToSelector": "[data-testid='cron-jobs-section']",
       "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-cron-org-filter-row-attribution",
+      "surface": "web",
+      "title": "Web Cron Job Organization Attribution",
+      "description": "Cron jobs across the caller's organizations with All organizations selected: the Organization column attributes rows to Acme and Globex.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/settings/cron",
+      "cropToSelector": ".data-table-wrap",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-cron-org-filter-flow",
+      "surface": "web",
+      "title": "Web Cron Job Organization Filter Flow",
+      "description": "Selecting Globex narrows the cross-organization cron list to Standby cache warmer; selecting an organization with no jobs then reports that no cron jobs belong to the selected organization.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/cron",
+          "label": "Open cron jobs",
+          "caption": "All cron jobs across every organization"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"cron-jobs-section\"]",
+          "label": "Cron list",
+          "caption": "Every cron job carries its owning organization"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"cron-organization-filter\"]",
+          "value": "org-proof-globex",
+          "label": "Choose Globex",
+          "caption": "Narrow the list to Globex"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"cron-jobs-section\"]",
+          "label": "Globex jobs",
+          "caption": "Only Standby cache warmer remains"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"cron-organization-filter\"]",
+          "value": "org-proof-empty",
+          "label": "Choose an empty organization",
+          "caption": "Select an organization with no cron jobs"
+        },
+        {
+          "action": "wait",
+          "selector": ".list-empty-filtered",
+          "label": "Organization empty state",
+          "caption": "No cron jobs belong to the selected organization"
+        }
+      ]
     },
     {
       "id": "web-cron-filter-flow",
@@ -697,7 +844,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/cron",
+          "route": "/settings/cron",
           "label": "Open cron jobs",
           "caption": "Open the Cron Jobs settings page"
         },
@@ -734,7 +881,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/cron",
+          "route": "/settings/cron",
           "label": "Open cron jobs",
           "caption": "Open the Cron Jobs settings page"
         },
@@ -762,10 +909,10 @@
       "id": "web-accounts-list",
       "surface": "web",
       "title": "Web Accounts",
-      "description": "Accounts settings page (/settings/accounts): the rotation-accounts table with Provider, Label, Daemon, Health, and Usage columns plus the per-row action group. The Daemon column names the daemon each account is registered on, so accounts aggregated from more than one daemon stay attributable. Disabled rows use the shared dormant treatment; no Active/Disabled status column is rendered. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%.",
+      "description": "Accounts settings page (/settings/accounts): the cross-organization rotation-accounts table with Provider, Label, Organization, Daemon, Health, Last checked, and Usage columns plus the per-row action group. Organization and Daemon identify where each account is registered, so accounts aggregated from more than one organization and daemon stay attributable. Disabled rows use the shared dormant treatment; no Active/Disabled status column is rendered. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%. The Last checked column dates every credential verdict and keeps three states apart that used to render as one green row: 'personal' was checked 15m ago and came back failed (auth_invalidated), so its Health pill reads Failed even though its stored health field still says ok; 'saturated@anthropic.com' shows unavailable (runner_unavailable), a check that could not be evaluated and is therefore never reported as a rejected credential; and 'retired@anthropic.com' reads Never checked rather than borrowing the clean row's ok. Only the daemon's closed-set failure-class token is shown — never a credential and never raw provider text.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/accounts",
+      "route": "/settings/accounts",
       "cropToSelector": "[data-testid='accounts-section']",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -773,10 +920,10 @@
       "id": "web-accounts-list-mobile",
       "surface": "web",
       "title": "Web Accounts (mobile)",
-      "description": "Accounts at 390px: the account label and its four action buttons share the top row, with provider and usage stacked as one meta block below and the health pill flush right. The Daemon column is hidden at this width — it is still a real desktop column and the header filter still narrows by daemon here, unlike Priority and Last used, which no longer exist in the table at any width. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%.",
+      "description": "Accounts at 390px: the account label and its four action buttons share the top row, with provider, Organization, and usage each occupying a row in the meta block below and the health pill flush right. The finer Daemon column is hidden at this width while Organization stays visible so every cross-organization account remains attributable. Priority and Last used no longer exist in the table at any width. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/accounts",
+      "route": "/settings/accounts",
       "cropToSelector": "[data-testid='accounts-section']",
       "viewport": { "width": 390, "height": 844 }
     },
@@ -792,7 +939,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/accounts",
+          "route": "/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -818,6 +965,67 @@
       ]
     },
     {
+      "id": "web-accounts-org-filter-flow",
+      "surface": "web",
+      "title": "Web Accounts Organization Filter Flow",
+      "description": "Choosing Globex in the accounts organization filter narrows the cross-organization table to Standby daemon accounts. Selecting the incompatible Proof daemon then shows the both-filters empty state and its plural Clear filters escape hatch.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/accounts",
+          "label": "Open accounts",
+          "caption": "All organizations and their accounts are visible"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"accounts-organization-filter\"]",
+          "value": "org-proof-globex",
+          "label": "Choose Globex",
+          "caption": "Narrow accounts to one organization"
+        },
+        {
+          "action": "wait",
+          "selector": "text=standby@anthropic.com",
+          "label": "Organization narrowed",
+          "caption": "Only Globex accounts remain"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"accounts-daemon-filter\"]",
+          "value": "daemon-proof",
+          "label": "Choose incompatible daemon",
+          "caption": "Both filters now exclude every account"
+        },
+        {
+          "action": "wait",
+          "selector": "text=No accounts match the selected filters",
+          "label": "Both-filter empty state",
+          "caption": "The copy names both selected filters"
+        },
+        {
+          "action": "wait",
+          "selector": "text=Clear filters",
+          "label": "Clear filters",
+          "caption": "The plural escape hatch resets both filters"
+        }
+      ]
+    },
+    {
+      "id": "web-accounts-partial-organization-failure",
+      "surface": "web",
+      "title": "Web Accounts Partial Organization Read",
+      "description": "The accounts page reports that one organization's daemon inventory could not be loaded while retaining the fulfilled organization's populated account rows, making the incomplete cross-organization result explicit.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/settings/accounts",
+      "cropToSelector": "[data-testid='accounts-section']",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-accounts-refresh-flow",
       "surface": "web",
       "title": "Web Accounts Usage Refresh",
@@ -829,7 +1037,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/accounts",
+          "route": "/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -857,10 +1065,10 @@
       "id": "web-accounts-cold-start-probe-failure",
       "surface": "web",
       "title": "Web Accounts Usage Probe Failure",
-      "description": "A usage-refresh probe that fails against an older bosso, while the first accounts read is still in flight: the header's 'Refresh account usage' control reports 'server does not support account usage refresh; update bosso and try again' as an inline notice with its own Try again action, and the page keeps showing the 'Loading accounts' spinner underneath. The probe's failure never becomes the whole page — the full-page give-up panel is reserved for the accounts read itself failing.",
+      "description": "A usage-refresh probe that fails against an older bosso, while the first accounts read is still in flight: the header's 'Refresh account usage' control reports 'server does not support account usage refresh; update bosso and try again' as an inline notice with its own Try again action, and the page keeps showing the 'Loading accounts' spinner underneath. The probe's failure never becomes the whole page — the full-page give-up panel is reserved for the accounts read itself failing. It is also never reported as a credential verdict: a probe that could not be evaluated leaves no Health pill and no Last checked state behind it, so nothing on this page accuses an account of being invalid on the strength of a call that never concluded.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/accounts",
+      "route": "/settings/accounts",
       "cropToSelector": ".settings-content",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -876,7 +1084,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/accounts",
+          "route": "/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -912,7 +1120,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/accounts",
+          "route": "/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -967,7 +1175,7 @@
       "description": "Repositories at 390px: each card stacks the repository name with its edit action on the first line, the serving daemon name beneath it, and the GitHub connection state ('Connected' / 'Not connected') on the last line — no daemon information is dropped on phones and nothing clips horizontally.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/repos",
+      "route": "/settings/repos",
       "cropToSelector": "[data-testid='repositories-section']",
       "viewport": { "width": 390, "height": 844 }
     },
@@ -975,7 +1183,7 @@
       "id": "web-organization-members",
       "surface": "web",
       "title": "Web Organization Members",
-      "description": "Organization settings members list at desktop width: no 'Members' heading sits above the table, and the list uses the standard bordered, rounded settings-table card with Member, Role and Status column headers plus a blank trailing actions column — the same chrome as the repositories list, not the old unstyled scroll box.",
+      "description": "Organization settings members list at desktop width: the bordered, rounded settings-table shows active member Ada Lovelace beside the pending invitation for grace@example.com. The active row says Active and keeps its role control; the pending row says Invite pending, renders User as static text, and offers Revoke invitation instead of member controls.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/org-e2e/settings/organization",
@@ -986,7 +1194,7 @@
       "id": "web-organization-members-mobile",
       "surface": "web",
       "title": "Web Organization Members (mobile)",
-      "description": "Organization members at 390px: the table has collapsed into stacked cards with no visible column headers, and every column survives the collapse — each card shows the member name with its remove action flush to the card edge on the first line, and the role beside a right-aligned status on the second. One card names a membership that resolved neither a display name nor an email as the literal text 'Unknown member'. Nothing is dropped and nothing clips horizontally.",
+      "description": "Organization members at 390px: the table collapses into stacked cards with no visible column headers, and every column survives. The pending invitation card names grace@example.com, shows static role User beside Invite pending, and keeps Revoke invitation flush to the card edge. The active Ada Lovelace card remains alongside it; nothing is dropped or clips horizontally.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/org-e2e/settings/organization",
@@ -1000,8 +1208,56 @@
       "description": "Daemons at 390px under the Settings layout, retained as the existing tidy mobile list reference.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/daemons",
+      "route": "/settings/daemons",
       "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-daemons-org-attribution",
+      "surface": "web",
+      "title": "Web Daemons Organization Attribution",
+      "description": "Desktop daemon inventory for a caller in two organizations with All organizations selected. The Organization column attributes Proof daemon to Acme and Standby daemon to Globex.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/org-proof-acme/settings/daemons",
+      "cropToSelector": "[data-testid='daemons-section']",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-daemons-org-filter",
+      "surface": "web",
+      "title": "Web Daemons Organization Filter",
+      "description": "Selecting Acme in the daemon organization filter narrows the desktop inventory to Proof daemon while keeping the All organizations control available.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-proof-acme/settings/daemons",
+          "label": "Open daemons",
+          "caption": "All organizations are visible"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='daemons-section']",
+          "label": "Daemon inventory",
+          "caption": "Organization attribution is populated"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid='daemons-org-filter']",
+          "value": "org-proof-acme",
+          "label": "Choose Acme",
+          "caption": "Narrow the inventory to Acme"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='daemons-section']",
+          "label": "Acme daemons",
+          "caption": "Only Acme daemon rows remain"
+        }
+      ]
     },
     {
       "id": "web-session-expired",
@@ -1117,10 +1373,99 @@
       ]
     },
     {
+      "id": "web-org-danger-zone",
+      "surface": "web",
+      "title": "Web Organization Danger Zone",
+      "description": "Organization settings for an owner, scrolled to show the Danger zone section beneath the Members table. The page header still names the organization (E2E Organization). The Danger zone carries one line of copy explaining that leaving gives up your own membership while deleting removes the organization for everyone, and two buttons: Leave organization and, because the caller is an owner, a red Delete organization. Neither button does anything on click without a confirmation.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/org-e2e/settings/organization",
+      "fullPage": true,
+      "viewport": { "width": 1024, "height": 900 }
+    },
+    {
+      "id": "web-org-delete-confirm",
+      "surface": "web",
+      "title": "Web Delete Organization Confirmation",
+      "description": "The confirmation dialog that stands between an owner and an irreversible delete. Clicking Delete organization in the Danger zone opens a modal titled 'Delete organization?' whose body reads 'Delete E2E Organization? This removes the organization for everybody and cannot be undone.' and whose action row carries Cancel beside a red Delete. Nothing has been deleted at this point -- the dialog is the brake.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1024, "height": 900 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open organization settings"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-danger-zone",
+          "label": "Danger zone",
+          "caption": "The Danger zone offers Leave and Delete"
+        },
+        {
+          "action": "click",
+          "selector": ".org-danger-zone-actions button:has-text('Delete organization')",
+          "label": "Delete organization",
+          "caption": "Choose Delete organization"
+        },
+        {
+          "action": "wait",
+          "selector": "[role='dialog']",
+          "label": "Confirmation",
+          "caption": "The delete is held behind a confirmation naming the organization"
+        }
+      ]
+    },
+    {
+      "id": "web-org-delete-refused",
+      "surface": "web",
+      "title": "Web Delete Organization Refused",
+      "description": "An owner confirms the delete and the server refuses it, because the organization is not empty. Confirming in the dialog dismisses it and the page stays on organization settings -- the URL never leaves /org-e2e/settings/organization -- with a red alert carrying the server's own reason: 'this organization still has sessions -- delete them before deleting it'. The Danger zone is still there to try again from once the sessions are gone.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1024, "height": 900 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open organization settings"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-danger-zone",
+          "label": "Danger zone",
+          "caption": "The Danger zone offers Leave and Delete"
+        },
+        {
+          "action": "click",
+          "selector": ".org-danger-zone-actions button:has-text('Delete organization')",
+          "label": "Delete organization",
+          "caption": "Choose Delete organization"
+        },
+        {
+          "action": "click",
+          "selector": "[role='dialog'] button[aria-label='Delete E2E Organization']",
+          "label": "Confirm delete",
+          "caption": "Confirm the delete"
+        },
+        {
+          "action": "wait",
+          "selector": ".alert-body",
+          "label": "Refusal",
+          "caption": "The server names what is standing in the way, and the page stays put"
+        }
+      ]
+    },
+    {
       "id": "web-org-settings",
       "surface": "web",
       "title": "Web Organization Settings",
-      "description": "Organization settings page for an owner in its resting display state, reached at the organization-scoped URL /org-e2e/settings/organization. The caller belongs to ONE organization, so there is NO organization picker in the page header -- it carries only the New organization and Invite member buttons. The organization name is rendered as a single click-to-edit control carrying a small pencil glyph to the right of the text. There is NO 'Organization name' form label, no text input, and no 'Save name' button anywhere on the page. Below it the Members table lists the organization's members with their roles.",
+      "description": "Organization settings page for an owner in its resting display state, reached at the organization-scoped URL /org-e2e/settings/organization. The caller belongs to ONE organization, so there is NO organization picker in the page header -- it carries only the New organization and Invite member buttons. The organization name is rendered as a single click-to-edit control carrying a small pencil glyph to the right of the text. There is NO 'Organization name' form label, no text input, and no 'Save name' button anywhere on the page. Below it an owner-only 'Manage billing for E2E Organization' action names this organization, and the Members table lists the organization's members with their roles.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/org-e2e/settings/organization",
@@ -1243,6 +1588,53 @@
       ]
     },
     {
+      "id": "web-org-billing-portal",
+      "surface": "web",
+      "title": "Web Organization Billing Portal Entry",
+      "description": "Organization settings for an owner, showing the billing portal entry for the organization being administered. Below the click-to-edit organization name sits a single action reading 'Manage billing for E2E Organization' with a credit-card glyph to its left -- the organization's own name, not a generic 'Billing' label, because the action targets THIS organization rather than whichever one the session happens to be scoped to. The Members table follows below it. The action is owner-only.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/org-e2e/settings/organization",
+      "viewport": { "width": 1024, "height": 768 }
+    },
+    {
+      "id": "web-org-billing-portal-second-org",
+      "surface": "web",
+      "title": "Web Organization Billing Portal Follows The Organization",
+      "description": "The billing portal entry follows the organization on screen rather than the session's claim. The page opens on 'E2E Organization' settings, where the action reads 'Manage billing for E2E Organization'; choosing 'Beta Robotics' from the organization picker in the settings header moves to that organization's own settings URL and the same action now reads 'Manage billing for Beta Robotics'. Captured as a flow because the second organization is reached by a selection, not as a static route.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open organization settings for the first organization"
+        },
+        {
+          "action": "wait",
+          "selector": "text=\"Manage billing for E2E Organization\"",
+          "label": "Billing action names the first organization",
+          "caption": "The billing action names the organization on screen"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid='org-picker']",
+          "value": "org-proof-beta",
+          "label": "Choose the other organization",
+          "caption": "Switch to the other organization the caller owns"
+        },
+        {
+          "action": "wait",
+          "selector": "text=\"Manage billing for Beta Robotics\"",
+          "label": "Billing action follows the switch",
+          "caption": "The billing action now targets the second organization"
+        }
+      ]
+    },
+    {
       "id": "web-org-picker-switch",
       "surface": "web",
       "title": "Web Organization Picker Switch",
@@ -1291,7 +1683,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/accounts",
+          "route": "/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -1327,7 +1719,7 @@
       "steps": [
         {
           "action": "goto",
-          "route": "/org-e2e/settings/accounts",
+          "route": "/settings/accounts",
           "label": "Open accounts",
           "caption": "Open the Accounts settings page"
         },
@@ -1358,7 +1750,7 @@
       "description": "Settings sidebar navigation with the Cron Jobs entry active alongside Appearance, Billing, and Repositories.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/org-e2e/settings/cron",
+      "route": "/settings/cron",
       "cropToSelector": "nav[aria-label=\"Settings\"]",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -1889,6 +2281,16 @@
       "viewport": { "width": 1280, "height": 1000 }
     },
     {
+      "id": "docs-login-guide",
+      "surface": "docs",
+      "title": "Docs — Signing In Guide",
+      "description": "Rendered sign-in documentation guide page (services/docs/docs/guides/login.md), covering the CLI and TUI device-code flows.",
+      "privacy": "fixture",
+      "route": "/guides/login",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
       "id": "docs-notes-guide",
       "surface": "docs",
       "title": "Docs — Notes Guide",
@@ -2002,6 +2404,16 @@
       "viewport": { "width": 1280, "height": 1000 }
     },
     {
+      "id": "docs-plugins",
+      "surface": "docs",
+      "title": "Docs — Plugins",
+      "description": "Rendered Plugins page (services/docs/docs/plugins.md), including the Agent plugins table where `opencode` reads Experimental (opt-in) rather than Coming soon.",
+      "privacy": "fixture",
+      "route": "/plugins",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
       "id": "docs-settings",
       "surface": "docs",
       "title": "Docs — Settings Reference",
@@ -2093,7 +2505,6 @@
         "web-sessions-filter-flow",
         "web-sessions-filter-persist",
         "web-sessions-org-filter-flow",
-        "web-sessions-org-filter-row-attribution",
         "web-session-detail",
         "web-session-detail-no-pr",
         "web-session-detail-rotation",
@@ -2108,35 +2519,48 @@
         "web-organization-members",
         "web-organization-members-mobile",
         "web-repository-edit",
+        "web-repository-organization-refusal",
         "web-repository-removal",
         "web-cron-list",
         "web-cron-list-mobile",
+        "web-cron-org-filter-flow",
+        "web-cron-org-filter-row-attribution",
         "web-cron-filter-flow",
         "web-cron-form",
         "web-cron-nav",
         "web-accounts-list",
         "web-accounts-list-mobile",
         "web-accounts-filter-flow",
+        "web-accounts-org-filter-flow",
+        "web-accounts-partial-organization-failure",
         "web-accounts-refresh-flow",
         "web-accounts-cold-start-probe-failure",
         "web-accounts-refresh-interrupted",
         "web-accounts-give-up-retry",
         "web-daemons-mobile",
+        "web-daemons-org-attribution",
+        "web-daemons-org-filter",
         "web-session-expired",
         "web-sessions-daemons-give-up",
         "web-sessions-reconnecting-dark",
         "web-header-menu",
         "web-org-create-modal",
         "web-org-settings",
+        "web-org-danger-zone",
+        "web-org-delete-confirm",
+        "web-org-delete-refused",
         "web-org-name-edit-flow",
         "web-org-name-edit-escape",
         "web-org-picker-switch",
+        "web-org-billing-portal",
+        "web-org-billing-portal-second-org",
         "web-account-add-form",
         "web-account-remove",
         "web-account",
         "web-subscribe",
         "web-subscribe-trial-used",
         "web-subscribe-no-notification-prompt",
+        "web-subscribe-active-redirect",
         "web-chat-terminal",
         "web-chat-terminal-reconnecting",
         "web-chat-terminal-stop-icon",
@@ -2250,6 +2674,11 @@
       "recipeIds": ["docs-cli-reference"]
     },
     {
+      "name": "Docs Plugins page",
+      "patterns": ["services/docs/docs/plugins"],
+      "recipeIds": ["docs-plugins"]
+    },
+    {
       "name": "Docs Settings reference",
       "patterns": ["services/docs/docs/reference/settings"],
       "recipeIds": ["docs-settings"]
@@ -2263,6 +2692,11 @@
       "name": "Docs Scheduled Sessions guide",
       "patterns": ["services/docs/docs/guides/scheduled-sessions"],
       "recipeIds": ["docs-scheduled-sessions"]
+    },
+    {
+      "name": "Docs Signing In guide",
+      "patterns": ["services/docs/docs/guides/login"],
+      "recipeIds": ["docs-login-guide"]
     }
   ]
 }

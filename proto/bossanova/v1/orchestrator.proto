@@ -31,12 +31,11 @@ service OrchestratorService {
 
   // Proxied daemon RPCs (remote CLI → orchestrator → daemon)
   rpc ProxyListSessions(ProxyListSessionsRequest) returns (ProxyListSessionsResponse);
-  // Union of sessions across EVERY organization the caller is a member of.
-  // A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
-  // keep failing when the caller's scope resolves to no single organization,
-  // because that error is how a caller learns to claim one. This read must
-  // succeed exactly then.
-  rpc ProxyListSessionsAcrossOrganizations(ProxyListSessionsAcrossOrganizationsRequest) returns (ProxyListSessionsAcrossOrganizationsResponse);
+  // Deprecated: use ProxyListSessions with organization_id unset for the union,
+  // or set organization_id to narrow the read.
+  rpc ProxyListSessionsAcrossOrganizations(ProxyListSessionsAcrossOrganizationsRequest) returns (ProxyListSessionsAcrossOrganizationsResponse) {
+    option deprecated = true;
+  }
   rpc ProxyGetSession(ProxyGetSessionRequest) returns (ProxyGetSessionResponse);
   rpc ProxyAttachSession(ProxyAttachSessionRequest) returns (stream ProxyAttachSessionResponse);
   // Creates a new session on a chosen daemon, streaming setup output as it
@@ -73,8 +72,9 @@ service OrchestratorService {
   // Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
   // carries no session_id.
   rpc ProxySendChatMessage(ProxySendChatMessageRequest) returns (ProxySendChatMessageResponse);
-  // Aggregates repos across all of the caller's live daemons, deduped by
-  // origin URL, with the serving daemon IDs unioned per repo.
+  // Aggregates repos across the caller's live daemons, deduped by origin URL,
+  // with the serving daemon IDs unioned per repo. Spans every organization the
+  // caller belongs to unless the request narrows it to one.
   rpc ProxyListReposAggregated(ProxyListReposAggregatedRequest) returns (ProxyListReposAggregatedResponse);
   // Lists the installed agents on a single named daemon via its reverse stream.
   rpc ProxyListAgents(ProxyListAgentsRequest) returns (ProxyListAgentsResponse);
@@ -229,6 +229,14 @@ service OrchestratorService {
   rpc InviteOrganizationMember(InviteOrganizationMemberRequest) returns (InviteOrganizationMemberResponse);
   rpc RemoveOrganizationMember(RemoveOrganizationMemberRequest) returns (RemoveOrganizationMemberResponse);
   rpc SetOrganizationMemberRole(SetOrganizationMemberRoleRequest) returns (SetOrganizationMemberRoleResponse);
+  // DeleteOrganization removes an organization the caller owns. Refused unless
+  // the organization is empty: no sessions, no entitled cloud account, no other
+  // members. The personal organization can never be deleted.
+  rpc DeleteOrganization(DeleteOrganizationRequest) returns (DeleteOrganizationResponse);
+  // LeaveOrganization removes the CALLER's own membership. Any member may
+  // leave; the last owner of an organization that still has members may not,
+  // and nobody may leave their personal organization.
+  rpc LeaveOrganization(LeaveOrganizationRequest) returns (LeaveOrganizationResponse);
   // Deprecated: use AuthKit switchToOrganization instead. This RPC is
   // deprecated rather than deleted because buf breaking: use: FILE blocks
   // deleting it from bossanova.v1; true removal requires bossanova.v2.
@@ -275,7 +283,13 @@ message PublishDaemonSnapshotRequest {
 
 message PublishDaemonSnapshotResponse {}
 
-message ListDaemonsRequest {}
+message ListDaemonsRequest {
+  // Target organization, if the caller needs one. Otherwise a user-scoped
+  // caller on V20260905 or newer receives the union across every organization
+  // they belong to. Older clients and daemon-authenticated callers retain the
+  // legacy single-organization resolution.
+  optional string organization_id = 1;
+}
 
 message DaemonInfo {
   string daemon_id = 1;
@@ -287,10 +301,26 @@ message DaemonInfo {
   // has no separate heartbeat; the live stream IS the liveness signal.
   google.protobuf.Timestamp connected_at = 5;
   bool online = 6;
+  // Organization whose daemon inventory read produced this row.
+  string organization_id = 7;
 }
 
 message ListDaemonsResponse {
   repeated DaemonInfo daemons = 1;
+  // Organizations whose daemon inventory could not be read. Their daemons are
+  // absent from `daemons`; the rest of the union is still served. Always empty
+  // for explicitly narrowed, legacy-version, and daemon-authenticated reads.
+  repeated OrganizationDaemonReadFailure failed_organizations = 2;
+}
+
+// One organization whose daemon inventory could not be read during a
+// cross-organization fan-out.
+message OrganizationDaemonReadFailure {
+  string organization_id = 1;
+  string organization_name = 2;
+  // Human-readable cause, safe to display. Never carries credentials or
+  // internal identifiers beyond the organization id above.
+  string reason = 3;
 }
 
 // --- Session Transfer ---
@@ -319,6 +349,10 @@ message ProxyListSessionsRequest {
   bool include_archived = 3;
   // Target daemon, if known. Otherwise orchestrator queries all.
   optional string daemon_id = 4;
+  // Unset means every organization the caller belongs to. Set narrows to that
+  // organization after a membership check. Clients pinned below 2026-09-12
+  // retain the former single-organization behavior when this is unset.
+  optional string organization_id = 5;
 }
 
 message ProxyListSessionsResponse {
@@ -328,9 +362,14 @@ message ProxyListSessionsResponse {
   // the rendered state directly. Tag reserved to prevent reuse.
   reserved 2;
   reserved "chat_statuses";
+  // Organizations whose read failed. Their sessions are absent from
+  // `sessions`; the rest of the union is still served.
+  repeated OrganizationSessionReadFailure failed_organizations = 3;
 }
 
+// Deprecated: use ProxyListSessions with organization_id instead.
 message ProxyListSessionsAcrossOrganizationsRequest {
+  option deprecated = true;
   // Mirrors ProxyListSessionsRequest field-for-field; each filter is applied
   // per organization, exactly as the single-organization read applies it.
   // The archived flag carries the should_ prefix the bool naming rule requires;
@@ -343,7 +382,9 @@ message ProxyListSessionsAcrossOrganizationsRequest {
   optional string daemon_id = 4;
 }
 
+// Deprecated: use ProxyListSessionsResponse instead.
 message ProxyListSessionsAcrossOrganizationsResponse {
+  option deprecated = true;
   // Union across the caller's memberships, sorted newest-first then by id.
   // Unlike ProxyListSessionsResponse.sessions, every entry carries a non-empty
   // `organization_id` naming the organization whose read produced it.
@@ -580,6 +621,10 @@ message AggregatedRepo {
   string display_name = 2;
   string default_base_branch = 3;
   repeated DaemonRepoRef daemons = 4;
+  // Organization that holds this origin, but only when the caller is a member
+  // of that organization. Empty also covers a holder outside the caller's
+  // memberships, so it does not mean the origin is unclaimed.
+  string organization_id = 5;
 }
 
 // DaemonRepoRef ties a logical repo to one serving daemon: that daemon's local
@@ -594,10 +639,53 @@ message DaemonRepoRef {
   string daemon_hostname = 5;
 }
 
-message ProxyListReposAggregatedRequest {}
+message ProxyListReposAggregatedRequest {
+  // Target organization, if the caller needs one. Otherwise the orchestrator
+  // queries every organization the caller belongs to — the same shape as
+  // ProxyListSessionsRequest.daemon_id one axis up.
+  //
+  // Absent is a defined answer ("all of them"), not an unresolved scope, so
+  // this read never raises the ambiguous-scope FailedPrecondition that
+  // ProxyListSessions raises. Set narrows to that organization after a
+  // membership check; an organization the caller does not belong to is denied
+  // rather than quietly widened.
+  //
+  // Before V20260905 there was no field, and the read resolved ONE organization
+  // from the caller's own claim. A client pinned older keeps that behavior.
+  optional string organization_id = 1;
+}
 
 message ProxyListReposAggregatedResponse {
+  // Deduped by normalized origin URL, with the serving daemon refs unioned. A
+  // repo registered on daemons in two organizations is ONE entry naming both.
   repeated AggregatedRepo repos = 1;
+  // Organizations whose fleet could not be read. Their repos are absent from
+  // `repos`; the rest of the union is still served, so a client showing an
+  // "all organizations" view should surface this as a partial result. Always
+  // empty when `organization_id` narrowed the read to one organization, which
+  // fails whole instead.
+  repeated OrganizationRepoReadFailure failed_organizations = 2;
+}
+
+// One organization whose fleet could not be read during a cross-organization
+// repository fan-out. Mirrors OrganizationSessionReadFailure rather than
+// reusing it: the two reads fail for different reasons and a shared message
+// would tie their vocabularies together.
+message OrganizationRepoReadFailure {
+  string organization_id = 1;
+  string organization_name = 2;
+  // Human-readable cause, safe to display. Never carries credentials or
+  // internal identifiers beyond the organization id above.
+  string reason = 3;
+}
+
+// One organization whose fleet could not be read while serving one of the
+// cross-organization fleet reads. The reason is safe to display and never
+// contains credentials or internal identifiers.
+message OrganizationFleetReadFailure {
+  string organization_id = 1;
+  string organization_name = 2;
+  string reason = 3;
 }
 
 message ProxyListAgentsRequest {
@@ -797,10 +885,40 @@ message CronJobWithDaemon {
   CronJob job = 1;
   string daemon_id = 2;
   string daemon_hostname = 3;
+  // Organization whose fleet read produced this row. Always populated from
+  // V20260905 on; older clients ignore the additive field.
+  string organization_id = 4;
 }
 
-message ProxyListCronJobsRequest {}
-message ProxyListCronJobsResponse { repeated CronJobWithDaemon jobs = 1; }
+message ProxyListCronJobsRequest {
+  // Target organization, if the caller needs one. Otherwise the orchestrator
+  // queries every organization the caller belongs to. Set narrows the read
+  // after a membership check; an organization outside the caller's membership
+  // is denied rather than quietly widened.
+  //
+  // Before V20260910 the read resolved one organization from the caller's own
+  // claim. A client pinned older keeps that behavior.
+  optional string organization_id = 1;
+}
+
+message ProxyListCronJobsResponse {
+  repeated CronJobWithDaemon jobs = 1;
+  // Organizations whose fleets could not be read. Their jobs are absent while
+  // the rest of the union is still served. Always empty when organization_id
+  // narrows the read to one organization, which fails whole instead.
+  repeated OrganizationCronJobReadFailure failed_organizations = 2;
+}
+
+// One organization whose fleet could not be read during a cross-organization
+// cron-job fan-out. This read has its own failure vocabulary rather than
+// reusing another response family's message.
+message OrganizationCronJobReadFailure {
+  string organization_id = 1;
+  string organization_name = 2;
+  // Human-readable cause, safe to display. Never carries credentials or
+  // internal identifiers beyond the organization id above.
+  string reason = 3;
+}
 
 // ProxyCreateCronJobRequest names the daemon to create the cron job on plus the
 // creation parameters (mirrors CreateCronJobCommand in stream.proto).
@@ -864,8 +982,16 @@ message ProxyListGithubCallbacksRequest {
   optional int32  pr_number      = 4;
   optional string trigger        = 5;
   optional string state          = 6;
+  // Target organization, if the caller needs one. Absent queries every
+  // organization the caller belongs to. Set narrows after a membership check;
+  // a non-member organization is denied rather than quietly widened. Before
+  // V20260910 there was no field and this read resolved one organization.
+  optional string organization_id = 7;
 }
-message ProxyListGithubCallbacksResponse { repeated GithubCallback github_callbacks = 1; }
+message ProxyListGithubCallbacksResponse {
+  repeated GithubCallback github_callbacks = 1;
+  repeated OrganizationFleetReadFailure failed_organizations = 2;
+}
 
 message ProxyDeleteGithubCallbackRequest {
   string target_chat_id = 1; // routing key (FindDaemonForChat)
@@ -954,8 +1080,16 @@ message ProxyListNotesRequest {
   // daemon that is offline or times out contributes nothing and is skipped
   // rather than failing the call.
   int32 limit = 6;
+  // Target organization, if the caller needs one. Absent queries every
+  // organization the caller belongs to. Set narrows after a membership check;
+  // a non-member organization is denied rather than quietly widened. Before
+  // V20260910 there was no field and this read resolved one organization.
+  optional string organization_id = 7;
 }
-message ProxyListNotesResponse { repeated Note notes = 1; }
+message ProxyListNotesResponse {
+  repeated Note notes = 1;
+  repeated OrganizationFleetReadFailure failed_organizations = 2;
+}
 
 message ProxyUpdateNoteRequest {
   string repo_id = 1; // routing key only; the daemon resolves by id alone
@@ -1210,6 +1344,17 @@ message CreateCheckoutSessionResponse {
 
 message CreateBillingPortalSessionRequest {
   string return_url = 1;
+
+  // Organization whose billing portal to open, as the internal organization id
+  // (the same flavour ListOrganizationMembers and InviteOrganizationMember
+  // take), NOT the WorkOS organization id.
+  //
+  // Absent or empty keeps the pre-existing behaviour exactly: the portal is
+  // minted for the cloud account the caller's own claim resolves to. Set, it
+  // targets the named organization instead, which bosso authorizes with a
+  // per-organization owner check — so a user who cannot re-scope their session
+  // to an organization can still cancel its subscription.
+  optional string organization_id = 2;
 }
 
 message CreateBillingPortalSessionResponse {
@@ -1252,7 +1397,7 @@ message Organization {
 }
 
 message OrganizationMember {
-  // bosso-local users.id; empty while an invite is unaccepted.
+  // bosso-local users.id; empty for invitation-only rows.
   string user_id = 1;
   string workos_membership_id = 2;
   string email = 3;
@@ -1260,6 +1405,11 @@ message OrganizationMember {
   MemberRole role = 5;
   bool is_invite_pending = 6;
   google.protobuf.Timestamp joined_at = 7;
+  // WorkOS invitation id; set for invitation-only rows.
+  string invitation_id = 8;
+  // True after WorkOS accepted the invitation but before the accepted user has
+  // landed as a local organization member through sign-in reconciliation.
+  bool is_invite_accepted = 9;
 }
 
 message ListOrganizationsRequest {}
@@ -1314,8 +1464,11 @@ message InviteOrganizationMemberResponse {
 
 message RemoveOrganizationMemberRequest {
   string organization_id = 1;
+  // Exactly one member identifier or invitation_id must be set. invitation_id
+  // revokes a pending invitation instead of removing an active membership.
   string user_id = 2;
   string workos_membership_id = 3;
+  string invitation_id = 4;
 }
 
 message RemoveOrganizationMemberResponse {}
@@ -1330,6 +1483,18 @@ message SetOrganizationMemberRoleRequest {
 message SetOrganizationMemberRoleResponse {
   OrganizationMember member = 1;
 }
+
+message DeleteOrganizationRequest {
+  string organization_id = 1;
+}
+
+message DeleteOrganizationResponse {}
+
+message LeaveOrganizationRequest {
+  string organization_id = 1;
+}
+
+message LeaveOrganizationResponse {}
 
 // Deprecated: use AuthKit switchToOrganization instead. This message is
 // deprecated rather than deleted because buf breaking: use: FILE blocks deleting
@@ -1465,26 +1630,61 @@ message ProxyListCheckSnapshotsResponse { repeated CheckSnapshot snapshots = 1; 
 // ProxyListAgentsAggregatedRequest aggregates installed agents across the
 // caller's Ready daemons (session-less). Distinct from the daemon-scoped
 // ProxyListAgents, which takes a daemon_id.
-message ProxyListAgentsAggregatedRequest {}
-message ProxyListAgentsAggregatedResponse { repeated AgentInfo agents = 1; }
+message ProxyListAgentsAggregatedRequest {
+  // Target organization, if the caller needs one. Absent queries every
+  // organization the caller belongs to. Set narrows after a membership check;
+  // a non-member organization is denied rather than quietly widened. Before
+  // V20260910 there was no field and this read resolved one organization.
+  optional string organization_id = 1;
+}
+message ProxyListAgentsAggregatedResponse {
+  repeated AgentInfo agents = 1;
+  repeated OrganizationFleetReadFailure failed_organizations = 2;
+}
 
 // ProxyListPluginsRequest aggregates configured plugins across the caller's
 // Ready daemons.
-message ProxyListPluginsRequest {}
-message ProxyListPluginsResponse { repeated InstalledPlugin plugins = 1; }
+message ProxyListPluginsRequest {
+  // Target organization, if the caller needs one. Absent queries every
+  // organization the caller belongs to. Set narrows after a membership check;
+  // a non-member organization is denied rather than quietly widened. Before
+  // V20260910 there was no field and this read resolved one organization.
+  optional string organization_id = 1;
+}
+message ProxyListPluginsResponse {
+  repeated InstalledPlugin plugins = 1;
+  repeated OrganizationFleetReadFailure failed_organizations = 2;
+}
 
 // ProxyGetCronJobRequest returns the first Ready daemon that owns the id.
 // An empty cron_job in the response => not found (bosso returns CodeNotFound).
-message ProxyGetCronJobRequest { string id = 1; }
-message ProxyGetCronJobResponse { CronJob cron_job = 1; }
+message ProxyGetCronJobRequest {
+  string id = 1;
+  // Target organization, if the caller needs one. Absent queries every
+  // organization the caller belongs to. Set narrows after a membership check;
+  // a non-member organization is denied rather than quietly widened. Before
+  // V20260910 there was no field and this read resolved one organization.
+  optional string organization_id = 2;
+}
+message ProxyGetCronJobResponse {
+  CronJob cron_job = 1;
+  repeated OrganizationFleetReadFailure failed_organizations = 2;
+}
 
 // ProxyRepairDoctorRequest merges repair-doctor reports across the caller's
 // Ready daemons; when the caller has >1 Ready daemon, bosso prefixes each check
 // name and log path with the daemon hostname for provenance.
-message ProxyRepairDoctorRequest {}
+message ProxyRepairDoctorRequest {
+  // Target organization, if the caller needs one. Absent queries every
+  // organization the caller belongs to. Set narrows after a membership check;
+  // a non-member organization is denied rather than quietly widened. Before
+  // V20260910 there was no field and this read resolved one organization.
+  optional string organization_id = 1;
+}
 message ProxyRepairDoctorResponse {
   repeated RepairDoctorCheck checks = 1;
   repeated RepairLogSnapshot recent_logs = 2;
+  repeated OrganizationFleetReadFailure failed_organizations = 3;
 }
 
 // Destructive-tier proxy messages (BOS-404). Session-scoped requests carry the
@@ -1503,8 +1703,22 @@ message ProxyRemoveSessionResponse {}
 // Ready daemons.
 message ProxyEmptyTrashRequest {
   optional google.protobuf.Timestamp older_than = 1;
+  // Target organization, if the caller needs one. Absent queries every
+  // organization the caller belongs to. Set narrows after a membership check;
+  // a non-member organization is denied rather than quietly widened. Before
+  // V20260910 there was no field and this read resolved one organization.
+  optional string organization_id = 2;
 }
-message ProxyEmptyTrashResponse { int32 deleted_count = 1; }
+message ProxyEmptyTrashResponse {
+  int32 deleted_count = 1;
+  repeated OrganizationFleetReadFailure failed_organizations = 2;
+  repeated OrganizationTrashDeletion deletions = 3;
+}
+message OrganizationTrashDeletion {
+  string organization_id = 1;
+  string organization_name = 2;
+  int32 deleted_count = 3;
+}
 
 // SessionSummary is a lightweight view of a Session for report context.
 message SessionSummary {

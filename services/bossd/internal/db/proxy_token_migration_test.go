@@ -100,8 +100,9 @@ func TestProxyTokensMigrationIndexes(t *testing.T) {
 
 // TestProxyTokensMigrationForeignKeys pins the load-bearing asymmetry: exactly
 // ONE foreign key, sessions(id) ON DELETE CASCADE, and deliberately none on
-// agent_session_id — agent_chats.agent_session_id is not unique, so SQLite
-// cannot accept it as a parent key and the chat-only delete path must issue an
+// agent_session_id. That column was originally not unique, so SQLite could not
+// accept it as a parent key; 20260904000000 made it UNIQUE without adding the
+// FK, so the chat-only delete path still gets no cascade and must issue an
 // explicit DELETE instead. A future migration that "helpfully" adds that FK
 // would fail here rather than silently changing the eviction contract.
 func TestProxyTokensMigrationForeignKeys(t *testing.T) {

@@ -33,8 +33,8 @@ binary:
 cli="boss mcp install --force"
 />
 
-Upgrade commands act on the local install — the daemon service, the MCP service
-file, and the binary on disk — so none of them has an MCP tool. The **Chat** and
+Upgrade commands act on the local install (the daemon service, the MCP service
+file, and the binary on disk), so none of them has an MCP tool. The **Chat** and
 **MCP** tabs say so explicitly rather than leaving the gap implicit.
 
 ## From the TUI (in-app upgrade)
@@ -60,7 +60,7 @@ run the new binary.
 
 The in-app upgrade fetches public GitHub release assets and does **not** require
 a GitHub login. (A `gh auth login` is still required for the PR and CI features
-Bossanova uses day to day — see [Installation](./install.md).)
+Bossanova uses day to day; see [Installation](./install.md).)
 
 ## Via the `boss upgrade` CLI
 
@@ -88,7 +88,7 @@ Useful flags:
 
 Upgrade checks require a stable release build; development builds report that a
 stable version is required. Homebrew installs upgrade through the tap, so exact
-`--version` installs are not supported there — run
+`--version` installs are not supported there; run
 `brew upgrade bossanova-dev/tap/bossanova` instead.
 
 ## Manual re-install via curl

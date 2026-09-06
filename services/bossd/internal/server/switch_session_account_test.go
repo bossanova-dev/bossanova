@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
+	"github.com/rs/zerolog"
 )
 
 // switchChatStoreFake is a minimal db.AgentChatStore for exercising the
@@ -49,10 +52,6 @@ func (f *switchChatStoreFake) UpdateTitleByAgentSessionID(context.Context, strin
 	return nil
 }
 
-func (f *switchChatStoreFake) UpdateAgentSessionID(context.Context, string, string, string) error {
-	return nil
-}
-
 func (f *switchChatStoreFake) UpdateTmuxSessionName(context.Context, string, *string) error {
 	return nil
 }
@@ -66,6 +65,10 @@ func (f *switchChatStoreFake) UpdateAccountIDByAgentSessionID(context.Context, s
 }
 
 func (f *switchChatStoreFake) MarkStartFailed(context.Context, string, string) error { return nil }
+
+func (f *switchChatStoreFake) RebindResumedChat(context.Context, string, db.RebindResumedChatParams) error {
+	return nil
+}
 
 func (f *switchChatStoreFake) DeleteByAgentSessionID(context.Context, string) error { return nil }
 
@@ -106,6 +109,51 @@ func TestSwitchSessionAccount_NoLiveChatIsFailedPrecondition(t *testing.T) {
 	}
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", got)
+	}
+}
+
+// TestSwitchSessionAccount_AuthInvalidTargetIsFailedPrecondition covers the
+// race between the handler's own eligibility precheck and the Lifecycle's
+// reload of the same target. resolveSessionAccount reads the account row at
+// request time; the Lifecycle reads it again before touching the pane. Credential
+// maintenance can bench the target in between, so the Lifecycle's refusal is a
+// routine statement about the target's state and must be reported as a failed
+// precondition — not as CodeInternal, which claims a daemon fault for a request
+// the daemon handled exactly as designed (and which the hosted classifier, which
+// maps only NotFound and FailedPrecondition, degrades further into an unmapped
+// code).
+func TestSwitchSessionAccount_AuthInvalidTargetIsFailedPrecondition(t *testing.T) {
+	live := "boss-repo-live"
+	switcher := &fakeAccountSwitcher{
+		err: fmt.Errorf("%w: account %q; re-authenticate it before switching",
+			session.ErrAccountAuthInvalid, "work"),
+	}
+	srv := &Server{
+		agentChats: &switchChatStoreFake{
+			chats: []*models.AgentChat{
+				{AgentSessionID: "chat-live", TmuxSessionName: &live, AgentName: "claude"},
+			},
+		},
+		// Healthy on this read: that is what lets the precheck pass and puts the
+		// refusal where the reviewer's race puts it — inside the Lifecycle.
+		accounts: accountBindingStore{byProvider: map[models.AccountProvider][]*models.Account{
+			models.AccountProviderClaude: {
+				{ID: "acct-work", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+			},
+		}},
+		switchAccountFn: switcher.switchFn,
+		logger:          zerolog.Nop(),
+	}
+
+	_, err := srv.SwitchSessionAccount(context.Background(), connect.NewRequest(&pb.SwitchSessionAccountRequest{
+		SessionId: "session-1",
+		AccountId: "work",
+	}))
+	if err == nil {
+		t.Fatal("expected an error when the target account is auth-invalid, got nil")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (CodeInternal reports a server fault for a routine target-state refusal)", got)
 	}
 }
 

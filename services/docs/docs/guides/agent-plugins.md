@@ -14,11 +14,24 @@ creation, repo setup, PR polling, and plugin dispatch.
 
 ## Bundled plugins
 
-| Agent    | Plugin                  | CLI        | Status    |
-| -------- | ----------------------- | ---------- | --------- |
-| Claude   | `bossd-plugin-claude`   | `claude`   | Available |
-| Codex    | `bossd-plugin-codex`    | `codex`    | Available |
-| OpenCode | `bossd-plugin-opencode` | `opencode` | Available |
+| Agent    | Plugin                  | CLI        | Status                |
+| -------- | ----------------------- | ---------- | --------------------- |
+| Claude   | `bossd-plugin-claude`   | `claude`   | Available             |
+| Codex    | `bossd-plugin-codex`    | `codex`    | Available             |
+| OpenCode | `bossd-plugin-opencode` | `opencode` | Experimental (opt-in) |
+
+`bossd-plugin-opencode` is installed with bossanova but is **not loaded** by
+default; it is still alpha. Opt in by adding it to `experimental_plugins` in
+`settings.json` and restarting the daemon:
+
+```json
+{
+  "experimental_plugins": ["opencode"]
+}
+```
+
+Its `plugins[].enabled` field is ignored while it is experimental; see
+[`experimental_plugins`](../reference/settings.md#experimental_plugins).
 
 ## Install the matching CLI
 
@@ -81,7 +94,7 @@ The OpenCode plugin (`bossd-plugin-opencode`) drives the
 
 `bossd` routes a session to the OpenCode plugin purely by the session's agent
 name matching the plugin's `GetInfo` name, `opencode`. There is no per-agent
-switch or hardcoded allow-list — the dispatcher resolves the free-form agent
+switch or hardcoded allow-list; the dispatcher resolves the free-form agent
 name against the registry of loaded plugins keyed by their reported names. Set
 `opencode` as the default:
 
@@ -106,7 +119,7 @@ create its own `ses_*` identifier; a resumed chat uses `opencode --session
 first user turn through `--prompt`, which OpenCode submits on launch.
 
 MCP servers are the repository's to declare, through whatever mechanism the
-harness natively supports — bossd configures none of them for any agent, so
+harness natively supports; bossd configures none of them for any agent, so
 OpenCode is no different from claude or codex here. Its TUI status polling does
 remain limited: question and working-state detection do not yet parse OpenCode's
 pane grammar.

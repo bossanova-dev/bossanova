@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "title": "BOS-1151 One organization fails and the list still renders",
+  "fixture": {
+    "preset": "demo",
+    "env": {
+      "BOSS_AUTH_E2E_EMAIL": "proof@example.com",
+      "BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active",
+      "BOSS_ORG_E2E_ORGANIZATIONS": "org-acme=Acme Corp,org-globex=Globex Industries",
+      "BOSS_ORG_E2E_SESSION_ORGS": "repo-1=Acme Corp,repo-2=Acme Corp,repo-3=Globex Industries,repo-4=Globex Industries",
+      "BOSS_ORG_E2E_SESSION_READ_FAILURE": "Globex Industries:sessions for this organization could not be read right now"
+    }
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "partial-organization-read",
+      "title": "a failed organization is named, and the sessions that were read still render",
+      "steps": [
+        {
+          "waitFor": {
+            "anyOf": [
+              { "text": "list is incomplete", "match": "normalized" },
+              { "text": "[n]ew session", "match": "normalized" }
+            ],
+            "label": "Home session list loaded"
+          },
+          "timeoutMs": 15000,
+          "caption": "The board has settled on the home session list"
+        },
+        { "waitMs": 500, "caption": "Let the first poll settle" },
+        {
+          "expect": [
+            {
+              "text": "list is incomplete",
+              "match": "normalized",
+              "label": "the board says the list is short rather than silently showing fewer rows"
+            },
+            {
+              "text": "Globex Industries",
+              "match": "normalized",
+              "label": "the failing organization is named, so the user knows WHAT is missing"
+            },
+            {
+              "text": "sessions for this organization could not be read right now",
+              "match": "normalized",
+              "label": "the server's reason is passed through verbatim, not re-worded into this view's guess"
+            },
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "a session that WAS read is still listed"
+            },
+            {
+              "text": "Add rate limiting to public API",
+              "match": "normalized",
+              "label": "and so is the other readable organization's second session — the list is degraded, not emptied"
+            },
+            {
+              "text": "^(?![\\s\\S]*Refresh landing page hero)[\\s\\S]*$",
+              "match": "regex",
+              "label": "the failed organization's sessions really are absent, so the notice is describing a genuine partial read"
+            }
+          ],
+          "caption": "A cross-organization read is a fan-out, so one organization failing yields a short list rather than an error. Without the notice the missing rows read as 'that organization has no sessions' — the wrong conclusion, in the one view whose job is seeing across organizations."
+        }
+      ]
+    }
+  ]
+}

@@ -501,7 +501,12 @@ func (m AccountEditModel) renderDetails(a *pb.Account) string {
 	rows := [][2]string{
 		{"Provider", a.GetProvider()},
 		{"Status", accountStatusLabel(a)},
-		{"Health", accountHealthCell(accountHealthLabel(a))},
+		{"Health", accountHealthCellFor(a, accountHealthLabel(a))},
+		// Directly under Health, because it is the field that can veto it. The
+		// credential check is ordered BEFORE the long masked diagnostics below:
+		// a load-bearing verdict placed after a multi-line payload is the field
+		// that disappears (BOS-892).
+		{"Credential check", accountCheckedDetail(a)},
 		{"Priority", strconv.Itoa(int(a.GetPriority()))},
 		{"Tier", detailOrDash(a.GetTier())},
 		{"Usage 5h", accountUsageWindowDetail(u, u.GetUtil_5H(), u.GetReset_5H(), now)},

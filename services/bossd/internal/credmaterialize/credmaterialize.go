@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -88,6 +89,17 @@ type Materialized struct {
 	// HomeDir is the per-account credential dir for codex, or "" for claude
 	// (which needs no on-disk home).
 	HomeDir string
+	// RefreshAssertion is the redacted BOS-1174 verdict about the credential
+	// that was just materialized: whether its own access token says a token
+	// refresh should already have happened. It is a classification derived
+	// here and nothing else — no claim value, no timestamp and no token byte
+	// crosses this boundary, which is what lets a caller carry it all the way
+	// to a durable record permitted to hold only closed-set tokens.
+	//
+	// It is Unknown for claude (whose materialization involves no OAuth access
+	// token this package can read) and for every codex blob whose expiry
+	// cannot be evaluated.
+	RefreshAssertion RefreshAssertion
 }
 
 // CredentialStore is the narrow slice of the account store this package needs.
@@ -248,6 +260,7 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 	m.writeCacheDirTag()
 	authPath := filepath.Join(dir, authFileName)
 	var recorded [sha256.Size]byte
+	refresh := RefreshAssertionUnknown
 	materializeAuth := func() error {
 		blob, err := m.store.LoadCredential(ctx, accountID)
 		if err != nil {
@@ -278,6 +291,11 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 		// Hash the bytes actually written so the persist-back unchanged-gate no-ops
 		// until codex itself mutates auth.json.
 		recorded = sha256.Sum256(authBlob)
+		// BOS-1174: classify the bytes ACTUALLY materialized (post-reconcile),
+		// because those are the ones the agent is about to authenticate with —
+		// the stored blob may be the older side of the fold-back above. What
+		// leaves this closure is the classification only; the blob does not.
+		refresh = refreshAssertion(authBlob, time.Now())
 		// Persist that same hash beside the file: `recorded` dies with this process,
 		// but the next materialization — possibly after a bossd restart — needs it to
 		// know whether auth.json still holds what we wrote (see
@@ -299,8 +317,9 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 	}
 
 	return Materialized{
-		Env:     map[string]string{"CODEX_HOME": dir},
-		HomeDir: dir,
+		Env:              map[string]string{"CODEX_HOME": dir},
+		HomeDir:          dir,
+		RefreshAssertion: refresh,
 	}, persist, nil
 }
 

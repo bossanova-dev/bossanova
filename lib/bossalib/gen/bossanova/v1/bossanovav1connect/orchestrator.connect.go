@@ -295,6 +295,12 @@ const (
 	// OrchestratorServiceSetOrganizationMemberRoleProcedure is the fully-qualified name of the
 	// OrchestratorService's SetOrganizationMemberRole RPC.
 	OrchestratorServiceSetOrganizationMemberRoleProcedure = "/bossanova.v1.OrchestratorService/SetOrganizationMemberRole"
+	// OrchestratorServiceDeleteOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's DeleteOrganization RPC.
+	OrchestratorServiceDeleteOrganizationProcedure = "/bossanova.v1.OrchestratorService/DeleteOrganization"
+	// OrchestratorServiceLeaveOrganizationProcedure is the fully-qualified name of the
+	// OrchestratorService's LeaveOrganization RPC.
+	OrchestratorServiceLeaveOrganizationProcedure = "/bossanova.v1.OrchestratorService/LeaveOrganization"
 	// OrchestratorServiceSwitchActiveOrganizationProcedure is the fully-qualified name of the
 	// OrchestratorService's SwitchActiveOrganization RPC.
 	OrchestratorServiceSwitchActiveOrganizationProcedure = "/bossanova.v1.OrchestratorService/SwitchActiveOrganization"
@@ -334,11 +340,10 @@ type OrchestratorServiceClient interface {
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
 	ProxyListSessions(context.Context, *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error)
-	// Union of sessions across EVERY organization the caller is a member of.
-	// A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
-	// keep failing when the caller's scope resolves to no single organization,
-	// because that error is how a caller learns to claim one. This read must
-	// succeed exactly then.
+	// Deprecated: use ProxyListSessions with organization_id unset for the union,
+	// or set organization_id to narrow the read.
+	//
+	// Deprecated: do not use.
 	ProxyListSessionsAcrossOrganizations(context.Context, *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest]) (*connect.ServerStreamForClient[v1.ProxyAttachSessionResponse], error)
@@ -376,8 +381,9 @@ type OrchestratorServiceClient interface {
 	// Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
 	// carries no session_id.
 	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
-	// Aggregates repos across all of the caller's live daemons, deduped by
-	// origin URL, with the serving daemon IDs unioned per repo.
+	// Aggregates repos across the caller's live daemons, deduped by origin URL,
+	// with the serving daemon IDs unioned per repo. Spans every organization the
+	// caller belongs to unless the request narrows it to one.
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
 	// Lists the installed agents on a single named daemon via its reverse stream.
 	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
@@ -527,6 +533,14 @@ type OrchestratorServiceClient interface {
 	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
 	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
 	SetOrganizationMemberRole(context.Context, *connect.Request[v1.SetOrganizationMemberRoleRequest]) (*connect.Response[v1.SetOrganizationMemberRoleResponse], error)
+	// DeleteOrganization removes an organization the caller owns. Refused unless
+	// the organization is empty: no sessions, no entitled cloud account, no other
+	// members. The personal organization can never be deleted.
+	DeleteOrganization(context.Context, *connect.Request[v1.DeleteOrganizationRequest]) (*connect.Response[v1.DeleteOrganizationResponse], error)
+	// LeaveOrganization removes the CALLER's own membership. Any member may
+	// leave; the last owner of an organization that still has members may not,
+	// and nobody may leave their personal organization.
+	LeaveOrganization(context.Context, *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error)
 	// Deprecated: use AuthKit switchToOrganization instead. This RPC is
 	// deprecated rather than deleted because buf breaking: use: FILE blocks
 	// deleting it from bossanova.v1; true removal requires bossanova.v2.
@@ -1077,6 +1091,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationMemberRole")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteOrganization: connect.NewClient[v1.DeleteOrganizationRequest, v1.DeleteOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceDeleteOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteOrganization")),
+			connect.WithClientOptions(opts...),
+		),
+		leaveOrganization: connect.NewClient[v1.LeaveOrganizationRequest, v1.LeaveOrganizationResponse](
+			httpClient,
+			baseURL+OrchestratorServiceLeaveOrganizationProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("LeaveOrganization")),
+			connect.WithClientOptions(opts...),
+		),
 		switchActiveOrganization: connect.NewClient[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse](
 			httpClient,
 			baseURL+OrchestratorServiceSwitchActiveOrganizationProcedure,
@@ -1205,6 +1231,8 @@ type orchestratorServiceClient struct {
 	inviteOrganizationMember             *connect.Client[v1.InviteOrganizationMemberRequest, v1.InviteOrganizationMemberResponse]
 	removeOrganizationMember             *connect.Client[v1.RemoveOrganizationMemberRequest, v1.RemoveOrganizationMemberResponse]
 	setOrganizationMemberRole            *connect.Client[v1.SetOrganizationMemberRoleRequest, v1.SetOrganizationMemberRoleResponse]
+	deleteOrganization                   *connect.Client[v1.DeleteOrganizationRequest, v1.DeleteOrganizationResponse]
+	leaveOrganization                    *connect.Client[v1.LeaveOrganizationRequest, v1.LeaveOrganizationResponse]
 	switchActiveOrganization             *connect.Client[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse]
 	setRepoOrganization                  *connect.Client[v1.SetRepoOrganizationRequest, v1.SetRepoOrganizationResponse]
 	getRepoOrganization                  *connect.Client[v1.GetRepoOrganizationRequest, v1.GetRepoOrganizationResponse]
@@ -1245,6 +1273,8 @@ func (c *orchestratorServiceClient) ProxyListSessions(ctx context.Context, req *
 
 // ProxyListSessionsAcrossOrganizations calls
 // bossanova.v1.OrchestratorService.ProxyListSessionsAcrossOrganizations.
+//
+// Deprecated: do not use.
 func (c *orchestratorServiceClient) ProxyListSessionsAcrossOrganizations(ctx context.Context, req *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error) {
 	return c.proxyListSessionsAcrossOrganizations.CallUnary(ctx, req)
 }
@@ -1649,6 +1679,16 @@ func (c *orchestratorServiceClient) SetOrganizationMemberRole(ctx context.Contex
 	return c.setOrganizationMemberRole.CallUnary(ctx, req)
 }
 
+// DeleteOrganization calls bossanova.v1.OrchestratorService.DeleteOrganization.
+func (c *orchestratorServiceClient) DeleteOrganization(ctx context.Context, req *connect.Request[v1.DeleteOrganizationRequest]) (*connect.Response[v1.DeleteOrganizationResponse], error) {
+	return c.deleteOrganization.CallUnary(ctx, req)
+}
+
+// LeaveOrganization calls bossanova.v1.OrchestratorService.LeaveOrganization.
+func (c *orchestratorServiceClient) LeaveOrganization(ctx context.Context, req *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error) {
+	return c.leaveOrganization.CallUnary(ctx, req)
+}
+
 // SwitchActiveOrganization calls bossanova.v1.OrchestratorService.SwitchActiveOrganization.
 //
 // Deprecated: do not use.
@@ -1700,11 +1740,10 @@ type OrchestratorServiceHandler interface {
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
 	ProxyListSessions(context.Context, *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error)
-	// Union of sessions across EVERY organization the caller is a member of.
-	// A sibling of ProxyListSessions, not a replacement: ProxyListSessions must
-	// keep failing when the caller's scope resolves to no single organization,
-	// because that error is how a caller learns to claim one. This read must
-	// succeed exactly then.
+	// Deprecated: use ProxyListSessions with organization_id unset for the union,
+	// or set organization_id to narrow the read.
+	//
+	// Deprecated: do not use.
 	ProxyListSessionsAcrossOrganizations(context.Context, *connect.Request[v1.ProxyListSessionsAcrossOrganizationsRequest]) (*connect.Response[v1.ProxyListSessionsAcrossOrganizationsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest], *connect.ServerStream[v1.ProxyAttachSessionResponse]) error
@@ -1742,8 +1781,9 @@ type OrchestratorServiceHandler interface {
 	// Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
 	// carries no session_id.
 	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
-	// Aggregates repos across all of the caller's live daemons, deduped by
-	// origin URL, with the serving daemon IDs unioned per repo.
+	// Aggregates repos across the caller's live daemons, deduped by origin URL,
+	// with the serving daemon IDs unioned per repo. Spans every organization the
+	// caller belongs to unless the request narrows it to one.
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
 	// Lists the installed agents on a single named daemon via its reverse stream.
 	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
@@ -1893,6 +1933,14 @@ type OrchestratorServiceHandler interface {
 	InviteOrganizationMember(context.Context, *connect.Request[v1.InviteOrganizationMemberRequest]) (*connect.Response[v1.InviteOrganizationMemberResponse], error)
 	RemoveOrganizationMember(context.Context, *connect.Request[v1.RemoveOrganizationMemberRequest]) (*connect.Response[v1.RemoveOrganizationMemberResponse], error)
 	SetOrganizationMemberRole(context.Context, *connect.Request[v1.SetOrganizationMemberRoleRequest]) (*connect.Response[v1.SetOrganizationMemberRoleResponse], error)
+	// DeleteOrganization removes an organization the caller owns. Refused unless
+	// the organization is empty: no sessions, no entitled cloud account, no other
+	// members. The personal organization can never be deleted.
+	DeleteOrganization(context.Context, *connect.Request[v1.DeleteOrganizationRequest]) (*connect.Response[v1.DeleteOrganizationResponse], error)
+	// LeaveOrganization removes the CALLER's own membership. Any member may
+	// leave; the last owner of an organization that still has members may not,
+	// and nobody may leave their personal organization.
+	LeaveOrganization(context.Context, *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error)
 	// Deprecated: use AuthKit switchToOrganization instead. This RPC is
 	// deprecated rather than deleted because buf breaking: use: FILE blocks
 	// deleting it from bossanova.v1; true removal requires bossanova.v2.
@@ -2439,6 +2487,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("SetOrganizationMemberRole")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceDeleteOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceDeleteOrganizationProcedure,
+		svc.DeleteOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceLeaveOrganizationHandler := connect.NewUnaryHandler(
+		OrchestratorServiceLeaveOrganizationProcedure,
+		svc.LeaveOrganization,
+		connect.WithSchema(orchestratorServiceMethods.ByName("LeaveOrganization")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceSwitchActiveOrganizationHandler := connect.NewUnaryHandler(
 		OrchestratorServiceSwitchActiveOrganizationProcedure,
 		svc.SwitchActiveOrganization,
@@ -2651,6 +2711,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceRemoveOrganizationMemberHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSetOrganizationMemberRoleProcedure:
 			orchestratorServiceSetOrganizationMemberRoleHandler.ServeHTTP(w, r)
+		case OrchestratorServiceDeleteOrganizationProcedure:
+			orchestratorServiceDeleteOrganizationHandler.ServeHTTP(w, r)
+		case OrchestratorServiceLeaveOrganizationProcedure:
+			orchestratorServiceLeaveOrganizationHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSwitchActiveOrganizationProcedure:
 			orchestratorServiceSwitchActiveOrganizationHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSetRepoOrganizationProcedure:
@@ -3018,6 +3082,14 @@ func (UnimplementedOrchestratorServiceHandler) RemoveOrganizationMember(context.
 
 func (UnimplementedOrchestratorServiceHandler) SetOrganizationMemberRole(context.Context, *connect.Request[v1.SetOrganizationMemberRoleRequest]) (*connect.Response[v1.SetOrganizationMemberRoleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SetOrganizationMemberRole is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) DeleteOrganization(context.Context, *connect.Request[v1.DeleteOrganizationRequest]) (*connect.Response[v1.DeleteOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteOrganization is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) LeaveOrganization(context.Context, *connect.Request[v1.LeaveOrganizationRequest]) (*connect.Response[v1.LeaveOrganizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.LeaveOrganization is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) SwitchActiveOrganization(context.Context, *connect.Request[v1.SwitchActiveOrganizationRequest]) (*connect.Response[v1.SwitchActiveOrganizationResponse], error) {

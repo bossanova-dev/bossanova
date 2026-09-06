@@ -112,6 +112,14 @@ func (r *recordingRegistrar) AdoptTokenForChat(sessionID, agentSessionID, accoun
 		agentSessionID: agentSessionID, accountID: accountID,
 	})
 }
+func (r *recordingRegistrar) RetargetChatToken(sessionID, priorAgentSessionID, newAgentSessionID, accountID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, adoptCall{
+		kind: "retarget", token: priorAgentSessionID, sessionID: sessionID,
+		agentSessionID: newAgentSessionID, accountID: accountID,
+	})
+}
 func (r *recordingRegistrar) got() []adoptCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()

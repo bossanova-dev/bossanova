@@ -1268,8 +1268,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260904 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260904)
+	if got := reg.Current(); got != apiversion.V20260914 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260914)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -1547,9 +1547,11 @@ func waitingResponseCases() []struct {
 			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
 		{"ProxyListSessionsAcrossOrganizations", bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
 			func() any {
+				//nolint:staticcheck // Deprecated response remains a supported transform surface.
 				return &pb.ProxyListSessionsAcrossOrganizationsResponse{Sessions: []*pb.Session{waitingSession()}}
 			},
 			func(m any) *pb.Session {
+				//nolint:staticcheck // Deprecated response remains a supported transform surface.
 				return m.(*pb.ProxyListSessionsAcrossOrganizationsResponse).GetSessions()[0]
 			}},
 		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
@@ -2385,9 +2387,11 @@ func stalledResponseCases() []struct {
 			func(m any) *pb.Session { return m.(*pb.ProxyListSessionsResponse).GetSessions()[0] }},
 		{"ProxyListSessionsAcrossOrganizations", bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
 			func() any {
+				//nolint:staticcheck // Deprecated response remains a supported transform surface.
 				return &pb.ProxyListSessionsAcrossOrganizationsResponse{Sessions: []*pb.Session{stalledSession()}}
 			},
 			func(m any) *pb.Session {
+				//nolint:staticcheck // Deprecated response remains a supported transform surface.
 				return m.(*pb.ProxyListSessionsAcrossOrganizationsResponse).GetSessions()[0]
 			}},
 		{"ProxyGetSession", bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
@@ -3947,6 +3951,29 @@ func (c *respOnlyChange) Version() apiversion.Version { return c.version }
 
 func (c *respOnlyChange) TransformResponse(string, any) { *c.respCalls++ }
 
+type nilReturningErrorChange struct {
+	version apiversion.Version
+}
+
+func (c nilReturningErrorChange) Version() apiversion.Version { return c.version }
+
+func (nilReturningErrorChange) TransformResponse(string, any) {}
+
+func (nilReturningErrorChange) TransformError(string, error) error { return nil }
+
+func TestApplyError_ErrorTransformCannotManufactureSuccess(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes, err := apiversion.NewChanges(reg, nilReturningErrorChange{version: apiversion.V20260820})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+
+	got := changes.ApplyError("/test.Procedure", errors.New("handler failed"), apiversion.Baseline)
+	if code := connect.CodeOf(got); code != connect.CodeInternal {
+		t.Fatalf("code = %v, want CodeInternal", code)
+	}
+}
+
 // TestApplyError_SkipsChangesWithoutTheCapability is the fan-out contract: a
 // change that implements only TransformResponse is invisible to ApplyError, and
 // a change that implements TransformError still has its TransformResponse left
@@ -4272,4 +4299,355 @@ func TestAbandonedCheckoutStatusChange_NoOpForUnrelatedMethods(t *testing.T) {
 	other := &pb.ProxyListSessionsResponse{}
 	ac.TransformResponse(bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure, other)
 	ac.TransformResponse(bossanovav1connect.OrchestratorServiceCreateCheckoutSessionProcedure, nil)
+}
+
+// cloudAccessOrgWireStatus is a status as bosso serves it from V20260905: an
+// ordinary needs-subscription answer that now also names the caller's
+// organization. Asserted on directly rather than through cloudStatusFields,
+// which deliberately renders only the fields the abandoned-checkout transform
+// touches and would be blind to this one.
+func cloudAccessOrgWireStatus() *pb.CloudAccessStatus {
+	return &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		Message:           "Bossanova Cloud requires a subscription.",
+		CanCreateCheckout: true,
+		DenialReason:      "subscription_required",
+		WorkosOrgId:       "org_01WORKOS",
+	}
+}
+
+func TestCloudAccessOrganizationChange_Version(t *testing.T) {
+	if got := (apiversion.CloudAccessOrganizationChange{}).Version(); got != apiversion.V20260907 {
+		t.Errorf("CloudAccessOrganizationChange.Version() = %q, want %q", got, apiversion.V20260907)
+	}
+}
+
+// TestCloudAccessOrganizationChange_DownConvertsForOlderClients is the contract:
+// a client pinned below V20260907 sees the empty workos_org_id it was built
+// against, on every response that can carry a CloudAccessStatus.
+func TestCloudAccessOrganizationChange_DownConvertsForOlderClients(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	for _, older := range []apiversion.Version{apiversion.Baseline, apiversion.V20260825, apiversion.V20260904} {
+		for _, tc := range abandonedCheckoutStatusResponses() {
+			t.Run(string(older)+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build(cloudAccessOrgWireStatus())
+				changes.Apply(tc.method, msg, older)
+				if got := tc.status(msg).GetWorkosOrgId(); got != "" {
+					t.Errorf("workos_org_id = %q, want \"\": a pre-V20260907 client was built when this field was always empty", got)
+				}
+				// Only that field moves. The rest of the status is the answer the
+				// older client is still entitled to.
+				if got := tc.status(msg).GetState(); got != pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION {
+					t.Errorf("state = %v, want CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION unchanged", got)
+				}
+				if got := tc.status(msg).GetMessage(); got != "Bossanova Cloud requires a subscription." {
+					t.Errorf("message = %q, want it unchanged", got)
+				}
+			})
+		}
+	}
+}
+
+// TestCloudAccessOrganizationChange_NoOpAtCurrent is the half that proves the
+// feature actually reaches a current client: a V20260907 request must keep the
+// organization bosso resolved, or the boss CLI's mirror lookup has nothing to
+// match and the scoped subscribe URL is unreachable again.
+func TestCloudAccessOrganizationChange_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes := apiversion.ProductionChanges()
+	for _, tc := range abandonedCheckoutStatusResponses() {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.build(cloudAccessOrgWireStatus())
+			changes.Apply(tc.method, msg, reg.Current())
+			if got := tc.status(msg).GetWorkosOrgId(); got != "org_01WORKOS" {
+				t.Errorf("workos_org_id = %q at Current, want org_01WORKOS preserved", got)
+			}
+		})
+	}
+}
+
+// TestCloudAccessOrganizationChange_LeavesAnEmptyOrganizationClonefree pins the
+// pass-through arm: a daemon caller, and every status produced before bosso
+// began filling the field, already carry "" and must not be cloned.
+func TestCloudAccessOrganizationChange_LeavesAnEmptyOrganizationClonefree(t *testing.T) {
+	shared := &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE}
+	msg := &pb.GetCloudAccessStatusResponse{Status: shared}
+	(apiversion.CloudAccessOrganizationChange{}).TransformResponse(
+		bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure, msg)
+	if msg.GetStatus() != shared {
+		t.Error("an already-empty status was cloned; the transform must pass it through untouched")
+	}
+}
+
+func TestCloudAccessOrganizationChange_DoesNotMutateSharedStatus(t *testing.T) {
+	shared := cloudAccessOrgWireStatus()
+	msg := &pb.GetCloudAccessStatusResponse{Status: shared}
+	(apiversion.CloudAccessOrganizationChange{}).TransformResponse(
+		bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure, msg)
+	if got := shared.GetWorkosOrgId(); got != "org_01WORKOS" {
+		t.Errorf("shared status was mutated in place: workos_org_id = %q, want org_01WORKOS", got)
+	}
+	if msg.GetStatus() == shared {
+		t.Error("response still points at the shared status; the transform must swap in a clone")
+	}
+}
+
+// --- PendingInvitationResponseChange (V20260910, BOS-1122/BOS-1123) -------
+
+func TestPendingInvitationResponseChange_Version(t *testing.T) {
+	if got := (apiversion.PendingInvitationResponseChange{}).Version(); got != apiversion.V20260910 {
+		t.Errorf("PendingInvitationResponseChange.Version() = %q, want %q", got, apiversion.V20260910)
+	}
+}
+
+func TestPendingInvitationResponseChange_DownConvertsForPriorVersion(t *testing.T) {
+	member := &pb.OrganizationMember{Email: "new@example.test", Role: pb.MemberRole_MEMBER_ROLE_USER, IsInvitePending: true, InvitationId: "inv_1"}
+	msg := &pb.InviteOrganizationMemberResponse{Member: member}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure,
+		msg,
+		apiversion.V20260909,
+	)
+	if msg.GetMember().GetIsInvitePending() {
+		t.Fatal("is_invite_pending = true, want false for client pinned immediately below V20260910")
+	}
+	if msg.GetMember().GetInvitationId() != "" {
+		t.Fatalf("invitation_id = %q, want empty for client pinned immediately below V20260910", msg.GetMember().GetInvitationId())
+	}
+	if msg.GetMember().GetEmail() != "new@example.test" || msg.GetMember().GetRole() != pb.MemberRole_MEMBER_ROLE_USER {
+		t.Fatalf("down-converted member = %+v, want email and role preserved", msg.GetMember())
+	}
+	if member.GetIsInvitePending() != true {
+		t.Fatal("transform mutated the shared member in place")
+	}
+}
+
+func TestPendingInvitationResponseChange_NoOpAtCurrent(t *testing.T) {
+	msg := &pb.InviteOrganizationMemberResponse{Member: &pb.OrganizationMember{Email: "new@example.test", IsInvitePending: true}}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure,
+		msg,
+		apiversion.DefaultRegistry().Current(),
+	)
+	if !msg.GetMember().GetIsInvitePending() {
+		t.Fatal("is_invite_pending = false at Current, want true")
+	}
+}
+
+func TestPendingInvitationResponseChange_FiltersPendingMembersForPriorVersion(t *testing.T) {
+	active := &pb.OrganizationMember{UserId: "user_1", WorkosMembershipId: "om_1", Email: "active@example.test"}
+	pending := &pb.OrganizationMember{Email: "pending@example.test", IsInvitePending: true, InvitationId: "inv_1"}
+	msg := &pb.ListOrganizationMembersResponse{Members: []*pb.OrganizationMember{active, pending}}
+
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,
+		msg,
+		apiversion.V20260909,
+	)
+
+	if got := msg.GetMembers(); len(got) != 1 || got[0] != active {
+		t.Fatalf("down-converted members = %+v, want active member only", got)
+	}
+	if pending.GetInvitationId() != "inv_1" {
+		t.Fatal("transform mutated the filtered pending member")
+	}
+}
+
+func TestPendingInvitationResponseChange_LeavesPendingMembersAtCurrent(t *testing.T) {
+	msg := &pb.ListOrganizationMembersResponse{Members: []*pb.OrganizationMember{
+		{UserId: "user_1"},
+		{Email: "pending@example.test", IsInvitePending: true, InvitationId: "inv_1"},
+	}}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,
+		msg,
+		apiversion.DefaultRegistry().Current(),
+	)
+	if got := len(msg.GetMembers()); got != 2 {
+		t.Fatalf("members at Current = %d, want 2", got)
+	}
+}
+
+func TestPendingInvitationResponseChange_LeavesOtherResponsesUntouched(t *testing.T) {
+	change := apiversion.PendingInvitationResponseChange{}
+	member := &pb.OrganizationMember{Email: "new@example.test", IsInvitePending: true}
+	wrongMethod := &pb.InviteOrganizationMemberResponse{Member: member}
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure, wrongMethod)
+	if wrongMethod.GetMember() != member {
+		t.Fatal("wrong procedure replaced member")
+	}
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure, &pb.ListOrganizationMembersResponse{})
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure, (*pb.InviteOrganizationMemberResponse)(nil))
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure, &pb.InviteOrganizationMemberResponse{})
+}
+
+func TestAcceptedInvitationResponseChange_DownConvertsPriorAndPreservesCurrent(t *testing.T) {
+	active := &pb.OrganizationMember{UserId: "user_1", WorkosMembershipId: "om_1"}
+	accepted := &pb.OrganizationMember{Email: "accepted@example.test", InvitationId: "inv_1", IsInviteAccepted: true}
+	prior := &pb.ListOrganizationMembersResponse{Members: []*pb.OrganizationMember{active, accepted}}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,
+		prior,
+		apiversion.V20260910,
+	)
+	if got := prior.GetMembers(); len(got) != 1 || got[0] != active {
+		t.Fatalf("prior members = %+v, want active member only", got)
+	}
+	if !accepted.GetIsInviteAccepted() {
+		t.Fatal("transform mutated filtered accepted member")
+	}
+
+	current := &pb.ListOrganizationMembersResponse{Members: []*pb.OrganizationMember{active, accepted}}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,
+		current,
+		apiversion.V20260911,
+	)
+	if got := current.GetMembers(); len(got) != 2 || got[1] != accepted {
+		t.Fatalf("current members = %+v, want accepted placeholder preserved", got)
+	}
+}
+
+func TestAcceptedInvitationResponseChange_IsMethodAndTypeScoped(t *testing.T) {
+	change := apiversion.AcceptedInvitationResponseChange{}
+	accepted := &pb.OrganizationMember{IsInviteAccepted: true}
+	wrongMethod := &pb.ListOrganizationMembersResponse{Members: []*pb.OrganizationMember{accepted}}
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure, wrongMethod)
+	if len(wrongMethod.GetMembers()) != 1 {
+		t.Fatal("wrong procedure filtered accepted member")
+	}
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure, &pb.InviteOrganizationMemberResponse{})
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure, (*pb.ListOrganizationMembersResponse)(nil))
+}
+
+// TestCloudAccessOrganizationChange_NoOpForUnrelatedMethods keeps the transform
+// scoped: it must not touch a procedure it does not target, and must not panic on
+// a payload type it does not expect.
+func TestCloudAccessOrganizationChange_NoOpForUnrelatedMethods(t *testing.T) {
+	co := apiversion.CloudAccessOrganizationChange{}
+	for _, method := range []string{
+		bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+		bossanovav1connect.OrchestratorServiceCreateBillingPortalSessionProcedure,
+		"/bossanova.v1.OrchestratorService/NotAProcedure",
+	} {
+		msg := &pb.GetCloudAccessStatusResponse{Status: cloudAccessOrgWireStatus()}
+		co.TransformResponse(method, msg)
+		if msg.GetStatus().GetWorkosOrgId() != "org_01WORKOS" {
+			t.Errorf("%s: transform fired on an untargeted method", method)
+		}
+	}
+	// A wrong payload type on a targeted procedure must be a guarded no-op.
+	other := &pb.ProxyListSessionsResponse{}
+	co.TransformResponse(bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure, other)
+	co.TransformResponse(bossanovav1connect.OrchestratorServiceCreateCheckoutSessionProcedure, nil)
+}
+
+// --- RefreshChainUnprovenOutcomeChange (V20260913, BOS-1174) ---------------
+
+func unprovenAccount() *pb.Account {
+	return &pb.Account{
+		Id: "acct-1",
+		AuthCheck: &pb.AuthCheck{
+			Outcome:      "refresh_chain_unproven",
+			FailureClass: "refresh_not_observed",
+		},
+	}
+}
+
+func TestRefreshChainUnprovenOutcomeChange_Version(t *testing.T) {
+	if got := (apiversion.RefreshChainUnprovenOutcomeChange{}).Version(); got != apiversion.V20260914 {
+		t.Errorf("RefreshChainUnprovenOutcomeChange.Version() = %q, want %q", got, apiversion.V20260914)
+	}
+}
+
+// TestRefreshChainUnprovenOutcomeChange_DownConvertsForOlderClients is the
+// contract: a client pinned before V20260913 must still observe the pre-BOS-1174
+// pair for the identical clean run — "healthy" with an empty failure class.
+func TestRefreshChainUnprovenOutcomeChange_DownConvertsForOlderClients(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.RefreshChainUnprovenOutcomeChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{unprovenAccount()}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp, apiversion.Baseline)
+
+	got := resp.GetAccounts()[0].GetAuthCheck()
+	if got.GetOutcome() != "healthy" {
+		t.Errorf("outcome = %q, want %q", got.GetOutcome(), "healthy")
+	}
+	if got.GetFailureClass() != "" {
+		t.Errorf("failure_class = %q, want empty", got.GetFailureClass())
+	}
+}
+
+// TestRefreshChainUnprovenOutcomeChange_NoOpAtCurrent pins the other half: a
+// client that negotiates the version the value shipped in receives it verbatim.
+func TestRefreshChainUnprovenOutcomeChange_NoOpAtCurrent(t *testing.T) {
+	changes, err := apiversion.NewChanges(apiversion.DefaultRegistry(), apiversion.RefreshChainUnprovenOutcomeChange{})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{unprovenAccount()}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp, apiversion.V20260914)
+
+	got := resp.GetAccounts()[0].GetAuthCheck()
+	if got.GetOutcome() != "refresh_chain_unproven" || got.GetFailureClass() != "refresh_not_observed" {
+		t.Errorf("outcome/class = %q/%q, want refresh_chain_unproven/refresh_not_observed",
+			got.GetOutcome(), got.GetFailureClass())
+	}
+}
+
+// TestRefreshChainUnprovenOutcomeChange_LeavesOtherOutcomesUntouched guards the
+// half a naive transform gets wrong: auth_invalid must NOT be laundered into
+// healthy, and an account with no check at all must stay unchecked.
+func TestRefreshChainUnprovenOutcomeChange_LeavesOtherOutcomesUntouched(t *testing.T) {
+	rc := apiversion.RefreshChainUnprovenOutcomeChange{}
+	for _, tc := range []struct {
+		name    string
+		account *pb.Account
+		want    string
+	}{
+		{"auth_invalid", &pb.Account{AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid", FailureClass: "auth_invalidated"}}, "auth_invalid"},
+		{"transient", &pb.Account{AuthCheck: &pb.AuthCheck{Outcome: "transient", FailureClass: "rate_limited"}}, "transient"},
+		{"healthy", &pb.Account{AuthCheck: &pb.AuthCheck{Outcome: "healthy"}}, "healthy"},
+		{"never checked", &pb.Account{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{tc.account}}
+			rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp)
+			if got := resp.GetAccounts()[0].GetAuthCheck().GetOutcome(); got != tc.want {
+				t.Errorf("outcome = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefreshChainUnprovenOutcomeChange_DoesNotMutateSharedAccount pins that the
+// down-convert clones. bosso's single-instance registry path hands out cached
+// *pb.Account pointers, so mutating in place would corrupt the cache for every
+// later reader — including current-version clients that must still see the new
+// value.
+func TestRefreshChainUnprovenOutcomeChange_DoesNotMutateSharedAccount(t *testing.T) {
+	rc := apiversion.RefreshChainUnprovenOutcomeChange{}
+	shared := unprovenAccount()
+	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{shared}}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp)
+
+	if shared.GetAuthCheck().GetOutcome() != "refresh_chain_unproven" {
+		t.Errorf("shared account was mutated in place: outcome = %q", shared.GetAuthCheck().GetOutcome())
+	}
+	if resp.GetAccounts()[0] == shared {
+		t.Error("response still holds the shared pointer; the down-convert did not clone")
+	}
+}
+
+// TestRefreshChainUnprovenOutcomeChange_NoOpForUnrelatedMethods keeps the
+// transform keyed strictly by procedure.
+func TestRefreshChainUnprovenOutcomeChange_NoOpForUnrelatedMethods(t *testing.T) {
+	rc := apiversion.RefreshChainUnprovenOutcomeChange{}
+	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{unprovenAccount()}}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, resp)
+	if got := resp.GetAccounts()[0].GetAuthCheck().GetOutcome(); got != "refresh_chain_unproven" {
+		t.Errorf("outcome = %q, want it untouched for an unrelated procedure", got)
+	}
 }

@@ -21,7 +21,7 @@ rather than an example of an operation, so they stay a plain block; every `boss`
 example below carries its interface tabs. The subcommand and flag tables are
 reference material rather than examples, so they stay plain too. The examples
 show the same operations through the other two interfaces as well, but they are
-illustrative — the binary is what is authoritative.
+illustrative; the binary is what is authoritative.
 
 ## Top-level commands
 
@@ -37,7 +37,7 @@ cli="boss"
 
 The TUI is a terminal program on this machine, so there is no chat prompt and no
 MCP tool for launching it. An agent reaches the same data through read tools
-instead — `list_sessions` and `get_session_statuses` for the session state the
+instead: `list_sessions` and `get_session_statuses` for the session state the
 home screen shows, plus the tools named below. See the
 [MCP guide](/guides/mcp) for the full catalog.
 
@@ -49,8 +49,8 @@ cli="boss settings"
 mcp="get_settings"
 />
 
-The same command _writes_ settings when you give it a flag — `boss settings --help`
-lists them — and the MCP counterpart for that path is `update_settings`.
+The same command _writes_ settings when you give it a flag (`boss settings --help`
+lists them), and the MCP counterpart for that path is `update_settings`.
 
 List configured repos:
 
@@ -76,8 +76,8 @@ cli="boss merge <session-id>"
 mcp="merge_session"
 />
 
-The daemon owns the merge — the gate that refuses an unready PR, the per-repo
-serialization, and the merge-strategy resolution — so all three interfaces get
+The daemon owns the merge (the gate that refuses an unready PR, the per-repo
+serialization, and the merge-strategy resolution), so all three interfaces get
 the same answer. When the gate refuses, the CLI exits non-zero with the daemon's
 `merge blocked: gate=<slug>` message naming the gate that stopped it. The CLI
 prompts for confirmation unless you pass `-y`/`--yes`; the MCP tool requires
@@ -93,7 +93,7 @@ or read EOF and report a merge as declined that was never offered. Used without
 `--yes` the command fails with `CONFIRMATION_REQUIRED`.
 
 The JSON envelope goes to **stdout**; the human `boss: ...` line still goes to
-**stderr**, so the two channels never interleave. Every failure exits `1` — the
+**stderr**, so the two channels never interleave. Every failure exits `1`; the
 `code`, not the exit status, is the discriminator.
 
 Success:
@@ -131,7 +131,7 @@ Failure:
 }
 ```
 
-`message` carries the daemon's sentinel token as its prefix — the token is
+`message` carries the daemon's sentinel token as its prefix; the token is
 matched in the message, not stripped from it, so `code` and `message` agree
 rather than one being derived by rewriting the other.
 
@@ -141,14 +141,14 @@ the CLI classified itself (`CONFIRMATION_REQUIRED`, `NOT_FOUND`,
 (`MERGE_STRATEGY_INCOMPATIBLE`), then the connect code upper-cased
 (`FAILED_PRECONDITION`, `NOT_FOUND`, `UNAVAILABLE`, ...). The token is checked
 before the connect code because a strategy incompatibility and an ordinary gate
-refusal both travel as `failed_precondition` — the connect code alone cannot
+refusal both travel as `failed_precondition`; the connect code alone cannot
 tell them apart. `connect_code` is always emitted alongside so a driver meeting
 an unfamiliar `code` still has the transport-level classification to fall back
 on. `message` is the daemon's own message, without the connect-code prefix or
 the CLI's wrapping.
 
 :::note
-Over `--remote`, `detail` is always `""` — the orchestrator's
+Over `--remote`, `detail` is always `""`; the orchestrator's
 `ProxyMergeSessionResponse` carries no detail field, so a merge-strategy
 substitution made on the remote daemon is not reported to a remote caller.
 `detail` being empty over `--remote` does not mean the merge ran as configured.
@@ -158,7 +158,7 @@ daemon's `detail` through unchanged.
 `session.state` is not the fallback signal. It is the daemon's value verbatim,
 and on a successful merge it can still read pre-merge: the daemon answers from a
 session it read before its own deferred refresh applied the `Merged` transition.
-The successful envelope itself — exit `0` with no `error` object — is the
+The successful envelope itself (exit `0` with no `error` object) is the
 outcome. A caller that needs the settled state must re-read the session
 (`boss show <id>`).
 :::
@@ -175,11 +175,11 @@ This is narrower than `boss plugin list`. That command reports every loaded
 plugin, including task sources (`linear`, `sentry`) and automation reactors
 (`dependabot`, `repair`); this one reports only the plugins that satisfy
 `AgentRunnerService` and can therefore back a session. Check it before passing
-an agent to `boss new --agent` — with no agent runner loaded the daemon stays
+an agent to `boss new --agent`; with no agent runner loaded the daemon stays
 healthy but session creation fails.
 
 The default table shows NAME, VERSION and a SETTINGS count. `--json` emits the
-full shape — each agent's `name`, `version` and `user_settings`, and each
+full shape: each agent's `name`, `version` and `user_settings`, and each
 setting's `key`, `label`, `description`, `default_value`, `type` and
 `allowed_values`:
 
@@ -207,7 +207,7 @@ setting's `key`, `label`, `description`, `default_value`, `type` and
 `type` is the enum name (`BOOL`, `STRING`, `ENUM`, `UNSPECIFIED`), not the
 daemon's numeric value. `agents`, `user_settings` and `allowed_values` are
 always arrays and never `null`, so a driver can iterate them without a null
-check. Zero loaded agents is a valid answer — `{"agents": []}` with exit `0`,
+check. Zero loaded agents is a valid answer: `{"agents": []}` with exit `0`,
 not an error. A failure to reach the daemon exits `1` with the same
 `{"error": {...}}` envelope `boss merge --json` uses.
 
@@ -223,9 +223,9 @@ necessarily by the one that will run your session, and there is no way to tell
 which from the response.
 
 The aggregate is a plain concatenation in daemon order, so **`name` is not
-unique in it**: two Ready daemons that both load `claude` produce two `claude`
+unique** in it: two Ready daemons that both load `claude` produce two `claude`
 rows and two JSON objects sharing that name. A driver keying by name silently
-collapses them, and one that counts agents gets the daemon count instead —
+collapses them, and one that counts agents gets the daemon count instead;
 deduplicate client-side if you need a set. `boss` deliberately does not, because
 that would hide fleet composition and diverge from `boss plugin list`, which
 aggregates the same way.
@@ -240,7 +240,7 @@ daemon's runners.
 a driver polls, so each takes `--json` and emits a stable envelope on **stdout**. As with
 `boss merge --json`, a failure puts the shared error envelope on stdout, leaves
 the human `boss: ...` line on stderr, and exits `1`. Passing `--json` changes
-rendering only — the filters, the `--limit`, and the daemon call underneath are
+rendering only: the filters, the `--limit`, and the daemon call underneath are
 identical with and without it. Every timestamp is RFC3339 in UTC, and every
 list-valued field is `[]` when empty, never `null`.
 
@@ -273,7 +273,7 @@ mcp="list_sessions"
 }
 ```
 
-`sessions` is `[]` when nothing matches — the human `No sessions found.` line is
+`sessions` is `[]` when nothing matches; the human `No sessions found.` line is
 never emitted under `--json`, so a driver decodes one shape either way.
 `pr_number` is `null` rather than `0` for a session with no PR.
 `tracker_id` is `null` when the session is not linked to a tracker issue, and
@@ -281,7 +281,7 @@ drivers can use `last_agent_activity_at` to tell whether a peer session is still
 alive.
 
 `state` here is the **short** enum name, with the `SESSION_STATE_` prefix
-trimmed — the same vocabulary `boss ls --state` accepts, so a value read out of
+trimmed, the same vocabulary `boss ls --state` accepts, so a value read out of
 one can be fed straight back into the other. This deliberately differs from
 `boss merge --json`, whose `session.state` carries the full wire value; that
 envelope reports a daemon response verbatim, while these reads own their
@@ -389,10 +389,10 @@ cli="boss session mcp <chat-id> --json"
 
 The probe is live: it asks the chat's own agent, in the chat's own worktree,
 under the chat's own resolved environment, and never runs a coding turn to
-completion — it is killed the moment the startup event is read, though a probe
+completion; it is killed the moment the startup event is read, though a probe
 that never sees that event may briefly start one before its deadline. Asking the
-model itself does not work — a session with dozens of MCP tools loaded has been
-observed answering "none" — and `<agent> mcp list` reports the environment _it_
+model itself does not work (a session with dozens of MCP tools loaded has been
+observed answering "none"), and `<agent> mcp list` reports the environment _it_
 inherits rather than the session's.
 
 It is a **fresh invocation**, not an inspection of the running pane: the answer
@@ -409,8 +409,8 @@ turns a five-second question into a multi-hour investigation:
 - **`is_supported: false`** — the agent has no way to report its MCP surface.
   The command still exits `0` and `unsupported_reason` says why.
 
-Within `servers`, a server that is **declared but exposed zero tools** appears
-with `is_declared: true` and `tool_count: 0` — the state a failed connection or
+Within `servers`, a server that is **declared** but exposed **zero tools** appears
+with `is_declared: true` and `tool_count: 0`, the state a failed connection or
 a missing credential produces. Read `auth_status` before concluding anything
 from a zero count: it is the harness's own verbatim word, and a Claude session
 can emit its startup event before every server has finished connecting, so a
@@ -421,7 +421,7 @@ call, so a config key that does not match the name a skill expects is visible
 without invoking a single tool. `source` is one of `repo_file`, `user_config`,
 `injected` or `unknown`, with `source_detail` naming the scanned file whenever
 it is not `unknown`. `injected` is reserved for a launcher that supplies MCP
-config on argv; boss does not, so it is never emitted today — a server that
+config on argv; boss does not, so it is never emitted today; a server that
 matches no scanned config reports `unknown`. `tool_names` is omitted unless
 `--tools` is passed; with `--tools` every server carries the key, and a
 declared-but-empty server carries `[]` rather than dropping it.
@@ -493,7 +493,7 @@ setup progress on stderr until setup settles. `--detach` is deliberately absent:
 the `--repo` + `--prompt` path
 always runs the initial agent pass headlessly, so passing it changes nothing. For
 a run that is **not** expected to change the repository, reach for `--defer-pr`
-instead — see [Runs that may change nothing](#runs-that-may-change-nothing)
+instead; see [Runs that may change nothing](#runs-that-may-change-nothing)
 below.
 
 `boss new` runs non-interactively when both `--repo` and `--prompt` are given (`--detach`
@@ -513,7 +513,7 @@ plugin; `--title <t>` is optional (auto-derived from the prompt when absent).
 
 `--detach` and `--tmux-unattended` are independent, and the pairing is the part most
 often got wrong. `--detach` governs only whether this command attaches a chat pane
-before it exits; `--tmux-unattended` says where the session should live — a durable
+before it exits; `--tmux-unattended` says where the session should live: a durable
 tmux pane that outlives a daemon restart and can be attached to later. Neither one
 decides whether the agent runs: supplying a prompt is what launches it headlessly. A
 scripted launch that should stay reachable wants `--tmux-unattended`, not `--detach`,
@@ -526,7 +526,7 @@ printed session id and verify that exact session with `boss show <session-id>`.
 By default a scripted launch opens a draft PR up front. That is right for a run meant
 to produce code, but wrong for planning, recon or review work: a run that legitimately
 commits nothing leaves an empty PR behind and finalizes as a no-op that needs
-attention. `--defer-pr` is the fix — the session still gets a worktree and branch, but
+attention. `--defer-pr` is the fix; the session still gets a worktree and branch, but
 the PR is opened at finalize **only if** commits actually landed, so a no-op finishes
 cleanly and nothing is left to clean up:
 
@@ -537,11 +537,11 @@ mcp="create_session"
 />
 
 The `--tmux-unattended` in that example is load-bearing, not decoration. `--defer-pr`
-means no PR exists until the run finalizes, and the daemon opens it there — through the
+means no PR exists until the run finalizes, and the daemon opens it there, through the
 finalize Stop hook on the durable tmux-hosted path, or through the run-completion poller
 that drives finalize for a paneless headless run. What neither path can do is finalize a
 run that was killed first: a bossd restart marks a paneless headless run _orphaned_
-rather than finalizing it, so its commits stay on a branch with no PR at all — where a
+rather than finalizing it, so its commits stay on a branch with no PR at all, where a
 run without `--defer-pr` would at least still have its up-front draft PR.
 `--tmux-unattended` hosts the run in a pane that survives the restart, so pair the two
 for anything long-running.
@@ -553,7 +553,7 @@ create launches nothing, the `chat-id:` line comes back empty, a notice is writt
 stderr, and the `--json` envelope carries a `next_action` field saying how to start the
 work. Use it for a chat you intend to attach to yourself.
 
-For **unattended** runs — anything scripted, batched or scheduled — prefer `--defer-pr`.
+For **unattended** runs (anything scripted, batched or scheduled) prefer `--defer-pr`.
 Concurrent `--quick-chat` sessions share the one repository checkout, so they contend
 over the working tree and git index with each other and with any uncommitted local work.
 The two flags are mutually exclusive and passing both is rejected before any RPC is
@@ -567,8 +567,8 @@ cli="boss new --repo <r> --prompt <p> --tmux-unattended --tracker-id BOS-821 --t
 mcp="create_session"
 />
 
-Without `--json` the command prints the same two lines it always has —
-`session-id:` then `chat-id:` — which existing scripts parse positionally. With
+Without `--json` the command prints the same two lines it always has
+(`session-id:` then `chat-id:`), which existing scripts parse positionally. With
 `--json` stdout carries exactly one object and the setup-script progress moves to
 stderr, so a driver can read `.session.id` and `.session.chat_id` straight out of it:
 
@@ -577,8 +577,8 @@ CHAT=$(boss new --repo <r> --prompt <p> --json | jq -r .session.chat_id)
 boss chat wait "$CHAT"
 ```
 
-A failure under `--json` writes the shared error envelope — `.error.code`,
-`.error.connect_code`, `.error.message` — to stdout and still exits 1. An unknown
+A failure under `--json` writes the shared error envelope (`.error.code`,
+`.error.connect_code`, `.error.message`) to stdout and still exits 1. An unknown
 `--tracker-source` is caught locally and reported as `INVALID_ARGUMENT` without a
 session ever being created.
 
@@ -658,8 +658,8 @@ the CLI joins them for you.
 
 `status` is the protobuf enum name with its `CHAT_STATUS_` prefix stripped:
 `IDLE`, `WORKING`, `QUESTION`, `STOPPED`, `LIMITED`, `WAITING`, or
-`UNSPECIFIED`. Every field is always present — an absent field is exactly what a
-caller should not have to guess about — so a chat the daemon holds no cached
+`UNSPECIFIED`. Every field is always present (an absent field is exactly what a
+caller should not have to guess about), so a chat the daemon holds no cached
 status for reads `UNSPECIFIED` with an empty `last_output_at`, never a missing
 key. A status a newer daemon reports that this build has no name for also reads
 `UNSPECIFIED`, so `status` is never a bare number. `waiting_reason` is populated
@@ -679,7 +679,7 @@ threshold. Staleness alone proves nothing, and a fresh `last_output_at` does not
 mean the agent is doing anything.
 :::
 
-When the per-chat status read fails — a daemon too old to implement it — the two
+When the per-chat status read fails (a daemon too old to implement it), the two
 output modes diverge deliberately:
 
 | Mode     | Behaviour                                                                                         |
@@ -688,7 +688,7 @@ output modes diverge deliberately:
 | `--json` | Exit `1`, `{"error":{"code":"CHAT_STATUS_UNAVAILABLE", ...}}`, and **no** `chats` array           |
 
 The JSON path refuses to answer rather than degrade because degraded rows would
-read `"status": "UNSPECIFIED"` — byte-identical to chats that genuinely have not
+read `"status": "UNSPECIFIED"`, byte-identical to chats that genuinely have not
 reported yet. A driver that missed one check would read that as "not working"
 and merge. Exiting `1` turns a transport gap into a stall instead of a wrong
 merge.
@@ -709,7 +709,7 @@ producing output.
 Read logs without needing to know where they live. It reads files on the local
 machine, so `--remote` and `--host` do not redirect it.
 
-Positional sources are `bossd` (the default), `boss`, `bosso` — or an
+Positional sources are `bossd` (the default), `boss`, `bosso`, or an
 **agent-session id**, which reads that agent's own log from the `agent-logs`
 directory beside your worktree base directory:
 
@@ -740,7 +740,7 @@ cli="boss tail bossd 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607"
 | `--level`        | only records at this level                                                |
 | `--json`         | emit one parseable JSON object per line                                   |
 
-`--all` stays service-only — the `agent-logs` directory holds one file per agent
+`--all` stays service-only; the `agent-logs` directory holds one file per agent
 session ever run. An absent `agent-logs` directory prints a notice and exits 0.
 See the [Logging guide](/guides/logging) for the full treatment.
 

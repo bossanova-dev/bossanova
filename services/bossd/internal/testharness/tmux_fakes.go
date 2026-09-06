@@ -214,7 +214,8 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 		// answers with empty stdout, which parses as "nothing is running" —
 		// an orphan-reaper test would then pass while exercising nothing.
 		// Emit the production format instead:
-		// "#{session_name}\t#{session_created}", creation as Unix seconds.
+		// "#{session_name}\t#{session_created}\t#{session_attached}", creation
+		// as Unix seconds and no attached clients.
 		if f.ListSessionsStderr != "" {
 			stderr := f.ListSessionsStderr
 			f.mu.Unlock()
@@ -228,7 +229,7 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 			if !f.liveSessions[sessName] {
 				continue
 			}
-			fmt.Fprintf(&b, "%s\t%d\n", sessName, f.sessionCreated[sessName].Unix())
+			fmt.Fprintf(&b, "%s\t%d\t0\n", sessName, f.sessionCreated[sessName].Unix())
 		}
 		f.mu.Unlock()
 		cmd := exec.CommandContext(ctx, "cat")

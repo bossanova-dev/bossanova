@@ -72,7 +72,6 @@ func (s *parkedChatStore) UpdateTitle(_ context.Context, _, _ string) error { re
 func (s *parkedChatStore) UpdateTitleByAgentSessionID(_ context.Context, _, _ string) error {
 	return nil
 }
-func (s *parkedChatStore) UpdateAgentSessionID(_ context.Context, _, _, _ string) error { return nil }
 func (s *parkedChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
 	return nil
 }
@@ -82,7 +81,11 @@ func (s *parkedChatStore) UpdateProviderSessionID(_ context.Context, _ string, _
 func (s *parkedChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
-func (s *parkedChatStore) MarkStartFailed(_ context.Context, _, _ string) error     { return nil }
+func (s *parkedChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }
+func (s *parkedChatStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+	return nil
+}
+
 func (s *parkedChatStore) DeleteByAgentSessionID(_ context.Context, _ string) error { return nil }
 func (s *parkedChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
 	return nil, nil

@@ -69,13 +69,21 @@ type sessionDetailJSON struct {
 	// LastCheckState is the ChecksOverall enum name with its prefix trimmed
 	// ("PENDING" / "PASSED" / "FAILED"). UNSPECIFIED means the daemon has no
 	// verdict demonstrated at the current head.
-	LastCheckState         string             `json:"last_check_state"`
-	LastCheckStateObserved string             `json:"last_check_state_observed"`
-	LastCheckStateHeadSHA  string             `json:"last_check_state_head_sha"`
-	LastCheckStateAt       string             `json:"last_check_state_at"`
-	ArchivedAt             string             `json:"archived_at"`
-	SetupError             string             `json:"setup_error"`
-	LastRepair             *sessionRepairJSON `json:"last_repair"`
+	LastCheckState         string `json:"last_check_state"`
+	LastCheckStateObserved string `json:"last_check_state_observed"`
+	LastCheckStateHeadSHA  string `json:"last_check_state_head_sha"`
+	LastCheckStateAt       string `json:"last_check_state_at"`
+	ArchivedAt             string `json:"archived_at"`
+	SetupError             string `json:"setup_error"`
+	// BlockedReason is the daemon's raw blocked reason, untruncated. It is a
+	// pointer so null ("this session is not blocked") stays distinguishable from
+	// "" — the same reason PrNumber is one.
+	//
+	// It is deliberately NOT on sessionJSON: `boss ls --json` is the widest
+	// contract in this file, and a raw multi-line transport error on every row is
+	// noise for the list use case. Detail is where triage happens.
+	BlockedReason *string            `json:"blocked_reason"`
+	LastRepair    *sessionRepairJSON `json:"last_repair"`
 }
 
 // sessionRepairJSON mirrors the "Last repair:" line runShow prints. It is nil
@@ -132,6 +140,9 @@ func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 		LastCheckStateAt:       rfc3339OrEmpty(s.GetLastCheckStateAt()),
 		ArchivedAt:             rfc3339OrEmpty(s.GetArchivedAt()),
 		SetupError:             s.GetSetupError(),
+	}
+	if reason := s.GetBlockedReason(); reason != "" {
+		detail.BlockedReason = &reason
 	}
 	if s.GetLastRepairStartedAt() != nil || s.GetLastRepairRunnerError() != "" || s.GetLastRepairExitError() != "" {
 		detail.LastRepair = &sessionRepairJSON{

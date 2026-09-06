@@ -9,10 +9,10 @@
 //   1. Auto-close: a non-terminal ticket whose matched `[BOS-NNN]` PRs have ALL
 //      merged is moved to Done. Any non-merged matched PR (or none) → untouched.
 //      Conflicting PR states → escalate, never guess.
-//   2. Parent rollup: a parent is moved FORWARD to reflect its children — started
+//   2. Parent rollup: a parent is moved to reflect its children — started
 //      when any child has started (target the least-advanced STARTED open child),
-//      else the least-advanced OPEN child. A parent at/above it is untouched; a
-//      parent is never moved backward.
+//      else the least-advanced OPEN child. A started, non-terminal parent may move
+//      backward only to a started target; terminal and not-started floors are kept.
 
 import { linearRequest } from '../skills-toolbox/linear-gate-lib.mjs'
 import { labelName, loadSkillConfig, stateName } from '../skills-toolbox/skill-config.mjs'
@@ -182,13 +182,15 @@ export function computeCloseable(
 
 // --- Behaviour 2: parent rollup --------------------------------------------
 
-// For each parent, roll it FORWARD to reflect its non-terminal children (children
+// For each parent, roll it to reflect its non-terminal children (children
 // in a terminal state are ignored). Started when any child has started: if any open
 // child is In Progress/In Review, target the least-advanced STARTED open child so a
 // not-started sibling never drags it down; otherwise the least-advanced open child.
-// Never regress.
-//   move     when the parent strictly trails its computed target.
-//   skip     when the parent is already at/above it, or has no open children.
+// Regress only within started, non-terminal states: both the parent and target must
+// satisfy isStartedStateName, so terminal parents stay closed and not-started
+// children never drag a started parent backward.
+//   move     when the parent trails its target, or both started-state guards permit regression.
+//   skip     when the parent equals its target, a regression guard refuses, or no child is open.
 //   escalate when an open child (or the parent) is in an unrankable state.
 export function computeRollups(parents) {
   const move = []
@@ -197,8 +199,8 @@ export function computeRollups(parents) {
   for (const parent of Array.isArray(parents) ? parents : []) {
     // If the child page was truncated (>100 children), the least-advanced open
     // child may be unread — computing a target from the visible subset could roll
-    // the parent PAST its true least-advanced child (a wrong forward move). Refuse
-    // to guess: escalate instead of mutating on a partial view.
+    // the parent PAST its true least-advanced child (a wrong forward move), or
+    // produce a wrong backward move. Refuse to guess on a partial view.
     if (parent?.childrenTruncated) {
       escalate.push({
         kind: 'rollup-children-truncated',
@@ -253,8 +255,20 @@ export function computeRollups(parents) {
         to: target.state.name,
         toStateId: target.state.id,
       })
+    } else if (
+      parentRank > targetRank &&
+      isStartedStateName(parent.state.name) &&
+      isStartedStateName(target.state.name)
+    ) {
+      move.push({
+        id: parent.id,
+        identifier: parent.identifier,
+        from: parent.state.name,
+        to: target.state.name,
+        toStateId: target.state.id,
+      })
     }
-    // else: parent at/above least-advanced open child → skip (never regress).
+    // else: equal rank, terminal parent, or not-started regression target → skip.
   }
 
   return { move, escalate }

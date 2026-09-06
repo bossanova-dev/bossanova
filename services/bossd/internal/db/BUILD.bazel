@@ -53,6 +53,7 @@ go_test(
         "account_decide_tx_test.go",
         "account_store_test.go",
         "agent_chat_store_test.go",
+        "agent_chats_unique_agent_session_migration_test.go",
         "agent_run_review_telemetry_preserve_test.go",
         "agent_run_store_test.go",
         "agent_run_terminal_state_pin_test.go",

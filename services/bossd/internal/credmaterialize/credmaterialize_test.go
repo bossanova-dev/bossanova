@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -3158,5 +3159,325 @@ func TestProjectCodexBaseHomeFailsOnNonForeignWithdrawalError(t *testing.T) {
 	// the entry went unsafe, which the removal error alone does not say.
 	if !errors.Is(err, errSymlinkOutsideBase) {
 		t.Fatalf("error = %v, want the errSymlinkOutsideBase diagnosis preserved in the join", err)
+	}
+}
+
+// --- BOS-1174: access-token expiry and the refresh assertion ---------------
+//
+// CREDENTIAL SAFETY: every token in this file is SYNTHETIC. The payloads are
+// hand-built claim objects, the signature segment is a fixed non-secret
+// literal, and no assertion below ever prints a token — the helpers under test
+// return only times and booleans, so a failure message cannot carry token
+// material even by accident. TestRefreshAssertionCarriesNoTokenMaterial pins
+// that property rather than leaving it to reviewer vigilance.
+
+// synthToken builds a SYNTHETIC three-segment JWT-shaped string whose payload
+// segment encodes claims. It is never a real credential: the header is fixed,
+// the signature segment is a literal, and no key material is involved.
+func synthToken(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal synthetic claims: %v", err)
+	}
+	return "eyJhbGciOiJub25lIn0." +
+		base64.RawURLEncoding.EncodeToString(payload) +
+		".signature-not-verified"
+}
+
+// expiryBlob wraps an access token in the codex auth.json shape, optionally
+// stamped with a last_refresh marker ("" leaves the marker out entirely).
+func expiryBlob(t *testing.T, accessToken, lastRefresh string) []byte {
+	t.Helper()
+	top := map[string]any{
+		"tokens": map[string]any{
+			"access_token":  accessToken,
+			"refresh_token": "synthetic-refresh-token",
+		},
+	}
+	if lastRefresh != "" {
+		top[authGenerationKey] = lastRefresh
+	}
+	blob, err := json.Marshal(top)
+	if err != nil {
+		t.Fatalf("marshal synthetic codex blob: %v", err)
+	}
+	return blob
+}
+
+// TestTokenNumericClaim is the malformed-token table. Absence of a readable
+// claim must always degrade to "cannot evaluate" (ok=false) — never to a zero
+// time a caller could mistake for a real instant, and never to an error that
+// could carry token bytes into a log line.
+func TestTokenNumericClaim(t *testing.T) {
+	t.Parallel()
+	exp := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		token  string
+		want   time.Time
+		wantOK bool
+	}{
+		{
+			name:   "valid token",
+			token:  synthToken(t, map[string]any{"exp": exp.Unix()}),
+			want:   exp,
+			wantOK: true,
+		},
+		{
+			name:  "empty token string",
+			token: "",
+		},
+		{
+			name:  "missing payload segment",
+			token: "eyJhbGciOiJub25lIn0",
+		},
+		{
+			name:  "only two segments",
+			token: "eyJhbGciOiJub25lIn0.",
+		},
+		{
+			name:  "non-base64 payload",
+			token: "eyJhbGciOiJub25lIn0.!!!not-base64!!!.signature-not-verified",
+		},
+		{
+			name:  "payload is not a JSON object",
+			token: "eyJhbGciOiJub25lIn0." + base64.RawURLEncoding.EncodeToString([]byte(`["exp",1]`)) + ".sig",
+		},
+		{
+			name:  "payload without exp",
+			token: synthToken(t, map[string]any{"iat": exp.Unix()}),
+		},
+		{
+			name:  "exp is not a number",
+			token: synthToken(t, map[string]any{"exp": "tomorrow"}),
+		},
+		{
+			name:  "exp is null",
+			token: synthToken(t, map[string]any{"exp": nil}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := tokenNumericClaim(tc.token, "exp")
+			if ok != tc.wantOK {
+				t.Fatalf("ok: got %v want %v", ok, tc.wantOK)
+			}
+			if ok && !got.Equal(tc.want) {
+				t.Fatalf("claim: got %v want %v", got.UTC(), tc.want)
+			}
+			if !ok && !got.IsZero() {
+				t.Fatalf("unreadable claim must return the zero time, got %v", got.UTC())
+			}
+		})
+	}
+}
+
+// TestRefreshAssertion covers both directions the plan requires: a clean
+// credential well inside its access-token lifetime must NOT be reported as
+// overdue (the common quiet case), and one past the refresh point must be.
+// Everything that cannot be evaluated stays Unknown.
+func TestRefreshAssertion(t *testing.T) {
+	t.Parallel()
+	issued := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	expires := issued.Add(10 * 24 * time.Hour)
+	issuedRFC := issued.Format(time.RFC3339)
+
+	live := synthToken(t, map[string]any{"iat": issued.Unix(), "exp": expires.Unix()})
+	noIat := synthToken(t, map[string]any{"exp": expires.Unix()})
+
+	for _, tc := range []struct {
+		name string
+		blob []byte
+		now  time.Time
+		want RefreshAssertion
+	}{
+		{
+			name: "well inside the access-token lifetime",
+			blob: expiryBlob(t, live, issuedRFC),
+			now:  issued.Add(24 * time.Hour),
+			want: RefreshAssertionNotDue,
+		},
+		{
+			name: "exactly at the refresh point is not yet overdue",
+			blob: expiryBlob(t, live, issuedRFC),
+			now:  issued.Add(8 * 24 * time.Hour),
+			want: RefreshAssertionNotDue,
+		},
+		{
+			name: "past the refresh point",
+			blob: expiryBlob(t, live, issuedRFC),
+			now:  issued.Add(9 * 24 * time.Hour),
+			want: RefreshAssertionOverdue,
+		},
+		{
+			name: "past expiry entirely",
+			blob: expiryBlob(t, live, issuedRFC),
+			now:  expires.Add(time.Hour),
+			want: RefreshAssertionOverdue,
+		},
+		{
+			name: "no iat falls back to the last_refresh stamp",
+			blob: expiryBlob(t, noIat, issuedRFC),
+			now:  issued.Add(9 * 24 * time.Hour),
+			want: RefreshAssertionOverdue,
+		},
+		{
+			name: "no iat and no last_refresh cannot be evaluated",
+			blob: expiryBlob(t, noIat, ""),
+			now:  issued.Add(9 * 24 * time.Hour),
+			want: RefreshAssertionUnknown,
+		},
+		{
+			name: "malformed token degrades to cannot-evaluate, never overdue",
+			blob: expiryBlob(t, "not-a-jwt", issuedRFC),
+			now:  issued.Add(9 * 24 * time.Hour),
+			want: RefreshAssertionUnknown,
+		},
+		{
+			name: "blob with no tokens object",
+			blob: []byte(`{"last_refresh":"2026-09-03T12:00:00Z"}`),
+			now:  issued.Add(9 * 24 * time.Hour),
+			want: RefreshAssertionUnknown,
+		},
+		{
+			name: "blob that is not JSON",
+			blob: []byte("not json at all"),
+			now:  issued.Add(9 * 24 * time.Hour),
+			want: RefreshAssertionUnknown,
+		},
+		{
+			name: "an expiry no later than issuance is not a lifetime",
+			blob: expiryBlob(t, synthToken(t, map[string]any{"iat": expires.Unix(), "exp": issued.Unix()}), issuedRFC),
+			now:  expires.Add(24 * time.Hour),
+			want: RefreshAssertionUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := refreshAssertion(tc.blob, tc.now); got != tc.want {
+				t.Fatalf("assertion: got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefreshAssertionRejectsFutureIssuance is the clock-skew guard. A
+// last_refresh (or iat) stamped in the future must never be read as a refresh
+// that just happened: that would silently vouch for a credential whose chain is
+// dead. The honest answer is "cannot evaluate", which is also the only answer
+// that cannot bench a working account on a skewed clock.
+func TestRefreshAssertionRejectsFutureIssuance(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	future := now.Add(48 * time.Hour)
+	expires := now.Add(24 * time.Hour)
+
+	skewedStamp := expiryBlob(t,
+		synthToken(t, map[string]any{"exp": expires.Unix()}),
+		future.Format(time.RFC3339),
+	)
+	if got := refreshAssertion(skewedStamp, now); got != RefreshAssertionUnknown {
+		t.Fatalf("future last_refresh: got %v want %v", got, RefreshAssertionUnknown)
+	}
+
+	skewedIat := expiryBlob(t,
+		synthToken(t, map[string]any{"iat": future.Unix(), "exp": expires.Unix()}),
+		now.Add(-10*24*time.Hour).Format(time.RFC3339),
+	)
+	if got := refreshAssertion(skewedIat, now); got != RefreshAssertionUnknown {
+		t.Fatalf("future iat: got %v want %v", got, RefreshAssertionUnknown)
+	}
+}
+
+// TestRefreshAssertionCarriesNoTokenMaterial pins the redaction property that
+// the whole design rests on: what leaves this package is a classification, not
+// a claim. Formatting every value these helpers return must never reproduce a
+// byte of the token they were derived from.
+func TestRefreshAssertionCarriesNoTokenMaterial(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	issued := now.Add(-9 * 24 * time.Hour)
+	expires := issued.Add(10 * 24 * time.Hour)
+	token := synthToken(t, map[string]any{"iat": issued.Unix(), "exp": expires.Unix()})
+	blob := expiryBlob(t, token, issued.Format(time.RFC3339))
+
+	assertion := refreshAssertion(blob, now)
+	if assertion != RefreshAssertionOverdue {
+		t.Fatalf("precondition: got %v want %v", assertion, RefreshAssertionOverdue)
+	}
+	rendered := fmt.Sprintf("%v %d", assertion, assertion)
+	for _, segment := range strings.Split(token, ".") {
+		if strings.Contains(rendered, segment) {
+			t.Fatalf("rendered assertion %q reproduced a token segment", rendered)
+		}
+	}
+	if strings.Contains(rendered, "synthetic-refresh-token") {
+		t.Fatalf("rendered assertion %q reproduced the refresh token", rendered)
+	}
+}
+
+// TestMaterializeCodexCarriesTheRefreshAssertion is the missing link BOS-1174's
+// review found: refreshAssertion itself was exhaustively table-tested, but
+// NOTHING asserted that MaterializeCodex actually puts its verdict on the
+// Materialized value it returns. Deleting that single assignment left the whole
+// suite green while the feature silently degraded back to a permanent Unknown —
+// the original bug, with passing CI.
+//
+// No clock injection is needed to test it. The threshold is a FRACTION of the
+// token's own observed lifetime, not a wall-clock duration, so a token issued 9
+// days ago and expiring in 1 day is 90% through a 10-day life under any clock
+// this test could plausibly run on; the verdict is skew-tolerant by
+// construction. The not-due half is pinned in the same shape so the test cannot
+// pass against a function that returns a constant.
+func TestMaterializeCodexCarriesTheRefreshAssertion(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name    string
+		issued  time.Time
+		expires time.Time
+		want    RefreshAssertion
+	}{
+		{
+			name:    "90% through its own lifetime is overdue",
+			issued:  now.Add(-9 * 24 * time.Hour),
+			expires: now.Add(24 * time.Hour),
+			want:    RefreshAssertionOverdue,
+		},
+		{
+			name:    "10% through its own lifetime is not due",
+			issued:  now.Add(-24 * time.Hour),
+			expires: now.Add(9 * 24 * time.Hour),
+			want:    RefreshAssertionNotDue,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token := synthToken(t, map[string]any{"iat": tc.issued.Unix(), "exp": tc.expires.Unix()})
+			m := newTestMaterializer(t, &fakeStore{blob: expiryBlob(t, token, "")})
+
+			mat, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+			if err != nil {
+				t.Fatalf("MaterializeCodex: %v", err)
+			}
+			if mat.RefreshAssertion != tc.want {
+				t.Fatalf("Materialized.RefreshAssertion = %v, want %v — the verdict is not reaching the caller",
+					mat.RefreshAssertion, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaterializeClaudeReportsUnknownRefreshAssertion pins the documented claude
+// answer. Claude materialization reads no OAuth access token this package can
+// evaluate, so "cannot ask" must be reported as Unknown — never as Overdue,
+// which would put an unproven-refresh warning on every claude account.
+func TestMaterializeClaudeReportsUnknownRefreshAssertion(t *testing.T) {
+	m := newTestMaterializer(t, &fakeStore{blob: []byte("sk-ant-oat01-secret")})
+	mat, err := m.MaterializeClaude(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeClaude: %v", err)
+	}
+	if mat.RefreshAssertion != RefreshAssertionUnknown {
+		t.Fatalf("claude Materialized.RefreshAssertion = %v, want Unknown", mat.RefreshAssertion)
 	}
 }

@@ -77,11 +77,22 @@ func TestResumeOrphanedHeadlessRuns_HappyPath(t *testing.T) {
 		t.Errorf("AgentSessionID = %v, want agent-new", s.AgentSessionID)
 	}
 	chats := f.lc.agentChats.(*mockAgentChatStore)
-	if len(chats.agentSessionIDUpdates) != 1 {
-		t.Fatalf("primary chat updates = %d, want 1", len(chats.agentSessionIDUpdates))
+	if len(chats.rebindCalls) != 1 {
+		t.Fatalf("primary chat rebinds = %d, want 1", len(chats.rebindCalls))
 	}
-	if got := chats.agentSessionIDUpdates[0]; got.id != "chat-primary" || got.oldAgentSessionID != "agent-old" || got.newAgentSessionID != "agent-new" {
-		t.Errorf("primary chat update = %+v, want agent-old -> agent-new", got)
+	got := chats.rebindCalls[0]
+	if got.agentSessionID != "agent-old" {
+		t.Errorf("rebind addressed %q, want agent-old", got.agentSessionID)
+	}
+	if got.params.NewAgentSessionID == nil || *got.params.NewAgentSessionID != "agent-new" {
+		t.Errorf("rebind NewAgentSessionID = %v, want agent-new", got.params.NewAgentSessionID)
+	}
+	// The resume moves the row; it must not delete and rebuild it (BOS-1143).
+	if len(chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("resume deleted chat rows %v; the row must be updated in place", chats.deletedAgentSessionIDs)
+	}
+	if len(chats.createCalls) != 0 {
+		t.Errorf("resume created %d chat rows; the row must be updated in place", len(chats.createCalls))
 	}
 	// Same account, not a rotation: the rotation attempt count must not move.
 	if s.RotationAttemptCount != 0 {
@@ -92,12 +103,28 @@ func TestResumeOrphanedHeadlessRuns_HappyPath(t *testing.T) {
 	}
 }
 
-func TestResumeOrphanedHeadlessRuns_UpdatesOnlyFetchedPrimaryChat(t *testing.T) {
+// TestResumeOrphanedHeadlessRuns_PreservesPrimaryChatIdentity pins BOS-1143 on
+// the orphan-resume path: moving the row onto the new run id must rewrite the
+// id and NOTHING else. The provider (agent_name), model, account binding, and
+// the provider's own session id all belong to the chat, and re-deriving them
+// from the parent session is what turned an interrupted codex chat into a
+// claude one.
+func TestResumeOrphanedHeadlessRuns_PreservesPrimaryChatIdentity(t *testing.T) {
 	f := newOrphanResumeFixture(t)
-	primary := &models.AgentChat{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}
-	duplicate := &models.AgentChat{ID: "chat-duplicate", SessionID: f.sessionID, AgentSessionID: "agent-old"}
+	f.lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	acct := "acct-chat"
+	provider := "codex-rollout-abc"
+	primary := &models.AgentChat{
+		ID:                "chat-primary",
+		SessionID:         f.sessionID,
+		AgentSessionID:    "agent-old",
+		AgentName:         "codex",
+		Model:             "gpt-5",
+		AccountID:         &acct,
+		ProviderSessionID: &provider,
+	}
 	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
-		f.sessionID: {primary, duplicate},
+		f.sessionID: {primary},
 	}}
 
 	if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 1 {
@@ -106,8 +133,83 @@ func TestResumeOrphanedHeadlessRuns_UpdatesOnlyFetchedPrimaryChat(t *testing.T) 
 	if got := primary.AgentSessionID; got != "agent-new" {
 		t.Errorf("primary chat agent session id = %q, want agent-new", got)
 	}
-	if got := duplicate.AgentSessionID; got != "agent-old" {
-		t.Errorf("duplicate chat agent session id = %q, want agent-old", got)
+	if primary.AgentName != "codex" {
+		t.Errorf("agent_name = %q, want codex preserved through resume", primary.AgentName)
+	}
+	if primary.Model != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5 preserved through resume", primary.Model)
+	}
+	if primary.AccountID == nil || *primary.AccountID != acct {
+		t.Errorf("account_id = %v, want %q preserved through resume", primary.AccountID, acct)
+	}
+	if primary.ProviderSessionID == nil || *primary.ProviderSessionID != provider {
+		t.Errorf("provider_session_id = %v, want %q preserved through resume", primary.ProviderSessionID, provider)
+	}
+}
+
+// TestResumeOrphanedHeadlessRuns_MissingPrimaryChatRefusesWithoutSpawning pins
+// the refuse path (BOS-1143 / BOS-973): a resume whose prior agent session has
+// no chat row is refused by id, and the refusal must not degrade into "create
+// something" — no agent is started at all, and the row stays a candidate.
+func TestResumeOrphanedHeadlessRuns_MissingPrimaryChatRefusesWithoutSpawning(t *testing.T) {
+	f := newOrphanResumeFixture(t)
+	chats := &mockAgentChatStore{}
+	f.lc.agentChats = chats
+
+	if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 0 {
+		t.Fatalf("resumed = %d, want 0 when the prior run has no chat row", n)
+	}
+	if len(f.runner.started) != 0 {
+		t.Errorf("StartByAgent calls = %d, want 0: the refusal must spawn no agent", len(f.runner.started))
+	}
+	if len(chats.createCalls) != 0 {
+		t.Errorf("created %d chat rows; the refusal must not invent one", len(chats.createCalls))
+	}
+	s := f.sessions.sessions[f.sessionID]
+	if s.State != machine.Orphaned {
+		t.Errorf("state = %v, want Orphaned (still a candidate for the next sweep)", s.State)
+	}
+	if s.BlockedReason == nil || *s.BlockedReason != OrphanedHeadlessRunReason {
+		t.Errorf("orphan marker = %v, want it left in place", s.BlockedReason)
+	}
+	// A missing chat row never comes back on its own, so the refusal must decline
+	// BEFORE the claim. Claiming and then releasing would leave blocked_reason
+	// untouched (ReleaseOrphanResumeClaim never writes it), so the row would match
+	// the candidate filter again on the very next tick and churn two conditional
+	// UPDATEs plus two state-transition fan-outs every sweep, forever.
+	if f.sessions.claimOrphanCalls != 0 {
+		t.Errorf("ClaimUnarchivedOrphan calls = %d, want 0: an unresumable orphan must not be claimed", f.sessions.claimOrphanCalls)
+	}
+	if f.sessions.releaseOrphanClaimCalls != 0 {
+		t.Errorf("ReleaseOrphanResumeClaim calls = %d, want 0: nothing was claimed, so nothing is released", f.sessions.releaseOrphanClaimCalls)
+	}
+}
+
+// TestRequireResumablePrimaryChat_TypedRefusalNamesTheID pins that the refusal
+// is attributable: it carries the agent_session_id an operator has to go
+// looking for, and it does NOT wrap db.ErrAgentChatNotFound, which several
+// callers read as "fine, create one".
+func TestRequireResumablePrimaryChat_TypedRefusalNamesTheID(t *testing.T) {
+	lc := &Lifecycle{logger: zerolog.Nop(), agentChats: &mockAgentChatStore{}}
+	err := lc.requireResumablePrimaryChat(context.Background(), "agent-gone")
+	if err == nil {
+		t.Fatal("expected a refusal for a missing chat row")
+	}
+	if !errors.Is(err, ErrResumedChatMissing) {
+		t.Errorf("err = %v, want it to match ErrResumedChatMissing", err)
+	}
+	var typed *ResumedChatMissingError
+	if !errors.As(err, &typed) {
+		t.Fatalf("err = %v, want a *ResumedChatMissingError", err)
+	}
+	if typed.AgentSessionID != "agent-gone" {
+		t.Errorf("refusal names %q, want agent-gone", typed.AgentSessionID)
+	}
+	if !strings.Contains(err.Error(), "agent-gone") {
+		t.Errorf("refusal message %q does not name the agent session id", err.Error())
+	}
+	if errors.Is(err, db.ErrAgentChatNotFound) {
+		t.Error("refusal must not wrap db.ErrAgentChatNotFound: existing errors.Is branches treat that as create-if-missing")
 	}
 }
 
@@ -312,10 +414,15 @@ func TestResumeOrphanedHeadlessRuns_PersistFailureReparksAndStopsRestart(t *test
 
 func TestResumeOrphanedHeadlessRuns_PrimaryChatSyncFailureRestampsMarker(t *testing.T) {
 	f := newOrphanResumeFixture(t)
-	// No chat exists for the prior agent session and Create fails, so the
-	// primary-chat sync errors *after* the ImplementingPlan persist has already
-	// cleared the orphan marker.
-	f.lc.agentChats = &mockAgentChatStore{createErr: errors.New("sqlite write failed")}
+	// The chat row exists (so the pre-spawn guard passes) but the in-place
+	// rebind fails, so the primary-chat sync errors *after* the ImplementingPlan
+	// persist has already cleared the orphan marker.
+	f.lc.agentChats = &mockAgentChatStore{
+		chatsBySession: map[string][]*models.AgentChat{
+			f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
+		},
+		rebindErr: errors.New("sqlite write failed"),
+	}
 
 	if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 0 {
 		t.Fatalf("resumed = %d, want 0 on primary-chat sync failure", n)
@@ -344,7 +451,12 @@ func TestResumeOrphanedHeadlessRuns_RollbackFailureLeavesImplementingPlan(t *tes
 	f := newOrphanResumeFixture(t)
 	// Primary-chat sync fails after the ImplementingPlan persist has already
 	// cleared the marker and swapped in the resume id.
-	f.lc.agentChats = &mockAgentChatStore{createErr: errors.New("sqlite write failed")}
+	f.lc.agentChats = &mockAgentChatStore{
+		chatsBySession: map[string][]*models.AgentChat{
+			f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
+		},
+		rebindErr: errors.New("sqlite write failed"),
+	}
 	// The conditional rollback fails, so the row remains in its committed shape.
 	f.sessions.orphanResumeReparkErr = errors.New("sqlite write failed on rollback")
 

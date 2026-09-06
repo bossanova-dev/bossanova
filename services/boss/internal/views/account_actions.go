@@ -138,3 +138,35 @@ func accountRemovePromptText(acct *pb.Account, count int, known bool) string {
 			" depending on spawn state — consider disable instead of remove.", count)
 	}
 }
+
+// --- Reauthenticate in place (BOS-1142) ---
+
+// Reauthentication is not an RPC this package issues directly. The credential
+// is acquired by an isolated device login and handed to the daemon's existing
+// RefreshAccount — the mutating owner of the stored credential — so the action
+// here is a view switch into that flow rather than a tea.Cmd wrapping a client
+// call. What lives here is the copy and the eligibility rule the list and the
+// edit view must not state differently.
+
+// accountReauthProvider is the only provider whose in-place device login is
+// implemented. Claude accounts are refreshed by pasting a setup token
+// (`boss account refresh`), which is a different acquisition path.
+const accountReauthProvider = "codex"
+
+// accountReauthSupported reports whether [R]eauth can run for this account.
+func accountReauthSupported(a *pb.Account) bool {
+	return a != nil && a.GetProvider() == accountReauthProvider
+}
+
+// accountReauthUnsupportedStatus is the in-place refusal shown when [R] is
+// pressed on an account whose provider has no device-login flow. It names the
+// alternative rather than reporting a bare "not supported", so the operator's
+// next move is in the message.
+func accountReauthUnsupportedStatus(provider string) string {
+	if provider == "" {
+		provider = "this"
+	}
+	return fmt.Sprintf(
+		"Reauthenticate is a %s device login; %s accounts refresh with a pasted credential instead (boss account refresh <id>).",
+		accountReauthProvider, provider)
+}

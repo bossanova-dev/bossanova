@@ -84,14 +84,6 @@ func (s *NotifyingAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Contex
 	return nil
 }
 
-func (s *NotifyingAgentChatStore) UpdateAgentSessionID(ctx context.Context, id, oldAgentSessionID, newAgentSessionID string) error {
-	if err := s.inner.UpdateAgentSessionID(ctx, id, oldAgentSessionID, newAgentSessionID); err != nil {
-		return err
-	}
-	s.notifyAfterUpdate(ctx, newAgentSessionID)
-	return nil
-}
-
 func (s *NotifyingAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
 	if err := s.inner.UpdateTmuxSessionName(ctx, agentSessionID, name); err != nil {
 		return err
@@ -127,6 +119,21 @@ func (s *NotifyingAgentChatStore) UpdateAccountIDByAgentSessionID(ctx context.Co
 		return err
 	}
 	s.notifyAfterUpdate(ctx, agentSessionID)
+	return nil
+}
+
+// RebindResumedChat forwards the in-place resume rebind and then notifies with
+// the row's post-update state. The notify key is the row's new identity when
+// the rebind re-keyed it, since that is the id the refreshed row now answers to.
+func (s *NotifyingAgentChatStore) RebindResumedChat(ctx context.Context, agentSessionID string, params RebindResumedChatParams) error {
+	if err := s.inner.RebindResumedChat(ctx, agentSessionID, params); err != nil {
+		return err
+	}
+	notifyID := agentSessionID
+	if params.NewAgentSessionID != nil {
+		notifyID = *params.NewAgentSessionID
+	}
+	s.notifyAfterUpdate(ctx, notifyID)
 	return nil
 }
 

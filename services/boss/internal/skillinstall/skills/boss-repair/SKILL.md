@@ -1384,12 +1384,13 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
    if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
    BOSS_REPAIR_CALLBACK="$BOSS_REPAIR_TOOLBOX/callback/adapter.mjs"
+   export BOSS_REPAIR_CALLBACK
    node --input-type=module -e '
      import{pathToFileURL as u}from"node:url"
-     const {resolveCallbackAdapter,callbacksAvailable}=await import(u(process.env.BOSS_REPAIR_CALLBACK).href)
-     const gate=callbacksAvailable(process.env)
-     if(!gate.available){
-       process.stdout.write("callbacks-unavailable: "+gate.reason+"\n")
+     const {resolveCallbackAdapter,callbacksAvailable,callbacksUnavailableReason}=await import(u(process.env.BOSS_REPAIR_CALLBACK).href)
+     const available=callbacksAvailable(process.env)
+     if(!available){
+       process.stdout.write("callbacks-unavailable: "+callbacksUnavailableReason(process.env)+"\n")
      }else{
        const a=resolveCallbackAdapter(process.env)
        process.stdout.write(JSON.stringify({triggers:a.policy.watchTriggers,expiresIn:a.policy.defaultExpiresIn})+"\n")
@@ -1402,7 +1403,7 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    its own group, resolving the CLI through the adapter rather than a bare binary name. On every wake
    **reconcile against real state before acting**: re-read checks, review threads, and mergeability
    exactly as steps 2 and 3 describe, dedup by callback id, and re-arm any trigger whose reconcile
-   still reads false. When the gate is **false**, log its `reason` — an unavailable gate is a clean
+   still reads false. When the gate is **false**, log `callbacksUnavailableReason(process.env)` — an unavailable gate is a clean
    degrade, never a failed wait — and drive the wait from the bounded poll alone.
 
    Either way the poll is what bounds the wait: a fixed number of reads at a fixed interval, with a

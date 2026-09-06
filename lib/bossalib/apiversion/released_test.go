@@ -53,7 +53,7 @@ func TestMissingReleased_DetectsSimulatedRemoval(t *testing.T) {
 	// reported missing, in ReleasedVersions order.
 	shrunk := []apiversion.Version{apiversion.Baseline}
 	missing := apiversion.MissingReleased(shrunk)
-	want := []apiversion.Version{apiversion.V20260704, apiversion.V20260705, apiversion.V20260706, apiversion.V20260711, apiversion.V20260718, apiversion.V20260723, apiversion.V20260803, apiversion.V20260804, apiversion.V20260812, apiversion.V20260816, apiversion.V20260820, apiversion.V20260821, apiversion.V20260825, apiversion.V20260902, apiversion.V20260903, apiversion.V20260904}
+	want := []apiversion.Version{apiversion.V20260704, apiversion.V20260705, apiversion.V20260706, apiversion.V20260711, apiversion.V20260718, apiversion.V20260723, apiversion.V20260803, apiversion.V20260804, apiversion.V20260812, apiversion.V20260816, apiversion.V20260820, apiversion.V20260821, apiversion.V20260825, apiversion.V20260902, apiversion.V20260903, apiversion.V20260904, apiversion.V20260905, apiversion.V20260906, apiversion.V20260907, apiversion.V20260908, apiversion.V20260909, apiversion.V20260910, apiversion.V20260911, apiversion.V20260912, apiversion.V20260913, apiversion.V20260914}
 	if len(missing) != len(want) {
 		t.Fatalf("MissingReleased(%v) = %v, want %v — the append-only guard must detect every dropped shipped version",
 			shrunk, missing, want)
@@ -65,20 +65,21 @@ func TestMissingReleased_DetectsSimulatedRemoval(t *testing.T) {
 	}
 }
 
-// TestReleasedVersions_CoversNonExampleRegistryMembers keeps the golden ledger
-// and the shipped registry in lockstep in the other direction: every version
-// the registry currently ships must already be recorded as released. Appending
-// a new version to DefaultRegistry() without also appending it to
-// ReleasedVersions (the required lockstep step) fails here, so the ledger can
-// never silently fall behind the registry.
-func TestReleasedVersions_CoversNonExampleRegistryMembers(t *testing.T) {
-	released := make(map[apiversion.Version]struct{}, len(apiversion.ReleasedVersions))
-	for _, v := range apiversion.ReleasedVersions {
-		released[v] = struct{}{}
+// TestReleasedVersions_AreRegistryPrefix keeps the shipped ledger and registry
+// ordered in lockstep while allowing one trailing unreleased Current contract.
+// Release automation records that final member only when it actually ships.
+func TestReleasedVersions_AreRegistryPrefix(t *testing.T) {
+	released := apiversion.ReleasedVersions
+	registered := apiversion.DefaultRegistry().All()
+	if extra := len(registered) - len(released); extra < 0 || extra > 1 {
+		t.Fatalf("registry has %d entries and ReleasedVersions has %d; want zero or one trailing unreleased version", len(registered), len(released))
 	}
-	for _, v := range apiversion.DefaultRegistry().All() {
-		if _, ok := released[v]; !ok {
-			t.Errorf("DefaultRegistry() ships %q but it is not in ReleasedVersions — appending a version to the registry must append it to the golden ledger too (append-only lockstep)", v)
+	for i := range released {
+		if registered[i] != released[i] {
+			t.Errorf("registry[%d] = %q, want released prefix entry %q", i, registered[i], released[i])
 		}
+	}
+	if len(registered) > len(released) && registered[len(registered)-1] != apiversion.DefaultRegistry().Current() {
+		t.Errorf("unreleased registry member %q is not Current %q", registered[len(registered)-1], apiversion.DefaultRegistry().Current())
 	}
 }

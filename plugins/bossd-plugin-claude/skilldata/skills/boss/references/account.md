@@ -30,6 +30,14 @@ List accounts
 - `--provider` — Filter by provider (claude|codex)
 - `--refresh` — Force a live usage probe of each account before listing
 
+### `boss account reauth <account-id> [flags]`
+
+Re-run the provider login for an account and replace its credential in place
+
+**Flags:**
+
+- `--timeout` — Deadline for the interactive device login (default: 10m0s)
+
 ### `boss account refresh <account-id> [flags]`
 
 Replace an account's stored credential

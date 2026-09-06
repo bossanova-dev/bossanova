@@ -71,12 +71,12 @@ the CLI derives it from `BOSS_REPO_ID` or the current working directory. It
 derives session provenance from `BOSS_SESSION_ID` or the current context; chat
 provenance comes from `BOSS_AGENT_SESSION_ID` or an explicit `--chat` value.
 
-The working-directory part of that is local-daemon-only — a CLI connected with
+The working-directory part of that is local-daemon-only: a CLI connected with
 `--remote` can't resolve the repository or session you're standing in, so set
 `BOSS_REPO_ID` or pass `--repo` there. Without one, `add`, `show`, `edit`, and
 `rm` fail, and `ls` lists every repository instead of the current one.
 
-Listing notes is one operation you can reach three ways — though only a
+Listing notes is one operation you can reach three ways, though only a
 local-daemon CLI defaults to the current repository, for the reason just above.
 `list_notes` with no `repo_id` searches
 every repository the agent can reach, as [MCP reference](#mcp-reference) covers

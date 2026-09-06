@@ -102,6 +102,15 @@ var ProofEnvAllowedKeys = []string{
 	"BOSS_PROOF_SETTINGS_EVENT_TRACING",
 	"BOSS_PROOF_SETTINGS_POSTHOG_HOST",
 	"BOSS_PROOF_SETTINGS_SAVE_FAILURE",
+	// BOSS_PROOF_CODEX_REAUTH (BOS-1142) swaps the codex device login for a
+	// scripted stand-in that writes a synthetic auth.json. Admitting it by exact
+	// key rather than by family is deliberate: this is the one proof toggle that
+	// changes what a credential flow does rather than only what a screen says,
+	// so it must never be reachable through a prefix an unrelated scenario could
+	// widen. The stand-in itself is compiled out of production builds by the e2e
+	// tag (views/account_register_proof.go), so this key is inert in a shipped
+	// binary even if it were set.
+	"BOSS_PROOF_CODEX_REAUTH",
 }
 
 // FilterProofEnv splits a requested env map into allowed (keys that prefix-match
@@ -201,6 +210,8 @@ func BaseHarnessEnv(environ []string) []string {
 			strings.HasPrefix(e, "BOSS_ORG_E2E_ORGANIZATIONS=") ||
 			strings.HasPrefix(e, "BOSS_ORG_E2E_MAPPING=") ||
 			strings.HasPrefix(e, "BOSS_ORG_E2E_SET_ERROR=") ||
+			strings.HasPrefix(e, "BOSS_ORG_E2E_SESSION_ORGS=") ||
+			strings.HasPrefix(e, "BOSS_ORG_E2E_SESSION_READ_FAILURE=") ||
 			strings.HasPrefix(e, "BOSS_PROOF_SETTINGS_") ||
 			strings.HasPrefix(e, "HOME=") ||
 			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {

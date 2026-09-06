@@ -37,6 +37,7 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dotenv"
@@ -383,6 +384,15 @@ type Lifecycle struct {
 	backgroundDraftPRMu sync.Mutex
 	backgroundDraftPRs  map[string]*backgroundDraftPRHandle
 
+	// providerSessionIDDiscoveryDone is the done channel of the most recently
+	// started launch-path background provider-session-id discovery goroutine
+	// (BOS-1144). Retaining it is what makes that retry a tracked step rather
+	// than fire-and-forget: WaitForBackgroundProviderSessionIDDiscovery joins
+	// it, so tests observe the bind deterministically instead of sleeping. nil
+	// until the foreground deadline first hands off.
+	providerSessionIDDiscoveryMu   sync.Mutex
+	providerSessionIDDiscoveryDone <-chan struct{}
+
 	// draftPRRetries rate-limits RetryFailedDraftPRsPeriodic (BOS-875), keyed
 	// by session id. Deliberately in memory and NOT a column: this is a rate
 	// limiter, not a fact about the session, and it must not outlive the
@@ -425,8 +435,13 @@ func (l *Lifecycle) resolveProofEnv() map[string]string {
 // rotation, keyed off the session's AccountID binding. Kept as an interface so
 // the real resolver (accountwiring.SpawnEnvResolver, wrapping account.Resolver)
 // can be injected without the session package depending on db/plugin plumbing.
+//
+// BOS-1142: the error return is the fail-closed seam. A session bound to a
+// managed account whose credentials cannot be injected must not spawn at all —
+// running it on the agent CLI's ambient login attributes, bills, and rate-limits
+// the work against an identity nobody chose, with nothing on screen to say so.
 type accountEnvResolver interface {
-	Resolve(ctx context.Context, sess *models.Session) map[string]string
+	Resolve(ctx context.Context, sess *models.Session) (map[string]string, error)
 }
 
 // SetAccountEnvResolver overrides the account env resolver (tests inject a
@@ -440,12 +455,112 @@ func (l *Lifecycle) SetAccountEnvResolver(r accountEnvResolver) { l.accountEnv =
 // but only when the bound account resolver produced a Claude OAuth bearer the
 // proxy can substitute for the BOS-326 sentinel. Never logs values (the proxy
 // token is a secret).
-func (l *Lifecycle) resolveAccountEnv(ctx context.Context, sess *models.Session) map[string]string {
+// An error means the binding could not be honoured; callers propagate it and
+// refuse the spawn (BOS-1142).
+func (l *Lifecycle) resolveAccountEnv(ctx context.Context, sess *models.Session) (map[string]string, error) {
 	var base map[string]string
 	if l.accountEnv != nil {
-		base = l.accountEnv.Resolve(ctx, sess)
+		var err error
+		base, err = l.accountEnv.Resolve(ctx, sess)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return l.ApplyFailoverProxyEnv(sess, base)
+	return l.ApplyFailoverProxyEnv(sess, base), nil
+}
+
+// resolveAccountEnvForChat is the CHAT-authority sibling of resolveAccountEnv
+// (BOS-1135). Use it at any spawn whose account authority is a chat binding
+// rather than the session's own — a respawn after a chat-scoped account switch,
+// an orphan resume, or a resurrect, all of which build their spawn view from
+// agent_chats and not from sessions.account_id.
+//
+// The difference is ONLY which proxy target the failover overlay is keyed on.
+// Credential materialization is identical: both resolve from spawnSess, whose
+// AccountID the caller has already set to the chat's account, so the child gets
+// the right CLAUDE_CODE_OAUTH_TOKEN either way. What resolveAccountEnv gets
+// wrong for a chat-bound spawn is the layer above that: it mints
+// TokenForSession(sess.ID), whose target resolves through
+// Lifecycle.CurrentBearer(<sessionID>) → sessions.account_id — the binding a
+// chat-scoped switch deliberately never writes (BOS-1386). The pane therefore
+// comes back up billing the account the operator just switched AWAY from, with
+// no CLAUDE_CODE_OAUTH_TOKEN of its own to fall back on (the overlay deletes
+// it). Keying the token on the chat instead routes CurrentBearer through
+// currentBearerForChat → agent_chats.account_id, which is the binding the
+// switch DID write.
+//
+// chat is the account authority, not merely the chat being spawned: pass nil
+// (or a chat with no account of its own) when the account came from the
+// session seed, and the session-scoped overlay is applied exactly as before.
+// It does not have to correspond to a persisted agent_chats row yet — a fresh
+// respawn resolves its env before Step 7 creates the row. TokenForChat carries
+// the supplied account id as the target's fallback, but that fallback is only
+// reached once the row exists and carries no account of its own:
+// chatProxyBinding returns no binding while the row is still absent, so the
+// pre-persist gap itself is NOT covered by it.
+//
+// Never logs values (both the account bearer and the proxy token are secrets).
+//
+// Returns an error for the same reason resolveAccountEnv does (BOS-1142): a
+// bound account whose credentials cannot be injected must refuse the spawn, not
+// silently hand back an env without them and let the child come up on the agent
+// CLI's ambient login. Every caller of this function is a spawn path, so the
+// error is never advisory -- swallowing it here would reopen the silent degrade
+// on exactly the chat-scoped paths BOS-1135 added.
+func (l *Lifecycle) resolveAccountEnvForChat(ctx context.Context, spawnSess *models.Session, chat *models.AgentChat) (map[string]string, error) {
+	var base map[string]string
+	if l.accountEnv != nil {
+		var err error
+		base, err = l.accountEnv.Resolve(ctx, spawnSess)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if chat == nil || chat.AgentSessionID == "" || chat.AccountID == nil {
+		// No chat-scoped authority to key a target on: the account came from the
+		// session seed. Degrade to the session-scoped overlay, which is
+		// byte-identical to resolveAccountEnv.
+		//
+		// The discriminator is `chat.AccountID == nil` and nothing more, matching
+		// Server.resolveChatAccountEnvForSpawn (account_binding.go) exactly — the
+		// one place this shape is already proven. A non-nil pointer to "" is an
+		// EXPLICIT account-0/unmanaged binding, not an absent one, and the
+		// codebase honours that distinction elsewhere; testing the pointee here
+		// too would be a third, wider definition of "chat-bound" that only this
+		// function held. It would also be inert: proxyBaseURLForChat returns ""
+		// for an empty accountID exactly as proxyBaseURL does for an empty
+		// sessions.account_id, so both arms leave base untouched either way.
+		return l.ApplyFailoverProxyEnv(spawnSess, base), nil
+	}
+	return l.ApplyFailoverProxyEnvForChat(spawnSess, chat, *chat.AccountID, base), nil
+}
+
+// redactedInjectionError carries a credential-injection refusal onward with its
+// typed classification intact while keeping the rendered text masked.
+//
+// Both properties are required and they pull in opposite directions.
+// account.InjectionError.Error() is deliberately raw — it can embed a provider
+// response body — and these refusals travel up to handlers that render the
+// error text. But flattening the refusal to a string with
+// account.RedactedMessage severs Unwrap: errors.Is(err, context.Canceled) and
+// account.AsInjectionError both go false, leaving a caller with text matching
+// as its only discriminator, which is exactly what BOS-1142's typed outcome
+// exists to remove. Wrapping keeps errors.Is/errors.As working through Unwrap
+// while Error() reports the same masked message the flattened form produced.
+type redactedInjectionError struct{ err error }
+
+func (e *redactedInjectionError) Error() string { return account.RedactedMessage(e.err) }
+
+func (e *redactedInjectionError) Unwrap() error { return e.err }
+
+// redactedInjection wraps err for %w propagation at an internal seam whose
+// error may still be rendered to an operator. Callers use it instead of
+// formatting account.RedactedMessage(err) with %s.
+func redactedInjection(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &redactedInjectionError{err: err}
 }
 
 // ApplyFailoverProxyEnv folds the BOS-320/326 Claude proxy overlay into an
@@ -1495,9 +1610,19 @@ func (l *Lifecycle) primaryChatForSession(ctx context.Context, sess *models.Sess
 // preserving the same-provider common case. Until chats have their own effort
 // column, cross-agent chats resolve effort from the spawning agent's config.
 func (l *Lifecycle) effectiveSpawnSession(ctx context.Context, sess *models.Session) *models.Session {
+	spawnSess, _ := l.effectiveSpawnTarget(ctx, sess)
+	return spawnSess
+}
+
+// effectiveSpawnTarget is effectiveSpawnSession plus the primary chat its
+// overrides came from, so a caller that has to key the failover-proxy target on
+// the account AUTHORITY (BOS-1135) can tell a chat-bound account from a
+// session-seeded one instead of guessing from the resulting session view. The
+// returned chat is nil exactly when the session seed governed.
+func (l *Lifecycle) effectiveSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *models.AgentChat) {
 	chat := l.primaryChatForSession(ctx, sess)
 	if chat == nil {
-		return sess
+		return sess, nil
 	}
 	eff := *sess
 	if chat.AgentName != "" {
@@ -1510,7 +1635,22 @@ func (l *Lifecycle) effectiveSpawnSession(ctx context.Context, sess *models.Sess
 	if chat.AccountID != nil {
 		eff.AccountID = chat.AccountID
 	}
-	return &eff
+	return &eff, chat
+}
+
+// EffectiveModelForAgent returns the model to send to the plugin that will
+// actually spawn a run, for a spawn whose chat carried no model of its own.
+// Model ids are provider-scoped, so a cross-agent spawn must NOT inherit the
+// session's model: a codex chat under a claude session would otherwise build
+// `codex --model <claude model id>`. Empty is the meaningful answer there
+// rather than a missing one — db.CreateAgentChatParams.Model documents "" as
+// the agent CLI default, and each runner plugin resolves its own. Mirrors
+// EffectiveEffortForAgent, which already resets effort across agents (BOS-1135).
+func EffectiveModelForAgent(sessionAgentName, sessionModel, spawnAgentName string) string {
+	if sessionAgentName == "" || spawnAgentName == "" || spawnAgentName == sessionAgentName {
+		return sessionModel
+	}
+	return ""
 }
 
 // EffectiveEffortForAgent returns the effort to send to the plugin that will
@@ -2201,7 +2341,15 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if !ok {
 			return rollbackPreflightFailure(fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile, resolvedAgentName))
 		}
-		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
+		// BOS-1142: a bound account whose credentials cannot be injected must not
+		// be preflighted (or launched) on the agent CLI's ambient login. The
+		// worktree already exists here, so the refusal goes through the same
+		// rollback every other post-setup preflight failure uses.
+		preflightAccountEnv, accountErr := l.resolveAccountEnv(ctx, session)
+		if accountErr != nil {
+			return rollbackPreflightFailure(fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr)))
+		}
+		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(preflightAccountEnv, l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
 		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
 			ctx, session.AgentName, result.WorktreePath, session.Model, session.EffectiveEffort, preflightEnv, opts.HeadlessCapabilityProfile,
 		); err != nil {
@@ -2335,7 +2483,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// stored LINEAR_API_KEY / SENTRY_* secrets are filled beneath the
 		// worktree .env (OverlayWithRepo) so the run authenticates to its own
 		// repo's Linear workspace, not the daemon's ambient one.
-		headlessEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
+		headlessAccountEnv, accountErr := l.resolveAccountEnv(ctx, session)
+		if accountErr != nil {
+			// BOS-1142: refuse rather than start the headless run on the agent
+			// CLI's ambient login. Bare return, matching the neighbouring
+			// dispatcher-capability failure: the worktree is already persisted on
+			// the session row by this point, so the caller's failure cleanup owns
+			// it, not the preflight rollback.
+			return fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr))
+		}
+		headlessEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(headlessAccountEnv, l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
 		// Hand the run the loopback question-signal context (BOS-486). The
 		// token is minted BEFORE the spawn — it has to be in the child's env —
 		// and bound to the agent session id the plugin resolves AFTER it, which
@@ -2719,6 +2876,17 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 // carries both the transient marker and the "after N attempts" suffix, which is
 // exactly the pair a reader needs.
 func draftPRBlockedReason(err error) string {
+	// Auth is tested FIRST, and the order is the only judgement call here.
+	// EnsurePR pushes the branch before it calls gh, so a single wrapped error
+	// can carry both a git transport signature and gh's auth signature — and
+	// gitremote.IsTransient is a substring test over the whole chain, so it would
+	// claim such an error and mark it "retrying". An auth outage is the
+	// operator's problem and does not heal on its own, so it must win: marking
+	// it transient promises a recovery that cannot happen and hides the one
+	// fact that names the cause.
+	if errors.Is(err, vcs.ErrGitHubAuthUnavailable) {
+		return sessionreason.DraftPRCreationAuthFailure(err)
+	}
 	if gitremote.IsTransient(err) {
 		return sessionreason.DraftPRCreationTransientFailure(err)
 	}
@@ -3799,9 +3967,23 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 	// BOS-381: the primary chat carries the authoritative provider/account/model.
 	// Resolve it so a chat whose agent/account/model diverged from the session's
 	// seed resumes under the right runner, credentials, and model.
-	spawnSess := l.effectiveSpawnSession(ctx, session)
-	resumeEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), session.WorktreePath, repo)
-	claudeSessionID, err := l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, session.Plan, resume, resumeEnv)
+	spawnSess, spawnChat := l.effectiveSpawnTarget(ctx, session)
+	// BOS-1142: a bound account whose credentials cannot be injected refuses the
+	// resurrect instead of restarting the session on the agent CLI's ambient
+	// login. The refusal shares startHeadlessReplacementRun's error path below so
+	// the un-archive is compensated either way.
+	//
+	// Resolved through the CHAT-authority sibling (BOS-1135): the resurrect
+	// builds its spawn view from agent_chats, so the failover token must be keyed
+	// on the chat's account, not the session's seed.
+	claudeSessionID, err := func() (string, error) {
+		accountEnv, envErr := l.resolveAccountEnvForChat(ctx, spawnSess, spawnChat)
+		if envErr != nil {
+			return "", fmt.Errorf("resolve account env: %w", redactedInjection(envErr))
+		}
+		resumeEnv := dotenv.OverlayWithRepo(mergeEnv(accountEnv, l.resolveProofEnv()), session.WorktreePath, repo)
+		return l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, session.Plan, resume, resumeEnv)
+	}()
 	if err != nil {
 		// Undo the un-archive (BOS-924). Without this the session is left live,
 		// agent-less and un-retryable: the guard at the top of this function

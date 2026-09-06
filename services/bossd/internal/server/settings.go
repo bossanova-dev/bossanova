@@ -183,11 +183,15 @@ func applyAgentConfig(s *config.Settings, name, key, value string, desc *pb.User
 	}
 }
 
-// agentEnabled reports whether the named plugin is configured and enabled.
+// agentEnabled reports whether the named plugin is configured and effectively
+// enabled. The entry must exist, but for an experimental plugin the opt-in list
+// decides: the daemon's gate overrides plugins[].enabled in both directions and
+// never persists the result, so the persisted flag would reject a default the
+// daemon has loaded and accept one it forces off.
 func agentEnabled(s config.Settings, name string) bool {
 	for _, p := range s.Plugins {
 		if p.Name == name {
-			return p.Enabled
+			return config.PluginEnabledForSettings(s, name)
 		}
 	}
 	return false

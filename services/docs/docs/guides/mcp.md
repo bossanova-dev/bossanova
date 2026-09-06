@@ -8,7 +8,7 @@ import CommandTabs from '@site/src/components/CommandTabs';
 
 # MCP Server
 
-Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents — Claude Code, Claude Desktop, and any MCP-capable host — drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. Anything you can do from the TUI or the `boss` CLI, an agent can do through MCP.
+Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents (Claude Code, Claude Desktop, and any MCP-capable host) drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. Anything you can do from the TUI or the `boss` CLI, an agent can do through MCP.
 
 The server exposes **70 tools** in three tiers:
 
@@ -27,16 +27,16 @@ make build-mcp          # produces bin/mcp
 ```
 
 That binary is all you need to wire up a stdio MCP host such as Claude Code or
-Claude Desktop — those hosts spawn `bin/mcp` themselves over stdio (see
+Claude Desktop. Those hosts spawn `bin/mcp` themselves over stdio (see
 [Connect an agent](#connect-an-agent) below), so they do **not** require the
 service install below.
 
 ### Optional: run `bin/mcp` as a standalone HTTP daemon
 
-:::note Optional — most users can skip this
+:::note Optional: most users can skip this
 Stdio MCP hosts (Claude Code, Claude Desktop) spawn `bin/mcp` themselves and
 never need this. Install the HTTP daemon only if you want an always-on
-`bin/mcp` reachable over HTTP — for HTTP-capable MCP clients, `curl`, or a
+`bin/mcp` reachable over HTTP: for HTTP-capable MCP clients, `curl`, or a
 browser-based inspector.
 :::
 
@@ -71,7 +71,7 @@ cli="boss mcp uninstall"
 />
 
 `boss mcp install` runs `mcp --http 127.0.0.1:<port>` (serving `/mcp`) under the
-platform user service manager — launchd (`~/Library/LaunchAgents/com.bossanova.mcp.plist`)
+platform user service manager: launchd (`~/Library/LaunchAgents/com.bossanova.mcp.plist`)
 on macOS, or systemd (`~/.config/systemd/user/bossanova-mcp.service`) on Linux.
 It accepts `--port <n>` (default 8765) and `--force` (overwrite an existing
 service file).
@@ -79,8 +79,8 @@ service file).
 #### What `boss mcp stop` owns, and what it leaves alone
 
 `boss mcp stop` only touches the service manager when the service is actually
-installed — so on a machine that never ran `boss mcp install` it does nothing
-there — and its "Idempotent." guarantee is now a verified end state, not just
+installed (so on a machine that never ran `boss mcp install` it does nothing
+there), and its "Idempotent." guarantee is now a verified end state, not just
 the service manager's exit code. Beyond the managed service, it also sweeps
 every other `boss-mcp` process owned by the current user (bossd writes one
 into each agent's per-chat MCP config), classifying each of them:
@@ -103,7 +103,7 @@ There is one known gap in the other direction, and it applies on both
 platforms: if the service _file_ is deleted while the launchd job or systemd
 unit is still loaded, the service reads as not installed, so `stop` neither
 stops it through the service manager nor treats the managed `--http` row as
-unattributable — it sweeps it as stray, and `KeepAlive` / `Restart=always`
+unattributable; it sweeps it as stray, and `KeepAlive` / `Restart=always`
 respawns it under a new PID. Recover by re-creating the service file and
 re-loading it: `boss mcp install --force` (which may report the job as already
 loaded), then `boss mcp start`.
@@ -116,7 +116,7 @@ when that chat ends. `boss mcp status` reports this same inventory on its
 
 ## Connect an agent
 
-stdio MCP hosts (Claude Code, Claude Desktop) spawn the binary themselves — you
+stdio MCP hosts (Claude Code, Claude Desktop) spawn the binary themselves. You
 do not need `boss mcp install` for this path. Point your host at the absolute
 path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 
@@ -132,18 +132,18 @@ path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 }
 ```
 
-**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`, same `mcpServers` block; restart Claude Desktop after saving. Verify with `/mcp` in Claude Code or the tools panel in Claude Desktop — the `bossanova` tools should appear.
+**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`, same `mcpServers` block; restart Claude Desktop after saving. Verify with `/mcp` in Claude Code or the tools panel in Claude Desktop; the `bossanova` tools should appear.
 
-> **Environment variables in `.mcp.json`.** `${VAR}` placeholders in
+> **Environment variables** in `.mcp.json`. `${VAR}` placeholders in
 > `.mcp.json` (for example `Authorization: Bearer ${LINEAR_API_KEY}`) are
 > resolved from the agent session's environment. Bossanova automatically
 > loads a worktree's `.env` into that environment, so putting the value in
-> the worktree `.env` is enough for it to resolve — see
+> the worktree `.env` is enough for it to resolve; see
 > [Automatic `.env` loading](./setup-scripts.md#automatic-env-loading).
 
 ## Modes
 
-- **stdio** (default) — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
+- **stdio (default)** — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
 - **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port) serves `/mcp` and `/healthz`, useful for `curl` or a browser-based MCP inspector. Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
 
 Pass `--read-only` to register only the 24 read-only tools; mutating and destructive tools then never appear in `tools/list`.
@@ -211,8 +211,8 @@ The callback, broadcast, and note tool families each have their own guide:
 ### `merge_session` results carry a `detail` note
 
 On success `merge_session` returns the session object exactly as `close_session`,
-`archive_session` and `resurrect_session` do — the session's own fields stay at the
-top level — plus one optional sibling key, `detail`. The payload shape is otherwise
+`archive_session` and `resurrect_session` do (the session's own fields stay at the
+top level), plus one optional sibling key, `detail`. The payload shape is otherwise
 unchanged, so if you read `id` or `pr_number` off a merge result you are unaffected.
 
 The `detail` string is the daemon's note about what it actually did, most
@@ -220,23 +220,23 @@ importantly a **merge-strategy substitution**: a rebase the repository's configu
 strategy asked for, which GitHub refused, so the daemon squashed instead. Without it
 you cannot tell a plain merge from a substituted one.
 
-The key is **omitted entirely when the note is empty**, so its presence is
-meaningful — do not expect a `detail` field on every successful merge, and do not
+The key is **omitted entirely** when the note is empty, so its presence is
+meaningful: do not expect a `detail` field on every successful merge, and do not
 read its absence as an error.
 
 A merge _refusal_ is not a `detail`. It comes back as an error result whose text
 reaches you verbatim, including the `MERGE_STRATEGY_INCOMPATIBLE` token you can
 branch on.
 
-`detail` is **always empty on the hosted gateway path**. The orchestrator response
+`detail` is **always empty** on the hosted gateway path. The orchestrator response
 behind the hosted endpoint carries only the session, so the note cannot cross the
-remote boundary — only the local `bin/mcp` server reports it.
+remote boundary; only the local `bin/mcp` server reports it.
 
 ## What the status values mean (and do not)
 
 Three values on the status tools have each been read, in a live run, as a signal
-they do not carry. The tool descriptions state this too — an agent caller never
-sees this page — but the reasoning only fits here.
+they do not carry. The tool descriptions state this too (an agent caller never
+sees this page), but the reasoning only fits here.
 
 ### `get_session`: `state` and `last_check_state` carry no push information
 
@@ -259,7 +259,7 @@ git rev-list --count origin/<base>..origin/<branch> 2>/dev/null || echo 0   # 0 
 ```
 
 Keep the guard. Before the first push there is no `origin/<branch>` at all, and
-`git rev-list` then exits non-zero with empty output instead of printing `0` —
+`git rev-list` then exits non-zero with empty output instead of printing `0`;
 that error is also "nothing pushed", not an unreadable oracle.
 
 ### `last_output_at` is a floor, not liveness
@@ -285,7 +285,7 @@ Use the fields that do discriminate, all on `ChatStatusEntry`:
 | `last_output_seeded`         | this timestamp is the poller's seed value, not an observed change |
 
 A chat is **settled** when its status is `IDLE` or `STOPPED` across two
-consecutive polls with `spinner_present` false — not when `last_output_at` looks
+consecutive polls with `spinner_present` false, not when `last_output_at` looks
 stale.
 
 ### `get_session_statuses` is aggregate only
@@ -296,12 +296,12 @@ for anything per-chat.
 
 ## Hosted MCP
 
-A hosted endpoint at `mcp.bossanova.dev` — WorkOS-authenticated and routed to your
-own daemon, so you can drive Bossanova from agents without running `bin/mcp` locally —
+A hosted endpoint at `mcp.bossanova.dev` (WorkOS-authenticated and routed to your
+own daemon, so you can drive Bossanova from agents without running `bin/mcp` locally)
 is **coming soon**. Until it ships, use the local `bin/mcp` server described above.
 
 When it ships, the gateway advertises a 50-tool proxiable subset (18 read-only,
-21 mutating, 11 destructive) — every session/repo/chat lifecycle tool, including the
+21 mutating, 11 destructive): every session/repo/chat lifecycle tool, including the
 destructive ones (which still require `confirm: true`), the cron-job mutators, and
 the GitHub-callback and note tools. `switch_account` is proxiable too: it acts on a
 session's live chat, so it routes like any other session operation.
@@ -310,6 +310,6 @@ The other 19 tools stay local-only, because they have no session/daemon-routed
 backing RPC: repo bootstrap (`resolve_context`, `validate_repo_path`,
 `register_repo`, `clone_and_register_repo`), the six account tools
 (`list_accounts`, `add_account`, `refresh_account`, `update_account`,
-`remove_account`, `test_account`) — whose credentials never leave your daemon —
-the six broadcast tools, the daemon settings tools (`get_settings`,
-`update_settings`), and `start_repair_workflow`.
+`remove_account`, `test_account`), whose credentials never leave your daemon;
+the six broadcast tools; the daemon settings tools (`get_settings`,
+`update_settings`); and `start_repair_workflow`.

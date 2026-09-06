@@ -22,6 +22,13 @@ const defaultFlowTimeout = 10 * time.Minute
 // module, so the string is duplicated rather than imported (module-boundary convention).
 const liveSmokeUnavailableDetail = "provider verification unavailable"
 
+// liveSmokeInconclusiveDetail mirrors the other bossd sentinel from the same
+// file: verification RAN but the credential changed underneath it, so the
+// result describes bytes that are no longer stored. Like the unavailable
+// sentinel it is "no verdict", never evidence against the credential.
+// Duplicated for the same module-boundary reason.
+const liveSmokeInconclusiveDetail = "provider verification inconclusive: credential changed during verification"
+
 // ClaudeOptions configures the `boss account add claude` registration flow.
 type ClaudeOptions struct {
 	Exec       Exec

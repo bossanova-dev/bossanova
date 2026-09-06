@@ -77,12 +77,24 @@ type VersionChange interface {
 // the seam to streaming means deleting that test on purpose.
 //
 // Implementations must return err UNCHANGED for methods and error shapes they
-// do not target, and must tolerate a nil err.
+// do not target, must tolerate a nil err, and must not turn a non-nil error
+// into nil. Restoring a legacy success requires ErrorRecoveryTransform so the
+// recovery can validate the response it would serve.
 type ErrorTransform interface {
 	// TransformError returns the error to serve in place of err for a client
 	// resolved to the version prior to this change, or err unchanged when this
 	// change does not target it. method is the Connect RPC procedure path.
 	TransformError(method string, err error) error
+}
+
+// ErrorRecoveryTransform is the explicit, response-aware capability for a
+// version change that restores a legacy success from a current error. Unlike
+// ErrorTransform, it receives the concrete response message that WrapUnary
+// would serve, so an implementation can require its expected response type
+// before returning nil. Implementations must return err unchanged unless both
+// the error and response are complete, producer-owned shapes for the method.
+type ErrorRecoveryTransform interface {
+	RecoverError(method string, response any, err error) error
 }
 
 // Changes is an ordered list of VersionChanges (oldest→newest) that can be
@@ -128,11 +140,12 @@ func (c *Changes) Apply(method string, msg any, resolved Version) {
 	}
 }
 
-// ApplyError is Apply for the error path. It runs, in newest→oldest order,
+// ApplyError is Apply for error-to-error transforms. It runs, in newest→oldest order,
 // every change whose Version() is strictly newer than resolved AND that
 // implements the optional ErrorTransform capability, threading each result into
-// the next. Changes that only transform responses are skipped here, so the
-// common case allocates nothing and returns err untouched.
+// the next. ErrorRecoveryTransform changes are skipped because this entry point
+// has no response to validate. Changes that only transform responses are also
+// skipped, so the common case allocates nothing and returns err untouched.
 //
 // Unlike Apply it RETURNS the (possibly replaced) error, because an error is an
 // immutable value — see ErrorTransform for why that asymmetry is deliberate. A
@@ -149,6 +162,17 @@ func (c *Changes) Apply(method string, msg any, resolved Version) {
 // second error-path change that discriminates on a marker must therefore either
 // preserve it when replacing, or accept that a newer change can shadow it.
 func (c *Changes) ApplyError(method string, err error, resolved Version) error {
+	return c.applyError(method, nil, err, resolved)
+}
+
+// ApplyErrorWithResponse applies error transforms with the concrete response
+// available. WrapUnary uses this entry point so an ErrorRecoveryTransform may
+// restore success only after validating the response it would serve.
+func (c *Changes) ApplyErrorWithResponse(method string, response any, err error, resolved Version) error {
+	return c.applyError(method, response, err, resolved)
+}
+
+func (c *Changes) applyError(method string, response any, err error, resolved Version) error {
 	if err == nil {
 		return nil
 	}
@@ -157,8 +181,21 @@ func (c *Changes) ApplyError(method string, err error, resolved Version) error {
 		if !c.reg.Newer(ch.Version(), resolved) {
 			continue
 		}
+		if response != nil {
+			if recovery, ok := ch.(ErrorRecoveryTransform); ok {
+				err = recovery.RecoverError(method, response, err)
+				if err == nil {
+					break
+				}
+				continue
+			}
+		}
 		if et, ok := ch.(ErrorTransform); ok {
-			err = et.TransformError(method, err)
+			transformed := et.TransformError(method, err)
+			if transformed == nil {
+				return connect.NewError(connect.CodeInternal, errors.New("api version error transform returned success without response-aware recovery"))
+			}
+			err = transformed
 		}
 	}
 	return err
@@ -281,6 +318,60 @@ func (e *retiredProcedure) Error() string { return e.err.Error() }
 
 func (e *retiredProcedure) Unwrap() error { return e.err }
 
+// proxyListSessionsOwnerResolutionFailed marks the new V20260909 failure from
+// ProxyListSessions when daemon-filter owner resolution is unavailable. The
+// handler returns its partially filtered response alongside this error, letting
+// the compatibility interceptor restore the legacy successful short list only
+// for older clients.
+type proxyListSessionsOwnerResolutionFailed struct{ err error }
+
+// MarkProxyListSessionsOwnerResolutionFailed wraps err in the typed producer
+// marker used by ProxyListSessionsOwnerResolutionChange.
+func MarkProxyListSessionsOwnerResolutionFailed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &proxyListSessionsOwnerResolutionFailed{err: err}
+}
+
+// IsProxyListSessionsOwnerResolutionFailed reports whether err carries the
+// ProxyListSessions owner-resolution marker.
+func IsProxyListSessionsOwnerResolutionFailed(err error) bool {
+	var marker *proxyListSessionsOwnerResolutionFailed
+	return errors.As(err, &marker)
+}
+
+func (e *proxyListSessionsOwnerResolutionFailed) Error() string { return e.err.Error() }
+
+func (e *proxyListSessionsOwnerResolutionFailed) Unwrap() error { return e.err }
+
+// proxyListReposHolderResolutionFailed marks the V20260910 failure from
+// ProxyListReposAggregated when the repository-holder store is unavailable.
+// The producer returns the complete unstamped repository response alongside
+// this error so older clients can retain the successful list they observed
+// before holder enrichment existed.
+type proxyListReposHolderResolutionFailed struct{ err error }
+
+// MarkProxyListReposHolderResolutionFailed wraps err in the typed producer
+// marker used by ProxyListReposHolderResolutionChange.
+func MarkProxyListReposHolderResolutionFailed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &proxyListReposHolderResolutionFailed{err: err}
+}
+
+// IsProxyListReposHolderResolutionFailed reports whether err carries the
+// ProxyListReposAggregated holder-resolution marker.
+func IsProxyListReposHolderResolutionFailed(err error) bool {
+	var marker *proxyListReposHolderResolutionFailed
+	return errors.As(err, &marker)
+}
+
+func (e *proxyListReposHolderResolutionFailed) Error() string { return e.err.Error() }
+
+func (e *proxyListReposHolderResolutionFailed) Unwrap() error { return e.err }
+
 // relayedDaemonCanceled marks a connect error as the RELAYED daemon
 // cancellation — a ProxySwitchSessionAccount whose CommandResult came back
 // carrying CommandResult_ERROR_CODE_CANCELED because the caller cancelled the
@@ -337,7 +428,7 @@ type RefMsg struct {
 }
 
 // ProductionChanges returns the Changes wired into bosso, built against
-// DefaultRegistry. It ships twelve live transforms in non-decreasing version
+// DefaultRegistry. It ships live transforms in non-decreasing version
 // order: OrphanedStateChange (introduced at V20260704), which down-converts
 // SESSION_STATE_ORPHANED on Session.state; AgentAuthFailedChange (introduced at
 // V20260705), which neutralizes the ATTENTION_REASON_AGENT_AUTH_FAILED attention
@@ -385,8 +476,40 @@ type RefMsg struct {
 // AbandonedCheckoutStatusChange (introduced at V20260904), which restores the
 // pre-BOS-1076 activating-subscription shape on CloudAccessStatus for a Stripe
 // Checkout session that was created but never completed.
+// CloudAccessOrganizationChange (introduced at V20260907), which restores the
+// always-empty CloudAccessStatus.workos_org_id older clients were built against,
+// before bosso began populating it with the caller's organization.
+// ProxyListSessionsOwnerResolutionChange (introduced at V20260909), which
+// restores the legacy successful short list when ownership resolution fails;
+// and ProxyListReposHolderResolutionChange (introduced at V20260910), which
+// restores the legacy successful unstamped repository list when holder
+// resolution fails; and PendingInvitationResponseChange (introduced at
+// V20260910), which removes pending rows from ListOrganizationMembers and
+// clears invitation-only fields older clients did not observe on
+// InviteOrganizationMember responses.
+// SupersededCredentialClassChange (introduced at V20260913), which restores the
+// empty AuthCheck.failure_class older clients were built against whenever the
+// daemon pairs "credential_superseded" with a "healthy" outcome.
+//
+// RefreshChainUnprovenOutcomeChange (introduced at V20260914), which restores
+// the pre-BOS-1174 "healthy" / "" pair on Account.auth_check for a credential
+// check that ran cleanly but could not prove the credential's refresh chain.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260904 (Current) runs zero transforms.
+// request resolved to V20260913 or newer runs zero registered transforms.
+//
+// V20260906's cloud-access change registers no entry here: that behavior is
+// caller-relative and stays handler-gated via apiversion.IsMemberOrgCloudAccess.
+//
+// V20260908 likewise registers no entry: cross-organization session command
+// routing is handler-gated via apiversion.IsCrossOrgSessionCommands because no
+// response or error transform can turn a successful dispatch back into the
+// former NotFound.
+//
+// V20260910's caller-relative cron-job result set registers no entry: it is
+// handler-gated via apiversion.IsCrossOrgCronReads because a transform cannot
+// reconstruct the organization named by the request's claim. The repository
+// holder failure introduced in the same release window does register an entry
+// because response-aware error recovery can restore its legacy success.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -395,11 +518,264 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{}, CloudAccessOrganizationChange{}, ProxyListSessionsOwnerResolutionChange{}, ProxyListReposHolderResolutionChange{}, PendingInvitationResponseChange{}, AcceptedInvitationResponseChange{}, SupersededCredentialClassChange{}, RefreshChainUnprovenOutcomeChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
 	return c
+}
+
+// SupersededCredentialClassChange is the production VersionChange introduced at
+// V20260913.
+//
+// At V20260913 the OrchestratorService began serving AuthCheck.failure_class
+// "credential_superseded" ALONGSIDE outcome "healthy" (BOS-1175): an ambient
+// `codex login` for the same provider account holds a different refresh token,
+// so the refresh chain behind the stored credential is dead even though the
+// provider still accepts the stored access token. The account remains eligible,
+// which is why the outcome stays healthy.
+//
+// No field or enum member was added; the change is in the VALUE served. What
+// makes it a behavioral change rather than an additive one is the invariant it
+// breaks: before this version outcome "healthy" ALWAYS came with an empty
+// failure_class, so a client built against that pairing has no branch for a
+// class it cannot interpret and may render the row as failed, print the raw
+// token, or drop it. Clients pinned to an older version are therefore
+// down-converted back to the empty failure_class.
+//
+// It targets the OrchestratorService procedures that carry an Account (and so
+// its embedded AuthCheck): ProxyListAccounts, ProxyManageListAccounts,
+// ProxyAddAccount and ProxyRefreshAccount. All are unary. All other methods and
+// message types are no-ops.
+//
+// ONLY the healthy pairing is blanked. A "credential_superseded" class on a
+// non-healthy outcome is not a shape this version introduced — no producer
+// emits it — and blanking it anyway would erase a classification older clients
+// could always observe on a failing check.
+type SupersededCredentialClassChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260913, so
+// it is applied to any request resolved to a strictly older version.
+func (SupersededCredentialClassChange) Version() Version { return V20260913 }
+
+// Wire values involved in SupersededCredentialClassChange (V20260913). They are
+// raw literals rather than an import of services/bossd's accountwiring package:
+// lib packages must not depend on a service's internal packages, and pinning the
+// exact wire strings keeps a later producer-side rename from silently changing
+// what older clients receive.
+const (
+	// authOutcomeHealthy is the AuthCheck.outcome the superseded class is
+	// paired with. It mirrors accountwiring's healthy outcome.
+	authOutcomeHealthy = "healthy"
+	// authFailureClassCredentialSuperseded is the CURRENT (V20260913+) class
+	// served alongside a healthy outcome. It mirrors accountwiring's
+	// authFailureCredentialSuperseded.
+	authFailureClassCredentialSuperseded = "credential_superseded"
+)
+
+// downconvertSupersededAccount returns the Account to place in the response for
+// a pre-V20260913 client. An account whose check is not the new
+// healthy+"credential_superseded" pairing is returned unchanged and clone-free,
+// which is every account a pre-BOS-1175 server could produce. Cloning otherwise
+// matters for the same reason it does on the transforms above: the response may
+// hold a pointer that is also cached or shared, so the down-convert must never
+// mutate in place.
+func downconvertSupersededAccount(a *pb.Account) *pb.Account {
+	check := a.GetAuthCheck()
+	if check.GetOutcome() != authOutcomeHealthy || check.GetFailureClass() != authFailureClassCredentialSuperseded {
+		return a
+	}
+	clone, ok := proto.Clone(a).(*pb.Account)
+	if !ok {
+		return a
+	}
+	if clone.AuthCheck != nil {
+		clone.AuthCheck.FailureClass = ""
+	}
+	return clone
+}
+
+// downconvertSupersededAccounts rewrites every account in a repeated field,
+// leaving the slice untouched when nothing changed.
+func downconvertSupersededAccounts(accounts []*pb.Account) {
+	for i := range accounts {
+		accounts[i] = downconvertSupersededAccount(accounts[i])
+	}
+}
+
+// TransformResponse implements VersionChange. It clears the
+// "credential_superseded" class from a healthy AuthCheck on every
+// OrchestratorService response that can carry an Account. It is a no-op for any
+// other method or payload type.
+//
+// SIX procedures carry one, not four: two return a repeated Account (ProxyList
+// Accounts, ProxyManageListAccounts) and four return a singular one (ProxyAdd
+// Account, ProxyRefreshAccount, ProxyUpdateAccount, ProxyTestAccount). The last
+// two are easy to miss because neither reads as an account-health call, but both
+// are served and both build their Account from the same accountToProto
+// (services/bossd/internal/server/convert.go) that carries the durable class —
+// TestAccount in particular re-reads the row through recordAndRespond after a
+// verification, which is exactly when a superseded class is most likely present.
+// accountProbes in production_coverage_test.go derives this list from the
+// generated descriptors so a seventh carrier cannot escape it silently.
+func (SupersededCredentialClassChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyListAccountsResponse); ok && m != nil {
+			downconvertSupersededAccounts(m.Accounts)
+		}
+	case bossanovav1connect.OrchestratorServiceProxyManageListAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyManageListAccountsResponse); ok && m != nil {
+			downconvertSupersededAccounts(m.Accounts)
+		}
+	case bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure:
+		if m, ok := msg.(*pb.ProxyAddAccountResponse); ok && m != nil {
+			m.Account = downconvertSupersededAccount(m.GetAccount())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRefreshAccountProcedure:
+		if m, ok := msg.(*pb.ProxyRefreshAccountResponse); ok && m != nil {
+			m.Account = downconvertSupersededAccount(m.GetAccount())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateAccountProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateAccountResponse); ok && m != nil {
+			m.Account = downconvertSupersededAccount(m.GetAccount())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyTestAccountProcedure:
+		if m, ok := msg.(*pb.ProxyTestAccountResponse); ok && m != nil {
+			m.Account = downconvertSupersededAccount(m.GetAccount())
+		}
+	}
+}
+
+// AcceptedInvitationResponseChange is the V20260911 member-directory response
+// change. Older clients cannot distinguish an accepted invitation placeholder
+// from an active member, so the down-convert removes those rows.
+type AcceptedInvitationResponseChange struct{}
+
+// Version implements VersionChange.
+func (AcceptedInvitationResponseChange) Version() Version { return V20260911 }
+
+// TransformResponse restores the member list served before V20260911.
+func (AcceptedInvitationResponseChange) TransformResponse(method string, msg any) {
+	if method != bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure {
+		return
+	}
+	response, ok := msg.(*pb.ListOrganizationMembersResponse)
+	if !ok || response == nil {
+		return
+	}
+	members := make([]*pb.OrganizationMember, 0, len(response.GetMembers()))
+	for _, member := range response.GetMembers() {
+		if member != nil && member.GetIsInviteAccepted() {
+			continue
+		}
+		members = append(members, member)
+	}
+	response.Members = members
+}
+
+// PendingInvitationResponseChange is the V20260910 response change for real
+// WorkOS invitations. Older clients never observed pending rows in
+// ListOrganizationMembers, so the down-convert removes them. On
+// InviteOrganizationMember it clears invitation-only fields while preserving
+// the email and role older clients can still render. It cannot restore the old
+// NotFound for unregistered emails: response transforms cannot turn a
+// successful RPC back into an error.
+type PendingInvitationResponseChange struct{}
+
+// Version implements VersionChange.
+func (PendingInvitationResponseChange) Version() Version { return V20260910 }
+
+// TransformResponse restores the member-list and invitation response shapes
+// served before V20260910. Shared member messages are never mutated in place.
+func (PendingInvitationResponseChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure:
+		response, ok := msg.(*pb.InviteOrganizationMemberResponse)
+		if !ok || response == nil || response.GetMember() == nil || !response.GetMember().GetIsInvitePending() {
+			return
+		}
+		member, ok := proto.Clone(response.GetMember()).(*pb.OrganizationMember)
+		if !ok {
+			return
+		}
+		member.IsInvitePending = false
+		member.InvitationId = ""
+		response.Member = member
+	case bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure:
+		response, ok := msg.(*pb.ListOrganizationMembersResponse)
+		if !ok || response == nil {
+			return
+		}
+		members := make([]*pb.OrganizationMember, 0, len(response.GetMembers()))
+		for _, member := range response.GetMembers() {
+			if member != nil && member.GetIsInvitePending() {
+				continue
+			}
+			members = append(members, member)
+		}
+		response.Members = members
+	}
+}
+
+// ProxyListReposHolderResolutionChange is the V20260910 error-path change that
+// makes a repository-holder store outage fail ProxyListReposAggregated instead
+// of silently serving blank organization stamps. Older clients retain the
+// complete unstamped repository list returned alongside the marked error;
+// Current receives CodeInternal.
+type ProxyListReposHolderResolutionChange struct{}
+
+// Version implements VersionChange.
+func (ProxyListReposHolderResolutionChange) Version() Version { return V20260910 }
+
+// TransformResponse implements VersionChange. This change lives only on the
+// error path.
+func (ProxyListReposHolderResolutionChange) TransformResponse(string, any) {}
+
+// RecoverError converts only the marked ProxyListReposAggregated holder-store
+// failure accompanied by the expected complete response to success. Unmarked
+// errors, mismatched response types, and every other procedure remain unchanged.
+func (ProxyListReposHolderResolutionChange) RecoverError(method string, response any, err error) error {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxyListReposAggregatedProcedure {
+		return err
+	}
+	if !IsProxyListReposHolderResolutionFailed(err) {
+		return err
+	}
+	if typed, ok := response.(*pb.ProxyListReposAggregatedResponse); !ok || typed == nil {
+		return err
+	}
+	return nil
+}
+
+// ProxyListSessionsOwnerResolutionChange is the V20260909 error-path change
+// that distinguishes an owner-store outage from a genuinely empty daemon-
+// filtered list. Older clients retain the legacy short-list success returned
+// alongside the marked error by the producer; Current receives CodeUnavailable.
+type ProxyListSessionsOwnerResolutionChange struct{}
+
+// Version implements VersionChange.
+func (ProxyListSessionsOwnerResolutionChange) Version() Version { return V20260909 }
+
+// TransformResponse implements VersionChange. This change lives only on the
+// error path.
+func (ProxyListSessionsOwnerResolutionChange) TransformResponse(string, any) {}
+
+// RecoverError converts only the marked ProxyListSessions outage accompanied
+// by the expected response message to success. WrapUnary then serves that
+// complete legacy short list. Unmarked errors, mismatched response types, and
+// every other procedure remain unchanged.
+func (ProxyListSessionsOwnerResolutionChange) RecoverError(method string, response any, err error) error {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure {
+		return err
+	}
+	if !IsProxyListSessionsOwnerResolutionFailed(err) {
+		return err
+	}
+	if typed, ok := response.(*pb.ProxyListSessionsResponse); !ok || typed == nil {
+		return err
+	}
+	return nil
 }
 
 // AbandonedCheckoutStatusChange is the production VersionChange introduced at
@@ -512,6 +888,60 @@ func (AbandonedCheckoutStatusChange) TransformResponse(method string, msg any) {
 	}
 }
 
+// CloudAccessOrganizationChange is the production VersionChange introduced at
+// V20260907. Current responses populate CloudAccessStatus.workos_org_id with the
+// WorkOS organization the caller is acting as. The field shipped with the
+// original subscription gating but no producer ever assigned it, so every client
+// built before V20260907 observed the empty string on every response; this
+// restores that value for them.
+//
+// Blanking rather than clone-free pass-through is the whole transform: there is
+// no prior non-empty value to reconstruct, because there never was one.
+type CloudAccessOrganizationChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260907, so
+// it is applied to any request resolved to a strictly older version.
+func (CloudAccessOrganizationChange) Version() Version { return V20260907 }
+
+// downconvertCloudAccessOrganization returns the CloudAccessStatus a
+// pre-V20260907 client expects: the same status with workos_org_id empty. A
+// status that already carries no organization is returned unchanged and
+// clone-free, which is both the daemon-caller case and every response produced
+// before bosso started filling the field. Cloning otherwise matters for the same
+// reason it does on the transforms above: the response may hold a pointer that is
+// also cached or shared, so the down-convert must never mutate in place.
+func downconvertCloudAccessOrganization(st *pb.CloudAccessStatus) *pb.CloudAccessStatus {
+	if st == nil || st.GetWorkosOrgId() == "" {
+		return st
+	}
+	clone, ok := proto.Clone(st).(*pb.CloudAccessStatus)
+	if !ok {
+		return st
+	}
+	clone.WorkosOrgId = ""
+	return clone
+}
+
+// TransformResponse implements VersionChange. It empties workos_org_id on every
+// OrchestratorService response that can carry a CloudAccessStatus. It is a no-op
+// for any other method or payload type.
+func (CloudAccessOrganizationChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceGetCloudAccessStatusProcedure:
+		if m, ok := msg.(*pb.GetCloudAccessStatusResponse); ok {
+			m.Status = downconvertCloudAccessOrganization(m.GetStatus())
+		}
+	case bossanovav1connect.OrchestratorServiceCreateCheckoutSessionProcedure:
+		if m, ok := msg.(*pb.CreateCheckoutSessionResponse); ok {
+			m.Status = downconvertCloudAccessOrganization(m.GetStatus())
+		}
+	case bossanovav1connect.OrchestratorServiceRefreshCloudEntitlementsProcedure:
+		if m, ok := msg.(*pb.RefreshCloudEntitlementsResponse); ok {
+			m.Status = downconvertCloudAccessOrganization(m.GetStatus())
+		}
+	}
+}
+
 // StaleCheckStateChange is the production VersionChange introduced at
 // V20260825. Current responses serve Session.last_check_state as an evaluated,
 // head-current value and keep the persisted latch in last_check_state_observed.
@@ -593,6 +1023,7 @@ func transformUnarySessionResponse(method string, msg any, transform func(*pb.Se
 			}
 		}
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure:
+		//nolint:staticcheck // The deprecated RPC remains supported for pinned clients.
 		if m, ok := msg.(*pb.ProxyListSessionsAcrossOrganizationsResponse); ok {
 			for i := range m.Sessions {
 				m.Sessions[i] = transform(m.Sessions[i])
@@ -1455,6 +1886,112 @@ func (GateFailedOutcomeChange) TransformResponse(method string, msg any) {
 			if m.GetSkippedReason() == cronOutcomeGateFailed {
 				m.SkippedReason = cronOutcomeGated
 			}
+		}
+	}
+}
+
+// RefreshChainUnprovenOutcomeChange is the production VersionChange introduced
+// at V20260914.
+//
+// At V20260914 the OrchestratorService began distinguishing a credential check
+// that ran cleanly AND proved nothing about the credential's refresh chain from
+// one that ran cleanly and is simply healthy (BOS-1174). A check that completed
+// with no provider error, on a credential whose own access token says a token
+// refresh should already have happened, and whose run observed no credential
+// write, now serves Account.auth_check.outcome "refresh_chain_unproven" with
+// failure_class "refresh_not_observed". Before this change that identical clean
+// run served "healthy" with an empty failure_class.
+//
+// No enum member was added — auth_check.outcome is a plain string — so the
+// behavior change is in the VALUE served, exactly the case GateFailedOutcomeChange
+// (V20260816) and StaleCheckStateChange (V20260825) were versioned for. It is
+// observable because clients switch on that string to pick a severity
+// (services/web/src/lib/accountRows.ts checkSeverity, and the boss TUI's
+// accountCheckSeverity): an older build that has never seen the new token maps
+// it to its unknown-outcome default and flips a green "healthy" pill to
+// undetermined for an account whose behavior did not change. A client pinned to
+// an older version was built against the prior pair, so for any request
+// resolved older than V20260914 this change restores it: outcome "healthy",
+// failure_class "".
+//
+// It targets every OrchestratorService procedure that can carry an Account
+// (ProxyListAccounts, ProxyManageListAccounts, ProxyAddAccount,
+// ProxyRefreshAccount, ProxyUpdateAccount, ProxyTestAccount). All are unary.
+// All other methods and message types are no-ops.
+type RefreshChainUnprovenOutcomeChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260913, so
+// it is applied to any request resolved to a strictly older version.
+func (RefreshChainUnprovenOutcomeChange) Version() Version { return V20260914 }
+
+// Wire values involved in RefreshChainUnprovenOutcomeChange (V20260914). They
+// are raw literals rather than an import of lib/bossalib/models for the same
+// reason the cron outcomes above are: this package pins the exact wire strings
+// both sides emit, and coupling the transform to the producer's vocabulary
+// would let a later rename silently change what older clients receive.
+const (
+	// authOutcomeRefreshChainUnproven is the CURRENT (V20260914+) outcome for a
+	// clean check that could not prove the refresh chain. It mirrors
+	// models.AuthCheckOutcomeRefreshChainUnproven.
+	authOutcomeRefreshChainUnproven = "refresh_chain_unproven"
+)
+
+// downconvertRefreshChainUnprovenAccount returns the Account to place in the
+// response for a pre-V20260914 client. Accounts whose check outcome is not
+// "refresh_chain_unproven" are returned unchanged, keeping the common path
+// clone-free. Cloning matters for the same reason it does on the Session and
+// CronJob transforms: a response may hold pointers that are also cached or
+// shared, so the down-convert must never mutate in place.
+//
+// failure_class is cleared alongside the outcome because the prior clean run
+// served an empty class; leaving "refresh_not_observed" behind on a "healthy"
+// outcome would invent a pair no server ever served.
+func downconvertRefreshChainUnprovenAccount(a *pb.Account) *pb.Account {
+	if a == nil || a.GetAuthCheck().GetOutcome() != authOutcomeRefreshChainUnproven {
+		return a
+	}
+	clone, ok := proto.Clone(a).(*pb.Account)
+	if !ok {
+		return a
+	}
+	clone.AuthCheck.Outcome = authOutcomeHealthy
+	clone.AuthCheck.FailureClass = ""
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores the pre-BOS-1174
+// "healthy" outcome and empty failure class on every OrchestratorService
+// response that can carry an Account. It is a no-op for any other method or
+// payload type.
+func (RefreshChainUnprovenOutcomeChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyListAccountsResponse); ok {
+			for i := range m.Accounts {
+				m.Accounts[i] = downconvertRefreshChainUnprovenAccount(m.Accounts[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyManageListAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyManageListAccountsResponse); ok {
+			for i := range m.Accounts {
+				m.Accounts[i] = downconvertRefreshChainUnprovenAccount(m.Accounts[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure:
+		if m, ok := msg.(*pb.ProxyAddAccountResponse); ok {
+			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRefreshAccountProcedure:
+		if m, ok := msg.(*pb.ProxyRefreshAccountResponse); ok {
+			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateAccountProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateAccountResponse); ok {
+			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyTestAccountProcedure:
+		if m, ok := msg.(*pb.ProxyTestAccountResponse); ok {
+			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
 		}
 	}
 }

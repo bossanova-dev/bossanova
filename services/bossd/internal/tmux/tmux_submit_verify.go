@@ -373,6 +373,73 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload 
 	return nil
 }
 
+// clearComposerCheckWindow / clearComposerCheckTick bound the exported
+// ClearComposer's per-press postcondition check. They are deliberately small:
+// the caller is on a failure path whose own budget has usually just been spent,
+// and the question here — "did that C-u land?" — is answered by a repaint or
+// two, not by waiting out a slow composer.
+const (
+	clearComposerCheckWindow = 300 * time.Millisecond
+	clearComposerCheckTick   = 100 * time.Millisecond
+)
+
+// ClearComposer removes from a live composer a payload the submit verifier has
+// already proven was NOT submitted, so nothing is left sitting at the prompt for
+// the next Enter — whoever presses it — to send.
+//
+// It is the exported counterpart of the clear half of verifyWithEnterRetry, and
+// it carries the SAME precondition: call it only with positive evidence that a
+// composer is drawn and holds the payload, i.e. an OutcomeNotSubmitted verdict.
+// C-u into a working full-screen pane is an unwanted keystroke, and after any
+// other outcome the payload may have been delivered — clearing then would erase
+// nothing useful and could cut into text this code did not put there.
+//
+// That verdict LICENSES the attempt but does not establish the precondition, so
+// this REVALIDATES it against the live pane before the first press: an
+// OutcomeNotSubmitted can be reached through an infrastructure error that never
+// read a composer at all (sendEnter can fail after tmux already delivered the
+// key, classifySubmit above), leaving the payload running. Only a drawn box that
+// still holds the payload earns the keystroke.
+//
+// It presses C-u up to maxComposerClearPresses times, checking the postcondition
+// after each press rather than trusting the press, for the same line-scoped
+// reason the retry does. It succeeds when no live composer holds the payload any
+// more — including the case where the input box is no longer drawn at all, which
+// is not something a further press could improve. It errors when the payload is
+// still held after the last press, or when the pane could not be read; both mean
+// the caller must assume the text is still there.
+func (c *Client) ClearComposer(ctx context.Context, sessionName, payload string) error {
+	if sessionName == "" {
+		return fmt.Errorf("clear composer: empty tmux session name")
+	}
+	// Read BEFORE pressing. composerClearMissed — box drawn and still holding the
+	// payload — is the only state that earns a destructive key. The other two are
+	// already this function's success case after a press (the loop below returns
+	// nil on both), so skipping them changes no caller-visible result; it only
+	// withholds a keystroke that could strike a running pane or a user's own text.
+	pane, err := c.CapturePane(ctx, sessionName)
+	if err != nil {
+		return fmt.Errorf("read composer before clear on tmux session %q: %w", sessionName, err)
+	}
+	if classifyComposerAfterClear(pane, payload) != composerClearMissed {
+		return nil
+	}
+	for press := 1; press <= maxComposerClearPresses; press++ {
+		if err := c.clearComposer(ctx, sessionName); err != nil {
+			return err
+		}
+		state, _, err := c.awaitComposerCleared(ctx, sessionName, payload, clearComposerCheckWindow, clearComposerCheckTick)
+		if err != nil {
+			return fmt.Errorf("clear composer on tmux session %q: %w", sessionName, err)
+		}
+		if state != composerClearMissed {
+			return nil
+		}
+	}
+	return fmt.Errorf("the composer on tmux session %q still holds the payload after %d clears",
+		sessionName, maxComposerClearPresses)
+}
+
 // composerVanishedErr is the verdict for a pane whose live input box is gone
 // after the composer clear: the box can disappear because the agent accepted the
 // payload after all, so the state is UNKNOWN rather than pending, and neither

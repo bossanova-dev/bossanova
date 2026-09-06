@@ -2785,3 +2785,312 @@ func TestSwitchRespawnBudgetSecondAttemptThreshold(t *testing.T) {
 		})
 	}
 }
+
+func TestIsExperimentalPlugin(t *testing.T) {
+	cases := []struct {
+		name      string
+		shortName string
+		want      bool
+	}{
+		{name: "opencode is experimental", shortName: "opencode", want: true},
+		{name: "claude is not", shortName: "claude", want: false},
+		{name: "codex is not", shortName: "codex", want: false},
+		{name: "unknown plugin is not", shortName: "nope", want: false},
+		{name: "empty name is not", shortName: "", want: false},
+		{name: "prefixed spelling is accepted", shortName: "bossd-plugin-opencode", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsExperimentalPlugin(tc.shortName); got != tc.want {
+				t.Errorf("IsExperimentalPlugin(%q) = %v, want %v", tc.shortName, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyExperimentalPluginGate pins the BOS-1145 contract: for a plugin in
+// the experimentalPlugins registry, experimental_plugins is the SOLE enable
+// switch — listed means on, unlisted means off, regardless of the persisted
+// plugins[].enabled value. Non-members are never touched in either direction.
+func TestApplyExperimentalPluginGate(t *testing.T) {
+	cases := []struct {
+		name         string
+		cfgs         []PluginConfig
+		optIn        []string
+		wantEnabled  map[string]bool
+		wantDisabled []string
+		wantLen      int
+	}{
+		{
+			name:         "registry member enabled in settings is forced off when not opted in",
+			cfgs:         []PluginConfig{{Name: "opencode", Enabled: true}, {Name: "claude", Enabled: true}},
+			optIn:        nil,
+			wantEnabled:  map[string]bool{"opencode": false, "claude": true},
+			wantDisabled: []string{"opencode"},
+			wantLen:      2,
+		},
+		{
+			name:         "registry member disabled in settings is forced on when opted in",
+			cfgs:         []PluginConfig{{Name: "opencode", Enabled: false}, {Name: "claude", Enabled: true}},
+			optIn:        []string{"opencode"},
+			wantEnabled:  map[string]bool{"opencode": true, "claude": true},
+			wantDisabled: nil,
+			wantLen:      2,
+		},
+		{
+			name:         "registry member absent from cfgs is never invented",
+			cfgs:         []PluginConfig{{Name: "claude", Enabled: true}},
+			optIn:        []string{"opencode"},
+			wantEnabled:  map[string]bool{"claude": true},
+			wantDisabled: nil,
+			wantLen:      1,
+		},
+		{
+			name:         "non-member enabled is left alone with an empty opt-in",
+			cfgs:         []PluginConfig{{Name: "claude", Enabled: true}},
+			optIn:        nil,
+			wantEnabled:  map[string]bool{"claude": true},
+			wantDisabled: nil,
+			wantLen:      1,
+		},
+		{
+			name:         "non-member disabled is left alone with an empty opt-in",
+			cfgs:         []PluginConfig{{Name: "claude", Enabled: false}},
+			optIn:        nil,
+			wantEnabled:  map[string]bool{"claude": false},
+			wantDisabled: nil,
+			wantLen:      1,
+		},
+		{
+			name:         "non-member disabled is left alone even when the opt-in names it",
+			cfgs:         []PluginConfig{{Name: "claude", Enabled: false}},
+			optIn:        []string{"claude"},
+			wantEnabled:  map[string]bool{"claude": false},
+			wantDisabled: nil,
+			wantLen:      1,
+		},
+		{
+			name:         "opt-in naming an unknown plugin is ignored",
+			cfgs:         []PluginConfig{{Name: "claude", Enabled: true}},
+			optIn:        []string{"does-not-exist"},
+			wantEnabled:  map[string]bool{"claude": true},
+			wantDisabled: nil,
+			wantLen:      1,
+		},
+		{
+			name:         "the prefixed opt-in spelling is accepted",
+			cfgs:         []PluginConfig{{Name: "opencode", Enabled: true}},
+			optIn:        []string{"bossd-plugin-opencode"},
+			wantEnabled:  map[string]bool{"opencode": true},
+			wantDisabled: nil,
+			wantLen:      1,
+		},
+		{
+			name:         "a member already disabled and not opted in is not reported as newly disabled",
+			cfgs:         []PluginConfig{{Name: "opencode", Enabled: false}},
+			optIn:        nil,
+			wantEnabled:  map[string]bool{"opencode": false},
+			wantDisabled: nil,
+			wantLen:      1,
+		},
+		{
+			name:         "nil cfgs and nil opt-in yield an empty result",
+			cfgs:         nil,
+			optIn:        nil,
+			wantEnabled:  map[string]bool{},
+			wantDisabled: nil,
+			wantLen:      0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, disabled := ApplyExperimentalPluginGate(tc.cfgs, tc.optIn)
+
+			if len(got) != tc.wantLen {
+				t.Fatalf("got %d entries, want %d: %+v", len(got), tc.wantLen, got)
+			}
+			for _, c := range got {
+				want, ok := tc.wantEnabled[c.Name]
+				if !ok {
+					t.Errorf("unexpected entry %q in result", c.Name)
+					continue
+				}
+				if c.Enabled != want {
+					t.Errorf("%s.Enabled = %v, want %v", c.Name, c.Enabled, want)
+				}
+			}
+			if !slices.Equal(disabled, tc.wantDisabled) {
+				t.Errorf("disabled = %v, want %v", disabled, tc.wantDisabled)
+			}
+		})
+	}
+}
+
+// TestApplyExperimentalPluginGateDoesNotMutateInput guards the copy discipline
+// MergeDiscoveredPlugins and HealPluginPaths share: bossd holds the pre-gate
+// slice while deciding whether to persist, so an in-place flip would silently
+// write the gate's decision into settings.json.
+func TestApplyExperimentalPluginGateDoesNotMutateInput(t *testing.T) {
+	cfgs := []PluginConfig{{Name: "opencode", Enabled: true}, {Name: "claude", Enabled: true}}
+
+	got, _ := ApplyExperimentalPluginGate(cfgs, nil)
+
+	if !cfgs[0].Enabled {
+		t.Errorf("caller's slice was mutated: cfgs[0] = %+v", cfgs[0])
+	}
+	if got[0].Enabled {
+		t.Errorf("returned slice was not gated: got[0] = %+v", got[0])
+	}
+}
+
+// TestSettingsExperimentalPluginsRoundTrip pins the settings key: it serializes
+// as experimental_plugins, survives Save/Load, and stays out of a file written
+// without it (omitempty), so a fresh settings.json is not littered with an
+// empty opt-in list.
+func TestSettingsExperimentalPluginsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv(settingsPathEnv, path)
+
+	s := DefaultSettings()
+	if err := SaveTo(path, s); err != nil {
+		t.Fatalf("save without opt-in: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "experimental_plugins") {
+		t.Errorf("freshly-written settings must omit the key, got:\n%s", raw)
+	}
+
+	s.ExperimentalPlugins = []string{"opencode"}
+	if err := SaveTo(path, s); err != nil {
+		t.Fatalf("save with opt-in: %v", err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"experimental_plugins"`) {
+		t.Errorf("settings must serialize the key as experimental_plugins, got:\n%s", raw)
+	}
+
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !slices.Equal(loaded.ExperimentalPlugins, []string{"opencode"}) {
+		t.Errorf("ExperimentalPlugins = %v, want [opencode]", loaded.ExperimentalPlugins)
+	}
+}
+
+// TestScanForPluginsDisablesExperimentalByDefault pins the discovery default:
+// a freshly-installed bossd-plugin-opencode binary is discovered (BOS-437 is
+// not reverted) but arrives disabled, so the persisted settings.json agrees
+// with the gate instead of showing a misleading "enabled": true.
+func TestScanForPluginsDisablesExperimentalByDefault(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("perms hardening no-op on Windows")
+	}
+	dir := t.TempDir()
+	writeBin(t, dir, "bossd-plugin-claude", []byte("claude"))
+	writeBin(t, dir, "bossd-plugin-opencode", []byte("opencode"))
+
+	got, rej := scanForPlugins(dir, discoveryPolicy{requireSafePerms: true})
+	if len(rej) != 0 {
+		t.Fatalf("unexpected rejections: %+v", rej)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d plugins, want 2: %+v", len(got), got)
+	}
+	want := map[string]bool{"claude": true, "opencode": false}
+	for _, c := range got {
+		enabled, ok := want[c.Name]
+		if !ok {
+			t.Errorf("unexpected discovered plugin %q", c.Name)
+			continue
+		}
+		if c.Enabled != enabled {
+			t.Errorf("%s.Enabled = %v, want %v", c.Name, c.Enabled, enabled)
+		}
+	}
+}
+
+// TestPluginEnabledForSettings covers the effective-enabled predicate a settings
+// consumer needs: for a registry member the opt-in list is authoritative in both
+// directions, because the daemon's gate overrides plugins[].enabled and never
+// persists the result.
+func TestPluginEnabledForSettings(t *testing.T) {
+	cases := []struct {
+		name     string
+		settings Settings
+		plugin   string
+		want     bool
+	}{
+		{
+			name: "opted-in experimental with a disabled persisted entry is enabled",
+			settings: Settings{
+				ExperimentalPlugins: []string{"opencode"},
+				Plugins:             []PluginConfig{{Name: "opencode", Enabled: false}},
+			},
+			plugin: "opencode",
+			want:   true,
+		},
+		{
+			name: "opted-in experimental by qualified name is enabled",
+			settings: Settings{
+				ExperimentalPlugins: []string{"bossd-plugin-opencode"},
+				Plugins:             []PluginConfig{{Name: "opencode", Enabled: false}},
+			},
+			plugin: "opencode",
+			want:   true,
+		},
+		{
+			name: "legacy enabled experimental without the opt-in is not enabled",
+			settings: Settings{
+				Plugins: []PluginConfig{{Name: "opencode", Enabled: true}},
+			},
+			plugin: "opencode",
+			want:   false,
+		},
+		{
+			name: "opted-in experimental with no persisted entry is enabled",
+			settings: Settings{
+				ExperimentalPlugins: []string{"opencode"},
+			},
+			plugin: "opencode",
+			want:   true,
+		},
+		{
+			name: "non-registry plugin still reads its persisted flag",
+			settings: Settings{
+				Plugins: []PluginConfig{{Name: "claude", Enabled: true}},
+			},
+			plugin: "claude",
+			want:   true,
+		},
+		{
+			name: "non-registry plugin disabled stays disabled",
+			settings: Settings{
+				ExperimentalPlugins: []string{"claude"},
+				Plugins:             []PluginConfig{{Name: "claude", Enabled: false}},
+			},
+			plugin: "claude",
+			want:   false,
+		},
+		{
+			name:     "unknown plugin is not enabled",
+			settings: Settings{},
+			plugin:   "nope",
+			want:     false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PluginEnabledForSettings(tc.settings, tc.plugin); got != tc.want {
+				t.Errorf("PluginEnabledForSettings(%q) = %v, want %v", tc.plugin, got, tc.want)
+			}
+		})
+	}
+}

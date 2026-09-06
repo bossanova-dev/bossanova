@@ -30,6 +30,7 @@ import (
 	"github.com/recurser/bossalib/models"
 
 	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/credmaterialize"
 	"github.com/recurser/bossd/internal/db"
@@ -235,6 +236,10 @@ func toMeta(a *models.Account) account.AccountMeta {
 		Priority:     a.Priority,
 		CoolingUntil: a.CooldownUntil,
 		LastUsedAt:   a.LastUsedAt,
+		// Durable credential-verification state (BOS-1141). Only a CONFIRMED
+		// auth failure projects here; transient/unavailable outcomes leave the
+		// account fully eligible.
+		AuthInvalid: a.AuthCheck.IsAuthInvalid(),
 	}
 	if u := a.Usage; u != nil {
 		m.Util5h = u.Util5h
@@ -310,8 +315,21 @@ func (m *materializerAdapter) client(provider string) (agent.AgentRunnerClient, 
 }
 
 // SupportsRotation reports whether provider's plugin can materialize
-// credentials. A missing client, codes.Unimplemented, or any other RPC error
-// all degrade to (false, nil): an unreachable plugin must never fail a spawn.
+// credentials.
+//
+// Two answers are authoritative and so degrade to (false, nil): a client that
+// was never registered, and codes.Unimplemented. A missing client means the
+// plugin was not loaded at daemon start rather than that it is momentarily
+// away — host.go hands out proxies, so a restart never removes the map key —
+// and Unimplemented is the runner answering "no rotation" in as many words.
+//
+// Every other RPC error is undetermined and propagates. Collapsing it to
+// "false" lands on account/binding.go's !supports branch, which states that
+// "the answer IS known" and returns the permanent InjectionOutcomeInvalid — so
+// a plugin that was merely restarting gets reported to the operator as a runner
+// that can never serve a managed account, and the InjectionOutcomeUndetermined
+// arm just above it becomes unreachable. host_agent_proxy.go resolves an absent
+// plugin to codes.Unavailable for this same reason.
 func (m *materializerAdapter) SupportsRotation(ctx context.Context, provider string) (bool, error) {
 	client, ok := m.client(provider)
 	if !ok {
@@ -319,30 +337,62 @@ func (m *materializerAdapter) SupportsRotation(ctx context.Context, provider str
 	}
 	resp, err := client.RotationCapability(ctx, &bossanovav1.RotationCapabilityRequest{})
 	if err != nil {
-		if grpcstatus.Code(err) != codes.Unimplemented {
-			m.log.Warn().Err(err).Str("provider", provider).
-				Msg("account: RotationCapability failed; treating provider as no-rotation")
+		if grpcstatus.Code(err) == codes.Unimplemented {
+			return false, nil
 		}
-		return false, nil
+		m.log.Warn().Err(err).Str("provider", provider).
+			Msg("account: RotationCapability failed; rotation support is undetermined")
+		return false, fmt.Errorf("rotation capability probe for provider %q: %w", provider, err)
 	}
 	return resp.GetSupportsRotation(), nil
 }
 
 // MaterializeAccount loads the account's credential blob from the keyring and
 // asks the provider plugin to turn it into spawn env. Any failure returns
-// (nil, err) so the resolver logs and degrades. The blob and the returned env
-// are never logged.
+// (nil, err) and the resolver fails the spawn closed (BOS-1142); it no longer
+// degrades to the ambient login. The blob and the returned env are never logged.
+//
+// Failures that never reached a verdict about the credential are wrapped with
+// account.ErrInjectionUndetermined so the resolver can tell "the provider says
+// this credential is unusable" from "I never got an answer". This is the layer
+// that can tell them apart, because this is the layer holding the gRPC status
+// for the plugin leg and the local failure for the codex leg. The two legs use
+// different predicates for that reason, not because they answer differently:
+// isUndeterminedMaterializeError reads a status code, and
+// isUndeterminedLocalMaterializeError — which has no status to read — enumerates
+// the single verdict that leg can reach. The two lookups that run BEFORE either
+// leg — the account row and the keyring blob — classify the same way through
+// isUndeterminedAccountLookupError and isUndeterminedCredentialLoadError: only a
+// genuine absence is a verdict, and a locked database or an unopenable keyring
+// is not.
+//
+// This method never returns (nil, nil). A missing dependency — no store, no
+// codex materializer, no loaded runner plugin for the provider — used to take
+// that shape, which the resolver could only read as "materialization succeeded
+// and the account needs no environment": it cleared the injection failure,
+// touched the LRU timestamp, and spawned on the ambient login with every
+// surface still reporting the account as bound. Those arms are undetermined
+// refusals now. The resolver additionally refuses an empty env on its own, so
+// the two layers close this from both sides.
 func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID string) (map[string]string, error) {
 	if m.store == nil || m.creds == nil {
-		return nil, nil
+		// A daemon wired without these cannot even reach the credential, so it
+		// holds no verdict about it. Returning (nil, nil) would report success
+		// with no env and spawn on the ambient login.
+		return nil, fmt.Errorf("materialize account: %w: the daemon is wired without an account or credential store",
+			account.ErrInjectionUndetermined)
 	}
 	acct, err := m.store.Get(ctx, accountID)
 	if err != nil {
+		if isUndeterminedAccountLookupError(err) {
+			return nil, fmt.Errorf("lookup account for materialize: %w: %w", account.ErrInjectionUndetermined, err)
+		}
 		return nil, fmt.Errorf("lookup account for materialize: %w", err)
 	}
 	if string(acct.Provider) == "codex" {
 		if m.codex == nil {
-			return nil, nil
+			return nil, fmt.Errorf("materialize codex account: %w: no codex materializer is wired",
+				account.ErrInjectionUndetermined)
 		}
 		// The PersistBack closure is deliberately discarded, not overlooked. This
 		// seam returns only an env map and has no run-completion hook to invoke it
@@ -353,23 +403,170 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 		// spawn seam does not have.
 		materialized, _, err := m.codex.MaterializeCodex(ctx, accountID)
 		if err != nil {
+			if isUndeterminedLocalMaterializeError(err) {
+				return nil, fmt.Errorf("materialize codex account: %w: %w", account.ErrInjectionUndetermined, err)
+			}
 			return nil, fmt.Errorf("materialize codex account: %w", err)
 		}
 		return materialized.Env, nil
 	}
 	client, ok := m.client(string(acct.Provider))
 	if !ok {
-		return nil, nil
+		// Undetermined rather than invalid: no plugin is loaded for this
+		// provider, so nothing asked the credential anything. Contrast the
+		// resolver's !SupportsRotation arm, which IS invalid because there the
+		// loaded runner gave a definite answer. A plugin that is merely absent
+		// or mid-restart must not tell the operator to re-authenticate.
+		return nil, fmt.Errorf("materialize account: %w: no runner plugin is loaded for provider %q",
+			account.ErrInjectionUndetermined, acct.Provider)
 	}
 	blob, err := m.creds.Load(accountID)
 	if err != nil {
+		if isUndeterminedCredentialLoadError(err) {
+			return nil, fmt.Errorf("load account credential: %w: %w", account.ErrInjectionUndetermined, err)
+		}
 		return nil, fmt.Errorf("load account credential: %w", err)
 	}
 	resp, err := client.MaterializeAccount(ctx, &bossanovav1.MaterializeAccountRequest{CredentialBlob: blob})
 	if err != nil {
+		if isUndeterminedMaterializeError(err) {
+			return nil, fmt.Errorf("plugin MaterializeAccount: %w: %w", account.ErrInjectionUndetermined, err)
+		}
 		return nil, fmt.Errorf("plugin MaterializeAccount: %w", err)
 	}
 	return resp.GetEnv(), nil
+}
+
+// isUndeterminedAccountLookupError reports whether reading the account row
+// failed without establishing anything about the account's credential.
+//
+// Exactly one lookup failure is a definite answer: sql.ErrNoRows, the sentinel
+// SQLiteAccountStore.Get returns verbatim from its row scan when the row is
+// genuinely gone. An account that does not exist cannot have a usable
+// credential, so that keeps the invalid arm. A locked SQLite file, a closed
+// pool, a disk I/O error, or a cancelled context says nothing whatever about
+// the stored credential; reporting one of those as invalid tells the operator
+// to re-authenticate a credential nothing ever read, which is the collapse
+// BOS-1142 closes.
+//
+// The allow-list deliberately runs in the fail-safe direction — a definite
+// absence is enumerated and EVERYTHING else is undetermined — so a failure mode
+// added below this layer later degrades to "could not be checked" rather than
+// silently accusing a healthy credential. Widening the enumeration is a
+// deliberate act; forgetting to is harmless.
+func isUndeterminedAccountLookupError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, sql.ErrNoRows)
+}
+
+// isUndeterminedCredentialLoadError reports whether loading the credential blob
+// failed without anything ever evaluating that blob.
+//
+// The single definite answer is accountcred.ErrCredentialNotFound, which the
+// keyring store returns (unwrapped) only for keyring.ErrKeyNotFound — the
+// account has no stored credential at all, and re-authenticating is exactly the
+// remedy. Every other failure of that call is infrastructure: the store wraps a
+// keyring that cannot be opened or unlocked as "open keyring: %w" and any other
+// backend fault as "load account credential: %w", and a locked, absent, or
+// otherwise unreadable keyring is not evidence about the credential inside it.
+//
+// Same fail-safe direction as isUndeterminedAccountLookupError above: absence
+// is enumerated, everything else is undetermined.
+func isUndeterminedCredentialLoadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, accountcred.ErrCredentialNotFound)
+}
+
+// isUndeterminedMaterializeError reports whether a MaterializeAccount RPC failed
+// without the plugin ever rendering a verdict on the credential.
+//
+// codes.Unavailable is the one that matters most in practice: agent runners are
+// resolved per-call through host_agent_proxy, so a plugin restarting between two
+// RPCs surfaces exactly this code, and treating it as "your credential is bad"
+// would tell an operator to re-authenticate over a restart.
+//
+// The status arm carries codes.Canceled and codes.DeadlineExceeded even though
+// the errors.Is check above already tests context.Canceled and
+// context.DeadlineExceeded, because the sentinel and the status are two shapes
+// of the same event and only one of them arrives. A gRPC client translates a
+// cancelled or expired call context into a status error, which does NOT unwrap
+// to the context sentinel; without these cases the predicate returns false and
+// the resolver reports an invalid credential for a request that was merely
+// cancelled. The sentinel form still occurs when the context is checked before
+// the RPC is dialled, so both shapes have to be listed.
+//
+// session.isTransientMaterializeError is the sibling of this predicate on the
+// failover path. They are deliberately separate: that one decides whether to
+// retry, this one decides what to tell the operator, and the two questions are
+// free to diverge.
+func isUndeterminedMaterializeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch grpcstatus.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// isUndeterminedLocalMaterializeError reports whether a codex materialization
+// failed without anything ever evaluating the account's credential.
+//
+// The codex leg never crosses a plugin RPC, so isUndeterminedMaterializeError
+// above cannot see it, and there is no status code here to read. What is left is
+// the same allow-list shape the two lookups above use, for the same reason: this
+// leg reaches EXACTLY ONE verdict about a credential — that the store holds none
+// — and every other way MaterializeCodex can fail is infrastructure.
+//
+// Absence keeps the invalid arm because re-authenticating is precisely its
+// remedy. It reaches us as accountcred.ErrCredentialNotFound, which the keyring
+// store returns unwrapped only for keyring.ErrKeyNotFound
+// (accountcred/accountcred.go:172-176), wrapped once by credmaterialize as
+// "load codex credential for %q: %w" and again here.
+//
+// Everything else degrades. This predicate used to test STRUCTURE — *fs.PathError
+// / *os.LinkError — which covered MaterializeCodex's own filesystem work (mkdir,
+// the 0700 chain, base-home projection, the atomic write) but nothing else, and
+// MaterializeCodex also returns plain errors that carry no filesystem shape at
+// all:
+//
+//   - accountcred.Store reports a keyring it cannot open or read as
+//     "open keyring: %w" / "load account credential: %w" (accountcred.go:167-179).
+//     A locked or unavailable system keyring therefore left this predicate false
+//     and told the operator to re-authenticate bytes that were never read — the
+//     accusation BOS-1142 exists to prevent, arriving through the one failure
+//     mode an operator hits routinely.
+//   - assertNoSymlinkChain's "%q is a symlink" is a refusal to WRITE into a tree
+//     that looks tampered with, not a judgement on the credential. That was the
+//     gap this doc used to record; inverting closes it without needing a sentinel
+//     exported from credmaterialize.
+//   - validateAccountID rejects the ID, having never looked at a credential.
+//
+// Inverting is safe in the direction that matters and is NOT "everything is
+// undetermined by default": nothing on this leg parses the stored blob to judge
+// it, because codexAuthForWrite passes anything it cannot normalize through
+// untouched, so absence really is the only verdict available to enumerate. The
+// one residual is mergePreservingIDToken's "parse previous credential blob"
+// (merge.go:45-47), reachable only when a mid-run agent rotation is being folded
+// back and the STORED blob is not a JSON object; that is verdict-shaped and now
+// degrades to undetermined. It is deliberate — the error has no exported
+// sentinel, and matching its message text is exactly the drift this predicate
+// was built structural to avoid. The spawn still fails closed either way; only
+// the operator advice softens from "re-authenticate" to "could not be checked".
+func isUndeterminedLocalMaterializeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, accountcred.ErrCredentialNotFound)
 }
 
 // RemoveMaterialization deletes the on-disk credential materialization for a
@@ -738,8 +935,8 @@ func (r *RotationBindingResolver) CurrentBinding(ctx context.Context, sess *mode
 // --- Session-aware spawn-env resolver -------------------------------------
 
 // SpawnEnvResolver adapts *account.Resolver to the session-aware spawn-env seam
-// (Resolve(ctx, sess) map[string]string) consumed by the session Lifecycle and
-// the plugin HostService. It never logs env values.
+// (Resolve(ctx, sess) (map[string]string, error)) consumed by the session
+// Lifecycle and the plugin HostService. It never logs env values.
 type SpawnEnvResolver struct {
 	resolver *account.Resolver
 	log      zerolog.Logger
@@ -752,24 +949,53 @@ func NewSpawnEnvResolver(resolver *account.Resolver, log zerolog.Logger) *SpawnE
 }
 
 // Resolve returns the per-account spawn env for sess, or nil for the
-// system-default (account 0) binding. It degrades to nil on any resolver error
-// so a materialize failure never blocks a spawn.
-func (r *SpawnEnvResolver) Resolve(ctx context.Context, sess *models.Session) map[string]string {
-	if r == nil || r.resolver == nil || sess == nil {
-		return nil
+// system-default (account 0) binding.
+//
+// BOS-1142: a resolver error is PROPAGATED, not swallowed. The old behaviour
+// downgraded the spawn to the agent CLI's ambient login, so a session bound to a
+// managed account quietly ran on somebody else's identity with only a log line
+// to say so. The returned error carries account.InjectionOutcome, so a caller
+// can tell an unusable credential from a binding it could not evaluate without
+// matching on error text.
+func (r *SpawnEnvResolver) Resolve(ctx context.Context, sess *models.Session) (map[string]string, error) {
+	if r == nil || sess == nil {
+		return nil, nil
 	}
 	accountID := deref(sess.AccountID)
-	env, err := r.resolver.ResolveSpawnEnv(ctx, accountID, sess.AgentName, time.Now())
-	if err != nil {
-		// ERROR, not WARN: this is a silent downgrade to the agent CLI's ambient
-		// login — the session runs on a credential nobody chose (BOS-973). The
-		// durable signal is the account row's health, written by the resolver.
+	if r.resolver == nil {
+		// BOS-1142: an unwired resolver says nothing about the credential, so
+		// the guard has to read the binding before it decides. An UNBOUND
+		// session still degrades — account 0 is the runtime it asked for, and
+		// the plan's degrade-site table keeps that shape. A session BOUND to a
+		// managed account must not spawn on the agent CLI's ambient login just
+		// because this daemon was assembled without a resolver: that is the
+		// same silent identity substitution the fail-closed policy repealed.
+		// Classified undetermined, matching resolveSpawnEnv's own nil-registry
+		// branch — wiring absent is could-not-evaluate, never "credential bad".
+		if accountID == account.SystemDefaultAccountID {
+			return nil, nil
+		}
+		err := &account.InjectionError{
+			AccountID: accountID,
+			Provider:  sess.AgentName,
+			Outcome:   account.InjectionOutcomeUndetermined,
+			Reason:    "account spawn-env resolver is not configured; cannot resolve the bound account",
+		}
 		r.log.Error().Err(err).Str("agent", sess.AgentName).
 			Str("account_id", accountID).Str("provider", sess.AgentName).
-			Msg("account: resolve spawn env failed; using system default (ambient CLI login)")
-		return nil
+			Str("injection_outcome", string(account.InjectionOutcomeUndetermined)).
+			Msg("account: spawn env resolver not wired; refusing to spawn a bound session on the ambient CLI login")
+		return nil, err
 	}
-	return env
+	env, err := r.resolver.ResolveSpawnEnv(ctx, accountID, sess.AgentName, time.Now())
+	if err != nil {
+		r.log.Error().Err(err).Str("agent", sess.AgentName).
+			Str("account_id", accountID).Str("provider", sess.AgentName).
+			Str("injection_outcome", string(account.InjectionOutcomeOf(err))).
+			Msg("account: resolve spawn env failed; refusing to spawn on the ambient CLI login")
+		return nil, err
+	}
+	return env, nil
 }
 
 func deref(s *string) string {

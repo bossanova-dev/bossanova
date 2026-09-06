@@ -10,8 +10,8 @@ directory. The daemon (`bossd`) manages session lifecycle, monitors PR
 status, and coordinates plugins. The Terminal UI (TUI), `boss`, provides a unified
 view across all active sessions.
 
-Sessions run in dedicated worktrees, allowing simultaneous work on
-multiple features without conflicts. Plugins listen for events like PR
+Sessions run in dedicated worktrees, so you work on several features at
+once without conflicts. Plugins listen for events like PR
 creation, CI failures, and merge conflicts, then take autonomous actions.
 
 ```mermaid
@@ -36,9 +36,10 @@ flowchart TD
   subscribe to bossd events. There are two flavors:
   - _Agent plugins_ own a coding-agent CLI subprocess for each
     session. The bundled `claude` plugin runs Claude Code, and the
-    bundled `codex` plugin runs OpenAI Codex CLI. `opencode` remains
-    on the roadmap. The daemon needs at least one agent plugin loaded
-    to start sessions.
+    bundled `codex` plugin runs OpenAI Codex CLI. `opencode` is
+    bundled too but experimental: it stays off until you opt in via
+    `experimental_plugins`. The daemon needs at least one agent plugin
+    loaded to start sessions.
   - _Task source plugins_ surface external issues in the new-session
     picker. `linear` (Linear tickets) and `sentry` (unresolved Sentry
     errors) are bundled and optional.

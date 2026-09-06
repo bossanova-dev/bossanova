@@ -356,6 +356,16 @@ func codexInitialInput(req *bossanovav1.BuildInteractiveCommandRequest) string {
 	return req.GetInitialPrompt()
 }
 
+// Reasons a resolution miss reports back to the daemon. They are deliberately
+// distinct: reasonPaneRolloutFDNotOpenYet is a "not yet" that the daemon should
+// keep polling on, while reasonNoRolloutFound is a "nothing here" for the
+// time-window scan. Both must stay non-empty — an unexplained miss is what made
+// the BOS-1144 unbound chats invisible in the logs.
+const (
+	reasonPaneRolloutFDNotOpenYet = "codex process tree visible but no rollout fd open yet"
+	reasonNoRolloutFound          = "no matching codex-tui rollout found"
+)
+
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
 	var id, path, reason string
 	var ambiguous bool
@@ -394,7 +404,10 @@ func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1
 		// wake-time legacy backfill (pane_pid 0) still uses the time-window scan,
 		// so an id is bound on first wake — the pre-fix result, merely deferred.
 		if treeVisible {
-			return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: false}, nil
+			return &bossanovav1.ResolveInteractiveSessionIDResponse{
+				Found:  false,
+				Reason: reasonPaneRolloutFDNotOpenYet,
+			}, nil
 		}
 	}
 	if req.GetAllowLegacyBackfill() {
@@ -409,6 +422,14 @@ func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1
 			launchedAfter = req.GetLaunchedAfter().AsTime()
 		}
 		id, path, ambiguous, reason = resolveInteractiveSessionID(req.WorkDir, launchedAfter)
+	}
+	// A miss must always name itself. The scan helpers already do, but a caller
+	// that only ever sees an empty Reason cannot tell "codex is still starting"
+	// (retry, the fd will appear) from "nothing matched this worktree" (the
+	// window is wrong) — and that distinction is what the daemon logs on its
+	// discovery warn line.
+	if id == "" && reason == "" {
+		reason = reasonNoRolloutFound
 	}
 	return &bossanovav1.ResolveInteractiveSessionIDResponse{
 		Found:          id != "",

@@ -451,20 +451,22 @@ func (c *Client) HasSessionStatus(ctx context.Context, name string) (bool, error
 	return true, nil
 }
 
-// LiveSession is one session tmux currently reports as running: its name and
-// the instant tmux created it. Created comes from tmux's own `session_created`
-// clock rather than any database column, so it is available for a pane that has
-// no row at all and survives a daemon restart (BOS-846 D4).
+// LiveSession is one session tmux currently reports as running: its name, the
+// instant tmux created it, and how many clients are attached. Created comes
+// from tmux's own `session_created` clock rather than any database column, so
+// it is available for a pane that has no row at all and survives a daemon
+// restart (BOS-846 D4).
 type LiveSession struct {
-	Name    string
-	Created time.Time
+	Name            string
+	Created         time.Time
+	AttachedClients int
 }
 
 // listSessionsFormat is the `-F` format ListSessions parses. Fields are
 // tab-separated because a tmux session name may contain spaces but never a tab.
 // The test fakes in internal/status and internal/testharness emit this exact
 // shape, so changing it means changing them too.
-const listSessionsFormat = "#{session_name}\t#{session_created}"
+const listSessionsFormat = "#{session_name}\t#{session_created}\t#{session_attached}"
 
 // ListSessions returns every tmux session the server currently reports.
 //
@@ -475,9 +477,9 @@ const listSessionsFormat = "#{session_name}\t#{session_created}"
 // slice with a nil error. Every other failure returns an error, because a
 // destructive caller must never read an unreadable tmux as an empty one.
 //
-// Malformed lines are skipped rather than guessed at: a line with no tab, an
-// empty name, or a non-numeric creation stamp contributes nothing and the
-// remaining well-formed lines are still returned.
+// Malformed lines are skipped rather than guessed at: a line with missing
+// fields, an empty name, or a non-numeric creation/attached stamp contributes
+// nothing and the remaining well-formed lines are still returned.
 func (c *Client) ListSessions(ctx context.Context) ([]LiveSession, error) {
 	cmd := c.cmdFunc(ctx, "tmux", "list-sessions", "-F", listSessionsFormat)
 	var stdout, stderr bytes.Buffer
@@ -498,15 +500,20 @@ func (c *Client) ListSessions(ctx context.Context) ([]LiveSession, error) {
 	var out []LiveSession
 	for _, line := range strings.Split(stdout.String(), "\n") {
 		line = strings.TrimRight(line, "\r")
-		name, created, ok := strings.Cut(line, "\t")
-		if !ok || name == "" {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || fields[0] == "" {
 			continue
 		}
-		secs, err := strconv.ParseInt(strings.TrimSpace(created), 10, 64)
+		name := fields[0]
+		secs, err := strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
 		if err != nil {
 			continue
 		}
-		out = append(out, LiveSession{Name: name, Created: time.Unix(secs, 0)})
+		attached, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if err != nil {
+			continue
+		}
+		out = append(out, LiveSession{Name: name, Created: time.Unix(secs, 0), AttachedClients: attached})
 	}
 	return out, nil
 }

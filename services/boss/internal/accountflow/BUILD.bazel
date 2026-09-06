@@ -33,5 +33,6 @@ go_test(
     deps = [
         "//lib/bossalib/agentcred",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

@@ -2,12 +2,14 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -16,6 +18,33 @@ import (
 )
 
 const defaultPRAssociationCacheTTL = 60 * time.Second
+
+// defaultPRAssociationFailureTTL is how long a FAILED provider listing is
+// remembered before the next pass is allowed to call the provider again.
+//
+// Without it a repo whose listing fails costs one provider call PER SESSION
+// awaiting association, on every pass, indefinitely: prsForRepo only ever
+// cached successes, and the sessions this reconciler looks at are by definition
+// the ones with no PR — so a repo that keeps failing never converges to zero
+// work the way a repo that succeeds does. With ~14 PR-less sessions on one repo
+// and a `gh pr list` wedged on DNS, that is 14 hung subprocesses per 60s tick,
+// overlapping the next tick.
+//
+// Much shorter than the success TTL on purpose. A remembered success is a fact
+// about the provider that stays true for a while; a remembered failure is a
+// guess about a transient condition, and the cost of guessing wrong is a PR
+// association that lands a few seconds late.
+const defaultPRAssociationFailureTTL = 15 * time.Second
+
+// errCachedPRListing marks an error served from the negative cache rather than
+// from a fresh provider call.
+//
+// It exists for log volume, not control flow. The negative cache removes the
+// repeated provider calls but not the repeated per-session error, so without a
+// way to tell the two apart every session on a failing repo still logs an
+// identical Warn line. Callers demote the repeats to Debug, leaving exactly one
+// Warn per repo per failure window — the first, real one.
+var errCachedPRListing = errors.New("cached PR listing failure")
 
 // LiveBranchResolver resolves the branch currently checked out in a worktree.
 // Implemented by *git.Manager (see Manager.CurrentBranch). Optional: when nil,
@@ -40,9 +69,13 @@ func ReconcilePRAssociations(
 	return NewPRAssociationResolver(sessions, repos, provider, logger).Reconcile(ctx)
 }
 
+// prCacheEntry is one repo's remembered listing. A non-nil err makes it a
+// remembered FAILURE, in which case prs is empty and the entry expires on the
+// failure TTL rather than the success one.
 type prCacheEntry struct {
 	expiresAt time.Time
 	prs       []vcs.PRSummary
+	err       error
 }
 
 type prAssociationMatch struct {
@@ -66,10 +99,19 @@ type PRAssociationResolver struct {
 	archiveTracker ArchiveWorkerTracker
 	notify         func(context.Context, *models.Session)
 
-	mu      sync.Mutex
-	ttl     time.Duration
-	now     func() time.Time
-	prCache map[string]prCacheEntry
+	mu         sync.Mutex
+	ttl        time.Duration
+	failureTTL time.Duration
+	now        func() time.Time
+	prCache    map[string]prCacheEntry
+
+	// flights collapses concurrent misses for one cache key onto a single
+	// provider call. The cache alone cannot do this: main.go shares this
+	// resolver between ListSessions and the periodic reconciler, so two passes
+	// can both read a miss before either has anything to write, and a failing
+	// repo then costs one gh call PER CONCURRENT PASS — the exact per-call cost
+	// the negative cache exists to remove. Keyed identically to prCache.
+	flights singleflight.Group
 }
 
 // NewPRAssociationResolver creates a PR association resolver with the default
@@ -81,13 +123,14 @@ func NewPRAssociationResolver(
 	logger zerolog.Logger,
 ) *PRAssociationResolver {
 	return &PRAssociationResolver{
-		sessions: sessions,
-		repos:    repos,
-		provider: provider,
-		logger:   logger,
-		ttl:      defaultPRAssociationCacheTTL,
-		now:      time.Now,
-		prCache:  make(map[string]prCacheEntry),
+		sessions:   sessions,
+		repos:      repos,
+		provider:   provider,
+		logger:     logger,
+		ttl:        defaultPRAssociationCacheTTL,
+		failureTTL: defaultPRAssociationFailureTTL,
+		now:        time.Now,
+		prCache:    make(map[string]prCacheEntry),
 	}
 }
 
@@ -156,6 +199,15 @@ func (r *PRAssociationResolver) SetTTLForTest(ttl time.Duration) {
 	r.ttl = ttl
 }
 
+// SetFailureTTLForTest overrides how long a remembered provider failure is
+// served from the negative cache.
+func (r *PRAssociationResolver) SetFailureTTLForTest(ttl time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.failureTTL = ttl
+}
+
 func (r *PRAssociationResolver) SetNowForTest(now func() time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -194,16 +246,41 @@ func (r *PRAssociationResolver) Reconcile(ctx context.Context) (int64, error) {
 // ReconcileSessions reconciles only the supplied active sessions. It exists for
 // caller-scoped repair paths, such as list-time dynamic discovery for already
 // visible rows. The full Reconcile method remains the startup/periodic scanner.
+//
+// It returns the caller's context error, and the count reconciled up to that
+// point, if the budget runs out mid-pass — the sessions after the cut are
+// neither reconciled nor reported as failures, and the stale-cron-title repair
+// below the loop does not run at all. Partial progress is durable either way:
+// each session is written as it is matched, not batched at the end.
 func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions []*models.Session) (int64, error) {
 	var updated int64
 	for _, sess := range sessions {
+		// Stop the pass once the caller's budget is gone. Every remaining
+		// session would fail on the dead context at its very first step — the
+		// repo read, a local SQLite call that has nothing to do with the
+		// provider — and log a Warn blaming PR discovery for it. That is what
+		// turned one slow `gh pr list` into a screenful of misleading
+		// "get repo ...: context deadline exceeded" lines, one per session.
+		if err := ctx.Err(); err != nil {
+			r.logger.Debug().Err(err).
+				Int64("updated", updated).
+				Msg("reconcile: pass cut short by caller budget")
+			return updated, err
+		}
+
 		if !NeedsPRAssociation(sess) {
 			continue
 		}
 
 		match, err := r.findPRMatchForSession(ctx, sess)
 		if err != nil {
-			r.logger.Warn().Err(err).
+			// One Warn per repo per failure window: the repeats this pass are
+			// served from the negative cache and carry no new information.
+			event := r.logger.Warn()
+			if errors.Is(err, errCachedPRListing) {
+				event = r.logger.Debug()
+			}
+			event.Err(err).
 				Str("session", sess.ID).
 				Str("repo_id", sess.RepoID).
 				Str("branch", sess.BranchName).
@@ -550,13 +627,70 @@ func (r *PRAssociationResolver) prsForRepo(ctx context.Context, repoID, originUR
 	r.mu.Lock()
 	if cached, ok := r.prCache[cacheKey]; ok && now.Before(cached.expiresAt) {
 		r.mu.Unlock()
+		if cached.err != nil {
+			// Wrapped so the caller can demote the repeat to Debug; the
+			// original error is preserved underneath for the message.
+			return nil, fmt.Errorf("%w: %w", errCachedPRListing, cached.err)
+		}
 		return clonePRSummaries(cached.prs), nil
 	}
 	r.mu.Unlock()
 
+	candidates, err := r.listOnce(ctx, cacheKey, repoID, originURL)
+	if err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+// listOnce performs the provider listing for cacheKey under a singleflight, so
+// concurrent misses share one call and one cache write.
+//
+// # Why a shared flight needs a context escape hatch
+//
+// singleflight hands every joiner the WINNER's result, and the winner ran under
+// the winner's context. Without the guard below, a caller from the ListSessions
+// path — whose whole pass is budgeted at listSessionsPRAssociationTimeout (10s)
+// — could win the flight, time out, and hand its own budget exhaustion to the
+// 60s periodic sweep as though the repo were unreachable. That is precisely the
+// "a caller-side timeout must not become a repo-side outage" invariant
+// rememberListingFailure already documents for the CACHE; a flight must not
+// reintroduce through the back door what the cache refuses at the front.
+//
+// So: if the shared result failed for a context reason and OUR context is still
+// healthy, the answer describes someone else's budget, not this repo. Fall back
+// to a direct call. This costs an extra provider call only in that narrow race,
+// and never on the failing-repo path the negative cache is optimising.
+func (r *PRAssociationResolver) listOnce(ctx context.Context, cacheKey, repoID, originURL string) ([]vcs.PRSummary, error) {
+	result, err, _ := r.flights.Do(cacheKey, func() (any, error) {
+		return r.listAndCache(ctx, cacheKey, repoID, originURL)
+	})
+	if err != nil {
+		if isContextError(err) && ctx.Err() == nil {
+			// A foreign budget expired, not this repo. Retry on our own.
+			return r.listAndCache(ctx, cacheKey, repoID, originURL)
+		}
+		return nil, err
+	}
+	// Clone per joiner: every caller must own its slice, or two passes mutate
+	// one backing array.
+	prs, ok := result.([]vcs.PRSummary)
+	if !ok {
+		// Unreachable: listAndCache is this key's only flight body, and its
+		// signature fixes the type. Reported rather than panicked so a future
+		// second producer surfaces as a failed listing, not a daemon crash.
+		return nil, fmt.Errorf("pr listing flight for repo %q returned %T, want []vcs.PRSummary", repoID, result)
+	}
+	return clonePRSummaries(prs), nil
+}
+
+// listAndCache is the flight body: one provider call, one cache write.
+func (r *PRAssociationResolver) listAndCache(ctx context.Context, cacheKey, repoID, originURL string) ([]vcs.PRSummary, error) {
 	openPRs, err := r.provider.ListOpenPRs(ctx, originURL)
 	if err != nil {
-		return nil, fmt.Errorf("list open PRs for repo %q: %w", repoID, err)
+		listErr := fmt.Errorf("list open PRs for repo %q: %w", repoID, err)
+		r.rememberListingFailure(ctx, cacheKey, listErr)
+		return nil, listErr
 	}
 
 	// Only open PRs are candidates. A closed or merged PR must never be
@@ -577,6 +711,52 @@ func (r *PRAssociationResolver) prsForRepo(ctx context.Context, repoID, originUR
 	}
 	r.mu.Unlock()
 	return candidates, nil
+}
+
+// isContextError reports whether err is (or wraps) a context cancellation or
+// deadline, including one the provider wrapped in its own message.
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// rememberListingFailure records a failed provider listing so the remaining
+// sessions on the same repo skip the provider call for failureTTL. The
+// subsequent success path overwrites this entry wholesale, so a repo that
+// recovers is never held back by a stale failure.
+//
+// A failure reached with the CALLER's context already dead is deliberately not
+// remembered. That error describes the caller's budget, not the repo: the
+// ListSessions path gives the whole pass 10s
+// (listSessionsPRAssociationTimeout), and letting one exhausted 10s budget
+// suppress the 60s periodic sweep's attempt would turn a caller-side timeout
+// into a repo-side outage. Nothing is lost by skipping it — on a dead context
+// every remaining session in that pass fails ahead of this call anyway, at the
+// repo read, and ReconcileSessions stops the pass outright at that point.
+func (r *PRAssociationResolver) rememberListingFailure(ctx context.Context, cacheKey string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.failureTTL <= 0 {
+		return
+	}
+	// Never downgrade a live success into a cached failure. The flight above
+	// makes the common concurrent case impossible, but this is the cheap,
+	// order-independent interlock: a slow failure that resolves AFTER a fresh
+	// success was installed would otherwise replace valid PR data with an
+	// error and suppress every association for the failure TTL. A success is
+	// valid for its own TTL no matter what a later call observed, so the
+	// already-installed entry wins.
+	if cached, ok := r.prCache[cacheKey]; ok && cached.err == nil && r.now().Before(cached.expiresAt) {
+		return
+	}
+	r.prCache[cacheKey] = prCacheEntry{
+		expiresAt: r.now().Add(r.failureTTL),
+		err:       err,
+	}
 }
 
 func clonePRSummaries(prs []vcs.PRSummary) []vcs.PRSummary {

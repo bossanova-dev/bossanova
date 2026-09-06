@@ -134,8 +134,8 @@ crash before the final flip.
    PR-sized children ⇒ **`needs-human`** ("too large to auto-plan; split by hand"), **never** a single
    oversized ticket — the exact monolith this flow exists to avoid.
 2. **Fully plan every child** by drafting each as a synthetic single ticket **with `allowEpic:
-false`** (the recursion guard — a child is never itself decomposed), writing a full
-   planContract-v1 plan per child. The spec never carries plan bodies, so copy back only **the child
+false`** (the recursion guard — a child is never itself decomposed), writing a full plan document
+   plus a separate planContract-v1 description projection per child. The spec never carries plan bodies, so copy back only **the child
    plan's own `agentFriendly` verdict AND its
    `openQuestions` list onto its spec entry** — `serializeEpicSpec` defaults an **absent**
    `agentFriendly` to `true`, so a `needs-human` (`agentFriendly:false`) child left blank here would be
@@ -281,14 +281,16 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    outward edges mutate **non-epic** backlog tickets, so writing them before the parent gate would
    strand existing backlog work behind a child that a deterministic parent-gate failure leaves
    unexposed. **Gate, then
-   SAVE the parent overview BEFORE exposing any child:** compose the parent overview now and run its two
-   Phase 4 gates (secret + image-parity) FIRST — on a gate failure take the SAFE branch (no exposure, no
+   SAVE the parent overview BEFORE exposing any child:** compose the parent overview now and run its three
+   Phase 4 gates (secret + image-parity + plan-contract with `--mode epic-parent`) FIRST — on a gate failure take the SAFE branch (no exposure, no
    parent write, abort), so a **deterministic** parent-gate failure (e.g. a dropped image or a secret in
    the parent's `## Original notes`) never leaves a child `agent-friendly`/`boss-build`-buildable while
    the parent aborts unplanned. The parent overview embeds the original description verbatim; its
    **secret gate** (redact any credentials/PII) and **image-parity gate** (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`
    — every original image URL must survive verbatim in the parent overview's `## Original notes`; on a
-   drop, no parent write, abort) run here. Only after both parent gates pass, attach the parent overview
+   drop, no parent write, abort) and **plan-contract gate** (`$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs --mode epic-parent`
+   — validate the parent overview's epic-parent sections before attachment finalize or parent save; on
+   a violation, no parent write, abort) run here. Only after all three parent gates pass, attach the parent overview
    natively + save it onto the original ticket,
    but keep it unplanned** (a description-only save — defer the unplanned → planned repurpose flip to the
    very last write below). This is the durable **parent commit**, and it runs **before any child is
@@ -523,7 +525,7 @@ runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath`
   fall through to Tier 2, then Tier 3 — the drafting layer is never silently dropped.
 
 - **Tier 2:** if no extension succeeded under the draft success predicate and the host exposes a native drafting command, use it
-  and normalize the result to the planContract sections in Step 7.
+  and compose its `descriptionSummary` to the planContract sections in Step 7.
 - **Tier 3:** if no extension succeeded under the draft success predicate and no host built-in exists, draft directly from
   Step 3 plus the self-contained plan-body requirements below. This tier has no external skill
   dependency.
@@ -546,6 +548,12 @@ Include, in the plan body, all of the following (scaled to triage):
 
 - A first development step: **"Copy this plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in
   the implementation PR."**
+- A **## Problem Frame** section that states the defect, the discriminating rule, and the artifact
+  surface the check reads. This is plan-file structure, not part of `descriptionSummary`.
+- A **## Requirements** section that names the plan's durable requirements or invariants. This is
+  plan-file structure, not part of `descriptionSummary`.
+- A **## Implementation Units** section that groups the implementation work at the single-ticket
+  level. This is plan-file structure, not part of `descriptionSummary`.
 - When the ticket names a specific call site, construct, literal claim, or other mechanism that could
   recur elsewhere, record a repo-wide sibling-class enumeration before fixing implementation scope.
   List every site the search returns, give each row a verdict (`fix` or `not a defect`) and a
@@ -635,11 +643,23 @@ it. Example:``- [ ] (central) the target helper does not already reject stale ci
   only. Do not retype, summarize, or reconstruct it. The plan attachment is gated with
   `plan-image-guard.mjs --require-verbatim`, so a model-authored reproduction is not a valid source.
 
-**The plan file must contain ONLY the plan body.** No tool-call scaffolding, no XML-ish wrapper
-tags, no transcript residue, no preamble narrating what you are about to write, and no trailing
-commentary after the last plan section. This file is finalized verbatim as the ticket's canonical
-plan attachment, and Phase 4's contract gate rejects a file whose last non-blank line is a bare
-closing scaffolding tag — the SAFE branch there is a full abort with no tracker write.
+The description-section contract governs `descriptionSummary` only. The plan file may retain
+additional drafting-layer headings and its native structure; do not flatten it to the Step 7
+template. `## Original notes` remains the terminal heading and its body runs to EOF. Every
+query-bearing upload URL anywhere in the plan file must be query-stripped.
+
+The Phase 4 contract gate also enforces a producer-side plan-file floor for single-ticket plans:
+the plan file must carry every required description-contract heading, the configured plan-file
+headings `## Problem Frame`, `## Requirements`, and `## Implementation Units`, and at least one
+heading outside `planContract.sections`. Epic-parent overviews and adopted-child redrafts are
+explicit exemption reasons because they are not this single-ticket artifact. No consumer-side path
+requires the plan-file structure; consumers read the description contract and plan-residue checks.
+
+The plan file must contain one plan document. No tool-call scaffolding, XML-ish wrapper tags,
+transcript residue, preamble narrating what you are about to write, or trailing commentary after
+the original-notes body. This file is finalized verbatim as the ticket's canonical plan attachment,
+and Phase 4's contract gate rejects a file whose last non-blank line is a bare closing scaffolding
+tag — the SAFE branch there is a full abort with no tracker write.
 
 ## Step 6 — Plan-body secret hygiene
 
@@ -753,6 +773,8 @@ implementer's convenience, but the original URLs must stay intact inside `## Ori
 mechanical orchestrator-side guard (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`) aborts the Linear
 write if any source image is missing from your `descriptionSummary`, so a dropped image fails the
 whole run — do not let it.
+The unsigned-upload rule is plan-wide: query-strip every query-bearing upload URL anywhere in the
+plan file, including URLs outside `## Original notes`.
 For any literal whose leading or trailing whitespace is semantically significant, use a fenced code
 block rather than an inline code span: the tracker's Markdown normalizer can move leading whitespace
 outside inline spans on save. The plan attachment is authoritative wherever the stored description
@@ -789,7 +811,7 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
     --arg childPlan ".linear-plans/<child-plan-path>.md" \
     --argjson childIds '["<child-id>"]' \
     --argjson epicSpecPaths '[]' \
-    --argjson guardScratchPaths '[".linear-plans/<ISSUE-ID>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.image-guard-new.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-new.md"]' \
+    --argjson guardScratchPaths '[".linear-plans/<ISSUE-ID>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.image-guard-new.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-new.md",".linear-plans/<child-plan-path>.md.rejected"]' \
     '{epic:true, epicParentId:$id, childIds:$childIds, childPlanPaths:{($childId):$childPlan}, epicSpecPaths:$epicSpecPaths, guardScratchPaths:$guardScratchPaths}')"
 ```
 
@@ -806,7 +828,8 @@ filename. Every `childIds` entry must have its own distinct non-empty child plan
 whose basename exactly equals `<PARENT>-child-<key>-<issueSlug(CHILD-ID, child-title)>.md`; an unrelated
 non-empty file with the same prefix does not satisfy a missing child. Replace
 the example `guardScratchPaths` array with every child and parent image-parity / safe-source guard
-scratch path this epic created; the field is mandatory even when the array is empty. Include the
+scratch path this epic created, plus every retained `<child-plan>.md.rejected` structure artifact;
+the field is mandatory even when the array is empty. Include the
 mandatory `epicSpecPaths` field, and put the local epic spec body scratch path in that array whether
 stage 2 uploaded a new spec in this run or rehydrated the durable stored spec during resume. Do
 **not** report attachment header scratch
@@ -862,9 +885,9 @@ node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <new.md> --plan 
 
 It prints one stderr line per violation, tagged `missing-sections`, `unknown-section`,
 `section-order`, `placeholder-residue`, `not-a-description`, `plan-file-residue`, or
-`unreadable-input`. **A non-zero exit means write no `ok` sentinel** — fix the description or the
-plan file and re-run, or leave the sentinel absent so the orchestrator reads `missing` and takes the
-safe branch.
+`plan-file-structure`, `plan-file-structure-exemption`, or `unreadable-input`. **A non-zero exit
+means write no `ok` sentinel** — fix the description or the plan file and re-run, or leave the
+sentinel absent so the orchestrator reads `missing` and takes the safe branch.
 
 Running it here as well as in the orchestrator's Phase 4 is deliberate, not redundant: failing fast
 here turns an orchestrator-side abort into a self-describing dispatch failure, while the Phase 4

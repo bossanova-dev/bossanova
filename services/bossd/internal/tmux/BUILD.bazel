@@ -32,6 +32,7 @@ go_test(
         "tmux_modal_test.go",
         "tmux_modal_wrappers_test.go",
         "tmux_ready_retry_test.go",
+        "tmux_submit_verify_clear_test.go",
         "tmux_submit_verify_codex_test.go",
         "tmux_submit_verify_queued_test.go",
         "tmux_test.go",

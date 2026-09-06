@@ -81,7 +81,10 @@ func seedAccountsList(t *testing.T, stub *accountsStub) AccountsListModel {
 	t.Helper()
 	m := NewAccountsListModel(stub, context.Background())
 	m.height = 24
-	m.width = 100
+	// Wide enough for the whole column set (BOS-1142 added CHECK and CHECKED),
+	// so a test asserting on a column is testing the cell rather than the
+	// responsive drop order — that ordering has its own test.
+	m.width = 170
 	updated, _ := m.Update(accountsLoadedMsg{accounts: stub.accounts})
 	return updated.(AccountsListModel)
 }
@@ -119,17 +122,22 @@ func responsiveAccountsFixture() []*pb.Account {
 }
 
 func TestAccountsListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
+	// BOS-1142 added CHECK and CHECKED. CHECK sits at priority 4 so it is given
+	// up just before HEALTH but after the pure-diagnostic columns: the health
+	// cell refuses a dominant green once a check has failed, so a terminal too
+	// narrow for CHECK still carries the signal.
 	wantTitles := map[int][]string{
-		0:   {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
+		0:   {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "CHECK", "CHECKED", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
 		60:  {" ", "LABEL", "STATUS", "UTIL5H"},
 		72:  {" ", "LABEL", "STATUS", "UTIL5H", "COOLDOWN"},
 		80:  {" ", "LABEL", "STATUS", "HEALTH", "UTIL5H", "COOLDOWN"},
-		100: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "UTIL5H", "COOLDOWN"},
-		140: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
+		100: {" ", "LABEL", "STATUS", "HEALTH", "CHECK", "UTIL5H", "COOLDOWN"},
+		140: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "CHECK", "UTIL5H", "AGE", "COOLDOWN", "LAST TEST"},
+		170: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "CHECK", "CHECKED", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
 	}
 
 	var unfitted []table.Column
-	for _, width := range []int{0, 60, 72, 80, 100, 140} {
+	for _, width := range []int{0, 60, 72, 80, 100, 140, 170} {
 		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
 			m := NewAccountsListModel(&accountsStub{accounts: responsiveAccountsFixture()}, context.Background())
 			m.accounts = responsiveAccountsFixture()
@@ -156,8 +164,8 @@ func TestAccountsListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
 			if got := columnTitles(cols); !slices.Equal(got, wantTitles[width]) {
 				t.Fatalf("width %d titles = %v, want %v", width, got, wantTitles[width])
 			}
-			if width == 140 && !reflect.DeepEqual(cols, unfitted) {
-				t.Fatalf("140-column set = %#v, want byte-identical unfitted %#v", cols, unfitted)
+			if width == 170 && !reflect.DeepEqual(cols, unfitted) {
+				t.Fatalf("170-column set = %#v, want byte-identical unfitted %#v", cols, unfitted)
 			}
 		})
 	}
@@ -605,5 +613,308 @@ func TestAccountLastTestCellMasksInjectionFailure(t *testing.T) {
 	}
 	if !strings.HasPrefix(detail, "failed · ") {
 		t.Fatalf("detail last-tested line = %q, want the failed framing", detail)
+	}
+}
+
+// ListSessionsWithReadFailures satisfies the BossClient seam: this fake reads
+// one place, so it never reports a partial read.
+func (s *accountsStub) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	sessions, err := s.ListSessions(ctx, req, opts)
+	return sessions, nil, err
+}
+
+// --- BOS-1142: credential-check state and the reauthenticate key ---
+
+// authCheckedAccount builds a codex account carrying a durable auth-check
+// verdict, so a test can pin what each verdict renders as.
+func authCheckedAccount(id, outcome, class string, checkedAgo time.Duration) *pb.Account {
+	a := &pb.Account{
+		Id:       id,
+		Provider: "codex",
+		Label:    id,
+		Status:   "active",
+		Health:   "ok",
+	}
+	if outcome != "" {
+		a.AuthCheck = &pb.AuthCheck{
+			Outcome:      outcome,
+			FailureClass: class,
+			CheckedAt:    timestamppb.New(time.Now().Add(-checkedAgo)),
+		}
+	}
+	return a
+}
+
+func TestAccountsListNeverCheckedIsDistinctFromCheckedAndClean(t *testing.T) {
+	// BOS-892: an account nobody ever verified and an account verified clean are
+	// different facts. If they render the same, an operator reads an unproven
+	// credential as proven.
+	never := authCheckedAccount("acct-never", "", "", 0)
+	clean := authCheckedAccount("acct-clean", authCheckHealthy, "", 4*time.Minute)
+
+	if got := accountCheckLabel(never); got != "never checked" {
+		t.Fatalf("never-checked label = %q, want %q", got, "never checked")
+	}
+	if got := accountCheckLabel(clean); got != "ok" {
+		t.Fatalf("checked-clean label = %q, want %q", got, "ok")
+	}
+	if accountCheckLabel(never) == accountCheckLabel(clean) {
+		t.Fatal("never-checked and checked-clean render identically")
+	}
+	if got := accountCheckAgeCell(never); got != "—" {
+		t.Fatalf("never-checked age = %q, want an em dash (no age may be claimed)", got)
+	}
+	if got := accountCheckAgeCell(clean); got == "—" {
+		t.Fatal("checked-clean account rendered no check age")
+	}
+
+	stub := &accountsStub{accounts: []*pb.Account{never, clean}}
+	m := seedAccountsList(t, stub)
+	content := stripANSI(m.View().Content)
+	for _, want := range []string{"CHECK", "CHECKED", "never checked"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("accounts list missing %q\n%s", want, content)
+		}
+	}
+}
+
+func TestAccountsListFailedCheckIsNeverADominantGreenRow(t *testing.T) {
+	// The whole point of BOS-1142: a row whose credential the provider rejected
+	// must not be painted with the success accent, whatever the health column
+	// still says.
+	failed := authCheckedAccount("acct-bad", authCheckAuthInvalid, "auth_invalidated", 3*time.Minute)
+	failed.LastTestError = "credential injection failed: materialize codex credentials"
+
+	if got := accountCheckLabel(failed); got != "failed:auth_invalidated" {
+		t.Fatalf("failed-check label = %q, want the class inline", got)
+	}
+	if !accountCheckFailed(failed) {
+		t.Fatal("accountCheckFailed did not recognise an auth_invalid verdict")
+	}
+
+	green := styleStatusSuccess.Render("ok")
+	if got := accountHealthCellFor(failed, "ok"); got == green {
+		t.Fatalf("health cell = %q, want the success accent withheld after a failed check", got)
+	}
+	// A transient verdict is NOT a credential fault (BOS-881), so it must not be
+	// painted as one -- but it is not proof of health either, so it does not earn
+	// the success accent. It reads as "ok?": no verdict, not an accusation.
+	transient := authCheckedAccount("acct-blip", "transient", "transient_provider", time.Minute)
+	got := accountHealthCellFor(transient, "ok")
+	if got == green {
+		t.Fatalf("health cell for a transient verdict = %q, want the success accent withheld", got)
+	}
+	if plain := stripANSI(got); !strings.Contains(plain, "ok?") {
+		t.Fatalf("health cell for a transient verdict = %q, want the unproven mark \"ok?\"", plain)
+	}
+	if plain := stripANSI(got); strings.Contains(plain, "failed") {
+		t.Fatalf("health cell for a transient verdict = %q, must not read as a credential fault", plain)
+	}
+
+	stub := &accountsStub{accounts: []*pb.Account{failed}}
+	m := seedAccountsList(t, stub)
+	content := m.View().Content
+	if strings.Contains(content, green) {
+		t.Fatalf("failed-check row still renders a dominant green ok cell\n%s", content)
+	}
+	plain := stripANSI(content)
+	if !strings.Contains(plain, "failed:auth_invalidated") {
+		t.Fatalf("failed-check row lost its failure class\n%s", plain)
+	}
+}
+
+func TestAccountsListRedactedDiagnosticLeadsWithItsPrefix(t *testing.T) {
+	// The injection prefix is what tells an operator this was a materialization
+	// failure rather than a rejected login. It has to survive both the mask and
+	// the column budget, so it must LEAD the cell.
+	a := authCheckedAccount("acct-bad", authCheckAuthInvalid, "auth_invalidated", time.Minute)
+	a.LastTestError = "credential injection failed: Authorization: Bearer sk-live-abcdef0123456789 rejected"
+
+	cell := accountLastTestCell(a)
+	if !strings.HasPrefix(cell, "credential injectio") {
+		t.Fatalf("last-test cell = %q, want it to lead with the injection prefix", cell)
+	}
+	if strings.Contains(cell, "sk-live-abcdef0123456789") {
+		t.Fatalf("last-test cell leaked credential-shaped text: %q", cell)
+	}
+	if lipgloss.Width(cell) > 22 {
+		t.Fatalf("last-test cell width = %d, want <= the 22-cell column budget", lipgloss.Width(cell))
+	}
+
+	detail := accountCheckedDetail(a)
+	if !strings.Contains(detail, "failed:auth_invalidated") {
+		t.Fatalf("detail line = %q, want the verdict and class", detail)
+	}
+	if strings.Contains(detail, "sk-live-abcdef0123456789") {
+		t.Fatalf("detail line leaked credential-shaped text: %q", detail)
+	}
+}
+
+func TestAccountsListReauthKeyDispatchesOnceAndIsGuarded(t *testing.T) {
+	stub := &accountsStub{accounts: []*pb.Account{
+		authCheckedAccount("acct-bad", authCheckAuthInvalid, "auth_invalidated", time.Minute),
+	}}
+	m := seedAccountsList(t, stub)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	m = updated.(AccountsListModel)
+	if cmd == nil {
+		t.Fatal("[R] produced no command")
+	}
+	msg, ok := cmd().(switchViewMsg)
+	if !ok {
+		t.Fatalf("[R] produced %T, want a switchViewMsg", cmd())
+	}
+	if msg.view != ViewAccountRegister || msg.reauthAccountID != "acct-bad" {
+		t.Fatalf("switch = %+v, want the register view in reauth mode for acct-bad", msg)
+	}
+	if msg.returnView != ViewAccounts {
+		t.Fatalf("returnView = %v, want ViewAccounts", msg.returnView)
+	}
+
+	// A second press before the switch lands must not open a second device
+	// login against the same account.
+	_, cmd2 := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if cmd2 != nil {
+		t.Fatalf("second [R] press dispatched %T, want it suppressed while in flight", cmd2())
+	}
+}
+
+func TestAccountsListReauthRefusesANonCodexAccountInPlace(t *testing.T) {
+	// Refusing before the flow starts is the point: the operator is not sent to
+	// a browser for a provider whose device login does not exist here.
+	claude := &pb.Account{Id: "acct-claude", Provider: "claude", Label: "Claude Prod", Status: "active", Health: "ok"}
+	stub := &accountsStub{accounts: []*pb.Account{claude}}
+	m := seedAccountsList(t, stub)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	m = updated.(AccountsListModel)
+	if cmd != nil {
+		t.Fatalf("[R] on a claude account dispatched %T, want a refusal in place", cmd())
+	}
+	content := stripANSI(m.View().Content)
+	if !strings.Contains(content, "boss account refresh") {
+		t.Fatalf("refusal does not name the alternative:\n%s", content)
+	}
+}
+
+func TestAccountsListReauthKeyIsDistinctFromTheRefreshUsageKey(t *testing.T) {
+	// Regression pin: [r] re-probes usage read-only and touches no credential;
+	// [R] replaces one. Collapsing them would let a routine usage probe
+	// overwrite a stored credential.
+	stub := &accountsStub{accounts: []*pb.Account{
+		authCheckedAccount("acct-bad", authCheckAuthInvalid, "auth_invalidated", time.Minute),
+	}}
+	m := seedAccountsList(t, stub)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m = updated.(AccountsListModel)
+	if cmd == nil {
+		t.Fatal("[r] produced no command")
+	}
+	if _, ok := cmd().(switchViewMsg); ok {
+		t.Fatal("[r] switched views; the refresh-usage key must stay a read-only probe")
+	}
+	if m.reauthing["acct-bad"] {
+		t.Fatal("[r] marked the account as reauthenticating")
+	}
+
+	bar := stripANSI(m.View().Content)
+	if !strings.Contains(bar, "[R]eauth") || !strings.Contains(bar, "[r]efresh") {
+		t.Fatalf("action bar does not offer both verbs:\n%s", bar)
+	}
+}
+
+// TestAccountsListRebuildTable_SupersededSurvivesCheckColumnDrop pins the
+// responsive half of BOS-1175.
+//
+// CHECK is priority 4 / minWidth 1 while HEALTH is priority 3, so a narrow
+// terminal drops CHECK first — and CHECK is the cell that spells the class out.
+// accountCheckSeverity deliberately keeps a superseded credential at
+// checkSeverityOK (eligibility is unaffected), so without the HEALTH mark this
+// row renders a plain green "ok" indistinguishable from a clean account once
+// CHECK is gone. Every other test for this feature exercises the pure helpers,
+// none of which see fitColumnsIndexed.
+func TestAccountsListRebuildTable_SupersededSurvivesCheckColumnDrop(t *testing.T) {
+	superseded := &pb.Account{
+		Id: "acct-superseded", Label: "superseded", Provider: "codex", Health: "ok",
+		AuthCheck: &pb.AuthCheck{Outcome: "healthy", FailureClass: AuthCheckClassSuperseded},
+	}
+	clean := &pb.Account{
+		Id: "acct-clean", Label: "cleanacct", Provider: "codex", Health: "ok",
+		AuthCheck: &pb.AuthCheck{Outcome: "healthy"},
+	}
+	accounts := []*pb.Account{superseded, clean}
+
+	m := NewAccountsListModel(&accountsStub{accounts: accounts}, context.Background())
+	m.accounts, m.height = accounts, 13
+
+	for _, width := range []int{60, 72} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			m.width = width
+			m.rebuildTable()
+
+			titles := columnTitles(m.table.Columns())
+			if slices.Contains(titles, "CHECK") {
+				t.Skipf("CHECK survives at width %d (titles %v); this test only covers the dropped case", width, titles)
+			}
+			if !slices.Contains(titles, "HEALTH") {
+				t.Fatalf("width %d dropped HEALTH as well (titles %v); the mark has nowhere to live", width, titles)
+			}
+
+			view := stripANSI(m.table.View())
+			if !strings.Contains(view, "ok"+healthSupersededMark) {
+				t.Fatalf("width %d: superseded row lost its HEALTH mark %q once CHECK dropped:\n%s", width, healthSupersededMark, view)
+			}
+			// The clean row must stay unmarked, or the mark says nothing.
+			if strings.Count(view, "ok"+healthSupersededMark) != 1 {
+				t.Fatalf("width %d: want exactly one marked row, got %d:\n%s", width, strings.Count(view, "ok"+healthSupersededMark), view)
+			}
+		})
+	}
+}
+
+// TestAccountsListRefreshChainUnprovenRendersAsItself is the BOS-1174 TUI
+// mirror: a new daemon outcome is INVISIBLE on this surface until the mirror
+// knows it, so it ships in the same change as the daemon that emits it.
+//
+// The state is a warning, not an accusation and not a green. The credential
+// answered — so nothing here may say "failed" — but its refresh chain was never
+// observed working, so nothing here may claim the confidence a green would.
+// That is exactly the undetermined tier the "?" veto mark already exists for.
+func TestAccountsListRefreshChainUnprovenRendersAsItself(t *testing.T) {
+	unproven := authCheckedAccount(
+		"acct-unproven", authCheckRefreshChainUnproven, "refresh_not_observed", 5*time.Minute)
+
+	// The cell names the state itself. The failure class is deliberately NOT
+	// appended: "refresh_chain_unproven" already is the whole message, and the
+	// pair would be 43 columns against a CHECK budget of 24 — the BOS-892
+	// truncation trap, which would eat the identifying half of the label.
+	if got := accountCheckLabel(unproven); got != authCheckRefreshChainUnproven {
+		t.Fatalf("label = %q, want the outcome rendered as itself (%q)", got, authCheckRefreshChainUnproven)
+	}
+	if got := accountCheckSeverity(unproven); got != checkSeverityUndetermined {
+		t.Fatalf("severity = %v, want undetermined (a warning, not a verdict)", got)
+	}
+	if accountCheckFailed(unproven) {
+		t.Fatal("an unproven refresh chain is not a confirmed credential fault")
+	}
+
+	// The health cell keeps its ok but wears the unproven mark, matching the
+	// web fold's "Unverified" amber.
+	if got, want := accountHealthCellFor(unproven, "ok"),
+		styleStatusWarning.Render("ok"+healthVetoUnprovenMark); got != want {
+		t.Fatalf("health cell = %q, want %q", got, want)
+	}
+	if got := accountHealthCellFor(unproven, "ok"); got == styleStatusSuccess.Render("ok") {
+		t.Fatal("an unproven refresh chain must not keep the dominant green")
+	}
+
+	// And it survives to the screen intact rather than being truncated away.
+	stub := &accountsStub{accounts: []*pb.Account{unproven}}
+	m := seedAccountsList(t, stub)
+	content := stripANSI(m.View().Content)
+	if !strings.Contains(content, authCheckRefreshChainUnproven) {
+		t.Fatalf("accounts list did not render %q\n%s", authCheckRefreshChainUnproven, content)
 	}
 }

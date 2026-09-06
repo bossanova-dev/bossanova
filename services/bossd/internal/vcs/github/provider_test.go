@@ -2135,3 +2135,184 @@ func TestGetReviewComments_StillCommentedBotIsThreadVerified(t *testing.T) {
 		t.Error("a bot whose latest review is COMMENTED must still be thread-verified")
 	}
 }
+
+// TestIsGitHubAuthFailureCoversBothUnauthenticatedShapes pins the pair. The 401
+// is the obvious one; the anonymous rate limit is the one that misleads, because
+// its text is about quota while its cause is missing credentials.
+func TestIsGitHubAuthFailureCoversBothUnauthenticatedShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"401 from graphql", errors.New("gh pr create: exit status 1: HTTP 401: Requires authentication (https://api.github.com/graphql)"), true},
+		{"bad credentials", errors.New("gh api: HTTP 401: Bad credentials"), true},
+		{
+			"anonymous rate limit",
+			errors.New("gh api: HTTP 403: API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)"),
+			true,
+		},
+		{"logged-out banner", errors.New("To get started with GitHub CLI, please run:  gh auth login"), true},
+		// The authenticated over-limit form is a REAL rate limit: the client had
+		// credentials and GitHub still refused. It must stay transient.
+		{"authenticated rate limit", errors.New("gh api: HTTP 403: API rate limit exceeded for user ID 12345."), false},
+		{"unrelated", errors.New("gh pr create: exit status 1: GraphQL: Head sha can't be blank"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isGitHubAuthFailure(tt.err); got != tt.want {
+				t.Fatalf("isGitHubAuthFailure(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsGitHubTransientRefusesTheAnonymousRateLimit is the precedence guard.
+// Without it the "api rate limit" fragment claims the anonymous shape, and an
+// auth outage is retried up the backoff ladder and then reported as a quota
+// problem — the wrong cause, arrived at slowly.
+func TestIsGitHubTransientRefusesTheAnonymousRateLimit(t *testing.T) {
+	anonymous := errors.New("gh api: HTTP 403: API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated requests get a higher rate limit.)")
+	if isGitHubTransient(anonymous) {
+		t.Fatal("the anonymous rate limit is classified transient; it persists until credentials are fixed")
+	}
+	// The authenticated form must still be transient, or this guard has traded
+	// one misclassification for another.
+	authenticated := errors.New("gh api: HTTP 403: API rate limit exceeded for user ID 12345.")
+	if !isGitHubTransient(authenticated) {
+		t.Fatal("a genuine authenticated rate limit stopped being transient")
+	}
+	// And the ordinary transient signatures are untouched.
+	if !isGitHubTransient(errors.New("gh pr view: HTTP 502 Bad Gateway")) {
+		t.Fatal("HTTP 502 stopped being transient")
+	}
+}
+
+// TestGHClassifiersReadOnlyTheGHResponseNotTheEchoedArgs is the guard on the
+// classification INPUT. defaultRunGH puts the flattened command line in its
+// message, and for `gh pr create` that line carries the caller's arbitrary
+// --title and --body. Classifying the whole message therefore let PR PROSE
+// decide control flow in both directions, which is what ghResponseText narrows.
+func TestGHClassifiersReadOnlyTheGHResponseNotTheEchoedArgs(t *testing.T) {
+	// A PR body that happens to discuss authentication, on a command whose real
+	// failure is a readiness problem. Before the fix this classified as auth.
+	authProseArgs := []string{
+		"pr", "create", "--repo", "owner/repo",
+		"--title", "Handle a 401: Bad credentials from the token refresh",
+		"--body", "This path fails when the API says it requires authentication.",
+	}
+	readinessFailure := &ghError{
+		args:   authProseArgs,
+		stderr: "GraphQL: No commits between main and feat/x (createPullRequest)",
+		err:    errors.New("exit status 1"),
+	}
+	if isGitHubAuthFailure(readinessFailure) {
+		t.Fatal("a readiness failure was classified as auth because the PR title/body mentioned credentials")
+	}
+	if !isRepoNotReady(readinessFailure) {
+		t.Fatal("the real cause (No commits between) stopped being recognised")
+	}
+
+	// The converse direction, which is just as reachable: a title mentioning a
+	// rate limit must not drag a genuine auth failure into the transient ladder.
+	rateLimitProse := &ghError{
+		args:   []string{"pr", "create", "--title", "Retry on HTTP 429 / api rate limit", "--body", "x"},
+		stderr: "HTTP 401: Requires authentication (https://api.github.com/graphql)",
+		err:    errors.New("exit status 1"),
+	}
+	if !isGitHubAuthFailure(rateLimitProse) {
+		t.Fatal("a genuine 401 stopped being an auth failure")
+	}
+	if isGitHubTransient(rateLimitProse) {
+		t.Fatal("an auth failure became transient because the PR title mentioned a rate limit")
+	}
+
+	// Classification narrowed; the human-readable message did NOT. The args stay
+	// in Error() because that is what debugging reads, and the raw gh response
+	// stays in it because that is what lands in the persisted blocked reason.
+	msg := readinessFailure.Error()
+	if !strings.Contains(msg, "--title") || !strings.Contains(msg, "No commits between") {
+		t.Fatalf("Error() = %q, want it to keep both the echoed args and gh's own output", msg)
+	}
+
+	// A plain error (a WithRunGH fake, or any fmt.Errorf from elsewhere) must
+	// still be read whole — the narrowing applies to real gh invocations only,
+	// and every existing classifier test depends on this fallback.
+	if !isGitHubAuthFailure(errors.New("gh api: HTTP 401: Bad credentials")) {
+		t.Fatal("the plain-error fallback regressed")
+	}
+
+	// And the narrowing survives wrapping, which is how these errors actually
+	// reach the classifiers (CreateDraftPR wraps with %w before returning).
+	wrapped := fmt.Errorf("create PR: %w", readinessFailure)
+	if isGitHubAuthFailure(wrapped) {
+		t.Fatal("errors.As did not find the ghError through a %w wrap")
+	}
+}
+
+// TestCreateDraftPRAuthProseInBodyStillRetriesAsRepoNotReady is the same defect
+// observed at the call site rather than the predicate: the misclassification's
+// visible cost was skipping the retry ladder and persisting the wrong sentinel.
+func TestCreateDraftPRAuthProseInBodyStillRetriesAsRepoNotReady(t *testing.T) {
+	slept := 0
+	p := New(zerolog.Nop(),
+		WithRunGH(func(_ context.Context, args ...string) (string, error) {
+			return "", &ghError{
+				args:   args,
+				stderr: "GraphQL: No commits between main and feat/x (createPullRequest)",
+				err:    errors.New("exit status 1"),
+			}
+		}),
+		WithSleepFunc(func(time.Duration) { slept++ }),
+	)
+
+	opts := testPROpts()
+	opts.Body = "Fixes the path where GitHub replies that it requires authentication."
+	opts.Title = "Handle HTTP 401: Bad credentials"
+
+	_, err := p.CreateDraftPR(context.Background(), opts)
+	if errors.Is(err, vcs.ErrGitHubAuthUnavailable) {
+		t.Fatalf("error = %v, want NOT ErrGitHubAuthUnavailable: the body's prose is not a credential verdict", err)
+	}
+	if !errors.Is(err, vcs.ErrRepoNotReady) {
+		t.Fatalf("error = %v, want ErrRepoNotReady", err)
+	}
+	// The readiness path retries; the auth path fails fast. A non-zero sleep
+	// count is what proves it took the right branch.
+	if slept == 0 {
+		t.Fatal("a readiness failure did not retry; it was still short-circuited as auth")
+	}
+}
+
+// TestCreateDraftPRReturnsErrGitHubAuthUnavailableFor401 is the 2026-09-03
+// incident in a test: gh silently unauthenticated, a 401 from PR creation, and
+// a persisted reason that named nothing.
+func TestCreateDraftPRReturnsErrGitHubAuthUnavailableFor401(t *testing.T) {
+	slept := 0
+	p := New(zerolog.Nop(),
+		WithRunGH(func(_ context.Context, _ ...string) (string, error) {
+			return "", errors.New("gh pr create: exit status 1: HTTP 401: Requires authentication (https://api.github.com/graphql)")
+		}),
+		WithSleepFunc(func(time.Duration) { slept++ }),
+	)
+
+	_, err := p.CreateDraftPR(context.Background(), testPROpts())
+	if !errors.Is(err, vcs.ErrGitHubAuthUnavailable) {
+		t.Fatalf("error = %v, want ErrGitHubAuthUnavailable", err)
+	}
+	// It must NOT be mistaken for a readiness problem — that is the branch it
+	// used to fall through, and the one that retries.
+	if errors.Is(err, vcs.ErrRepoNotReady) {
+		t.Fatalf("error = %v, want it not to report ErrRepoNotReady", err)
+	}
+	if slept != 0 {
+		t.Fatalf("slept %d times on an auth failure; it must fail fast", slept)
+	}
+	// The raw gh text has to survive into the wrap: it is what `boss show`
+	// prints, and on the incident machine it is where gh's keychain OSStatus
+	// appeared.
+	if !strings.Contains(err.Error(), "Requires authentication") {
+		t.Fatalf("error = %v, dropped the raw gh text", err)
+	}
+}

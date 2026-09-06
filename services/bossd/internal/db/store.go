@@ -366,10 +366,16 @@ type AgentChatStore interface {
 	ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error)
 	UpdateTitle(ctx context.Context, id string, title string) error
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
-	UpdateAgentSessionID(ctx context.Context, id, oldAgentSessionID, newAgentSessionID string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
 	UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error
 	UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error
+	// RebindResumedChat updates an existing chat row in place when a chat
+	// is resumed, instead of deleting and re-creating it. Only the fields
+	// set on params are written; every other column — notably
+	// agent_name, model, account_id and provider_session_id — keeps the
+	// value the row already carries (BOS-1143). Returns a wrapped
+	// ErrAgentChatNotFound when no row carries agentSessionID.
+	RebindResumedChat(ctx context.Context, agentSessionID string, params RebindResumedChatParams) error
 	// MarkStartFailed records a short human-readable reason that the
 	// agent never came up for this chat, AND clears tmux_session_name
 	// in the same statement so the chat is no longer treated as
@@ -380,14 +386,43 @@ type AgentChatStore interface {
 	MarkStartFailed(ctx context.Context, agentSessionID, reason string) error
 	// DeleteByAgentSessionID removes the chat and, in the same
 	// transaction, the durable proxy-token row that resolved to it
-	// (BOS-979). That row cannot cascade — agent_chats.agent_session_id
-	// is not UNIQUE, so it cannot be a foreign-key parent.
+	// (BOS-979). The delete is explicit rather than a cascade: no
+	// foreign key was declared from proxy_tokens.agent_session_id, so
+	// nothing deletes the token row on our behalf.
 	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
 	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
 	// ListRoutableChats returns chats the daemon can route to for the
 	// upstream reconnect snapshot: tmux-hosted chats plus headless runs
 	// (which have no tmux session name), excluding failed-start rows.
 	ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error)
+}
+
+// RebindResumedChatParams holds the columns a resume may rewrite on an
+// existing agent_chats row. Every field is optional and preserve-on-absence:
+// a nil field leaves the stored column untouched. Nullable columns take a
+// pointer-to-pointer so a caller can distinguish "leave alone" (nil) from
+// "set to NULL" (non-nil pointer to a nil *string), matching
+// UpdateAttemptParams.Error.
+type RebindResumedChatParams struct {
+	// NewAgentSessionID re-keys the row onto a fresh agent_session_id.
+	NewAgentSessionID *string
+	// SessionID moves the chat to a different parent session.
+	SessionID *string
+	// Title replaces the chat title.
+	Title *string
+	// AgentName replaces the agent (provider) that owns the chat.
+	AgentName *string
+	// Model replaces the per-chat model id.
+	Model *string
+	// AccountID replaces the bound account (nullable).
+	AccountID **string
+	// ProviderSessionID replaces the provider's own session id (nullable).
+	ProviderSessionID **string
+	// ClearStartError clears start_error so a previously failed chat is
+	// no longer badged as failed after a successful resume. The old
+	// delete+create resume path cleared it implicitly; an in-place
+	// rebind has to say so.
+	ClearStartError bool
 }
 
 // CreateAttemptParams holds the parameters for creating a new attempt.
@@ -812,8 +847,9 @@ type ProxyTokenStore interface {
 	// tokens. Idempotent.
 	DeleteBySessionID(ctx context.Context, sessionID string) error
 	// DeleteByAgentSessionID removes one chat's token. Required because
-	// agent_chats.agent_session_id is not unique, so no cascade can cover the
-	// chat-only delete path. Idempotent.
+	// proxy_tokens carries no foreign key onto agent_chats.agent_session_id
+	// (deliberately, even after 20260904000000 made that column UNIQUE), so no
+	// cascade covers the chat-only delete path. Idempotent.
 	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
 	// DeleteOlderThan drops every row created before cutoff and reports how many
 	// went away. This is what bounds the table: no other delete path runs for a

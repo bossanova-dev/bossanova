@@ -49,6 +49,11 @@ type switchViewMsg struct {
 	returnView View        // optional view to return to when the target view is cancelled
 	firstRepo  bool        // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
 	account    *pb.Account // selected account carrier for ViewAccountEdit (BOS-266)
+	// reauthAccountID switches ViewAccountRegister into in-place
+	// reauthentication for that account instead of adding a new one
+	// (BOS-1142): the provider chooser is skipped and the flow replaces the
+	// existing row's credential.
+	reauthAccountID string
 }
 
 type repoAddCompletedMsg struct {

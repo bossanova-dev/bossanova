@@ -64,16 +64,70 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 	return client.NewLocal(socketPath), nil
 }
 
+// registrationOp identifies WHICH registration verb a guard is refusing, so the
+// remedy it prints repairs the operator's actual situation (BOS-1142).
+//
+// The two verbs diverge sharply once a guard fires. `boss account add` mints a
+// NEW account; `boss account reauth <id>` replaces the credential on an EXISTING
+// one. An operator who follows an add remedy out of a reauth refusal therefore
+// registers a second account and leaves the failed bound id exactly as it was —
+// precisely the state reauthentication exists to repair. The add remedy's
+// --token-stdin escape hatch is wrong there for a second, independent reason:
+// reauth runs the codex device flow (accountflow.RunCodexReauth), and codex
+// rejects --token-stdin outright — see runAccountAddCodex.
+//
+// It carries the values rather than a verb string because both guards need the
+// same two facts and a bare bool pair at three call sites is what let the reauth
+// path inherit the add wording in the first place.
+type registrationOp struct {
+	// reauth marks the verb. Kept separate from accountID so a degenerate empty
+	// id (`boss account reauth ""`) still gets reauth wording rather than
+	// silently falling back to the add remedy.
+	reauth bool
+	// accountID is the account a reauth would repair. Empty for add.
+	accountID string
+	// pastedToken marks the one add shape with no local subprocess in it:
+	// `boss account add claude --token-stdin` reads a token that already exists.
+	// Meaningless for reauth, which has no pasted-token shape.
+	pastedToken bool
+}
+
+// addRegistration describes a `boss account add`, pastedToken marking the
+// claude --token-stdin shape.
+func addRegistration(pastedToken bool) registrationOp {
+	return registrationOp{pastedToken: pastedToken}
+}
+
+// reauthRegistration describes a `boss account reauth <id>`.
+func reauthRegistration(accountID string) registrationOp {
+	return registrationOp{reauth: true, accountID: accountID}
+}
+
+// reauthCommand is the remedy a reauth refusal has to carry away with it. The id
+// is part of the command, not decoration: `boss account reauth` without one is
+// not a command the operator can run.
+func (o registrationOp) reauthCommand() string {
+	id := o.accountID
+	if id == "" {
+		id = "<account-id>"
+	}
+	return "boss account reauth " + id
+}
+
 // guardInteractiveStdin fails fast when an interactive registration flow would
-// block on a terminal that is not attached. --token-stdin (claude) is the one
+// block on a terminal that is not attached. --token-stdin (claude add) is the one
 // non-interactive escape hatch and skips the guard. Returning cleanly here —
 // before any client dial or subprocess — is what a headless agent or cron hits.
-func guardInteractiveStdin(tokenStdin bool) error {
-	if tokenStdin {
+func guardInteractiveStdin(op registrationOp) error {
+	if op.pastedToken {
 		return nil
 	}
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil
+	}
+	if op.reauth {
+		// No --token-stdin suggestion: reauth has no pasted-token shape at all.
+		return fmt.Errorf("boss account reauth is interactive; run `%s` in a terminal on the daemon host", op.reauthCommand())
 	}
 	return errors.New("boss account add is interactive; run it in a terminal (or pass --token-stdin for claude)")
 }
@@ -98,12 +152,27 @@ func guardInteractiveStdin(tokenStdin bool) error {
 // cloud orchestrator to have run the CLI on, so allowing a paste there is a
 // separate design question rather than the same one.
 //
+// Reauth (`boss account reauth <id>`) is refused for the same reason and gets
+// its own remedy: see registrationOp for why the add wording is not merely
+// imprecise there but actively harmful.
+//
 // It runs before any client dial or subprocess.
-func requireLocalRegistration(cmd *cobra.Command, pastedToken bool) error {
+func requireLocalRegistration(cmd *cobra.Command, op registrationOp) error {
 	if remoteURL(cmd) != "" {
+		if op.reauth {
+			return fmt.Errorf("boss account reauth re-runs the provider login on the local daemon and cannot target a remote (--remote) daemon; run `%s` on the daemon host instead", op.reauthCommand())
+		}
 		return errors.New("boss account add registers credentials on the local daemon and cannot target a remote (--remote) daemon")
 	}
-	if host := hostDestination(cmd); host != "" && !pastedToken {
+	host := hostDestination(cmd)
+	if host != "" && op.reauth {
+		// Deliberately NOT the add remedy: `ssh <host> boss account add ...`
+		// creates a second account and leaves the failed bound id untouched, and
+		// there is no --token-stdin shape to fall back to. Name the id, because
+		// the operator reached this from a specific broken binding.
+		return fmt.Errorf("boss account reauth runs the agent CLI on this machine and cannot target a remote (--host %s) daemon; run `ssh %s %s` on that host instead", host, host, op.reauthCommand())
+	}
+	if host != "" && !op.pastedToken {
 		// The claude escape hatch has to carry --host back with it. Suggesting the
 		// bare `boss account add claude --token-stdin` reads as a working remedy
 		// but drops the destination, so an operator who copies it registers the
@@ -146,10 +215,11 @@ func runAccountAddClaude(cmd *cobra.Command) error {
 	// Read --token-stdin first: it is what decides whether this invocation has a
 	// local subprocess in it, and therefore whether the --host guard applies.
 	tokenStdin, _ := cmd.Flags().GetBool("token-stdin")
-	if err := requireLocalRegistration(cmd, tokenStdin); err != nil {
+	op := addRegistration(tokenStdin)
+	if err := requireLocalRegistration(cmd, op); err != nil {
 		return err
 	}
-	if err := guardInteractiveStdin(tokenStdin); err != nil {
+	if err := guardInteractiveStdin(op); err != nil {
 		return err
 	}
 	c, err := newClient(cmd)
@@ -178,13 +248,14 @@ func runAccountAddClaude(cmd *cobra.Command) error {
 // round-trip), so --token-stdin is rejected up front.
 func runAccountAddCodex(cmd *cobra.Command) error {
 	// Codex has no pasted-token shape at all, so the guard always applies.
-	if err := requireLocalRegistration(cmd, false); err != nil {
+	op := addRegistration(false)
+	if err := requireLocalRegistration(cmd, op); err != nil {
 		return err
 	}
 	if tokenStdin, _ := cmd.Flags().GetBool("token-stdin"); tokenStdin {
 		return errors.New("--token-stdin is not supported for codex; codex registration uses an interactive device flow")
 	}
-	if err := guardInteractiveStdin(false); err != nil {
+	if err := guardInteractiveStdin(op); err != nil {
 		return err
 	}
 	c, err := newClient(cmd)
@@ -202,6 +273,39 @@ func runAccountAddCodex(cmd *cobra.Command) error {
 		Label:    label,
 		Priority: priority,
 	})
+}
+
+// runAccountReauth drives `boss account reauth <id>`: re-run the provider's
+// interactive device login and hand the fresh credential to the EXISTING
+// account rather than registering a second one (BOS-1142).
+//
+// Thin by design — it resolves the client and the flags, and the flow itself
+// is a pure function over the narrow AccountClient seam so it stays testable
+// without a daemon.
+func runAccountReauth(cmd *cobra.Command, id string) error {
+	// The device login needs an interactive TTY and writes a credential to the
+	// local machine, so the same local-registration and stdin guards the codex
+	// add path uses apply here too — but declared as a REAUTH, so each refusal
+	// prints the remedy that repairs this account instead of the add remedy,
+	// which would register a second one and leave the failed binding as it is.
+	op := reauthRegistration(id)
+	if err := requireLocalRegistration(cmd, op); err != nil {
+		return err
+	}
+	if err := guardInteractiveStdin(op); err != nil {
+		return err
+	}
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	return accountflow.RunCodexReauth(cmd.Context(), accountflow.CodexOptions{
+		Exec:     accountflow.NewOSExec(),
+		Prompter: accountflow.NewIOPrompter(cmd.InOrStdin(), cmd.OutOrStdout()),
+		Client:   c,
+		Timeout:  timeout,
+	}, id)
 }
 
 // newRemoteClient creates a RemoteClient with a JWT from the keychain.
@@ -307,6 +411,11 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 			return err
 		}
 	}
+	// e2e-only: make the home list read as a cross-organization union, so a
+	// proof scenario can capture the union and the one-organization-short
+	// partial read without a cloud backend. Returns the client unchanged in
+	// production builds and in every scenario that asked for no seed.
+	c = applyE2ECrossOrgSessions(c)
 	authMgr := newOptionalAuthManager(cmd)
 	settings := launchSettings(time.Now())
 	if err := runAgentPreflights(context.Background(), cmd, c, settings, opts.attachSessionID); err != nil {
@@ -330,7 +439,10 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 			app.WithCloudAccessClient(newAuthCloudAccessClient(authMgr, cloud))
 		}
 		app.WithCheckoutURLs(cloudReturnURL(), cloudCancelURL())
-		app.WithSubscriptionURL(cloudSubscribeURL())
+		// Unscoped on purpose: the cloud client is only being constructed here, so
+		// no CloudAccessStatus has been read and there is no organization id to
+		// scope the URL to yet.
+		app.WithSubscriptionURL(cloudSubscribeURL(""))
 	}
 	if opts.configure != nil {
 		opts.configure(&app)
@@ -3126,6 +3238,15 @@ func printSessionShowHeader(sess *pb.Session) {
 	if sess.GetWorktreePath() != "" {
 		fmt.Printf("  Worktree: %s\n", sess.GetWorktreePath())
 	}
+	// Printed in full and deliberately untruncated. Every other operator-facing
+	// surface loses this text: the TUI hint applies firstLine + a 48-rune cap
+	// (views/status.go), `boss ls` has no room for it at all, and a daemon
+	// started detached writes its logs to /dev/null — which is exactly the
+	// failure that most needs the raw reason read. This line is the CLI's answer
+	// to "what actually went wrong", so it must never acquire a truncation.
+	if reason := sess.GetBlockedReason(); reason != "" {
+		fmt.Printf("  Blocked:  %s\n", strings.ReplaceAll(reason, "\n", "\n            "))
+	}
 	if sess.CreatedAt != nil {
 		fmt.Printf("  Created:  %s\n", views.RelativeTime(sess.CreatedAt.AsTime()))
 	}
@@ -3833,11 +3954,16 @@ func runConfigInit(cmd *cobra.Command) error {
 			s.Plugins[idx].Path = path
 			s.Plugins[idx].Version = buildinfo.Version
 		} else {
-			// Add new entry (default to enabled for newly discovered plugins)
+			// Add new entry. Newly discovered plugins default to enabled, except
+			// experimental ones (BOS-1145): this scans the directory the official
+			// installer populated, so it authors the very entry that made an
+			// alpha runner load unasked. bossd gates it off at load either way,
+			// but writing "enabled": true here would leave the installer's own
+			// file contradicting the daemon.
 			newPlugin := config.PluginConfig{
 				Name:    pluginName,
 				Path:    path,
-				Enabled: true,
+				Enabled: !config.IsExperimentalPlugin(pluginName),
 				Version: buildinfo.Version,
 			}
 			s.Plugins = append(s.Plugins, newPlugin)
@@ -3852,5 +3978,33 @@ func runConfigInit(cmd *cobra.Command) error {
 
 	settingsPath, _ := config.Path()
 	fmt.Printf("Configured %d plugins in %s\n", len(foundPlugins), settingsPath)
+
+	// Name the experimental plugins the daemon will leave off. The count above
+	// includes them, so on its own it reads as "all of these are on", and the
+	// only other places that state surfaces are a bossd log line and the
+	// settings reference — neither of which reaches the person who just ran this.
+	// settings.json cannot carry a comment, so this line is the hint.
+	//
+	// Ask the gate rather than reading plugins[].enabled: that flag is inert for
+	// a registry member, since ApplyExperimentalPluginGate overrides it in both
+	// directions. Reading it directly would nag a user who has already opted in
+	// (config init writes the entry disabled and never rewrites the flag) and
+	// stay silent for the legacy "enabled": true entry the daemon is about to
+	// force off — the very installed base this notice exists for.
+	gated, _ := config.ApplyExperimentalPluginGate(s.Plugins, s.ExperimentalPlugins)
+	var experimentalOff []string
+	for i := range gated {
+		p := gated[i]
+		if _, discovered := foundPlugins["bossd-plugin-"+p.Name]; !discovered {
+			continue
+		}
+		if config.IsExperimentalPlugin(p.Name) && !p.Enabled {
+			experimentalOff = append(experimentalOff, p.Name)
+		}
+	}
+	if len(experimentalOff) > 0 {
+		fmt.Printf("Experimental, left off: %s. To load one, add its name to %q in %s.\n",
+			strings.Join(experimentalOff, ", "), "experimental_plugins", settingsPath)
+	}
 	return nil
 }

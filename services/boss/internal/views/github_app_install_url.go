@@ -15,7 +15,10 @@ type githubAppInstallTarget struct {
 	kind string
 }
 
-var lookupGitHubAppInstallTarget = lookupGitHubAppInstallTargetWithGH
+var (
+	lookupGitHubAppInstallTarget        = lookupGitHubAppInstallTargetWithGH
+	githubAppInstallTargetLookupTimeout = 3 * time.Second
+)
 
 func enrichGitHubAppInstallURL(ctx context.Context, rawURL, repoOrigin string) string {
 	nwo := vcs.GitHubNWO(repoOrigin)
@@ -51,7 +54,7 @@ func lookupGitHubAppInstallTargetWithGH(ctx context.Context, nwo string) (github
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, githubAppInstallTargetLookupTimeout)
 	defer cancel()
 
 	// #nosec G204 -- gh api repos/<nwo>; user-selected repo passed as a single argv arg; no shell

@@ -3,6 +3,7 @@
 // every I/O boundary is a fixture-backed injected function.
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import {
@@ -269,6 +270,32 @@ test('computeRollups: an epic whose open children are all In Review still rolls 
   assert.equal(move[0].to, 'In Review')
 })
 
+test('computeRollups: reporter shape regresses In Review parent to In Progress', () => {
+  const { move, escalate } = computeRollups([
+    {
+      id: 'p',
+      identifier: 'BOS-1140',
+      state: st('In Review', 'started'),
+      children: [
+        { id: 'a', identifier: 'BOS-1141', state: st('Done', 'completed') },
+        { id: 'b', identifier: 'BOS-1142', state: st('Done', 'completed') },
+        { id: 'c', identifier: 'BOS-1143', state: st('In Progress', 'started') },
+        { id: 'd', identifier: 'BOS-1144', state: st('Todo') },
+      ],
+    },
+  ])
+  assert.deepEqual(escalate, [])
+  assert.deepEqual(move, [
+    {
+      id: 'p',
+      identifier: 'BOS-1140',
+      from: 'In Review',
+      to: 'In Progress',
+      toStateId: 'state-In Progress',
+    },
+  ])
+})
+
 test('computeRollups: no move when parent already at/above least-advanced open child', () => {
   const parents = [
     {
@@ -281,7 +308,8 @@ test('computeRollups: no move when parent already at/above least-advanced open c
   assert.deepEqual(computeRollups(parents).move, [])
 })
 
-test('computeRollups: never regress a parent ahead of its children', () => {
+test('computeRollups: never regress a started parent toward a not-started child', () => {
+  // Non-vacuity proof for the target-state conjunct in the guarded backward branch.
   const parents = [
     {
       id: 'p',
@@ -291,6 +319,65 @@ test('computeRollups: never regress a parent ahead of its children', () => {
     },
   ]
   assert.deepEqual(computeRollups(parents).move, [])
+})
+
+test('computeRollups: never move a terminal parent back into a started state', () => {
+  // Non-vacuity proof for the parent-state conjunct in the guarded backward branch.
+  const result = computeRollups([
+    {
+      id: 'p',
+      identifier: 'BOS-410',
+      state: st('Done', 'completed'),
+      children: [{ id: 'a', identifier: 'BOS-411', state: st('In Progress', 'started') }],
+    },
+  ])
+  assert.deepEqual(result.move, [])
+  assert.deepEqual(result.escalate, [])
+})
+
+test('computeRollups: backward rollup is idempotent in the settled reporter shape', () => {
+  const result = computeRollups([
+    {
+      id: 'p',
+      identifier: 'BOS-1140',
+      state: st('In Progress', 'started'),
+      children: [
+        { id: 'a', identifier: 'BOS-1141', state: st('Done', 'completed') },
+        { id: 'b', identifier: 'BOS-1142', state: st('Done', 'completed') },
+        { id: 'c', identifier: 'BOS-1143', state: st('In Progress', 'started') },
+        { id: 'd', identifier: 'BOS-1144', state: st('Todo') },
+      ],
+    },
+  ])
+  assert.deepEqual(result.move, [])
+  assert.deepEqual(result.escalate, [])
+})
+
+test('computeRollups: started-state direction table', () => {
+  const cases = [
+    { parent: 'In Review', children: ['In Progress'], expectedTo: 'In Progress' },
+    { parent: 'In Review', children: ['In Review'], expectedTo: null },
+    { parent: 'In Progress', children: ['In Review'], expectedTo: 'In Review' },
+    { parent: 'In Progress', children: ['In Progress', 'In Review'], expectedTo: null },
+    { parent: 'In Review', children: ['In Progress', 'In Review'], expectedTo: 'In Progress' },
+  ]
+
+  for (const [caseIndex, entry] of cases.entries()) {
+    const result = computeRollups([
+      {
+        id: `p-${caseIndex}`,
+        identifier: `BOS-${420 + caseIndex}`,
+        state: st(entry.parent, 'started'),
+        children: entry.children.map((name, childIndex) => ({
+          id: `c-${caseIndex}-${childIndex}`,
+          identifier: `BOS-${520 + caseIndex * 10 + childIndex}`,
+          state: st(name, 'started'),
+        })),
+      },
+    ])
+    assert.deepEqual(result.escalate, [])
+    assert.equal(result.move[0]?.to ?? null, entry.expectedTo, JSON.stringify(entry))
+  }
 })
 
 test('computeRollups: zero open children (none or all-terminal) is skipped', () => {
@@ -316,7 +403,7 @@ test('computeRollups: unrankable open child (or parent) escalates', () => {
     {
       id: 'p',
       identifier: 'BOS-600',
-      state: st('Backlog', 'backlog'),
+      state: st('In Review', 'started'),
       children: [{ id: 'a', identifier: 'BOS-601', state: st('Triage', 'started') }],
     },
   ])
@@ -331,13 +418,28 @@ test('computeRollups: unrankable open child (or parent) escalates', () => {
       id: 'p',
       identifier: 'BOS-700',
       state: st('Mystery', 'started'),
-      children: [{ id: 'a', identifier: 'BOS-701', state: st('Todo') }],
+      children: [{ id: 'a', identifier: 'BOS-701', state: st('In Progress', 'started') }],
     },
   ])
   assert.deepEqual(
     parentCase.escalate.map((e) => e.kind),
     ['rollup-unrankable-parent'],
   )
+  assert.deepEqual(parentCase.move, [])
+
+  const canceledParentCase = computeRollups([
+    {
+      id: 'p',
+      identifier: 'BOS-710',
+      state: st('Canceled', 'canceled'),
+      children: [{ id: 'a', identifier: 'BOS-711', state: st('In Progress', 'started') }],
+    },
+  ])
+  assert.deepEqual(
+    canceledParentCase.escalate.map((e) => e.kind),
+    ['rollup-unrankable-parent'],
+  )
+  assert.deepEqual(canceledParentCase.move, [])
 })
 
 test('computeRollups: truncated child page escalates instead of moving on a partial view', () => {
@@ -358,6 +460,33 @@ test('computeRollups: truncated child page escalates instead of moving on a part
     escalate.map((e) => `${e.kind}:${e.identifier}`),
     ['rollup-children-truncated:BOS-800'],
   )
+})
+
+test('computeRollups: truncated child page never regresses on a partial view', () => {
+  const result = computeRollups([
+    {
+      id: 'p',
+      identifier: 'BOS-810',
+      state: st('In Review', 'started'),
+      childrenTruncated: true,
+      children: [{ id: 'a', identifier: 'BOS-811', state: st('In Progress', 'started') }],
+    },
+  ])
+  assert.deepEqual(result.move, [])
+  assert.deepEqual(
+    result.escalate.map((e) => `${e.kind}:${e.identifier}`),
+    ['rollup-children-truncated:BOS-810'],
+  )
+})
+
+test('bs-sweep-tidy-linear prose matches guarded bidirectional rollup behavior', () => {
+  const skill = readFileSync('.claude/skills/bs-sweep-tidy-linear/SKILL.md', 'utf8')
+  assert.doesNotMatch(skill, /Forward\s+only\./i)
+  assert.doesNotMatch(skill, /never\s+moved\s+backward/i)
+  assert.doesNotMatch(skill, /forward-only\s+and\s+idempotent/i)
+  assert.match(skill, /regresses\s+only\s+within\s+started,\s+non-terminal\s+states/i)
+  assert.match(skill, /never\s+regresses\s+toward\s+a\s+not-started\s+child/i)
+  assert.match(skill, /never\s+moves\s+a\s+terminal\s+parent/i)
 })
 
 // --- parseTidyData ----------------------------------------------------------
@@ -525,6 +654,62 @@ test('runTidy: --dry-run computes the same moves but writes nothing', async () =
     result.rolledUp.map((m) => m.identifier),
     ['BOS-2'],
   )
+})
+
+test('runTidy: applies a backward rollup with the child workflow state id', async () => {
+  const data = {
+    workflowStates: {
+      nodes: [
+        { id: 's-in-progress', name: 'In Progress', type: 'started' },
+        { id: 's-in-review', name: 'In Review', type: 'started' },
+        { id: 's-done', name: 'Done', type: 'completed' },
+      ],
+    },
+    issues: {
+      nodes: [
+        {
+          id: 'i-parent',
+          identifier: 'BOS-1140',
+          state: st('In Review', 'started', 's-in-review'),
+          children: {
+            nodes: [
+              {
+                id: 'i-child',
+                identifier: 'BOS-1143',
+                state: st('In Progress', 'started', 's-in-progress'),
+              },
+            ],
+          },
+        },
+        {
+          id: 'i-child',
+          identifier: 'BOS-1143',
+          state: st('In Progress', 'started', 's-in-progress'),
+          children: { nodes: [] },
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  }
+  const writes = []
+  const result = await runTidy({
+    apiKey: 'k',
+    dryRun: false,
+    readPullRequests: async () => [],
+    linearReadImpl: async () => data,
+    linearWriteImpl: async ({ variables }) => {
+      writes.push(variables)
+      return { issueUpdate: { success: true } }
+    },
+  })
+
+  assert.deepEqual(writes, [{ id: 'i-parent', stateId: 's-in-progress' }])
+  assert.deepEqual(
+    result.rolledUp.map((move) => `${move.identifier}->${move.to}`),
+    ['BOS-1140->In Progress'],
+  )
+  assert.equal(result.counts.prReads, 1)
+  assert.equal(result.counts.linearReads, 1)
 })
 
 test('runTidy: idempotent — post-move state yields empty deltas', async () => {

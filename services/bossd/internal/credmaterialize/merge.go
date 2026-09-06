@@ -1,6 +1,7 @@
 package credmaterialize
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -435,4 +436,223 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// --- Access-token expiry (BOS-1174) ---------------------------------------
+//
+// A live credential check that merely succeeds proves less than it looks like
+// it proves: codex answers the smoke prompt with whatever access token it
+// already holds, so a credential whose OAuth refresh chain is dead keeps
+// passing until that access token finally expires. The only non-invasive
+// discriminator is the access token's own `exp` claim — it lets the caller ask
+// "should a healthy credential have refreshed by now?" and read a missing
+// refresh as evidence only once the answer is yes.
+//
+// SIGNATURE VERIFICATION IS DELIBERATELY NOT PERFORMED. Verifying would need a
+// JWKS fetch this package has no business making, and it would not change the
+// answer: the token is one bossd itself stored and is about to hand to codex,
+// so the question is when this credential says it expires, not whether some
+// third party forged it. Nothing here is a trust decision — a token that lies
+// about `exp` can only make the daemon report a warning, never bench an
+// account.
+//
+// SAFETY: every function below returns times and booleans only. None of them
+// returns an error, precisely because an error is the shape that carries a
+// quoted value into a log line, and the value here is a bearer token.
+
+// RefreshAssertion is a redacted verdict about whether the credential this
+// package materialized should already have been refreshed. It is a
+// classification and nothing else: it carries no claim value, no timestamp and
+// no token byte, which is what lets it cross package boundaries and reach a
+// durable record that is permitted to hold only closed-set tokens.
+type RefreshAssertion int
+
+const (
+	// RefreshAssertionUnknown means the question could not be evaluated: no
+	// readable access token, no readable `exp`, or no usable issuance instant
+	// to measure a lifetime against. Absence of a readable claim is NOT
+	// evidence of a dead refresh chain, so this is the only safe default and
+	// every malformed input lands here.
+	RefreshAssertionUnknown RefreshAssertion = iota
+	// RefreshAssertionNotDue means the credential is still well inside its
+	// access-token lifetime. A client that has not refreshed is behaving
+	// normally, so silence says nothing and must not be reported as a problem.
+	RefreshAssertionNotDue
+	// RefreshAssertionOverdue means the access token is far enough through its
+	// own lifetime that a healthy client should already have refreshed it.
+	// Combined with a run that wrote no credential, that silence becomes
+	// evidence rather than noise.
+	RefreshAssertionOverdue
+)
+
+// String renders the redacted token form used in logs and tests. It is derived
+// entirely from the constant, never from the credential.
+func (a RefreshAssertion) String() string {
+	switch a {
+	case RefreshAssertionNotDue:
+		return "not_due"
+	case RefreshAssertionOverdue:
+		return "overdue"
+	default:
+		return "unknown"
+	}
+}
+
+// refreshDueFraction is how far through its own observed lifetime an access
+// token must be before a client that still has not refreshed is treated as
+// evidence rather than as ordinary quiet.
+//
+// It is expressed as a FRACTION OF THE OBSERVED LIFETIME, never as an absolute
+// duration: the ten-day access token measured on one machine in 2026-09 is a
+// single observation of an undocumented provider schedule, and hardcoding it
+// would silently stop working the moment the provider retunes. Deriving the
+// lifetime from the token itself keeps the threshold meaningful whatever the
+// provider chooses.
+//
+// 0.8 is chosen to sit above any plausible client refresh point while still
+// leaving real warning time. OAuth clients conventionally refresh between half
+// and three quarters of the way through an access token's life, and codex is
+// observed to refresh only near expiry, so a lower fraction would report every
+// quiet account as unproven — noise that trains an operator to ignore the
+// state, which is the more expensive failure here. On the observed ten-day
+// token this converts an eight-day silent window that ended in a hard failure
+// into roughly two days of warning.
+//
+// KNOWN FALSE-POSITIVE WINDOW — read this before retuning the constant. A
+// healthy client whose refresh point sits ABOVE this fraction is reported as
+// unproven for the stretch between the two. Codex is observed to refresh only
+// near expiry, so on the measured ten-day token that is up to the last two
+// days of every lifetime, and the caller's other conjunct cannot close it: the
+// credential check drives a tiny smoke prompt, which is not by itself an event
+// that obliges a client to rotate, so "no credential write during this run" is
+// the expected reading for a perfectly healthy account in that window.
+//
+// The window is accepted rather than engineered away, because of what the
+// outcome costs when it is wrong. AuthCheckOutcomeRefreshChainUnproven is
+// non-condemning by construction: IsAuthInvalid stays false, the account stays
+// selectable and rotation still picks it, so a false positive costs an
+// operator-visible "unverified" label on a working account — not a benched one.
+// The alternative that would close it, escalating only after a STREAK of
+// observations, needs refresh history persisted across checks; the AuthCheck
+// record carries no such state today, and inventing it is BOS-1174's explicit
+// deferral rather than an oversight.
+//
+// The consequence for tuning: LOWERING this fraction widens the false-positive
+// window proportionally and is what turns the state into ignorable noise.
+// Raising it narrows the window but eats the warning time the outcome exists to
+// buy. Neither direction is safe to change without a fresh measurement of the
+// provider's actual refresh point.
+const refreshDueFraction = 0.8
+
+// refreshAssertion classifies the credential blob's access token against the
+// refresh-due threshold. It is deliberately conservative in one direction: any
+// input it cannot fully evaluate — unparseable blob, no tokens object, no
+// access token, an unreadable `exp`, no usable issuance instant, a nonsensical
+// lifetime, or a clock skewed such that issuance appears to be in the future —
+// returns Unknown rather than Overdue. Reporting "unproven" on a parsing
+// failure would put a warning on a working account for a reason that has
+// nothing to do with its credential.
+func refreshAssertion(blob []byte, now time.Time) RefreshAssertion {
+	token, ok := accessToken(blob)
+	if !ok {
+		return RefreshAssertionUnknown
+	}
+	expires, ok := tokenNumericClaim(token, "exp")
+	if !ok {
+		return RefreshAssertionUnknown
+	}
+	issued, ok := credentialIssuedAt(blob, token, now)
+	if !ok {
+		return RefreshAssertionUnknown
+	}
+	lifetime := expires.Sub(issued)
+	if lifetime <= 0 {
+		// Expiry no later than issuance is not a lifetime this can reason
+		// about. Say so rather than dividing by it.
+		return RefreshAssertionUnknown
+	}
+	if now.Sub(issued) > time.Duration(float64(lifetime)*refreshDueFraction) {
+		return RefreshAssertionOverdue
+	}
+	return RefreshAssertionNotDue
+}
+
+// credentialIssuedAt resolves the instant the current access token came into
+// existence, which is the baseline the observed lifetime is measured from. The
+// token's own `iat` claim is preferred — it is what the provider itself says —
+// and the auth.json `last_refresh` stamp codex writes on every rotation is the
+// fallback for tokens that omit it.
+//
+// CLOCK SKEW: an issuance instant in the future is refused outright. Nothing
+// else guards last_refresh (due() guards only CheckedAt), and a future stamp
+// read at face value would look exactly like a refresh that had just happened —
+// vouching for the credential this check exists to doubt. "Cannot evaluate" is
+// the honest answer and is also the one that cannot warn about a working
+// account on a skewed clock.
+func credentialIssuedAt(blob []byte, token string, now time.Time) (time.Time, bool) {
+	if issued, ok := tokenNumericClaim(token, "iat"); ok {
+		return issued, !issued.After(now)
+	}
+	if issued, ok := authGeneration(blob); ok {
+		return issued, !issued.After(now)
+	}
+	return time.Time{}, false
+}
+
+// accessToken pulls the codex access token out of a credential blob. The bool
+// is false whenever the blob is not an object, carries no usable tokens
+// object, or has no non-empty access_token — every one of which means the
+// expiry question simply cannot be asked.
+func accessToken(blob []byte) (string, bool) {
+	top, err := parseObject(blob)
+	if err != nil {
+		return "", false
+	}
+	tokens, err := parseTokenObject(top["tokens"])
+	if err != nil || len(tokens) == 0 {
+		return "", false
+	}
+	raw, ok := tokens["access_token"]
+	if !ok || isEmptyJSON(raw) {
+		return "", false
+	}
+	var token string
+	if err := json.Unmarshal(raw, &token); err != nil {
+		return "", false
+	}
+	return token, token != ""
+}
+
+// tokenNumericClaim reads one NumericDate claim (RFC 7519 §2: seconds since
+// the Unix epoch) out of a JWT-shaped token's payload segment.
+//
+// It decodes, it does not verify — see the package note above. The bool is
+// false for every shape it cannot read: an empty string, a token without three
+// dot-separated segments, a payload that is not unpadded base64url, a payload
+// that is not a JSON object, a missing claim, and a claim that is not a
+// number. All of them mean the same thing to the caller ("cannot evaluate"),
+// and collapsing them onto one boolean is deliberate: distinguishing them in a
+// returned error is exactly how token bytes end up quoted in a log line.
+func tokenNumericClaim(token, claim string) (time.Time, bool) {
+	segments := strings.Split(token, ".")
+	if len(segments) != 3 || segments[1] == "" {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(segments[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	claims, err := parseObject(payload)
+	if err != nil {
+		return time.Time{}, false
+	}
+	raw, ok := claims[claim]
+	if !ok || isEmptyJSON(raw) {
+		return time.Time{}, false
+	}
+	var seconds float64
+	if err := json.Unmarshal(raw, &seconds); err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(seconds), 0).UTC(), true
 }

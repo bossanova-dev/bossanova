@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -1011,14 +1012,21 @@ func (m RepoSettingsModel) loadOrganizations() tea.Cmd {
 	}
 }
 
-// orgChoices is the picker's row set: Personal first, then exactly the caller's
-// organizations as ListOrganizations returned them, in that order.
+// orgChoices is the picker's row set: the None sentinel first, then exactly the caller's
+// organizations sorted case-insensitively by their displayed labels. IDs break
+// equal-label ties so the order does not depend on the sorting implementation.
 func (m RepoSettingsModel) orgChoices() []orgChoice {
 	choices := make([]orgChoice, 0, len(m.organizations)+1)
 	choices = append(choices, orgChoice{label: repoSettingsNoOrgLabel})
 	for _, o := range m.organizations {
 		choices = append(choices, orgChoice{id: o.GetId(), label: organizationLabel(o)})
 	}
+	slices.SortFunc(choices[1:], func(a, b orgChoice) int {
+		if byLabel := strings.Compare(strings.ToLower(a.label), strings.ToLower(b.label)); byLabel != 0 {
+			return byLabel
+		}
+		return strings.Compare(a.id, b.id)
+	})
 	return choices
 }
 

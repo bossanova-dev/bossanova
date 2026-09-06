@@ -978,6 +978,109 @@ func TestAppAccountRegisterDoneReturnsToRefreshedAccounts(t *testing.T) {
 	}
 }
 
+// TestAppAccountReauthDoneCarriesTheVerdictToTheList pins the BOS-1142 leg of
+// that same completion: an ADD is self-evidencing, because a row that was not
+// there appears. A REAUTHENTICATION is not — it replaces a secret on a row that
+// was already on screen — and this pop is immediate, so the flow's closing
+// verdict (the only place the daemon's post-save verification is reported to
+// the operator) would otherwise be discarded with the flow model.
+//
+// The verdict is read from the prompter rather than the rendered progress tail
+// on purpose: at flowDoneMsg time the reader Cmd may still be holding the
+// closing line as an in-flight message, so the tail is short by exactly the line
+// that matters.
+func TestAppAccountReauthDoneCarriesTheVerdictToTheList(t *testing.T) {
+	const verdict = "Reauthenticated account acct-codex-2; the new credential verified. The account is eligible again."
+
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccountRegister
+	ar := NewAccountRegisterModel(nil, a.ctx)
+	ar.done = true
+	ar.returnView = ViewAccounts
+	ar.reauthAccountID = "acct-codex-2"
+	ar.prompter = newTUIPrompter(a.ctx)
+	ar.prompter.Say("%s", verdict)
+	a.accountRegister = ar
+
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+	if got.activeView != ViewAccounts {
+		t.Fatalf("reauth done routed to %v, want ViewAccounts", got.activeView)
+	}
+	if got.accountsList.status != verdict {
+		t.Fatalf("accounts list status = %q, want the flow verdict %q", got.accountsList.status, verdict)
+	}
+	if got.accountsList.statusErr {
+		t.Fatal("a verified reauthentication must not be reported as an error")
+	}
+}
+
+// TestAppAccountReauthVerdictSurvivesAFailedListReload pins the other half of
+// the re-stamp: a reload that FAILED must consume nothing.
+//
+// The re-stamp exists because the toast is a 5-second transient whose clock
+// starts at the pop, before ListAccounts is even dialled. When that load errors,
+// AccountsListModel.View returns its full-screen error and never reaches the
+// status line — so stamping the verdict there writes it to a surface that
+// renders none of it, and clearing the marker at the same time discards the only
+// report of the daemon's post-save verification for good. The operator is left
+// looking at a dial error with no idea whether the credential they just replaced
+// works. The verdict is held instead, and lands on the first load that can show
+// it.
+func TestAppAccountReauthVerdictSurvivesAFailedListReload(t *testing.T) {
+	const verdict = "Reauthenticated account acct-codex-2; the new credential verified. The account is eligible again."
+
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccounts
+	a.accountsList = NewAccountsListModel(nil, a.ctx)
+	ar := NewAccountRegisterModel(nil, a.ctx)
+	ar.reauthAccountID = "acct-codex-2"
+	ar.prompter = newTUIPrompter(a.ctx)
+	ar.prompter.Say("%s", verdict)
+	a.accountRegister = ar
+
+	model, _ := a.Update(accountsLoadedMsg{err: errors.New("dial bossd: connection refused")})
+	got := model.(App)
+	if got.accountRegister.reauthAccountID != "acct-codex-2" {
+		t.Fatalf("failed reload consumed the reauth marker (now %q); the verdict can never be shown", got.accountRegister.reauthAccountID)
+	}
+
+	// The retry is what the operator actually reaches: [r], or leaving and
+	// re-entering the list. The verdict must be waiting for it.
+	model, _ = got.Update(accountsLoadedMsg{accounts: []*pb.Account{{Id: "acct-codex-2", Provider: "codex"}}})
+	got = model.(App)
+	if got.accountsList.status != verdict {
+		t.Fatalf("status after the successful reload = %q, want the held verdict %q", got.accountsList.status, verdict)
+	}
+	if got.accountsList.statusErr {
+		t.Fatal("a verified reauthentication must not be reported as an error")
+	}
+	// And exactly once: a marker left set would re-toast on every later load.
+	if got.accountRegister.reauthAccountID != "" {
+		t.Fatalf("successful reload left the marker set (%q); the verdict will re-toast", got.accountRegister.reauthAccountID)
+	}
+}
+
+// TestAppAccountAddDoneCarriesNoStatus is the other half: an add says nothing on
+// the list, because the new row IS the report. Without this the reauth carry
+// would quietly become a generic "flow said something" toast on every add.
+func TestAppAccountAddDoneCarriesNoStatus(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewAccountRegister
+	ar := NewAccountRegisterModel(nil, a.ctx)
+	ar.done = true
+	ar.returnView = ViewAccounts
+	ar.prompter = newTUIPrompter(a.ctx)
+	ar.prompter.Say("Added account acct-new.")
+	a.accountRegister = ar
+
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+	if got.accountsList.status != "" {
+		t.Fatalf("add left status = %q, want empty", got.accountsList.status)
+	}
+}
+
 // TestAppAccountRegisterCancelReturnsToAccounts covers the cancel leg: a register
 // flow reporting Cancelled() with returnView=ViewAccounts routes back to the
 // accounts list rather than falling through to Home.

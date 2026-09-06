@@ -80,9 +80,9 @@ are configured via environment variables. See
 ## Daemon PATH
 
 A service manager never sources your interactive shell config, so the daemon
-does not inherit the PATH your terminal has. A toolchain installed by **nodenv,
-nvm, asdf or volta** — or a `claude` from the native installer in
-`~/.local/bin` — is therefore invisible to `bossd` unless its directory is on
+does not inherit the PATH your terminal has. A toolchain installed by nodenv,
+nvm, asdf or volta (or a `claude` from the native installer in
+`~/.local/bin`) is therefore invisible to `bossd` unless its directory is on
 the service PATH.
 
 The generated service file sets this PATH by default:
@@ -115,10 +115,10 @@ generated plist or inject a directive into the systemd unit. Duplicates are
 removed, keeping the first occurrence, so listing a baseline directory moves it
 to the front rather than repeating it.
 
-A directory containing a **space** is fine — the systemd unit quotes its `PATH`
+A directory containing a **space** is fine; the systemd unit quotes its `PATH`
 value, and the plist stores it as XML text.
 
-The key is **prepend-only by design** — there is deliberately no
+The key is **prepend-only** by design; there is deliberately no
 full-replacement override. The baseline entries can never be removed, so a typo
 here costs you one tool rather than a daemon that cannot run `git`.
 
@@ -129,7 +129,7 @@ you run `boss daemon restart`.
 `boss daemon doctor` reports both PATHs and tells them apart: the one in the
 **installed** service file, which is what the running daemon actually has, and
 the one the **next restart** will write. When they differ it says so and points
-at the restart. It resolves `node` and `claude` under the installed PATH — not
+at the restart. It resolves `node` and `claude` under the installed PATH, not
 your shell's, which is exactly the check that passes while the daemon is broken.
 :::
 
@@ -142,6 +142,35 @@ your shell's, which is exactly the check that passes while the daemon is broken.
 | `enabled` | bool   | When `false`, the plugin is loaded-but-inert.           |
 | `version` | string | Optional version string, informational.                 |
 | `config`  | object | Plugin-specific string key/value pairs.                 |
+
+## `experimental_plugins`
+
+Some plugins ship installed but stay **off** until you opt in. They are alpha
+quality, so bossanova will not load one on your daemon unless you name it here.
+
+```json
+{
+  "experimental_plugins": ["opencode"]
+}
+```
+
+Entries are plugin names without the `bossd-plugin-` prefix, the same spelling
+`plugins[].name` uses. Today the only experimental plugin is `opencode`; naming
+a plugin that is not experimental (or not installed) does nothing.
+
+:::caution `plugins[].enabled` is ignored for an experimental plugin
+For a plugin in this list, `experimental_plugins` is the **only** enable switch:
+listed means the plugin loads, absent means it does not, regardless of what its
+`plugins[].enabled` field says. So a `{"name": "opencode", "enabled": true}`
+entry left over from an earlier version keeps showing `true` in your
+`settings.json` while the daemon leaves the plugin unloaded; remove the plugin
+from `experimental_plugins` to turn it off, and add it to turn it on. Toggling
+`enabled` in the TUI or with `boss settings` has no effect for these plugins.
+
+If `default_agent` names an experimental plugin you have not opted into, the
+daemon clears it on startup rather than failing every session that does not name
+an agent explicitly.
+:::
 
 ## `claude` plugin `config` keys
 
@@ -165,7 +194,7 @@ appear. Delivery fails rather than typing into a pane that isn't ready, because
 keystrokes sent early are swallowed or land in the wrong widget.
 
 There are **two** deadlines because the two delivery paths have different
-ceilings, and each is configured independently — setting one never moves the
+ceilings, and each is configured independently; setting one never moves the
 other.
 
 | Field                                  | Type | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -178,18 +207,18 @@ written before this block existed keeps both defaults, so there is nothing to
 migrate.
 
 Raise `session_start_ready_deadline_seconds` when sessions fail to start on a
-host with a slow shell profile — measured login-shell init alone has ranged from
+host with a slow shell profile; measured login-shell init alone has ranged from
 under a second to twelve seconds on affected machines.
 
 It is a **per-attempt** budget, not a total. The start path retries the
 readiness wait once before giving up, so a start that is genuinely going to fail
-spends roughly twice this value — about 94 seconds at the default of 45 (each
+spends roughly twice this value, about 94 seconds at the default of 45 (each
 attempt also reserves two seconds for an interstitial-dialog check on its way
 out). Size the knob against the boot you want to survive, then expect a little
 over twice that before a doomed start reports failure. The send deadline is
 **not** retried: one attempt, always.
 
-An attempt can also be **shortened** — not by this setting, but by whatever
+An attempt can also be **shortened**, not by this setting, but by whatever
 context the start is running under. If the caller has less time left than a full
 attempt needs, the wait is trimmed to fit rather than skipped, and the timeout
 message says so: _shortened from 45s to stay inside the caller's context_. Read
@@ -207,11 +236,11 @@ starts (mid-turn check, pane kill, transcript probe, account binding write), and
 a margin on top.
 
 So the longest a doomed switch waits before reporting failure is
-`session_start_ready_deadline_seconds` **+ 45 seconds** — 90 seconds at the
+`session_start_ready_deadline_seconds` **+ 45 seconds**: 90 seconds at the
 45-second default, and 345 seconds if you raise the setting to 300. Raising this
 value **does** help on the switch route: the budget rises with it instead of
 clamping the wait below the number you wrote. The cost is proportional, and it
-is the deliberate trade — the more room you buy a slow host, the longer a switch
+is the deliberate trade: the more room you buy a slow host, the longer a switch
 that is going to fail takes to say so.
 
 The repair-driven start path has the same derived protection around its
@@ -264,7 +293,7 @@ ten seconds of headroom.
 
 One case is served by the shorter deadline even though it is a cold start:
 sending to a chat that is asleep, with wake enabled. The wake only launches (or
-resumes) the agent — it delivers nothing and never waits for the composer — so
+resumes) the agent; it delivers nothing and never waits for the composer, so
 the session-start deadline is not spent there. Your message is typed in
 afterwards, by the ordinary send path, which is therefore waiting on a pane that
 is still booting while holding only the **send** deadline. If that combination
@@ -279,13 +308,13 @@ here is inert until you run `boss daemon restart`.
 
 ## `subagent_dispatch_grant`
 
-Most boss skills mandate subagent dispatch as part of their protocol —
+Most boss skills mandate subagent dispatch as part of their protocol:
 `boss-review` runs its lenses and round extensions as subagents, `boss-plan`
 dispatches its drafting and reviewer extensions, `boss-repair` and `boss-epic`
 fan out the same way. Coding-agent harnesses ship a standing system-prompt line
 that tells the agent not to dispatch subagents unless the user asked for it.
 That restriction comes from the **harness**, not from bossanova, and it has no
-off switch — so without a counter-instruction those skills quietly collapse
+off switch, so without a counter-instruction those skills quietly collapse
 their dispatched work into a single context and can still report a clean run.
 
 Bossanova therefore appends a **bounded** dispatch grant to the system prompt it
@@ -308,23 +337,23 @@ result. It is not a general widening of tool access.
 ```
 
 The key is absent from a fresh `settings.json` and behaves as `always`. An
-unrecognised value also resolves to `always` — a typo must not withdraw the
+unrecognised value also resolves to `always`; a typo must not withdraw the
 shipped default, and it never fails daemon startup. Because that fallback would
 otherwise discard an intended opt-out in silence, `bossd` logs a warning naming
 the offending value each time it spawns or wakes a chat; check `bossd`'s log
 if an opt-out does not seem to be taking effect.
 
-Edit this key in `settings.json` directly — it is not yet exposed in the boss
+Edit this key in `settings.json` directly; it is not yet exposed in the boss
 settings form or the `update_settings` API, so the TUI neither shows nor
 overwrites it. Unrelated settings changes made through the TUI preserve it.
 
-Unattended sessions receive their grant in every configuration — `unattended` is
+Unattended sessions receive their grant in every configuration; `unattended` is
 an opt-out for attended chats only, and cannot be used to withdraw authority
 from an autonomous run.
 
 The setting is read when a chat is **spawned**, so a change takes effect for
 chats started afterwards. Chats already running keep the grant they were
-launched with; start a new chat — or wake a sleeping one, which re-spawns it —
+launched with; start a new chat (or wake a sleeping one, which re-spawns it)
 to pick up the change.
 
 ## Development profile
@@ -421,7 +450,7 @@ make bin/bosso
 ```
 
 `make -C services/bosso dev` runs the same server straight from source. It
-inherits the two variables from step 2, so export them in that shell too —
+inherits the two variables from step 2, so export them in that shell too;
 without them bosso exits immediately with the `BOSSO_DB_DRIVER is required`
 error.
 
@@ -433,7 +462,7 @@ production error triage.
 Note what `BOSS_ENV=development` does and does not do: it only retags those
 events, which are still transmitted to the same Sentry project, under the
 `development` environment. Setting `BOSSO_SENTRY_DSN=` does not stop them
-either — `config.EnvOr` treats an empty value as unset and falls back to the
+either; `config.EnvOr` treats an empty value as unset and falls back to the
 built-in DSN. To send nothing at all, set `BOSSO_SENTRY_DSN` to a non-empty
 invalid value, which makes `sentry.Init` fail and bosso log
 `errortrack disabled`.

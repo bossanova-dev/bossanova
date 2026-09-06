@@ -11,10 +11,56 @@ import (
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// injectionRefusalConnectError maps a preserved credential-injection refusal to
+// the code that describes it: a bound account whose credentials cannot be
+// injected is a precondition on the request, not a daemon fault. It reports
+// false when err is not a typed refusal, so every caller keeps its own default
+// arm untouched.
+//
+// Answering these with CodeInternal is wrong twice over. It reports a server
+// fault for a request the daemon handled exactly as designed, and on the hosted
+// path upstream's classifier maps anything outside its known set to
+// ERROR_CODE_UNSPECIFIED, which bosso surfaces as Aborted — further still from
+// the truth than Internal was.
+//
+// The message is redacted because this is the actual RPC edge and the wrapped
+// materialize error can embed a provider response body (account/injection.go).
+// Note the flattening is deliberate, not sloppiness: %w here would leave
+// Connect rendering the raw Error() text and undo the redaction, so the chain
+// ends at this boundary by design and nothing downstream may unwrap it.
+// RedactedMessage resolves through errors.As and returns only the refusal's own
+// text, so the caller supplies the operation prefix — the shape
+// describeChatMCP and the plugin host service already ship.
+//
+// Deliberately not branched on Outcome: neither shipped precedent does, and
+// splitting Undetermined off to CodeUnavailable would invent a retry contract
+// the rest of this surface does not honour.
+func injectionRefusalConnectError(err error, prefix string) (error, bool) {
+	if _, ok := account.AsInjectionError(err); !ok {
+		return nil, false
+	}
+	return connect.NewError(connect.CodeFailedPrecondition,
+		fmt.Errorf("%s: %s", prefix, account.RedactedMessage(err))), true
+}
+
+// injectionRefusalCommandCode is injectionRefusalConnectError for the
+// dispatcher leg, which carries a proto enum instead of a connect code. It
+// exists because ERROR_CODE_UNSPECIFIED is worse here than Internal was: bosso
+// turns unspecified into Aborted, so an unmapped refusal arrives further from
+// the truth than before it was classified at all.
+func injectionRefusalCommandCode(err error, prefix string) (pb.CommandResult_ErrorCode, error, bool) {
+	if _, ok := account.AsInjectionError(err); !ok {
+		return pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil, false
+	}
+	return pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION,
+		fmt.Errorf("%s: %s", prefix, account.RedactedMessage(err)), true
+}
 
 // resolveSessionAccount decides which registry account a new session binds to.
 // account_id is an optional proto field, so its presence is meaningful and the
@@ -29,9 +75,13 @@ import (
 //   - Present and empty (""): an explicit "system default (account 0)" choice.
 //     The user is opting out of the default-account policy, so bind account 0
 //     (the CLI's ambient login) directly — do NOT run the policy.
-//   - Absent (nil): apply the default-account policy via the resolver. A
-//     resolver error never fails creation — it logs and falls back to "" (account
-//     0).
+//   - Absent (nil): apply the default-account policy via the resolver, then
+//     confirm the selected account against the authoritative store before
+//     returning it (see confirmPolicyAccountEligible). A resolver error never
+//     fails creation — it logs and falls back to "" (account 0) — but an
+//     account the policy picked that the store says is ineligible does fail
+//     creation, because binding it would spend a worktree on a session that
+//     cannot run.
 //
 // The returned id is "" for the system-default (account 0) binding.
 func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, agentName string) (string, error) {
@@ -74,7 +124,79 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 			Msg("account: default-account policy failed; using system default")
 		return "", nil
 	}
-	return id, nil
+	return s.confirmPolicyAccountEligible(ctx, id, agentName)
+}
+
+// confirmPolicyAccountEligible re-checks the account the default-account policy
+// selected against the authoritative store, at the last seam before session
+// creation takes any ownership side effect (BOS-1142).
+//
+// The explicit-id path has always been eligibility-checked here; the policy path
+// was not, so an account the policy ranked from a stale or differently-shaped
+// projection could be bound, get a worktree and a branch, and only fail once the
+// spawn tried to inject its credentials. Now that a failed injection refuses
+// instead of quietly running on the ambient CLI login, that late refusal costs a
+// worktree — so the check moves ahead of it.
+//
+// Explicit and policy selection stay deliberately distinct, per
+// docs/solutions/design-patterns/run-eligibility-before-ownership-side-effects.md:
+// an explicit id has no alternative and stops immediately, while the policy path
+// has runner-up candidates and therefore skips the ineligible account and asks
+// the policy for the next best one. The walk is bounded to that single retry —
+// the resolver ranks the whole list itself, so a second failure means the
+// remaining candidates are no better, not that another pass would help.
+//
+// A refusal names the skip class (the wrapped checkAccountEligible message
+// separates "failed its last credential verification" from
+// "status/health/cooldown") rather than collapsing to an unexplained no-op. It
+// is CodeFailedPrecondition, not CodeInvalidArgument: the caller asked for
+// nothing, so nothing they sent is wrong — the daemon has no account it can
+// honestly run this session on.
+func (s *Server) confirmPolicyAccountEligible(ctx context.Context, id, agentName string) (string, error) {
+	if id == "" || s.accounts == nil {
+		// Account 0 is not a store row, and with no store there is nothing
+		// authoritative to check against.
+		return id, nil
+	}
+	firstErr := s.policyAccountEligibility(ctx, id)
+	if firstErr == nil {
+		return id, nil
+	}
+	s.logger.Warn().Err(firstErr).Str("agent", agentName).Str("account_id", id).
+		Msg("account: default-account policy selected an ineligible account; trying the next best")
+
+	next, err := s.resolver.DefaultAccountIDExcluding(ctx, agentName, id, time.Now())
+	if err != nil {
+		return "", connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("default-account policy selected an ineligible %s account (%w) and the next-best lookup failed: %v", agentName, firstErr, err))
+	}
+	if next == "" {
+		return "", connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("no eligible %s account: %w", agentName, firstErr))
+	}
+	if nextErr := s.policyAccountEligibility(ctx, next); nextErr != nil {
+		return "", connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("no eligible %s account: %w", agentName, nextErr))
+	}
+	return next, nil
+}
+
+// policyAccountEligibility reads id from the authoritative store and applies the
+// same eligibility predicate the explicit-id path uses.
+//
+// A store read failure is NOT treated as ineligibility. The policy already
+// vetted this account against the registry; an unreadable row says nothing about
+// the credential, and refusing on it would let one store hiccup block every
+// session on the daemon. It is logged and the binding stands — the spawn path
+// still fails closed if the credentials genuinely cannot be injected.
+func (s *Server) policyAccountEligibility(ctx context.Context, id string) error {
+	acct, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("account_id", id).
+			Msg("account: could not read the policy-selected account for eligibility; keeping the binding")
+		return nil
+	}
+	return accountEligibilityReason(id, acct)
 }
 
 // resolveAccountLabel resolves requested as a provider-scoped account label
@@ -134,42 +256,102 @@ func (s *Server) findAccountLabelProvider(ctx context.Context, requested, agentN
 }
 
 // checkAccountEligible rejects an explicitly-requested account that the rotation
-// engine would skip — disabled, failed health, or cooling down — mirroring the
-// default-account policy's selectability predicate. Explicitly binding a
-// known-bad account is a client error (connect.CodeInvalidArgument): it would
-// otherwise materialize a credential the rotation engine has already sidelined.
+// engine would skip — disabled, failed health, cooling down, or benched by
+// durable credential-verification state. Explicitly binding a known-bad account
+// is a client error (connect.CodeInvalidArgument): it would otherwise
+// materialize a credential the rotation engine has already sidelined.
+//
+// It defers to rotation.BindableNow rather than re-deriving the predicate, so
+// this surface cannot drift from the engine's own definition of selectable.
+// The auth-invalid case gets its own message: it is not a status, health, or
+// cooldown problem, and the operator action it calls for is re-authenticating
+// the account, which the generic wording would not tell them.
 func checkAccountEligible(requested string, acct *models.Account) error {
-	if acct.Status != models.AccountStatusActive ||
-		acct.Health != models.AccountHealthOK ||
-		(acct.CooldownUntil != nil && acct.CooldownUntil.After(time.Now())) {
-		return connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("account %q is not eligible (status/health/cooldown)", requested))
+	if err := accountEligibilityReason(requested, acct); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return nil
 }
 
+// accountEligibilityReason is checkAccountEligible without the connect wrapper:
+// a plain error naming the skip class. The policy path needs the bare reason so
+// it can wrap it in its own code and its own sentence without embedding a
+// second "invalid_argument:" prefix in the operator-facing message.
+func accountEligibilityReason(requested string, acct *models.Account) error {
+	if acct.IsAuthInvalid() {
+		return fmt.Errorf("account %q failed its last credential verification; re-authenticate it before binding", requested)
+	}
+	if !rotation.BindableNow(bindEligibilityView(acct), time.Now()) {
+		return fmt.Errorf("account %q is not eligible (status/health/cooldown)", requested)
+	}
+	return nil
+}
+
+// bindEligibilityView is the account rotation.BindableNow is asked about: acct
+// itself, except that a SELF-CLEARING injection failure is read as healthy.
+//
+// db.RecordInjectionFailure sets health=failed when a spawn could not
+// MATERIALIZE a credential — a local plugin/keyring outage, not a verdict on the
+// credential — and db.ClearInjectionFailure withdraws that exact row on the next
+// successful materialization. Rejecting the row here makes that withdrawal
+// unreachable: for a provider whose only account carries the marker, every
+// create is refused BEFORE materialization, so the success path that would heal
+// it never runs and one transient outage wedges new sessions until an operator
+// hand-repairs an otherwise valid credential.
+//
+// Letting the attempt proceed is not a downgrade, because it is not the safety
+// property. Under BOS-1142 the spawn path itself fails closed: ResolveSpawnEnv
+// returns a typed refusal and resolveAccountEnv propagates it rather than
+// spawning on the ambient CLI login. So the outcome is exactly one of two —
+// materialization succeeds and ClearInjectionFailure heals the row, or it fails
+// again and the spawn refuses with the typed refusal. This pre-check was only
+// ever the earlier, friendlier of the two refusals.
+//
+// The exemption is narrow by construction. It covers ONLY the health clause, and
+// only for the rows db.IsSelfClearingInjectionFailure matches (health=failed
+// plus a last_test_error under db.InjectionFailureReasonPrefix — the exact pair
+// ClearInjectionFailure heals). Health failed for any other reason — an
+// operator's `boss account test`, a suspension, a non-prefixed reason — is
+// unchanged, and so are status, cooldown, and the auth-invalid check above:
+// a disabled, cooling, or auth-invalid account is still refused however its
+// health got there. Auth-invalid especially: that is a confirmed provider
+// rejection of the credential, which no amount of retrying materialization
+// fixes, and nothing clears it but re-authentication.
+func bindEligibilityView(acct *models.Account) *models.Account {
+	if !db.IsSelfClearingInjectionFailure(acct) {
+		return acct
+	}
+	// Copy so the caller's row is never mutated; only status/health/cooldown and
+	// the auth check are read from it.
+	healthy := *acct
+	healthy.Health = models.AccountHealthOK
+	return &healthy
+}
+
 // resolveAccountEnv returns the per-account spawn env overlay for sess (the
 // bound account's materialized credentials), or nil when the resolver is unset,
-// sess is nil, or the session is unbound (account 0). It mirrors
-// accountwiring.SpawnEnvResolver.Resolve: a resolver error never blocks a spawn
-// — it logs and returns nil so the agent falls back to the ambient CLI login.
+// sess is nil, or the session is unbound (account 0).
+//
+// BOS-1142: a resolver error is PROPAGATED. It mirrors
+// accountwiring.SpawnEnvResolver.Resolve — a session bound to a managed account
+// whose credentials cannot be injected must not spawn on the agent CLI's
+// ambient login. The error carries account.InjectionOutcome so the caller can
+// separate an unusable credential from a binding that could not be evaluated.
 // Env values are never logged.
-func (s *Server) resolveAccountEnv(ctx context.Context, sess *models.Session) map[string]string {
+func (s *Server) resolveAccountEnv(ctx context.Context, sess *models.Session) (map[string]string, error) {
 	if s.resolver == nil || sess == nil {
-		return nil
+		return nil, nil
 	}
 	accountID := derefAccountID(sess.AccountID)
 	env, err := s.resolver.ResolveSpawnEnv(ctx, accountID, sess.AgentName, time.Now())
 	if err != nil {
-		// ERROR, not WARN: the spawn silently runs on the agent CLI's ambient
-		// login instead of the bound account (BOS-973). The durable operator
-		// signal is the account row's health, written by the resolver.
 		s.logger.Error().Err(err).Str("agent", sess.AgentName).
 			Str("account_id", accountID).Str("provider", sess.AgentName).
-			Msg("account: resolve spawn env failed for chat spawn; using system default (ambient CLI login)")
-		return nil
+			Str("injection_outcome", string(account.InjectionOutcomeOf(err))).
+			Msg("account: resolve spawn env failed for chat spawn; refusing to spawn on the ambient CLI login")
+		return nil, err
 	}
-	return env
+	return env, nil
 }
 
 // resolveChatAccountEnvForSpawn returns the per-account spawn env for a chat's
@@ -186,9 +368,9 @@ func (s *Server) resolveAccountEnv(ctx context.Context, sess *models.Session) ma
 //     provider-scoped resolver guarantees another provider's credentials are
 //     never injected.
 //
-// Like resolveAccountEnv, a resolver error never blocks a spawn: it logs and
-// returns nil so the agent falls back to the ambient CLI login. Env values are
-// never logged.
+// Like resolveAccountEnv, a resolver error is propagated (BOS-1142): a chat
+// bound to a managed account never falls back to the ambient CLI login. Env
+// values are never logged.
 //
 // use selects the account bookkeeping only. recordAccountUse bumps the
 // account's last-used timestamp, which is the LRU key account selection reads;
@@ -200,9 +382,9 @@ func (s *Server) resolveChatAccountEnvForSpawn(
 	chat *models.AgentChat,
 	defaultAccountID string,
 	use accountUseRecording,
-) map[string]string {
+) (map[string]string, error) {
 	if s.resolver == nil || chat == nil {
-		return nil
+		return nil, nil
 	}
 	accountID := ""
 	switch {
@@ -224,11 +406,13 @@ func (s *Server) resolveChatAccountEnvForSpawn(
 	env, err := resolve(ctx, accountID, chat.AgentName, time.Now())
 	if err != nil {
 		// ERROR, not WARN: see resolveAccountEnv. This is the site whose WRN
-		// line hid a month of ambient-login spawns.
+		// line hid a month of ambient-login spawns; since BOS-1142 the spawn
+		// is refused instead of being downgraded.
 		s.logger.Error().Err(err).Str("agent", chat.AgentName).
 			Str("account_id", accountID).Str("provider", chat.AgentName).
-			Msg("account: resolve chat spawn env failed; using system default (ambient CLI login)")
-		return nil
+			Str("injection_outcome", string(account.InjectionOutcomeOf(err))).
+			Msg("account: resolve chat spawn env failed; refusing to spawn on the ambient CLI login")
+		return nil, err
 	}
 	if sameAgentSessionChat(sess, chat) && chat.AccountID == nil && sess != nil && sess.AccountID != nil {
 		proxySess := *sess
@@ -237,7 +421,7 @@ func (s *Server) resolveChatAccountEnvForSpawn(
 	} else {
 		env = s.lifecycle.ApplyFailoverProxyEnvForChat(sess, chat, accountID, env)
 	}
-	return env
+	return env, nil
 }
 
 func (s *Server) defaultAccountIDForChat(ctx context.Context, sess *models.Session, chat *models.AgentChat) string {

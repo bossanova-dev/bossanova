@@ -1,0 +1,26 @@
+
+• Ran yarn prettier --write docs/plans/2026-09-04-1808-feat-practitioner-hospital-directory-plan.md && yarn prettier --check docs/plans/2026-09-04-1808-feat-practitioner-hospital-directory-plan.md && if rg -n
+  │ 'e519ad9b1e|a0bdec3166|27f4d7bf5e|40c70d3cbe' docs/plans/2026-09-04-1808-feat-practitioner-hospital-directory-plan.md; then exit 1; fi
+  └ yarn run v1.22.22
+    $ /Users/dave/Documents/Code/fresh-claim/fresh-claim/node_modules/.bin/prettier --write docs/plans/2026-09-04-1808-feat-practitioner-hospital-directory-plan.md
+    … +5 lines (ctrl + t to view transcript)
+    All matched files use Prettier code style!
+    Done in 0.43s.
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Exhaustive enumeration is now a hard gate in the FRE-1602 plan (docs/plans/2026-09-04-1808-feat-practitioner-hospital-directory-plan.md). Unresolved partitions or unclassified details preserve evidence but cannot
+  establish completeness or enable recurrence.
+
+  Next decision: hospital inventory scope.
+
+  1. National declared-hospital inventory — recommended: Import every Australian declared hospital and attempt to identify each official website. Victorian anaesthetists remain the initial practitioner cohort.
+  2. Victorian hospitals only: Smaller MVP inventory and website workload.
+  3. FreshClaim hospitals only: Cover only hospitals already configured in the application.
+
+  Reply 1, 2, or 3.
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› Ask Codex to do anything

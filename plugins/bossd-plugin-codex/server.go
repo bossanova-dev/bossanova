@@ -471,16 +471,20 @@ func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitle
 // lives in question.go: hasCodexQuestionPrompt strips user-prompt-history
 // and activity-bullet lines, refuses to fire while the working spinner is
 // visible, and matches against the codex approval-menu grammar captured in
-// the Lane 0 spike.
+// the Lane 0 spike. It also matches a conversational reply-choice instruction
+// ("Reply 1, 2, or 3.") that codex asked in prose with the composer left live
+// (BOS-1180); unlike the drawn-UI arms that one is bounded to the rendered
+// tail, because a prose line is transcript and never redraws itself away.
 // blocks_input (hasCodexModalPrompt) runs that same question grammar over the
-// TAIL of the pane rather than all of it, and adds one clause has_prompt does
+// TAIL of the pane rather than all of it, and adds clauses has_prompt does
 // not have. has_prompt asks "has this chat asked something?", which is worth
 // surfacing wherever in the buffer it appears; blocks_input asks "is the
 // composer taken right now?", and a capture carries up to 1000 lines of
 // scrollback in which a long-answered approval footer still sits. Reading that
 // pane-wide would wedge delivery to an idle chat forever (BOS-600).
 //
-// The extra clause is the boot interstitial (BOS-894): codex's "Update
+// The clause that decides the subset question is the boot interstitial
+// (BOS-894): codex's "Update
 // available!" screen owns the composer but asks nothing, so it must block
 // delivery WITHOUT notifying — it answers blocks_input=true, has_prompt=false.
 // blocks_input is therefore NOT a subset of has_prompt, and neither answer may

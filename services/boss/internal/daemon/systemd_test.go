@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -634,4 +636,157 @@ func TestUnitEnvironmentPathRoundTripsGeneratedUnit(t *testing.T) {
 	if want := serviceEnvPath(); got != want {
 		t.Errorf("round trip = %q, want %q", got, want)
 	}
+}
+
+// stubSocketReachableAfter replaces the dial seam so isSocketReachable reports
+// "unreachable" for the first failures probes and "reachable" afterwards. A
+// net.Pipe end is used rather than a real listener because unix socket paths
+// have a length limit that t.TempDir() paths already exceed.
+func stubSocketReachableAfter(t *testing.T, failures int) {
+	t.Helper()
+
+	calls := 0
+	original := dialUnixSocket
+	t.Cleanup(func() { dialUnixSocket = original })
+	dialUnixSocket = func(string, string, time.Duration) (net.Conn, error) {
+		calls++
+		if calls > failures {
+			conn, _ := net.Pipe()
+			return conn, nil
+		}
+		return nil, errors.New("socket not reachable")
+	}
+}
+
+// writeFakeBossd installs a runnable stand-in for bossd next to a fake boss
+// executable, so ResolveBossdPath finds it and the fallback spawn can really
+// start it. It exits immediately: the test's dial stub, not the child, decides
+// when the socket becomes reachable.
+func writeFakeBossd(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	bossdPath := filepath.Join(dir, "bossd")
+	if err := os.WriteFile(bossdPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write fake bossd: %v", err)
+	}
+	original := executablePath
+	t.Cleanup(func() { executablePath = original })
+	executablePath = func() (string, error) { return filepath.Join(dir, "boss"), nil }
+	return bossdPath
+}
+
+func writeBossdUnitFile(t *testing.T, home string) {
+	t.Helper()
+
+	dir := filepath.Join(home, ".config", "systemd", "user")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ServiceName), []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatalf("write unit file: %v", err)
+	}
+}
+
+// TestPlatformEnsureRunningReportsStartMode pins BOS-1183 on the systemd path.
+// The signature now carries a StartMode, and the three success points must
+// report which of them ran: nothing started, systemd started it (supervised),
+// or the direct spawn started it (unsupervised — no Restart=, gone after a
+// reboot). Behaviour is otherwise unchanged, which is what the systemctl-call
+// assertions below pin: the branch conditions did not move, and BOS-1181 owns
+// any change to which path runs.
+func TestPlatformEnsureRunningReportsStartMode(t *testing.T) {
+	t.Run("already reachable starts nothing", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		stubSocketReachableAfter(t, 0)
+		originalRunSystemctl := runSystemctl
+		t.Cleanup(func() { runSystemctl = originalRunSystemctl })
+		runSystemctl = func(args ...string) ([]byte, error) {
+			t.Fatalf("systemctl invoked for an already-reachable socket: %v", args)
+			return nil, nil
+		}
+
+		mode, err := platformEnsureRunning(filepath.Join(home, "bossd.sock"))
+		if err != nil {
+			t.Fatalf("platformEnsureRunning: %v", err)
+		}
+		if mode != StartModeAlreadyRunning {
+			t.Errorf("StartMode = %v, want %v", mode, StartModeAlreadyRunning)
+		}
+	})
+
+	t.Run("systemd start is supervised", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		// BOSS_DAEMON_SKIP_LAUNCHCTL makes platformGetStatus report the unit
+		// installed and not running without asking systemd — exactly the
+		// Installed && !Running shape that selects the service-manager branch.
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		writeBossdUnitFile(t, home)
+		stubSocketReachableAfter(t, 1)
+		var calls [][]string
+		originalRunSystemctl := runSystemctl
+		t.Cleanup(func() { runSystemctl = originalRunSystemctl })
+		runSystemctl = func(args ...string) ([]byte, error) {
+			calls = append(calls, args)
+			return nil, nil
+		}
+
+		mode, err := platformEnsureRunning(filepath.Join(home, "bossd.sock"))
+		if err != nil {
+			t.Fatalf("platformEnsureRunning: %v", err)
+		}
+		if mode != StartModeServiceManager {
+			t.Errorf("StartMode = %v, want %v", mode, StartModeServiceManager)
+		}
+		want := [][]string{{"--user", "start", ServiceName}}
+		if !reflect.DeepEqual(calls, want) {
+			t.Errorf("systemctl calls = %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("direct spawn is unsupervised", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		// No unit file: platformGetStatus reports not installed, the
+		// service-manager branch is skipped, and the fallback spawn runs.
+		writeFakeBossd(t)
+		// Two failures: the entry probe and the final pre-spawn guard.
+		stubSocketReachableAfter(t, 2)
+		originalRunSystemctl := runSystemctl
+		t.Cleanup(func() { runSystemctl = originalRunSystemctl })
+		runSystemctl = func(args ...string) ([]byte, error) {
+			t.Fatalf("systemctl invoked with no unit installed: %v", args)
+			return nil, nil
+		}
+
+		mode, err := platformEnsureRunning(filepath.Join(home, "bossd.sock"))
+		if err != nil {
+			t.Fatalf("platformEnsureRunning: %v", err)
+		}
+		if mode != StartModeDetached {
+			t.Errorf("StartMode = %v, want %v — an unsupervised spawn must not look like a supervised start", mode, StartModeDetached)
+		}
+	})
+
+	t.Run("failure carries no mode", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		t.Setenv("PATH", t.TempDir())
+		original := executablePath
+		t.Cleanup(func() { executablePath = original })
+		executablePath = func() (string, error) { return filepath.Join(t.TempDir(), "boss"), nil }
+		stubSocketReachableAfter(t, 2)
+
+		mode, err := platformEnsureRunning(filepath.Join(home, "bossd.sock"))
+		if err == nil {
+			t.Fatal("platformEnsureRunning succeeded with no bossd to start")
+		}
+		if mode != StartModeUnknown {
+			t.Errorf("StartMode = %v, want %v — an error must never carry a supervision verdict", mode, StartModeUnknown)
+		}
+	})
 }

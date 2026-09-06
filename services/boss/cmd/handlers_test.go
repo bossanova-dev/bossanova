@@ -210,6 +210,203 @@ func TestRunDaemonStatusPrintsProfileMetadataWhenReachable(t *testing.T) {
 	}
 }
 
+// daemonStatusRecordedPID is the PID writeDaemonStatusProfile records in the
+// daemon state file. Tests pair it with the stubbed service-manager PID to
+// select a rung of the supervision ladder.
+const daemonStatusRecordedPID = 12345
+
+// writeDaemonStatusProfile lays down the settings + daemon state record that
+// runDaemonStatus reads and returns the socket path it will probe. It mirrors
+// the setup TestRunDaemonStatusPrintsProfileMetadataWhenReachable does inline
+// so the BOS-1183 header and supervision tests differ only in the stubbed
+// service-manager status.
+func writeDaemonStatusProfile(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	executablePath := filepath.Join(dir, "bossd")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+		PID:            daemonStatusRecordedPID,
+		ExecutablePath: executablePath,
+		SettingsPath:   settingsPath,
+		SocketPath:     socketPath,
+		StartedAt:      time.Now(),
+	}); err != nil {
+		t.Fatalf("daemonstate.Write: %v", err)
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	return socketPath
+}
+
+// TestRunDaemonStatusDoesNotClaimRunningWhenSocketUnreachable is the BOS-1183
+// headline regression test. `boss daemon status` chose its header from
+// Installed/Running alone while probing the socket ten lines lower, so on
+// 2026-09-06 a real machine printed "Daemon is running." directly above
+// "socket reachable: false" — a launchd job registered but never spawned. One
+// probe must now drive both, and the header must never assert health that the
+// probe contradicts.
+func TestRunDaemonStatusDoesNotClaimRunningWhenSocketUnreachable(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	socketPath := writeDaemonStatusProfile(t)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: daemonStatusRecordedPID, ServicePath: "/tmp/service"}, nil
+	}
+	probes := 0
+	daemonSocketReachable = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("socket reachability path = %q, want %q", path, socketPath)
+		}
+		probes++
+		return false
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+	if strings.Contains(out, "Daemon is running.") {
+		t.Fatalf("output = %q, must not claim the daemon is running while its socket is unreachable", out)
+	}
+	for _, want := range []string{
+		"registered but not serving",
+		"socket reachable: false",
+		"boss daemon doctor",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	}
+	if probes != 1 {
+		t.Fatalf("socket probed %d times, want exactly 1 verdict driving both header and field", probes)
+	}
+}
+
+// TestRunDaemonStatusLabelsUnsupervisedDaemon pins the BOS-1183 R4 half: a
+// daemon the service manager does not own must be labelled where it is
+// displayed. "standalone PID" is a misnomer — bossd writes that record on
+// every start, supervised or not — so the label is the only line that
+// separates the two.
+func TestRunDaemonStatusLabelsUnsupervisedDaemon(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	writeDaemonStatusProfile(t)
+	stubDaemonDoctorProcess(t, nil)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: false, ServicePath: "/tmp/service"}, nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"standalone PID: 12345",
+		"supervision: unsupervised",
+		"will not survive reboot",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	}
+}
+
+// TestRunDaemonStatusLabelsSupervisedDaemon is the other half: when the
+// service manager owns the recorded PID the label must say so, or the
+// unsupervised warning becomes noise operators learn to ignore.
+func TestRunDaemonStatusLabelsSupervisedDaemon(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	writeDaemonStatusProfile(t)
+	stubDaemonDoctorProcess(t, nil)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: daemonStatusRecordedPID, ServicePath: "/tmp/service"}, nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "supervision: supervised") {
+		t.Fatalf("output = %q, want a supervised label", out)
+	}
+	if strings.Contains(out, "unsupervised") {
+		t.Fatalf("output = %q, must not warn about supervision for a service-manager-owned daemon", out)
+	}
+}
+
+// TestRunDaemonStatusReportsUnknownSupervisionWithoutServicePID mirrors
+// reportDaemonSupervision's st.PID == 0 rung (services/boss/cmd/daemon_doctor.go):
+// launchctl output that will not parse, or a systemd MainPID read that fails,
+// leaves ownership unproven. Certifying supervision there would emit a false
+// healthy verdict from the one line added to detect an ownership mismatch.
+func TestRunDaemonStatusReportsUnknownSupervisionWithoutServicePID(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	writeDaemonStatusProfile(t)
+	stubDaemonDoctorProcess(t, nil)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 0, ServicePath: "/tmp/service"}, nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+	if !strings.Contains(out, "supervision: unknown") {
+		t.Fatalf("output = %q, want an unknown supervision verdict", out)
+	}
+	if strings.Contains(out, "supervision: supervised") {
+		t.Fatalf("output = %q, must not certify supervision without a service PID", out)
+	}
+}
+
+// TestRunDaemonStatusDoesNotCallAStaleRecordUnsupervised is the repair-pass
+// regression for the disagreement BOS-1183 and BOS-1181 left between three
+// surfaces. `boss daemon status` described the state RECORD without probing
+// it, so a correctly supervised daemon whose record outlived its process read
+// "unsupervised (two daemons, or a stale state record)" here while doctor said
+// "unknown (recorded PID N is not running)" and restart classified the host as
+// supervised. Status now makes the same signal-0 probe doctor does.
+func TestRunDaemonStatusDoesNotCallAStaleRecordUnsupervised(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	writeDaemonStatusProfile(t)
+	stubDaemonDoctorProcess(t, syscall.ESRCH)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: daemonStatusRecordedPID + 1, ServicePath: "/tmp/service"}, nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+	if strings.Contains(out, "unsupervised") {
+		t.Fatalf("output = %q, must not report a stale record as an unsupervised daemon", out)
+	}
+	if !strings.Contains(out, "supervision: unknown (recorded PID 12345 is not running)") {
+		t.Fatalf("output = %q, want the stale-record unknown verdict doctor prints", out)
+	}
+}
+
 func TestRunDaemonStartRefusesReachableSocket(t *testing.T) {
 	restoreDaemonCommandStubs(t)
 	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
@@ -224,6 +421,10 @@ func TestRunDaemonStartRefusesReachableSocket(t *testing.T) {
 		t.Fatal("daemonEnsureRunning called for reachable socket")
 		return nil
 	}
+	daemonEnsureRunningWithMode = func(string) (daemon.StartMode, error) {
+		t.Fatal("daemonEnsureRunningWithMode called for reachable socket")
+		return daemon.StartModeUnknown, nil
+	}
 
 	out := captureStdout(t, func() {
 		if err := runDaemonStart(&cobra.Command{}); err != nil {
@@ -232,6 +433,109 @@ func TestRunDaemonStartRefusesReachableSocket(t *testing.T) {
 	})
 	if !strings.Contains(out, "Daemon is already running.") {
 		t.Fatalf("output = %q, want already running message", out)
+	}
+}
+
+// TestRunDaemonStartAnnouncesStandaloneFallback pins BOS-1183 R4 on the start
+// path. platformEnsureRunning falls through to an unsupervised direct spawn
+// whenever the LaunchAgent branch does not serve the socket — including the
+// registered-but-never-spawned case, where Running==true skips that branch
+// entirely — and `boss daemon start` printed the same "Daemon started." for
+// both. Losing supervision has to be announced where it happens.
+func TestRunDaemonStartAnnouncesStandaloneFallback(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return false }
+	daemonEnsureRunningWithMode = func(path string) (daemon.StartMode, error) {
+		if path != socketPath {
+			t.Fatalf("start socket path = %q, want %q", path, socketPath)
+		}
+		return daemon.StartModeDetached, nil
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStart: %v", err)
+		}
+	})
+	// The existing line is load-bearing for scripts that parse this output, so
+	// the notice is ADDED beneath it rather than replacing it.
+	if !strings.Contains(out, "Daemon started.") {
+		t.Fatalf("output = %q, want the unchanged started line", out)
+	}
+	for _, want := range []string{
+		"not under the service manager",
+		// The reboot consequence alone reads as a deferred, tomorrow problem,
+		// so the operator moves on while gh is ALREADY falling back to
+		// unauthenticated requests. This is the first surface that reports the
+		// loss, so it must name both halves — as status and doctor do.
+		"keychain",
+		"unauthenticated",
+		"will not survive reboot",
+		"boss daemon doctor",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	}
+}
+
+// TestDaemonUnsupervisedConsequencesAreOneSentenceEverywhere pins what the
+// shared constant buys: three surfaces reported three different consequence
+// sets for one fact, and the operator learned the least from the surface that
+// tells them first. Asserting the constant is USED, rather than re-asserting
+// the wording, is what keeps this from being a copy of the string.
+func TestDaemonUnsupervisedConsequencesAreOneSentenceEverywhere(t *testing.T) {
+	for _, want := range []string{"keychain", "unauthenticated", "will not survive reboot"} {
+		if !strings.Contains(daemonUnsupervisedConsequences, want) {
+			t.Fatalf("shared consequence sentence = %q, want it to name %q", daemonUnsupervisedConsequences, want)
+		}
+	}
+
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	stubDaemonDoctorProcess(t, nil)
+	const recordedPID = 5150
+	st := daemon.Status{Installed: true, Running: false}
+
+	statusLine := daemonSupervisionLine(&st, recordedPID)
+	if !strings.Contains(statusLine, daemonUnsupervisedConsequences) {
+		t.Fatalf("status line = %q, want the shared consequence sentence", statusLine)
+	}
+
+	previous := daemonGetStatus
+	daemonGetStatus = func() (*daemon.Status, error) { return &st, nil }
+	t.Cleanup(func() { daemonGetStatus = previous })
+	var doctorOut bytes.Buffer
+	reportDaemonSupervision(&doctorOut, daemonstate.Metadata{PID: recordedPID}, nil)
+	if !strings.Contains(doctorOut.String(), daemonUnsupervisedConsequences) {
+		t.Fatalf("doctor output = %q, want the shared consequence sentence", doctorOut.String())
+	}
+}
+
+// TestRunDaemonStartOmitsFallbackNoticeWhenSupervised is the other half: a
+// warning printed on the healthy path is a warning operators stop reading.
+func TestRunDaemonStartOmitsFallbackNoticeWhenSupervised(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return false }
+	daemonEnsureRunningWithMode = func(string) (daemon.StartMode, error) {
+		return daemon.StartModeServiceManager, nil
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStart: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Daemon started.") {
+		t.Fatalf("output = %q, want the started line", out)
+	}
+	for _, unwanted := range []string{"not under the service manager", "will not survive reboot"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("output = %q, must not warn about supervision when the service manager started the daemon", out)
+		}
 	}
 }
 
@@ -517,6 +821,434 @@ func TestRunDaemonRestartWaitsForStandaloneExitBeforeStartingReplacement(t *test
 	}
 }
 
+// daemonRestartProfileFixture points the current profile at a temp app-data
+// directory, so the BOS-1181 serving-mode probe reads test state rather than
+// whatever daemon happens to be running on the host.
+func daemonRestartProfileFixture(t *testing.T) (appDataDir, socketPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir = filepath.Join(dir, "data")
+	socketPath = filepath.Join(dir, "bossd.sock")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	return appDataDir, socketPath
+}
+
+// recordLiveStandaloneDaemon writes the daemon-state record bossd leaves on
+// startup and makes that PID answer as a live bossd, which is what the probe
+// keys the standalone verdict on. Requires restoreDaemonCommandStubs.
+func recordLiveStandaloneDaemon(t *testing.T, appDataDir, socketPath string, pid int) {
+	t.Helper()
+	const executable = "/opt/homebrew/bin/bossd"
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+		PID:            pid,
+		ExecutablePath: executable,
+		SocketPath:     socketPath,
+	}); err != nil {
+		t.Fatalf("write daemon state: %v", err)
+	}
+	bossdProcessCommandLine = func(queried int) (string, error) {
+		if queried == pid {
+			return executable, nil
+		}
+		return "", errors.New("no such process")
+	}
+}
+
+// TestRunDaemonRestartPreservesStandaloneDaemonBehindAnUnusableLaunchAgent is
+// the BOS-1181 regression. It reproduces the reported incident exactly: a
+// standalone daemon is serving, a LaunchAgent plist exists, and `launchctl
+// list` exits 0 for a job launchd registered but never spawned (Running with
+// no PID). The old predicate read Installed and Running and took the launchd
+// path, which stopped the process that was serving and then could not produce
+// a socket. Restart must instead restart the standalone daemon in kind and end
+// with a reachable socket.
+//
+// This drives the real serving-mode probe rather than stubbing it, so the
+// daemon-state record and the launchd PID are the actual inputs under test.
+func TestRunDaemonRestartPreservesStandaloneDaemonBehindAnUnusableLaunchAgent(t *testing.T) {
+	if !daemon.StandaloneServingSupported() {
+		t.Skip("standalone serving is a macOS mode; the sibling test pins the unchanged path elsewhere")
+	}
+	restoreDaemonCommandStubs(t)
+	appDataDir, socketPath := daemonRestartProfileFixture(t)
+	recordLiveStandaloneDaemon(t, appDataDir, socketPath, 27923)
+
+	var events []string
+	serving := true
+	// Installed AND Running are both true here, and neither is a statement
+	// about what is serving: the plist exists and launchctl accepted the job,
+	// but launchd never spawned it, so there is no PID.
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return serving }
+	daemonStop = func() error {
+		events = append(events, "launchd-stop")
+		serving = false
+		return nil
+	}
+	restartDaemon = func() error {
+		// launchd accepts the bootstrap and still spawns nothing — the half of
+		// the incident that made the outcome worse than doing nothing.
+		events = append(events, "launchd-restart")
+		return nil
+	}
+	terminateStandaloneCurrentProfile = func(profile daemonProfile) (int, error) {
+		events = append(events, "terminate-standalone")
+		serving = false
+		return 1, nil
+	}
+	waitForDaemonSocketGone = func(string) bool {
+		events = append(events, "socket-gone")
+		return true
+	}
+	waitForStandaloneBossdExit = func(string) bool {
+		events = append(events, "process-exited")
+		return true
+	}
+	daemonEnsureRunning = func(string) error {
+		events = append(events, "start-standalone")
+		serving = true
+		return nil
+	}
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	captureStdout(t, func() {
+		if err := runDaemonRestart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonRestart: %v", err)
+		}
+	})
+
+	want := []string{"terminate-standalone", "socket-gone", "process-exited", "start-standalone"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v (a standalone-served daemon must restart in kind, never through launchd)", events, want)
+	}
+	if !daemonSocketReachable(socketPath) {
+		t.Fatal("restart ended with no reachable socket; it began with one")
+	}
+}
+
+// TestRunDaemonRestartLeavesServiceManagerPathUnchangedWithoutStandaloneMode
+// is the other half of the platform seam: where there is no standalone serving
+// mode (Linux), the very same inputs must still restart through the service
+// manager. BOS-1181 deliberately does not change Linux behaviour.
+func TestRunDaemonRestartLeavesServiceManagerPathUnchangedWithoutStandaloneMode(t *testing.T) {
+	if daemon.StandaloneServingSupported() {
+		t.Skip("this platform has a standalone serving mode; the sibling test covers it")
+	}
+	restoreDaemonCommandStubs(t)
+	appDataDir, socketPath := daemonRestartProfileFixture(t)
+	recordLiveStandaloneDaemon(t, appDataDir, socketPath, 27923)
+
+	var events []string
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return true }
+	daemonStop = func() error {
+		events = append(events, "service-stop")
+		return nil
+	}
+	restartDaemon = func() error {
+		events = append(events, "service-restart")
+		return nil
+	}
+	terminateStandaloneCurrentProfile = func(daemonProfile) (int, error) {
+		t.Fatal("the standalone path must not be reachable on a platform without a standalone serving mode")
+		return 0, nil
+	}
+	waitForDaemonSocketGone = func(string) bool {
+		events = append(events, "socket-gone")
+		return true
+	}
+	daemonEnsureRunning = func(string) error { return nil }
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	captureStdout(t, func() {
+		if err := runDaemonRestart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonRestart: %v", err)
+		}
+	})
+
+	if want := []string{"service-stop", "socket-gone", "service-restart"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+// TestRunDaemonRestartStillRestartsASupervisedDaemonThroughTheServiceManager
+// pins the anti-downgrade half of the fix. bossd writes its daemon-state
+// record however it was spawned, so a correctly supervised host also has a
+// live recorded PID — reading the record alone would push every such host onto
+// the standalone path permanently. Here the record names the same PID launchd
+// reports, so the verdict must stay supervised.
+func TestRunDaemonRestartStillRestartsASupervisedDaemonThroughTheServiceManager(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	appDataDir, socketPath := daemonRestartProfileFixture(t)
+	const launchdPID = 4242
+	recordLiveStandaloneDaemon(t, appDataDir, socketPath, launchdPID)
+
+	var events []string
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: launchdPID}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return true }
+	daemonStop = func() error {
+		events = append(events, "launchd-stop")
+		return nil
+	}
+	restartDaemon = func() error {
+		events = append(events, "launchd-restart")
+		return nil
+	}
+	waitForDaemonSocketGone = func(string) bool {
+		events = append(events, "socket-gone")
+		return true
+	}
+	terminateStandaloneCurrentProfile = func(daemonProfile) (int, error) {
+		t.Fatal("a launchd-served daemon must not be restarted as a standalone one")
+		return 0, nil
+	}
+	daemonEnsureRunning = func(string) error {
+		t.Fatal("a launchd-served daemon must not be started standalone while launchd can serve it")
+		return nil
+	}
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	captureStdout(t, func() {
+		if err := runDaemonRestart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonRestart: %v", err)
+		}
+	})
+
+	if want := []string{"launchd-stop", "socket-gone", "launchd-restart"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+// TestRunDaemonRestartRestoresServiceWhenTheServiceManagerProducesNoSocket
+// covers the other way BOS-1181's outcome is reached: the service manager
+// accepts the restart, returns success, and never produces a reachable socket.
+// Restoring service outranks honouring the requested supervision mode, so
+// restart must fall back to the direct start `boss daemon start` uses instead
+// of exiting non-zero with the host left with no daemon.
+func TestRunDaemonRestartRestoresServiceWhenTheServiceManagerProducesNoSocket(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	appDataDir, socketPath := daemonRestartProfileFixture(t)
+
+	var events []string
+	serving := true
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 4242}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return serving }
+	daemonStop = func() error {
+		events = append(events, "launchd-stop")
+		serving = false
+		return nil
+	}
+	waitForDaemonSocketGone = func(string) bool { return true }
+	restartDaemon = func() error {
+		events = append(events, "launchd-restart")
+		return nil
+	}
+	daemonEnsureRunning = func(string) error {
+		events = append(events, "restore")
+		// The fallback really did leave a directly-spawned bossd serving, so
+		// the record it writes is what the announcement must be read from.
+		// Off macOS that record is compiled out of the verdict, which is the
+		// whole point of the platform-split assertion below.
+		recordLiveStandaloneDaemon(t, appDataDir, socketPath, 27923)
+		serving = true
+		return nil
+	}
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	out := captureStdout(t, func() {
+		if err := runDaemonRestart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonRestart: %v", err)
+		}
+	})
+
+	if want := []string{"launchd-stop", "launchd-restart", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	if !daemonSocketReachable(socketPath) {
+		t.Fatal("restart ended with no reachable socket")
+	}
+	// The announcement must be read from the serving-mode probe, never assumed
+	// from the fact that the fallback ran — so what it has to say is decided by
+	// the platform seam, and both arms are asserted rather than one skipped.
+	//
+	// On macOS the restore left a directly-spawned bossd whose recorded PID is
+	// not launchd's, so the probe reads standalone: silently downgrading
+	// supervision would leave the operator believing the LaunchAgent is still
+	// serving, and the announcement has to say otherwise. Off macOS standalone
+	// serving is compiled out, so the very same inputs classify supervised and
+	// the announcement must say THAT — claiming a direct start there would be a
+	// statement about the host that this path never observed.
+	//
+	// Each arm also asserts the sibling wording is absent, so neither the
+	// neutral fallback branch nor the opposite verdict can satisfy this test.
+	want, notWant := "under the service manager", "by starting bossd directly"
+	if daemon.StandaloneServingSupported() {
+		want, notWant = notWant, want
+	}
+	if !strings.Contains(out, want) {
+		t.Fatalf("stdout = %q, want it to contain %q", out, want)
+	}
+	if strings.Contains(out, notWant) {
+		t.Fatalf("stdout = %q, must not contain %q on this platform", out, notWant)
+	}
+}
+
+// TestRunDaemonRestartNamesTheRecoveryCommandWhenRestoreFails pins R3: when
+// neither the service manager nor the restore produces a socket, the error has
+// to name `boss daemon start`. The reported incident's message pointed at
+// `boss daemon status`, from which recovery is not discoverable.
+func TestRunDaemonRestartNamesTheRecoveryCommandWhenRestoreFails(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	_, socketPath := daemonRestartProfileFixture(t)
+
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 4242}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return false }
+	daemonStop = func() error { return nil }
+	waitForDaemonSocketGone = func(string) bool { return true }
+	restartDaemon = func() error { return nil }
+	daemonEnsureRunning = func(string) error { return errors.New("no bossd binary") }
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	err := runDaemonRestart(&cobra.Command{})
+	if err == nil {
+		t.Fatal("runDaemonRestart returned nil, want an error naming the recovery command")
+	}
+	if !strings.Contains(err.Error(), "did not become reachable") {
+		t.Fatalf("error = %v, want it to mention the socket never becoming reachable", err)
+	}
+	// The remediation has to name `boss daemon start`; it must NOT blanket-claim
+	// the daemon is now stopped, which this path never verified — launchd still
+	// reports PID 4242 here.
+	if !strings.Contains(err.Error(), "boss daemon start") {
+		t.Fatalf("error = %v, want it to name 'boss daemon start'", err)
+	}
+	if strings.Contains(err.Error(), "the daemon is now stopped") {
+		t.Fatalf("error = %v, must not claim a stopped daemon it never probed", err)
+	}
+	// The failed restore's own error is the only diagnostic the operator gets.
+	if !strings.Contains(err.Error(), "no bossd binary") {
+		t.Fatalf("error = %v, want it to surface the direct-start failure", err)
+	}
+}
+
+// TestRestartReachableDaemonForSettingsReloadTakesStandalonePathWhenStandaloneServed
+// is half of R4: the settings-reload restart and `boss daemon restart` must
+// decide standalone-vs-service-manager through the same helper, so an
+// installed-and-running status that is nonetheless standalone-served does not
+// get booted out here either.
+func TestRestartReachableDaemonForSettingsReloadTakesStandalonePathWhenStandaloneServed(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	daemonStandaloneServed = func(*daemon.Status) bool { return true }
+
+	var events []string
+	err := restartReachableDaemonForSettingsReloadWith(
+		"/tmp/boss.sock",
+		func() (*daemon.Status, error) {
+			return &daemon.Status{Installed: true, Running: true, PID: 0}, nil
+		},
+		restartTakesStandalonePath,
+		func() error {
+			t.Fatal("a standalone-served daemon must not be booted out of launchd")
+			return nil
+		},
+		func(path string) error {
+			events = append(events, "ensure:"+path)
+			return nil
+		},
+		func() (int, error) {
+			events = append(events, "terminate-standalone")
+			return 1, nil
+		},
+		func() bool {
+			events = append(events, "process-exited")
+			return true
+		},
+		func(path string) bool {
+			events = append(events, "wait:"+path)
+			return true
+		},
+	)
+	if err != nil {
+		t.Fatalf("restartReachableDaemonForSettingsReloadWith returned error: %v", err)
+	}
+	want := []string{"terminate-standalone", "wait:/tmp/boss.sock", "process-exited", "ensure:/tmp/boss.sock"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+// TestRestartDaemonAfterUpgradeKeepsAStandaloneServedDaemonStandalone is the
+// other half of R4. The upgrade path already refused to change a user's
+// service mode, but it keyed on Status.Installed, which is true here.
+func TestRestartDaemonAfterUpgradeKeepsAStandaloneServedDaemonStandalone(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	_, socketPath := daemonRestartProfileFixture(t)
+	daemonStandaloneServed = func(*daemon.Status) bool { return true }
+
+	var events []string
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true}, nil
+	}
+	daemonStop = func() error {
+		t.Fatal("upgrade must not boot a standalone-served daemon out of launchd")
+		return nil
+	}
+	restartDaemon = func() error {
+		t.Fatal("upgrade must not bootstrap a LaunchAgent for a standalone-served daemon")
+		return nil
+	}
+	terminateCurrentProfileBossd = func() (int, error) {
+		events = append(events, "terminate-standalone")
+		return 1, nil
+	}
+	waitForDaemonSocketGone = func(string) bool {
+		events = append(events, "socket-gone")
+		return true
+	}
+	waitForStandaloneBossdExit = func(string) bool { return true }
+	daemonEnsureRunning = func(string) error {
+		events = append(events, "start-standalone")
+		return nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	if err := restartDaemonAfterUpgrade(); err != nil {
+		t.Fatalf("restartDaemonAfterUpgrade: %v", err)
+	}
+	if want := []string{"terminate-standalone", "socket-gone", "start-standalone"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestRunLocalProviderStartupBeforeClientRestartsReachableDaemonAfterLoginShellChange(t *testing.T) {
 	oldRunProviderStartupIfNeeded := runProviderStartupIfNeeded
 	oldRestartDaemonAfterLoginShellCapture := restartDaemonAfterLoginShellCapture
@@ -706,6 +1438,7 @@ func TestRestartReachableDaemonForSettingsReloadReapsStandaloneWhenInstalledServ
 			events = append(events, "status")
 			return &daemon.Status{Installed: true, Running: false}, nil
 		},
+		restartTakesStandalonePath,
 		func() error {
 			t.Fatal("daemon.Stop should not be called for an inactive installed service")
 			return nil
@@ -1070,6 +1803,7 @@ func restoreDaemonCommandStubs(t *testing.T) {
 	oldDaemonSocketReachable := daemonSocketReachable
 	oldDaemonGetStatus := daemonGetStatus
 	oldDaemonEnsureRunning := daemonEnsureRunning
+	oldDaemonEnsureRunningWithMode := daemonEnsureRunningWithMode
 	oldDaemonStop := daemonStop
 	oldRestartDaemon := restartDaemon
 	oldTerminateStandaloneCurrentProfile := terminateStandaloneCurrentProfile
@@ -1078,6 +1812,9 @@ func restoreDaemonCommandStubs(t *testing.T) {
 	oldFindBossdPluginPIDs := findBossdPluginPIDs
 	oldWaitForDaemonSocketGone := waitForDaemonSocketGone
 	oldWaitForStandaloneBossdExit := waitForStandaloneBossdExit
+	oldTerminateCurrentProfileBossd := terminateCurrentProfileBossd
+	oldDaemonStandaloneServed := daemonStandaloneServed
+	oldBossdProcessCommandLine := bossdProcessCommandLine
 	oldDaemonRestartReadyTimeout := daemonRestartReadyTimeout
 	oldDaemonRestartPollInterval := daemonRestartPollInterval
 	t.Cleanup(func() {
@@ -1085,6 +1822,7 @@ func restoreDaemonCommandStubs(t *testing.T) {
 		daemonSocketReachable = oldDaemonSocketReachable
 		daemonGetStatus = oldDaemonGetStatus
 		daemonEnsureRunning = oldDaemonEnsureRunning
+		daemonEnsureRunningWithMode = oldDaemonEnsureRunningWithMode
 		daemonStop = oldDaemonStop
 		restartDaemon = oldRestartDaemon
 		terminateStandaloneCurrentProfile = oldTerminateStandaloneCurrentProfile
@@ -1093,6 +1831,9 @@ func restoreDaemonCommandStubs(t *testing.T) {
 		findBossdPluginPIDs = oldFindBossdPluginPIDs
 		waitForDaemonSocketGone = oldWaitForDaemonSocketGone
 		waitForStandaloneBossdExit = oldWaitForStandaloneBossdExit
+		terminateCurrentProfileBossd = oldTerminateCurrentProfileBossd
+		daemonStandaloneServed = oldDaemonStandaloneServed
+		bossdProcessCommandLine = oldBossdProcessCommandLine
 		daemonRestartReadyTimeout = oldDaemonRestartReadyTimeout
 		daemonRestartPollInterval = oldDaemonRestartPollInterval
 	})
@@ -1541,3 +2282,92 @@ func TestPrintSessionShowHeaderOmitsAnEmptyBlockedReason(t *testing.T) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// TestObservedServingFactsRefusesUnverifiableAndForeignRecords pins the
+// criterion-4 downgrade risk: the mirror image of BOS-1181. A daemon-state
+// record must not produce a standalone verdict — and boot a correctly
+// supervised daemon out of the service manager — unless it is both
+// attributable to this profile's socket and liveness-verifiable.
+func TestObservedServingFactsRefusesUnverifiableAndForeignRecords(t *testing.T) {
+	const supervisedPID = 4242
+	const recordedPID = 27923
+
+	tests := []struct {
+		name     string
+		metadata func(socketPath string) daemonstate.Metadata
+		wantPID  int
+		wantMode daemon.ServingMode
+	}{
+		{
+			// metadataMatchesRunningProcess short-circuits to true with no
+			// probe when no executable is recorded. Trusting that here would
+			// declare standalone on a stale PID nothing verified.
+			name: "record naming no executable is not liveness-verifiable",
+			metadata: func(socketPath string) daemonstate.Metadata {
+				return daemonstate.Metadata{PID: recordedPID, SocketPath: socketPath}
+			},
+			wantPID:  recordedPID,
+			wantMode: daemon.ServingModeSupervised,
+		},
+		{
+			// Same app data dir, different socket: the record says nothing
+			// about what is serving this profile.
+			name: "record bound to a different socket is not this profile's",
+			metadata: func(string) daemonstate.Metadata {
+				return daemonstate.Metadata{
+					PID:            recordedPID,
+					ExecutablePath: "/opt/homebrew/bin/bossd",
+					SocketPath:     "/tmp/some-other-profile/bossd.sock",
+				}
+			},
+			wantPID:  0,
+			wantMode: daemon.ServingModeSupervised,
+		},
+		{
+			// The control: a complete, matching, live record still classifies
+			// standalone, so the guards above are not simply disabling BOS-1181.
+			name: "complete matching live record still reads standalone",
+			metadata: func(socketPath string) daemonstate.Metadata {
+				return daemonstate.Metadata{
+					PID:            recordedPID,
+					ExecutablePath: "/opt/homebrew/bin/bossd",
+					SocketPath:     socketPath,
+				}
+			},
+			wantPID:  recordedPID,
+			wantMode: daemon.ServingModeStandalone,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreDaemonCommandStubs(t)
+			appDataDir, socketPath := daemonRestartProfileFixture(t)
+			defaultSocketPath = func() (string, error) { return socketPath, nil }
+			bossdProcessCommandLine = func(int) (string, error) {
+				return "/opt/homebrew/bin/bossd", nil
+			}
+			if err := daemonstate.Write(appDataDir, tc.metadata(socketPath)); err != nil {
+				t.Fatalf("write daemon state: %v", err)
+			}
+
+			profile, err := currentDaemonProfile()
+			if err != nil {
+				t.Fatalf("currentDaemonProfile: %v", err)
+			}
+			st := &daemon.Status{Installed: true, Running: true, PID: supervisedPID}
+			facts := observedServingFacts(st, profile)
+			if facts.StandalonePID != tc.wantPID {
+				t.Fatalf("StandalonePID = %d, want %d", facts.StandalonePID, tc.wantPID)
+			}
+			wantMode := tc.wantMode
+			if !daemon.StandaloneServingSupported() {
+				// Off macOS the standalone verdict is compiled out entirely.
+				wantMode = daemon.ServingModeSupervised
+			}
+			if got := daemon.ClassifyServingMode(facts); got != wantMode {
+				t.Fatalf("ClassifyServingMode = %q, want %q", got, wantMode)
+			}
+		})
+	}
+}

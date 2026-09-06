@@ -35,6 +35,18 @@ const (
 	LifecyclePollInterval = 100 * time.Millisecond
 )
 
+// RestartRecoveryHint is the wording a restart failure path uses once it has
+// established that nothing is left serving, so those paths speak with one
+// voice. It leads with a claim about the host ("the daemon is now stopped"),
+// so it is only correct behind a probe: verifiedRestartOutcome gates it on
+// bossdStillRunningProbe, and `boss daemon restart`'s readiness-timeout path
+// gates it on the serving-mode probe (restartRecoveryHint in cmd/handlers.go),
+// which picks different wording when a daemon is still running. What IS
+// universal across restart failure paths is naming `boss daemon start` —
+// pointing at `boss daemon status` instead left recovery undiscoverable to the
+// operator it stranded (BOS-1181).
+const RestartRecoveryHint = "the daemon is now stopped — run 'boss daemon start'"
+
 // Status represents the daemon's current state.
 type Status struct {
 	Installed   bool   // Whether daemon is registered with the system
@@ -125,12 +137,69 @@ func McpGetStatus() (*Status, error) {
 	return platformMcpGetStatus()
 }
 
+// StartMode reports HOW the daemon came to be running, which is not something
+// a bare error can express: the service-manager path and the direct-spawn
+// fallback both succeed and both leave a serving socket behind, but only one
+// of them leaves the daemon supervised.
+//
+// BOS-1183: the fallback spawn has no KeepAlive restart and does not survive a
+// reboot, and `boss daemon start` reported it identically to a supervised
+// start. Losing supervision is a legitimate recovery, but never a silent one,
+// so the start path has to hand its caller the fact.
+type StartMode int
+
+const (
+	// StartModeUnknown is the zero value, carried by every error return: when
+	// the start failed there is no mode to report, and a caller must not read
+	// the absence of a mode as a supervised start.
+	StartModeUnknown StartMode = iota
+
+	// StartModeAlreadyRunning means nothing was started because the socket was
+	// already being served. Supervision is whatever the running daemon already
+	// had; this call did not change it.
+	StartModeAlreadyRunning
+
+	// StartModeServiceManager means the platform service manager (launchd on
+	// macOS, systemd --user on Linux) started the daemon, so it is supervised:
+	// it restarts on failure and comes back after a reboot.
+	StartModeServiceManager
+
+	// StartModeDetached means the daemon was spawned directly as a detached
+	// background process because the service manager did not serve the socket.
+	// It runs, but nothing supervises it.
+	StartModeDetached
+)
+
+func (m StartMode) String() string {
+	switch m {
+	case StartModeAlreadyRunning:
+		return "already-running"
+	case StartModeServiceManager:
+		return "service-manager"
+	case StartModeDetached:
+		return "detached"
+	default:
+		return "unknown"
+	}
+}
+
 // EnsureRunning checks if the daemon socket is reachable. If not, it attempts
 // to start bossd and waits for the socket to become available.
+//
+// It is consumed as a bare func(string) error in several places; callers that
+// need to know whether the daemon ended up supervised use
+// EnsureRunningWithMode instead.
 func EnsureRunning(socketPath string) error {
+	_, err := EnsureRunningWithMode(socketPath)
+	return err
+}
+
+// EnsureRunningWithMode is EnsureRunning plus the StartMode describing which
+// path satisfied the request. The mode is StartModeUnknown on error.
+func EnsureRunningWithMode(socketPath string) (StartMode, error) {
 	// Try to connect to the existing socket.
 	if isSocketReachable(socketPath) {
-		return nil
+		return StartModeAlreadyRunning, nil
 	}
 
 	return platformEnsureRunning(socketPath)

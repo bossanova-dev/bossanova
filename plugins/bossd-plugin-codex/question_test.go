@@ -210,3 +210,146 @@ func TestQuestionPromptRealPaneFixture(t *testing.T) {
 		t.Errorf("expected has_prompt=true on real codex pane fixture (%d bytes)", len(data))
 	}
 }
+
+// TestQuestionPromptFiresOnReplyChoiceInstruction is BOS-1180's headline case.
+// Codex asked a multiple-choice question as ordinary assistant prose — a
+// numbered option list closed by "Reply 1, 2, or 3." — and left the composer
+// live. None of the drawn-UI arms sees that pane, so the chat sat waiting with
+// nobody told. The committed fixture is the reporter's own capture.
+func TestQuestionPromptFiresOnReplyChoiceInstruction(t *testing.T) {
+	data, err := os.ReadFile("testdata/panes/reply_choice.txt")
+	if err != nil {
+		t.Fatalf("read reply-choice pane fixture: %v", err)
+	}
+	if !hasCodexQuestionPrompt(data) {
+		t.Errorf("expected has_prompt=true on reply-choice pane fixture (%d bytes)", len(data))
+	}
+}
+
+// TestReplyChoicePaneIsNotAModal is the regression that matters most in
+// BOS-1180. The reply-choice pane's composer is LIVE — answering the question
+// means typing into it — so the arm that recognises it must never reach
+// blocks_input. It fails loudly if someone later folds the arm back above the
+// modalOnly return in the shared body.
+func TestReplyChoicePaneIsNotAModal(t *testing.T) {
+	data, err := os.ReadFile("testdata/panes/reply_choice.txt")
+	if err != nil {
+		t.Fatalf("read reply-choice pane fixture: %v", err)
+	}
+	if hasCodexModalPrompt(data) {
+		t.Error("blocks_input = true for reply-choice pane; the composer is live and delivery must not be refused")
+	}
+}
+
+// TestReplyChoiceInstructionGrammar pins the discriminator: two or more numeric
+// options make a choice, one does not, and the word "reply" in ordinary prose
+// is not an instruction at all. Each line is embedded in a pane so the assertion
+// runs through the real detector rather than the bare regex.
+func TestReplyChoiceInstructionGrammar(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"comma list with or", "Reply 1, 2, or 3.", true},
+		{"two options with or", "Reply 1 or 2.", true},
+		{"reply with", "Reply with 1, 2, or 3.", true},
+		{"numeric range", "Reply 1-3.", true},
+		{"respond verb", "Please respond 1 or 2.", true},
+		{"answer verb", "Answer 1, 2, or 3", true},
+		{"single option is not a choice", "Reply 1.", false},
+		{"prose containing reply", "Reply to this when you can.", false},
+		{"past tense with a number", "I replied 1 hour ago", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pane := []byte("The agent weighed the tradeoffs and stopped.\n\n  " + tc.line + "\n")
+			if got := hasCodexQuestionPrompt(pane); got != tc.want {
+				t.Errorf("has_prompt = %v, want %v for line %q", got, tc.want, tc.line)
+			}
+		})
+	}
+}
+
+// TestReplyChoiceIgnoresUserPromptHistory verifies a reply instruction replayed
+// as user history cannot fire the arm. Codex prefixes prior user messages with
+// "› " and the shared stripper deletes those lines before any matching runs.
+// Note this pins the REGEX defence, not the stripper: codexBoxBorderClass
+// excludes ›, so this pane stays negative even if the stripper is removed. No
+// line the stripper drops can also match codexReplyChoiceInstruction — it only
+// removes lines opening "› "/"• ", and neither glyph is in the class nor starts
+// a verb — so on THIS arm the stripper is not what keeps a false positive out.
+// It is still load-bearing here in the other direction: the tail is taken over
+// the stripped buffer, so dropped history does not spend the 30-line window (a
+// live "Reply 1, 2, or 3." followed by 31 "› " lines answers true today and
+// false with the stripper removed). Its false-positive role belongs to the
+// approval arm above, which its own tests cover.
+func TestReplyChoiceIgnoresUserPromptHistory(t *testing.T) {
+	pane := []byte("The agent finished the task and went idle.\n\n› Reply 1, 2, or 3.\n\n› Ask Codex to do anything\n")
+	if hasCodexQuestionPrompt(pane) {
+		t.Error("has_prompt = true for a reply instruction on a replayed user line, want false")
+	}
+}
+
+// TestReplyChoiceIgnoresWorkingSpinner verifies the arm inherits the working
+// guard for free: a turn still producing output is not a question, even when the
+// instruction it is about to close with is already on screen.
+func TestReplyChoiceIgnoresWorkingSpinner(t *testing.T) {
+	data, err := os.ReadFile("testdata/panes/reply_choice.txt")
+	if err != nil {
+		t.Fatalf("read reply-choice pane fixture: %v", err)
+	}
+	pane := append(append([]byte{}, data...), []byte("\n• Working (12s • esc to interrupt)\n")...)
+	if hasCodexQuestionPrompt(pane) {
+		t.Error("has_prompt = true while the working spinner is visible, want false")
+	}
+}
+
+// TestReplyChoiceIgnoresScrolledOffInstruction pins the tail bound in the
+// direction that stops an answered question wedging QUESTION for the rest of the
+// session: once later output pushes the instruction above the rendered window,
+// the arm stops firing.
+//
+// The appended lines are plain prose ON PURPOSE. The window is measured over the
+// STRIPPED buffer, so "•"-prefixed activity bullets would be deleted before the
+// count and the instruction would never leave the window — the test would pass
+// while proving nothing. TestReplyChoiceScrollGuardIsNonVacuous asserts the same
+// appended volume, minus the scroll, still fires.
+func TestReplyChoiceIgnoresScrolledOffInstruction(t *testing.T) {
+	data, err := os.ReadFile("testdata/panes/reply_choice.txt")
+	if err != nil {
+		t.Fatalf("read reply-choice pane fixture: %v", err)
+	}
+	if hasCodexQuestionPrompt(append(append([]byte{}, data...), scrolledPastReplyChoice()...)) {
+		t.Error("has_prompt = true for a reply instruction pushed above the rendered tail, want false")
+	}
+}
+
+// TestReplyChoiceScrollGuardIsNonVacuous proves the test above measures the
+// scroll rather than something the appended text did on its own: the identical
+// pane with FEWER appended lines than the window still fires, so the false above
+// is the window bound and not an accident of the filler.
+func TestReplyChoiceScrollGuardIsNonVacuous(t *testing.T) {
+	data, err := os.ReadFile("testdata/panes/reply_choice.txt")
+	if err != nil {
+		t.Fatalf("read reply-choice pane fixture: %v", err)
+	}
+	var short []byte
+	for i := range 3 {
+		short = append(short, []byte(fmt.Sprintf("  the agent kept printing ordinary prose, line %d\n", i))...)
+	}
+	if !hasCodexQuestionPrompt(append(append([]byte{}, data...), short...)) {
+		t.Error("has_prompt = false with only 3 lines appended; the scroll test above proves nothing")
+	}
+}
+
+// scrolledPastReplyChoice returns more rendered lines than codexModalTailLines,
+// each one surviving the "›"/"•" stripper, so the fixture's instruction is
+// pushed clear of the window.
+func scrolledPastReplyChoice() []byte {
+	var b []byte
+	for i := range codexModalTailLines + 10 {
+		b = append(b, []byte(fmt.Sprintf("  the agent kept printing ordinary prose, line %d\n", i))...)
+	}
+	return b
+}

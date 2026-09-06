@@ -689,7 +689,21 @@ func TestRunUpgradeNoRestartChangesOutput(t *testing.T) {
 	}
 }
 
+// pinDaemonNotStandaloneServed fixes the BOS-1181 serving-mode verdict for one
+// test. Without it the real predicate reads the daemon state of whatever bossd
+// is running on the machine executing the suite, so these upgrade paths would
+// be decided by the host rather than by the status under test.
+// TestRestartDaemonAfterUpgradeKeepsAStandaloneServedDaemonStandalone covers
+// the opposite verdict.
+func pinDaemonNotStandaloneServed(t *testing.T) {
+	t.Helper()
+	old := daemonStandaloneServed
+	t.Cleanup(func() { daemonStandaloneServed = old })
+	daemonStandaloneServed = func(*daemon.Status) bool { return false }
+}
+
 func TestRestartDaemonAfterUpgradeWaitsForShutdownBeforeBootstrap(t *testing.T) {
+	pinDaemonNotStandaloneServed(t)
 	oldDefaultSocketPath := defaultSocketPath
 	oldDaemonGetStatus := daemonGetStatus
 	oldDaemonStop := daemonStop
@@ -754,6 +768,7 @@ func TestRestartDaemonAfterUpgradeWaitsForShutdownBeforeBootstrap(t *testing.T) 
 }
 
 func TestRestartDaemonAfterUpgradeReportsWhenSocketNeverBecomesReachable(t *testing.T) {
+	pinDaemonNotStandaloneServed(t)
 	oldDefaultSocketPath := defaultSocketPath
 	oldDaemonGetStatus := daemonGetStatus
 	oldDaemonStop := daemonStop
@@ -792,6 +807,7 @@ func TestRestartDaemonAfterUpgradeReportsWhenSocketNeverBecomesReachable(t *test
 }
 
 func TestRestartDaemonAfterUpgradeScopesStandaloneCleanupToCurrentProfile(t *testing.T) {
+	pinDaemonNotStandaloneServed(t)
 	oldDefaultSocketPath := defaultSocketPath
 	oldDaemonGetStatus := daemonGetStatus
 	oldDaemonStop := daemonStop
@@ -863,6 +879,7 @@ func TestRestartDaemonAfterUpgradeScopesStandaloneCleanupToCurrentProfile(t *tes
 }
 
 func TestRestartDaemonAfterUpgradeKeepsStandaloneDaemonUninstalled(t *testing.T) {
+	pinDaemonNotStandaloneServed(t)
 	oldDefaultSocketPath := defaultSocketPath
 	oldDaemonGetStatus := daemonGetStatus
 	oldDaemonStop := daemonStop

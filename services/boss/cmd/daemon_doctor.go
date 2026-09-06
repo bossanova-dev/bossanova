@@ -63,6 +63,15 @@ func daemonProcessAlive(pid int) (bool, error) {
 	}
 }
 
+// daemonGetSpawnHistory is the launchd spawn-history probe, behind the same
+// package-var seam idiom as findDaemonProcess and daemonAuthStateProbe.
+//
+// The seam is not a convenience: without it every doctor test on a developer's
+// machine would read that machine's REAL launchd domain, so the assertions
+// would depend on whether the engineer running them happens to have bossd
+// loaded. BOS-1183.
+var daemonGetSpawnHistory = daemon.GetSpawnHistory
+
 // daemonStalenessGOOS mirrors daemonDoctorGOOS so the non-darwin no-op is
 // testable on a darwin CI machine. Staging is darwin-only and stays that way.
 var daemonStalenessGOOS = runtime.GOOS
@@ -394,6 +403,20 @@ func daemonMetadataForDoctor() (daemonstate.Metadata, error) {
 // runs on developer machines and in CI, where BOSS_DAEMON_SKIP_LAUNCHCTL makes
 // the service view meaningless; a false FAIL there would train operators to
 // ignore the one line that matters on a real host.
+//
+// The ownership verdict is NOT decided here. It comes from
+// daemonSupervisionOfLiveRecord (services/boss/cmd/daemon_supervision.go),
+// which daemonSupervisionLine in handlers.go renders as a `boss daemon status`
+// line and which delegates to daemon.ClassifyServingMode — the same decision
+// `boss daemon restart` branches on. That shared call replaces what used to be
+// a hand-copied ladder whose agreement was asserted only in this comment, and
+// a comment asserting an invariant cannot fail when the invariant breaks.
+//
+// Exactly one divergence between the two renderers survives, and
+// TestDaemonSupervisionVerdictsMatchDoctor pins it as the only one: a daemon
+// recorded while no service is installed reads unknown here (the not-installed
+// check below owns that fact and its remedy; claiming it twice would print two
+// failures for one cause) and unsupervised on the status line.
 func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metadataErr error) (unhealthy bool, restartRemediation bool) {
 	// Checked BEFORE the service view is read, not after. Under this env var
 	// platformGetStatus deliberately returns Installed=true, Running=false
@@ -436,13 +459,17 @@ func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metad
 		return false, false
 	}
 
-	switch {
-	case !st.Running:
+	// The verdict is decided by daemonSupervisionOfLiveRecord — the one
+	// decision `boss daemon status` renders too and `boss daemon restart`
+	// branches on, via daemon.ClassifyServingMode. Only the wording and the
+	// remediation flags are chosen here.
+	verdict, reason := daemonSupervisionOfLiveRecord(st, metadata.PID)
+	switch reason {
+	case daemonSupervisionReasonDetached:
 		_, _ = fmt.Fprintf(out,
-			"daemon supervision: FAIL bossd (PID %d) is running but the service manager does not own it — it was started detached, so on macOS it cannot reach the login keychain and gh silently falls back to unauthenticated requests\n",
-			metadata.PID)
-		return true, true
-	case st.PID == 0:
+			"daemon supervision: FAIL bossd (PID %d) is running but the service manager does not own it — %s\n",
+			metadata.PID, daemonUnsupervisedConsequences)
+	case daemonSupervisionReasonNoServicePID:
 		// Reachable on systemd when `systemctl is-active` succeeds but the
 		// MainPID read does not, and on launchd when its output cannot be
 		// parsed. Certifying ownership here would emit a false healthy verdict
@@ -450,16 +477,25 @@ func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metad
 		_, _ = fmt.Fprintf(out,
 			"daemon supervision: unknown (the service manager reports running but did not report a PID; recorded daemon is PID %d)\n",
 			metadata.PID)
-		return false, false
-	case st.PID != metadata.PID:
+	case daemonSupervisionReasonForeignPID:
 		_, _ = fmt.Fprintf(out,
 			"daemon supervision: FAIL the service manager owns PID %d but the recorded daemon is PID %d — two daemons, or a stale state record\n",
 			st.PID, metadata.PID)
-		return true, true
-	default:
+	case daemonSupervisionReasonManagerOwned:
 		_, _ = fmt.Fprintf(out, "daemon supervision: ok (PID %d is owned by the service manager)\n", metadata.PID)
-		return false, false
+	default:
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: unknown (the service manager's view of PID %d could not be attributed)\n",
+			metadata.PID)
 	}
+	// Derived from the shared VERDICT rather than restated per rung. A `return
+	// true, true` literal in each unhealthy case is a second, hand-maintained
+	// copy of the same classification — the exact shape this repair removed —
+	// and it is what would let a future rung print FAIL while reporting healthy.
+	// Only an unsupervised daemon is a fault: an unknown is a probe that could
+	// not tell, and restarting on it would act on nothing observed.
+	unhealthy = verdict == daemonSupervisionUnsupervised
+	return unhealthy, unhealthy
 }
 
 // reportDaemonAuthState prints the live-auth section and reports whether it
@@ -591,6 +627,123 @@ func reportDaemonAuthState(ctx context.Context, out io.Writer) (unhealthy bool, 
 	return false, false
 }
 
+// daemonSpawnRemediation names which remedy a spawn-history verdict calls for.
+//
+// An enum rather than a second and third bool because the remedies are mutually
+// exclusive by construction — never-spawned is a launchd domain problem and
+// crash-looping is bossd's own — and a pair of bools would admit a "both" state
+// the Remediation block would then have to pick between arbitrarily.
+type daemonSpawnRemediation int
+
+const (
+	// daemonSpawnRemediationNone covers every healthy and every inconclusive
+	// verdict: nothing to tell the operator to do.
+	daemonSpawnRemediationNone daemonSpawnRemediation = iota
+
+	// daemonSpawnRemediationConsole is the never-spawned remedy: launchd will
+	// not start the job in this domain, so the requirement to state is the
+	// foreground console, never a boss command.
+	daemonSpawnRemediationConsole
+
+	// daemonSpawnRemediationForeground is the crash-loop remedy: launchd DID
+	// spawn bossd and bossd died, so the only step that makes the failure
+	// visible is running the staged binary in the foreground.
+	daemonSpawnRemediationForeground
+)
+
+// reportDaemonSpawnHistory asks the question every other macOS check in this
+// command is structurally unable to ask: did launchd ever actually TRY to start
+// the job?
+//
+// BOS-1183: on 2026-09-06 doctor was clean on every adjacent condition — the
+// staged binary up to date, the protected roots ok, the plist naming the right
+// executable — while the LaunchAgent sat registered in a GUI domain launchd
+// would never spawn anything in, because fast user switching had backgrounded
+// the user's Aqua session. `launchctl list` exits 0 for such a job, so nothing
+// the other checks read could see it, and the diagnosis took an hour of
+// `launchctl print` and system-log reading outside the tooling entirely.
+//
+// The two FAIL verdicts carry DISJOINT remedies, which is the whole reason the
+// distinction has to reach the operator: never-spawned is a launchd domain
+// problem no amount of restarting bossd will fix, and failing is bossd's own
+// crash, which has nothing to do with the domain.
+//
+// Every inconclusive input returns unknown rather than a failure, matching
+// reportDaemonSupervision above. This runs on developer machines and in CI, and
+// a false FAIL there is how an operator learns to skip the one line that is
+// telling the truth on a real host.
+func reportDaemonSpawnHistory(out io.Writer, stagedPath string) (unhealthy bool, remediation daemonSpawnRemediation) {
+	history, err := daemonGetSpawnHistory()
+	if err != nil {
+		// A non-nil error means launchctl could not be EXECUTED at all. The
+		// returned history is fail-closed on that path, so reporting unknown
+		// here cannot certify anything. The message is a foreign process's
+		// error text, so it is bounded like every other one.
+		_, _ = fmt.Fprintf(out, "launchd spawn history: unknown (%s)\n", sanitizeDaemonDoctorField(err.Error()))
+		return false, daemonSpawnRemediationNone
+	}
+
+	switch history.State {
+	case daemon.SpawnStateUnsupported:
+		// The caller only reaches this inside the darwin-only section, so there
+		// is nothing to report and nothing to warn about.
+		return false, daemonSpawnRemediationNone
+	case daemon.SpawnStateNeverSpawned:
+		_, _ = fmt.Fprintf(out,
+			"launchd spawn history: FAIL launchd has never attempted to spawn %s (runs = 0) — the job is registered in a domain launchd will not start it in, which is a launchd domain problem and never a bossd crash\n",
+			history.Target)
+		return true, daemonSpawnRemediationConsole
+	case daemon.SpawnStateFailing:
+		// Runs and LastExitCode are readable by construction here: the
+		// classifier reaches this state only after parsing both.
+		_, _ = fmt.Fprintf(out,
+			"launchd spawn history: FAIL launchd has spawned %s %d times and it last exited with code %d — bossd itself started and failed, so the fault is in the staged binary %s, not in the launchd domain\n",
+			history.Target, history.Runs, history.LastExitCode, stagedPath)
+		return true, daemonSpawnRemediationForeground
+	case daemon.SpawnStateHealthy:
+		_, _ = fmt.Fprintf(out, "launchd spawn history: ok (launchd has spawned %s %d times)\n",
+			history.Target, history.Runs)
+		return false, daemonSpawnRemediationNone
+	default:
+		// SpawnStateUnknown, plus anything a future build of the probe adds.
+		// The Reason is printed verbatim rather than through
+		// sanitizeDaemonDoctorField: it is this repository's own sentence,
+		// already single-line, and it quotes any launchctl-supplied value with
+		// %q — truncating it at the field bound would cut off the half that
+		// says what could not be read.
+		reason := history.Reason
+		if reason == "" {
+			reason = fmt.Sprintf("unrecognised spawn state %q", string(history.State))
+		}
+		_, _ = fmt.Fprintf(out, "launchd spawn history: unknown (%s)\n", reason)
+		return false, daemonSpawnRemediationNone
+	}
+}
+
+// reportDaemonStartupFailureDirective names the only way to see a bossd startup
+// failure that happens BEFORE the socket binds.
+//
+// BOS-1183's second invisible failure, in the same incident: bossd exited
+// inside a fail-loud migration before it ever listened, and
+// ~/Library/Logs/bossanova/bossd.stderr.log was 0 bytes. That file is written
+// by launchd's own stdout/stderr redirect, so it holds nothing at all when
+// launchd never ran the binary — neither `boss daemon status` nor doctor said a
+// word about either half.
+//
+// It is deliberately a directive and not a probe. Detecting a pending migration
+// means opening the database doctor is diagnosing, contending with a daemon
+// that may well be running it; the cheaper pointer buys the same answer.
+//
+// It prints only when the daemon is known not to be serving. On a healthy
+// machine it is noise, and noise is how the lines that matter get skipped.
+func reportDaemonStartupFailureDirective(out io.Writer, stagedPath string, notServing bool) {
+	if !notServing {
+		return
+	}
+	_, _ = fmt.Fprintln(out, "startup diagnosis: a bossd failure before the socket binds (a fail-loud migration, for example) leaves nothing in ~/Library/Logs/bossanova/bossd.stderr.log — launchd writes that file through its own redirect, so it is empty when launchd never ran the binary at all")
+	_, _ = fmt.Fprintf(out, "  to see such an error, run the staged bossd in the foreground: %s\n", stagedPath)
+}
+
 func runDaemonDoctor(cmd *cobra.Command) error {
 	out := cmd.OutOrStdout()
 	// A stale service PATH is a real unhealthy state with an actionable remedy
@@ -699,6 +852,15 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 		}
 	}
 
+	// Placed inside the darwin-only section, unlike the auth and supervision
+	// checks above: launchd spawn history is not a cross-platform concept, and a
+	// Linux run must emit nothing new at all — not even a probe that prints
+	// nothing.
+	spawnUnhealthy, spawnRemediation := reportDaemonSpawnHistory(out, stagedPath)
+	if spawnUnhealthy {
+		unhealthyNonAuth = true
+	}
+
 	var metadata daemonstate.Metadata
 	profile, profileErr := currentDaemonProfile()
 	metadataErr := profileErr
@@ -769,12 +931,77 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 		}
 	}
 
+	// The socket, not the process table, is the definition of "serving": the
+	// BOS-1183 migration failure had a launchd job, a plist and a staged binary
+	// and never bound anything. profileErr is a genuine third answer — with no
+	// profile we cannot know whether the socket answers, and a verdict printed
+	// on a guess sends an operator to foreground a bossd that is already up.
+	//
+	// The verdict is deliberately NOT widened by the spawn history. A job
+	// launchd has never spawned can still be SERVED, and on this branch that is
+	// the ordinary shape after the detached-fallback recovery: `boss daemon
+	// start` spawns bossd directly, the socket answers, and launchd's runs
+	// stays 0 forever. Folding spawnUnhealthy in here sent exactly that
+	// operator to foreground a second bossd — the duplicate the three
+	// isSocketReachable guards in platformEnsureRunning exist to prevent.
+	notServing := false
+	switch {
+	case profileErr != nil:
+		_, _ = fmt.Fprintf(out, "daemon socket: unknown (%v)\n", profileErr)
+	case daemonSocketReachable(profile.SocketPath):
+		_, _ = fmt.Fprintf(out, "daemon socket: %s — reachable\n", profile.SocketPath)
+	default:
+		// Serving is what the daemon is FOR, so a socket known not to answer is
+		// a failure verdict rather than a note. Without it the directive below
+		// printed "run the staged bossd in the foreground" on a run that
+		// emitted no Remediation section and exited 0 — doctor asserting health
+		// while instructing recovery, which is R1's contradiction reproduced
+		// inside doctor's own output.
+		unhealthyNonAuth = true
+		startRemediation = true
+		notServing = true
+		_, _ = fmt.Fprintf(out, "FAIL daemon socket: %s — not reachable, so bossd is not serving\n", profile.SocketPath)
+	}
+	reportDaemonStartupFailureDirective(out, stagedPath, notServing)
+
 	if unhealthyNonAuth || authUnhealthy {
 		_, _ = fmt.Fprintln(out, "\nRemediation:")
 		if unhealthyNonAuth {
 			switch {
 			case installRemediation:
+				// Ahead of the console branch: a job with no plist has to be
+				// installed before which domain it would land in can matter.
 				_, _ = fmt.Fprintln(out, "  run 'boss daemon install'")
+			case spawnRemediation == daemonSpawnRemediationConsole:
+				// Deliberately NOT "run 'boss daemon start'", and ahead of the
+				// startRemediation branch that would print it. launchd is not
+				// going to spawn anything in this domain, so the only thing
+				// that command can do is succeed by producing an UNSUPERVISED
+				// bossd outside the login session — BOS-1183's third reported
+				// failure, reached by following the remedy for its first.
+				_, _ = fmt.Fprintln(out, "  bossd's user must own the FOREGROUND console — check with: stat -f %Su /dev/console, which must print that user.")
+				_, _ = fmt.Fprintln(out, "  A GUI session backgrounded by fast user switching keeps its existing services running but refuses new RunAtLoad spawns, so the job sits pending forever.")
+				_, _ = fmt.Fprintln(out, "  Return that user's login session to the foreground console; launchd spawns the job once that user owns /dev/console again.")
+			case spawnRemediation == daemonSpawnRemediationForeground && notServing:
+				// Ahead of startRemediation, which an unreachable socket has
+				// already set by this point, and ahead of the restart default.
+				// launchd spawned bossd and bossd exited: restarting a binary
+				// that starts and dies reproduces the crash, and `boss daemon
+				// start` finds the job already loaded and does nothing at all.
+				// The failure is only READABLE in the foreground, because the
+				// launchd redirect that would hold it is written by launchd
+				// itself and stays empty for a process that dies this early.
+				//
+				// Gated on notServing for the same reason
+				// reportDaemonStartupFailureDirective is: a crash-loop stays on
+				// launchd's record forever, so this rung is reached long after
+				// the operator recovered with a detached `boss daemon start`.
+				// Telling them to foreground a SECOND bossd over a socket that
+				// already answers is the duplicate the three isSocketReachable
+				// guards in platformEnsureRunning exist to prevent. A serving
+				// but crash-marked job falls through to the restart default,
+				// which is the coherent answer for a daemon that is up.
+				_, _ = fmt.Fprintf(out, "  run the staged bossd in the foreground to see why it exits: %s\n", stagedPath)
 			case startRemediation:
 				// Nothing is running, so there is nothing to restart. This is the
 				// recovery from a restart whose bootstrap failed after its bootout.

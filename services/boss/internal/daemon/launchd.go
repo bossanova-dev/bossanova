@@ -789,7 +789,7 @@ func verifiedRestartOutcome() string {
 	if bossdStillRunningProbe() {
 		return "bootstrap failed but a daemon is still running"
 	}
-	return "the daemon is now stopped — run 'boss daemon start'"
+	return RestartRecoveryHint
 }
 
 // platformStop bootouts the LaunchAgent so the running bossd terminates but
@@ -878,13 +878,18 @@ func platformGetStatus() (*Status, error) {
 }
 
 // platformEnsureRunning attempts to start the daemon via LaunchAgent or fallback.
-func platformEnsureRunning(socketPath string) error {
+//
+// The returned StartMode says which of those two happened. BOS-1183: the
+// fallback is unsupervised, and the caller has no other way to tell — both
+// paths return a nil error and a serving socket. The control flow here is
+// unchanged; only the verdict is threaded out.
+func platformEnsureRunning(socketPath string) (StartMode, error) {
 	// Re-probe: a daemon may have come up (or another caller started one) since
 	// EnsureRunning's initial check. Spawning a duplicate bossd here is the root
 	// cause of the socket-stealing storm, so never start one if the socket is
 	// already being served.
 	if isSocketReachable(socketPath) {
-		return nil
+		return StartModeAlreadyRunning, nil
 	}
 
 	// stagedPath is set only when the LaunchAgent refresh below actually
@@ -923,7 +928,7 @@ func platformEnsureRunning(socketPath string) error {
 
 		if _, err := runLaunchctl("load", plistPath); err == nil {
 			if waitForSocket(socketPath, LifecycleStartupTimeout) {
-				return nil
+				return StartModeServiceManager, nil
 			}
 		}
 	}
@@ -937,28 +942,28 @@ func platformEnsureRunning(socketPath string) error {
 	if bossdPath == "" {
 		sourcePath, resolveErr := ResolveBossdPath()
 		if resolveErr != nil {
-			return fmt.Errorf("cannot auto-start daemon because start failed: %w", resolveErr)
+			return StartModeUnknown, fmt.Errorf("cannot auto-start daemon because start failed: %w", resolveErr)
 		}
 		bossdPath, err = EnsureStaged(sourcePath)
 		if err != nil {
-			return fmt.Errorf("stage fallback daemon: %w", err)
+			return StartModeUnknown, fmt.Errorf("stage fallback daemon: %w", err)
 		}
 	}
 
 	// Final guard before spawning: don't race a daemon that just came up.
 	if isSocketReachable(socketPath) {
-		return nil
+		return StartModeAlreadyRunning, nil
 	}
 
 	if err := startDetachedBossd(bossdPath); err != nil {
-		return err
+		return StartModeUnknown, err
 	}
 
 	if !waitForSocket(socketPath, LifecycleStartupTimeout) {
-		return fmt.Errorf("daemon started but socket not ready after %s at %s", LifecycleStartupTimeout, socketPath)
+		return StartModeUnknown, fmt.Errorf("daemon started but socket not ready after %s at %s", LifecycleStartupTimeout, socketPath)
 	}
 
-	return nil
+	return StartModeDetached, nil
 }
 
 // InstalledServiceEnvPath returns the PATH recorded in the LaunchAgent plist
@@ -1086,4 +1091,58 @@ func plistNextString(decoder *xml.Decoder) (string, bool) {
 			return "", false
 		}
 	}
+}
+
+// platformSpawnHistory reads launchd's spawn history for the installed bossd
+// job.
+//
+// BOS-1183: this is the only probe here that can tell a REGISTERED job from a
+// RUNNABLE one. `launchctl list <label>` — which platformGetStatus uses, and
+// which this function deliberately does not touch — exits 0 for a job launchd
+// has loaded into a domain it will never spawn anything in, so Status.Running
+// reports true for a daemon that is never going to start. `launchctl print`
+// carries `runs` and `last exit code`, which separate "launchd never tried"
+// from "bossd started and died".
+//
+// Error discipline (see GetSpawnHistory): a non-nil error means launchctl could
+// not be EXECUTED. A launchctl that ran and exited non-zero — the "could not
+// find service in domain" case — is a nil error with an unknown verdict, since
+// whether the job is registered at all is a fact Status.Installed already owns.
+// Both paths still return a populated, fail-closed SpawnHistory.
+func platformSpawnHistory() (SpawnHistory, error) {
+	target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + Label
+
+	// Checked BEFORE shelling out, matching reportDaemonSupervision in
+	// services/boss/cmd/daemon_doctor.go: under this env var the service view
+	// is meaningless, and a verdict derived from it on every CI run and test
+	// harness would train operators to ignore the one line that matters on a
+	// real host.
+	if skipLaunchctl() {
+		return SpawnHistory{
+			State:  SpawnStateUnknown,
+			Target: target,
+			Reason: "service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL",
+		}, nil
+	}
+
+	out, err := runLaunchctl("print", target)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return SpawnHistory{
+				State:  SpawnStateUnknown,
+				Target: target,
+				Reason: fmt.Sprintf("could not run launchctl print %s: %v", target, err),
+			}, fmt.Errorf("launchctl print %s: %w", target, err)
+		}
+		return SpawnHistory{
+			State:  SpawnStateUnknown,
+			Target: target,
+			Reason: fmt.Sprintf("launchctl print %s exited %d: %q", target, exitErr.ExitCode(), strings.TrimSpace(string(out))),
+		}, nil
+	}
+
+	history := parseLaunchdSpawnHistory(out)
+	history.Target = target
+	return history, nil
 }

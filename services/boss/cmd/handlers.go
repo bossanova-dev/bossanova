@@ -685,6 +685,7 @@ func restartReachableDaemonForSettingsReload(socketPath string) error {
 	return restartReachableDaemonForSettingsReloadWith(
 		socketPath,
 		daemon.GetStatus,
+		restartTakesStandalonePath,
 		daemon.Stop,
 		daemon.EnsureRunning,
 		terminateBossdProcesses,
@@ -696,6 +697,7 @@ func restartReachableDaemonForSettingsReload(socketPath string) error {
 func restartReachableDaemonForSettingsReloadWith(
 	socketPath string,
 	getStatus func() (*daemon.Status, error),
+	takesStandalonePath func(*daemon.Status) bool,
 	stop func() error,
 	ensureRunning func(string) error,
 	terminateStandalone func() (int, error),
@@ -706,7 +708,15 @@ func restartReachableDaemonForSettingsReloadWith(
 	if err != nil {
 		return fmt.Errorf("daemon restart: %w", err)
 	}
-	if !st.Installed || !st.Running {
+	// restartTakesStandalonePath is BOS-1181's R4: this helper and `boss daemon
+	// restart` must not disagree about what counts as a standalone-served
+	// daemon. The extra `!st.Running` term is this helper's alone and is
+	// deliberate: an installed service the manager has not started has nothing
+	// to stop(), so terminate-then-ensure is the correct sequence. It is
+	// evaluated first so a not-running service short-circuits the probe. It widens
+	// which statuses take the standalone path; it never narrows them, so it
+	// cannot reintroduce the defect.
+	if !st.Running || takesStandalonePath(st) {
 		n, err := terminateStandalone()
 		if err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
@@ -839,14 +849,22 @@ var restartDaemonAfterUpgrade = func() error {
 		return fmt.Errorf("restart daemon after upgrade: daemon status: %w", err)
 	}
 	start := func(string) error { return restartDaemon() }
-	if !st.Installed {
-		// A standalone daemon deliberately has no LaunchAgent. Restart would
-		// create one on macOS, changing the user's service mode during upgrade.
+	// Evaluated ONCE and reused below. The predicate is not pure — it re-reads
+	// the daemon state record and re-probes process liveness on every call — so
+	// deciding twice lets the two halves of one restart disagree, which is the
+	// same split-brain class as the defect being fixed (BOS-1181).
+	standalone := restartTakesStandalonePath(st)
+	if standalone {
+		// A standalone daemon must keep its service mode across an upgrade.
+		// Restart would create a LaunchAgent on macOS, changing it. Installed
+		// alone missed the case where a plist exists but a standalone process
+		// is what is actually serving (BOS-1181), so both are checked here.
 		start = daemonEnsureRunning
 	}
 	if err := restartReachableDaemonForSettingsReloadWith(
 		socketPath,
 		func() (*daemon.Status, error) { return st, nil },
+		func(*daemon.Status) bool { return standalone },
 		daemonStop,
 		start,
 		terminateCurrentProfileBossd,
@@ -856,7 +874,10 @@ var restartDaemonAfterUpgrade = func() error {
 		return fmt.Errorf("restart daemon after upgrade: %w", err)
 	}
 	if err := waitForDaemonRestartReady(socketPath); err != nil {
-		return fmt.Errorf("restart daemon after upgrade: %w", err)
+		// `boss daemon status` names no remediation; the shared hint does, and
+		// it is probe-derived, so it does not misreport a daemon this path's
+		// own fallback may have left running (BOS-1181).
+		return fmt.Errorf("restart daemon after upgrade: %w; %s", err, restartRecoveryHint())
 	}
 	return nil
 }
@@ -871,7 +892,132 @@ var daemonGetStatus = daemon.GetStatus
 
 var daemonEnsureRunning = daemon.EnsureRunning
 
+// daemonEnsureRunningWithMode is the same start path as daemonEnsureRunning,
+// kept as a separate seam because only `boss daemon start` reports the mode
+// (BOS-1183). Widening daemonEnsureRunning's signature would ripple through
+// four unrelated callers that have nothing to say about supervision.
+var daemonEnsureRunningWithMode = daemon.EnsureRunningWithMode
+
 var daemonStop = daemon.Stop
+
+// daemonStandaloneServed reports whether a directly-spawned bossd recorded for
+// the current profile — rather than the platform service manager — is what is
+// actually serving. It answers only that question; the strategy condition the
+// restart paths branch on is restartTakesStandalonePath, which wraps it.
+// Indirected through a var so tests pin it instead of depending on the host's
+// own daemon.
+var daemonStandaloneServed = func(st *daemon.Status) bool {
+	profile, err := currentDaemonProfile()
+	if err != nil {
+		// Without a profile there is no daemon state to attribute the socket
+		// to, so fail closed: every caller keeps its previous behaviour.
+		return false
+	}
+	return daemon.ClassifyServingMode(observedServingFacts(st, profile)) == daemon.ServingModeStandalone
+}
+
+// restartTakesStandalonePath is the whole strategy condition every restart path
+// decides through, so they cannot disagree (BOS-1181 R4). A profile with no
+// service file has never had a service-manager strategy available, and a
+// standalone-served daemon must not be replaced by one; everything else
+// restarts through the service manager.
+func restartTakesStandalonePath(st *daemon.Status) bool {
+	return st == nil || !st.Installed || daemonStandaloneServed(st)
+}
+
+// observedServingFacts gathers what the serving-mode probe adjudicates: the
+// service manager's own view of the job (from st) and the standalone daemon
+// this profile recorded the last time bossd started.
+func observedServingFacts(st *daemon.Status, profile daemonProfile) daemon.ServingFacts {
+	facts := daemon.ServingFacts{StandaloneSupported: daemon.StandaloneServingSupported()}
+	if st != nil {
+		facts.Installed = st.Installed
+		facts.Running = st.Running
+		facts.ServiceManagerPID = st.PID
+	}
+	metadata, err := daemonstate.Read(profile.AppDataDir)
+	if err != nil || metadata.PID <= 0 || !recordServesProfileSocket(metadata, profile) {
+		return facts
+	}
+	facts.StandalonePID = metadata.PID
+	// metadataMatchesRunningProcess returns true with NO liveness probe when
+	// the record names no executable. That permissive default is right for its
+	// original kill-guard caller and inverted here: a legacy or partial record
+	// carrying a stale PID would declare a standalone verdict and boot a
+	// correctly supervised daemon out of the service manager — the mirror image
+	// of BOS-1181. daemon_doctor.go treats the same record shape as
+	// unverifiable ("names no running process"), so follow that precedent and
+	// let the classifier fail closed.
+	if metadata.ExecutablePath == "" {
+		return facts
+	}
+	facts.StandaloneAlive = metadataMatchesRunningProcess(metadata)
+	return facts
+}
+
+// recordServesProfileSocket reports whether a daemon-state record found under
+// this profile's app data dir is bound to this profile's socket. A record
+// written under the same app data dir but naming a DIFFERENT socket says
+// nothing about what is serving here, so it must not produce a standalone
+// verdict. An empty recorded socket predates the field being written and is
+// treated as unverifiable-but-not-mismatched, which keeps BOS-1181's fix
+// reachable for records older than it.
+func recordServesProfileSocket(metadata daemonstate.Metadata, profile daemonProfile) bool {
+	if metadata.SocketPath == "" || profile.SocketPath == "" {
+		return true
+	}
+	return filepath.Clean(metadata.SocketPath) == filepath.Clean(profile.SocketPath)
+}
+
+// currentServingMode re-probes what is serving the current profile right now.
+// ok is false when the probe itself could not be completed, so callers never
+// assert a state they did not observe.
+func currentServingMode() (daemon.ServingMode, bool) {
+	st, err := daemonGetStatus()
+	if err != nil {
+		return daemon.ServingModeUnserved, false
+	}
+	profile, err := currentDaemonProfile()
+	if err != nil {
+		return daemon.ServingModeUnserved, false
+	}
+	return daemon.ClassifyServingMode(observedServingFacts(st, profile)), true
+}
+
+// restartFallbackAnnouncement names what is actually serving after the
+// direct-start fallback produced a socket. daemonEnsureRunning tries the
+// service manager FIRST (launchctl load) and returns nil the moment that
+// yields a socket, so "started bossd directly" is not something this path may
+// assert without looking: the daemon may well still be supervised.
+func restartFallbackAnnouncement() string {
+	mode, ok := currentServingMode()
+	switch {
+	case ok && mode == daemon.ServingModeStandalone:
+		return "Daemon restarted by starting bossd directly: the service manager did not produce a reachable socket, so the daemon is no longer under service-manager supervision."
+	case ok && mode == daemon.ServingModeSupervised:
+		return "Daemon restarted under the service manager: the first attempt did not produce a reachable socket, and a follow-up start did."
+	default:
+		return "Daemon restarted by a follow-up start: the service manager's first attempt did not produce a reachable socket. Run 'boss daemon status' to see what is now serving."
+	}
+}
+
+// restartRecoveryHint names the recovery for a restart that ended with no
+// reachable socket. daemon.RestartRecoveryHint leads with "the daemon is now
+// stopped", which is a claim about the host: the launchd path only makes it
+// behind a liveness probe (verifiedRestartOutcome), and this mirrors that
+// discipline rather than asserting it blind. Every branch names
+// `boss daemon start`, which is what makes recovery discoverable (BOS-1181).
+func restartRecoveryHint() string {
+	mode, ok := currentServingMode()
+	switch {
+	case ok && mode == daemon.ServingModeUnserved:
+		return daemon.RestartRecoveryHint
+	case ok:
+		return fmt.Sprintf("a %s daemon is still running but is not serving the socket — run 'boss daemon stop' then 'boss daemon start'", mode)
+	default:
+		return "run 'boss daemon start' to restore service"
+	}
+}
 
 var terminateAllBossdProcesses = terminateBossdProcesses
 
@@ -2553,15 +2699,41 @@ func runDaemonStatus(_ *cobra.Command) error {
 	}
 	profile, profileErr := currentDaemonProfile()
 
-	if !st.Installed {
+	// BOS-1183: one reachability verdict drives BOTH the header and the
+	// `socket reachable:` field below. The header used to be chosen from
+	// Installed/Running alone while the socket was probed ten lines lower, so
+	// a launchd job that was registered but never spawned printed "Daemon is
+	// running." directly above "socket reachable: false" — observed on a real
+	// machine on 2026-09-06. Probing once and branching on that single value
+	// is what makes the contradiction unrepresentable rather than merely
+	// unlikely.
+	//
+	// Reachability is only knowable when the profile resolved, because the
+	// socket path lives in the profile. When it did not, the verdict is
+	// UNKNOWN, not "unreachable" and not "running": this surface must never
+	// assert health it did not verify.
+	socketKnown := profileErr == nil
+	socketReachable := false
+	if socketKnown {
+		socketReachable = daemonSocketReachable(profile.SocketPath)
+	}
+
+	switch {
+	case !st.Installed:
 		fmt.Println("Daemon is not installed.")
 		fmt.Println("  Run 'boss daemon install' to set up the daemon.")
-	} else if st.Running {
+	case st.Running && socketKnown && socketReachable:
 		fmt.Println("Daemon is running.")
-		if st.PID > 0 {
-			fmt.Printf("  PID:     %d\n", st.PID)
-		}
-	} else {
+		printDaemonStatusPID(st)
+	case st.Running && socketKnown:
+		fmt.Println("Daemon is registered but not serving: the service manager reports the job loaded, but its socket is unreachable.")
+		fmt.Println("  Run 'boss daemon doctor' to diagnose.")
+		printDaemonStatusPID(st)
+	case st.Running:
+		fmt.Println("Daemon is registered with the service manager, but its socket could not be probed, so whether it is serving is unknown.")
+		fmt.Println("  Run 'boss daemon doctor' to diagnose.")
+		printDaemonStatusPID(st)
+	default:
 		fmt.Println("Daemon is installed but not running.")
 	}
 	if st.ServicePath != "" {
@@ -2571,12 +2743,18 @@ func runDaemonStatus(_ *cobra.Command) error {
 		fmt.Printf("  settings: %s\n", profile.SettingsPath)
 		fmt.Printf("  app data: %s\n", profile.AppDataDir)
 		fmt.Printf("  socket:   %s\n", profile.SocketPath)
-		fmt.Printf("  socket reachable: %t\n", daemonSocketReachable(profile.SocketPath))
+		fmt.Printf("  socket reachable: %t\n", socketReachable)
 		if metadata, err := daemonstate.Read(profile.AppDataDir); err == nil {
 			fmt.Printf("  standalone PID: %d\n", metadata.PID)
 			if metadata.ExecutablePath != "" {
 				fmt.Printf("  standalone executable: %s\n", metadata.ExecutablePath)
 			}
+			// "standalone" is a misnomer kept for compatibility: bossd writes
+			// this record on every start (services/bossd/cmd/main.go), so the
+			// two lines above look identical for a supervised daemon and for
+			// one spawned detached. BOS-1183: the classification below is the
+			// only thing that tells them apart on this surface.
+			fmt.Printf("  %s\n", daemonSupervisionLine(st, metadata.PID))
 			// The staged file being current does not mean the live process is
 			// running those bytes (BOS-864). Keep the two facts distinct here
 			// too, so status and doctor can never disagree.
@@ -2590,6 +2768,78 @@ func runDaemonStatus(_ *cobra.Command) error {
 	return nil
 }
 
+func printDaemonStatusPID(st *daemon.Status) {
+	if st.PID > 0 {
+		fmt.Printf("  PID:     %d\n", st.PID)
+	}
+}
+
+// daemonSupervisionLine classifies the daemon in the state record: does the
+// service manager own it, or was it spawned detached with no KeepAlive restart
+// and no chance of surviving a reboot?
+//
+// BOS-1183 R4: losing supervision is a legitimate recovery, never a silent
+// one, so the fact has to be labelled on the surface that displays it.
+//
+// The verdict is NOT decided here. It comes from daemonSupervisionOfLiveRecord
+// — the single decision `boss daemon doctor` renders too and
+// `boss daemon restart` branches on, via daemon.ClassifyServingMode — so the
+// three surfaces cannot give one machine three answers. This function owns
+// only the guard rungs above that decision and the wording below it.
+//
+// One divergence from reportDaemonSupervision survives, and
+// TestDaemonSupervisionVerdictsMatchDoctor pins it as the only one: a daemon
+// recorded while no service is installed is reported unsupervised here and
+// unknown by doctor, because doctor has a separate not-installed check with its
+// own remedy and would otherwise print two failures for one fact, whereas here
+// the "Daemon is not installed." header three lines up already says why.
+func daemonSupervisionLine(st *daemon.Status, recordedPID int) string {
+	// Checked BEFORE the service view is read, exactly as doctor does. Under
+	// this env var platformGetStatus returns Installed=true, Running=false
+	// without asking launchd or systemd at all — byte-identical to the
+	// detached shape this line exists to flag, so interpreting it would make
+	// every test harness and CI run print a false warning.
+	if os.Getenv("BOSS_DAEMON_SKIP_LAUNCHCTL") != "" {
+		return "supervision: unknown (service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL)"
+	}
+	if recordedPID <= 0 {
+		return "supervision: unknown (no recorded daemon PID)"
+	}
+	// BOS-1183 repair pass: status used to skip this probe and describe the
+	// RECORD alone, which is what let it disagree with doctor and restart. A
+	// supervised machine whose state record outlived its process read
+	// "unsupervised (two daemons, or a stale state record)" here, "unknown" in
+	// doctor and "supervised" to restart. One signal-0 call — the same probe
+	// doctor already makes — removes the whole disagreement.
+	alive, aliveErr := daemonProcessAlive(recordedPID)
+	switch {
+	case aliveErr != nil:
+		return fmt.Sprintf("supervision: unknown (recorded PID %d could not be checked: %v)", recordedPID, aliveErr)
+	case !alive:
+		return fmt.Sprintf("supervision: unknown (recorded PID %d is not running)", recordedPID)
+	}
+
+	_, reason := daemonSupervisionOfLiveRecord(st, recordedPID)
+	switch reason {
+	case daemonSupervisionReasonDetached:
+		return fmt.Sprintf(
+			"supervision: unsupervised (the service manager does not own the recorded daemon PID %d — %s)",
+			recordedPID, daemonUnsupervisedConsequences)
+	case daemonSupervisionReasonForeignPID:
+		return fmt.Sprintf(
+			"supervision: unsupervised (the service manager owns PID %d but the recorded daemon is PID %d — two daemons, or a stale state record; either way the recorded daemon is not under service-manager supervision)",
+			st.PID, recordedPID)
+	case daemonSupervisionReasonNoServicePID:
+		return fmt.Sprintf(
+			"supervision: unknown (the service manager reports running but did not report a PID; recorded daemon is PID %d)",
+			recordedPID)
+	case daemonSupervisionReasonManagerOwned:
+		return fmt.Sprintf("supervision: supervised (the service manager owns PID %d)", recordedPID)
+	default:
+		return fmt.Sprintf("supervision: unknown (the service manager's view of PID %d could not be attributed)", recordedPID)
+	}
+}
+
 func runDaemonStart(_ *cobra.Command) error {
 	socketPath, err := defaultSocketPath()
 	if err != nil {
@@ -2599,10 +2849,22 @@ func runDaemonStart(_ *cobra.Command) error {
 		fmt.Println("Daemon is already running.")
 		return nil
 	}
-	if err := daemonEnsureRunning(socketPath); err != nil {
+	mode, err := daemonEnsureRunningWithMode(socketPath)
+	if err != nil {
 		return fmt.Errorf("start daemon failed: %w", err)
 	}
+	// "Daemon started." stays verbatim and stays first: scripts parse this
+	// output, so the supervision verdict is ADDED beneath it rather than
+	// restructuring what is already there. BOS-1183 R4 — the fallback spawn is
+	// a legitimate recovery, but it must never be a silent one.
 	fmt.Println("Daemon started.")
+	if mode == daemon.StartModeDetached {
+		// This is the surface where the operator FIRST learns supervision was
+		// lost, so it is the one that must not understate it: the shared
+		// consequence sentence names the immediate keychain/gh damage as well
+		// as the reboot one.
+		fmt.Printf("  Warning: started detached, not under the service manager — %s. Run 'boss daemon doctor'.\n", daemonUnsupervisedConsequences)
+	}
 	return nil
 }
 
@@ -2709,7 +2971,14 @@ func runDaemonRestart(_ *cobra.Command) error {
 	}
 	socketPath := profile.SocketPath
 
-	if !st.Installed {
+	// BOS-1181: `!st.Installed` alone asked whether a plist file exists, which
+	// is never a statement about what is serving. A standalone daemon sitting
+	// behind an existing (and here unusable) LaunchAgent fell through to the
+	// launchd path, which stopped the process that was serving and could not
+	// produce a replacement socket. Restart in kind instead. The Installed
+	// clause stays so a profile with no service file keeps its previous
+	// behaviour even when nothing is recorded as serving.
+	if restartTakesStandalonePath(st) {
 		n, err := terminateStandaloneCurrentProfile(profile)
 		if err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
@@ -2750,7 +3019,24 @@ func runDaemonRestart(_ *cobra.Command) error {
 		return fmt.Errorf("restart daemon failed: %w", err)
 	}
 	if err := waitForDaemonRestartReady(socketPath); err != nil {
-		return fmt.Errorf("daemon restarted but %w", err)
+		// R1: restoring service outranks honouring the requested supervision
+		// mode. The service manager reported success and produced no socket,
+		// so fall back to the direct start `boss daemon start` uses rather
+		// than exiting non-zero having left the host with no daemon at all.
+		restoreErr := daemonEnsureRunning(socketPath)
+		if restoreErr == nil && daemonSocketReachable(socketPath) {
+			// Announced, not silent: the operator's daemon may no longer be
+			// under the service manager, and they would otherwise believe it
+			// is. What to announce is probed, not assumed — see below.
+			fmt.Println(restartFallbackAnnouncement())
+			return nil
+		}
+		// restoreErr is the only diagnostic the operator gets for why the
+		// fallback failed; discarding it left them with nothing to act on.
+		if restoreErr != nil {
+			return fmt.Errorf("daemon restarted but %w; starting bossd directly also failed: %w; %s", err, restoreErr, restartRecoveryHint())
+		}
+		return fmt.Errorf("daemon restarted but %w; starting bossd directly reported success but produced no reachable socket; %s", err, restartRecoveryHint())
 	}
 	fmt.Println("Daemon restarted.")
 	return nil
@@ -2766,7 +3052,7 @@ func waitForDaemonRestartReady(socketPath string) error {
 		}
 		time.Sleep(daemonRestartPollInterval)
 	}
-	return fmt.Errorf("socket did not become reachable after %s; check 'boss daemon status'", daemonRestartReadyTimeout)
+	return fmt.Errorf("socket did not become reachable after %s", daemonRestartReadyTimeout)
 }
 
 func restartSocketPath(socketPath string, err error) (string, error) {

@@ -1,0 +1,64 @@
+com.bossanova.bossd = {
+	active count = 1
+	path = /Users/dave/Library/LaunchAgents/com.bossanova.bossd.plist
+	state = running
+
+	program = /Users/dave/Library/Application Support/bossanova/bin/bossd
+
+	arguments = {
+		/Users/dave/Library/Application Support/bossanova/bin/bossd
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		PATH => /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+		LC_CTYPE => UTF-8
+		XPC_SERVICE_NAME => com.bossanova.bossd
+	}
+
+	domain = gui/501 [100019]
+	asid = 100019
+	minimum runtime = 10
+	exit timeout = 90
+	pid = 4213
+	immediate reason = speculative
+	forks = 0
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	last exit code = (never exited)
+	runs = 1
+
+	pending removal = 0
+	pending removal reason = none
+
+	endpoints = {
+		"com.bossanova.bossd.xpc" = {
+			port = 0x9e0b
+			active = 1
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 0
+		}
+	}
+
+	stdout path = /Users/dave/Library/Logs/bossanova/bossd.stdout.log
+	stderr path = /Users/dave/Library/Logs/bossanova/bossd.stderr.log
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	submitted job.
+	jetsam thread limit = 32
+	cpumon = default
+
+	properties = keepalive | runatload | inferred program
+}

@@ -1437,3 +1437,26 @@ func TestResolveInteractiveSessionIDRPCNamesDistinctMissReasons(t *testing.T) {
 		t.Fatalf("both misses report the same reason %q; they must be distinguishable", fdMiss.Reason)
 	}
 }
+
+// TestHasQuestionPromptReportsReplyChoiceWithoutBlocking pins the pair the
+// daemon actually reads for BOS-1180's pane: the poller raises QUESTION off
+// HasPrompt while the delivery gate keeps typing into the live composer off
+// BlocksInput. Asserting them together at the RPC boundary is what stops a
+// future edit satisfying one and breaking the other.
+func TestHasQuestionPromptReportsReplyChoiceWithoutBlocking(t *testing.T) {
+	data, err := os.ReadFile("testdata/panes/reply_choice.txt")
+	if err != nil {
+		t.Fatalf("read reply-choice pane fixture: %v", err)
+	}
+	s := newTestServer(t)
+	resp, err := s.HasQuestionPrompt(context.Background(), &bossanovav1.HasQuestionPromptRequest{PaneContent: data})
+	if err != nil {
+		t.Fatalf("HasQuestionPrompt(reply-choice): %v", err)
+	}
+	if !resp.HasPrompt {
+		t.Error("HasPrompt = false for the reply-choice pane, want true")
+	}
+	if resp.BlocksInput {
+		t.Error("BlocksInput = true for the reply-choice pane, want false: the composer is live")
+	}
+}

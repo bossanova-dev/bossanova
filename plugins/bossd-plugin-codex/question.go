@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
-	"strings"
 
 	"github.com/recurser/bossalib/statusdetect"
 )
@@ -54,7 +53,15 @@ var codexApproval = regexp.MustCompile(`(?m)(Press\s+enter\s+to\s+confirm\s+or\s
 // prefix codex's replayed user history and activity bullets, which is exactly
 // the text that must not be able to impersonate live UI.
 const (
-	codexQuestionCardHeaderFmt     = `^[\s\x{2502}\x{2503}\x{258C}\x{2588}|]*\bQuestion\s+[0-9]+/[0-9]+\s+\(%s\s+unanswered\)`
+	// codexBoxBorderClass is that run of leading glyphs: indentation plus the
+	// TUI's box borders, and nothing else. It is a named const because two
+	// matchers anchor past it — the question-card header here and
+	// codexReplyChoiceInstruction below — and the second one's claim to be
+	// using "the same class" has to be structural, not a copy that a later edit
+	// can quietly desync.
+	codexBoxBorderClass = `[\s\x{2502}\x{2503}\x{258C}\x{2588}|]`
+
+	codexQuestionCardHeaderFmt     = `^` + codexBoxBorderClass + `*\bQuestion\s+[0-9]+/[0-9]+\s+\(%s\s+unanswered\)`
 	codexQuestionCardAnyCount      = `[0-9]+`
 	codexQuestionCardLiveCount     = `[1-9][0-9]*`
 	codexQuestionCardFooterPattern = `^\s*tab\s+to\s+add\s+notes\s+\|\s+enter\s+to\s+submit\s+answer\s+\|\s+esc\s+to\s+interrupt\s*$`
@@ -77,6 +84,31 @@ var (
 	codexQuestionCardHeader = regexp.MustCompile(`(?m)` + codexQuestionCardHeaderPattern(codexQuestionCardAnyCount))
 	codexQuestionCardLive   = regexp.MustCompile(`(?m)` + codexQuestionCardHeaderPattern(codexQuestionCardLiveCount))
 )
+
+// codexReplyChoiceInstruction matches the closing line of a codex assistant turn
+// that asked a multiple-choice question in ordinary prose: an imperative
+// reply/respond/answer instruction naming TWO OR MORE numeric options —
+// "Reply 1, 2, or 3.", "Reply with 1, 2, or 3.", "Reply 1 or 2.", "Reply 1-3.".
+//
+// Two options are the discriminator and one is deliberately not enough.
+// "Reply 1." names a single value, which is an instruction to acknowledge
+// rather than a choice to make, and a lone digit after a verb is the shape
+// ordinary prose produces most often ("reply 1 line", "answer 1 of the
+// reviewers"). Requiring a second option — an "or N", or an "N-M" range —
+// is what separates a menu the agent is waiting on from a sentence that
+// happens to contain a number.
+//
+// The leading class is codexBoxBorderClass, the same run of indentation and box
+// borders codexQuestionCardHeaderFmt anchors past, shared as a const so the two
+// cannot drift apart. Neither "›" nor "•" is in it, for the reason stated
+// there: those prefix codex's replayed user history and activity bullets, the
+// text that must never be able to impersonate live output. On this path the
+// stripper has already deleted both, so the exclusion is belt-and-braces rather
+// than the only defence — which is the right way round, because the stripper is
+// what a future edit is likeliest to loosen.
+var codexReplyChoiceInstruction = regexp.MustCompile(
+	`(?im)^` + codexBoxBorderClass + `*(?:please\s+)?(?:reply|respond|answer)(?:\s+(?:with|using))?` +
+		`\s+[0-9]+(?:\s*,\s*[0-9]+)*\s*(?:,?\s*or\s+[0-9]+|\s*[-\x{2013}\x{2014}]\s*[0-9]+)\s*[.!]?\s*$`)
 
 // codexSessionComplete marks terminal output for a finished Codex session.
 // Question UI above this marker is stale scrollback, not an active prompt.
@@ -110,6 +142,22 @@ var codexUnicodeSpace = regexp.MustCompile(`\p{Zs}`)
 // the agent is producing output; treating it as a question state would
 // trigger spurious notifications mid-turn.
 func hasCodexQuestionPrompt(data []byte) bool {
+	return codexQuestionPrompt(data, false)
+}
+
+// codexQuestionPrompt implements both codex pane predicates. modalOnly stops
+// the scan after the arms that describe DRAWN UI — the request_user_input card
+// and the approval menu — instead of falling through to the conversational arm
+// below them.
+//
+// The shape is lifted deliberately from statusdetect.hasQuestionPrompt, which
+// splits the claude predicates the same way and for the same reason: both
+// callers run the same prep and the same modal arms in the same order, so the
+// modal subset cannot drift away from the notify superset as either grammar is
+// edited. Two separate scans would let them disagree silently, and the way that
+// disagreement fails is BOS-600 — a notify-only pattern quietly becoming a
+// reason to refuse delivery.
+func codexQuestionPrompt(data []byte, modalOnly bool) bool {
 	// Normalize NBSP and other Unicode spaces to ASCII space so the prefix
 	// checks and "\s"-based regexes below match the TUI's NBSP-rendered output.
 	data = codexUnicodeSpace.ReplaceAll(data, []byte(" "))
@@ -125,7 +173,7 @@ func hasCodexQuestionPrompt(data []byte) bool {
 	// historical "1. Yes" in a user message doesn't trip the approval
 	// regex. We rebuild the pane content line-by-line; bytes are kept on
 	// the (intentionally rare) lines that survive both filters.
-	var b strings.Builder
+	var b bytes.Buffer
 	b.Grow(len(activeData))
 	for _, line := range bytes.Split(activeData, []byte{'\n'}) {
 		trimmed := bytes.TrimLeft(line, " \t")
@@ -136,7 +184,65 @@ func hasCodexQuestionPrompt(data []byte) bool {
 		b.WriteByte('\n')
 	}
 
-	return codexApproval.MatchString(b.String())
+	stripped := b.Bytes()
+	if codexApproval.Match(stripped) {
+		return true
+	}
+
+	// Everything below this line describes a CONVERSATIONAL question: codex
+	// ended its turn with ordinary prose and left the composer live. That is a
+	// reason to notify a human and emphatically not a reason to refuse input —
+	// the pane is waiting to be typed into, and refusing would break the
+	// commonest action of all, answering the question codex just asked
+	// (BOS-600). A caller gating delivery stops here.
+	//
+	// Within this shared body the early return is the only difference between
+	// the two answers, which is what makes the conversational arm structurally
+	// unable to reach blocks_input: getting past this line requires modalOnly to
+	// be false, so no later edit below can leak into the modal answer by
+	// accident. It is not merely absent from the modal set by luck of ordering.
+	//
+	// That guarantee is about this function, NOT about the two exported
+	// predicates -- do not read a subset relation into it. hasCodexModalPrompt
+	// slices to codexModalTail before calling in, and adds the boot
+	// interstitial, a window-scoped working guard and the tall-card path on top
+	// of this scan, so blocks_input is neither a superset nor a subset of
+	// has_prompt overall. See hasCodexModalPrompt's doc comment.
+	if modalOnly {
+		return false
+	}
+
+	// The conversational arm (BOS-1180). Codex ended its turn with a numbered
+	// list closed by "Reply 1, 2, or 3.", drew no menu, and left the composer
+	// live. The plugin contract already promises has_prompt covers "a
+	// conversational question asked with a live composer"
+	// (proto/bossanova/v1/plugin.proto); codex simply did not honour it, because
+	// both arms above match DRAWN UI. That pane answered has_prompt=false and
+	// the chat sat waiting with nobody told.
+	//
+	// Notify-only structurally: it sits below the modalOnly return above, for
+	// the reason given there.
+	//
+	// Bounded to the rendered tail, unlike the approval arm above, which reads
+	// pane-wide. The inconsistency is deliberate: a menu footer is drawn chrome
+	// and codex redraws it away the moment it is answered, whereas a prose line
+	// is transcript and never self-evicts. Callers capture with up to 1000 lines
+	// of scrollback and neither stripper removes an ordinary sentence, so a
+	// pane-wide read would let a question answered an hour ago pin the chat in
+	// QUESTION for the rest of the session. It is the same reasoning
+	// statusdetect's pattern 4 gives for scoping itself to a tail. The tail is
+	// taken over the STRIPPED buffer, so its 30 lines are 30 lines of live
+	// output — replayed history and activity bullets are already gone and do
+	// not spend the window.
+	//
+	// Accepted residual: this repository's own agents write "Reply 1, 2, or 3."
+	// into plans, tickets and commit messages — the ticket that produced this
+	// arm does — so a codex pane quoting one inside its last
+	// codexModalTailLines rendered lines fires spuriously. The cost is one
+	// notification. The failure it replaces is never telling a human their
+	// session is stuck, so the cheap direction is the one taken; it is the same
+	// asymmetry services/bossd/internal/agent/modal_detector.go states.
+	return codexReplyChoiceInstruction.Match(codexModalTail(stripped))
 }
 
 // codexModalTailLines bounds the "does this pane BLOCK input right now?" answer
@@ -144,7 +250,10 @@ func hasCodexQuestionPrompt(data []byte) bool {
 // for free from bossalib/statusdetect (see hasQuestionPrompt's modalOnly path).
 //
 // The notification question ("has this chat asked something?") is answered over
-// the whole pane on purpose: a prompt is worth surfacing wherever it is. The
+// the whole pane for the DRAWN-UI arms on purpose: a menu is worth surfacing
+// wherever it is. The conversational arm is the exception and borrows this same
+// bound — a prose line never self-evicts, so pane-wide it would pin the chat in
+// QUESTION forever; see codexQuestionPrompt's conversational arm. The
 // modal question is not the same question. Callers capture with scrollback — up
 // to 1000 lines — and hasCodexQuestionPrompt's active-pane slice only truncates
 // at "• Session Complete", which a long-running chat may never print. Neither
@@ -333,9 +442,10 @@ func hasCodexBootInterstitial(tail []byte) bool {
 }
 
 // hasCodexModalPrompt reports whether the pane is showing a codex selection UI
-// that has taken the composer *now*: the hasCodexQuestionPrompt grammar bounded
-// to the tail (see codexModalTailLines for why the two differ), PLUS the boot
-// interstitial, which hasCodexQuestionPrompt deliberately does not match. That
+// that has taken the composer *now*: the shared codexQuestionPrompt grammar in
+// its modalOnly form, bounded to the tail (see codexModalTailLines for why the
+// two differ), PLUS the boot interstitial, which that grammar deliberately does
+// not match. That
 // screen owns the composer without asking anything, so this predicate is not a
 // superset or a subset of the notify one — do not infer either from the other.
 //
@@ -350,7 +460,7 @@ func hasCodexModalPrompt(data []byte) bool {
 	data = codexUnicodeSpace.ReplaceAll(data, []byte(" "))
 	trimmed := bytes.TrimRight(data, " \t\r\n")
 	tail := codexModalTail(trimmed)
-	if hasCodexQuestionPrompt(tail) {
+	if codexQuestionPrompt(tail, true) {
 		return true
 	}
 	if hasCodexBootInterstitial(tail) {
@@ -419,8 +529,9 @@ func codexTallCardOwnsComposer(trimmed, tail []byte) bool {
 // — so the bound has to be measured from rendered content.
 //
 // The trim is ASCII-only, so callers must normalize Unicode spaces first or a
-// pane padded with NBSP is not recognised as padding. hasCodexModalPrompt, the
-// only caller, does exactly that on the line above.
+// pane padded with NBSP is not recognised as padding. Both callers do exactly
+// that before calling in: hasCodexModalPrompt just above its own call,
+// and codexQuestionPrompt's conversational arm at the top of that function.
 func codexModalTail(data []byte) []byte {
 	return statusdetect.LastNLines(bytes.TrimRight(data, " \t\r\n"), codexModalTailLines)
 }

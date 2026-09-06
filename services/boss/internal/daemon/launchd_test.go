@@ -225,8 +225,14 @@ func TestPlatformEnsureRunningStagesFallbackDaemon(t *testing.T) {
 		}
 	})
 
-	if err := platformEnsureRunning(socketPath); err != nil {
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
 		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	// BOS-1183: this is the unsupervised path, and the caller can only tell
+	// because of this verdict — the error is nil either way.
+	if mode != StartModeDetached {
+		t.Errorf("StartMode = %v, want %v for the direct-spawn fallback", mode, StartModeDetached)
 	}
 	if got, want := startedPath, expectedStagedBossdPath(t); got != want {
 		t.Errorf("fallback started %q, want stable staged path %q", got, want)
@@ -322,8 +328,12 @@ func TestPlatformEnsureRunningStagesBeforeLoadingTheLaunchAgent(t *testing.T) {
 		stagedAtLoad = string(contents)
 	})
 
-	if err := platformEnsureRunning(socketPath); err != nil {
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
 		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if mode != StartModeServiceManager {
+		t.Errorf("StartMode = %v, want %v when the LaunchAgent served the socket", mode, StartModeServiceManager)
 	}
 	if got := countLaunchctlVerb(*calls, "load"); got != 1 {
 		t.Fatalf("`launchctl load` invocations = %d, want 1", got)
@@ -347,8 +357,12 @@ func TestPlatformEnsureRunningDoesNotRestageACurrentBinary(t *testing.T) {
 	}
 
 	calls := stubLoadServesSocket(t, socketPath, nil)
-	if err := platformEnsureRunning(socketPath); err != nil {
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
 		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if mode != StartModeServiceManager {
+		t.Errorf("StartMode = %v, want %v when the LaunchAgent served the socket", mode, StartModeServiceManager)
 	}
 
 	after, err := os.Stat(stagedPath)
@@ -389,8 +403,12 @@ func TestPlatformEnsureRunningLoadsAnywayWhenStagingFails(t *testing.T) {
 	t.Cleanup(func() { warnDaemonRefreshFailed = originalWarn })
 
 	calls := stubLoadServesSocket(t, socketPath, nil)
-	if err := platformEnsureRunning(socketPath); err != nil {
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
 		t.Fatalf("a staging failure turned a working start into a hard failure: %v", err)
+	}
+	if mode != StartModeServiceManager {
+		t.Errorf("StartMode = %v, want %v — a staging failure must not downgrade a supervised start", mode, StartModeServiceManager)
 	}
 	if got := countLaunchctlVerb(*calls, "load"); got != 1 {
 		t.Fatalf("`launchctl load` invocations = %d, want 1 — a staging failure must not stop the start", got)
@@ -457,8 +475,12 @@ func TestPlatformEnsureRunningReusesTheRefreshedStagingForTheFallback(t *testing
 		return []byte("Load failed"), fakeExitError(t, 1)
 	})
 
-	if err := platformEnsureRunning(socketPath); err != nil {
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
 		t.Fatalf("fallback re-resolved and re-staged instead of reusing the refresh it had just done: %v", err)
+	}
+	if mode != StartModeDetached {
+		t.Errorf("StartMode = %v, want %v — a failed load falls through to the unsupervised spawn", mode, StartModeDetached)
 	}
 	// The whole discriminating power of this test lives in the stub's `load`
 	// branch, which is where the source is sabotaged. If the LaunchAgent branch
@@ -497,8 +519,12 @@ func TestPlatformEnsureRunningLeavesACurrentPlistAlone(t *testing.T) {
 	}
 
 	stubLoadServesSocket(t, socketPath, nil)
-	if err := platformEnsureRunning(socketPath); err != nil {
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
 		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if mode != StartModeServiceManager {
+		t.Errorf("StartMode = %v, want %v when the LaunchAgent served the socket", mode, StartModeServiceManager)
 	}
 
 	after, err := os.Stat(plistPath)
@@ -1642,5 +1668,137 @@ func TestPlistEnvironmentPathRoundTripsGeneratedPlist(t *testing.T) {
 	}
 	if want := serviceEnvPath(); got != want {
 		t.Errorf("round trip = %q, want %q", got, want)
+	}
+}
+
+// TestPlatformSpawnHistory covers the launchd wiring around
+// parseLaunchdSpawnHistory: the service target it asks about, the
+// BOSS_DAEMON_SKIP_LAUNCHCTL short-circuit, and the two launchctl failure
+// shapes. BOS-1183: the classification itself is exercised platform-agnostically
+// in spawnhistory_test.go against the same fixtures, so what is left to prove
+// here is that the probe asks launchd the right question and fails closed when
+// it does not get an answer.
+func TestPlatformSpawnHistory(t *testing.T) {
+	origRunLaunchctl := runLaunchctl
+	t.Cleanup(func() { runLaunchctl = origRunLaunchctl })
+
+	wantTarget := "gui/" + strconv.Itoa(os.Getuid()) + "/" + Label
+
+	t.Run("never_spawned_job", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		var gotArgs []string
+		runLaunchctl = func(args ...string) ([]byte, error) {
+			gotArgs = args
+			return readSpawnFixture(t, "never-spawned.txt"), nil
+		}
+
+		got, err := platformSpawnHistory()
+		if err != nil {
+			t.Fatalf("platformSpawnHistory: %v", err)
+		}
+		wantArgs := []string{"print", wantTarget}
+		if len(gotArgs) != len(wantArgs) || gotArgs[0] != wantArgs[0] || gotArgs[1] != wantArgs[1] {
+			t.Errorf("runLaunchctl args = %q, want %q", gotArgs, wantArgs)
+		}
+		if got.Target != wantTarget {
+			t.Errorf("Target = %q, want %q", got.Target, wantTarget)
+		}
+		if got.State != SpawnStateNeverSpawned {
+			t.Errorf("State = %q, want %q", got.State, SpawnStateNeverSpawned)
+		}
+		if !got.RunsKnown || got.Runs != 0 || !got.NeverExited {
+			t.Errorf("RunsKnown=%v Runs=%d NeverExited=%v, want true/0/true", got.RunsKnown, got.Runs, got.NeverExited)
+		}
+	})
+
+	t.Run("launchctl_exit_error_is_unknown_not_healthy", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		runLaunchctl = func(_ ...string) ([]byte, error) {
+			return []byte("Could not find service \"com.bossanova.bossd\" in domain for login\n"), fakeExitError(t, 113)
+		}
+
+		got, err := platformSpawnHistory()
+		if err != nil {
+			t.Fatalf("platformSpawnHistory: want a nil error for a launchctl that ran and refused, got %v", err)
+		}
+		if got.State == SpawnStateHealthy {
+			t.Fatal("State = healthy after a failed launchctl print; must fail closed")
+		}
+		if got.State != SpawnStateUnknown {
+			t.Errorf("State = %q, want %q", got.State, SpawnStateUnknown)
+		}
+		if got.Target != wantTarget {
+			t.Errorf("Target = %q, want %q", got.Target, wantTarget)
+		}
+		if !strings.Contains(got.Reason, "Could not find service") {
+			t.Errorf("Reason = %q, want it to carry the launchctl output", got.Reason)
+		}
+	})
+
+	t.Run("launchctl_not_executable_returns_an_error", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		runLaunchctl = func(_ ...string) ([]byte, error) {
+			return nil, errors.New(`exec: "launchctl": executable file not found in $PATH`)
+		}
+
+		got, err := platformSpawnHistory()
+		if err == nil {
+			t.Fatal("platformSpawnHistory() = nil error when launchctl could not be executed, want an error")
+		}
+		if got.State != SpawnStateUnknown {
+			t.Errorf("State = %q, want %q even on the error path", got.State, SpawnStateUnknown)
+		}
+		if got.Target != wantTarget {
+			t.Errorf("Target = %q, want %q", got.Target, wantTarget)
+		}
+	})
+
+	t.Run("skip_launchctl_does_not_shell_out", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		runLaunchctl = func(_ ...string) ([]byte, error) {
+			t.Fatal("runLaunchctl must not be called when BOSS_DAEMON_SKIP_LAUNCHCTL is set")
+			return nil, nil
+		}
+
+		got, err := platformSpawnHistory()
+		if err != nil {
+			t.Fatalf("platformSpawnHistory: %v", err)
+		}
+		if got.State != SpawnStateUnknown {
+			t.Errorf("State = %q, want %q", got.State, SpawnStateUnknown)
+		}
+		if !strings.Contains(got.Reason, "BOSS_DAEMON_SKIP_LAUNCHCTL") {
+			t.Errorf("Reason = %q, want it to name BOSS_DAEMON_SKIP_LAUNCHCTL", got.Reason)
+		}
+		if got.Target != wantTarget {
+			t.Errorf("Target = %q, want %q", got.Target, wantTarget)
+		}
+	})
+}
+
+// TestGetSpawnHistoryDelegates proves the exported entry point is wired to the
+// platform probe rather than to a default-valued zero struct -- a zero
+// SpawnHistory has an empty State, which no caller should ever be handed.
+func TestGetSpawnHistoryDelegates(t *testing.T) {
+	origRunLaunchctl := runLaunchctl
+	t.Cleanup(func() { runLaunchctl = origRunLaunchctl })
+
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	runLaunchctl = func(_ ...string) ([]byte, error) {
+		return readSpawnFixture(t, "crash-loop.txt"), nil
+	}
+
+	got, err := GetSpawnHistory()
+	if err != nil {
+		t.Fatalf("GetSpawnHistory: %v", err)
+	}
+	if got.State != SpawnStateFailing {
+		t.Errorf("State = %q, want %q", got.State, SpawnStateFailing)
+	}
+	if got.Runs != 47 || got.LastExitCode != 1 {
+		t.Errorf("Runs = %d, LastExitCode = %d, want 47 and 1", got.Runs, got.LastExitCode)
+	}
+	if got.Target != "gui/"+strconv.Itoa(os.Getuid())+"/"+Label {
+		t.Errorf("Target = %q, want the gui/<uid>/<label> form", got.Target)
 	}
 }

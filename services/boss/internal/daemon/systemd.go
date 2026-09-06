@@ -560,13 +560,19 @@ func platformMcpGetStatus() (*Status, error) {
 }
 
 // platformEnsureRunning attempts to start the daemon if it's not reachable.
-func platformEnsureRunning(socketPath string) error {
+//
+// The returned StartMode says whether systemd started the daemon or whether
+// this fell through to the unsupervised direct spawn. BOS-1183: the caller has
+// no other way to tell the two apart, because both return a nil error and a
+// serving socket. The control flow here is unchanged; only the verdict is
+// threaded out.
+func platformEnsureRunning(socketPath string) (StartMode, error) {
 	// Re-probe: a daemon may have come up (or another caller started one) since
 	// EnsureRunning's initial check. Spawning a duplicate bossd here is the root
 	// cause of the socket-stealing storm, so never start one if the socket is
 	// already being served.
 	if isSocketReachable(socketPath) {
-		return nil
+		return StartModeAlreadyRunning, nil
 	}
 
 	// Try the systemd service first (if installed).
@@ -574,7 +580,7 @@ func platformEnsureRunning(socketPath string) error {
 	if err == nil && st.Installed && !st.Running {
 		if _, err := runSystemctl("--user", "start", ServiceName); err == nil {
 			if waitForSocket(socketPath, LifecycleStartupTimeout) {
-				return nil
+				return StartModeServiceManager, nil
 			}
 		}
 	}
@@ -582,12 +588,12 @@ func platformEnsureRunning(socketPath string) error {
 	// Fall back to starting bossd directly as a background process.
 	bossdPath, err := ResolveBossdPath()
 	if err != nil {
-		return fmt.Errorf("cannot auto-start daemon because start failed: %w", err)
+		return StartModeUnknown, fmt.Errorf("cannot auto-start daemon because start failed: %w", err)
 	}
 
 	// Final guard before spawning: don't race a daemon that just came up.
 	if isSocketReachable(socketPath) {
-		return nil
+		return StartModeAlreadyRunning, nil
 	}
 
 	// #nosec G204 -- self-spawn of the discovered bossd binary (bossdPath); literal args, no shell; local-trust, not attacker-controlled.
@@ -596,17 +602,17 @@ func platformEnsureRunning(socketPath string) error {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start bossd: %w", err)
+		return StartModeUnknown, fmt.Errorf("start bossd: %w", err)
 	}
 
 	// Release the child process so it runs independently.
 	_ = cmd.Process.Release()
 
 	if !waitForSocket(socketPath, LifecycleStartupTimeout) {
-		return fmt.Errorf("daemon started but socket not ready after %s at %s", LifecycleStartupTimeout, socketPath)
+		return StartModeUnknown, fmt.Errorf("daemon started but socket not ready after %s at %s", LifecycleStartupTimeout, socketPath)
 	}
 
-	return nil
+	return StartModeDetached, nil
 }
 
 // InstalledServiceEnvPath returns the PATH recorded in the systemd unit file
@@ -680,4 +686,21 @@ func splitUnitAssignments(value string) []string {
 	}
 	flush()
 	return assignments
+}
+
+// platformSpawnHistory reports that Linux has no launchd-style spawn history to
+// read.
+//
+// BOS-1183 is a launchd-domain defect: launchd will register a job into a
+// session it never spawns anything in, and `launchctl list` cannot see the
+// difference. systemd has no equivalent blind spot — it reports unit substates
+// (activating/failed/inactive) and a restart count directly — so there is
+// nothing extra to probe here. Returning "unsupported" rather than a verdict
+// keeps the Linux reporting path behaviourally unchanged: this must never make
+// Linux report unhealthy.
+func platformSpawnHistory() (SpawnHistory, error) {
+	return SpawnHistory{
+		State:  SpawnStateUnsupported,
+		Reason: "systemd reports unit substates directly; no launchd-style spawn history",
+	}, nil
 }

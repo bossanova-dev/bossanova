@@ -524,6 +524,10 @@ func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
 	// daemon happens to be running detached. Disabling the probe is the accurate
 	// way to say "not under test here".
 	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	// BOS-1183: launchd spawn history is macOS-only, so the Linux path must not
+	// merely omit the LINE — it must never ask. A probe that runs and prints
+	// nothing still shells out to a service manager this platform does not have.
+	spawnCalls := stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{State: daemon.SpawnStateUnsupported}, nil)
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -534,11 +538,18 @@ func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
 	if !strings.Contains(output.String(), "not applicable") {
 		t.Fatalf("output missing not-applicable status:\n%s", output.String())
 	}
-	// Linux behaviour is unchanged: no staging comparison and no liveness probe.
-	for _, unwanted := range []string{"staged bossd", "running executable", "running bossd"} {
+	// Linux behaviour is unchanged: no staging comparison, no liveness probe,
+	// no launchd spawn history and no macOS startup-failure directive.
+	for _, unwanted := range []string{
+		"staged bossd", "running executable", "running bossd",
+		"launchd spawn history", "startup diagnosis",
+	} {
 		if strings.Contains(output.String(), unwanted) {
 			t.Fatalf("non-darwin doctor emitted %q:\n%s", unwanted, output.String())
 		}
+	}
+	if *spawnCalls != 0 {
+		t.Fatalf("non-darwin doctor probed launchd %d times, want 0", *spawnCalls)
 	}
 }
 
@@ -859,6 +870,31 @@ func prepareDaemonDoctorPaths(t *testing.T) (home, sourcePath, stagedPath string
 		t.Fatalf("write source bossd: %v", err)
 	}
 	t.Setenv("PATH", sourceDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// BOS-1183: doctor now reads launchd's spawn history. Left unstubbed the
+	// probe shells out to the DEVELOPER's real launchd domain, so any doctor
+	// test would report whatever that machine's bossd happens to be doing.
+	// Every fixture pins the ordinary running shape — runs = 1 with
+	// "(never exited)" — and a test that wants a different one re-stubs after
+	// calling the fixture, which wins.
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:        daemon.SpawnStateHealthy,
+		Target:       daemonDoctorSpawnHistoryTarget,
+		Runs:         1,
+		RunsKnown:    true,
+		NeverExited:  true,
+		ServiceState: "running",
+	}, nil)
+
+	// Pinned for the same reason and in the same place: doctor now treats a
+	// socket it knows is unreachable as a FAIL, and every fixture here points
+	// HOME at a fresh temp dir whose socket path nothing is listening on. Left
+	// unpinned, every doctor test would carry that unrelated failure. The
+	// ordinary healthy shape is "serving", and a test that wants the daemon
+	// down re-stubs after calling the fixture, which wins.
+	previousReachable := daemonSocketReachable
+	daemonSocketReachable = func(string) bool { return true }
+	t.Cleanup(func() { daemonSocketReachable = previousReachable })
 
 	appDataDir, err := config.DefaultAppDataDir()
 	if err != nil {
@@ -1905,5 +1941,479 @@ func TestReportDaemonSupervisionRefusesToCertifyWithoutAServicePID(t *testing.T)
 	}
 	if strings.Contains(got, "ok (") {
 		t.Fatalf("output certified ownership without a service PID:\n%s", got)
+	}
+}
+
+// stubDaemonDoctorSpawnHistory pins launchd's spawn-history probe, the same way
+// and for the same reason stubDaemonDoctorProcess pins process liveness: left
+// unstubbed the probe shells out to the DEVELOPER's real launchd domain, so an
+// unrelated doctor test would pass or fail depending on whether the engineer
+// running it happens to have bossd loaded. BOS-1183.
+//
+// It returns a call counter, because "the check silently stopped asking" and
+// "the check asked and got a clean answer" print the same nothing.
+func stubDaemonDoctorSpawnHistory(t *testing.T, history daemon.SpawnHistory, err error) *int {
+	t.Helper()
+	calls := 0
+	previous := daemonGetSpawnHistory
+	daemonGetSpawnHistory = func() (daemon.SpawnHistory, error) {
+		calls++
+		return history, err
+	}
+	t.Cleanup(func() { daemonGetSpawnHistory = previous })
+	return &calls
+}
+
+// daemonDoctorSpawnHistoryTarget is the shape launchd prints for a per-user
+// GUI job: the domain is the part of it that was wrong during the incident.
+const daemonDoctorSpawnHistoryTarget = "gui/501/com.bossanova.bossd"
+
+// daemonDoctorLine returns the single output line beginning with prefix, so an
+// assertion about ONE check's verdict cannot be satisfied by a string that
+// happens to appear on some other line of the report.
+func daemonDoctorLine(t *testing.T, got, prefix string) string {
+	t.Helper()
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	t.Fatalf("output has no %q line:\n%s", prefix, got)
+	return ""
+}
+
+// TestRunDaemonDoctorReportsNeverSpawnedJobWithConsoleRemediation is the
+// headline BOS-1183 behaviour and the reason this whole check exists.
+//
+// On 2026-09-06 doctor was clean on every adjacent condition — staged binary up
+// to date, protected roots ok — while the LaunchAgent sat registered in a GUI
+// domain launchd would never spawn anything in, because fast user switching had
+// backgrounded the Aqua session. `launchctl list` exits 0 for that job, so
+// nothing doctor read could see it, and the diagnosis took an hour outside the
+// tooling.
+//
+// The negative assertion is the important one. R3 says the remedy must NOT be
+// `boss daemon start`: that command succeeds by producing an UNSUPERVISED
+// bossd, which is BOS-1183's third reported failure. The fixture deliberately
+// records a DEAD PID so startRemediation is genuinely set — without that, the
+// assertion would pass for the trivial reason that nothing had asked for the
+// start remedy in the first place.
+func TestRunDaemonDoctorReportsNeverSpawnedJobWithConsoleRemediation(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorProcess(t, syscall.ESRCH)
+	calls := stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:        daemon.SpawnStateNeverSpawned,
+		Target:       daemonDoctorSpawnHistoryTarget,
+		Runs:         0,
+		RunsKnown:    true,
+		NeverExited:  true,
+		ServiceState: "not running",
+	}, nil)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+	got := output.String()
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("a job launchd never spawned must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	if *calls != 1 {
+		t.Errorf("spawn-history probe called %d times, want 1", *calls)
+	}
+	spawnLine := daemonDoctorLine(t, got, "launchd spawn history:")
+	for _, want := range []string{
+		"FAIL",
+		"never attempted to spawn",
+		"runs = 0",
+		daemonDoctorSpawnHistoryTarget,
+		"never a bossd crash",
+	} {
+		if !strings.Contains(spawnLine, want) {
+			t.Errorf("spawn-history line missing %q:\n%s", want, spawnLine)
+		}
+	}
+	for _, want := range []string{"foreground console", "stat -f %Su /dev/console", "fast user switching"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("remediation missing %q:\n%s", want, got)
+		}
+	}
+	// R3, stated as an executable assertion.
+	if strings.Contains(got, "run 'boss daemon start'") {
+		t.Errorf("doctor offered 'boss daemon start' for a domain that will never spawn the job — that command succeeds by producing an unsupervised daemon:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorReportsCrashLoopingJobDistinctlyFromNeverSpawned pins R2:
+// launchd-never-tried and bossd-started-and-failed have DISJOINT remedies, so
+// the two must not read the same. A crash loop is bossd's own fault, and the
+// console requirement has nothing to do with it.
+func TestRunDaemonDoctorReportsCrashLoopingJobDistinctlyFromNeverSpawned(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:             daemon.SpawnStateFailing,
+		Target:            daemonDoctorSpawnHistoryTarget,
+		Runs:              47,
+		RunsKnown:         true,
+		LastExitCode:      1,
+		LastExitCodeKnown: true,
+	}, nil)
+	// Explicit, and load-bearing: this is the SERVED crash-loop shape. launchd
+	// spawned bossd, bossd died, the operator recovered with a detached
+	// `boss daemon start`, and launchd's crash record stays on the job forever.
+	// The assertions below require that doctor not send that operator to
+	// foreground a second bossd over a socket that already answers.
+	daemonSocketReachable = func(string) bool { return true }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+	got := output.String()
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("a crash-looping job must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	spawnLine := daemonDoctorLine(t, got, "launchd spawn history:")
+	for _, want := range []string{"FAIL", "47", "exit", "1", stagedPath} {
+		if !strings.Contains(spawnLine, want) {
+			t.Errorf("spawn-history line missing %q:\n%s", want, spawnLine)
+		}
+	}
+	for _, unwanted := range []string{"foreground console", "/dev/console", "fast user switching"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a bossd crash loop was given the launchd-domain remedy (%q):\n%s", unwanted, got)
+		}
+	}
+	_, remediation, found := strings.Cut(got, "Remediation:")
+	if !found {
+		t.Fatalf("output has no Remediation section:\n%s", got)
+	}
+	if strings.Contains(remediation, "in the foreground") {
+		t.Errorf("a SERVED daemon was told to foreground a second bossd — the duplicate the isSocketReachable guards exist to prevent:\n%s", remediation)
+	}
+	if !strings.Contains(remediation, "run 'boss daemon restart'") {
+		t.Errorf("a serving but crash-marked job must fall through to the restart remedy:\n%s", remediation)
+	}
+}
+
+// TestRunDaemonDoctorReportsUnparseableSpawnHistoryAsUnknown: `launchctl print`
+// is a human-readable dump with no format contract, so a macOS release that
+// renames a key must make this check say "I don't know" — never healthy, and
+// never a FAIL either, because a false FAIL on developer machines and in CI is
+// how the one line that matters on a real host gets ignored.
+func TestRunDaemonDoctorReportsUnparseableSpawnHistoryAsUnknown(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	const reason = "launchctl print output carried neither a `runs` nor a `last exit code` line"
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:  daemon.SpawnStateUnknown,
+		Target: daemonDoctorSpawnHistoryTarget,
+		Reason: reason,
+	}, nil)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+	got := output.String()
+
+	if err != nil {
+		t.Fatalf("an unreadable spawn history must not fail the doctor on its own: %v\n%s", err, got)
+	}
+	spawnLine := daemonDoctorLine(t, got, "launchd spawn history:")
+	if !strings.Contains(spawnLine, "unknown") || !strings.Contains(spawnLine, reason) {
+		t.Errorf("spawn-history line did not report unknown with its reason:\n%s", spawnLine)
+	}
+	if strings.Contains(spawnLine, "ok") || strings.Contains(spawnLine, "FAIL") {
+		t.Errorf("an unreadable spawn history was given a determinate verdict:\n%s", spawnLine)
+	}
+}
+
+// TestRunDaemonDoctorReportsHealthySpawnHistory pins the shape that must NOT
+// fire: runs > 0 with "(never exited)" is an ordinary daemon that is up right
+// now, and only runs = 0 with that same text is the incident.
+func TestRunDaemonDoctorReportsHealthySpawnHistory(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	restoreDaemonCommandStubs(t)
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:        daemon.SpawnStateHealthy,
+		Target:       daemonDoctorSpawnHistoryTarget,
+		Runs:         1,
+		RunsKnown:    true,
+		NeverExited:  true,
+		ServiceState: "running",
+	}, nil)
+	daemonSocketReachable = func(string) bool { return true }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v\n%s", err, output.String())
+	}
+	got := output.String()
+	spawnLine := daemonDoctorLine(t, got, "launchd spawn history:")
+	if !strings.Contains(spawnLine, "ok") || !strings.Contains(spawnLine, "1") {
+		t.Errorf("spawn-history line missing the healthy verdict and its run count:\n%s", spawnLine)
+	}
+	if strings.Contains(got, "Remediation:") || strings.Contains(got, "/dev/console") {
+		t.Errorf("a healthy spawn history produced remediation:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing covers the
+// second invisible failure of the same incident: bossd exited inside a fail-loud
+// migration BEFORE binding the socket, and bossd.stderr.log was 0 bytes because
+// launchd — which writes that file through its own redirect — had never run the
+// binary. Neither status nor doctor said anything at all.
+func TestRunDaemonDoctorDirectsOperatorToTheStagedBinaryWhenNotServing(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	restoreDaemonCommandStubs(t)
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	daemonSocketReachable = func(string) bool { return false }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	_ = runDaemonDoctor(cmd)
+	got := output.String()
+
+	directive := daemonDoctorLine(t, got, "startup diagnosis:")
+	if !strings.Contains(directive, "before the socket binds") {
+		t.Errorf("directive does not name the failure window:\n%s", directive)
+	}
+	if !strings.Contains(got, "bossd.stderr.log") {
+		t.Errorf("directive does not explain why the launchd log is empty:\n%s", got)
+	}
+	if !strings.Contains(got, stagedPath) {
+		t.Errorf("directive does not name the staged bossd to run:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorOmitsStartupDirectiveWhenServing: the directive is a
+// diagnostic aid, not a permanent line. A healthy machine that prints it has
+// taught its operator to skip the section.
+func TestRunDaemonDoctorOmitsStartupDirectiveWhenServing(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	restoreDaemonCommandStubs(t)
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	daemonSocketReachable = func(string) bool { return true }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v\n%s", err, output.String())
+	}
+	if strings.Contains(output.String(), "startup diagnosis:") {
+		t.Fatalf("a serving daemon printed the startup-failure directive:\n%s", output.String())
+	}
+}
+
+// TestRunDaemonDoctorOmitsStartupDirectiveForANeverSpawnedJobThatIsServing is
+// the state this branch itself creates, and the one the directive must not fire
+// in. The operator took the detached-fallback recovery, so a bossd is up and
+// the socket answers — while launchd's runs stays 0 forever, because launchd
+// never spawned the job and never will in that domain.
+//
+// Deriving "not serving" from the spawn history sent exactly that operator to
+// foreground a SECOND bossd over a socket that is already served: the duplicate
+// the three isSocketReachable guards in platformEnsureRunning exist to prevent.
+// The domain FAIL and its console remedy still stand; only the directive is
+// wrong here.
+func TestRunDaemonDoctorOmitsStartupDirectiveForANeverSpawnedJobThatIsServing(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:        daemon.SpawnStateNeverSpawned,
+		Target:       daemonDoctorSpawnHistoryTarget,
+		Runs:         0,
+		RunsKnown:    true,
+		NeverExited:  true,
+		ServiceState: "not running",
+	}, nil)
+	daemonSocketReachable = func(string) bool { return true }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+	got := output.String()
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("a job launchd never spawned is still unhealthy when something else serves the socket, got err=%v:\n%s", err, got)
+	}
+	if strings.Contains(got, "startup diagnosis:") {
+		t.Errorf("doctor told an operator to foreground a second bossd over a socket that is already served:\n%s", got)
+	}
+	if !strings.Contains(got, "foreground console") {
+		t.Errorf("the never-spawned domain remedy was dropped along with the directive:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorFailsAnUnreachableSocket pins the other half of the same
+// rule. The directive is recovery instruction, so a run that prints it must not
+// simultaneously report health: doctor exiting 0 with no Remediation section is
+// the R1 contradiction ("no surface may assert the daemon is running when its
+// socket is unreachable") reproduced inside doctor's own output.
+func TestRunDaemonDoctorFailsAnUnreachableSocket(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	daemonSocketReachable = func(string) bool { return false }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+	got := output.String()
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("a daemon that is not serving must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	socketLine := daemonDoctorLine(t, got, "FAIL daemon socket:")
+	if !strings.Contains(socketLine, "not serving") {
+		t.Errorf("socket verdict does not say the daemon is not serving:\n%s", socketLine)
+	}
+	if !strings.Contains(got, "Remediation:") {
+		t.Errorf("doctor printed the startup directive with no Remediation section:\n%s", got)
+	}
+	if !strings.Contains(got, "run 'boss daemon start'") {
+		t.Errorf("a daemon that is not serving was given no way to start it:\n%s", got)
+	}
+	if !strings.Contains(got, "startup diagnosis:") {
+		t.Errorf("the directive is missing from the one state it exists for:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorReportsSocketReachableWhenServing is the negative of the
+// above: the FAIL and its exit status must not fire for a daemon that answers.
+func TestRunDaemonDoctorReportsSocketReachableWhenServing(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	daemonSocketReachable = func(string) bool { return true }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v\n%s", err, output.String())
+	}
+	got := output.String()
+	socketLine := daemonDoctorLine(t, got, "daemon socket:")
+	if !strings.Contains(socketLine, "reachable") || strings.Contains(socketLine, "not reachable") {
+		t.Errorf("a serving daemon did not report a reachable socket:\n%s", socketLine)
+	}
+}
+
+// TestRunDaemonDoctorRemediatesACrashLoopWithTheForegroundRun pins the remedy
+// the crash-loop verdict actually needs. `boss daemon restart` re-runs a binary
+// that starts and dies, and `boss daemon start` finds the job already loaded;
+// neither shows the operator the error. Naming the foreground run ABOVE the
+// Remediation header, as the first cut did, strands the one actionable command
+// outside the block an operator reads for it.
+func TestRunDaemonDoctorRemediatesACrashLoopWithTheForegroundRun(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:             daemon.SpawnStateFailing,
+		Target:            daemonDoctorSpawnHistoryTarget,
+		Runs:              47,
+		RunsKnown:         true,
+		LastExitCode:      1,
+		LastExitCodeKnown: true,
+	}, nil)
+	daemonSocketReachable = func(string) bool { return false }
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+	got := output.String()
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("a crash-looping job must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	_, remediation, found := strings.Cut(got, "Remediation:")
+	if !found {
+		t.Fatalf("output has no Remediation section:\n%s", got)
+	}
+	if !strings.Contains(remediation, "foreground") || !strings.Contains(remediation, stagedPath) {
+		t.Errorf("the crash-loop remediation does not name the foreground run of the staged binary:\n%s", remediation)
+	}
+	for _, unwanted := range []string{"run 'boss daemon restart'", "run 'boss daemon start'"} {
+		if strings.Contains(remediation, unwanted) {
+			t.Errorf("a binary that starts and dies was offered %q, which reproduces the crash:\n%s", unwanted, remediation)
+		}
+	}
+}
+
+// TestRunDaemonDoctorReportsSpawnProbeExecutionFailureAsUnknown covers the
+// other half of the probe's error discipline: a non-nil error means launchctl
+// could not be EXECUTED, which is still "we could not tell" and must never
+// become a FAIL — a machine with no launchctl on PATH is not a broken daemon.
+func TestRunDaemonDoctorReportsSpawnProbeExecutionFailureAsUnknown(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{State: daemon.SpawnStateUnknown},
+		errors.New("exec: \"launchctl\": executable file not found in $PATH"))
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("an unrunnable probe must not fail the doctor: %v\n%s", err, output.String())
+	}
+	spawnLine := daemonDoctorLine(t, output.String(), "launchd spawn history:")
+	if !strings.Contains(spawnLine, "unknown") || !strings.Contains(spawnLine, "executable file not found") {
+		t.Errorf("spawn-history line did not report the execution failure as unknown:\n%s", spawnLine)
 	}
 }

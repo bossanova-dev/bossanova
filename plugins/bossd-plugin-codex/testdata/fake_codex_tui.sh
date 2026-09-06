@@ -37,6 +37,18 @@ if [ "${1:-}" = "resume" ]; then
         exit 3
     fi
     printf 'RESUMED %s\n' "$id"
+    # The glyph below is U+276F, which is CLAUDE's ReadyMarker
+    # (bossd-plugin-claude/server.go); codex's own marker is U+203A. Real codex
+    # does not print this, and nothing on the resume path the e2e drives waits
+    # on it for input delivery: BuildInteractiveCommand returns
+    # ConsumesInitialInput for a resume that carries a prompt, so StartTmuxChat
+    # skips injectTmuxChatInput altogether.
+    #
+    # It is emitted anyway, and it is deliberately NOT codex's own marker:
+    # swapping it to U+203A hangs the e2e. Whatever resolves readiness in that
+    # scenario is looking for the claude glyph, and untangling that is a
+    # separate question from what this fixture is for. Leave it as U+276F.
+    printf '\xe2\x9d\xaf\n'
     sleep_long_enough
     exit 0
 fi

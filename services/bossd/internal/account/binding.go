@@ -1,12 +1,22 @@
 // Package account resolves which registry account a session should run under
 // and produces the per-account spawn environment for that account.
 //
-// The resolver is deliberately degrade-safe: an empty registry, a missing
-// account, or an agent-runner plugin that does not support credential rotation
-// all collapse to "account 0" (the system default), meaning no per-account
-// environment is injected and the CLI's own login is used. It never panics on
-// nil dependencies so it can be constructed before the DB/plugin adapters are
-// wired.
+// Account SELECTION is degrade-safe: with no registry, no accounts, or no
+// eligible account, DefaultAccountID returns "account 0" (the system default)
+// and the session runs on the agent CLI's own login. Nothing was promised, so
+// nothing is broken.
+//
+// Credential INJECTION for a session that is already bound is not (BOS-1142).
+// A bound session that cannot be given its account's credentials fails closed
+// with a typed *InjectionError rather than silently running on the ambient
+// login: the alternative produces work attributed to, billed to, and
+// rate-limited against an identity the operator did not choose, with no signal
+// anywhere that it happened. The error's Outcome separates "this credential is
+// unusable" (InjectionOutcomeInvalid) from "I could not evaluate this
+// credential" (InjectionOutcomeUndetermined) so no caller has to guess.
+//
+// The resolver still never panics on nil dependencies, so it can be constructed
+// before the DB/plugin adapters are wired.
 package account
 
 import (
@@ -34,6 +44,17 @@ type AccountMeta struct {
 	CoolingUntil *time.Time // non-nil & future ⇒ cooling
 	LastUsedAt   *time.Time // for stable LRU tie-break
 
+	// AuthInvalid is durable credential-verification state (BOS-1141): the
+	// provider CONFIRMED the stored credential is unusable. It is deliberately
+	// separate from Health, which also absorbs transient injection failures —
+	// only a confirmed auth failure sets this, so a provider outage can never
+	// bench an account through it. An auth-invalid account is excluded from
+	// BOTH selection tiers and refused before materialization; since BOS-1142
+	// that refusal fails the spawn closed with an InjectionOutcomeInvalid error
+	// instead of degrading to the system default. A later healthy verification
+	// clears it.
+	AuthInvalid bool
+
 	// Cached usage projection (from models.Account.Usage, populated by the
 	// probe/refresh paths). Read-only at bind time — the resolver never probes.
 	// A nil UsageFetchedAt means "never probed / unknown", which the selector
@@ -60,12 +81,12 @@ type Registry interface {
 // it. A registry that does not implement it degrades to the pre-BOS-973
 // behaviour (log only), matching the resolver's nil-dependency discipline.
 //
-// Why it lives here and not at the call sites: four separate paths degrade a
-// resolver error to "use the ambient CLI login"
-// (server.resolveAccountEnv, server.resolveChatAccountEnvForSpawn,
-// accountwiring.SpawnEnvResolver.Resolve, plugin host service). They all funnel
-// through resolveSpawnEnv, so recording once here cannot drift the way four
-// copies would.
+// Why it lives here and not at the call sites: four separate paths consume a
+// resolver error (server.resolveAccountEnv, server.resolveChatAccountEnvForSpawn,
+// accountwiring.SpawnEnvResolver.Resolve, plugin host service). Since BOS-1142
+// they all PROPAGATE it rather than degrading to the ambient CLI login, but they
+// still all funnel through resolveSpawnEnv, so recording once here cannot drift
+// the way four copies would.
 //
 // reason is the MaterializeAccount error string and nothing else. It carries
 // filesystem paths, never credential material, and no implementation may widen
@@ -181,6 +202,14 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, 
 			continue
 		}
 		if a.Provider != provider || a.Status != "active" {
+			continue
+		}
+		// Durable auth-invalid state (BOS-1141) removes an account from BOTH
+		// tiers, including the least-bad fallback: unlike a failed health flag
+		// (which can be a transient injection blip worth retrying), this is a
+		// confirmed provider rejection, so "least bad" must never land here.
+		// With no other candidate the loop falls through to the system default.
+		if a.AuthInvalid {
 			continue
 		}
 		if !fallbackFound || r.moreEligibleFallback(a, fallback, now) {
@@ -373,12 +402,16 @@ func lastUsed(a AccountMeta) time.Time {
 // records the account as used. Call it from paths that are actually launching
 // an agent; read-only diagnostics must call ResolveSpawnEnvForProbe instead.
 //
-// Degrade-safe rules:
+// Rules (BOS-1142 — bound bindings fail closed):
 //   - accountID == "" (account 0): return (nil, nil) immediately, with NO
-//     registry or materializer calls.
-//   - account not found in the registry: log once and treat as account 0.
-//   - provider plugin does not support rotation (or materializer is nil): log
-//     the degrade once and return (nil, nil) — status-only binding.
+//     registry or materializer calls. Nothing was bound, nothing can be broken.
+//   - account not found, auth-invalid, provider plugin without rotation
+//     support, or a materialize failure: return an *InjectionError with
+//     InjectionOutcomeInvalid. The spawn must not proceed on the ambient login.
+//   - registry or materializer not wired, or an infrastructure call failed:
+//     return an *InjectionError with InjectionOutcomeUndetermined. It still
+//     fails the spawn closed, but it is NOT evidence the credential is bad and
+//     must never be reported to an operator as one.
 //   - otherwise materialize the account's env, best-effort bump last-used
 //     (log-and-continue on error), and return the env.
 func (r *Resolver) ResolveSpawnEnv(ctx context.Context, accountID, provider string, now time.Time) (map[string]string, error) {
@@ -423,6 +456,17 @@ func (r *Resolver) ResolveSpawnEnvForProbe(ctx context.Context, accountID, provi
 
 // resolveSpawnEnv is the one body both exported entry points share.
 // recordLastUsed is the ONLY behavioural difference between them.
+//
+// BOS-1142 repealed the degrade-to-account-0 policy for BOUND accounts. A
+// session that names an account and cannot be given that account's credentials
+// must not silently run on the agent CLI's ambient login: it produces work
+// attributed to, billed to, and rate-limited against the wrong identity, and
+// nothing on screen says so. Every bound refusal below therefore returns a typed
+// *InjectionError the callers propagate.
+//
+// Two shapes stay degrading, and are not defects:
+//   - accountID == SystemDefaultAccountID: there is no binding to honour.
+//   - r == nil: the resolver itself was never constructed.
 func (r *Resolver) resolveSpawnEnv(
 	ctx context.Context,
 	accountID, provider string,
@@ -436,32 +480,45 @@ func (r *Resolver) resolveSpawnEnv(
 		return nil, nil
 	}
 	if r.reg == nil {
-		r.logDebug().Str("account_id", accountID).Msg("account: no registry; using system default")
-		return nil, nil
+		// Could-not-evaluate, not invalid: with no registry the resolver has no
+		// way to look the binding up, which says nothing about the credential.
+		return nil, undeterminedInjection(accountID, provider,
+			"account registry is not configured; cannot resolve the bound account", nil)
 	}
 
 	acct, ok, err := r.reg.Get(ctx, accountID)
 	if err != nil {
-		return nil, err
+		return nil, undeterminedInjection(accountID, provider, "could not read the bound account", err)
 	}
 	if !ok {
-		r.logWarn().Str("account_id", accountID).Msg("account: bound account not found; using system default")
-		return nil, nil
+		return nil, invalidInjection(accountID, provider, "bound account not found in the registry", nil)
+	}
+
+	// BOS-1141 recorded the confirmed auth-invalid verdict; BOS-1142 acts on it.
+	// Refused BEFORE any materialization, so a known-dead account never reaches
+	// the keyring, the worktree, or a spawned agent.
+	if acct.AuthInvalid {
+		return nil, invalidInjection(accountID, provider,
+			"credential verification reported the stored credential invalid; re-authenticate the account", nil)
 	}
 
 	if r.mat == nil {
-		r.logDebug().Str("account_id", accountID).Str("provider", provider).
-			Msg("account: no materializer; status-only binding")
-		return nil, nil
+		// Could-not-evaluate: a daemon wired without a materializer cannot
+		// answer the credential question for ANY account.
+		return nil, undeterminedInjection(accountID, provider,
+			"no credential materializer is wired; cannot inject the bound account", nil)
 	}
 	supports, err := r.mat.SupportsRotation(ctx, provider)
 	if err != nil {
-		return nil, err
+		return nil, undeterminedInjection(accountID, provider,
+			"could not determine whether the provider supports credential rotation", err)
 	}
 	if !supports {
-		r.logDebug().Str("account_id", accountID).Str("provider", provider).
-			Msg("account: plugin lacks rotation; status-only binding")
-		return nil, nil
+		// Invalid, not undetermined: the answer IS known — this provider's
+		// runner cannot serve a managed account, so the binding can never be
+		// honoured until the operator rebinds or upgrades the plugin.
+		return nil, invalidInjection(accountID, provider,
+			"the agent runner for this provider does not support credential rotation", nil)
 	}
 
 	env, err := r.mat.MaterializeAccount(ctx, acct.ID)
@@ -473,9 +530,43 @@ func (r *Resolver) resolveSpawnEnv(
 		if recordLastUsed {
 			r.recordInjectionFailure(ctx, acct.ID, provider, err)
 		}
-		// The error is returned UNCHANGED: every caller's degrade-to-nil policy
-		// is deliberately untouched by BOS-973 — only its observability changes.
-		return nil, err
+		// BOS-973 recorded this failure; BOS-1142 stops swallowing it. The
+		// underlying error is preserved via Unwrap so existing errors.Is checks
+		// (context cancellation in particular) still see through.
+		//
+		// The recordInjectionFailure above stays on BOTH arms: it tracks whether
+		// injection WORKED, which is a different axis from whether the credential
+		// is good, and it is withdrawn on the next successful spawn either way.
+		// Only the operator-facing classification below splits.
+		if isUndeterminedCause(err) {
+			// The call never reached a verdict — the plugin was mid-restart, the
+			// RPC timed out, the context was cancelled. Calling that "invalid"
+			// tells the operator to re-authenticate a credential nobody looked
+			// at, which is the BOS-881 collapse this branch exists to close.
+			return nil, undeterminedInjection(acct.ID, provider,
+				"could not evaluate the bound account's credential", err)
+		}
+		return nil, invalidInjection(acct.ID, provider, "credential injection failed", err)
+	}
+	if len(env) == 0 {
+		// A nil-error materialization that produced no environment is not a
+		// success. The spawn would proceed on the agent CLI's ambient login
+		// while every surface still reports the account as bound and in force —
+		// byte-identical to the BOS-973 silent degrade this package exists to
+		// close, and reached without any error ever being returned. Refuse it
+		// here rather than trusting each materializer to have refused it: this
+		// is the one call site of the seam, so this check covers every
+		// implementation of it, present and future.
+		//
+		// Undetermined, not invalid: an empty env means nothing in this path
+		// ever looked at the credential, so telling the operator to
+		// re-authenticate would be exactly the BOS-881 collapse the outcome
+		// split exists to prevent.
+		if recordLastUsed {
+			r.recordInjectionFailure(ctx, acct.ID, provider, errEmptyMaterialization)
+		}
+		return nil, undeterminedInjection(acct.ID, provider,
+			"the credential materializer returned no environment for the bound account", nil)
 	}
 	if recordLastUsed {
 		r.clearInjectionFailure(ctx, acct.ID)
@@ -564,5 +655,4 @@ func ShortID(id string) string {
 	return id
 }
 
-func (r *Resolver) logDebug() *zerolog.Event { return r.log.Debug() }
-func (r *Resolver) logWarn() *zerolog.Event  { return r.log.Warn() }
+func (r *Resolver) logWarn() *zerolog.Event { return r.log.Warn() }

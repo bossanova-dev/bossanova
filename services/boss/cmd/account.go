@@ -46,6 +46,14 @@ type accountJSON struct {
 	UsageStatus    string   `json:"usage_status"`
 	PlanTier       string   `json:"plan_tier"`
 	UsageFetchedAt string   `json:"usage_fetched_at"`
+	// Credential-check state (BOS-1141/BOS-1142). These are deliberately three
+	// separate fields rather than one rolled-up string: "never checked" and
+	// "checked, found nothing wrong" are opposite facts, and a consumer that
+	// only sees an empty diagnostic cannot tell them apart. AuthCheckedAt
+	// empty means the check never ran.
+	AuthCheckOutcome      string `json:"auth_check_outcome"`
+	AuthCheckFailureClass string `json:"auth_check_failure_class"`
+	AuthCheckedAt         string `json:"auth_checked_at"`
 }
 
 // accountToJSON maps a proto Account to the stable JSON schema.
@@ -65,6 +73,10 @@ func accountToJSON(a *pb.Account) accountJSON {
 		LastTestError: a.GetLastTestError(),
 		CreatedAt:     rfc3339OrEmpty(a.GetCreatedAt()),
 		UpdatedAt:     rfc3339OrEmpty(a.GetUpdatedAt()),
+
+		AuthCheckOutcome:      a.GetAuthCheck().GetOutcome(),
+		AuthCheckFailureClass: a.GetAuthCheck().GetFailureClass(),
+		AuthCheckedAt:         rfc3339OrEmpty(a.GetAuthCheck().GetCheckedAt()),
 	}
 	if u := a.GetUsage(); u != nil {
 		out.Util5h = u.GetUtil_5H()
@@ -133,17 +145,21 @@ func accountLS(cmd *cobra.Command, c accountLister) error {
 	usageStatuses := make([]string, len(accounts))
 	usageAges := make([]string, len(accounts))
 	cooldowns := make([]string, len(accounts))
+	checks := make([]string, len(accounts))
+	checkAges := make([]string, len(accounts))
 	for i, a := range accounts {
 		ids[i] = a.GetId()
 		providers[i] = orDash(a.GetProvider())
 		labels[i] = orDash(a.GetLabel())
 		statuses[i] = orDash(a.GetStatus())
-		healths[i] = orDash(a.GetHealth())
+		healths[i] = fmtAccountHealth(a)
 		util5hs[i] = fmtUtil(a.GetUsage(), a.GetUsage().GetUtil_5H(), a.GetUsage().GetReset_5H())
 		util7ds[i] = fmtUtil(a.GetUsage(), a.GetUsage().GetUtil_7D(), a.GetUsage().GetReset_7D())
 		usageStatuses[i] = fmtUsageStatus(a.GetUsage())
 		usageAges[i] = fmtUsageAge(a.GetUsage())
 		cooldowns[i] = fmtCooldown(a.GetCooldownUntil())
+		checks[i] = fmtAuthCheck(a.GetAuthCheck())
+		checkAges[i] = fmtAuthCheckAge(a.GetAuthCheck())
 	}
 
 	cols := []table.Column{
@@ -157,14 +173,28 @@ func accountLS(cmd *cobra.Command, c accountLister) error {
 		{Title: "USAGE", Width: views.MaxColWidth("USAGE", usageStatuses, 8)},
 		{Title: "AGE", Width: views.MaxColWidth("AGE", usageAges, 6)},
 		{Title: "COOLDOWN", Width: views.MaxColWidth("COOLDOWN", cooldowns, 10)},
+		// 24 fits the longest "failed:<class>" the daemon emits; truncating the
+		// class would make two different diagnoses render identically.
+		{Title: "CHECK", Width: views.MaxColWidth("CHECK", checks, 24)},
+		{Title: "CHECKED", Width: views.MaxColWidth("CHECKED", checkAges, 8)},
 	}
 
 	rows := make([]table.Row, len(accounts))
 	for i := range accounts {
-		rows[i] = table.Row{ids[i], providers[i], labels[i], statuses[i], healths[i], util5hs[i], util7ds[i], usageStatuses[i], usageAges[i], cooldowns[i]}
+		rows[i] = table.Row{ids[i], providers[i], labels[i], statuses[i], healths[i], util5hs[i], util7ds[i], usageStatuses[i], usageAges[i], cooldowns[i], checks[i], checkAges[i]}
 	}
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), views.RenderCLITable(cols, rows))
+
+	// The mark on a vetoed HEALTH cell is deliberately one rune wide — HEALTH is
+	// early in a ~110-column fixed table and CHECK is at the far right, so on an
+	// 80-column terminal the contradicting evidence is scrolled off screen and
+	// the mark is all that is left of it. One legend line, printed only when a
+	// mark is actually on the table, spells it back out.
+	if legend := accountHealthLegend(healths); legend != "" {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout())
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), legend)
+	}
 
 	// BOS-327: steer the operator to the real remedy when a provider has accounts
 	// but none ELIGIBLE — rotation cannot switch onto a disabled or unhealthy
@@ -316,6 +346,152 @@ func fmtUsageAge(u *pb.UsageSnapshot) string {
 	return fmtDurationShort(time.Since(u.GetFetchedAt().AsTime()))
 }
 
+// fmtAuthCheck renders the credential-check verdict for the ls table.
+//
+// The critical case is the empty one: an account nobody has ever checked and an
+// account checked five minutes ago with nothing wrong are opposite facts, and
+// collapsing both to "-" is the BOS-892 defect. "never" says the observation
+// did not happen; "ok" says it happened and found nothing.
+func fmtAuthCheck(ac *pb.AuthCheck) string {
+	switch ac.GetOutcome() {
+	case "":
+		return "never"
+	case "healthy":
+		// credential_superseded is the one class that qualifies a HEALTHY
+		// verdict rather than a failing one: the provider accepted the stored
+		// credential, but an ambient codex login for the same provider account
+		// holds a different refresh token, so the stored chain is already dead
+		// (BOS-1175). "ok" keeps its head because eligibility genuinely is
+		// unaffected; dropping the class would render a superseded credential
+		// identically to a clean one, which is the state the daemon's
+		// credcheck.go comment says both client mirrors render.
+		//
+		// Matched by EXACT value, mirroring views.accountCheckLabel: an
+		// unrecognised class on a healthy outcome stays a bare "ok" so a newer
+		// daemon cannot make this build render a warning it cannot explain.
+		if ac.GetFailureClass() == views.AuthCheckClassSuperseded {
+			return "ok:" + views.AuthCheckClassSuperseded
+		}
+		return "ok"
+	case "auth_invalid":
+		// The failure class is already a short redacted token, never a raw
+		// provider message, so it is safe to render verbatim.
+		if fc := ac.GetFailureClass(); fc != "" {
+			return "failed:" + fc
+		}
+		return "failed"
+	case "refresh_chain_unproven":
+		// The outcome token is the whole message: "refresh_not_observed"
+		// restates it rather than naming a different remedy, and the pair is 43
+		// columns against the 24-column CHECK budget below, so appending the
+		// class would spend the truncation on the identifying half. Mirrors the
+		// TUI's accountCheckLabel (internal/views/account_health.go).
+		return ac.GetOutcome()
+	default:
+		if fc := ac.GetFailureClass(); fc != "" {
+			return ac.GetOutcome() + ":" + fc
+		}
+		return ac.GetOutcome()
+	}
+}
+
+// Marks a vetoed HEALTH cell wears in `boss account ls`. They mirror the TUI's
+// healthVetoInvalidMark / healthVetoUnprovenMark (internal/views/account_health.go)
+// and, like them, are one rune because the HEALTH column is sized from its own
+// values — a word would only be truncated back off.
+const (
+	healthVetoInvalidMark  = "!"
+	healthVetoUnprovenMark = "?"
+	// healthSupersededMark mirrors views.healthSupersededMark. Distinct from the
+	// two veto marks because it is not a veto: the check PASSED and the account
+	// is still eligible. It marks HEALTH as well as CHECK because CHECK sits at
+	// the far right of a ~110-column table and scrolls off at 80 (see
+	// fmtAccountHealth) — a state only that column carries is one an operator on
+	// a narrow terminal never sees.
+	healthSupersededMark = "~"
+)
+
+// fmtAccountHealth renders the HEALTH cell with the same never-green veto both
+// richer surfaces apply: the TUI's accountHealthCellFor and the web's
+// accountHealthStatus. `boss account ls` prints a fixed ~110-column table with
+// no colour and no responsive fold, and it appends CHECK/CHECKED at the FAR
+// RIGHT — so at 80 columns a row that reads a bare "ok" has its contradicting
+// evidence scrolled off screen entirely, which is the one place the "green
+// while broken" state survived. Marking HEALTH itself puts the honest state in
+// a column that is actually visible.
+//
+// A confirmed-invalid check and an undetermined one get DIFFERENT marks: the
+// first indicts the credential and names a remedy, the second only says nothing
+// verified it. A never-checked account keeps its unmarked health, exactly as on
+// the other two surfaces — it is the normal state of a freshly registered
+// account, and marking it would spend the signal until it meant nothing.
+func fmtAccountHealth(a *pb.Account) string {
+	health := orDash(a.GetHealth())
+	if health != "ok" {
+		return health
+	}
+	switch a.GetAuthCheck().GetOutcome() {
+	case "healthy":
+		// Matched by EXACT class value, and only on a HEALTHY outcome: a class is
+		// an answer only where the daemon actually asked, and an unrecognised
+		// class keeps the plain health so a newer daemon cannot make this CLI
+		// mark a row it cannot explain.
+		if a.GetAuthCheck().GetFailureClass() == views.AuthCheckClassSuperseded {
+			return health + healthSupersededMark
+		}
+		return health
+	case "":
+		// Never checked: nothing was asked, so no class this row happens to
+		// carry describes an answer.
+		return health
+	case "auth_invalid":
+		return health + healthVetoInvalidMark
+	default:
+		// transient, unavailable, and any outcome a newer daemon adds: the check
+		// reached no verdict, so it cannot vouch for the credential. Unknown
+		// folds here rather than into the accusation above — a newer daemon must
+		// not be able to make an older CLI indict a credential it cannot
+		// classify.
+		return health + healthVetoUnprovenMark
+	}
+}
+
+// accountHealthLegend returns the legend for whichever veto marks the rendered
+// HEALTH column actually carries, or "" when it carries none.
+func accountHealthLegend(healths []string) string {
+	var invalid, unproven, superseded bool
+	for _, h := range healths {
+		switch {
+		case strings.HasSuffix(h, healthVetoInvalidMark):
+			invalid = true
+		case strings.HasSuffix(h, healthVetoUnprovenMark):
+			unproven = true
+		case strings.HasSuffix(h, healthSupersededMark):
+			superseded = true
+		}
+	}
+	var parts []string
+	if invalid {
+		parts = append(parts, healthVetoInvalidMark+" health says ok, but the last credential check found the credential rejected — see CHECK, then `boss account reauth <id>`")
+	}
+	if unproven {
+		parts = append(parts, healthVetoUnprovenMark+" health says ok, but the last credential check did not establish it — see CHECK for what it did or did not conclude")
+	}
+	if superseded {
+		parts = append(parts, healthSupersededMark+" health says ok and the credential still works, but an ambient `codex login` has replaced the stored refresh token — this account will stop working when its access token expires; run `boss account reauth <id>`")
+	}
+	return strings.Join(parts, "\n")
+}
+
+// fmtAuthCheckAge renders how long ago the credential check ran. A check that
+// never ran has no age, and rendering one would be a fabrication.
+func fmtAuthCheckAge(ac *pb.AuthCheck) string {
+	if ac.GetCheckedAt() == nil {
+		return "-"
+	}
+	return fmtDurationShort(time.Since(ac.GetCheckedAt().AsTime()))
+}
+
 // resolveAddProvider resolves the account provider from the positional arg
 // (preferred) or the --provider flag, and validates it against the known set.
 func resolveAddProvider(cmd *cobra.Command, args []string) (string, error) {
@@ -401,11 +577,9 @@ func runAccountRefresh(cmd *cobra.Command, id string) error {
 	if err != nil {
 		return err
 	}
-	refresher, ok := c.(accountRefresher)
-	if !ok {
-		return fmt.Errorf("refresh account: client does not support account refresh")
-	}
-	return accountRefresh(cmd, refresher, id)
+	// RefreshAccount is on the client interface itself now (BOS-1142), so this
+	// no longer needs a capability type-assertion.
+	return accountRefresh(cmd, c, id)
 }
 
 func accountRefresh(cmd *cobra.Command, c accountRefresher, id string) error {

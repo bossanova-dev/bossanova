@@ -547,20 +547,19 @@ func (r *TmuxReaper) classifyIdle(
 	}
 
 	owner := owners[s.Name]
-	ev := idleReapEvidence{owner: owner}
+	ev := idleReapEvidence{owner: owner, attachedClients: s.AttachedClients}
 	if owner != nil && owner.chat != nil && r.idle.Tracker != nil {
 		ev.entry = r.idle.Tracker.Get(owner.chat.AgentSessionID)
 	}
-	if owner != nil && owner.chat != nil && owner.session != nil && r.idle.Transcripts != nil {
+	if owner != nil && owner.chat != nil {
+		ev.resumeSessionID = chatResumeSessionID(owner.chat)
+	}
+	if owner != nil && owner.chat != nil && owner.session != nil && r.idle.Transcripts != nil && ev.resumeSessionID != "" {
 		// Lazy: the predicate only calls this once every cheaper gate has
 		// passed, so an idle-reap sweep costs one plugin RPC per genuinely
 		// stale chat rather than one per live pane.
-		resumeID := owner.chat.AgentSessionID
-		if owner.chat.ProviderSessionID != nil && *owner.chat.ProviderSessionID != "" {
-			resumeID = *owner.chat.ProviderSessionID
-		}
 		ev.transcriptPresent = func() bool {
-			return r.idle.Transcripts.TranscriptExists(ctx, owner.chat.AgentName, owner.session.WorktreePath, resumeID)
+			return r.idle.Transcripts.TranscriptExists(ctx, owner.chat.AgentName, owner.session.WorktreePath, ev.resumeSessionID)
 		}
 	}
 

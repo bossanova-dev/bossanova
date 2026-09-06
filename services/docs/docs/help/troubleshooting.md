@@ -29,7 +29,10 @@ cli="boss login"
 />
 
 `boss login` drives a browser flow on this machine, so there is no MCP tool for
-it — the tabs record that rather than leaving it ambiguous.
+it; the tabs record that rather than leaving it ambiguous.
+
+For what a successful sign-in looks like on both surfaces, see
+[Signing In](../guides/login.md#confirming-it-worked).
 
 If it still fails, check three things:
 
@@ -97,7 +100,7 @@ parent-only time, token totals, model/tool calls, or subagent counts.
 
 The setup script runs from the new worktree's directory, so you can usually
 reproduce it manually. This is a multi-line shell recipe rather than a single
-command, so it stays a plain block — the `boss show` inside it reads the
+command, so it stays a plain block; the `boss show` inside it reads the
 worktree path, and `get_session` is its MCP counterpart:
 
 ```bash
@@ -245,7 +248,7 @@ mcp="repair_doctor"
 />
 
 Its `protected roots readable` check probes on every invocation. Answering a
-pending privacy dialog clears it immediately — no restart, because answering
+pending privacy dialog clears it immediately: no restart, because answering
 unblocks the read that was already in flight. The other two routes still need
 `boss daemon restart`: a System Settings grant does not reach a running
 process, and a root the daemon found at startup keeps being probed until the
@@ -276,8 +279,8 @@ with the permission.
 
 Both routes above need someone at the screen: a pending privacy dialog cannot
 be answered over SSH, and System Settings needs a GUI. On a host reached only
-over SSH, the option that works unattended is to **move the repository and the
-worktree base out of the TCC-guarded folders** — `~/Documents`, `~/Desktop`
+over SSH, the option that works unattended is to move the repository and the
+worktree base out of the **TCC-guarded folders**: `~/Documents`, `~/Desktop`
 and `~/Downloads`. A repository at, say, `~/src/...` needs no grant at all, and
 cannot re-break on the next upgrade. Reinstalling the binary is not a fix: TCC
 keys the grant to the installed path, not to the bytes.
@@ -322,7 +325,7 @@ The doctor answers two separate questions, and the difference matters:
 
 They can disagree. A restart re-stages the file between stopping and starting
 the daemon, so after a restart that failed halfway the file is current while
-the live process is not — the file line reads `up to date` and the process
+the live process is not: the file line reads `up to date` and the process
 line reads `stale`. Only a PID change proves a restart actually happened.
 
 `boss daemon status` reports the same process verdict as a `running image:`
@@ -338,7 +341,7 @@ if every attempt fails it verifies what is actually running before reporting:
 boss: restart daemon failed: launchctl bootstrap: exit status 5: Bootstrap failed: 5: Input/output error; the daemon is now stopped — run 'boss daemon start'
 ```
 
-When the message names `boss daemon start`, nothing is running — run it:
+When the message names `boss daemon start`, nothing is running; run it:
 
 <CommandTabs
 cli="boss daemon start"
@@ -497,7 +500,7 @@ running and prints its PID:
 cli="boss daemon status"
 />
 
-For log content, run `boss tail` — it reads the daemon log without needing a
+For log content, run `boss tail`; it reads the daemon log without needing a
 path:
 
 <CommandTabs
@@ -556,8 +559,8 @@ app.
 
 ### Terminal spams numbers and letters when you move the mouse
 
-After a boss session ends abnormally — an SSH connection drops, a terminal
-tab is closed, the process is killed — your terminal can be left in xterm
+After a boss session ends abnormally (an SSH connection drops, a terminal
+tab is closed, the process is killed) your terminal can be left in xterm
 **mouse-reporting mode**. Nothing is reading those reports any more, so every
 mouse movement over the window is printed as text. Native click-drag selection
 usually stops working at the same time.
@@ -573,8 +576,8 @@ report arrives:
   35;39;28M0;17;5m
   ```
 
-- **Escape visible.** In cooked mode — for example while `ssh` is still
-  connecting, before anything has taken the terminal into raw mode — the whole
+- **Escape visible.** In cooked mode (for example while `ssh` is still
+  connecting, before anything has taken the terminal into raw mode) the whole
   sequence is echoed:
 
   ```text
@@ -601,8 +604,8 @@ ssh <host> boss fix-terminal
 `boss fix-terminal` writes the mouse- and focus-reporting disable sequences and
 prints nothing else, so it is safe to pipe straight into the affected terminal.
 
-If boss isn't installed on the box, the core reset is a plain `printf` — mouse
-reporting, focus reporting and bracketed paste:
+If boss isn't installed on the box, the core reset is a plain `printf` (mouse
+reporting, focus reporting and bracketed paste):
 
 ```bash
 printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1004l\033[?2004l'
@@ -611,7 +614,7 @@ printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1004l\033[?2004l'
 `boss fix-terminal` additionally clears some legacy mouse encodings and the
 keyboard-protocol modes, so prefer it when it's available.
 
-As a last resort, `reset` reinitializes the terminal completely — note that it
+As a last resort, `reset` reinitializes the terminal completely; note that it
 **clears your scrollback**:
 
 ```bash
@@ -623,7 +626,7 @@ boss on the affected terminal normally clears it on its own.
 
 **One honest limit.** That automatic self-heal is written by the boss process
 itself. When boss is on a remote host, the reset can't arrive until after SSH
-has connected, authenticated, and started boss — so relaunching boss over SSH
+has connected, authenticated, and started boss, so relaunching boss over SSH
 still shows a few seconds of spam between pressing Enter and boss appearing.
 `boss fix-terminal` and the raw `printf` are the remedies that don't wait on a
 remote round trip: run them from a shell that's already connected, or run the
@@ -632,13 +635,13 @@ remote round trip: run them from a shell that's already connected, or run the
 ### Add-account prompt ignores everything you type
 
 Running boss over SSH, the **Add an account** flow can reach
-`Label for this account:` — cursor visible, `[enter] submit · [esc] cancel` on
-the action bar — and then ignore every keystroke. Nothing appears as you type
+`Label for this account:` (cursor visible, `[enter] submit · [esc] cancel` on
+the action bar) and then ignore every keystroke. Nothing appears as you type
 and the form can't be submitted, even though the sign-in already succeeded and
 the screen above says the token was created.
 
 The cause is the agent CLI that boss just ran. It shares your terminal, and it
-reads from it directly — even though boss deliberately hands it an empty input.
+reads from it directly, even though boss deliberately hands it an empty input.
 While the sign-in runs there are briefly **two programs reading your keyboard**:
 the CLI and boss itself. They compete for each keystroke, which is why pasting
 the sign-in code often takes several attempts, and why the prompt afterwards can
@@ -647,7 +650,7 @@ stop responding.
 Boss now hands the terminal to the sign-in CLI for the duration and takes it back
 cleanly when the CLI exits, so only one program is ever reading your keyboard.
 While the CLI has it, the action bar reads **`claude has the terminal`** and
-`esc` goes to the CLI rather than to boss — use `ctrl+c` to interrupt it.
+`esc` goes to the CLI rather than to boss; use `ctrl+c` to interrupt it.
 
 If you hit a prompt that still ignores input:
 
@@ -666,10 +669,10 @@ Over SSH, run it from the stuck session so it reaches the right terminal:
 ssh <host> boss fix-terminal
 ```
 
-That clears stranded **input-reporting** modes — focus reporting, bracketed
+That clears stranded **input-reporting** modes: focus reporting, bracketed
 paste, `modifyOtherKeys` and the Kitty keyboard protocol.
 
-**Your sign-in token is not silently lost.** If the flow fails at or after the
+Your sign-in token is **not silently lost**. If the flow fails at or after the
 label step, boss now tells you that a token was already created, shows it in
 masked `sk-ant-…` form so you can identify it, and points you at
 [the Anthropic console](https://console.anthropic.com/settings/keys) to revoke
@@ -689,12 +692,12 @@ of attaching the image:
 The agent then reports it cannot open that file.
 
 Your terminal never pastes an image. It writes the screenshot to a temporary file
-on **the machine you are sitting at** and pastes that file's path as text. Boss
+on the machine you are sitting at and pastes that file's path as text. Boss
 can rewrite that path only when it is running on the same machine as the file.
 
 - If you SSH to a box and run `boss` there, the TUI is on the **remote** machine
   and the screenshot is on your laptop. There is no reverse channel back to your
-  local filesystem, so boss passes the path through untouched — which is what you
+  local filesystem, so boss passes the path through untouched, which is what you
   are seeing.
 - If you attach with `boss --host <destination>` from your own machine, the TUI is
   local, boss copies the file to the agent's machine and inserts the remote path.
@@ -707,7 +710,7 @@ boss --host <destination>
 ```
 
 Boss flashes `[boss] no such image on this machine: …` on the bottom row when it
-sees this, and records it in `boss.log` — the flash is transient because the agent
+sees this, and records it in `boss.log`; the flash is transient because the agent
 redraws over it, so check the log if you missed it:
 
 ```bash

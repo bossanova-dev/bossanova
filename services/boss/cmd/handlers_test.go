@@ -1493,3 +1493,51 @@ func TestSignalBossdPluginProcessesFiltersBeforeSignaling(t *testing.T) {
 func (s *agentPreflightStub) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
 	panic("unused")
 }
+
+// TestPrintSessionShowHeaderPrintsTheFullBlockedReason is the 2026-09-03 fix.
+//
+// The reason was reachable from no CLI surface at all — not `boss show`, not
+// `--json`, not `boss ls` — while the TUI truncated it to 48 runes and the
+// daemon, started detached, was writing its logs to /dev/null. Diagnosis ended
+// in a direct sqlite3 query against bossd.db. This line is the CLI's answer, and
+// it must never acquire a truncation: that is the whole point of it.
+func TestPrintSessionShowHeaderPrintsTheFullBlockedReason(t *testing.T) {
+	// Deliberately longer than the TUI's 48-rune hint cap, and multi-line, which
+	// is the shape a real `gh pr create` failure has.
+	const reason = "draft PR creation failed: create PR: HTTP 401: Requires authentication (https://api.github.com/graphql)\nTry authenticating with:  gh auth login"
+
+	out := captureStdout(t, func() {
+		printSessionShowHeader(&pb.Session{Id: "sess-1234abcd", BlockedReason: ptrTo(reason)})
+	})
+
+	if !strings.Contains(out, "Blocked:") {
+		t.Fatalf("output has no Blocked line:\n%s", out)
+	}
+	// Every load-bearing fragment survives, including the part a 48-rune cap
+	// would have cut and the part after the newline.
+	for _, fragment := range []string{
+		"HTTP 401: Requires authentication",
+		"https://api.github.com/graphql",
+		"gh auth login",
+	} {
+		if !strings.Contains(out, fragment) {
+			t.Fatalf("output dropped %q — it must print the reason in full:\n%s", fragment, out)
+		}
+	}
+	if strings.Contains(out, "…") {
+		t.Fatalf("output was truncated; this surface exists precisely because the TUI truncates:\n%s", out)
+	}
+}
+
+// TestPrintSessionShowHeaderOmitsAnEmptyBlockedReason keeps the common case
+// clean: an unblocked session must not grow a dangling label.
+func TestPrintSessionShowHeaderOmitsAnEmptyBlockedReason(t *testing.T) {
+	out := captureStdout(t, func() {
+		printSessionShowHeader(&pb.Session{Id: "sess-1234abcd"})
+	})
+	if strings.Contains(out, "Blocked:") {
+		t.Fatalf("unblocked session printed a Blocked line:\n%s", out)
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }

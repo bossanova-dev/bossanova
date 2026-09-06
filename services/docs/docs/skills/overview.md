@@ -14,9 +14,9 @@ skill is a self-contained workflow you invoke by name (for example `/boss-build`
 and together they take a ticket from **Unplanned → planned Todo → PR → review →
 merge → proof** with minimal hand-holding.
 
-Every skill is built as a **project-agnostic core plus a few pluggable seams**, so
-the same suite runs in any repository. The Bossanova-specific coupling — the issue
-tracker, proof-artifact publishing, the session runner, and the PR-finalize policy —
+Every skill is built as a **project-agnostic core** plus a few pluggable seams, so
+the same suite runs in any repository. The Bossanova-specific coupling (the issue
+tracker, proof-artifact publishing, the session runner, and the PR-finalize policy)
 lives behind adapters that default to the Bossanova reference implementation. A repo
 adopting these skills configures them with a single `.boss-skills.json` file, and can
 extend a core skill's behaviour with repo-local add-ons without editing the skill
@@ -45,7 +45,7 @@ The suite keeps its Bossanova coupling confined to **four seams**. Each seam is 
 adapter selected by configuration and defaulting to the Bossanova reference
 implementation, so omitting the configuration reproduces the built-in behaviour. To
 port the skills to a different stack, a repo ships a small module that conforms to
-the seam's capability contract and points the adapter at it — the skill bodies never
+the seam's capability contract and points the adapter at it; the skill bodies never
 change.
 
 | Seam            | What it abstracts                                                                | Default implementation |
@@ -58,7 +58,7 @@ change.
 ### The `.boss-skills.json` config
 
 A consuming repo drops a single `.boss-skills.json` file at its root. The skills read
-it instead of any hard-coded settings — the loader walks up from the working
+it instead of any hard-coded settings: the loader walks up from the working
 directory, merges the file over built-in defaults, and validates it. Alongside the
 adapter selection, the config declares the review `lensMap`, the build/lint/test
 `commands`, the headless-mode `env` signals, and the versioned `planContract` that

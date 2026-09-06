@@ -15,8 +15,8 @@ There are three flavors:
 - **Agent plugins** own the subprocess lifecycle for one
   coding-agent CLI. At least one agent plugin must be loaded before
   the daemon will start sessions.
-- **Task source plugins** surface external issues — Linear tickets,
-  Sentry errors — in the new-session picker so you can start a session
+- **Task source plugins** surface external issues (Linear tickets,
+  Sentry errors) in the new-session picker so you can start a session
   directly from one. They are user-initiated: nothing happens until you
   pick an issue.
 - **Automation plugins** react to PR / CI events and dispatch agent
@@ -26,11 +26,23 @@ There are three flavors:
 
 ### Agent plugins
 
-| Plugin     | Status      | Purpose                                                                                                                |
-| ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `claude`   | Available   | Owns the [Claude Code](https://claude.ai/download) subprocess for each session.                                        |
-| `codex`    | Available   | Owns the [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started) subprocess. |
-| `opencode` | Coming soon | Will own the OpenCode CLI subprocess for each session.                                                                 |
+| Plugin     | Status                | Purpose                                                                                                                |
+| ---------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `claude`   | Available             | Owns the [Claude Code](https://claude.ai/download) subprocess for each session.                                        |
+| `codex`    | Available             | Owns the [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started) subprocess. |
+| `opencode` | Experimental (opt-in) | Owns the [OpenCode](https://opencode.ai) CLI subprocess for each session.                                              |
+
+`opencode` is installed but not loaded by default; it is still alpha. Add it to
+`experimental_plugins` in `settings.json` and restart the daemon to turn it on:
+
+```json
+{
+  "experimental_plugins": ["opencode"]
+}
+```
+
+See [`experimental_plugins`](./reference/settings.md#experimental_plugins) for
+how the opt-in interacts with `plugins[].enabled`.
 
 ### Task sources
 
@@ -61,7 +73,7 @@ agent, including:
 
 Selecting an issue starts a session pre-seeded with that context and a
 suggested `fix/<short-id>` branch name. The plugin is read-only against
-Sentry — it never resolves or comments on issues — and is only consulted
+Sentry (it never resolves or comments on issues) and is only consulted
 when you open the picker, never on a timer.
 
 To enable it, set the **Sentry API key** and **Sentry org** (your

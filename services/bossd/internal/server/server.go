@@ -1552,6 +1552,9 @@ func createSessionConnectError(err error) error {
 	if errors.Is(err, gitpkg.ErrRefLockContended) {
 		return connect.NewError(connect.CodeUnavailable, err)
 	}
+	if refusal, ok := injectionRefusalConnectError(err, "start session"); ok {
+		return refusal
+	}
 	return connect.NewError(connect.CodeInternal, err)
 }
 
@@ -3658,6 +3661,9 @@ func resurrectSessionConnectError(err error) error {
 	case errors.Is(err, context.Canceled):
 		return connect.NewError(connect.CodeCanceled, fmt.Errorf("resurrect session: %w", err))
 	default:
+		if refusal, ok := injectionRefusalConnectError(err, "resurrect session"); ok {
+			return refusal
+		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("resurrect session: %w", err))
 	}
 }
@@ -3931,7 +3937,15 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 		case errors.Is(err, session.ErrChatMidTurn):
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("chat is mid-turn; confirm the switch (force) to interrupt it: %w", err))
-		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled), errors.Is(err, session.ErrAccountFailed):
+		// ErrAccountAuthInvalid belongs here with the other target-eligibility
+		// refusals, not on the default arm. The Lifecycle reloads the target
+		// after resolveSessionAccount already prechecked it, so credential
+		// maintenance can bench it in between; that is a routine refusal about
+		// the target's state, and answering it with CodeInternal reports a
+		// server fault (and, through the hosted classifier, an unmapped code)
+		// for a request the daemon handled exactly as designed.
+		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled),
+			errors.Is(err, session.ErrAccountFailed), errors.Is(err, session.ErrAccountAuthInvalid):
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, sql.ErrNoRows):
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeNotFound, err)
@@ -3949,6 +3963,21 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeCanceled,
 				fmt.Errorf("switch session account: %w", err))
 		default:
+			// A switch that rebound the chat and then could not inject the target
+			// account's credentials refuses the respawn (BOS-1142). That refusal
+			// travels the whole way here: StartTmuxChat wraps it with
+			// redactedInjection (masked message, Unwrap intact) and SwitchAccount
+			// re-wraps it with %w, so the typed outcome is still readable at this
+			// edge. It is a precondition on the target account exactly like the
+			// eligibility arms above, not a daemon fault — and the create, wake and
+			// resurrect paths already answer the same refusal with
+			// FailedPrecondition, so leaving the switch on the default arm would
+			// make one spawn edge disagree with the other four. The dispatcher leg
+			// needs no arm of its own: classifySwitchCommandError maps
+			// CodeFailedPrecondition to ERROR_CODE_FAILED_PRECONDITION already.
+			if refusal, ok := injectionRefusalConnectError(err, "switch session account"); ok {
+				return session.SwitchAccountResult{}, refusal
+			}
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("switch session account: %w", err))
 		}
 	}
@@ -4086,6 +4115,9 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		s.logger.Warn().Err(err).
 			Str("agentSessionID", chat.AgentSessionID).
 			Msg("failed to ensure tmux session for chat")
+		if refusal, ok := injectionRefusalConnectError(err, "ensure chat tmux session"); ok {
+			return nil, refusal
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("ensure chat tmux session: %w", err))
 	} else {
 		// Refetch so the response carries the persisted tmux_session_name.
@@ -4139,7 +4171,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		}
 	}
 	defaultAccountID := ""
-	sessionEnvFunc := func() map[string]string {
+	sessionEnvFunc := func() (map[string]string, error) {
 		defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
 		// Merge the bound account's spawn env UNDER the managed session env so a
 		// persisted account_id gets its credentials materialized on the attach path,
@@ -4151,10 +4183,18 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		// provider's default account env. This closure runs only after spawnChatTmux
 		// has proved a new tmux session is needed, avoiding account last-used updates
 		// on already-live attaches.
+		//
+		// BOS-1142: a bound account whose credentials cannot be injected refuses
+		// the attach instead of downgrading it to the ambient CLI login. The
+		// closure runs before argv is built, so nothing has been created yet.
+		accountEnv, err := s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID, recordAccountUse)
+		if err != nil {
+			return nil, err
+		}
 		return mergeManagedOverAccount(
 			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
-			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID, recordAccountUse),
-		)
+			accountEnv,
+		), nil
 	}
 	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger))
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
@@ -4164,15 +4204,20 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		ForceFresh:                !resume,
 		AppendSystemPrompt:        appendPrompt,
 		AppendSystemPromptClasses: promptClasses,
-		SessionEnvFunc: func() map[string]string {
+		SessionEnvFunc: func() (map[string]string, error) {
 			// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath the
 			// worktree .env so the attached chat authenticates to its own repo's
 			// Linear workspace, not the daemon's ambient one. Fetched lazily here
 			// because this closure runs only when a fresh tmux is actually needed;
 			// a missing/failed repo lookup is non-fatal (OverlayWithRepo still
-			// guarantees LINEAR_API_KEY is present).
+			// guarantees LINEAR_API_KEY is present). A credential-injection
+			// refusal is fatal, though — see sessionEnvFunc.
+			base, err := sessionEnvFunc()
+			if err != nil {
+				return nil, err
+			}
 			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
-			return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
+			return dotenv.OverlayWithRepo(base, sess.WorktreePath, repo), nil
 		},
 		Model:                  chat.Model,
 		SessionAgentName:       sess.AgentName,
@@ -4465,6 +4510,11 @@ func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, w
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
+		// lastReason carries the plugin's own account of the most recent miss
+		// ("no rollout fd open yet" vs "no matching rollout found") onto the
+		// timeout log below. Without it a timed-out discovery is indistinguishable
+		// from a chat the resolver never had an opinion about (BOS-1144).
+		lastReason := ""
 		for {
 			resolution, err := resolver.ResolveInteractiveSessionID(ctx, agentName, worktreePath, agentSessionID, launchedAt, time.Time{}, false, panePID)
 			if err != nil {
@@ -4505,11 +4555,16 @@ func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, w
 				return
 			}
 
+			if resolution.Reason != "" {
+				lastReason = resolution.Reason
+			}
+
 			select {
 			case <-ctx.Done():
 				s.logger.Warn().
 					Str("agent_session_id", agentSessionID).
 					Str("agent", agentName).
+					Str("reason", lastReason).
 					Msg("background provider session id discovery timed out")
 				return
 			case <-ticker.C:

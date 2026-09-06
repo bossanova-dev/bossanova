@@ -723,10 +723,29 @@ func accountCmd() *cobra.Command {
 	update.Flags().String("status", "", "Set the status (active|disabled)")
 	update.Flags().StringSlice("allowed-models", nil, "Replace the allowed-models set (comma-separated)")
 
+	// `reauth` is deliberately its own verb rather than a flag on `refresh`.
+	// Refresh takes a credential you already have; reauth ACQUIRES one by
+	// driving an interactive device login, so its flags, its stdin needs and
+	// its failure modes are a different command's (BOS-1142).
+	reauth := &cobra.Command{
+		Use:   "reauth <account-id>",
+		Short: "Re-run the provider login for an account and replace its credential in place",
+		Long: "Drive the provider's interactive device login and store the resulting credential on the EXISTING account.\n\n" +
+			"Use this when an account's credential was rejected: it keeps the account's id, label, priority and every\n" +
+			"session binding, replacing only the secret, and verifies the replacement before reporting success.\n" +
+			"Adding a new account instead would leave the failed row in place alongside it.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAccountReauth(cmd, args[0])
+		},
+	}
+	reauth.Flags().Duration("timeout", 10*time.Minute, "Deadline for the interactive device login")
+
 	account.AddCommand(
 		ls,
 		add,
 		refresh,
+		reauth,
 		update,
 		&cobra.Command{
 			Use:   "remove <account-id>",

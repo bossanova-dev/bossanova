@@ -55,6 +55,55 @@ func (getOnlyAccountStore) ClearInjectionFailure(context.Context, string) error 
 // TestAccountRegistryAdapter_FailedHealthMapsToFailed verifies the registry
 // projection maps a models.AccountHealthFailed account to AccountFailed, so the
 // switch rejects it (mirroring session creation's checkAccountEligible).
+// TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid pins that durable
+// verification state reaches the switch predicate. The account is ACTIVE and
+// HEALTHY — recording an auth-invalid verdict deliberately leaves Health alone
+// — so without this arm the switch accepts it, kills the pane, rebinds the
+// chat, and only then does the respawn silently fall back to ambient
+// credentials.
+func TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid(t *testing.T) {
+	acct := &models.Account{
+		ID:        "acct-auth-invalid",
+		Label:     "benched",
+		Provider:  models.AccountProviderCodex,
+		Status:    models.AccountStatusActive,
+		Health:    models.AccountHealthOK,
+		AuthCheck: models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid},
+	}
+	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
+	got, err := adapter.Account(context.Background(), acct.ID)
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if got.Status != AccountAuthInvalid {
+		t.Fatalf("status = %v, want AccountAuthInvalid", got.Status)
+	}
+}
+
+// TestAccountRegistryAdapter_AuthInvalidOutranksCooling pins the ordering: a
+// credential confirmed rejected is not a time-bounded bench, so reporting
+// "cooling" would tell an operator to wait for something that will never fix it.
+func TestAccountRegistryAdapter_AuthInvalidOutranksCooling(t *testing.T) {
+	future := time.Now().Add(2 * time.Hour)
+	acct := &models.Account{
+		ID:            "acct-both",
+		Label:         "benched-and-cooling",
+		Provider:      models.AccountProviderCodex,
+		Status:        models.AccountStatusActive,
+		Health:        models.AccountHealthOK,
+		CooldownUntil: &future,
+		AuthCheck:     models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid},
+	}
+	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
+	got, err := adapter.Account(context.Background(), acct.ID)
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if got.Status != AccountAuthInvalid {
+		t.Fatalf("status = %v, want AccountAuthInvalid (must outrank Cooling)", got.Status)
+	}
+}
+
 func TestAccountRegistryAdapter_FailedHealthMapsToFailed(t *testing.T) {
 	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: &models.Account{
 		ID:       "acct-9",
@@ -272,12 +321,23 @@ func TestSwitchAccount_HappyResume(t *testing.T) {
 	if last.GetSessionId() != "agent-1" {
 		t.Errorf("respawn SessionId = %q, want agent-1 (resume prior id)", last.GetSessionId())
 	}
-	if last.GetInitialPrompt() != "" || last.GetInitialCommand() != "" {
-		t.Errorf("interrupted prompt was resent: prompt=%q command=%q, want both empty",
-			last.GetInitialPrompt(), last.GetInitialCommand())
+	// D12 still holds: the payload is the freshly composed account-switch
+	// notice, never a replay of the interrupted prompt (the session's stored
+	// plan is what a replay would reach for).
+	if got, want := last.GetInitialPrompt(), res.NoticeText; got != want {
+		t.Errorf("respawn InitialPrompt = %q, want the account-switch notice %q", got, want)
 	}
-	if n := h.tmuxFake.enterSendKeysCount(); n != 0 {
-		t.Errorf("no submit expected (D12), got %d Enter presses", n)
+	if last.GetInitialPrompt() == h.sessions.sessions["sess-1"].Plan {
+		t.Errorf("interrupted prompt was resent: %q (D12)", last.GetInitialPrompt())
+	}
+	if last.GetInitialCommand() != "" {
+		t.Errorf("respawn InitialCommand = %q, want empty (the notice is prompt text, not a command)",
+			last.GetInitialCommand())
+	}
+	// BOS-1135: the notice is SUBMITTED, not left pending in the composer — that
+	// is what returns the chat to a visibly running state.
+	if n := h.tmuxFake.enterSendKeysCount(); n != 1 {
+		t.Errorf("Enter presses = %d, want exactly 1 (the notice is submitted)", n)
 	}
 }
 
@@ -386,6 +446,124 @@ func TestSwitchAccount_CrossAgentChatSucceeds(t *testing.T) {
 	}
 	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
 		t.Errorf("session AccountID = %v, want nil (session binding untouched)", got)
+	}
+}
+
+// TestSwitchAccount_NonResumableCrossAgentRespawnKeepsChatProviderAndModel covers
+// the cross-product the other switch tests miss: cross-agent AND non-resumable.
+// TestSwitchAccount_CrossAgentChatSucceeds resumes, so StartTmuxChat reads the
+// chat row and gets the provider right for free; the non-resumable tests are
+// same-agent, so the session seed happens to be correct. Only together do they
+// expose the gap: with no transcript there is NO row to read, so provider and
+// model fall back to the parent SESSION's unless the respawn carries the chat's
+// own. A codex chat inside a claude session reaches this path routinely, because
+// its provider rollout id defeats the transcript probe (see switchResumeID).
+//
+// The regression this guards: the fresh row came back up as claude while the
+// codex account was persisted onto it, so the claude runner built argv while
+// account materialization — which dispatches on the ACCOUNT's provider — handed
+// that claude process codex env (BOS-1135).
+func TestSwitchAccount_NonResumableCrossAgentRespawnKeepsChatProviderAndModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	// The session runs claude; the selected chat is a cross-agent codex chat with
+	// its own model, and the target is a codex account.
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
+	h.chats.chatsBySession["sess-1"][0].Model = "gpt-5-codex"
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+	}}
+	// Force the fresh path: no transcript means nothing to resume.
+	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: false}
+
+	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	if err != nil {
+		t.Fatalf("SwitchAccount: %v", err)
+	}
+	if res.Resumed {
+		t.Fatal("precondition: this switch must start fresh, not resume")
+	}
+
+	h.chats.mu.Lock()
+	creates := append([]db.CreateAgentChatParams(nil), h.chats.createCalls...)
+	h.chats.mu.Unlock()
+	if len(creates) != 1 {
+		t.Fatalf("agent_chats Create calls = %d, want exactly 1 (the fresh chat)", len(creates))
+	}
+	fresh := creates[0]
+	if fresh.AgentName != "codex" {
+		t.Errorf("fresh chat AgentName = %q, want codex (the CHAT's provider), not the session seed %q",
+			fresh.AgentName, h.sessions.sessions["sess-1"].AgentName)
+	}
+	if fresh.Model != "gpt-5-codex" {
+		t.Errorf("fresh chat Model = %q, want gpt-5-codex (the CHAT's model), not the session seed %q",
+			fresh.Model, h.sessions.sessions["sess-1"].Model)
+	}
+	// Provider and account must stay CONSISTENT: carrying one without the other is
+	// the pairing this test exists to forbid.
+	if fresh.AccountID == nil || *fresh.AccountID != "acct-2" {
+		t.Errorf("fresh chat AccountID = %v, want acct-2 (the codex target)", fresh.AccountID)
+	}
+}
+
+// TestSwitchAccount_NonResumableCrossAgentRespawnDropsSessionModelWhenChatHasNone
+// proves a cross-agent chat carrying NO model of its own does not inherit the
+// SESSION's model on the fresh respawn path.
+//
+// An empty chat model is a MEANINGFUL value, not an absent one: store.go
+// documents "" as "the agent CLI default", and the runner plugin resolves it.
+// Inheriting the claude session's id instead would build `codex --model
+// <claude id>`, which fails — and the switch already killed the old pane by
+// then, so the chat is left dead rather than merely degraded (BOS-1135).
+func TestSwitchAccount_NonResumableCrossAgentRespawnDropsSessionModelWhenChatHasNone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	// The session seed must be NON-EMPTY or this test cannot fail: the harness
+	// leaves Model empty, which would satisfy the assertion below without the
+	// cross-agent reset ever running.
+	h.sessions.sessions["sess-1"].Model = "claude-opus-4"
+	// A cross-agent codex chat that never bound a model of its own.
+	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
+	h.chats.chatsBySession["sess-1"][0].Model = ""
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+	}}
+	// Force the fresh path: no transcript means nothing to resume.
+	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: false}
+
+	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	if err != nil {
+		t.Fatalf("SwitchAccount: %v", err)
+	}
+	if res.Resumed {
+		t.Fatal("precondition: this switch must start fresh, not resume")
+	}
+
+	h.chats.mu.Lock()
+	creates := append([]db.CreateAgentChatParams(nil), h.chats.createCalls...)
+	h.chats.mu.Unlock()
+	if len(creates) != 1 {
+		t.Fatalf("agent_chats Create calls = %d, want exactly 1 (the fresh chat)", len(creates))
+	}
+	fresh := creates[0]
+	// The provider still comes from the chat — this test narrows the MODEL axis
+	// only, and a wrong provider would make the model assertion meaningless.
+	if fresh.AgentName != "codex" {
+		t.Fatalf("fresh chat AgentName = %q, want codex (the CHAT's provider)", fresh.AgentName)
+	}
+	if fresh.Model != "" {
+		t.Errorf("fresh chat Model = %q, want \"\" (the codex CLI default) — the claude session seed %q is a provider-scoped id the codex runner cannot start",
+			fresh.Model, h.sessions.sessions["sess-1"].Model)
 	}
 }
 
@@ -731,6 +909,31 @@ func TestSwitchAccount_FailedHealthTargetRefused(t *testing.T) {
 	}
 }
 
+// TestSwitchAccount_AuthInvalidTargetRefusedBeforePaneTouch is the ordering
+// guarantee that makes this finding matter: the refusal must land ABOVE the
+// pane-touch boundary. A spawn-time refusal arrives only after the chat has
+// been killed and rebound, at which point the respawn silently falls back to
+// ambient credentials and the disruption is already done.
+func TestSwitchAccount_AuthInvalidTargetRefusedBeforePaneTouch(t *testing.T) {
+	h := newSwitchHarness(t)
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "claude", Label: "Benched", Status: AccountAuthInvalid,
+	}}
+
+	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	if !errors.Is(err, ErrAccountAuthInvalid) {
+		t.Fatalf("err = %v, want ErrAccountAuthInvalid", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Error("auth-invalid refusal must not kill the pane")
+	}
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got != nil {
+		t.Errorf("chat AccountID = %v, want nil (no rebind)", got)
+	}
+}
+
 // TestSwitchAccount_IdempotentNoop: switching to the already-bound account is a
 // success no-op — no stop, no rebind, no respawn.
 func TestSwitchAccount_IdempotentNoop(t *testing.T) {
@@ -953,5 +1156,313 @@ func TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext(t *testing.T) {
 	}
 	if !sawStartStamp {
 		t.Errorf("no StartTmuxChat start-error stamp recorded for agent-1; calls = %+v", stamps)
+	}
+}
+
+// stuckComposerPane models a pane whose composer holds whatever was last pasted
+// into it and empties only on C-u: Enter is SWALLOWED. That is exactly the
+// condition tmux.OutcomeNotSubmitted names — a live composer still holding the
+// payload after the verifier's Enter retry — and it is the one shape a static
+// capture-pane fixture cannot express, because the verifier's own clear/redeliver
+// dance has to move the pane between states for the run to reach that verdict.
+//
+// The marker row renders the notice's first word rather than the whole notice:
+// composerHoldsPayload matches a prefix in either direction, so this holds the
+// payload for the verifier without the fixture having to predict the label and
+// outcome suffix SwitchAccount composes at run time.
+func stuckComposerPane(calls []recordedTmuxCall) string {
+	held := false
+	for _, c := range calls {
+		if c.subcommand == "paste-buffer" {
+			held = true
+			continue
+		}
+		if c.subcommand != "send-keys" || len(c.args) == 0 {
+			continue
+		}
+		switch c.args[len(c.args)-1] {
+		case "C-u":
+			held = false
+		case "Enter":
+			// Swallowed by the TUI — the whole point of the fixture.
+		default:
+			// A literal `send-keys -l -- <text>`, which is how sendPlan delivers
+			// a single-line payload like this notice.
+			held = true
+		}
+	}
+	if held {
+		return "Welcome to Claude\n❯ switched\n"
+	}
+	return "Welcome to Claude\n❯\n"
+}
+
+// composerHoldsNotice replays stuckComposerPane's rule over everything the fake
+// recorded, answering the question the ticket actually cares about: when the
+// switch returned, was the notice still sitting at the prompt?
+func composerHoldsNotice(f *fakeTmux) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Contains(stuckComposerPane(f.calls), "switched")
+}
+
+// TestSwitchAccount_UnsubmittedNoticeIsClearedFromTheComposer is the other half
+// of "the notice is submitted, not left pending". Treating OutcomeNotSubmitted
+// as a merely-undelivered optional payload keeps the launch — correctly, the
+// account is already rebound and the pane is up — but it also LEAVES the notice
+// in the composer, which is the exact reported symptom: a chat that comes back
+// parked behind a pending housekeeping line the operator's next Enter would
+// submit. The switch must still succeed AND the composer must come back empty.
+func TestSwitchAccount_UnsubmittedNoticeIsClearedFromTheComposer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	h.tmuxFake.capturePaneFunc = stuckComposerPane
+
+	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	// The non-fatal contract is a named acceptance criterion of this ticket, and
+	// the clear must not quietly convert the outcome back into a failure.
+	if err != nil {
+		t.Fatalf("SwitchAccount: %v; an unsubmitted cosmetic notice must not fail a completed switch", err)
+	}
+	if res.TargetLabel != "Work" {
+		t.Errorf("TargetLabel = %q, want Work", res.TargetLabel)
+	}
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got == nil || *got != "acct-2" {
+		t.Errorf("chat AccountID = %v, want acct-2 (the rebind must stand)", got)
+	}
+	// The pane must NOT be reaped: the outcome is classified, so the launch
+	// stands and only the payload did not land.
+	if h.tmuxFake.subcommandCount("kill-session") != 1 {
+		t.Errorf("kill-session calls = %d, want exactly 1 (the STOP before the respawn); "+
+			"a second kill means the classified submit failure went down the fatal path",
+			h.tmuxFake.subcommandCount("kill-session"))
+	}
+	if composerHoldsNotice(h.tmuxFake) {
+		t.Error("the account-switch notice was left pending in the composer after the switch; " +
+			"the next Enter would submit a stale housekeeping message — the very shape this ticket removes")
+	}
+}
+
+// TestSwitchAccount_UnclearableNoticeStillLeavesTheSwitchStanding pins the
+// decision taken where the reviewer offered a fork. A composer that C-u cannot
+// empty is one the verifier's own bounded clear dance already failed to empty,
+// so escalating to fatal here would run failStartBestEffort — which KILLS a pane
+// that is up, correctly wired, and bound to the account the switch just moved it
+// to. A stray line in a working composer is strictly less harm than destroying a
+// completed switch, so the clear stays best-effort and the launch stands.
+func TestSwitchAccount_UnclearableNoticeStillLeavesTheSwitchStanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	// A composer that renders the payload forever: every C-u is a no-op, so the
+	// clear exhausts its presses and fails.
+	h.tmuxFake.capturePaneOutput = "Welcome to Claude\n❯ switched\n"
+
+	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	}); err != nil {
+		t.Fatalf("SwitchAccount: %v; a composer that cannot be cleared must not fail a completed switch", err)
+	}
+	if h.tmuxFake.subcommandCount("kill-session") != 1 {
+		t.Errorf("kill-session calls = %d, want exactly 1 (the STOP before the respawn); "+
+			"the pane must survive an uncleanable cosmetic notice",
+			h.tmuxFake.subcommandCount("kill-session"))
+	}
+	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got == nil || *got != "acct-2" {
+		t.Errorf("chat AccountID = %v, want acct-2 (the rebind must stand)", got)
+	}
+}
+
+// TestSwitchAccount_UnconfirmedDeliveryOnAVanishedPaneFailsTheSwitch pins the
+// one place the "a classified outcome means the launch stands" rule has to be
+// crossed. OutcomeUnconfirmed is the verdict a FAILED capture-pane produces, and
+// a pane whose process exited after NewSession produces that identical failed
+// read — this spawn path arms no RemainOnExit, so the exit collapses the session
+// outright rather than leaving a readable zombie. Classification therefore
+// cannot tell "up but unreadable" from "gone", and softening it unconditionally
+// returned SUCCESS from a switch whose row kept a tmux_session_name pointing at
+// nothing: a chat the operator can see, click, and never open.
+//
+// So the outcome alone does not decide it — tmux is asked, and only a DEFINITE
+// "can't find session" turns the degrade back into a failed launch. The two
+// siblings above hold the other side of that line: an indeterminate probe, or
+// any other classified outcome, still leaves the completed switch standing.
+func TestSwitchAccount_UnconfirmedDeliveryOnAVanishedPaneFailsTheSwitch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	fake := h.tmuxFake
+	// The respawned pane comes up and draws a composer — readiness MUST pass, or
+	// the readiness gate's own paneVanishedErr (OutcomeUnclassified) takes the
+	// fatal branch above this one and the test proves nothing. It then dies the
+	// instant readiness is satisfied: every later capture-pane fails, which is
+	// what makes the submit verifier answer OutcomeUnconfirmed, and has-session
+	// answers the definite miss that licenses the reap.
+	//
+	// capturePaneFunc runs with the fake's lock held, so the flip writes the maps
+	// directly rather than going back through the fake.
+	fake.capturePaneFunc = func(calls []recordedTmuxCall) string {
+		respawned, capturesAfterRespawn := false, 0
+		for _, c := range calls {
+			switch c.subcommand {
+			case "new-session":
+				respawned, capturesAfterRespawn = true, 0
+			case "capture-pane":
+				if respawned {
+					capturesAfterRespawn++
+				}
+			}
+		}
+		if respawned && capturesAfterRespawn >= 1 {
+			fake.failSubcommand["capture-pane"] = true
+			fake.failStderr["capture-pane"] = "can't find pane: bossd-agent-run-agent-1"
+			// An empty stderr would map to (false, error) — an INDETERMINATE
+			// probe, which confirmPaneVanished deliberately refuses to act on.
+			// Only tmux's own words make the miss definite.
+			fake.failSubcommand["has-session"] = true
+			fake.failStderr["has-session"] = "can't find session: bossd-agent-run-agent-1"
+		}
+		return "Welcome to Claude\n❯\n"
+	}
+
+	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	if err == nil {
+		t.Fatal("SwitchAccount returned success for a switch whose respawned pane is gone; " +
+			"the chat row would keep a tmux_session_name pointing at nothing")
+	}
+
+	// Two kills: the STOP that precedes the respawn (which the siblings assert
+	// alone, because their launch stands) and failStartBestEffort's reap of the
+	// pane this path just declared dead.
+	if got := fake.subcommandCount("kill-session"); got != 2 {
+		t.Errorf("kill-session calls = %d, want exactly 2 (the STOP before the respawn plus the failure reap); "+
+			"only 1 means the unconfirmed delivery was softened into success on a vanished pane", got)
+	}
+
+	// The row must not be left reading live: failStartBestEffort stamps it so the
+	// chat list shows "(failed to start)" instead of a pane that is not there.
+	var stamped bool
+	h.chats.mu.Lock()
+	stamps := append([]markStartFailedCall(nil), h.chats.markStartFailedCalls...)
+	h.chats.mu.Unlock()
+	for _, c := range stamps {
+		if c.agentSessionID == "agent-1" && strings.Contains(c.reason, "send plan failed") {
+			stamped = true
+		}
+	}
+	if !stamped {
+		t.Errorf("no start-error stamp recorded for agent-1; calls = %+v", stamps)
+	}
+}
+
+// TestSwitchAccount_UnsubmittedDeliveryOnAVanishedPaneFailsTheSwitch holds the
+// OTHER half of the same line, and it is the half that is easy to miss.
+// OutcomeNotSubmitted reads like a verdict about a pane that was READ — "a
+// composer is drawn and it still holds the payload" — and for the sibling above
+// this test it is exactly that. But the Enter retry is entered only AFTER a
+// confirmed-pending verdict, so every failure inside its clear/redeliver/Enter
+// dance is classified not-submitted too, deliberately: C-u cannot submit, so
+// telling the operator "this may already have run" would invert the advice. A
+// pane that DIES during that dance therefore mints not-submitted from a tmux
+// call that failed rather than a composer that was read — the same evidence
+// gap OutcomeUnconfirmed has — and a guard that trusted the verdict's name let
+// it through: the switch returned SUCCESS, the best-effort clear below fired a
+// C-u at a session that no longer exists and only logged its failure, and the
+// row kept a tmux_session_name pointing at nothing.
+//
+// So the probe governs both verdicts, and both siblings above still stand: the
+// notice-cleared case is a live composer this test never reaches, and neither
+// gets reaped without tmux's own definite "can't find session".
+func TestSwitchAccount_UnsubmittedDeliveryOnAVanishedPaneFailsTheSwitch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	fake := h.tmuxFake
+	// The pane must live long enough to be classified NOT-SUBMITTED rather than
+	// unconfirmed, and that verdict cannot be faked by a static fixture: it is
+	// reached only through a confirmed-pending verdict, which needs a composer
+	// that actually holds the payload while Enter is swallowed. So the pane runs
+	// as stuckComposerPane — readiness passes, the notice lands, the first
+	// waitForSubmission times out with the payload still at the prompt — and it
+	// dies at the verifier's own first C-u, which is a key that cannot be sent
+	// before that pending verdict. The next post-clear capture fails, and the
+	// verifier answers not-submitted because the only key it has pressed since
+	// is a clear.
+	//
+	// capturePaneFunc runs with the fake's lock held, so the flip writes the maps
+	// directly rather than going back through the fake.
+	fake.capturePaneFunc = func(calls []recordedTmuxCall) string {
+		cleared := false
+		for _, c := range calls {
+			if c.subcommand == "send-keys" && len(c.args) > 0 && c.args[len(c.args)-1] == "C-u" {
+				cleared = true
+			}
+		}
+		if !cleared {
+			return stuckComposerPane(calls)
+		}
+		fake.failSubcommand["capture-pane"] = true
+		fake.failStderr["capture-pane"] = "can't find pane: bossd-agent-run-agent-1"
+		// An empty stderr would map to (false, error) — an INDETERMINATE probe,
+		// which confirmPaneVanished deliberately refuses to act on. Only tmux's
+		// own words make the miss definite.
+		fake.failSubcommand["has-session"] = true
+		fake.failStderr["has-session"] = "can't find session: bossd-agent-run-agent-1"
+		// This one capture still answers (the fail flag applies from the NEXT call
+		// on), and it must answer "the box still holds the payload". Reporting an
+		// empty composer would license the redelivery and a second Enter, and the
+		// dead pane would then be read after that Enter — which is the UNCONFIRMED
+		// verdict this test exists to stay out of.
+		return "Welcome to Claude\n❯ switched\n"
+	}
+
+	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	if err == nil {
+		t.Fatal("SwitchAccount returned success for a switch whose respawned pane died during the submit retry; " +
+			"the chat row would keep a tmux_session_name pointing at nothing")
+	}
+	// Pin WHICH verdict got here. Every assertion below passes just as well for
+	// an OutcomeUnconfirmed run, so without this the fixture could drift into the
+	// sibling's branch and prove nothing about this one.
+	if got := tmux.OutcomeOf(err); got != tmux.OutcomeNotSubmitted {
+		t.Fatalf("delivery outcome = %v, want %v; this test is only about the "+
+			"not-submitted half of the guard, and %v is the sibling's case",
+			got, tmux.OutcomeNotSubmitted, tmux.OutcomeUnconfirmed)
+	}
+
+	// Two kills, exactly as in the unconfirmed sibling: the STOP that precedes
+	// the respawn, plus failStartBestEffort's reap of the pane this path just
+	// proved dead. One kill means the not-submitted verdict was softened into
+	// success and the only other thing sent at the dead session was the
+	// best-effort C-u, whose failure is merely logged.
+	if got := fake.subcommandCount("kill-session"); got != 2 {
+		t.Errorf("kill-session calls = %d, want exactly 2 (the STOP before the respawn plus the failure reap); "+
+			"only 1 means the unsubmitted delivery was softened into success on a vanished pane", got)
+	}
+
+	// The row must not be left reading live: failStartBestEffort stamps it so the
+	// chat list shows "(failed to start)" instead of a pane that is not there.
+	var stamped bool
+	h.chats.mu.Lock()
+	stamps := append([]markStartFailedCall(nil), h.chats.markStartFailedCalls...)
+	h.chats.mu.Unlock()
+	for _, c := range stamps {
+		if c.agentSessionID == "agent-1" && strings.Contains(c.reason, "send plan failed") {
+			stamped = true
+		}
+	}
+	if !stamped {
+		t.Errorf("no start-error stamp recorded for agent-1; calls = %+v", stamps)
 	}
 }

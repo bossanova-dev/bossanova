@@ -58,7 +58,9 @@ generic `boss callback` CLI and carries the watch policy:
 | `listWatches`   | `boss callback list`    | Reconciliation read: enumerate live watches, dedup by id.                     |
 | `removeWatch`   | `boss callback remove`  | Tear a stale/duplicate watch down by id when the wait ends.                   |
 
-`policy.watchTriggers` = `checks_passed`, `checks_failed`, `merged`. `policy.defaultExpiresIn` = `24h`.
+`policy.availableTriggers` is the CLI vocabulary: `merged`, `closed`, `checks_passed`,
+`checks_failed`, `ready_for_review`, `checks_passed_ready`. `policy.watchTriggers` is the default
+wait set: `checks_passed`, `checks_failed`, `merged`. `policy.defaultExpiresIn` = `24h`.
 `policy.fallbackPoll` = `gh pr checks --watch --fail-fast`. That value names the **command** the
 adapter reports, not the wait protocol, and the raw form has **no timeout of its own** — so never
 run it unwrapped. Run the fallback poll as the bounded loop in Protocol step 5, which is the only
@@ -77,7 +79,18 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
    ```bash
    PR="$PR_NUMBER"
    MSG="boss-build: CI/PR state changed for PR #$PR — reconcile and continue."
-   for T in checks_passed checks_failed merged; do
+   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+   if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+   BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+   export BOSS_BUILD_TOOLBOX
+   WATCH_TRIGGERS="$(
+     node --input-type=module -e '
+       import{pathToFileURL as u}from"node:url"
+       const {resolveCallbackAdapter}=await import(u(process.env.BOSS_BUILD_TOOLBOX+"/callback/adapter.mjs").href)
+       process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join(" "))
+     '
+   )"
+   for T in $WATCH_TRIGGERS; do
      boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --message "$MSG" --expires-in 24h --json
    done
    ```
@@ -126,6 +139,8 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
    on that later reconcile. On `could-not-evaluate`, arm nothing and keep polling.
    Use `boss callback list` to see which triggers are still live and only re-arm the
    missing, safe-to-arm ones (avoids duplicate watches).
+   State-matching is the default. When a consumer needs a new unsatisfied → satisfied edge instead,
+   pass the CLI's `--on-transition` flag through the adapter's `onTransition` argument.
 
 5. **Bounded fallback poll — and `--watch` is not the bound.** Whether or not a watch is armed, back
    the wait with the bounded poll below. When callbacks are available it is a safety net for a

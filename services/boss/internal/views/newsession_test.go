@@ -295,6 +295,9 @@ func (s *stubClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Acc
 func (s *stubClient) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
 	panic("unused")
 }
+func (s *stubClient) RefreshAccount(context.Context, *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	panic("unused")
+}
 func (s *stubClient) RemoveAccount(context.Context, string) error { panic("unused") }
 func (s *stubClient) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
 	panic("unused")
@@ -2342,18 +2345,13 @@ func TestNewSession_PRSelectEnterEmptyFilteredIsNoop(t *testing.T) {
 		{Number: 7, Title: "Fix login flow", HeadBranch: "fix-login"},
 	}})
 
-	// Narrow to a query that matches nothing, then commit it so the filter is
-	// applied (blurred): the non-filter Enter path now sees an empty list.
+	// Narrow to a query that matches nothing. Enter must remain a no-op because
+	// there is no focused PR to activate.
 	m = sendKey(t, m, '/')
 	m = sendMsg(t, m, pasteText("zzz-no-such-pr"))
 	if len(m.prsFiltered) != 0 {
 		t.Fatalf("prsFiltered = %d, want 0 after a non-matching filter", len(m.prsFiltered))
 	}
-	m = sendSpecialKey(t, m, tea.KeyEnter) // commit the filter
-	if m.prFilter.Active() {
-		t.Fatal("prFilter still active after Enter commit")
-	}
-
 	// Enter with an empty filtered list must not start creation.
 	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
 	m = assertValueType(t, updated)
@@ -2383,7 +2381,6 @@ func TestNewSession_StartCreatingExistingPREmptyFilteredDoesNotAttach(t *testing
 	// startCreating must skip PR attachment rather than index out of range.
 	m = sendKey(t, m, '/')
 	m = sendMsg(t, m, pasteText("zzz-no-such-pr"))
-	m = sendSpecialKey(t, m, tea.KeyEnter) // commit; prsFiltered now empty
 	if len(m.prsFiltered) != 0 {
 		t.Fatalf("prsFiltered = %d, want 0", len(m.prsFiltered))
 	}
@@ -3256,4 +3253,56 @@ func TestNewSessionStreamSingleFrameStreamStillCreates(t *testing.T) {
 	if !stream.closed {
 		t.Fatal("stream was not closed on the terminal EOF")
 	}
+}
+
+// TestNewSession_OptedInExperimentalAgent_AppearsInPicker guards the opt-in path
+// BOS-1145 documents. config init writes the experimental entry "enabled": false
+// and never rewrites it, so the persisted flag stays false however the user opts
+// in; the daemon's gate is what actually loads the runner. Filtering the picker
+// on the persisted flag therefore hid a runner the daemon had loaded, and the
+// escape hatch below does not help: it only fires when NO plugin is enabled, so
+// any user with claude on lost opencode from the picker entirely.
+func TestNewSession_OptedInExperimentalAgent_AppearsInPicker(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+			{Name: "opencode", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m.SetAgentSettings(config.Settings{
+		ExperimentalPlugins: []string{"opencode"},
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "opencode", Enabled: false},
+		},
+	})
+
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	names := make([]string, 0, len(m.agents))
+	for _, a := range m.agents {
+		names = append(names, a.Name)
+	}
+	if len(m.agents) != 2 {
+		t.Fatalf("agents = %v, want both claude and the opted-in opencode", names)
+	}
+	found := false
+	for _, n := range names {
+		if n == "opencode" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("opted-in opencode missing from the picker; agents = %v", names)
+	}
+}
+
+// ListSessionsWithReadFailures satisfies the BossClient seam: this fake reads
+// one place, so it never reports a partial read.
+func (s *stubClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	sessions, err := s.ListSessions(ctx, req, opts)
+	return sessions, nil, err
 }

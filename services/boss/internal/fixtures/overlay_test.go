@@ -113,7 +113,7 @@ func TestApplyOverlayBadStateNameListsValid(t *testing.T) {
 
 func TestApplyOverlayAllEntitiesWithDefaults(t *testing.T) {
 	o, err := ParseOverlay([]byte(`{
-		"repos": [{"id": "repo-x", "displayName": "widget-app"}],
+		"repos": [{"id": "repo-x", "displayName": "widget-app", "linearApiKey": "lin_fixture"}],
 		"sessions": [{"id": "sx", "title": "sess"}],
 		"chats": [{"id": "cx", "sessionId": "sx", "title": "chat"}],
 		"cronJobs": [{"id": "jx", "name": "nightly"}],
@@ -129,6 +129,9 @@ func TestApplyOverlayAllEntitiesWithDefaults(t *testing.T) {
 	}
 	if len(target.repos) != 1 || target.repos[0].DefaultBaseBranch != "main" || target.repos[0].MergeStrategy != "merge" {
 		t.Fatalf("repo defaults wrong: %+v", target.repos)
+	}
+	if target.repos[0].LinearApiKey != "lin_fixture" {
+		t.Fatalf("repo LinearApiKey = %q, want fixture value", target.repos[0].LinearApiKey)
 	}
 	if len(target.crons) != 1 {
 		t.Fatalf("want 1 cron, got %d", len(target.crons))

@@ -101,16 +101,29 @@ func NewRunner(logger zerolog.Logger, opts ...Option) *Runner {
 		BinaryName: "codex",
 		BuildArgv:  r.buildArgv,
 		PostExit: func(orig error, tail []byte) error {
-			if orig != nil && detectAuthFailure(tail) {
+			// Only a non-nil exit can be classified at all.
+			if orig == nil {
+				return nil
+			}
+			// Non-execution is checked before either marker match. 127/126 is
+			// a structural fact the OS reported about the process, while the
+			// auth and usage-cap markers are substring matches on
+			// agent-authored log text. A codex that never started cannot have
+			// printed its own auth banner, so an auth marker in a 127 tail
+			// came from the shell or a wrapper -- and reading it as
+			// ErrAuthRequired would bench a working credential for a PATH
+			// fault, the expensive direction of this mistake (BOS-1172).
+			if err := detectNonExecution(orig); err != nil {
+				return err
+			}
+			// Auth is checked next so it still wins when both an auth and a
+			// usage-cap marker appear in the same tail, preserving today's
+			// behavior.
+			if detectAuthFailure(tail) {
 				return ErrAuthRequired
 			}
-			// Auth is checked first (above) so it wins when both an auth and a
-			// usage-cap marker appear in the same tail, preserving today's
-			// behavior. Only a non-nil exit can be a usage cap.
-			if orig != nil {
-				if err := classifyUsageCap(logger, tail, time.Now()); err != nil {
-					return err
-				}
+			if err := classifyUsageCap(logger, tail, time.Now()); err != nil {
+				return err
 			}
 			return nil
 		},

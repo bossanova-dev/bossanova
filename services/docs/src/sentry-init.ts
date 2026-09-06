@@ -66,6 +66,12 @@ export function scrub(input: string): string {
 }
 
 export function initSentry(opts: { env?: string; release?: string } = {}): void {
+  // A dev-server HMR crash created a production issue (BOS-1170). Keep local
+  // browser errors on the developer's machine instead of sending them to Sentry.
+  if (process.env.NODE_ENV === 'development') {
+    return
+  }
+
   Sentry.init({
     dsn,
     environment: opts.env ?? 'production',

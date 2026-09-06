@@ -52,7 +52,7 @@ mcp="update_repo"
 ## Automatic `.env` loading
 
 Once a worktree contains a `.env` file, Bossanova loads it into the
-environment of every agent session it starts in that worktree — you do
+environment of every agent session it starts in that worktree; you do
 **not** need to `source` it or run direnv yourself. This is why the setup
 script above copies `.env` into the worktree: the copy makes the file
 present, and Bossanova picks it up automatically from there.
@@ -68,7 +68,7 @@ headless runs, and automated repair runs alike.
 A common use is resolving `${VAR}` placeholders in a project's
 `.mcp.json`. For example, an MCP server configured with an
 `Authorization: Bearer ${LINEAR_API_KEY}` header only authenticates if
-`LINEAR_API_KEY` is present in the session environment — putting it in the
+`LINEAR_API_KEY` is present in the session environment; putting it in the
 worktree `.env` is enough. See the [MCP guide](./mcp.md).
 
 ### Precedence and format
@@ -77,7 +77,7 @@ worktree `.env` is enough. See the [MCP guide](./mcp.md).
   own `BOSS_*` variables and internal session values are never overridden
   by a repo `.env`, even if it defines the same key.
 - **Missing is fine.** A worktree with no `.env` (or an empty/unreadable
-  one) is a no-op — nothing is loaded and the session starts normally.
+  one) is a no-op: nothing is loaded and the session starts normally.
 - **The parser is intentionally minimal.** Blank lines and `#` comment
   lines are ignored; an optional leading `export ` is stripped; one pair
   of surrounding quotes is removed from a value. There is **no** variable

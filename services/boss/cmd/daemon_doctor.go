@@ -359,6 +359,109 @@ func sanitizeDaemonDoctorField(s string) string {
 	return out
 }
 
+// daemonMetadataForDoctor resolves the recorded daemon state the same way the
+// macOS block below does. It is read twice rather than hoisted because the
+// supervision check has to run ABOVE the platform early return and the rest of
+// the metadata consumers sit below it; two cheap file reads are a better trade
+// than reordering a function whose ordering is documented as load-bearing.
+func daemonMetadataForDoctor() (daemonstate.Metadata, error) {
+	profile, profileErr := currentDaemonProfile()
+	if profileErr != nil {
+		return daemonstate.Metadata{}, profileErr
+	}
+	return daemonstate.Read(profile.AppDataDir)
+}
+
+// reportDaemonSupervision answers a question none of the other checks ask: is
+// the bossd that is actually running the one the service manager started?
+//
+// Every other check here reads CONFIGURATION — the plist's PATH, the plist's
+// ProgramArguments, the staged binary's mtime — and a detached daemon matches
+// all of it, because it is the same executable at the same path. On 2026-09-03
+// that gap let `boss daemon doctor` exit 0 while the running daemon could not
+// authenticate to GitHub and was writing every log line to /dev/null. A
+// diagnostic that checks configuration rather than the live process reports
+// healthy on a process the configuration does not describe.
+//
+// The three consequences travel together because they have one cause. A bossd
+// started detached (over SSH, or by hand) is outside the GUI login session, so
+// on macOS its gh subprocesses cannot read the login keychain and fall back to
+// UNAUTHENTICATED requests — which surfaces as 401s on writes and anonymous
+// rate limits on reads — and it inherits whatever stdio the starting shell had
+// rather than the service's log files.
+//
+// Every inconclusive input returns "unknown" rather than a failure. This check
+// runs on developer machines and in CI, where BOSS_DAEMON_SKIP_LAUNCHCTL makes
+// the service view meaningless; a false FAIL there would train operators to
+// ignore the one line that matters on a real host.
+func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metadataErr error) (unhealthy bool, restartRemediation bool) {
+	// Checked BEFORE the service view is read, not after. Under this env var
+	// platformGetStatus deliberately returns Installed=true, Running=false
+	// without ever asking launchd or systemd — which is byte-identical to the
+	// detached-daemon shape this function exists to flag. Interpreting it would
+	// turn every test harness and CI run into a FAIL, which is precisely how a
+	// diagnostic gets ignored on the host where it is telling the truth.
+	if os.Getenv("BOSS_DAEMON_SKIP_LAUNCHCTL") != "" {
+		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL)")
+		return false, false
+	}
+
+	st, statusErr := daemonGetStatus()
+	switch {
+	case statusErr != nil:
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (service status unavailable: %v)\n", statusErr)
+		return false, false
+	case metadataErr != nil:
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (no daemon state record: %v)\n", metadataErr)
+		return false, false
+	case !st.Installed:
+		// "not installed" has its own check and its own remedy below; claiming
+		// it here too would print two failures for one fact.
+		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (no service is installed)")
+		return false, false
+	case metadata.PID <= 0:
+		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (no recorded daemon PID)")
+		return false, false
+	}
+
+	alive, aliveErr := daemonProcessAlive(metadata.PID)
+	switch {
+	case aliveErr != nil:
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d could not be checked: %v)\n", metadata.PID, aliveErr)
+		return false, false
+	case !alive:
+		// Nothing is running under the recorded PID. The running-process check
+		// below owns that story.
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d is not running)\n", metadata.PID)
+		return false, false
+	}
+
+	switch {
+	case !st.Running:
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: FAIL bossd (PID %d) is running but the service manager does not own it — it was started detached, so on macOS it cannot reach the login keychain and gh silently falls back to unauthenticated requests\n",
+			metadata.PID)
+		return true, true
+	case st.PID == 0:
+		// Reachable on systemd when `systemctl is-active` succeeds but the
+		// MainPID read does not, and on launchd when its output cannot be
+		// parsed. Certifying ownership here would emit a false healthy verdict
+		// from the one check added to detect an ownership mismatch.
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: unknown (the service manager reports running but did not report a PID; recorded daemon is PID %d)\n",
+			metadata.PID)
+		return false, false
+	case st.PID != metadata.PID:
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: FAIL the service manager owns PID %d but the recorded daemon is PID %d — two daemons, or a stale state record\n",
+			st.PID, metadata.PID)
+		return true, true
+	default:
+		_, _ = fmt.Fprintf(out, "daemon supervision: ok (PID %d is owned by the service manager)\n", metadata.PID)
+		return false, false
+	}
+}
+
 // reportDaemonAuthState prints the live-auth section and reports whether it
 // found an unhealthy state and whether the fix is a login.
 //
@@ -503,15 +606,21 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// check silently unreachable on Linux — the platform most bossd instances
 	// that talk to an orchestrator actually run on.
 	authUnhealthy, authRemediation := reportDaemonAuthState(cmd.Context(), out)
+	// Also above the macOS early return, and for the same reason: a daemon
+	// running outside its service manager is not a macOS concept.
+	// platformGetStatus fills PID on launchd and on systemd alike, so the check
+	// is genuinely cross-platform.
+	supervisionMetadata, supervisionMetadataErr := daemonMetadataForDoctor()
+	supervisionUnhealthy, supervisionRemediation := reportDaemonSupervision(out, supervisionMetadata, supervisionMetadataErr)
 	if daemonDoctorGOOS != "darwin" {
 		_, _ = fmt.Fprintf(out, "macOS daemon install and protected-folder checks: not applicable on %s\n", daemonDoctorGOOS)
 		// The service-PATH and upstream-auth checks are NOT macOS-specific —
 		// the systemd unit carries an explicit PATH too — so their verdicts
 		// have to survive this early return. Returning nil here regardless
 		// would make both a no-op on exactly the platform they matter most on.
-		if servicePathStale || authUnhealthy {
+		if servicePathStale || authUnhealthy || supervisionUnhealthy {
 			_, _ = fmt.Fprintln(out, "\nRemediation:")
-			if servicePathStale {
+			if servicePathStale || supervisionRemediation {
 				_, _ = fmt.Fprintln(out, "  run 'boss daemon restart'")
 			}
 			if authRemediation {
@@ -525,7 +634,12 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// different remedies. Folding an auth wedge into the same flag would print
 	// "run 'boss daemon restart'" for a problem a restart cannot fix — the
 	// credentials are still dead after it.
-	unhealthyNonAuth := servicePathStale
+	// The supervision verdict rides the non-auth flag: its remedy IS
+	// "boss daemon restart", which runDaemonRestart already implements for
+	// exactly this shape (installed-but-not-running takes the branch that kills
+	// the stray recorded-PID daemon and re-bootstraps it under the service
+	// manager).
+	unhealthyNonAuth := servicePathStale || supervisionUnhealthy
 	permissionRemediation := false
 	installRemediation := false
 	startRemediation := false

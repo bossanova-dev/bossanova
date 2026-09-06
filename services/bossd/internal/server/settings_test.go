@@ -459,3 +459,60 @@ func agentConfig(g *pb.GlobalSettings, name string) map[string]string {
 func agentConfigValue(g *pb.GlobalSettings, name, key string) string {
 	return agentConfig(g, name)[key]
 }
+
+// TestUpdateSettings_OptedInExperimentalDefaultAgent covers the opt-in path from
+// BOS-1145 at the RPC layer. The persisted entry stays "enabled": false for an
+// experimental plugin — config init writes it that way and the daemon's gate
+// never persists its override — so validating the default agent against the
+// persisted flag rejected a runner the daemon had actually loaded.
+func TestUpdateSettings_OptedInExperimentalDefaultAgent(t *testing.T) {
+	dir := t.TempDir()
+	seedSettings(t, config.Settings{
+		WorktreeBaseDir:     dir,
+		PollIntervalSeconds: 30,
+		DefaultAgent:        "claude",
+		ExperimentalPlugins: []string{"opencode"},
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "opencode", Enabled: false},
+		},
+	})
+	clients := map[string]agent.AgentRunnerClient{
+		"claude":   &listAgentsFakeClient{info: &pb.PluginInfo{Name: "claude"}},
+		"opencode": &listAgentsFakeClient{info: &pb.PluginInfo{Name: "opencode"}},
+	}
+	srv := newSettingsServer(clients)
+
+	got := mustUpdateSettings(t, srv, &pb.UpdateSettingsRequest{DefaultAgent: strptr("opencode")})
+	if got.GetDefaultAgent() != "opencode" {
+		t.Errorf("default_agent = %q, want opencode; the opt-in makes it effectively enabled", got.GetDefaultAgent())
+	}
+}
+
+// TestUpdateSettings_LegacyEnabledExperimentalDefaultAgentRejected is the other
+// direction: a pre-gate "enabled": true entry with no opt-in is forced off at
+// load, so accepting it as a default would persist an agent that never loads.
+func TestUpdateSettings_LegacyEnabledExperimentalDefaultAgentRejected(t *testing.T) {
+	dir := t.TempDir()
+	seedSettings(t, config.Settings{
+		WorktreeBaseDir:     dir,
+		PollIntervalSeconds: 30,
+		DefaultAgent:        "claude",
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "opencode", Enabled: true},
+		},
+	})
+	clients := map[string]agent.AgentRunnerClient{
+		"claude":   &listAgentsFakeClient{info: &pb.PluginInfo{Name: "claude"}},
+		"opencode": &listAgentsFakeClient{info: &pb.PluginInfo{Name: "opencode"}},
+	}
+	srv := newSettingsServer(clients)
+
+	_, err := srv.UpdateSettings(context.Background(), connect.NewRequest(&pb.UpdateSettingsRequest{
+		DefaultAgent: strptr("opencode"),
+	}))
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("expected InvalidArgument for a legacy-enabled experimental default_agent, got %v", err)
+	}
+}

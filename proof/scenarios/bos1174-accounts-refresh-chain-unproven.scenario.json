@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "title": "BOS-1174 an unproven refresh chain is reported as its own state, not as health",
+  "fixture": {
+    "preset": "demo"
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "a check that passed on a credential whose refresh chain was never observed working",
+      "steps": [
+        {
+          "key": "s",
+          "caption": "Open the Settings menu"
+        },
+        {
+          "key": "a",
+          "caption": "Open Settings -> Accounts"
+        },
+        {
+          "waitFor": "LABEL PROVIDER",
+          "timeoutMs": 10000,
+          "caption": "The accounts list has loaded"
+        },
+        {
+          "expect": [
+            {
+              "text": "refresh_chain_unproven",
+              "match": "normalized",
+              "label": "the new verdict is rendered as ITSELF rather than folded into a state this surface already knew; before this change the same row was an unqualified green and the operator had eight silent days before a hard failure"
+            },
+            {
+              "text": "unproven-codex codex active ok? refresh_chain_unproven",
+              "match": "normalized",
+              "label": "the account is still ACTIVE and its health still reads ok: an unproven refresh chain is a warning, not a provider rejection, so it does not remove the account from selection"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the warning is distinct from both a clean check and a rejected credential",
+      "steps": [
+        {
+          "waitFor": "LABEL PROVIDER",
+          "timeoutMs": 10000,
+          "caption": "The same list, read for what the four rows say about each other"
+        },
+        {
+          "expect": [
+            {
+              "text": "work-claude claude active ok ok",
+              "match": "normalized",
+              "label": "a credential the daemon asked about, which answered, and whose refresh chain raised no question: the only row still entitled to an unqualified green"
+            },
+            {
+              "text": "team-codex codex active failed failed:auth_invalidated",
+              "match": "normalized",
+              "label": "a CONFIRMED provider rejection, the one outcome that benches an account — the state the new one must never be confused with"
+            },
+            {
+              "text": "personal-codex codex disabled failed never checked",
+              "match": "normalized",
+              "label": "an account nobody has ever asked about; 'never checked' remains its own answer, so the new state adds a fourth distinct verdict rather than blurring the existing three"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

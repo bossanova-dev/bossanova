@@ -564,10 +564,13 @@ func probeCandidateUtilizationForRotationSignal(
 		if acct == nil || string(acct.Provider) != sig.Provider || acct.ID == sig.CappedAccountID {
 			continue
 		}
-		if acct.Status != models.AccountStatusActive || acct.Health != models.AccountHealthOK {
-			continue
-		}
-		if acct.CooldownUntil != nil && acct.CooldownUntil.After(now) {
+		// Mirrors rotation.BindableNow so the probe budget is not spent on an
+		// account the engine will not select. It must stay in step with
+		// isSelectable: an empty utilization map makes selectCandidate fall
+		// through to its unguarded list-order branch, so probing MORE widely
+		// than the engine selects is the safe direction and probing less is
+		// not.
+		if !rotation.BindableNow(acct, now) {
 			continue
 		}
 		sawCandidate = true
@@ -875,6 +878,14 @@ type runOpts struct {
 	// transition hook that is its only trigger — because either half alone is a
 	// daemon that silently never auto-resumes.
 	onTransientResumeSeamsWired func(live bool)
+
+	// onEvictionRecomputeSeamsWired, if non-nil, fires synchronously immediately
+	// after the BOS-1096 eviction recompute hook is installed. live reports that
+	// the tracker actually holds the hook — a daemon that skipped the one
+	// SetOnEntriesEvicted call is indistinguishable from one with the fix, in
+	// every test but this one, right up until a chat goes quiet in production
+	// and its session label freezes again.
+	onEvictionRecomputeSeamsWired func(live bool)
 
 	// onArchiveTrackerSeamsWired, if non-nil, fires synchronously immediately
 	// after the four archive-after-merge archivers are wired. live reports that
@@ -1262,7 +1273,7 @@ func executableDigest(path string) ([sha256.Size]byte, error) {
 // the not-attempted branch (abort keeps the charge and re-probes; not-attempted refunds
 // and parks). Anything else that returned before the pane was touched maps to
 // ErrSwitchNotAttempted, additionally carrying ErrSwitchAccountIneligible when the cause
-// was the target account being disabled / health-failed / cooling — on the
+// was the target account being disabled / health-failed / auth-invalid / cooling — on the
 // respawn-in-place path the "target" IS the bound account, and that is the case the
 // rotator resolves by rotating to an eligible account instead. (BOS-981)
 func mapRotationSwitchError(err error) error {
@@ -1280,6 +1291,7 @@ func mapRotationSwitchError(err error) error {
 	}
 	if errors.Is(err, session.ErrAccountDisabled) ||
 		errors.Is(err, session.ErrAccountFailed) ||
+		errors.Is(err, session.ErrAccountAuthInvalid) ||
 		errors.Is(err, session.ErrAccountCooling) {
 		return fmt.Errorf("%w: %w: %w", rotation.ErrSwitchNotAttempted, rotation.ErrSwitchAccountIneligible, err)
 	}
@@ -1645,6 +1657,20 @@ func run(opts runOpts) error {
 		})
 	})
 
+	// BOS-1096: recompute a session's display composite when the tracker
+	// destroys one of its chat entries. Eviction is the one input to
+	// display_label that was never an edge — Recompute fires on status
+	// TRANSITIONS, and a chat that simply stops heartbeating never transitions,
+	// so the label stood at whatever the last edge wrote until a daemon restart
+	// ran the boot backfill. Covers both deleting paths, since the tracker fires
+	// this hook from Cleanup's staleness sweep and from Remove (DeleteChat).
+	//
+	// Installed here rather than inline so the seam probe below can assert a
+	// booted daemon actually has it: dropping this single line leaves every
+	// other test for this fix green while the reported symptom returns in full.
+	wireEvictionRecompute(chatStatusTracker, agentChats, displayComputer, log.Logger)
+	evictionRecomputeHookInstalled := true
+
 	// Emit a structured audit log each time a chat enters or leaves the
 	// usage-limited state. Fired exactly once per transition by the tracker;
 	// the durable sink is Epic 4.4. Logging only — no behavior change.
@@ -1951,34 +1977,14 @@ func run(opts runOpts) error {
 		}
 	}
 
-	// Self-heal a settings file that accumulated duplicate plugin entries —
-	// e.g. a user added a plugin the discovery loop also wrote. Duplicates
-	// would otherwise spawn parallel plugin subprocesses with independent
-	// in-memory dedup state (see bossd-plugin-repair).
-	if deduped, dropped := config.DedupPluginConfigs(pluginCfgs); dropped {
-		log.Warn().Int("before", len(pluginCfgs)).Int("after", len(deduped)).Msg("removing duplicate plugin entries")
-		pluginCfgs = deduped
-		if opts.plugins == nil {
-			settings.Plugins = deduped
-			if err := config.Save(settings); err != nil {
-				log.Warn().Err(err).Msg("failed to persist deduped plugin list to settings")
-			}
-		}
-	}
-
-	// Configured plugins (settings.Plugins, e.g. persisted by `boss config init
-	// --plugin-dir`, which the official installer runs) are exec'd by their
-	// stored path. Auto-discovery already vets binaries it finds, but these
-	// explicit entries bypass that scan, so on a release build a plugin binary
-	// swapped after config init would run without a plugins.sum check. Re-verify
-	// the final list against the manifest and drop any binary that fails (fail
-	// closed). The explicit --plugins E2E override loads unverified test stubs by
-	// design, so it is exempt.
-	if opts.plugins == nil {
-		verified, rejected := config.VerifyConfiguredPlugins(pluginCfgs)
-		logPluginRejections(rejected)
-		pluginCfgs = verified
-	}
+	// Dedup, gate, and verify the resolved list, in that order. The three steps
+	// are sequenced inside finalizePluginConfigs rather than inline here because
+	// their order is load-bearing and this function is far too long and
+	// boot-heavy to assert an order within: dedup must run first so the gate sees
+	// one entry per plugin, and verification must run last so it vets the list
+	// the daemon will actually load.
+	pluginCfgs = finalizePluginConfigs(pluginCfgs, &settings, opts.plugins != nil,
+		defaultPluginPipeline(logPluginRejections))
 
 	if runtime.GOOS == "darwin" {
 		workingPaths := []string{settings.WorktreeBaseDir}
@@ -2104,6 +2110,55 @@ func run(opts runOpts) error {
 	accountSmoke, err := accountwiring.NewSmokeRunner(agentClients, accountCreds, log.Logger)
 	if err != nil {
 		log.Warn().Err(err).Msg("account provider verification unavailable; account test will validate credential shape only")
+	}
+	// BOS-1141: the daemon-owned credential-maintenance coordinator wraps the
+	// smoke runner so scheduled sweeps and explicit TestAccount RPCs share one
+	// single-flight verification path and one generation-guarded durable write.
+	// Constructed even when managed accounts are disabled — the RPC hook still
+	// benefits from de-duplication — and Start()ed unconditionally, because the
+	// scheduled path now consults the kill switch live (WithAuthCheckEnabled
+	// below) rather than at boot.
+	var accountCredMaintenance *accountwiring.CredentialMaintainer
+	if accountSmoke != nil {
+		// Staleness is deliberately left at the package default (hours). It is
+		// NOT wired to ManagedAccounts.UsageStalenessWindow(): that knob sizes
+		// the age of a cached USAGE SNAPSHOT, gathered by a cheap HTTP probe,
+		// and defaults to 30 minutes. A credential check spawns a real agent
+		// process, so borrowing that window made nearly every account stale on
+		// every restart and turned the boot sweep into one live agent run per
+		// account.
+		// The managed-accounts kill switch is re-read from disk per sweep, not
+		// captured here: `boss settings --no-managed-accounts` rewrites
+		// settings.json without restarting the daemon, so a boot-time snapshot
+		// would keep spawning real Codex verification runs after the operator
+		// turned rotation off. Fails closed on a load error, matching
+		// Lifecycle.currentRotationConfig. Declared inline rather than reusing
+		// rotationConfigLoader because that closure is built later in run().
+		accountCredMaintenance, err = accountwiring.NewCredentialMaintainer(
+			accountSmoke, accounts, accountCreds, log.Logger,
+			accountwiring.WithAuthCheckEnabled(func() bool {
+				loaded, err := config.Load()
+				if err != nil {
+					log.Warn().Err(err).
+						Msg("account: credential maintenance settings load failed; treating managed accounts as disabled")
+					return false
+				}
+				return loaded.ManagedAccounts.ManagedAccountsEnabled()
+			}),
+		)
+		if err != nil {
+			log.Warn().Err(err).Msg("account credential maintenance unavailable; verification stays on-demand only")
+			accountCredMaintenance = nil
+		}
+	}
+	// The server's verification hook: the coordinator when it exists, else the
+	// bare smoke runner. Never both — a parallel smoke/persist path would
+	// escape the single-flight and the generation guard.
+	var accountSmokeHook server.AccountSmokeRunner
+	if accountCredMaintenance != nil {
+		accountSmokeHook = accountCredMaintenance
+	} else if accountSmoke != nil {
+		accountSmokeHook = accountSmoke
 	}
 
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
@@ -3465,7 +3520,7 @@ func run(opts runOpts) error {
 		RotationEngine:          rotationEngine,
 		Resolver:                accountResolver,
 		AccountCredentials:      accountCreds,
-		AccountSmokeRunner:      accountSmoke,
+		AccountSmokeRunner:      accountSmokeHook,
 		UsageProbe:              accountUsageProbe,
 		AccountMaterializations: accountMaterializations,
 		CheckSnapshots:          checkSnapshots,
@@ -3759,6 +3814,9 @@ func run(opts runOpts) error {
 	})
 	if opts.onTransientResumeSeamsWired != nil {
 		opts.onTransientResumeSeamsWired(transientResumer != nil && transientResumeHookInstalled)
+	}
+	if opts.onEvictionRecomputeSeamsWired != nil {
+		opts.onEvictionRecomputeSeamsWired(evictionRecomputeHookInstalled && chatStatusTracker.HasOnEntriesEvicted())
 	}
 
 	callbackWorker := callback.NewDeliveryWorker(callback.WorkerConfig{
@@ -4302,6 +4360,27 @@ func run(opts runOpts) error {
 		})
 	}
 
+	// Proactive Codex credential maintenance (BOS-1141). One stale-at-boot
+	// sweep after daemon wiring settles, then a jittered periodic sweep, so a
+	// credential that died while the daemon was down is discovered before a
+	// session tries to use it rather than by that session failing. Gated on
+	// managed accounts for the same reason the usage refresh is: with rotation
+	// off there is no registry to maintain. Stopped explicitly during shutdown.
+	//
+	// That gate is deliberately NOT repeated here. It lives inside the sweep
+	// (WithAuthCheckEnabled, wired at construction) so it is re-read live: the
+	// kill switch is a settings.json value the operator can flip while the
+	// daemon runs, and a startup-only conjunct would both keep sweeping after a
+	// disable and never start after an enable. With rotation off the loop parks
+	// on its timer and each wake returns immediately.
+	if accountCredMaintenance != nil {
+		accountCredMaintenance.Start(pollerCtx)
+		// The explicit Stop below is what shutdown ordering depends on; this
+		// defer only covers run()'s error return paths, which skip it. Stop is
+		// idempotent, so the pair is safe.
+		defer accountCredMaintenance.Stop()
+	}
+
 	// Bind the socket and initialize the http.Server synchronously so
 	// Shutdown below cannot race with the serving goroutine's write to
 	// the internal server field.
@@ -4387,6 +4466,12 @@ func run(opts runOpts) error {
 
 	// Stop upstream StreamClient (if running).
 	streamCancel()
+
+	// Stop credential maintenance before the plugin host goes away (BOS-1141):
+	// a live verification drives an agent runner plugin, so it must be given a
+	// bounded chance to finish rather than have its transport pulled. Stop()
+	// cancels future scheduling and waits, bounded, for owned work.
+	accountCredMaintenance.Stop()
 
 	// Stop the cron scheduler and wait for in-flight fires to finish. Bound
 	// the wait so a stuck CreateSession cannot delay overall shutdown.

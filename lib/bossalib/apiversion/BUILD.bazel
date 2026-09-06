@@ -27,10 +27,14 @@ go_library(
 go_test(
     name = "apiversion_test",
     srcs = [
+        "changelogversion_test.go",
         "interceptor_test.go",
         "procedureset_test.go",
         "production_coverage_test.go",
+        "proxy_list_repos_holder_resolution_test.go",
+        "proxy_list_sessions_owner_resolution_test.go",
         "released_test.go",
+        "superseded_credential_class_test.go",
         "transform_test.go",
         "version_test.go",
     ],

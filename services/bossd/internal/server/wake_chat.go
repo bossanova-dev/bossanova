@@ -145,7 +145,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			ForceFresh:                forceFresh,
 			AppendSystemPrompt:        appendPrompt,
 			AppendSystemPromptClasses: promptClasses,
-			SessionEnvFunc: func() map[string]string {
+			SessionEnvFunc: func() (map[string]string, error) {
 				// The bound account's spawn env sits UNDER the managed session env
 				// so a persisted account_id gets its credentials materialized on
 				// the wake path, and the repo's stored LINEAR_API_KEY / SENTRY_*
@@ -287,6 +287,9 @@ func wakeChatErrorToConnect(err error) error {
 		if err.Error() == "agent_session_id is required" {
 			return connect.NewError(connect.CodeInvalidArgument, err)
 		}
+		if refusal, ok := injectionRefusalConnectError(err, "spawn"); ok {
+			return refusal
+		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("spawn: %w", err))
 	}
 }
@@ -336,6 +339,11 @@ func (s *Server) WakeChatStream(ctx context.Context, agentSessionID string, forc
 			code = pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION
 		case errors.Is(err, ErrHeadlessRunActive):
 			code = pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION
+		}
+		// Same rule as wakeChatErrorToConnect, in the dispatcher's enum. Placed
+		// after the switch so it cannot shadow the sentinel arms above.
+		if refusalCode, redacted, ok := injectionRefusalCommandCode(err, "spawn"); ok {
+			code, err = refusalCode, redacted
 		}
 		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", "", code, err
 	}

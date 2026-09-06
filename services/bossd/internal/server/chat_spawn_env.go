@@ -42,6 +42,12 @@ import (
 //
 // Values are secret-bearing. Callers must never log them, and op names the
 // operation only so a repo-lookup failure is attributable in the daemon log.
+//
+// BOS-1142: an error means the chat is bound to a managed account whose
+// credentials could not be injected. Both callers propagate it rather than
+// continuing with a partial overlay — the spawn path so the agent never runs on
+// the ambient CLI login, and the probe path so a diagnostic never reports on an
+// environment the real chat would never get.
 func (s *Server) chatSpawnEnv(
 	ctx context.Context,
 	sess *models.Session,
@@ -49,16 +55,20 @@ func (s *Server) chatSpawnEnv(
 	defaultAccountID string,
 	op string,
 	use accountUseRecording,
-) map[string]string {
+) (map[string]string, error) {
+	accountEnv, err := s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID, use)
+	if err != nil {
+		return nil, err
+	}
 	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, op, s.logger)
 	return dotenv.OverlayWithRepo(
 		mergeManagedOverAccount(
 			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
-			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID, use),
+			accountEnv,
 		),
 		sess.WorktreePath,
 		repo,
-	)
+	), nil
 }
 
 // accountUseRecording selects whether deriving a chat's environment also

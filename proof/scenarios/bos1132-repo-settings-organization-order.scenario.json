@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "title": "BOS-1132 Repo settings organization order",
+  "fixture": {
+    "preset": "repo-organization",
+    "env": {
+      "BOSS_AUTH_E2E_EMAIL": "proof@example.com",
+      "BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active",
+      "BOSS_ORG_E2E_ORGANIZATIONS": "org-p=Personal,org-k=Kamikai,org-m=Madverts,org-f=FreshClaim,org-a=acme labs"
+    }
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "organization-picker-order",
+      "title": "the picker sorts organization labels case-insensitively",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": {
+            "anyOf": [
+              { "text": "design-system", "match": "normalized" },
+              { "text": "[enter] settings", "match": "normalized" }
+            ],
+            "label": "Repository list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Repository list settled"
+        },
+        {
+          "key": "enter",
+          "caption": "Press [enter] to open the selected repo's settings"
+        },
+        {
+          "waitFor": "Organization:",
+          "timeoutMs": 10000,
+          "caption": "Repository settings visible"
+        },
+        { "key": "down", "caption": "Move down off Name" },
+        { "key": "down", "caption": "Move down onto the Organization row" },
+        { "key": "enter", "caption": "Press [enter] to open the organization picker" },
+        {
+          "waitFor": "[enter] select",
+          "timeoutMs": 10000,
+          "caption": "The organization picker is open"
+        },
+        {
+          "expect": [
+            {
+              "text": "None[\\s\\S]*acme labs[\\s\\S]*FreshClaim[\\s\\S]*Kamikai[\\s\\S]*Madverts[\\s\\S]*Personal",
+              "match": "regex",
+              "label": "the picker lists the caller's organizations case-insensitively alphabetically under the pinned None row"
+            }
+          ],
+          "caption": "None stays pinned first. Personal is a real organization named Personal, not the sentinel; the mixed-case organization labels beneath None are alphabetical."
+        }
+      ]
+    }
+  ]
+}

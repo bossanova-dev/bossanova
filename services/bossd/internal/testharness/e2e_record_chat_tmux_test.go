@@ -13,6 +13,8 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/testharness"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -545,5 +547,234 @@ func TestE2E_RecordChat_TmuxUnavailableSkipsCreate(t *testing.T) {
 	}
 	if fake.findCall("new-session") != nil {
 		t.Error("expected NO new-session call when tmux is unavailable")
+	}
+}
+
+// TestE2E_RecordChat_CodexResumeTwicePreservesChatIdentity is the end-to-end
+// regression for BOS-1143, and it resumes TWICE on purpose.
+//
+// The reported defect: a codex chat that was interrupted and reopened came back
+// as a *claude* chat under the same agent_session_id, with its codex
+// conversation id gone. StartTmuxChat resumed by DELETING the agent_chats row
+// and Creating a new one, and the re-create omitted provider_session_id while
+// recomputing agent_name / model / account_id from the parent *session* rather
+// than from the row it had just destroyed.
+//
+// A single resume is not enough evidence. The eraser class recorded in BOS-1107
+// is a partial-row rewrite that looks correct after one write and loses a column
+// on the next, so this drives two consecutive resumes through the real SQLite
+// store, the real migrations, and real tmux, and asserts the chat's identity
+// after each one.
+func TestE2E_RecordChat_CodexResumeTwicePreservesChatIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
+	tmuxFactory := realTmuxFactory(t)
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	argvLog := installFakeCodexTUI(t)
+
+	h := testharness.NewWithOptions(t, testharness.Options{TmuxCommandFactory: tmuxFactory})
+	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
+	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "codex-resume-twice",
+		LocalPath:         repoDir,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+	// The parent session is deliberately a *claude* session: the defect was
+	// resume re-deriving the chat's agent from the session, so a session whose
+	// agent differs from the chat's is what makes the regression visible.
+	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
+		RepoId: repoResp.Msg.Repo.Id,
+		Title:  "Codex Resume Twice",
+		Plan:   "test plan",
+	})
+
+	codex := "codex"
+	const agentSessionID = "logical-codex-resume-twice"
+	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+		SessionId:      sess.Id,
+		AgentSessionId: agentSessionID,
+		Title:          "codex chat to interrupt",
+		AgentName:      &codex,
+	}))
+	if err != nil {
+		t.Fatalf("RecordChat: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = h.Tmux.KillSession(context.Background(), resp.Msg.Chat.TmuxSessionName)
+	})
+
+	before, err := h.AgentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if before.AgentName != "codex" {
+		t.Fatalf("seeded chat agent_name = %q, want codex", before.AgentName)
+	}
+	chatID := before.ID
+
+	// Give the row the identity columns the defect erased. The provider id is
+	// stamped directly rather than waiting on TUI discovery: this test is about
+	// what survives a resume, not about how the id is first discovered (that is
+	// TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID's job).
+	const providerSessionID = "codex-rollout-preserved"
+	providerID := providerSessionID
+	if err := h.AgentChats.UpdateProviderSessionID(ctx, agentSessionID, &providerID); err != nil {
+		t.Fatalf("seed provider_session_id: %v", err)
+	}
+	if seeded, err := h.AgentChats.GetByAgentSessionID(ctx, agentSessionID); err != nil {
+		t.Fatalf("read back seeded provider id: %v", err)
+	} else if seeded.ProviderSessionID == nil || *seeded.ProviderSessionID != providerSessionID {
+		t.Fatalf("provider_session_id seed did not take: %v", seeded.ProviderSessionID)
+	}
+	// provider_session_id was only one of the columns the delete+recreate
+	// resume dropped: model and account_id were recomputed from the parent
+	// session too. Seed both with values the *session* does not carry, so a
+	// resume that re-derives them from the session is visible as a change
+	// rather than agreeing by coincidence -- this claude session has neither
+	// set, so a re-derived row would read back empty/NULL.
+	const chatModel = "gpt-5-codex"
+	const chatAccountID = "acct-codex-chat"
+	chatAccount := chatAccountID
+	chatAccountPtr := &chatAccount
+	chatModelValue := chatModel
+	if err := h.AgentChats.RebindResumedChat(ctx, agentSessionID, db.RebindResumedChatParams{
+		Model:     &chatModelValue,
+		AccountID: &chatAccountPtr,
+	}); err != nil {
+		t.Fatalf("seed model/account_id: %v", err)
+	}
+	if seeded, err := h.AgentChats.GetByAgentSessionID(ctx, agentSessionID); err != nil {
+		t.Fatalf("read back seeded model/account_id: %v", err)
+	} else {
+		if seeded.Model != chatModel {
+			t.Fatalf("model seed did not take: %q", seeded.Model)
+		}
+		if seeded.AccountID == nil || *seeded.AccountID != chatAccountID {
+			t.Fatalf("account_id seed did not take: %v", seeded.AccountID)
+		}
+		// Prove the seeded values differ from the parent session's, or a
+		// re-derived row would read back identical and assert nothing.
+		parent, err := h.Sessions.Get(ctx, sess.Id)
+		if err != nil {
+			t.Fatalf("read parent session: %v", err)
+		}
+		if parent.Model == chatModel {
+			t.Fatalf("parent session model = %q equals the chat's; the seed proves nothing", parent.Model)
+		}
+		if parent.AccountID != nil && *parent.AccountID == chatAccountID {
+			t.Fatalf("parent session account_id equals the chat's; the seed proves nothing")
+		}
+	}
+	// The fake codex TUI refuses `codex resume <id>` unless a rollout exists for
+	// the id it is handed, and the relaunch hands it the provider id, so
+	// materialise that rollout.
+	rolloutDir := filepath.Join(tmpHome, ".codex", "sessions", "2026", "05", "11")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	rollout := filepath.Join(rolloutDir, "rollout-2026-05-11T00-00-00-"+providerSessionID+".jsonl")
+	if err := os.WriteFile(rollout, []byte(`{"type":"session_meta","payload":{"id":"`+providerSessionID+`"}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	for i := 1; i <= 2; i++ {
+		// Interrupt: tear the pane down so the resume takes the relaunch path
+		// rather than the live-pane reuse shortcut.
+		current, err := h.AgentChats.GetByAgentSessionID(ctx, agentSessionID)
+		if err != nil {
+			t.Fatalf("resume #%d: read chat before interrupt: %v", i, err)
+		}
+		if current.TmuxSessionName != nil && *current.TmuxSessionName != "" {
+			_ = h.Tmux.KillSession(ctx, *current.TmuxSessionName)
+		}
+
+		gotID, err := h.Lifecycle.StartTmuxChat(ctx, sess.Id, session.ChatInput{
+			Prompt:               "carry on",
+			Delivery:             session.DeliveryPrefillOnly,
+			ResumeAgentSessionID: agentSessionID,
+		}, "reopened codex chat", session.HookOpts{})
+		if err != nil {
+			t.Fatalf("resume #%d: StartTmuxChat: %v", i, err)
+		}
+		if gotID != agentSessionID {
+			t.Fatalf("resume #%d: returned id = %q, want the reused id %q", i, gotID, agentSessionID)
+		}
+		// Prove the relaunch actually ran codex rather than short-circuiting on
+		// a still-live pane: the fake TUI records every argv it was invoked
+		// with, and each round must add one more `codex resume <provider id>`.
+		argv, err := os.ReadFile(argvLog)
+		if err != nil {
+			t.Fatalf("resume #%d: read fake codex argv log: %v", i, err)
+		}
+		if got := strings.Count(string(argv), "resume\n"+providerSessionID+"\n"); got != i {
+			t.Fatalf("resume #%d: fake codex saw %d `resume %s` invocations, want %d; log:\n%s",
+				i, got, providerSessionID, i, argv)
+		}
+
+		after, err := h.AgentChats.GetByAgentSessionID(ctx, agentSessionID)
+		if err != nil {
+			t.Fatalf("resume #%d: GetByAgentSessionID: %v", i, err)
+		}
+		t.Cleanup(func() {
+			if after.TmuxSessionName != nil {
+				_ = h.Tmux.KillSession(context.Background(), *after.TmuxSessionName)
+			}
+		})
+
+		// The row was updated in place, not deleted and rebuilt.
+		if after.ID != chatID {
+			t.Errorf("resume #%d: chat id = %q, want %q (the row must be updated, not re-created)",
+				i, after.ID, chatID)
+		}
+		// The reported defect, verbatim.
+		if after.AgentName != "codex" {
+			t.Errorf("resume #%d: agent_name = %q, want codex (a resumed codex chat came back as claude)",
+				i, after.AgentName)
+		}
+		if after.ProviderSessionID == nil || *after.ProviderSessionID != providerSessionID {
+			got := "<nil>"
+			if after.ProviderSessionID != nil {
+				got = *after.ProviderSessionID
+			}
+			t.Errorf("resume #%d: provider_session_id = %q, want %q preserved",
+				i, got, providerSessionID)
+		}
+		// The other two columns the re-create recomputed from the session.
+		if after.Model != chatModel {
+			t.Errorf("resume #%d: model = %q, want %q preserved (not re-derived from the session)",
+				i, after.Model, chatModel)
+		}
+		if after.AccountID == nil || *after.AccountID != chatAccountID {
+			got := "<nil>"
+			if after.AccountID != nil {
+				got = *after.AccountID
+			}
+			t.Errorf("resume #%d: account_id = %q, want %q preserved (not re-derived from the session)",
+				i, got, chatAccountID)
+		}
+
+		// Exactly one row still carries the id -- the UNIQUE index is in force
+		// and the resume left no duplicate behind.
+		chats, err := h.AgentChats.ListBySession(ctx, sess.Id)
+		if err != nil {
+			t.Fatalf("resume #%d: list chats: %v", i, err)
+		}
+		var carrying int
+		for _, c := range chats {
+			if c.AgentSessionID == agentSessionID {
+				carrying++
+			}
+		}
+		if carrying != 1 {
+			t.Errorf("resume #%d: %d rows carry agent_session_id %q, want exactly 1",
+				i, carrying, agentSessionID)
+		}
 	}
 }

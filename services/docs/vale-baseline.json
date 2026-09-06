@@ -1,0 +1,105 @@
+{
+  "docs/concepts/worktrees.md": {
+    "BossanovaProse.BannedWords": 5,
+    "BossanovaProse.FunctionWordBold": 2
+  },
+  "docs/guides/account-rotation.md": {
+    "BossanovaProse.BannedWords": 10,
+    "BossanovaProse.FunctionWordBold": 1
+  },
+  "docs/guides/agent-plugins.md": {
+    "BossanovaProse.BannedWords": 1
+  },
+  "docs/guides/broadcasts.md": {
+    "BossanovaProse.BannedWords": 6
+  },
+  "docs/guides/github-callbacks.md": {
+    "BossanovaProse.BannedWords": 17,
+    "BossanovaProse.EmDashCluster": 1,
+    "BossanovaProse.FunctionWordBold": 1
+  },
+  "docs/guides/logging.md": {
+    "BossanovaProse.BannedWords": 5
+  },
+  "docs/guides/login.md": {
+    "BossanovaProse.BannedWords": 3
+  },
+  "docs/guides/mcp.md": {
+    "BossanovaProse.BannedWords": 11
+  },
+  "docs/guides/notes.md": {
+    "BossanovaProse.BannedWords": 7
+  },
+  "docs/guides/pr-lifecycle.md": {
+    "BossanovaProse.BannedWords": 1
+  },
+  "docs/guides/remote-daemons.md": {
+    "BossanovaProse.BannedWords": 4,
+    "BossanovaProse.FunctionWordBold": 13
+  },
+  "docs/guides/scheduled-sessions.md": {
+    "BossanovaProse.BannedWords": 6,
+    "BossanovaProse.FunctionWordBold": 7
+  },
+  "docs/guides/setup-scripts.md": {
+    "BossanovaProse.BannedWords": 4,
+    "BossanovaProse.FunctionWordBold": 1
+  },
+  "docs/guides/web.md": {
+    "BossanovaProse.BannedWords": 9,
+    "BossanovaProse.FunctionWordBold": 2
+  },
+  "docs/help/faq.md": {
+    "BossanovaProse.BannedWords": 13
+  },
+  "docs/help/troubleshooting.md": {
+    "BossanovaProse.BannedWords": 18,
+    "BossanovaProse.FunctionWordBold": 4
+  },
+  "docs/how-it-works.md": {
+    "BossanovaProse.BannedWords": 2
+  },
+  "docs/install.md": {
+    "BossanovaProse.BannedWords": 1
+  },
+  "docs/intro.mdx": {
+    "BossanovaProse.BannedWords": 1,
+    "BossanovaProse.FunctionWordBold": 2
+  },
+  "docs/plugins.md": {
+    "BossanovaProse.BannedWords": 3,
+    "BossanovaProse.FunctionWordBold": 1
+  },
+  "docs/quick-start.md": {
+    "BossanovaProse.BannedWords": 4
+  },
+  "docs/reference/api-changelog.mdx": {
+    "BossanovaProse.BannedWords": 6,
+    "BossanovaProse.EmDashCluster": 1,
+    "BossanovaProse.FunctionWordBold": 8
+  },
+  "docs/reference/cli-reference.md": {
+    "BossanovaProse.BannedWords": 17,
+    "BossanovaProse.FunctionWordBold": 3
+  },
+  "docs/reference/privacy.md": {
+    "BossanovaProse.BannedWords": 14,
+    "BossanovaProse.FunctionWordBold": 8
+  },
+  "docs/reference/security-and-permissions.md": {
+    "BossanovaProse.BannedWords": 15
+  },
+  "docs/reference/settings.md": {
+    "BossanovaProse.BannedWords": 13,
+    "BossanovaProse.FunctionWordBold": 5
+  },
+  "docs/skills/extensions.md": {
+    "BossanovaProse.BannedWords": 6
+  },
+  "docs/skills/overview.md": {
+    "BossanovaProse.BannedWords": 1
+  },
+  "docs/upgrade.md": {
+    "BossanovaProse.BannedWords": 2
+  }
+}

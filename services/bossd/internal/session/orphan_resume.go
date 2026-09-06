@@ -93,8 +93,10 @@ func (l *Lifecycle) ResumeOrphanedHeadlessRuns(ctx context.Context) (resumed int
 // claim gate: a concurrent completion signal or a duplicate sweep pass that
 // already advanced this row loses the CAS and this pass no-ops. Any failure
 // leaves (or restores) the row Orphaned so the next sweep retries — the loud
-// fallback is preserved on every unhappy path. Returns true only when the run
-// was actually resumed.
+// fallback is preserved on every unhappy path. A condition that cannot clear on
+// its own is declined BEFORE the claim, so it costs no writes at all: a retry
+// queue only makes sense for a failure a later tick could resolve. Returns true
+// only when the run was actually resumed.
 func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanResumeStore, session *models.Session) bool {
 	// A missing agent runner (nil test/legacy wiring) leaves the run Orphaned
 	// (fail-safe — a human nudges).
@@ -102,6 +104,35 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 		return false
 	}
 	orphanReason := *session.BlockedReason
+
+	// The prior run's identity is pure derivation from the row the sweep already
+	// listed, so it is in hand before the claim — which is what lets the refusal
+	// below decline without taking one.
+	var resume *string
+	var priorAgentSession *string
+	var priorAgentSessionID string
+	if session.AgentSessionID != nil {
+		resume = session.AgentSessionID
+		priorAgentSession = session.AgentSessionID
+		priorAgentSessionID = *session.AgentSessionID
+	}
+	// BOS-1143: the resume moves the prior run's chat row onto the new id, so
+	// refuse when there is no row to move — and refuse BEFORE claiming. A missing
+	// row is permanent (nothing re-creates one under the prior id), and
+	// ReleaseOrphanResumeClaim never writes blocked_reason, so claiming and then
+	// releasing would hand the row back to the candidate filter unchanged and the
+	// sweep would re-select it every tick forever — two conditional UPDATEs, two
+	// state-transition fan-outs, and a reset state_entered_at each time.
+	// Declining here makes it a zero-write skip instead, the same shape as the
+	// missing-agent-session-id skip in the caller. A transient chat-store read
+	// failure reaches this branch too and simply retries on the next tick, which
+	// is why the refusal stays non-terminal rather than writing a terminal
+	// reason. The sync after the spawn still refuses as defence in depth.
+	if err := l.requireResumablePrimaryChat(ctx, priorAgentSessionID); err != nil {
+		l.logger.Warn().Err(err).Str("session", session.ID).
+			Msg("orphan-resume sweep: prior run has no primary chat row; leaving it Orphaned without claiming")
+		return false
+	}
 
 	// Claim the row atomically before doing any restart work. Losing the CAS
 	// means a concurrent signal changed it, archived it, or cleared its orphan
@@ -118,7 +149,7 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 
 	// Resolve the spawn view before materializing its account env: the primary
 	// chat is the runtime authority for provider, model, and account binding.
-	spawnSess := l.effectiveSpawnSession(ctx, session)
+	spawnSess, spawnChat := l.effectiveSpawnTarget(ctx, session)
 
 	// Materialize the CURRENT account's env exactly as the initial headless start
 	// does (account > proof, then the worktree .env with the repo's stored
@@ -126,18 +157,20 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	// logged. A repo lookup failure is non-fatal (OverlayWithRepo still
 	// guarantees LINEAR_API_KEY).
 	repo := RepoForSessionEnv(ctx, l.repos, session.RepoID, session.ID, "orphan resume", l.logger)
-	mergedEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), session.WorktreePath, repo)
+	accountEnv, accountErr := l.resolveAccountEnvForChat(ctx, spawnSess, spawnChat)
+	if accountErr != nil {
+		// BOS-1142: never resume an orphan onto the agent CLI's ambient login.
+		// Release the claim exactly as a failed restart does so the next sweep
+		// retries once the operator has re-authenticated the account.
+		l.logger.Warn().Err(accountErr).Str("session", session.ID).
+			Msg("orphan-resume sweep: bound account credentials unavailable; re-parking Orphaned")
+		l.releaseOrphanResumeClaim(ctx, claimStore, session.ID, orphanReason, priorAgentSession)
+		return false
+	}
+	mergedEnv := dotenv.OverlayWithRepo(mergeEnv(accountEnv, l.resolveProofEnv()), session.WorktreePath, repo)
 
 	resumedPrompt := orphanResumeSteeringNotice + "\n\n" + session.Plan
 
-	var resume *string
-	var priorAgentSession *string
-	var priorAgentSessionID string
-	if session.AgentSessionID != nil {
-		resume = session.AgentSessionID
-		priorAgentSession = session.AgentSessionID
-		priorAgentSessionID = *session.AgentSessionID
-	}
 	// BOS-381: dispatch the restart under the primary chat's provider/model (the
 	// runtime authority), not the session's stale seed.
 	newID, err := l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, resumedPrompt, resume, mergedEnv)
@@ -174,7 +207,7 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 		l.releaseOrphanResumeClaim(ctx, claimStore, session.ID, orphanReason, priorAgentSession)
 		return false
 	}
-	if err := l.syncResumedPrimaryChat(ctx, session, priorAgentSessionID, newID); err != nil {
+	if err := l.syncResumedPrimaryChat(ctx, priorAgentSessionID, newID); err != nil {
 		l.logger.Error().Err(err).Str("session", session.ID).
 			Msg("orphan-resume sweep: persist resumed primary chat failed; re-parking Orphaned")
 		l.stopOrphanedRestart(ctx, spawnSess.AgentName, newID, session.ID)
@@ -187,6 +220,12 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 		}
 		return false
 	}
+	// The row now answers to newID, so the chat-scoped proxy token the spawn env
+	// was built with — necessarily keyed on the PRIOR id, which is the only one
+	// that existed when the env was materialized — has to follow it. The
+	// replacement process has already frozen that URL, so the token is moved
+	// rather than re-minted, and only now that the rekey is persisted (BOS-1135).
+	l.retargetChatProxyToken(session.ID, spawnChat, priorAgentSessionID, newID)
 
 	// Re-arm completion for the NEW run only. The original orphaned run's exit
 	// map was lost to the restart; the new StartByAgent process is tracked by the
@@ -210,31 +249,38 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	return true
 }
 
-// syncResumedPrimaryChat preserves the primary chat row while moving it from
-// the prior headless run id to the resumed run id. Old sessions may predate
-// headless chat-row creation, so create the missing row rather than leaving a
-// resumed run invisible to chat/status/routing APIs.
-func (l *Lifecycle) syncResumedPrimaryChat(ctx context.Context, session *models.Session, priorAgentSession, newID string) error {
+// syncResumedPrimaryChat moves the primary chat row from the prior headless run
+// id to the resumed run id, in place, through the shared resume-rebind seam.
+//
+// There is no create fallback. Re-creating the row from the session's spawn view
+// reconstructs a chat that already exists somewhere else, or invents identity for
+// one that does not — agent_name, model, account_id and provider_session_id all
+// come out of the parent session rather than the chat (BOS-1143). A resume with
+// no row to move is refused instead, and the caller stops the replacement and
+// re-parks the session Orphaned so the loud fallback stays loud (BOS-973).
+func (l *Lifecycle) syncResumedPrimaryChat(ctx context.Context, priorAgentSession, newID string) error {
+	if l.agentChats == nil || priorAgentSession == "" {
+		return nil
+	}
+	return l.rebindResumedChat(ctx, priorAgentSession, db.RebindResumedChatParams{
+		NewAgentSessionID: &newID,
+	})
+}
+
+// requireResumablePrimaryChat fails the resume before it spawns anything when
+// the prior run has no chat row for syncResumedPrimaryChat to move. The sync
+// itself refuses too, but it runs after the replacement agent is already up —
+// checking here means the refusal costs no agent process at all.
+func (l *Lifecycle) requireResumablePrimaryChat(ctx context.Context, priorAgentSession string) error {
 	if l.agentChats == nil || priorAgentSession == "" {
 		return nil
 	}
 	chat, err := l.agentChats.GetByAgentSessionID(ctx, priorAgentSession)
-	if err == nil && chat != nil {
-		return l.agentChats.UpdateAgentSessionID(ctx, chat.ID, priorAgentSession, newID)
+	if errors.Is(err, db.ErrAgentChatNotFound) || (err == nil && chat == nil) {
+		return &ResumedChatMissingError{AgentSessionID: priorAgentSession}
 	}
-	if err != nil && !errors.Is(err, db.ErrAgentChatNotFound) {
+	if err != nil {
 		return fmt.Errorf("get primary chat: %w", err)
-	}
-	spawnSess := l.effectiveSpawnSession(ctx, session)
-	if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
-		SessionID:      session.ID,
-		AgentSessionID: newID,
-		AgentName:      spawnSess.AgentName,
-		Title:          session.Title,
-		AccountID:      spawnSess.AccountID,
-		Model:          spawnSess.Model,
-	}); err != nil {
-		return fmt.Errorf("create primary chat: %w", err)
 	}
 	return nil
 }

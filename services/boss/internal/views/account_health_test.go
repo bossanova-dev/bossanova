@@ -232,3 +232,153 @@ func TestAccountLastTestedDetail(t *testing.T) {
 		}
 	})
 }
+
+// --- BOS-1175: a stored credential superseded by an ambient codex login ---
+
+// supersededAccount builds a codex account whose last check passed while the
+// daemon found the stored refresh chain superseded by an ambient login.
+func supersededAccount(id string) *pb.Account {
+	return &pb.Account{
+		Id:       id,
+		Provider: "codex",
+		Label:    id,
+		Status:   "active",
+		Health:   "ok",
+		AuthCheck: &pb.AuthCheck{
+			Outcome:      authCheckHealthy,
+			FailureClass: AuthCheckClassSuperseded,
+			CheckedAt:    timestamppb.New(time.Now().Add(-3 * time.Minute)),
+		},
+	}
+}
+
+// TestAccountCheckLabelSurfacesSupersededCredential is the visibility half of
+// BOS-1175. The remedy (`boss account reauth`) exists, but a state no operator
+// can see is not a report, so the class has to reach the CHECK cell.
+//
+// The label keeps "ok" as its head deliberately: the verdict genuinely is ok and
+// the account is still eligible. What it must not do is render as a bare "ok",
+// which would lose the whole warning.
+func TestAccountCheckLabelSurfacesSupersededCredential(t *testing.T) {
+	a := supersededAccount("acct-superseded")
+
+	got := accountCheckLabel(a)
+	if got != "ok:credential_superseded" {
+		t.Fatalf("superseded label = %q, want %q", got, "ok:credential_superseded")
+	}
+	if got == "ok" {
+		t.Fatal("a superseded credential rendered as a bare ok; the warning is lost")
+	}
+	if !strings.Contains(got, "ok") {
+		t.Fatalf("superseded label = %q, want it to keep the ok verdict it qualifies", got)
+	}
+	// The detail screen inherits the same label plus the check age.
+	if detail := accountCheckedDetail(a); !strings.Contains(detail, "ok:credential_superseded") {
+		t.Fatalf("detail credential-check line = %q, want the superseded state", detail)
+	}
+}
+
+// TestAccountCheckLabelIgnoresAnUnknownClassOnAHealthyVerdict pins that the
+// superseded exception is matched by EXACT VALUE. A healthy check has no failure
+// to classify, so any other class — stale, defaulted, or invented by a newer
+// daemon — must never turn a clean result into "ok:something".
+func TestAccountCheckLabelIgnoresAnUnknownClassOnAHealthyVerdict(t *testing.T) {
+	a := supersededAccount("acct-odd")
+	a.AuthCheck.FailureClass = "some_future_class"
+	if got := accountCheckLabel(a); got != "ok" {
+		t.Fatalf("healthy check with an unknown class = %q, want a bare %q", got, "ok")
+	}
+}
+
+// TestSupersededCredentialStaysEligibleAndUnvetoed pins the eligibility half: a
+// superseded refresh chain is a warning about the future, not a present
+// rejection. The provider just accepted this credential, so the HEALTH cell must
+// wear NEITHER veto mark and the severity must stay OK.
+//
+// It does carry the non-veto healthSupersededMark. CHECK outranks HEALTH in
+// fitColumnsIndexed and is dropped first, so without a mark of its own the state
+// would vanish entirely on a narrow terminal — see
+// TestAccountsListRebuildTable_SupersededSurvivesCheckColumnDrop. The mark is a
+// report, not a veto: it changes no eligibility decision, and the two veto marks
+// stay reserved for a check that did not pass.
+func TestSupersededCredentialStaysEligibleAndUnvetoed(t *testing.T) {
+	a := supersededAccount("acct-superseded")
+
+	if accountCheckFailed(a) {
+		t.Fatal("a superseded credential was reported as a confirmed credential fault")
+	}
+	if got := accountCheckSeverity(a); got != checkSeverityOK {
+		t.Fatalf("superseded severity = %v, want %v: the check passed", got, checkSeverityOK)
+	}
+	health := accountHealthCellFor(a, "ok")
+	if got := stripANSI(health); got != "ok"+healthSupersededMark {
+		t.Fatalf("health cell = %q, want %q: the non-veto superseded mark", got, "ok"+healthSupersededMark)
+	}
+	for _, mark := range []string{healthVetoInvalidMark, healthVetoUnprovenMark} {
+		if strings.Contains(stripANSI(health), "ok"+mark) {
+			t.Fatalf("health cell %q wears a veto mark for a check that passed", stripANSI(health))
+		}
+	}
+	// A clean healthy account keeps the plain green, or the mark says nothing.
+	clean := supersededAccount("acct-clean")
+	clean.AuthCheck.FailureClass = ""
+	if got, want := accountHealthCellFor(clean, "ok"), accountHealthCell("ok"); got != want {
+		t.Fatalf("clean health cell = %q, want the unmarked %q", got, want)
+	}
+}
+
+// TestAccountCheckCellSupersededIsWarningNotGreenOrRed pins the colour tier. The
+// clean green would claim a confidence the ambient comparison just withdrew; the
+// danger red would assert a rejection nothing made. The label already carries the
+// whole state in words, so a NO_COLOR or monochrome run loses nothing.
+func TestAccountCheckCellSupersededIsWarningNotGreenOrRed(t *testing.T) {
+	label := accountCheckLabel(supersededAccount("acct-superseded"))
+	cell := accountCheckCell(label)
+
+	if cell == styleStatusSuccess.Render(label) {
+		t.Fatal("superseded check cell wears the clean success accent")
+	}
+	if cell == styleStatusDanger.Render(label) {
+		t.Fatal("superseded check cell wears the danger accent; nothing rejected this credential")
+	}
+	if want := styleStatusWarning.Render(label); cell != want {
+		t.Fatalf("superseded check cell = %q, want the warning tier %q", cell, want)
+	}
+	if got := stripANSI(cell); got != label {
+		t.Fatalf("superseded check cell text = %q, want the label %q unchanged", got, label)
+	}
+}
+
+// TestHealthSupersededMarkRequiresAHealthyOutcome pins the outcome gate on the
+// HEALTH cell's superseded mark.
+//
+// The mark is chosen by failure class, but a class only describes an answer if
+// the daemon actually asked. A never-checked row (outcome "") carrying a stale
+// class must therefore render a plain "ok" in HEALTH — otherwise HEALTH claims a
+// superseded credential while CHECK, which gates on the healthy outcome, still
+// reads "never checked", and the two cells contradict each other about whether
+// the account has ever been verified (BOS-892's rule, applied to the new state).
+func TestHealthSupersededMarkRequiresAHealthyOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome string
+		want    bool
+	}{
+		{name: "healthy outcome carries the mark", outcome: "healthy", want: true},
+		{name: "never checked does not", outcome: "", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acct := &pb.Account{
+				Health: "ok",
+				AuthCheck: &pb.AuthCheck{
+					Outcome:      tc.outcome,
+					FailureClass: AuthCheckClassSuperseded,
+				},
+			}
+			got := strings.Contains(accountHealthCellFor(acct, "ok"), healthSupersededMark)
+			if got != tc.want {
+				t.Fatalf("HEALTH cell carries the superseded mark = %v, want %v (outcome %q)", got, tc.want, tc.outcome)
+			}
+		})
+	}
+}

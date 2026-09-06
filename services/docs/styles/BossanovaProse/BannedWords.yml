@@ -1,0 +1,16 @@
+extends: existence
+message: "Use plain, specific language instead of '%s'."
+level: error
+ignorecase: true
+tokens:
+  - unlock
+  - supercharge
+  - seamless
+  - leverage
+  - empower
+  - robust
+  - can
+  - may
+  - optional
+  - if needed
+  - try this now

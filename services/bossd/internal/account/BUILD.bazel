@@ -4,11 +4,13 @@ go_library(
     name = "account",
     srcs = [
         "binding.go",
+        "injection.go",
         "labels.go",
     ],
     importpath = "github.com/recurser/bossd/internal/account",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/agenterr",
         "//services/bossd/internal/rotation",
         "@com_github_rs_zerolog//:zerolog",
     ],
@@ -16,7 +18,10 @@ go_library(
 
 go_test(
     name = "account_test",
-    srcs = ["binding_test.go"],
+    srcs = [
+        "binding_test.go",
+        "injection_test.go",
+    ],
     embed = [":account"],
     deps = ["@com_github_rs_zerolog//:zerolog"],
 )

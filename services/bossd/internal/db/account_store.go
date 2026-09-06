@@ -324,6 +324,27 @@ func (s *SQLiteAccountStore) ClearInjectionFailure(ctx context.Context, id strin
 	return nil
 }
 
+// IsSelfClearingInjectionFailure reports whether a row's failed health is the
+// SELF-CLEARING kind RecordInjectionFailure writes and ClearInjectionFailure
+// withdraws — health=failed carrying a last_test_error under
+// InjectionFailureReasonPrefix. It is the in-memory twin of
+// ClearInjectionFailure's WHERE clause, so a caller asking "will the next
+// successful materialize heal this row?" gets the same answer the UPDATE would
+// give, and the two cannot drift.
+//
+// It is deliberately the NARROWEST possible reading of failed health. An
+// operator's `boss account test` failure, a MarkAccountSuspended row, and any
+// non-prefixed reason all report false — exactly the rows ClearInjectionFailure
+// refuses to touch — so a caller that exempts this class exempts only failures
+// a local materialization outage produced and a successful materialization
+// erases. It says nothing about status, cooldown, or auth-check state; a caller
+// still has to evaluate those itself.
+func IsSelfClearingInjectionFailure(a *models.Account) bool {
+	return a != nil &&
+		a.Health == models.AccountHealthFailed &&
+		strings.HasPrefix(a.LastTestError, InjectionFailureReasonPrefix)
+}
+
 // RecordUsageProbe overwrites only the cached usage-snapshot metadata columns
 // for a row. It never stores credential material. Returns sql.ErrNoRows when
 // the row does not exist.
@@ -364,6 +385,77 @@ func (s *SQLiteAccountStore) RecordUsageProbe(ctx context.Context, id string, sn
 	return nil
 }
 
+// RecordAuthCheck atomically stores the redacted result of one daemon-owned
+// credential verification (BOS-1141). It writes ONLY the four auth_check_*
+// columns plus updated_at: usage_* and last_test_* are deliberately untouched,
+// so a scheduled verification can never clobber a usage probe or a manual
+// TestAccount result. Nothing written here is derived from credential bytes —
+// check.Outcome and check.FailureClass are closed-set classification tokens.
+func (s *SQLiteAccountStore) RecordAuthCheck(ctx context.Context, id string, check models.AuthCheck) error {
+	now := sqlutil.TimeNow()
+	checkedAt := check.CheckedAt
+	if checkedAt == nil {
+		t := sqlutil.ParseTime(now)
+		checkedAt = &t
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE accounts
+		 SET auth_checked_at = ?,
+		     auth_check_outcome = ?,
+		     auth_check_failure_class = ?,
+		     auth_check_next_retry_at = ?,
+		     updated_at = ?
+		 WHERE id = ?`,
+		sqlutil.FormatTime(*checkedAt),
+		string(check.Outcome),
+		check.FailureClass,
+		formatNullableTime(check.NextRetryAt),
+		now,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("record account auth check: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ClearAuthCheck withdraws a row's durable credential-verification state after
+// its credential is replaced (BOS-1141). It writes ONLY the four auth_check_*
+// columns plus updated_at, leaving usage_* and last_test_* exactly as it found
+// them, and is a no-op returning nil when no state is recorded.
+//
+// auth_checked_at is set to NULL rather than to now. That is load-bearing and
+// is why this cannot be expressed as RecordAuthCheck with a zero AuthCheck:
+// RecordAuthCheck defaults a nil CheckedAt to the current time, which would
+// satisfy the maintainer's staleness gate and leave the replacement credential
+// unverified for a full interval. A NULL auth_checked_at is immediately due.
+//
+// Returns sql.ErrNoRows when the account does not exist.
+func (s *SQLiteAccountStore) ClearAuthCheck(ctx context.Context, id string) error {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE accounts
+		 SET auth_checked_at = NULL,
+		     auth_check_outcome = '',
+		     auth_check_failure_class = '',
+		     auth_check_next_retry_at = NULL,
+		     updated_at = ?
+		 WHERE id = ?`,
+		now,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("clear account auth check: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func formatNullableTime(t *time.Time) any {
 	if t == nil {
 		return nil
@@ -376,6 +468,7 @@ const accountSelectSQL = `SELECT id, provider, label, status, priority, health,
 	last_test_ok_at, last_test_error,
 	usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d,
 	usage_status, usage_plan_tier, usage_fetched_at,
+	auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at,
 	created_at, updated_at
 	FROM accounts`
 
@@ -399,6 +492,8 @@ func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
 	var usageReset5h, usageReset7d, usageFetchedAt sql.NullString
 	var usageStatus, usagePlanTier string
 	var usageUtil5h, usageUtil7d float64
+	var authCheckedAt, authNextRetryAt sql.NullString
+	var authOutcome, authFailureClass string
 	var createdAt, updatedAt string
 	err := s.Scan(
 		&a.ID, &providerStr, &a.Label, &statusStr, &a.Priority, &healthStr,
@@ -406,6 +501,7 @@ func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
 		&lastTestOkAt, &a.LastTestError,
 		&usageUtil5h, &usageUtil7d, &usageReset5h, &usageReset7d,
 		&usageStatus, &usagePlanTier, &usageFetchedAt,
+		&authCheckedAt, &authOutcome, &authFailureClass, &authNextRetryAt,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -431,6 +527,22 @@ func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
 		t := sqlutil.ParseTime(lastTestOkAt.String)
 		if !t.IsZero() {
 			a.LastTestOkAt = &t
+		}
+	}
+	a.AuthCheck = models.AuthCheck{
+		Outcome:      models.AuthCheckOutcome(authOutcome),
+		FailureClass: authFailureClass,
+	}
+	if authCheckedAt.Valid {
+		t := sqlutil.ParseTime(authCheckedAt.String)
+		if !t.IsZero() {
+			a.AuthCheck.CheckedAt = &t
+		}
+	}
+	if authNextRetryAt.Valid {
+		t := sqlutil.ParseTime(authNextRetryAt.String)
+		if !t.IsZero() {
+			a.AuthCheck.NextRetryAt = &t
 		}
 	}
 	if usageFetchedAt.Valid {

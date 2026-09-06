@@ -172,25 +172,6 @@ func (s *SQLiteAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, 
 	return nil
 }
 
-// UpdateAgentSessionID keeps a primary chat attached to a resumed headless
-// run. The row remains the same chat, retaining its provider, account, model,
-// title, and creation time while its live agent run identity changes.
-func (s *SQLiteAgentChatStore) UpdateAgentSessionID(ctx context.Context, id, oldAgentSessionID, newAgentSessionID string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET agent_session_id = ? WHERE id = ? AND agent_session_id = ?`,
-		newAgentSessionID, id, oldAgentSessionID,
-	)
-	if err != nil {
-		return fmt.Errorf("update agent_chat agent_session_id: %w", err)
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("update agent_chat agent_session_id rows affected: %w", err)
-	} else if n == 0 {
-		return fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, oldAgentSessionID)
-	}
-	return nil
-}
-
 func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE agent_chats SET tmux_session_name = ? WHERE agent_session_id = ?`,
@@ -240,6 +221,72 @@ func (s *SQLiteAgentChatStore) UpdateAccountIDByAgentSessionID(ctx context.Conte
 	return nil
 }
 
+// RebindResumedChat updates an existing chat row in place so a resume keeps
+// the chat's identity instead of destroying and re-creating it (BOS-1143).
+//
+// Only the fields set on params are written; every other column keeps the
+// value the row already carries. The statement is addressed by
+// agent_session_id, which 20260904000000_agent_chats_unique_agent_session_id
+// makes UNIQUE — so exactly one row can match. No matching row is an error
+// (wrapped ErrAgentChatNotFound) rather than a silent no-op: the caller asked
+// to resume a specific chat, and there is nothing to resume.
+func (s *SQLiteAgentChatStore) RebindResumedChat(ctx context.Context, agentSessionID string, params RebindResumedChatParams) error {
+	var sets []string
+	var args []any
+	if params.NewAgentSessionID != nil {
+		sets = append(sets, "agent_session_id = ?")
+		args = append(args, *params.NewAgentSessionID)
+	}
+	if params.SessionID != nil {
+		sets = append(sets, "session_id = ?")
+		args = append(args, *params.SessionID)
+	}
+	if params.Title != nil {
+		sets = append(sets, "title = ?")
+		args = append(args, *params.Title)
+	}
+	if params.AgentName != nil {
+		sets = append(sets, "agent_name = ?")
+		args = append(args, *params.AgentName)
+	}
+	if params.Model != nil {
+		sets = append(sets, "model = ?")
+		args = append(args, *params.Model)
+	}
+	if params.AccountID != nil {
+		sets = append(sets, "account_id = ?")
+		args = append(args, *params.AccountID)
+	}
+	if params.ProviderSessionID != nil {
+		sets = append(sets, "provider_session_id = ?")
+		args = append(args, *params.ProviderSessionID)
+	}
+	if params.ClearStartError {
+		sets = append(sets, "start_error = NULL")
+	}
+	if len(sets) == 0 {
+		// A no-field rebind still has to answer "does this chat exist?",
+		// so write the column to itself rather than skipping the UPDATE:
+		// SQLite counts matched rows, so RowsAffected stays meaningful.
+		sets = append(sets, "agent_session_id = agent_session_id")
+	}
+	args = append(args, agentSessionID)
+
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE agent_chats SET `+strings.Join(sets, ", ")+` WHERE agent_session_id = ?`,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("update agent_chat resume rebind: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("update agent_chat resume rebind rows affected: %w", err)
+	} else if n == 0 {
+		return fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, agentSessionID)
+	}
+	return nil
+}
+
 // MarkStartFailed stamps a short reason on the row and clears
 // tmux_session_name in a single statement, used by StartTmuxChat's
 // failure paths. Mirrors UpdateTmuxSessionName(..., nil) for the
@@ -261,11 +308,11 @@ func (s *SQLiteAgentChatStore) MarkStartFailed(ctx context.Context, agentSession
 // DeleteByAgentSessionID removes a chat AND the durable proxy-token row that
 // pointed at it (BOS-979), in one transaction.
 //
-// The token delete cannot be a cascade: proxy_tokens.agent_session_id carries no
-// foreign key, because agent_chats.agent_session_id is indexed but NOT unique
-// and SQLite requires a unique parent key. So the two statements are issued
-// together instead — a chat whose row is gone but whose token still resolves
-// would let a rebuild point a live pane at a chat that no longer exists.
+// The token delete is not a cascade: proxy_tokens.agent_session_id carries no
+// foreign key, so nothing deletes the token row on our behalf. The two
+// statements are issued together instead — a chat whose row is gone but whose
+// token still resolves would let a rebuild point a live pane at a chat that no
+// longer exists.
 func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
 	conn, err := beginImmediate(ctx, s.db, "agent_chat")
 	if err != nil {

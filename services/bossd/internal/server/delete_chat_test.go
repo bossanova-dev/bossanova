@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -21,6 +22,11 @@ type deleteChatStoreFake struct {
 	getErr     error
 	deleteErr  error
 	operations *[]string
+	// clearOnDelete models the real store, which stops resolving a row once it
+	// is deleted and reports the miss as a wrapped db.ErrAgentChatNotFound
+	// rather than a nil chat (internal/db/agent_chat_store.go). Opt-in so the
+	// other tests in this file keep their simpler always-resolves fake.
+	clearOnDelete bool
 }
 
 func (f *deleteChatStoreFake) Create(context.Context, db.CreateAgentChatParams) (*models.AgentChat, error) {
@@ -52,10 +58,6 @@ func (f *deleteChatStoreFake) UpdateTitleByAgentSessionID(context.Context, strin
 	return nil
 }
 
-func (f *deleteChatStoreFake) UpdateAgentSessionID(context.Context, string, string, string) error {
-	return nil
-}
-
 func (f *deleteChatStoreFake) UpdateTmuxSessionName(context.Context, string, *string) error {
 	return nil
 }
@@ -72,11 +74,19 @@ func (f *deleteChatStoreFake) MarkStartFailed(context.Context, string, string) e
 	return nil
 }
 
+func (f *deleteChatStoreFake) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+	return nil
+}
+
 func (f *deleteChatStoreFake) DeleteByAgentSessionID(_ context.Context, agentSessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.operations != nil {
 		*f.operations = append(*f.operations, "delete:"+agentSessionID)
+	}
+	if f.deleteErr == nil && f.clearOnDelete {
+		f.chat = nil
+		f.getErr = db.ErrAgentChatNotFound
 	}
 	return f.deleteErr
 }
@@ -219,6 +229,63 @@ func TestDeleteChat_MissingChatIsIdempotentAndDoesNotKillTmux(t *testing.T) {
 	}
 
 	want := []string{"delete:" + agentSessionID}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("operations = %#v, want %#v", operations, want)
+	}
+}
+
+// AC3, and the ordering the whole criterion rests on. DeleteChat clears the
+// cached status at server.go:4607 -- while the chat row is still present --
+// and only deletes the row afterwards. The eviction hook therefore fires with
+// the row still resolvable, so the recompute finds its session and the label
+// settles; had Remove been called after the delete, the lookup would miss and
+// the session's label would stay frozen with nothing left to re-emit it.
+//
+// The fake stops resolving the row once it is deleted, exactly as the real
+// store does, so a regression that moves the eviction after the delete records
+// recompute-missed instead of recompute and fails on both count and order.
+func TestDeleteChat_RecomputesWhileTheChatRowIsStillPresent(t *testing.T) {
+	ctx := context.Background()
+	agentSessionID := "agent-5678"
+	operations := []string{}
+
+	store := &deleteChatStoreFake{
+		operations:    &operations,
+		clearOnDelete: true,
+		chat: &models.AgentChat{
+			SessionID:      "session-1",
+			AgentSessionID: agentSessionID,
+		},
+	}
+
+	tracker := status.NewTracker()
+	// A live entry, so DeleteChat's Remove has something to evict and the
+	// eviction hook fires at all.
+	tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	// Stands in for cmd's wireEvictionRecompute, which lives in package main and
+	// is out of reach here. Same shape: resolve each evicted id to its session,
+	// then recompute that session.
+	tracker.SetOnEntriesEvicted(func(agentSessionIDs []string) {
+		for _, id := range agentSessionIDs {
+			chat, err := store.GetByAgentSessionID(ctx, id)
+			if err != nil || chat == nil {
+				operations = append(operations, "recompute-missed:"+id)
+				continue
+			}
+			operations = append(operations, "recompute:"+chat.SessionID)
+		}
+	})
+
+	srv := &Server{agentChats: store, chatStatus: tracker}
+
+	if _, err := srv.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
+		AgentSessionId: agentSessionID,
+	})); err != nil {
+		t.Fatalf("DeleteChat: %v", err)
+	}
+
+	want := []string{"recompute:session-1", "delete:" + agentSessionID}
 	if !reflect.DeepEqual(operations, want) {
 		t.Fatalf("operations = %#v, want %#v", operations, want)
 	}

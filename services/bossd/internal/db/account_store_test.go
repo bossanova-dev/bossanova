@@ -870,3 +870,418 @@ func TestAccountStore_RecordInjectionFailureWritesOverBlankReason(t *testing.T) 
 		t.Fatalf("last_test_error = %q, want the newer reason %q", got.LastTestError, want)
 	}
 }
+
+// TestIsSelfClearingInjectionFailure pins the predicate against the UPDATE it
+// claims to mirror: for each seeded row it asserts the in-memory answer matches
+// what ClearInjectionFailure actually does to that row. If the two ever drift,
+// a caller that exempts "self-clearing" rows would be exempting rows the clear
+// path will never heal.
+func TestIsSelfClearingInjectionFailure(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		seed func(t *testing.T, store *SQLiteAccountStore, id string)
+		want bool
+	}{
+		{"healthy", func(*testing.T, *SQLiteAccountStore, string) {}, false},
+		{"injection failure", func(t *testing.T, store *SQLiteAccountStore, id string) {
+			t.Helper()
+			if err := store.RecordInjectionFailure(ctx, id, "keyring unavailable"); err != nil {
+				t.Fatalf("record injection failure: %v", err)
+			}
+		}, true},
+		{"suspension", func(t *testing.T, store *SQLiteAccountStore, id string) {
+			t.Helper()
+			if err := store.MarkAccountSuspended(ctx, id, "billing suspended"); err != nil {
+				t.Fatalf("mark suspended: %v", err)
+			}
+		}, false},
+		{"operator test failure", func(t *testing.T, store *SQLiteAccountStore, id string) {
+			t.Helper()
+			if err := store.RecordTestResult(ctx, id, nil, "401 unauthorized"); err != nil {
+				t.Fatalf("record test result: %v", err)
+			}
+			failed := models.AccountHealthFailed
+			if _, err := store.Update(ctx, id, UpdateAccountParams{Health: &failed}); err != nil {
+				t.Fatalf("update health: %v", err)
+			}
+		}, false},
+		{"failed with no reason", func(t *testing.T, store *SQLiteAccountStore, id string) {
+			t.Helper()
+			failed := models.AccountHealthFailed
+			if _, err := store.Update(ctx, id, UpdateAccountParams{Health: &failed}); err != nil {
+				t.Fatalf("update health: %v", err)
+			}
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewAccountStore(setupTestDB(t))
+			acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "work"})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			tc.seed(t, store, acct.ID)
+
+			before := mustGet(t, store, acct.ID)
+			if got := IsSelfClearingInjectionFailure(before); got != tc.want {
+				t.Fatalf("IsSelfClearingInjectionFailure = %v, want %v (health %q, reason %q)",
+					got, tc.want, before.Health, before.LastTestError)
+			}
+
+			// The predicate's whole claim is that it answers "would
+			// ClearInjectionFailure heal this row?", so verify against the real
+			// UPDATE rather than restating the prefix rule.
+			if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+				t.Fatalf("clear injection failure: %v", err)
+			}
+			after := mustGet(t, store, acct.ID)
+			cleared := before.Health != after.Health || before.LastTestError != after.LastTestError
+			if cleared != tc.want {
+				t.Errorf("ClearInjectionFailure changed the row = %v, want %v (predicate said %v)",
+					cleared, tc.want, tc.want)
+			}
+		})
+	}
+
+	if IsSelfClearingInjectionFailure(nil) {
+		t.Error("IsSelfClearingInjectionFailure(nil) = true, want false")
+	}
+}
+
+// --- BOS-1141: durable, redacted credential-verification state --------------
+
+func TestAccountStore_AuthCheckColumnsDefault(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "fresh"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for _, got := range []*models.Account{acct, mustGet(t, store, acct.ID)} {
+		if got.AuthCheck.CheckedAt != nil {
+			t.Errorf("auth_checked_at = %v, want nil on create", got.AuthCheck.CheckedAt)
+		}
+		if got.AuthCheck.Outcome != models.AuthCheckOutcomeUnknown {
+			t.Errorf("auth_check_outcome = %q, want empty on create", got.AuthCheck.Outcome)
+		}
+		if got.AuthCheck.FailureClass != "" {
+			t.Errorf("auth_check_failure_class = %q, want empty on create", got.AuthCheck.FailureClass)
+		}
+		if got.AuthCheck.NextRetryAt != nil {
+			t.Errorf("auth_check_next_retry_at = %v, want nil on create", got.AuthCheck.NextRetryAt)
+		}
+		if got.AuthCheck.IsAuthInvalid() {
+			t.Error("a never-checked account must not read as auth-invalid")
+		}
+	}
+}
+
+func TestAccountStore_RecordAuthCheckRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "verify"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	checkedAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+	retryAt := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Millisecond)
+
+	cases := []struct {
+		name  string
+		check models.AuthCheck
+	}{
+		{"auth_invalid", models.AuthCheck{
+			CheckedAt:    ptrTime(checkedAt),
+			Outcome:      models.AuthCheckOutcomeAuthInvalid,
+			FailureClass: "auth_invalidated",
+		}},
+		{"transient_with_retry", models.AuthCheck{
+			CheckedAt:    ptrTime(checkedAt),
+			Outcome:      models.AuthCheckOutcomeTransient,
+			FailureClass: "transient_provider",
+			NextRetryAt:  ptrTime(retryAt),
+		}},
+		{"healthy_clears", models.AuthCheck{
+			CheckedAt: ptrTime(checkedAt),
+			Outcome:   models.AuthCheckOutcomeHealthy,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.RecordAuthCheck(ctx, acct.ID, tc.check); err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			got := mustGet(t, store, acct.ID)
+			if got.AuthCheck.Outcome != tc.check.Outcome {
+				t.Errorf("outcome = %q, want %q", got.AuthCheck.Outcome, tc.check.Outcome)
+			}
+			if got.AuthCheck.FailureClass != tc.check.FailureClass {
+				t.Errorf("failure_class = %q, want %q", got.AuthCheck.FailureClass, tc.check.FailureClass)
+			}
+			if got.AuthCheck.CheckedAt == nil || !got.AuthCheck.CheckedAt.Equal(checkedAt) {
+				t.Errorf("checked_at = %v, want %v", got.AuthCheck.CheckedAt, checkedAt)
+			}
+			if tc.check.NextRetryAt == nil {
+				if got.AuthCheck.NextRetryAt != nil {
+					t.Errorf("next_retry_at = %v, want nil", got.AuthCheck.NextRetryAt)
+				}
+			} else if got.AuthCheck.NextRetryAt == nil || !got.AuthCheck.NextRetryAt.Equal(retryAt) {
+				t.Errorf("next_retry_at = %v, want %v", got.AuthCheck.NextRetryAt, retryAt)
+			}
+			if got.AuthCheck.IsAuthInvalid() != (tc.check.Outcome == models.AuthCheckOutcomeAuthInvalid) {
+				t.Errorf("IsAuthInvalid = %v for outcome %q", got.AuthCheck.IsAuthInvalid(), tc.check.Outcome)
+			}
+		})
+	}
+}
+
+func TestAccountStore_RecordAuthCheckDefaultsCheckedAt(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "default-time"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{Outcome: models.AuthCheckOutcomeHealthy}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	got := mustGet(t, store, acct.ID)
+	if got.AuthCheck.CheckedAt == nil {
+		t.Fatal("checked_at = nil, want the write time")
+	}
+	if d := time.Since(*got.AuthCheck.CheckedAt); d < 0 || d > time.Minute {
+		t.Errorf("checked_at = %v, want approximately now", got.AuthCheck.CheckedAt)
+	}
+}
+
+func TestAccountStore_RecordAuthCheckUnknownID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+
+	if err := store.RecordAuthCheck(context.Background(), "nope", models.AuthCheck{}); err != sql.ErrNoRows {
+		t.Errorf("record auth check unknown: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestAccountStore_ClearAuthCheckResetsDurableState covers the credential-
+// replacement path: clearing withdraws the whole auth-check record so a
+// replaced credential is neither benched by a verdict about bytes that are no
+// longer stored, nor left waiting for a staleness window to expire.
+func TestAccountStore_ClearAuthCheckResetsDurableState(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "verify"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	checkedAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+	retryAt := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Millisecond)
+	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+		CheckedAt:    ptrTime(checkedAt),
+		Outcome:      models.AuthCheckOutcomeAuthInvalid,
+		FailureClass: "auth_invalidated",
+		NextRetryAt:  ptrTime(retryAt),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if !mustGet(t, store, acct.ID).AuthCheck.IsAuthInvalid() {
+		t.Fatal("precondition: account should be auth-invalid before the clear")
+	}
+
+	if err := store.ClearAuthCheck(ctx, acct.ID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	got := mustGet(t, store, acct.ID)
+	// checked_at must be NULL, not "now". A cleared row has to be immediately
+	// due for verification; stamping the current time would satisfy the
+	// maintainer's staleness gate and leave the replacement credential
+	// unverified for a full interval — the exact bench this clear removes.
+	if got.AuthCheck.CheckedAt != nil {
+		t.Errorf("checked_at = %v, want nil so the account is immediately due", got.AuthCheck.CheckedAt)
+	}
+	if got.AuthCheck.Outcome != "" {
+		t.Errorf("outcome = %q, want empty", got.AuthCheck.Outcome)
+	}
+	if got.AuthCheck.FailureClass != "" {
+		t.Errorf("failure_class = %q, want empty", got.AuthCheck.FailureClass)
+	}
+	if got.AuthCheck.NextRetryAt != nil {
+		t.Errorf("next_retry_at = %v, want nil", got.AuthCheck.NextRetryAt)
+	}
+	if got.AuthCheck.IsAuthInvalid() {
+		t.Error("IsAuthInvalid = true after clear; the account must be selectable again")
+	}
+}
+
+// TestAccountStore_ClearAuthCheckPreservesTestAndUsage holds the clear to the
+// same no-cross-contamination rule RecordAuthCheck obeys: it owns the four
+// auth_check_* columns and nothing else.
+func TestAccountStore_ClearAuthCheckPreservesTestAndUsage(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "verify"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	okAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
+	if err := store.RecordTestResult(ctx, acct.ID, &okAt, ""); err != nil {
+		t.Fatalf("record test result: %v", err)
+	}
+	fetchedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
+	if err := store.RecordUsageProbe(ctx, acct.ID, models.UsageSnapshot{
+		Status:    "active",
+		PlanTier:  "pro",
+		FetchedAt: &fetchedAt,
+	}); err != nil {
+		t.Fatalf("record usage probe: %v", err)
+	}
+	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+		CheckedAt: ptrTime(time.Now().UTC()),
+		Outcome:   models.AuthCheckOutcomeAuthInvalid,
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	if err := store.ClearAuthCheck(ctx, acct.ID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	got := mustGet(t, store, acct.ID)
+	if got.LastTestOkAt == nil || !got.LastTestOkAt.Equal(okAt) {
+		t.Errorf("last_test_ok_at = %v, want %v (clear must not touch manual test state)", got.LastTestOkAt, okAt)
+	}
+	if got.Usage.Status != "active" || got.Usage.PlanTier != "pro" {
+		t.Errorf("usage snapshot disturbed by clear: %+v", got.Usage)
+	}
+}
+
+func TestAccountStore_ClearAuthCheckUnknownID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+
+	if err := store.ClearAuthCheck(context.Background(), "nope"); err != sql.ErrNoRows {
+		t.Errorf("clear auth check unknown: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage is the plan's
+// no-cross-contamination requirement in both directions: a verification write
+// must not disturb manual TestAccount bookkeeping or the usage snapshot, and
+// neither of those may disturb the auth-check columns.
+func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "isolation"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	okAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
+	fetchedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
+	snap := models.UsageSnapshot{Util5h: 0.5, Util7d: 0.25, Status: "ok", PlanTier: "pro", FetchedAt: &fetchedAt}
+
+	if err := store.RecordTestResult(ctx, acct.ID, ptrTime(okAt), ""); err != nil {
+		t.Fatalf("record test result: %v", err)
+	}
+	if err := store.RecordUsageProbe(ctx, acct.ID, snap); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	// A verification write leaves the manual-test and usage fields alone.
+	checkedAt := time.Now().UTC().Truncate(time.Millisecond)
+	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+		CheckedAt:    ptrTime(checkedAt),
+		Outcome:      models.AuthCheckOutcomeAuthInvalid,
+		FailureClass: "auth_invalidated",
+	}); err != nil {
+		t.Fatalf("record auth check: %v", err)
+	}
+	got := mustGet(t, store, acct.ID)
+	if got.LastTestOkAt == nil || !got.LastTestOkAt.Equal(okAt) {
+		t.Errorf("auth check clobbered last_test_ok_at: %v, want %v", got.LastTestOkAt, okAt)
+	}
+	if got.LastTestError != "" {
+		t.Errorf("auth check clobbered last_test_error: %q", got.LastTestError)
+	}
+	if got.Usage == nil || got.Usage.Util5h != snap.Util5h || got.Usage.Status != snap.Status {
+		t.Errorf("auth check clobbered usage snapshot: %#v", got.Usage)
+	}
+	if got.Health != models.AccountHealthOK {
+		t.Errorf("auth check changed health to %q; verification must not bench an account through health", got.Health)
+	}
+
+	// Manual-test and usage writes leave the verification record alone.
+	if err := store.RecordTestResult(ctx, acct.ID, nil, "manual smoke failed"); err != nil {
+		t.Fatalf("record test result 2: %v", err)
+	}
+	if err := store.RecordUsageProbe(ctx, acct.ID, models.UsageSnapshot{Util5h: 0.9, Status: "warning"}); err != nil {
+		t.Fatalf("record usage 2: %v", err)
+	}
+	got = mustGet(t, store, acct.ID)
+	if got.AuthCheck.Outcome != models.AuthCheckOutcomeAuthInvalid {
+		t.Errorf("usage/test write clobbered auth outcome: %q", got.AuthCheck.Outcome)
+	}
+	if got.AuthCheck.FailureClass != "auth_invalidated" {
+		t.Errorf("usage/test write clobbered failure class: %q", got.AuthCheck.FailureClass)
+	}
+	if got.AuthCheck.CheckedAt == nil || !got.AuthCheck.CheckedAt.Equal(checkedAt) {
+		t.Errorf("usage/test write clobbered checked_at: %v", got.AuthCheck.CheckedAt)
+	}
+}
+
+func mustGet(t *testing.T, store *SQLiteAccountStore, id string) *models.Account {
+	t.Helper()
+	got, err := store.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get %s: %v", id, err)
+	}
+	return got
+}
+
+// TestAccountStore_AuthCheckSurvivesMigrationReplay is AC-6's "across
+// restart": the daemon re-runs migrations on every boot, so the record must
+// still read back after a replay.
+func TestAccountStore_AuthCheckSurvivesMigrationReplay(t *testing.T) {
+	db := dbtest.NewMigrated(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "restart"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	checkedAt := time.Now().UTC().Truncate(time.Millisecond)
+	retryAt := checkedAt.Add(time.Hour)
+	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+		CheckedAt:    ptrTime(checkedAt),
+		Outcome:      models.AuthCheckOutcomeTransient,
+		FailureClass: "transient_provider",
+		NextRetryAt:  ptrTime(retryAt),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if err := dbtest.Run(db, os.DirFS(migrationsDir())); err != nil {
+		t.Fatalf("migration replay: %v", err)
+	}
+	got := mustGet(t, store, acct.ID)
+	if got.AuthCheck.Outcome != models.AuthCheckOutcomeTransient ||
+		got.AuthCheck.FailureClass != "transient_provider" ||
+		got.AuthCheck.CheckedAt == nil || !got.AuthCheck.CheckedAt.Equal(checkedAt) ||
+		got.AuthCheck.NextRetryAt == nil || !got.AuthCheck.NextRetryAt.Equal(retryAt) {
+		t.Fatalf("auth check did not survive migration replay: %+v", got.AuthCheck)
+	}
+}

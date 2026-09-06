@@ -215,8 +215,11 @@ type spawnInput struct {
 	// SessionEnv is the canonical BOSS_* environment set on the spawned tmux session.
 	SessionEnv map[string]string
 	// SessionEnvFunc lazily builds SessionEnv after liveness checks pass. It lets
-	// callers defer credential materialization until a spawn will actually happen.
-	SessionEnvFunc func() map[string]string
+	// callers defer credential materialization until a spawn will actually
+	// happen. An error aborts the spawn BEFORE argv is built and before any tmux
+	// pane exists: BOS-1142 made a bound account whose credentials cannot be
+	// injected a refusal, not a downgrade to the ambient CLI login.
+	SessionEnvFunc func() (map[string]string, error)
 }
 
 type spawnResult struct {
@@ -380,7 +383,13 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 	// Liveness was checked above, so this remains lazy for already-live panes.
 	sessionEnv := in.SessionEnv
 	if in.SessionEnvFunc != nil {
-		sessionEnv = in.SessionEnvFunc()
+		var envErr error
+		sessionEnv, envErr = in.SessionEnvFunc()
+		if envErr != nil {
+			// Fail closed before argv and before NewSessionWithCmd: nothing has
+			// been created yet, so there is no pane to roll back.
+			return spawnResult{}, envErr
+		}
 	}
 	effort := session.EffectiveEffortForAgent(in.SessionAgentName, in.SessionEffectiveEffort, in.Chat.AgentName)
 	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, effort, configHomeEnv(sessionEnv, in.WorktreePath))
@@ -592,7 +601,10 @@ func (r liveInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.
 		return interactiveSessionResolution{Ambiguous: true, Reason: resp.GetReason()}, nil
 	}
 	if !resp.GetFound() {
-		return interactiveSessionResolution{}, nil
+		// Carry the plugin's account of the miss ("no rollout fd open yet" vs
+		// "no matching rollout found"). Dropping it here is what left the
+		// background discovery's timeout log unable to say why it gave up.
+		return interactiveSessionResolution{Reason: resp.GetReason()}, nil
 	}
 	return interactiveSessionResolution{SessionID: resp.GetSessionId()}, nil
 }

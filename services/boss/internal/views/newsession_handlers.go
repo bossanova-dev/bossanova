@@ -98,6 +98,7 @@ func (m NewSessionModel) handleIssues(msg issuesMsg) (tea.Model, tea.Cmd) {
 	}
 	m.issuesFetching = false
 	if msg.err != nil {
+		m.pendingIssueActivate = false
 		m.err = msg.err
 		return m, nil
 	}
@@ -118,6 +119,11 @@ func (m NewSessionModel) handleIssues(msg issuesMsg) (tea.Model, tea.Cmd) {
 	}
 	updateCursorColumn(&m.issueTable)
 	m.issueTableReady = true
+	if m.pendingIssueActivate {
+		m.pendingIssueActivate = false
+		cmd := m.activateHighlightedIssue()
+		return m, cmd
+	}
 	return m, nil
 }
 

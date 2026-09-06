@@ -928,3 +928,10 @@ func TestTrashModel_FastRestoreShowsNoProgressFlicker(t *testing.T) {
 		t.Fatalf("restoreWarning = %q on a clean restore", final.restoreWarning)
 	}
 }
+
+// ListSessionsWithReadFailures satisfies the BossClient seam: this fake reads
+// one place, so it never reports a partial read.
+func (s *trashStubClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	sessions, err := s.ListSessions(ctx, req, opts)
+	return sessions, nil, err
+}

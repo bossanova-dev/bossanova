@@ -13,7 +13,7 @@ authoritative; please file a bug.
 
 ## The trust model
 
-**The agent runs as the user that runs `bossd`.** It has the same
+The agent runs as the **user that runs `bossd`**. It has the same
 filesystem, network, and keychain access as that user.
 
 There is no sandbox. No seccomp profile. No filesystem container. No
@@ -25,9 +25,9 @@ agent.
 
 This is intentional. The agent needs to run `git`, `gh`, your
 language toolchain, and your test suite, all of which require real
-user-level access to be useful. The trade-off is that **you are
-trusting the agent the way you'd trust a human colleague with shell
-access to your machine.**
+user-level access to be useful. The trade-off is that you are
+trusting the agent the way you'd trust a human colleague with **shell
+access** to your machine.
 
 If you want a hardened version of this story (containers, ephemeral
 VMs, scoped credentials) it is not in the box today. The pieces below
@@ -105,7 +105,7 @@ per-repo Linear API key stored in bossd's DB).
 `BOSSD_ORCHESTRATOR_URL=""` is the kill switch for using them at
 all (see below).
 
-## Pull the plug: three independent kills
+## Three independent kill switches
 
 These three are independent. You can use any combination.
 
@@ -113,13 +113,16 @@ These three are independent. You can use any combination.
 
 Setting `BOSSD_ORCHESTRATOR_URL` to an explicit empty string in the
 environment that launches `bossd` puts the daemon in **local-only
-mode**. No registration call. No bidi stream. No terminal attach. The
-TUI and plugins keep working over the local Unix socket. The web app
-stops seeing this daemon's sessions. Reverse it by unsetting the
-variable (or setting it to a URL) and restarting bossd.
+mode**: it makes no registration call, opens no bidi stream, and
+accepts no terminal attach. The TUI and plugins keep working over the
+local Unix socket. The web app stops seeing this daemon's sessions.
+Reverse it by unsetting the variable (or setting it to a URL) and
+restarting bossd.
 
-This is the single biggest kill switch on the cloud side. Use it if
-you want the local agentic flow without anything leaving the machine.
+It is the broadest cloud-side cutoff: the local agentic flow keeps
+running, and `bossd` sends nothing to Boss Cloud. The opt-in `ctrl+g`
+bug report is separate; it targets `BOSS_REPORT_URL` and still
+submits.
 
 ### 2. Per-repo `can_auto_*` flags
 
@@ -163,8 +166,8 @@ your full shell environment: same `$PATH`, same `$HOME`, same
 keychain agent, same SSH config. The cross-link is
 [guides → Setup Scripts](../guides/setup-scripts.md).
 
-The trust model: **a setup script is the same as something you'd
-paste into your terminal yourself.** If a teammate gives you a
+The trust model: a setup script is the same as something you'd
+**paste into your terminal yourself**. If a teammate gives you a
 setup-script snippet, treat it the way you'd treat any pasted shell
 command from a teammate. The same applies if a plugin or workflow
 suggests a setup-script edit. Review it before saving.
@@ -208,7 +211,7 @@ which scans (in order):
 
 Any binary named `bossd-plugin-*` in those directories is loaded.
 There is no signing check, no checksum, no per-plugin permission
-declaration. **A malicious plugin can do anything `bossd` can do**.
+declaration. A **malicious plugin** can do anything `bossd` can do:
 read the SQLite DB, read the keychain, push to git, hit the network,
 delete worktrees. Trust the plugins you install.
 

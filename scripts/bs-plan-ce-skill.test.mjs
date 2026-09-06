@@ -22,9 +22,19 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 const DRAFT_NAME = 'boss-plan-compound-engineering'
 const DRAFT_SKILL = join(REPO_ROOT, '.claude', 'skills', DRAFT_NAME, 'SKILL.md')
 const FIXTURES = join(REPO_ROOT, 'scripts', 'testdata', 'boss-plan-ce')
+const PLAN_CONFIG = JSON.parse(readFileSync(join(REPO_ROOT, '.boss-skills.json'), 'utf8'))
 
 const draftBody = () => readFileSync(DRAFT_SKILL, 'utf8')
 const fixture = (name) => JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'))
+
+function h2Section(body, heading) {
+  const marker = `## ${heading}\n`
+  const start = body.indexOf(marker)
+  assert.notEqual(start, -1, `the SKILL.md must keep its ${marker.trim()} section`)
+  const rest = body.slice(start + marker.length)
+  const end = rest.search(/^## /m)
+  return end === -1 ? rest : rest.slice(0, end)
+}
 
 /** Every fenced block of `lang` in `body`, in document order, dedented. Fences nested inside a
  *  numbered list item are indented, so a column-0 anchor would silently miss them — and a block
@@ -807,4 +817,185 @@ test('BOS-813 fixtures: each mode states its own mode to CE instead of relying o
       `the ${heading} section must record why the ambient flag is not the signal`,
     )
   }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Normalize and promote: preserve the rich plan; project the tracker description separately.
+// ---------------------------------------------------------------------------------------------
+
+test('BOS-1176: normalization preserves native plan structure and projects the description', () => {
+  const prose = h2Section(draftBody(), 'Normalize and promote').replace(/\s+/g, ' ')
+
+  assert.match(
+    prose,
+    /plan\s+file\s+keeps\s+(?:CE's|the\s+drafting\s+layer's)\s+own\s+structure[^.]*boss-specific\s+blocks/i,
+    'the promoted plan must retain the drafting layer native structure plus Boss blocks',
+  )
+  assert.match(
+    prose,
+    /description\s+is\s+composed\s+as\s+a\s+separate[^.]*planContract[^.]*projection/i,
+    'the tracker description must be a separate planContract-conformant projection',
+  )
+  assert.doesNotMatch(
+    prose,
+    /contract\s+gate\s+rejects\s+an?\s+off-contract\s+`##`\s+heading/i,
+    'the extension must not claim the plan-file gate rejects native headings',
+  )
+  assert.doesNotMatch(
+    prose,
+    /section\s+with\s+no\s+contract\s+counterpart[^.]*folded\s+into\s+the\s+nearest\s+contract\s+section/i,
+    'the extension must not flatten native sections into contract sections',
+  )
+})
+
+test('BOS-1176: normalization pins terminal notes, unsigned uploads, and mode ownership', () => {
+  const prose = h2Section(draftBody(), 'Normalize and promote').replace(/\s+/g, ' ')
+
+  assert.match(
+    prose,
+    /`##\s+Original\s+notes`\s+is\s+the\s+terminal\s+heading\s+of\s+the\s+plan\s+file[^.]*body\s+runs\s+to\s+(?:the\s+)?end\s+of\s+file/i,
+    'Original notes must be terminal because its body extends to EOF',
+  )
+  assert.match(
+    prose,
+    /every\s+(?:query-bearing\s+)?upload\s+URL\s+anywhere\s+in\s+the\s+plan\s+file[^.]*query-stripped/i,
+    'all upload URLs in the plan file must have query strings stripped',
+  )
+  assert.match(
+    prose,
+    /interactive\s+mode[^.]*orchestrator\s+composes\s+the\s+description/i,
+    'interactive description composition belongs to the orchestrator',
+  )
+  assert.match(
+    prose,
+    /headless\s+mode[^.]*drafting\s+subagent\s+composes\s+the\s+description/i,
+    'headless description composition belongs to the drafting subagent',
+  )
+})
+
+test('BOS-1176: the projection still names every configured contract heading', () => {
+  const body = h2Section(draftBody(), 'Normalize and promote')
+  for (const { heading } of PLAN_CONFIG.planContract.sections) {
+    assert.ok(
+      body.includes(`\`${heading}\``),
+      `the description projection must name configured heading ${heading} in backticks`,
+    )
+  }
+})
+
+test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () => {
+  withTmp((dir) => {
+    const rawNotes =
+      'Reporter context\n\n![capture](https://uploads.linear.app/demo/capture.png?token=signed)\n'
+    const safeNotes =
+      'Reporter context\n\n![capture](https://uploads.linear.app/demo/capture.png)\n'
+    const description = PLAN_CONFIG.planContract.sections
+      .filter(({ required }) => required === 'always')
+      .map(({ heading }) => {
+        if (heading === '## Planning')
+          return `${heading}\n\n- Contract: v${PLAN_CONFIG.planContract.version}`
+        if (heading === '## Original notes') return `${heading}\n\n${safeNotes}`
+        return `${heading}\n\nSubstantive projected description for ${heading.slice(3)}.`
+      })
+      .join('\n\n')
+    const plan = [
+      '# Rich drafting result',
+      '',
+      '## Problem Frame',
+      '',
+      'The drafter preserved its own problem framing before projection.',
+      '',
+      '## Requirements',
+      '',
+      '- R1: Keep the promoted plan structured as a plan, not a copied description.',
+      '',
+      '## Implementation Units',
+      '',
+      '- U1: Preserve the drafting layer structure during promotion.',
+      '',
+      '## Native Work Graph',
+      '',
+      '- W1: This native heading proves the plan is richer than the description contract.',
+      '',
+      ...PLAN_CONFIG.planContract.sections
+        .filter(({ required }) => required === 'always')
+        .filter(({ heading }) => heading !== '## Original notes')
+        .map(({ heading }) => [
+          heading,
+          '',
+          heading === '## Planning'
+            ? `- Contract: v${PLAN_CONFIG.planContract.version}`
+            : `Plan copy for ${heading.slice(3)}.`,
+          '',
+        ])
+        .flat(),
+      '## Original notes',
+      '',
+      safeNotes,
+    ].join('\n')
+
+    assert.match(
+      plan,
+      /^##\s+Implementation\s+Units$/m,
+      'fixture must retain a non-contract heading',
+    )
+    assert.ok(plan.endsWith(safeNotes), 'Original notes must be terminal and run to EOF')
+    assert.doesNotMatch(
+      `${description}\n${plan}`,
+      /(?:api[_-]?key|password|private[_-]?key|session[_-]?cookie)\s*[:=]/i,
+      'the promoted artifacts must clear the Phase 4 secret review fixture',
+    )
+
+    const paths = {
+      raw: join(dir, 'raw.md'),
+      safe: join(dir, 'safe.md'),
+      description: join(dir, 'description.md'),
+      plan: join(dir, 'plan.md'),
+    }
+    writeFileSync(paths.raw, rawNotes)
+    writeFileSync(paths.safe, safeNotes)
+    writeFileSync(paths.description, description)
+    writeFileSync(paths.plan, plan)
+
+    const imageGuard = join(
+      REPO_ROOT,
+      'services/boss/internal/skillinstall/skills/boss-plan/toolbox/plan-image-guard.mjs',
+    )
+    const contractGuard = join(
+      REPO_ROOT,
+      'services/boss/internal/skillinstall/skills/boss-plan/toolbox/plan-contract-guard.mjs',
+    )
+    const runGate = (tool, args) => {
+      const result = spawnSync(process.execPath, [tool, ...args], { encoding: 'utf8' })
+      assert.equal(result.status, 0, `${tool} ${args.join(' ')}\n${result.stderr}`)
+    }
+
+    runGate(imageGuard, [
+      '--original',
+      paths.raw,
+      '--rewritten',
+      paths.description,
+      '--expect-images',
+      '1',
+      '--require-unsigned-uploads',
+    ])
+    runGate(imageGuard, [
+      '--original',
+      paths.raw,
+      '--rewritten',
+      paths.safe,
+      '--require-safe-source',
+    ])
+    for (const rewritten of [paths.description, paths.plan]) {
+      runGate(imageGuard, [
+        '--original',
+        paths.safe,
+        '--rewritten',
+        rewritten,
+        '--require-verbatim',
+        '--require-unsigned-uploads',
+      ])
+    }
+    runGate(contractGuard, ['--description', paths.description, '--plan', paths.plan])
+  })
 })

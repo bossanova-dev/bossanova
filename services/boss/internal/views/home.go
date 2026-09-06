@@ -41,9 +41,16 @@ type HomeModel struct {
 	// proto carries only the composite label, not why. Empty/absent for every
 	// session that is not parked.
 	daemonWaitingReasons map[string]string
-	table                table.Model
-	err                  error
-	status               string
+	// sessionReadFailures holds the organizations whose sessions the last
+	// successful poll could not read (BOS-1151). A cloud session read fans out
+	// across every organization the caller belongs to and returns what it could
+	// get, so this is what makes the resulting list's incompleteness visible
+	// instead of silently showing a short list. Always empty against a local
+	// daemon, which reads one place and either answers or fails outright.
+	sessionReadFailures []*pb.OrganizationSessionReadFailure
+	table               table.Model
+	err                 error
+	status              string
 	// statusErr marks status as a failure so renderSessionTable colours it as
 	// one. Without it every status reads as success, and a red-on-green
 	// "Rename failed" is worse than no colour at all — it says the opposite of

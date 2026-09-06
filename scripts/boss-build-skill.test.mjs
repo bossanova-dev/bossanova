@@ -270,8 +270,7 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // the RATCHET this branch first measured, so the bound bites again almost immediately and the
   // next growth is paid for by a trim, not by another slide. That is what keeps this from being
   // the "sliding both up together" failure the arm warns about — a slide leaves headroom to grow
-  // into; this leaves a handful of bytes. Read the live gap off the RATCHET note below, which is
-  // repinned every time the body moves; do NOT read a fixed offset out of this paragraph.
+  // into; this leaves a handful of bytes.
   // BOS-1105 RE-DERIVES it a third time, 84574 -> 85369, and owes the same justification. The
   // growth it admits is behavioural, not explanatory: the advisory-bookkeeping `warning: ...`
   // strings EXECUTE inside the resident preflight fence, and the transport report must name
@@ -283,7 +282,14 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // matter how well justified the growth beneath it is — the bound stops biting. It is not that
   // here: the review pass over this branch paid for its own resident additions by TRIMMING this
   // body rather than moving this number again (the Step 12 spine bullet and the `degraded:`
-  // scoping note were both cut back after they were written), and 30 B of live headroom remain.
+  // scoping note were both cut back after they were written).
+  //
+  // BOS-1119 INVARIANT: `assertExactSize`'s `below` arm compares the pinned constant, not the
+  // measured size, so it fires at repin time before the exact-size comparison. `RATCHET` is
+  // repinned every commit and therefore cannot accumulate growth; this historical baseline must
+  // not move with it. Re-derive the baseline upward only under the `below` arm's second reading,
+  // with the reason recorded at this site. Obtain the live gap by subtracting the two constants
+  // declared here. Never restate that changing measurement in standing prose.
   const PRE_EXTRACTION_BASELINE = 85369
   // Re-baselined +271 from the post-extraction 69058 for the per-step reference pointers: the
   // Steps 8-12 block carried one preamble link for five summary bullets, so a reader working the
@@ -635,13 +641,17 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // proof the deleted sentence was load-bearing. That is why the number is -2815 B and not the
   // several times larger cut the line-count target implied. Headroom below PRE_EXTRACTION_BASELINE
   // is now 4527 B; see the note below for why that is a bound and not a budget.
-  const RATCHET = 80842 // exact measured resident body, re-measured 2026-09-03 (BOS-1107)
-  // Headroom to the pre-extraction baseline is 4527 B (80842 < 85369) — read that as the real
-  // budget before writing ANY resident prose, because this assertion is the only thing standing
-  // between the extraction's ~11.8 KB and it being quietly re-spent. When it reds upward, the fix
-  // is a trim somewhere in an 80 KB body, not in whatever file you were editing; the cheap move is
-  // to put the new prose in a reference and leave the resident body a pointer. When it reds
-  // downward, you trimmed something: bank the new number here in the same commit.
+  // BOS-1129 re-baselines 80842 -> 80905 (+63 B) so the resident callback summary names the
+  // full-vocabulary policy beside the deliberately unchanged default wait set.
+  // BOS-1116 banks 80905 -> 81130 (+225 B) for the authenticated-author lookup and the anchored
+  // marker selector that prevents the review upsert from overwriting a quoted-marker linkback.
+  // BOS-1118 re-baselines 81130 -> 81391 (+261 B) so reviewed-tip comparison selects one of two
+  // shipping routes instead of gating PR creation on a matching tip.
+  const RATCHET = 81391 // exact measured resident body, re-measured 2026-09-05 (BOS-1118)
+  // When this reds upward, the fix is a trim somewhere in an 80 KB body, not in whatever file you
+  // were editing; the cheap move is to put the new prose in a reference and leave the resident body
+  // a pointer. When it reds downward, you trimmed something: bank the new number here in the same
+  // commit.
   assertArtifactSet(RESIDENT_BODY_SKILLS, 1, 'RESIDENT_BODY_SKILLS')
   for (const skillPath of RESIDENT_BODY_SKILLS) {
     assertExactSize({
@@ -653,15 +663,50 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
       measured: measureFile(path.join(rootDir, skillPath)),
       path: skillPath,
       previous: {
-        value: 83657,
-        delta: -2815,
-        label: 'BOS-1107 dead-prose trim',
+        value: 81130,
+        delta: 261,
+        label: 'BOS-1118 reviewed-tip route selection',
       },
       residual:
         'the references/ files this body points at — content moved out of the resident body ' +
         'leaves this pin entirely, so a trim here is not by itself proof the run got cheaper',
     })
   }
+})
+
+test('BOS-1119: pre-extraction baseline states its invariant without a live gap', () => {
+  const source = fs.readFileSync(path.join(rootDir, 'scripts/boss-build-skill.test.mjs'), 'utf8')
+  const invariant = regionUntilNext(
+    source,
+    '// BOS-1119 INVARIANT:',
+    'const PRE_EXTRACTION_BASELINE =',
+    'BOS-1119 pre-extraction baseline invariant',
+  )
+
+  assert.match(
+    invariant,
+    /compares\s+the\s+pinned\s+constant,\s+not\s+the[\s\S]{0,20}measured\s+size[\s\S]{0,60}repin\s+time/i,
+  )
+  assert.match(
+    invariant,
+    /`RATCHET`\s+is[\s\S]{0,20}repinned\s+every\s+commit[\s\S]{0,120}cannot\s+accumulate/i,
+  )
+  assert.match(
+    invariant,
+    /live\s+gap[\s\S]{0,120}subtracting\s+the\s+two\s+constants[\s\S]{0,20}declared\s+here/i,
+  )
+
+  const standingGap =
+    /(?:\b\d+\s+B\b[\s\S]{0,60}\b(?:headroom|slack|budget\s+remain\w*)\b|\b(?:headroom|slack|budget\s+remain\w*)\b[\s\S]{0,60}\b\d+\s+B\b)/i
+  assertProhibitionFires({
+    source: invariant,
+    pattern: standingGap,
+    violation: {
+      find: 'declared here.',
+      replacement: 'declared here; 30 B of live headroom remain.',
+    },
+    label: 'BOS-1119 standing live-gap prohibition',
+  })
 })
 
 test('BOS-1016: route-contract executable refuses missing evidence, downgrades on BLOCKED stamps, and accepts full evidence', () => {
@@ -3066,67 +3111,110 @@ test('BOS-240/BOS-1104: resident body pins the deferred-required-item finalize s
     // Arm 1 — an open must-fix ships, and ships PUBLISHED. The publication list is pinned in full
     // because a rule that says "not fatal" without naming the four artifacts is a licence to
     // ship the finding silently, which is worse than blocking on it.
-    assert.match(
-      body,
-      /Open\s+findings\s+are\s+published,\s+not\s+fatal/,
-      `${mirror}: body must state that open findings are published rather than fatal`,
-    )
-    assert.match(
-      body,
-      /open\s+must-fix\s+review\s+findings\s+\*\*never\*\*\s*\n?\s*force\s+BLOCKED/,
-      `${mirror}: body must state that open must-fix findings never force BLOCKED`,
-    )
-    assert.match(
-      body,
-      /ledger\s+comment\s+on\s+the\s+PR[\s\S]{0,80}same\s+summary\s+on\s+the\s+ticket[\s\S]{0,40}`please-review`[\s\S]{0,40}PR\s+readied/,
-      `${mirror}: the published-findings rule must name all four publication artifacts`,
-    )
+    assertFalsifiable({
+      source: body,
+      pattern: /Open\s+findings\s+are\s+published,\s+not\s+fatal/,
+      mutation: {
+        find: 'Open findings are published, not fatal',
+        replacement: 'Open findings are recorded, then treated as fatal',
+      },
+      label: `${mirror}: body must state that open findings are published rather than fatal`,
+    })
+    assertFalsifiable({
+      source: body,
+      pattern: /open\s+must-fix\s+review\s+findings\s+\*\*never\*\*\s*\n?\s*force\s+BLOCKED/,
+      mutation: {
+        find: 'open must-fix review findings **never**\n  force BLOCKED',
+        replacement: 'open must-fix review findings force BLOCKED',
+      },
+      label: `${mirror}: body must state that open must-fix findings never force BLOCKED`,
+    })
+    assertFalsifiable({
+      source: body,
+      pattern:
+        /ledger\s+comment\s+on\s+the\s+PR[\s\S]{0,80}same\s+summary\s+on\s+the\s+ticket[\s\S]{0,40}`please-review`[\s\S]{0,40}PR\s+readied/,
+      mutation: {
+        find: 'ledger comment on the PR, the same summary on the ticket, `please-review`\n  applied, PR readied',
+        replacement: 'ledger comment on the PR and PR readied',
+      },
+      label: `${mirror}: the published-findings rule must name all four publication artifacts`,
+    })
     // Arm 2 — an unsatisfied in-scope criterion is `PARTIAL`, and only on a green pushed branch.
-    assert.match(
-      body,
-      /Unsatisfied\s+in-scope\s+criteria\s+⇒\s+`PARTIAL`,\s+not\s+BLOCKED/,
-      `${mirror}: body must route an unsatisfied in-scope criterion to PARTIAL, not BLOCKED`,
-    )
+    assertFalsifiable({
+      source: body,
+      pattern: /Unsatisfied\s+in-scope\s+criteria\s+⇒\s+`PARTIAL`,\s+not\s+BLOCKED/,
+      mutation: {
+        find: 'Unsatisfied in-scope criteria ⇒ `PARTIAL`, not BLOCKED',
+        replacement: 'Unsatisfied in-scope criteria ⇒ BLOCKED',
+      },
+      label: `${mirror}: body must route an unsatisfied in-scope criterion to PARTIAL, not BLOCKED`,
+    })
     // Arm 3 — the API-version bump is the one review finding that still blocks, and it is named
     // through the configured lens ROLE so the published core stays project-agnostic.
     assert.match(body, /API-version\s+bump/, `${mirror}: required must name the API-version bump`)
-    assert.match(
-      body,
-      /open\s+must-fix\s+review\s+findings/,
-      `${mirror}: required must name open must-fix review findings`,
-    )
-    assert.match(
-      body,
-      /configured\s*\n?\s*API-compatibility\s+lens\s+role/,
-      `${mirror}: the API-version cause must be expressed through the configured lens role`,
-    )
+    assertFalsifiable({
+      source: body,
+      pattern: /open\s+must-fix\s+review\s+findings/,
+      mutation: {
+        find: 'open must-fix review findings',
+        replacement: 'optional review observations',
+      },
+      label: `${mirror}: required must name open must-fix review findings`,
+    })
+    assertFalsifiable({
+      source: body,
+      pattern: /configured\s*\n?\s*API-compatibility\s+lens\s+role/,
+      mutation: {
+        find: 'configured\n  API-compatibility lens role',
+        replacement: 'any available reviewer',
+      },
+      label: `${mirror}: the API-version cause must be expressed through the configured lens role`,
+    })
     // BOS-240 originally pinned the literal proto package `bossanova.v1` here. That token is
     // project-specific and had no business in a globally published core (CLAUDE.md's
     // project-agnostic rule; `skills_manifest_test.go` enforces it). BOS-1104's rewrite dropped
     // it; pin the absence so it cannot come back through this rule.
-    assert.doesNotMatch(
-      body,
-      /bossanova\.v1/,
-      `${mirror}: the published core must not name a project-specific proto package`,
-    )
+    assertProhibitionFires({
+      source: body,
+      pattern: /bossanova\.v1/,
+      violation: {
+        find: 'API-version bump',
+        replacement: 'bossanova.v1 API-version bump',
+      },
+      label: `${mirror}: the published core must not name a project-specific proto package`,
+    })
     // The exhaustiveness claim is the load-bearing half: without it "four causes" is a list of
     // examples and every bookkeeping exit re-enters through the gap.
-    assert.match(
-      body,
-      /\*\*BLOCKED\s+has\s+exactly\s+four\s+causes\*\*/,
-      `${mirror}: body must cap BLOCKED at exactly four causes`,
-    )
-    assert.match(
-      body,
-      /list\s+is\s*\n?\s*exhaustive\s+—\s+open\s+review\s+findings\s+are\s+\*\*not\*\*\s+on\s+it/,
-      `${mirror}: the four-cause list must declare itself exhaustive and exclude review findings`,
-    )
+    assertFalsifiable({
+      source: body,
+      pattern: /\*\*BLOCKED\s+has\s+exactly\s+four\s+causes\*\*/,
+      mutation: {
+        find: '**BLOCKED has exactly four causes**',
+        replacement: '**BLOCKED has four common causes**',
+      },
+      label: `${mirror}: body must cap BLOCKED at exactly four causes`,
+    })
+    assertFalsifiable({
+      source: body,
+      pattern:
+        /list\s+is\s*\n?\s*exhaustive\s+—\s+open\s+review\s+findings\s+are\s+\*\*not\*\*\s+on\s+it/,
+      mutation: {
+        find: 'That list is\n  exhaustive — open review findings are **not** on it',
+        replacement: 'That list is illustrative — open review findings may also block',
+      },
+      label: `${mirror}: the four-cause list must declare itself exhaustive and exclude review findings`,
+    })
     // Optional stays non-fatal (Minor findings + best-effort proof).
-    assert.match(
-      body,
-      /_?optional_?[\s\S]{0,40}Minor\s+findings[\s\S]{0,40}best-effort\s+proof[\s\S]{0,40}non-fatal/i,
-      `${mirror}: optional (Minor findings + best-effort proof) must stay non-fatal`,
-    )
+    assertFalsifiable({
+      source: body,
+      pattern:
+        /_?optional_?[\s\S]{0,40}Minor\s+findings[\s\S]{0,40}best-effort\s+proof[\s\S]{0,40}non-fatal/i,
+      mutation: {
+        find: '_Optional_ items (Minor\n  findings, best-effort proof) stay non-fatal',
+        replacement: '_Optional_ items may force BLOCKED',
+      },
+      label: `${mirror}: optional (Minor findings + best-effort proof) must stay non-fatal`,
+    })
     // The wall-clock breaker no longer grants "usually BLOCKED" latitude.
     assert.doesNotMatch(
       body,
@@ -3162,27 +3250,68 @@ test('BOS-240/BOS-1104: resident body pins the deferred-required-item finalize s
       /open\s+must-fix\*{0,2}\s+review\s+finding\s+→\s+`REVIEW_READY`\s+with\s+the\s+findings\s+\*\*published\*\*/,
       `${mirror}: Step 9's open-must-fix arm must ship REVIEW_READY with the findings published`,
     )
-    assert.match(
-      step9,
-      /missing\s+required\s+API-version\s+bump\s+or\s+down-convert\s+transform[\s\S]{0,200}finalize\s+BLOCKED/,
-      `${mirror}: Step 9 must keep the API-version arm as the one blocking deferral`,
-    )
+    assertFalsifiable({
+      source: step9,
+      pattern:
+        /missing\s+required\s+API-version\s+bump\s+or\s+down-convert\s+transform[\s\S]{0,200}finalize\s+BLOCKED/,
+      mutation: {
+        find: 'a **missing required API-version bump or down-convert transform**, per the configured\n  API-compatibility lens role → finalize BLOCKED',
+        replacement: 'a missing API-version update → continue REVIEW_READY',
+      },
+      label: `${mirror}: Step 9 must keep the API-version arm as the one blocking deferral`,
+    })
     const step12 = region(ref, '## Step 12:')
     assert.match(
       step12,
       /`BLOCKED`\s+is\s+reachable\s*\n?\s*for\s+exactly\s+four\s+reasons/,
       `${mirror}: Step 12 must open the terminal pick from the four-cause BLOCKED list`,
     )
-    assert.match(
-      step12,
-      /\*\*That\s+list\s+is\s+\*\*exhaustive\.\*\*|\*\*That\s+list\s+is\s+exhaustive\.\*\*/,
-      `${mirror}: Step 12's four-cause list must declare itself exhaustive`,
-    )
-    assert.match(
-      step12,
-      /cannot\s+name\s+which\s+of\s+the\s+four\s*\n?\s*numbered\s+causes[\s\S]{0,60}you\s+are\s+in\s+none\s+of\s+them/,
-      `${mirror}: Step 12 must close the gap a reader reaches through when no cause fits`,
-    )
+    assertFalsifiable({
+      source: step12,
+      pattern:
+        /\*\*That\s+list\s+is\s+\*\*exhaustive\.\*\*|\*\*That\s+list\s+is\s+exhaustive\.\*\*/,
+      mutation: {
+        find: '**That list is exhaustive.**',
+        replacement: '**That list gives the usual causes.**',
+      },
+      label: `${mirror}: Step 12's four-cause list must declare itself exhaustive`,
+    })
+    assertFalsifiable({
+      source: step12,
+      pattern:
+        /cannot\s+name\s+which\s+of\s+the\s+four\s*\n?\s*numbered\s+causes[\s\S]{0,60}you\s+are\s+in\s+none\s+of\s+them/,
+      mutation: {
+        find: 'cannot name which of\nthe four numbered causes above you are in, you are in none of them',
+        replacement: 'cannot name a cause, choose the nearest one',
+      },
+      label: `${mirror}: Step 12 must close the gap a reader reaches through when no cause fits`,
+    })
+  }
+})
+
+test('BOS-1117: Step 12 BLOCKED list has exactly four causes in both mirrors', async (t) => {
+  for (const dir of BUILD_MIRRORS) {
+    await t.test(dir, () => {
+      const ref = finalizeAndStop(dir)
+      const blockedList = region(
+        ref,
+        '1. **quality gates are red**',
+        '**That list is exhaustive.**',
+        `${dir}/${FINALIZE_REF}`,
+      )
+      const listItems = blockedList.match(/^\s*(?:\d+\.|-)\s+.+$/gm) ?? []
+      assert.strictEqual(
+        listItems.length,
+        4,
+        `${dir}/${FINALIZE_REF}: the BLOCKED list must carry exactly four items, found ${listItems.length}: ${JSON.stringify(listItems)}`,
+      )
+      const boldSpans = blockedList.match(/\*\*[^*]+\*\*/g) ?? []
+      assert.strictEqual(
+        boldSpans.length,
+        4,
+        `${dir}/${FINALIZE_REF}: the BLOCKED list must carry exactly four bold cause spans, found ${boldSpans.length}: ${JSON.stringify(boldSpans)}`,
+      )
+    })
   }
 })
 
@@ -3772,6 +3901,7 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
     'resolveCallbackAdapter', // the callback-notifier adapter seam
     'toolbox/callback/adapter.mjs', // its path
     'boss callback add', // the generic register CLI (project-agnostic host interface)
+    'policy.availableTriggers', // full CLI vocabulary, distinct from the default wait set
     'policy.watchTriggers', // the grouped trigger set lives in policy, not hard-coded prose
     'reconcile against real', // authoritative reconciliation before acting
     'policy.fallbackPoll', // bounded fallback when callbacks are unavailable
@@ -3814,6 +3944,18 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
     ref,
     /checks_passed[\s\S]*checks_failed[\s\S]*merged/,
     'reference must name the grouped triggers',
+  )
+  assert.ok(ref.includes('policy.availableTriggers'), 'reference must name the full CLI vocabulary')
+  assert.ok(ref.includes('policy.watchTriggers.join'), 'arming loop must read policy.watchTriggers')
+  assert.doesNotMatch(
+    ref,
+    /for\s+T\s+in\s+checks_passed\s+checks_failed\s+merged/,
+    'arming loop must not duplicate the default trigger list',
+  )
+  assert.match(
+    ref,
+    /state-matching\s+is\s+the\s+default[\s\S]*--on-transition[\s\S]*onTransition/i,
+    'reference must name transition-only arming as the state-matching opt-out',
   )
   assert.match(ref, /Reconcile\s+before\s+act/i, 'reference must state reconcile-before-act')
   assert.match(
@@ -5616,11 +5758,15 @@ test('BOS-1103: review-stack picks the review tier from the diff at Step 6 entry
     // Narrow, not blanket: forbid the OLD destination for this tier's own findings, not the word
     // `BLOCKED` anywhere in the region — a blanket ban would red on the legitimate mention of
     // cause (3), the API-version bump this tier still dispatches.
-    assert.doesNotMatch(
-      quick,
-      /`bs-review\s+capped:`\s*→\s*\*\*BLOCKED\*\*/,
-      `${dir}: the quick tier must not route its own findings to the retired BLOCKED destination`,
-    )
+    assertProhibitionFires({
+      source: quick,
+      pattern: /`bs-review\s+capped:`\s*→\s*\*\*BLOCKED\*\*/,
+      violation: {
+        find: '`bs-review capped:` → §REVIEW_READY-with-findings publication',
+        replacement: '`bs-review capped:` → **BLOCKED**',
+      },
+      label: `${dir}: the quick tier must not route its own findings to the retired BLOCKED destination`,
+    })
     // BOS-859 REPLACED "detector, not a repairer" with the narrower rule that is now true. The old
     // sentence forbade repair as such; the argument underneath it was never about repair, it was
     // about SELF-certification — repair without an independent witness. Pin that, because it is the
@@ -6079,11 +6225,15 @@ test('BOS-1103: the pre-dispatch off-switch decline completes the reference push
       /`rescue`\/`no`\s+report\s+BLOCKED\s+\(cause\s+2\)/i,
       `${dir}/SKILL.md: an unpushable branch on the decline route must still report BLOCKED cause (2)`,
     )
-    assert.doesNotMatch(
-      decline,
-      /git\s+push\s+-u\s+origin\s+"\$SESSION_BRANCH"/,
-      `${dir}/SKILL.md: the decline route must delegate its durable push procedure to the reference, not regress to a one-shot inline push`,
-    )
+    assertProhibitionFires({
+      source: decline,
+      pattern: /git\s+push\s+-u\s+origin\s+"\$SESSION_BRANCH"/,
+      violation: {
+        find: 'retry/rebase/rescue procedure',
+        replacement: 'git push -u origin "$SESSION_BRANCH"',
+      },
+      label: `${dir}/SKILL.md: the decline route must delegate its durable push procedure to the reference, not regress to a one-shot inline push`,
+    })
     assert.match(
       decline,
       /do\s+(?:\*\*)?not(?:\*\*)?\s+fall\s+through[\s\S]{0,180}(?:generic|classifier|Step\s+7)/i,
@@ -6106,11 +6256,17 @@ test('BOS-1103: the pre-dispatch off-switch decline completes the reference push
     // The coverage token is decidable HERE, from this route's own record that it dispatched
     // nothing — not from a sentinel it never wrote. Without that, "publish both tokens" is an
     // instruction the route cannot carry out.
-    assert.match(
-      decline,
-      /`none:\s+review\s+stack\s+did\s+not\s+run\s+\(<reason>\)`[\s\S]{0,140}decidable\s+here/i,
-      `${dir}/SKILL.md: the decline coverage token must be decidable from this route's own record`,
-    )
+    assertFalsifiable({
+      source: decline,
+      pattern:
+        /`none:\s+review\s+stack\s+did\s+not\s+run\s+\(<reason>\)`[\s\S]{0,140}decidable\s+here/i,
+      mutation: {
+        find: '`none: review stack did not run (<reason>)`, decidable here from your own record that you dispatched\nnothing',
+        replacement:
+          '`none: review stack did not run (<reason>)`, inferred from the missing sentinel',
+      },
+      label: `${dir}/SKILL.md: the decline coverage token must be decidable from this route's own record`,
+    })
   }
 })
 
@@ -8647,11 +8803,15 @@ test('BOS-758 repair P1: Step 7 confirms the pushed tip is the tip that was revi
       /take\s+one\s+of\s+the\s+exactly\s+two\s+routes\s+that\s+section\s+names/i,
       `${dir}/SKILL.md: Step 7 must bind a moved tip to the reference's exactly two routes`,
     )
-    assert.doesNotMatch(
-      step7,
-      /against\s+the\s+new\s+tip\s+or\s+\*\*Stop\s+cleanly\*\*\s+`BLOCKED`/i,
-      `${dir}/SKILL.md: a moved tip must not route to BLOCKED — that would be a fifth cause`,
-    )
+    assertProhibitionFires({
+      source: step7,
+      pattern: /against\s+the\s+new\s+tip\s+or\s+\*\*Stop\s+cleanly\*\*\s+`BLOCKED`/i,
+      violation: {
+        find: 'take\none of the exactly two routes that section names',
+        replacement: 'review again against the new tip or **Stop cleanly** `BLOCKED`',
+      },
+      label: `${dir}/SKILL.md: a moved tip must not route to BLOCKED — that would be a fifth cause`,
+    })
 
     // (c) The reference carries the capture/compare, and it fails CLOSED on an unreadable tip.
     const reviewStack = reviewStackFor(dir)
@@ -8900,14 +9060,18 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
     // set of examples and the carve-out becomes general again.
     assert.match(
       rule,
-      /\*\*BLOCKED\s+has\s+exactly\s+four\s+causes\*\*[\s\S]{0,120}quality\s+gates\s+are\s+red[\s\S]{0,80}branch\s+cannot\s+be\s+pushed[\s\S]{0,200}API-version\s+bump\s+or\s+down-convert\s+transform[\s\S]{0,200}plan\s+demands\s+something\s+unsafe/,
+      /\*\*BLOCKED\s+has\s+exactly\s+four\s+causes\*\*[\s\S]{0,120}quality\s+gates\s+are\s+red[\s\S]{0,80}branch\s+cannot\s+be\s+pushed[\s\S]{0,200}API-version\s+bump\s+or\s+down-convert\s+transform[\s\S]{0,200}plan\s+demands\s+something\s+unsafe\s+\(Decide\s+vs\s+ABORT\)\.\s+That\s+list\s+is\s+exhaustive/,
       `${dir}: the four BLOCKED causes must survive in order on the Hard rules`,
     )
-    assert.match(
-      rule,
-      /list\s+is\s*\n?\s*exhaustive/,
-      `${dir}: the four-cause list must declare itself exhaustive, or it reads as examples`,
-    )
+    assertFalsifiable({
+      source: rule,
+      pattern: /list\s+is\s*\n?\s*exhaustive/,
+      mutation: {
+        find: 'That list is\n  exhaustive',
+        replacement: 'That list gives common examples',
+      },
+      label: `${dir}: the four-cause list must declare itself exhaustive, or it reads as examples`,
+    })
     // T1 on the bullet that DEFINES the exception. Without it the carve-out reads as "defer every
     // criterion and still land PARTIAL" — a 0-of-N universal soft landing that publishes a ready
     // PR asserting progress that never happened.
@@ -9230,16 +9394,25 @@ test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label
     )
     // The direction of the fallback is the whole point of the re-framing: a conjunct you cannot
     // establish must NOT drop to BLOCKED by default, or `PARTIAL` becomes a softer BLOCKED again.
-    assert.match(
-      step12,
-      /not\s+a\s+softer\s+`BLOCKED`/,
-      `${dir}: Step 12 must say PARTIAL is not a softer BLOCKED`,
-    )
-    assert.match(
-      step12,
-      /falls\s+back\s+to\s+`REVIEW_READY`\s+with\s+the\s+items\s+published,\s+and\s+to\s+`BLOCKED`\s+only\s+through\s+cause\s+\(1\)\s+or\s*\n?\s*\(2\)/,
-      `${dir}: an unestablished PARTIAL conjunct must fall back to REVIEW_READY, not to BLOCKED`,
-    )
+    assertFalsifiable({
+      source: step12,
+      pattern: /not\s+a\s+softer\s+`BLOCKED`/,
+      mutation: {
+        find: 'not a softer `BLOCKED`',
+        replacement: 'a softer form of `BLOCKED`',
+      },
+      label: `${dir}: Step 12 must say PARTIAL is not a softer BLOCKED`,
+    })
+    assertFalsifiable({
+      source: step12,
+      pattern:
+        /falls\s+back\s+to\s+`REVIEW_READY`\s+with\s+the\s+items\s+published,\s+and\s+to\s+`BLOCKED`\s+only\s+through\s+cause\s+\(1\)\s+or\s*\n?\s*\(2\)/,
+      mutation: {
+        find: 'falls back to `REVIEW_READY` with the items published, and to `BLOCKED` only through cause (1) or\n(2)',
+        replacement: 'falls back to `BLOCKED` whenever any conjunct is unknown',
+      },
+      label: `${dir}: an unestablished PARTIAL conjunct must fall back to REVIEW_READY, not to BLOCKED`,
+    })
   }
 })
 
@@ -9393,11 +9566,16 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     )
     // Failing T1 must not silently become a clean REVIEW_READY: it disqualifies the route, and the
     // run still has to publish the unmet criteria under the coverage token it actually earned.
-    assert.match(
-      section,
-      /Failing\s+T1\s+is\s+not\s+a\s+blocker[\s\S]{0,200}§REVIEW_READY-with-findings\s+publication[\s\S]{0,200}coverage\s+token\s+this\s+run\s+actually\s+earned/,
-      `${dir}: a T1 failure must route to the published-findings section under an earned coverage token`,
-    )
+    assertFalsifiable({
+      source: section,
+      pattern:
+        /Failing\s+T1\s+is\s+not\s+a\s+blocker[\s\S]{0,200}§REVIEW_READY-with-findings\s+publication[\s\S]{0,200}coverage\s+token\s+this\s+run\s+actually\s+earned/,
+      mutation: {
+        find: 'Failing T1 is not a blocker — it disqualifies this\n  route, not the run: take §REVIEW_READY-with-findings publication above, which states the unmet\n  criteria in the PR body under the coverage token this run actually earned',
+        replacement: 'Failing T1 blocks the run',
+      },
+      label: `${dir}: a T1 failure must route to the published-findings section under an earned coverage token`,
+    })
     // The failure edges: an unestablished conjunct, and a push that only reached the rescue path,
     // both change the TERMINAL STATE, not merely the report.
     // BOS-1104 split this fallback by WHICH conjunct failed, and the split is the contract: T2
@@ -9405,11 +9583,16 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     // BLOCKED route; a failing T1 or T3 on a pushed green branch is neither, and publishes. Pin
     // both halves — pinning only the BLOCKED half would leave a rewrite free to send every failed
     // conjunct back to BLOCKED, and pinning only the publish half would let a red T2 ship.
-    assert.match(
-      section,
-      /a\s+red\s+or\s+unresolvable\s+\*\*T2\*\*\s+is\s+`BLOCKED`\s+cause\s+\(1\)[\s\S]{0,160}§BLOCKED-route\s+publication/,
-      `${dir}: a red or unresolvable T2 must fall back to the BLOCKED route as cause (1)`,
-    )
+    assertFalsifiable({
+      source: section,
+      pattern:
+        /a\s+red\s+or\s+unresolvable\s+\*\*T2\*\*\s+is\s+`BLOCKED`\s+cause\s+\(1\)[\s\S]{0,160}§BLOCKED-route\s+publication/,
+      mutation: {
+        find: 'a red or unresolvable **T2** is `BLOCKED` cause (1), and a push that will not\nland is cause (2) — those two take §BLOCKED-route publication below',
+        replacement: 'a red T2 may continue through REVIEW_READY-with-findings publication',
+      },
+      label: `${dir}: a red or unresolvable T2 must fall back to the BLOCKED route as cause (1)`,
+    })
     assert.match(
       section,
       /A\s+failing\s+\*\*T1\*\*\s+or\s+\*\*T3\*\*\s+on\s+a[\s\S]{0,80}§REVIEW_READY-with-findings\s+publication/,
@@ -9614,18 +9797,27 @@ test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publicatio
       /The\s+\*\*one\*\*\s+exception\s+is\s+the\s+run\s+whose\s+only\s+open\s+items\s+are/,
       `${dir}: PARTIAL must be the ONE narrow exception on the capped arm, never its default`,
     )
-    assert.match(
-      capped,
-      /published,\s+not\s+fatal/,
-      `${dir}: the capped arm's default must publish its findings rather than withhold the PR`,
-    )
+    assertFalsifiable({
+      source: capped,
+      pattern: /published,\s+not\s+fatal/,
+      mutation: {
+        find: '**published, not fatal**',
+        replacement: '**withheld until every finding is cleared**',
+      },
+      label: `${dir}: the capped arm's default must publish its findings rather than withhold the PR`,
+    })
     // …and the default still has a floor: BLOCKED remains reachable, through exactly the two
     // causes this arm can decide. Dropping this sentence makes the arm unconditionally green.
-    assert.match(
-      capped,
-      /becomes\s+`BLOCKED`\s*\n?\s*\*\*only\*\*\s+when\s+the\s+push\s+or\s+the\s+quality\s+gates\s+fail/,
-      `${dir}: the capped arm must keep BLOCKED reachable through the push and gate causes`,
-    )
+    assertFalsifiable({
+      source: capped,
+      pattern:
+        /becomes\s+`BLOCKED`\s*\n?\s*\*\*only\*\*\s+when\s+the\s+push\s+or\s+the\s+quality\s+gates\s+fail/,
+      mutation: {
+        find: 'It becomes `BLOCKED`\n  **only** when the push or the quality gates fail',
+        replacement: 'It becomes `BLOCKED` whenever findings remain',
+      },
+      label: `${dir}: the capped arm must keep BLOCKED reachable through the push and gate causes`,
+    })
   }
 })
 
@@ -10090,16 +10282,26 @@ test('BOS-964: the classify block reads the marker and the route list carries th
       /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,240}\*\*never\*\*\s+clean\s+and\s+\*\*never\*\*\s+`PARTIAL`/i,
       `${dir}/SKILL.md: the provisional arm must exclude BOTH the clean and the PARTIAL routes by name`,
     )
-    assert.match(
-      step6,
-      /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,700}`none:\s+review\s+coverage\s+unknown\s+\(review\s+stack\s+entered;\s+provisional\s+verdict\s+never\s*\n?upgraded\s+—\s+<reason>\)`/,
-      `${dir}/SKILL.md: the provisional arm must publish the coverage token that says no verdict was ever settled`,
-    )
-    assert.match(
-      step6,
-      /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,900}becomes\s+`BLOCKED`\s+\*\*only\*\*\s+when\s+the\s+push\s+or\s+the\s+quality\s+gates\s+fail/,
-      `${dir}/SKILL.md: the provisional arm must keep BLOCKED reachable through the push and gate causes`,
-    )
+    assertFalsifiable({
+      source: step6,
+      pattern:
+        /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,700}`none:\s+review\s+coverage\s+unknown\s+\(review\s+stack\s+entered;\s+provisional\s+verdict\s+never\s*\n?upgraded\s+—\s+<reason>\)`/,
+      mutation: {
+        find: '`none: review coverage unknown (review stack entered; provisional verdict never\nupgraded — <reason>)`',
+        replacement: '`full`',
+      },
+      label: `${dir}/SKILL.md: the provisional arm must publish the coverage token that says no verdict was ever settled`,
+    })
+    assertFalsifiable({
+      source: step6,
+      pattern:
+        /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,900}becomes\s+`BLOCKED`\s+\*\*only\*\*\s+when\s+the\s+push\s+or\s+the\s+quality\s+gates\s+fail/,
+      mutation: {
+        find: 'it becomes `BLOCKED` **only** when the push or the quality gates fail',
+        replacement: 'it becomes `BLOCKED` whenever the verdict is provisional',
+      },
+      label: `${dir}/SKILL.md: the provisional arm must keep BLOCKED reachable through the push and gate causes`,
+    })
     // The bug this ticket must not reintroduce: inferring "the subagent didn't write" from anything
     // other than the marker. Pin the prohibition positively AND deny the prose-reading route.
     assert.match(
@@ -11181,4 +11383,45 @@ test('BOS-1020: the drift note reaches the reviewer and every route out (both mi
       `${dir}/references/review-stack.md: the clean route must name who writes the note, where`,
     )
   }
+})
+
+test('BOS-1116: review comment upserts require an anchored marker and matching author', () => {
+  const sites = [`${CORE}/SKILL.md`, `${CORE}/references/review-stack.md`]
+  const anchoredSelector =
+    /ME="\$\(gh\s+api\s+user\s+--jq\s+'\.login'\s+2>\/dev\/null\s+\|\|\s+true\)"[\s\S]{0,300}select\(\.body\s+\|\s+startswith\("<!-- bs-review -->"\)\)[\s\S]{0,160}select\(\$me\s+==\s+""\s+or\s+\(\.author\.login\s+\/\/\s+""\)\s+==\s+\$me\)/
+
+  for (const site of sites) {
+    const source = readSkill(site)
+    assertFalsifiable({
+      source,
+      pattern: anchoredSelector,
+      mutation: {
+        find: 'startswith("<!-- bs-review -->")',
+        replacement: 'contains("<!-- bs-review -->")',
+      },
+      label: `${site}: marker and author selector`,
+    })
+  }
+
+  const authoringRoots = ['services/boss/internal/skillinstall/skills', '.claude/skills']
+  const markdown = []
+  const visit = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name)
+      if (entry.isDirectory()) visit(file)
+      else if (entry.isFile() && entry.name.endsWith('.md'))
+        markdown.push(fs.readFileSync(file, 'utf8'))
+    }
+  }
+  for (const authoringRoot of authoringRoots) visit(path.join(rootDir, authoringRoot))
+
+  assertProhibitionFires({
+    source: markdown.join('\n'),
+    pattern: /select\(\.body\s+\|\s+contains\("<!-- bs-review -->"\)\)/,
+    violation: {
+      find: 'startswith("<!-- bs-review -->")',
+      replacement: 'contains("<!-- bs-review -->")',
+    },
+    label: 'authoring skill roots: whole-body marker-substring selector prohibition',
+  })
 })

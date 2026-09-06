@@ -94,6 +94,16 @@ func TestMapRotationSwitchError(t *testing.T) {
 			wantIneligible: true,
 		},
 		{
+			// The daemon-owned credential maintainer can bench the BOUND account between
+			// the auth probe and the same-account respawn, so the automatic path reaches
+			// this refusal too; without the mapping the rotator misses its remedy.
+			name: "auth-invalid target is not-attempted AND ineligible",
+			err: fmt.Errorf("%w: %w: account %q; re-authenticate it before switching",
+				session.ErrSwitchNotAttempted, session.ErrAccountAuthInvalid, "stale-creds"),
+			wantNotAttempt: true,
+			wantIneligible: true,
+		},
+		{
 			name:           "cooling target is not-attempted AND ineligible",
 			err:            fmt.Errorf("%w: %w: account %q is cooling", session.ErrSwitchNotAttempted, session.ErrAccountCooling, "cool"),
 			wantNotAttempt: true,

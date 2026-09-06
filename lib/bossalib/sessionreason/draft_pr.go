@@ -71,6 +71,55 @@ func IsDraftPRCreationTransientFailure(reason *string) bool {
 	return reason != nil && strings.HasPrefix(*reason, draftPRCreationFailurePrefix+transientMarker)
 }
 
+// authMarker distinguishes a draft-PR failure caused by the daemon's gh CLI
+// being unable to authenticate at all from every other terminal failure.
+//
+// # Why it nests, like transientMarker
+//
+// Same reason, and it is the same load-bearing contract: IsDraftPRCreationFailure
+// is a HasPrefix test on draftPRCreationFailurePrefix, and it gates every live
+// consumer — displaystatus's "? PR failed" label, the TUI's draft-PR hint and
+// its de-duplication against the attention hint, and the apiversion
+// DraftPRFailureLabelChange down-convert transform. None of them enumerate reason
+// kinds, so a sibling prefix would make all of them silently stop matching.
+//
+// # A new invariant this file did not previously need
+//
+// authMarker and transientMarker are BOTH anchored immediately after the failure
+// prefix, and each constructor writes prefix+marker+err. A reason can therefore
+// carry at most one of them: they are mutually exclusive by construction, and
+// IsDraftPRCreationAuthFailure and IsDraftPRCreationTransientFailure can never
+// both be true. Callers may rely on that; a third marker must preserve it.
+//
+// Like transientMarker it is a full sentence fragment on purpose. The predicate
+// anchors it at a fixed position, so a gh error that merely mentions the text
+// cannot misfire — but a short marker would be far likelier to begin one. Do not
+// shorten it.
+const authMarker = "bossd's gh CLI could not authenticate to GitHub — run 'boss repair doctor': "
+
+// DraftPRCreationAuthFailure formats the persisted blocked reason for a draft PR
+// creation that failed because the daemon's gh CLI had no usable credentials.
+// The result still satisfies IsDraftPRCreationFailure — see authMarker for why
+// that nesting is load-bearing.
+//
+// The nil contract matches DraftPRCreationFailure's: no error, no reason.
+func DraftPRCreationAuthFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	return draftPRCreationFailurePrefix + authMarker + err.Error()
+}
+
+// IsDraftPRCreationAuthFailure reports whether a blocked reason carries the auth
+// marker DraftPRCreationAuthFailure writes, anchored where the constructor puts
+// it rather than accepted anywhere in the string — so a reason whose raw gh error
+// merely quotes the marker mid-sentence is refused. It is strictly narrower than
+// IsDraftPRCreationFailure and mutually exclusive with
+// IsDraftPRCreationTransientFailure.
+func IsDraftPRCreationAuthFailure(reason *string) bool {
+	return reason != nil && strings.HasPrefix(*reason, draftPRCreationFailurePrefix+authMarker)
+}
+
 // draftPRCreationInFlightReason marks a session whose draft PR is being created
 // right now by the background step StartSession spawns (BOS-540). It is a
 // deliberately distinct string from DraftPRCreationFailure so the two states are

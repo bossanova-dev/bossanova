@@ -1,6 +1,10 @@
 package rotation
 
-import "time"
+import (
+	"time"
+
+	"github.com/recurser/bossalib/models"
+)
 
 // FutureWeeklyReset reports the account's weekly-quota reset instant when it is
 // known AND still strictly in the future; ok=false means "no urgent expiry"
@@ -71,4 +75,24 @@ func MaxUtilization(u5h, u7d float64) float64 {
 		return u7d
 	}
 	return u5h
+}
+
+// Selectable reports whether an account may be chosen to run: active, healthy,
+// and not benched by durable credential-verification state. It is the exported
+// form of the engine's own predicate, so binding-validation surfaces outside
+// this package share it instead of re-deriving eligibility and drifting.
+func Selectable(a *models.Account) bool { return isSelectable(a) }
+
+// BindableNow reports whether an account may be bound to a session right now:
+// Selectable, and not inside a cooldown window at the given instant.
+//
+// Explicit binding paths (CreateSession with an account id, manual account
+// switch) need this stricter form because they must refuse BEFORE mutating a
+// session — a spawn-time refusal arrives after the chat has already been
+// stopped and rebound.
+func BindableNow(a *models.Account, now time.Time) bool {
+	if !Selectable(a) {
+		return false
+	}
+	return a.CooldownUntil == nil || !a.CooldownUntil.After(now)
 }

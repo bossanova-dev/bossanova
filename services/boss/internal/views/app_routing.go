@@ -110,6 +110,14 @@ func (a App) handleSwitchView(msg switchViewMsg) (tea.Model, tea.Cmd) {
 		a.accountRegister.returnView = msg.returnView
 		a.accountRegister.width = a.width
 		a.accountRegister.height = a.height
+		if msg.reauthAccountID != "" {
+			// In-place reauthentication skips the provider chooser: the account
+			// already names its provider, and offering a choice here would let
+			// an operator overwrite a codex credential with a claude one.
+			var cmd tea.Cmd
+			a.accountRegister, cmd = a.accountRegister.beginReauth(msg.reauthAccountID)
+			return a, cmd
+		}
 		return a, a.accountRegister.Init()
 	}
 	return a, nil

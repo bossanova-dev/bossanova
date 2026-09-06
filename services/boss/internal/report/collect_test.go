@@ -158,3 +158,10 @@ func TestCollectContext_ListSessionsErrorIsSwallowed(t *testing.T) {
 		t.Errorf("Os = %q, want %q", rc.Os, runtime.GOOS)
 	}
 }
+
+// ListSessionsWithReadFailures satisfies the BossClient seam: this fake reads
+// one place, so it never reports a partial read.
+func (f *fakeReportClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	sessions, err := f.ListSessions(ctx, req, opts)
+	return sessions, nil, err
+}

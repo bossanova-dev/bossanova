@@ -662,3 +662,209 @@ func TestClampInt32(t *testing.T) {
 		})
 	}
 }
+
+// --- BOS-1096: a silent chat settles the session label -----------------------
+
+// evictionSettleHarness wires a REAL Tracker into a REAL DisplayStatusComputer
+// over a real (in-memory) database, so these tests exercise the composition
+// cascade rather than a fake's idea of it. That matters here: the whole premise
+// of the fix is that Get already returns nil past StaleThreshold, so an evicted
+// chat folds out of the aggregate and the cascade reaches the right answer
+// unaided — only the recompute was missing. If that premise were false, the
+// first scenario below fails.
+type evictionSettleHarness struct {
+	t         *testing.T
+	sessions  db.SessionStore
+	chats     db.AgentChatStore
+	disp      *DisplayTracker
+	tracker   *Tracker
+	computer  *DisplayStatusComputer
+	sessionID string
+}
+
+func newEvictionSettleHarness(t *testing.T) *evictionSettleHarness {
+	t.Helper()
+	sessions, workflows, chats, repos := newTestDB(t)
+	repoID := mustRepo(t, repos)
+	sessID := mustSession(t, sessions, repoID)
+
+	disp := NewDisplayTracker()
+	tracker := NewTracker()
+	computer := NewDisplayStatusComputer(sessions, disp, tracker, chats, workflows, zerolog.Nop())
+
+	// Stands in for cmd's wireEvictionRecompute, which lives in package main and
+	// is therefore out of reach from here — this unit has to live in the status
+	// package because backdating entries requires in-package access. Same shape:
+	// resolve each evicted id to its session, dedupe, recompute once each. The
+	// daemon really does install the real one; TestEvictionRecomputeSeamsWired
+	// is what proves that.
+	tracker.SetOnEntriesEvicted(func(agentSessionIDs []string) {
+		seen := map[string]struct{}{}
+		for _, id := range agentSessionIDs {
+			chat, err := chats.GetByAgentSessionID(context.Background(), id)
+			if err != nil || chat == nil {
+				continue
+			}
+			if _, dup := seen[chat.SessionID]; dup {
+				continue
+			}
+			seen[chat.SessionID] = struct{}{}
+			_ = computer.Recompute(context.Background(), chat.SessionID)
+		}
+	})
+
+	return &evictionSettleHarness{
+		t: t, sessions: sessions, chats: chats,
+		disp: disp, tracker: tracker, computer: computer, sessionID: sessID,
+	}
+}
+
+// reportChat seeds a chat row and a live tracker heartbeat for it.
+func (h *evictionSettleHarness) reportChat(agentSessionID string, st pb.ChatStatus) {
+	h.t.Helper()
+	if _, err := h.chats.Create(context.Background(), db.CreateAgentChatParams{
+		SessionID:      h.sessionID,
+		AgentSessionID: agentSessionID,
+		Title:          "test chat",
+	}); err != nil {
+		h.t.Fatalf("create chat %s: %v", agentSessionID, err)
+	}
+	h.tracker.Update(agentSessionID, st, time.Now())
+}
+
+// goSilent backdates a chat's heartbeat past StaleThreshold — the producer
+// stopping without ever sending a terminal STOPPED, which is the reported bug.
+func (h *evictionSettleHarness) goSilent(agentSessionID string) {
+	h.t.Helper()
+	h.tracker.mu.Lock()
+	defer h.tracker.mu.Unlock()
+	e, ok := h.tracker.entries[agentSessionID]
+	if !ok {
+		h.t.Fatalf("goSilent: no entry %q", agentSessionID)
+	}
+	e.ReceivedAt = time.Now().Add(-StaleThreshold - time.Second)
+}
+
+func (h *evictionSettleHarness) recompute() {
+	h.t.Helper()
+	if err := h.computer.Recompute(context.Background(), h.sessionID); err != nil {
+		h.t.Fatalf("recompute: %v", err)
+	}
+}
+
+func (h *evictionSettleHarness) label() string {
+	h.t.Helper()
+	got, err := h.sessions.Get(context.Background(), h.sessionID)
+	if err != nil {
+		h.t.Fatalf("get session: %v", err)
+	}
+	return got.DisplayLabel
+}
+
+// The reported symptom, at the level the user experiences it: a session whose
+// only chat stops heartbeating settles to stopped on the cleanup tick, with no
+// daemon restart. The freeze is not confined to idle — any label the last edge
+// produced survives the same way, which is why every starting status is
+// covered. question matters most: a dead session otherwise goes on claiming a
+// human is needed.
+func TestEviction_SettlesFrozenSessionLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		start     pb.ChatStatus
+		wantFirst string
+	}{
+		{"idle", pb.ChatStatus_CHAT_STATUS_IDLE, "idle"},
+		{"working", pb.ChatStatus_CHAT_STATUS_WORKING, "working"},
+		{"question", pb.ChatStatus_CHAT_STATUS_QUESTION, "? question"},
+		// Listed for completeness rather than as new coverage: a waiting chat
+		// holds a tracker waiting marker, which Cleanup already clears through
+		// onWaitingChange's nil-entry branch.
+		{"waiting", pb.ChatStatus_CHAT_STATUS_WAITING, "waiting"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEvictionSettleHarness(t)
+			h.reportChat("agent-1", tc.start)
+			h.recompute()
+
+			if got := h.label(); got != tc.wantFirst {
+				t.Fatalf("label with a live chat = %q, want %q", got, tc.wantFirst)
+			}
+
+			// The producer goes quiet without a terminal STOPPED. No further
+			// recompute is triggered by hand — the eviction is the only edge.
+			h.goSilent("agent-1")
+			h.tracker.Cleanup()
+
+			if got := h.label(); got != "stopped" {
+				t.Fatalf("label after eviction = %q, want %q (label stayed frozen)", got, "stopped")
+			}
+		})
+	}
+}
+
+// The eviction must not overwrite a chat-status-independent branch of the
+// cascade. A session whose label comes from its PR keeps that label when a chat
+// is evicted — idle and stopped both fall THROUGH to the PR cascade, so the
+// recompute reaches the same answer it did before.
+// AC3: deleting a session's last chat settles its label the same way staleness
+// does. Remove is the other site that deletes from entries, and it is reached by
+// DeleteChat -- which calls it while the chat row is still present, so the
+// eviction hook's lookup resolves and the recompute lands. The ordering that
+// makes that true is pinned separately by
+// TestDeleteChat_RecomputesWhileTheChatRowIsStillPresent in internal/server;
+// this is the composition half, asserting the label actually settles.
+func TestEviction_SettlesLabelWhenLastChatRemoved(t *testing.T) {
+	h := newEvictionSettleHarness(t)
+	h.reportChat("agent-1", pb.ChatStatus_CHAT_STATUS_WORKING)
+	h.recompute()
+
+	if got := h.label(); got != "working" {
+		t.Fatalf("label with a live chat = %q, want %q", got, "working")
+	}
+
+	// The explicit-deletion edge, with no hand-rolled recompute after it.
+	h.tracker.Remove("agent-1")
+
+	if got := h.label(); got != "stopped" {
+		t.Fatalf("label after removing the last chat = %q, want %q (label stayed frozen)", got, "stopped")
+	}
+}
+
+func TestEviction_KeepsPRDerivedLabel(t *testing.T) {
+	h := newEvictionSettleHarness(t)
+	h.disp.Set(h.sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	h.reportChat("agent-1", pb.ChatStatus_CHAT_STATUS_IDLE)
+	h.recompute()
+
+	if got := h.label(); got != "✓ passing" {
+		t.Fatalf("label with a live idle chat = %q, want %q", got, "✓ passing")
+	}
+
+	h.goSilent("agent-1")
+	h.tracker.Cleanup()
+
+	if got := h.label(); got != "✓ passing" {
+		t.Fatalf("label after eviction = %q, want %q (eviction clobbered a PR-derived label)", got, "✓ passing")
+	}
+}
+
+// Evicting one chat must not report the whole session dead: the aggregate is
+// over every chat in the session, and a still-live one still wins.
+func TestEviction_KeepsLabelFromRemainingLiveChat(t *testing.T) {
+	h := newEvictionSettleHarness(t)
+	h.reportChat("agent-dead", pb.ChatStatus_CHAT_STATUS_IDLE)
+	h.reportChat("agent-live", pb.ChatStatus_CHAT_STATUS_WORKING)
+	h.recompute()
+
+	if got := h.label(); got != "working" {
+		t.Fatalf("label with two live chats = %q, want %q", got, "working")
+	}
+
+	// Only one goes silent; the other keeps heartbeating.
+	h.goSilent("agent-dead")
+	h.tracker.Cleanup()
+
+	if got := h.label(); got != "working" {
+		t.Fatalf("label after one eviction = %q, want %q (a live chat was reported dead)", got, "working")
+	}
+}

@@ -1,0 +1,9 @@
+extends: substitution
+message: "Replace '%s' with a specific claim."
+level: error
+ignorecase: true
+swap:
+  best-in-class: specific
+  cutting-edge: current
+  game-changing: significant
+  world-class: specific

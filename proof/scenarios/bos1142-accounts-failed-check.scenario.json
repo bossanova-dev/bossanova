@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "title": "BOS-1142 accounts failed credential check and in-place reauthentication",
+  "fixture": {
+    "preset": "demo",
+    "env": {
+      "BOSS_PROOF_CODEX_REAUTH": "1"
+    }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "a live check that rejected the credential names the fault and the remedy",
+      "steps": [
+        {
+          "key": "s",
+          "caption": "Open the Settings menu"
+        },
+        {
+          "key": "a",
+          "caption": "Open Settings -> Accounts"
+        },
+        {
+          "waitFor": "LABEL PROVIDER",
+          "timeoutMs": 10000,
+          "caption": "The accounts list has loaded"
+        },
+        {
+          "expect": [
+            {
+              "text": "team-codex codex active failed failed:auth_invalidated",
+              "match": "normalized",
+              "label": "the row an operator believes is in service carries the daemon's own verdict, not just a red health cell"
+            },
+            {
+              "text": "credential injection",
+              "match": "normalized",
+              "label": "the BOS-973 injection failure is still shown alongside the check verdict"
+            },
+            {
+              "text": "[R]eauth",
+              "match": "normalized",
+              "label": "the remedy for an auth_invalidated account is offered on the same screen as the diagnosis"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "never checked and checked-and-clean are different answers",
+      "steps": [
+        {
+          "waitFor": "LABEL PROVIDER",
+          "timeoutMs": 10000,
+          "caption": "The same list, read for what it says about the two rows nobody has diagnosed"
+        },
+        {
+          "expect": [
+            {
+              "text": "work-claude claude active ok ok",
+              "match": "normalized",
+              "label": "an account the daemon asked about, and which answered: health ok AND check ok"
+            },
+            {
+              "text": "personal-codex codex disabled failed never checked",
+              "match": "normalized",
+              "label": "an account nobody has ever asked about reads 'never checked', never a bare 'ok' that would claim a verification that never happened (BOS-892)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "reauthenticating in place repairs the bound row rather than adding a second one",
+      "steps": [
+        {
+          "key": "down",
+          "caption": "Move to the disabled personal codex account"
+        },
+        {
+          "key": "down",
+          "caption": "Move to the team codex account whose credential was rejected"
+        },
+        {
+          "key": "R",
+          "caption": "Start in-place reauthentication for the selected account"
+        },
+        {
+          "waitFor": "Reauthenticate codex account acct-codex-2",
+          "timeoutMs": 15000,
+          "caption": "The flow names the account whose credential is about to be replaced, and never presents the provider chooser"
+        },
+        {
+          "expect": [
+            {
+              "text": "Reauthenticate codex account acct-codex-2",
+              "match": "normalized",
+              "label": "the device login says which existing account it is about to overwrite, so it cannot be mistaken for the add flow"
+            },
+            {
+              "text": "enter code",
+              "match": "normalized",
+              "label": "the operator is given the device-login prompt rather than a spinner with no instruction"
+            }
+          ]
+        },
+        {
+          "waitFor": "Reauthenticated account acct-codex-2",
+          "timeoutMs": 30000,
+          "caption": "The daemon verified the replacement credential and the list reports it"
+        },
+        {
+          "expect": [
+            {
+              "text": "the new credential verified. The account is eligible again.",
+              "match": "normalized",
+              "label": "success is reported only after the daemon's post-save verification returned a verdict, never on a save that merely did not error (BOS-943)"
+            },
+            {
+              "text": "team-codex codex active ok",
+              "match": "normalized",
+              "label": "the SAME row recovered: the identity, label and priority the sessions are bound to are unchanged and its health is ok again"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

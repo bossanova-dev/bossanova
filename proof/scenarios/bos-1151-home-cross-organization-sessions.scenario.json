@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "title": "BOS-1151 Home lists sessions from every organization",
+  "fixture": {
+    "preset": "demo",
+    "env": {
+      "BOSS_AUTH_E2E_EMAIL": "proof@example.com",
+      "BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active",
+      "BOSS_ORG_E2E_ORGANIZATIONS": "org-acme=Acme Corp,org-globex=Globex Industries",
+      "BOSS_ORG_E2E_SESSION_ORGS": "repo-1=Acme Corp,repo-2=Acme Corp,repo-3=Globex Industries,repo-4=Globex Industries"
+    }
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "cross-organization-union",
+      "title": "the board shows sessions from both organizations at once",
+      "steps": [
+        {
+          "waitFor": {
+            "anyOf": [
+              { "text": "Add dark mode", "match": "normalized" },
+              { "text": "[n]ew session", "match": "normalized" }
+            ],
+            "label": "Home session list loaded"
+          },
+          "timeoutMs": 15000,
+          "caption": "The board has settled on the home session list"
+        },
+        { "waitMs": 500, "caption": "Let the first poll settle" },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "an Acme Corp session (my-app)"
+            },
+            {
+              "text": "Add rate limiting to public API",
+              "match": "normalized",
+              "label": "a second Acme Corp session, in a different repo (my-api)"
+            },
+            {
+              "text": "Refresh landing page hero",
+              "match": "normalized",
+              "label": "a Globex Industries session (my-web) — a DIFFERENT organization, on the same board"
+            },
+            {
+              "text": "Upgrade to React Navigation 7",
+              "match": "normalized",
+              "label": "a second Globex Industries session (mobile-app)"
+            },
+            {
+              "text": "my-app",
+              "match": "normalized",
+              "label": "the REPO column distinguishes the rows by repo"
+            },
+            {
+              "text": "my-web",
+              "match": "normalized",
+              "label": "and it carries a repo from the other organization"
+            },
+            {
+              "text": "^(?![\\s\\S]*\\bORGANIZATION\\b)[\\s\\S]*$",
+              "match": "regex",
+              "label": "no ORGANIZATION column was added: the repo-origin index is unique, so REPO already answers which organization a row belongs to"
+            },
+            {
+              "text": "^(?![\\s\\S]*list is incomplete)[\\s\\S]*$",
+              "match": "regex",
+              "label": "the read is complete, so nothing claims the list is short"
+            }
+          ],
+          "caption": "One board, four sessions, two organizations. Before this the remote read asked ProxyListSessions — which answers only the caller's ACTIVE organization — so the two Globex Industries rows were simply absent, and the sessions the list omitted could not be opened from the board at all."
+        }
+      ]
+    }
+  ]
+}

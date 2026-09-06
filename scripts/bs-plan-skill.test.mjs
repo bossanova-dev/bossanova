@@ -32,6 +32,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
+import { precedes, regionUntilNext } from './gate-region-lib.mjs'
 import { assertExactSize, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
@@ -81,6 +82,27 @@ function sectionBetween(body, startMarker, endMarker) {
   const end = body.indexOf(endMarker, from)
   assert.notEqual(end, -1, `missing section end after ${startMarker}: ${endMarker}`)
   return body.slice(from, end)
+}
+
+function draftBehaviorRegions(body) {
+  assert.ok(
+    precedes(body, '### Interactive', '### Headless', `${DRAFT_NAME} behavior sections`),
+    `${DRAFT_NAME} must keep Interactive before Headless`,
+  )
+  assert.ok(
+    precedes(body, '### Headless', '## Normalize and promote', `${DRAFT_NAME} behavior sections`),
+    `${DRAFT_NAME} must keep Headless before Normalize and promote`,
+  )
+
+  return {
+    interactive: regionUntilNext(
+      body,
+      '### Interactive',
+      '\n### ',
+      `${DRAFT_NAME} interactive section`,
+    ),
+    headless: regionUntilNext(body, '### Headless', '\n## ', `${DRAFT_NAME} headless section`),
+  }
 }
 
 const REFERENCE_TABLE = sectionBetween(SKILL, '## On-demand references', '\n## Phase 0')
@@ -490,6 +512,11 @@ test('the epic sentinel carries required artifact paths in both payload copies',
       /epicSpecPaths:\$epicSpecPaths/,
       `${payload.name}: epic sentinel must carry optional epic spec body scratch paths`,
     )
+    assert.match(
+      payload.brief,
+      /<child-plan-path>[.]md[.]rejected/,
+      `${payload.name}: epic sentinel must retain rejected child plan structure artifacts in guardScratchPaths`,
+    )
     assert.doesNotMatch(
       payload.brief,
       /childPlanKeysById:\{/,
@@ -514,6 +541,11 @@ test('the epic sentinel carries required artifact paths in both payload copies',
       payload.brief,
       /refuses\s+an\s+epic\s+sentinel\s+that\s+omits\s+the\s+required\s+epic\s+artifact\s+paths/i,
       `${payload.name}: epic brief must state that artifact paths are required`,
+    )
+    assert.match(
+      payload.brief,
+      /retained\s+`<child-plan>[.]md[.]rejected`\s+structure\s+artifact/i,
+      `${payload.name}: epic brief must say retained structure artifacts belong in guardScratchPaths`,
     )
   }
 })
@@ -831,6 +863,31 @@ test('epic parent validation mode is documented (BOS-755)', () => {
   )
 })
 
+test('epic parent overview runs the contract guard in epic-parent mode before parent save', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    assert.match(
+      payload.skill,
+      /plan-contract\s+gate[\s\S]{0,220}plan-contract-guard\.mjs\s+--mode\s+epic-parent[\s\S]{0,220}before\s+attachment\s+finalize\s+or\s+parent\s+save/i,
+      `${payload.name}: resident epic path must gate the parent overview with --mode epic-parent before parent writes`,
+    )
+    assert.match(
+      payload.skill,
+      /plan-contract-guard\.mjs\s+--mode\s+epic-parent[\s\S]{0,180}on\s+a\s+violation\s+take\s+the\s+same\s+SAFE\s+branch/i,
+      `${payload.name}: resident epic gate must share the parent SAFE branch`,
+    )
+  }
+  assert.match(
+    BRIEF,
+    /plan-contract-guard\.mjs\s+--mode\s+epic-parent[\s\S]{0,180}on\s+a\s+violation,\s+no\s+parent\s+write,\s+abort/i,
+    'headless drafting brief must require the epic-parent contract gate before parent writes',
+  )
+  assert.match(
+    BRIEF,
+    /plan-contract-guard\.mjs\s+--mode\s+epic-parent[\s\S]{0,160}before\s+attachment\s+finalize\s+or\s+parent\s+save/i,
+    'headless drafting brief must name the exact epic-parent guard mode',
+  )
+})
+
 test('epic sentinel childIds are required in the drafting brief (BOS-755)', () => {
   for (const copy of PAYLOAD_COPIES) {
     assert.ok(
@@ -967,7 +1024,7 @@ test('BOS-769: headless drafting defers resolution to the shared Fallback contra
   )
 })
 
-test('the drafting brief pins the cased ## Open Questions heading and plan-body-only rule (BOS-741)', () => {
+test('the drafting brief pins the cased ## Open Questions heading and plan-document-only rule (BOS-741)', () => {
   assert.match(
     BRIEF,
     /\*\*`## Open\s+Questions`\*\*[\s\S]{0,160}exact\s+casing, capital `Q`/,
@@ -980,13 +1037,13 @@ test('the drafting brief pins the cased ## Open Questions heading and plan-body-
   )
   assert.match(
     BRIEF,
-    /plan\s+file\s+must\s+contain\s+ONLY\s+the\s+plan\s+body/,
-    'the brief must require the plan file to carry only the plan body',
+    /plan\s+file\s+must\s+contain\s+one\s+plan\s+document/,
+    'the brief must require the plan file to carry one plan document',
   )
   assert.match(
     BRIEF,
     /No\s+tool-call\s+scaffolding[\s\S]{0,120}transcript\s+residue/,
-    'the plan-body-only rule must name the residue it excludes',
+    'the plan-document-only rule must name the residue it excludes',
   )
 })
 
@@ -1132,6 +1189,49 @@ test('the resident body documents the byte-identical description section contrac
       SKILL.includes(heading),
       `SKILL.md must document the "${heading}" description section`,
     )
+  }
+})
+
+test('the description contract does not flatten the plan attachment (BOS-1176)', () => {
+  for (const copy of PAYLOAD_COPIES) {
+    for (const [name, body] of [
+      ['resident skill', copy.skill],
+      ['headless drafting brief', copy.brief],
+    ]) {
+      const label = `${copy.name} ${name}`
+      assert.match(
+        body,
+        /description(?:-section)?\s+contract\s+governs\s+`descriptionSummary`\s+only/i,
+        `${label} must scope the description contract to descriptionSummary`,
+      )
+      assert.match(
+        body,
+        /plan\s+(?:file|attachment)\s+may\s+retain\s+additional\s+drafting-layer\s+headings\s+and\s+(?:its\s+)?native\s+structure/i,
+        `${label} must preserve plan-native drafting structure`,
+      )
+      assert.match(
+        body,
+        /`##\s+Original\s+notes`\s+(?:must\s+)?remain(?:s)?\s+the\s+terminal\s+heading[\s\S]{0,120}body\s+(?:continues|runs)\s+to\s+EOF/i,
+        `${label} must make Original notes terminal through EOF`,
+      )
+      assert.match(
+        body,
+        /every\s+query-bearing\s+upload\s+URL\s+anywhere\s+in\s+the\s+plan\s+file\s+must\s+be\s+query-stripped/i,
+        `${label} must strip upload queries across the whole plan file`,
+      )
+    }
+
+    for (const forbidden of [
+      /normalize\s+the\s+(?:plan|result)\s+to\s+(?:the\s+)?planContract\s+sections/i,
+      /plan\s+file\s+must\s+contain\s+ONLY\s+the\s+plan\s+body/i,
+      /Any\s+other\s+heading\s+is\s+off-contract/i,
+    ]) {
+      assert.doesNotMatch(
+        `${copy.skill}\n${copy.brief}`,
+        forbidden,
+        `${copy.name} must not imply the plan file is limited to description-contract sections`,
+      )
+    }
   }
 })
 
@@ -1568,8 +1668,7 @@ test('BOS-813: the CE draft extension drives CE natively in both modes', () => {
   for (const skill of ['ce-plan', 'ce-doc-review']) {
     assert.ok(DRAFT.includes(`\`${skill}\``), `${DRAFT_NAME} must drive CE through \`${skill}\``)
   }
-  const interactive = sectionBetween(DRAFT, '### Interactive', '### Headless')
-  const headless = sectionBetween(DRAFT, '### Headless', '## Normalize and promote')
+  const { interactive, headless } = draftBehaviorRegions(DRAFT)
   assert.match(
     interactive,
     /AskUserQuestion/,
@@ -1628,6 +1727,37 @@ test('BOS-813: the CE draft extension drives CE natively in both modes', () => {
     interactive.replace(/\s+/g, ' '),
     /already\s+been\s+created[\s\S]{0,60}before\s+you\s+could\s+decline[\s\S]{0,400}failure\s+envelope/i,
     'an already-fired tracker-issue branch must route to the failure envelope, not be papered over',
+  )
+})
+
+test('BOS-1176: CE behavior prose pins stop at the next heading and fail on missing landmarks', () => {
+  const decoyHeading = '## Decoy before normalize'
+  const withDecoy = DRAFT.replace(
+    '\n## Normalize and promote',
+    `\n${decoyHeading}\n\n## Normalize and promote`,
+  )
+  assert.notEqual(withDecoy, DRAFT, 'fixture must insert the decoy before Normalize and promote')
+
+  const legacyHeadless = sectionBetween(withDecoy, '### Headless', '## Normalize and promote')
+  assert.match(legacyHeadless, new RegExp(`^${decoyHeading}$`, 'm'))
+
+  const { headless } = draftBehaviorRegions(withDecoy)
+  assert.doesNotMatch(
+    headless,
+    new RegExp(`^${decoyHeading}$`, 'm'),
+    'the headless prose pin must exclude an intervening H2 instead of silently widening',
+  )
+
+  const withoutNormalize = DRAFT.replace('\n## Normalize and promote', '')
+  assert.notEqual(
+    withoutNormalize,
+    DRAFT,
+    'fixture must delete the Normalize and promote delimiter',
+  )
+  assert.throws(
+    () => draftBehaviorRegions(withoutNormalize),
+    /later\s+marker\s+not\s+found:\s+"##\s+Normalize\s+and\s+promote"/,
+    'a deleted named delimiter must fail with the missing marker',
   )
 })
 
@@ -2132,8 +2262,17 @@ test('the SKILL documents every load-bearing epic guard', () => {
     /neither\*\*\s*`agent-friendly`\s*\*\*nor\*\*\s*`needs-human`/,
     'the parent must carry neither agent-friendly nor needs-human',
   )
-  // per-child planContract-v1 + intra-epic DAG + external links
-  assert.match(EPIC_PHASE, /planContract-v1/, 'children must be full planContract-v1 plans')
+  // per-child full plan + separate contract description + intra-epic DAG + external links
+  assert.match(
+    EPIC_PHASE,
+    /each\s+a\s+\*\*Phase\s+3\*\*\s+plan/,
+    'children must receive full plans',
+  )
+  assert.match(
+    EPIC_PHASE,
+    /save\s+each\s+child's\s+contract\s+description/,
+    'children need descriptions',
+  )
   assert.match(EPIC_PHASE, /external\s+conflict\s+links/i, 'must wire external conflict links')
   // reconcileEpicChildren's ambiguous-drift branch must be pinned SAFE (report, no writes, no
   // guessing) and a refusal must never degrade to "no children exist" — the whole-epic-duplication
@@ -2348,6 +2487,7 @@ test('BOS-992: Phase 5 cleanup stays per-issue scoped', () => {
   const phase5 = sectionBetween(SKILL, '## Phase 5 — Discard local artifacts', '\n## Phase 6')
   const expectedPatterns = [
     '<ISSUE-ID>-child-*.md',
+    '<ISSUE-ID>-child-*.md.rejected',
     '<ISSUE-ID>*.image-guard-*.md',
     '<ISSUE-ID>*.attachment-guard-orig.md',
     '<ISSUE-ID>*.attachment-headers-*.json',
@@ -2397,6 +2537,7 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
     `expected at least 12 glob cleanup lines (4 sites x child-plan/image-guard/attachment-headers), got ${globCleanupLines.length}`,
   )
   const SAFE_SOURCE = '<ISSUE-ID>*.attachment-guard-orig.md'
+  const REJECTED_CHILD_PLAN = '<ISSUE-ID>-child-*.md.rejected'
   assert.equal(
     lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}' -delete`)).length,
     4,
@@ -2406,6 +2547,17 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
     lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}'`) && l.includes('-print)')).length,
     4,
     'every residual sweep must detect a surviving redacted safe-source scratch file',
+  )
+  assert.equal(
+    lines.filter((l) => l.includes(`-name '${REJECTED_CHILD_PLAN}' -delete`)).length,
+    SITES,
+    'every cleanup path must delete retained rejected child plans',
+  )
+  assert.equal(
+    lines.filter((l) => l.includes(`-name '${REJECTED_CHILD_PLAN}'`) && l.includes('-print)'))
+      .length,
+    SITES,
+    'every residual sweep must detect retained rejected child plans',
   )
   assert.ok(
     lines.filter((l) =>
@@ -2476,7 +2628,7 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // for re-derivation — instead of prescribing one cause.
   // On a rebase this constant conflicts too; see the REBASE HAZARD note at RATCHET below for
   // how to resolve BOTH — this one is re-baselined above the new measurement, never set to it.
-  const PRE_SPLIT_BASELINE = 109101
+  const PRE_SPLIT_BASELINE = 111842
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -2659,7 +2811,22 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // than "gate", and a failed ledger write warns and continues. All three are rails read at the
   // moment they fire, so they stay resident -- a reference would be consulted after the run had
   // already stopped on the failure the new prose exists to prevent.
-  const RATCHET = 109064 // exact measured resident body, re-measured 2026-09-03 (BOS-1105)
+  // BOS-1178 re-baselines 109064 -> 109448 (+384 B), carrying PRE_SPLIT_BASELINE 109101 ->
+  // 109485 to keep the existing 37-byte guard margin. Resident epic orchestration now names the
+  // parent-overview plan-contract gate with `--mode epic-parent` at the exact point before parent
+  // attachment finalize/save; this cannot live solely in the drafting brief because the resident
+  // orchestrator path skips that reference while making the parent write.
+  // BOS-1176 re-baselines 109448 -> 109804 (+356 B), carrying PRE_SPLIT_BASELINE 109485 ->
+  // 109841 to keep the existing 37-byte guard margin. The resident drafting contract now states
+  // that its section list governs `descriptionSummary` only, while preserving the plan attachment's
+  // native headings, terminal Original notes body, and plan-wide unsigned-upload rule. These bytes
+  // stay resident because both drafting modes enter Phase 3 before the detailed reference path.
+  // BOS-1177 re-baselines 109804 -> 111805 (+2001 B), carrying PRE_SPLIT_BASELINE 109841 ->
+  // 111842 to keep the existing 37-byte guard margin. The resident body now names the config-backed
+  // plan-file floor, explicit exemptions, consumer non-goal, and structure-only `.rejected`
+  // retention, including the review-found abort cleanup enumerations, because Phase 4 owns the
+  // pre-write gate and cleanup behavior.
+  const RATCHET = 111805 // exact measured resident body, re-measured 2026-09-06 (BOS-1177)
   assertExactSize({
     below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
     constFile: 'scripts/bs-plan-skill.test.mjs',

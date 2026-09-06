@@ -184,6 +184,9 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			if errors.Is(wakeErr, ErrWorktreeMissing) || errors.Is(wakeErr, ErrHeadlessRunActive) {
 				return nil, connect.NewError(connect.CodeFailedPrecondition, wakeErr)
 			}
+			if refusal, ok := injectionRefusalConnectError(wakeErr, "wake chat"); ok {
+				return nil, refusal
+			}
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("wake chat: %w", wakeErr))
 		}
 		// Wake spawns under (and persists) the canonical name; send there rather

@@ -1313,3 +1313,127 @@ func TestListIgnoredDirtyFilesReturnsEmptySlice(t *testing.T) {
 		t.Errorf("Paths = %v, want empty", resp.Paths)
 	}
 }
+
+// TestResolveInteractiveSessionIDRPCPaneBindingBeatsAmbiguousScan is the
+// BOS-1144 reproduction. Two codex-tui rollouts exist for one worktree — the
+// ordinary shape once an operator opens a second chat on a session. Resolved
+// the way the launch path used to ask (no pane pid, no launch floor) the scan
+// can only report ambiguity, which is why those chats were left with no
+// provider_session_id and reopened into a fresh conversation. Resolved with the
+// chat's own pane pid, the same corpus binds deterministically to the rollout
+// that pane's codex holds open.
+func TestResolveInteractiveSessionIDRPCPaneBindingBeatsAmbiguousScan(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+	workDir := t.TempDir()
+	root := filepath.Join(tmpHome, codexSessionsDir)
+
+	written := time.Now().Add(-time.Second)
+	own := writeSessionMetaRollout(t, root, uuidA, workDir, "codex-tui", written)
+	_ = writeSessionMetaRollout(t, root, uuidB, workDir, "codex-tui", written)
+
+	s := newTestServer(t)
+	s.inspector = fakeProcessInspector{
+		descendants: map[int][]int{4242: {4242, 5252}},
+		openFiles:   map[int][]string{5252: {own}},
+	}
+
+	// (a) The pre-fix request shape: no pane pid, no launch floor.
+	scanned, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID(scan): %v", err)
+	}
+	if !scanned.Ambiguous {
+		t.Fatalf("Ambiguous = false (SessionId %q), want true: two codex-tui rollouts share this worktree", scanned.SessionId)
+	}
+	if scanned.Found {
+		t.Error("Found = true, want false for an ambiguous scan")
+	}
+	if scanned.Reason != "multiple matching codex-tui rollouts found" {
+		t.Errorf("Reason = %q, want %q", scanned.Reason, "multiple matching codex-tui rollouts found")
+	}
+
+	// (b) The fixed request shape: the chat's own pane pid resolves it.
+	bound, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:       workDir,
+		LaunchedAfter: timestamppb.New(written.Add(-time.Second)),
+		PanePid:       4242,
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID(pane): %v", err)
+	}
+	if !bound.Found {
+		t.Fatal("Found = false, want true: the pane's codex holds a rollout open")
+	}
+	if bound.SessionId != uuidA {
+		t.Errorf("SessionId = %q, want the pane's own rollout %q", bound.SessionId, uuidA)
+	}
+	if bound.Ambiguous {
+		t.Error("Ambiguous = true, want false: fd resolution is unambiguous")
+	}
+}
+
+// TestResolveInteractiveSessionIDRPCNamesDistinctMissReasons pins that every
+// miss explains itself, and that the two misses are told apart. "The fd is not
+// open yet" is a retry-and-it-will-appear; "nothing matched" is a wrong window
+// or a chat that never wrote a rollout. Collapsing them into one silent
+// Found=false is what made the unbound chats invisible in the daemon log.
+func TestResolveInteractiveSessionIDRPCNamesDistinctMissReasons(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+	workDir := t.TempDir()
+	root := filepath.Join(tmpHome, codexSessionsDir)
+
+	// A sibling's rollout exists, but the target pane's codex has opened none.
+	launchedAfter := time.Now().Add(-2 * time.Second)
+	_ = writeSessionMetaRollout(t, root, uuidB, workDir, "codex-tui", launchedAfter.Add(time.Second))
+
+	s := newTestServer(t)
+	s.inspector = fakeProcessInspector{
+		descendants: map[int][]int{4242: {4242, 5252}},
+		openFiles:   map[int][]string{5252: {}},
+	}
+	fdMiss, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:       workDir,
+		LaunchedAfter: timestamppb.New(launchedAfter),
+		PanePid:       4242,
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID(fd miss): %v", err)
+	}
+	if fdMiss.Found {
+		t.Fatal("Found = true, want false while the pane's own fd is not open")
+	}
+	if fdMiss.Reason == "" {
+		t.Fatal("Reason is empty for an fd miss with a visible process tree")
+	}
+	if fdMiss.Reason != reasonPaneRolloutFDNotOpenYet {
+		t.Errorf("Reason = %q, want %q", fdMiss.Reason, reasonPaneRolloutFDNotOpenYet)
+	}
+
+	// Nothing at all in the window: the scan's own miss.
+	emptyWorkDir := t.TempDir()
+	scanMiss, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:       emptyWorkDir,
+		LaunchedAfter: timestamppb.New(launchedAfter),
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID(scan miss): %v", err)
+	}
+	if scanMiss.Found {
+		t.Fatal("Found = true, want false for a worktree with no rollouts")
+	}
+	if scanMiss.Reason == "" {
+		t.Fatal("Reason is empty for a scan fall-through miss")
+	}
+	if scanMiss.Reason != reasonNoRolloutFound {
+		t.Errorf("Reason = %q, want %q", scanMiss.Reason, reasonNoRolloutFound)
+	}
+	if fdMiss.Reason == scanMiss.Reason {
+		t.Fatalf("both misses report the same reason %q; they must be distinguishable", fdMiss.Reason)
+	}
+}

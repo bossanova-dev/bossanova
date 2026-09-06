@@ -3,7 +3,7 @@
 // Every rule group the checker enforces gets a fixture that FAILS it, because a
 // checker that silently passes everything is worse than no checker: it reads as
 // evidence in CI while guarding nothing. The baseline fixture below passes all
-// eight groups, and each test mutates exactly one thing.
+// nine groups, and each test mutates exactly one thing.
 //
 // The final test runs the real checker over the real docs/email-course/, so
 // `make test-scripts` guards the shipped course as well as the code that checks it.
@@ -24,7 +24,9 @@ import {
   normaliseRoute,
   headingSlugs,
   parseGoStringConstant,
+  parseBannedPhrases,
   parsePublishedSkills,
+  proseSentences,
   proseOf,
   run,
   sectionBody,
@@ -306,6 +308,95 @@ test('bannedPhraseRegex treats an apostrophe as part of the word', () => {
   assert.equal(re().test('it cannot go'), false)
   assert.equal(re().test("it can't go"), false)
   assert.equal(re().test('a canvas'), false)
+})
+
+test('voice: shared Vale rule supplies the banned register', () => {
+  assert.deepEqual(parseBannedPhrases('tokens:\n  - unlock\n  - if needed\n'), [
+    'unlock',
+    'if needed',
+  ])
+  assert.throws(() => parseBannedPhrases('tokens: []\n'), /non-empty tokens list/)
+  assert.throws(
+    () => parseBannedPhrases('tokens:\n  - unlock # comment\n'),
+    /unquoted lowercase words/,
+  )
+  assert.throws(() => parseBannedPhrases('tokens:\n  - "if needed"\n'), /unquoted lowercase words/)
+})
+
+// ---------------------------------------------------------------------------
+// punctuation
+
+test('punctuation: two em dashes in one sentence fail', () => {
+  const violations = check({
+    [bodyName(2)]: body(2, { extra: 'One thought — with one aside — keeps going.' }),
+  })
+  assert.ok(
+    violations.some(
+      (v) => v.rule === 'punctuation' && /2 em dashes in one sentence/.test(v.message),
+    ),
+    JSON.stringify(violations),
+  )
+})
+
+test('punctuation: abbreviation periods do not hide two dashes in one sentence', () => {
+  const violations = check({
+    [bodyName(2)]: body(2, { extra: 'I tried one — e.g. this — and stopped.' }),
+  })
+  assert.ok(
+    violations.some(
+      (v) => v.rule === 'punctuation' && /2 em dashes in one sentence/.test(v.message),
+    ),
+    JSON.stringify(violations),
+  )
+})
+
+test('punctuation: spaced initials do not hide two dashes in one sentence', () => {
+  const violations = check({
+    [bodyName(2)]: body(2, {
+      extra: 'I tried one — with J. R. R. Tolkien — and stopped.',
+    }),
+  })
+  assert.ok(
+    violations.some(
+      (v) => v.rule === 'punctuation' && /2 em dashes in one sentence/.test(v.message),
+    ),
+    JSON.stringify(violations),
+  )
+})
+
+test('punctuation: a sentence-final abbreviation keeps the next sentence separate', () => {
+  const prose = 'Keep the note — with logs, links, etc. Start the next thought — with one aside.'
+  assert.deepEqual(proseSentences(prose), [
+    'Keep the note — with logs, links, etc.',
+    'Start the next thought — with one aside.',
+  ])
+})
+
+test('punctuation: separate spoken asides pass', () => {
+  assert.deepEqual(
+    check({
+      [bodyName(2)]: body(2, {
+        extra: 'One thought — with one aside. Another thought — with another aside.',
+      }),
+    }),
+    [],
+  )
+})
+
+test('punctuation: paired structural asides and separate list items pass', () => {
+  assert.deepEqual(
+    check({
+      [bodyName(2)]: body(2, {
+        extra: [
+          'Run it — `boss repo ls` prints the id — and leave it alone.',
+          'Use the lenses — Go, web, database, API — in their own contexts.',
+          '- First link — one description',
+          '- Second link — another description',
+        ].join('\n'),
+      }),
+    }),
+    [],
+  )
 })
 
 // ---------------------------------------------------------------------------

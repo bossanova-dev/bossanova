@@ -826,7 +826,45 @@ message Account {
   // Cached per-account rate-limit usage snapshot (BOS-297). METADATA ONLY —
   // never a credential. Absent = never probed.
   UsageSnapshot usage = 16;
+  // Durable, redacted credential-verification state (BOS-1141). METADATA
+  // ONLY — a classification token, a timestamp, and a retry instant. Absent
+  // = never verified.
+  AuthCheck auth_check = 17;
   // NO credential field. Ever.
+}
+
+// AuthCheck is the durable record of the last daemon-owned credential
+// verification for one account (BOS-1141). Every field is redacted metadata:
+// a closed-set outcome, a closed-set failure-class token, the check time, and
+// the next retry instant. It NEVER contains a credential, provider log text,
+// or anything derived from credential bytes.
+message AuthCheck {
+  // "" (never checked) | "healthy" | "auth_invalid" | "transient" |
+  // "unavailable" | "refresh_chain_unproven"
+  //
+  // "refresh_chain_unproven" (BOS-1174) is a clean verification on a credential
+  // whose own access token says a token refresh should already have happened
+  // and which produced no credential write — a live access token above a
+  // possibly dead refresh chain. It is a WARNING, not an accusation:
+  // "auth_invalid" remains the only outcome that removes an account from
+  // selection. The field is a plain string, so a client that predates a value
+  // must treat an unrecognized outcome as undetermined — never as invalid, and
+  // never as healthy.
+  string outcome = 1;
+  // Short redacted classification token; "" when there is nothing to classify
+  // (e.g. "auth_invalidated", "rate_limited", "transient_provider",
+  // "runner_unavailable", "refresh_not_observed").
+  //
+  // It normally qualifies a non-healthy outcome. The one exception is
+  // "credential_superseded", which the daemon writes ALONGSIDE a "healthy"
+  // outcome: an ambient `codex login` for the same provider account holds a
+  // different refresh token, so the stored refresh chain is dead even though the
+  // provider still accepts the stored access token. It is a warning about the
+  // future and does NOT affect eligibility. A client that does not know the token
+  // must render the outcome alone rather than a class it cannot interpret.
+  string failure_class = 2;
+  google.protobuf.Timestamp checked_at = 3;    // when the verification completed
+  google.protobuf.Timestamp next_retry_at = 4; // earliest next scheduled check
 }
 
 // UsageSnapshot is a cached rate-limit usage reading for one account. It is

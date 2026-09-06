@@ -31,12 +31,14 @@ import {
   REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS,
   epicChildWallClockMinutes,
   EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES,
+  EPIC_MAX_CHILD_WALL_CLOCK_MINUTES,
   notesSampleRate,
   NOTES_DEFAULT_SAMPLE_RATE,
   reviewLedgerConfig,
   command,
   moduleTestCommand,
   manifestPath,
+  markdownH2Heading,
   isHeadless,
   adapterFor,
   trackerConfigFor,
@@ -50,9 +52,12 @@ import {
   isConfiguredForPlanning,
   scanUnmappedRoleClaims,
   planContractVersion,
+  planFileFloor,
   planSections,
+  planSectionsForDescriptionMode,
   planDescriptionSections,
   requiredPlanSections,
+  requiredSectionsForDescriptionMode,
   validatePlanDescription,
   parseAcceptanceCriteria,
   parsePremises,
@@ -482,6 +487,88 @@ test('mergeConfig replaces reviewDefaults.rounds wholesale', () => {
   ])
 })
 
+test('DEFAULT_CONFIG declares a plan-file floor and planFileFloor reads it', () => {
+  assert.deepEqual(planFileFloor(DEFAULT_CONFIG), {
+    requiredHeadings: ['## Problem Frame', '## Requirements', '## Implementation Units'],
+    minimumAdditionalHeadings: 1,
+  })
+  validateConfig(DEFAULT_CONFIG, 'test')
+})
+
+test('mergeConfig replaces nested planFile arrays wholesale', () => {
+  const merged = mergeConfig(DEFAULT_CONFIG, {
+    planContract: {
+      planFile: {
+        requiredHeadings: ['## Decisions'],
+        minimumAdditionalHeadings: 2,
+      },
+    },
+  })
+  validateConfig(merged, 'test')
+  assert.deepEqual(planFileFloor(merged), {
+    requiredHeadings: ['## Decisions'],
+    minimumAdditionalHeadings: 2,
+  })
+})
+
+test('validateConfig rejects malformed planContract.planFile declarations', () => {
+  for (const planFile of [null, [], 'floor']) {
+    assert.throws(
+      () =>
+        validateConfig(
+          { ...DEFAULT_CONFIG, planContract: { ...DEFAULT_CONFIG.planContract, planFile } },
+          'test',
+        ),
+      /skill-config:.*planContract\.planFile must be an object/,
+    )
+  }
+
+  assert.throws(
+    () =>
+      validateConfig(
+        {
+          ...DEFAULT_CONFIG,
+          planContract: {
+            ...DEFAULT_CONFIG.planContract,
+            planFile: { requiredHeadings: [], minimumAdditionalHeadings: 1 },
+          },
+        },
+        'test',
+      ),
+    /skill-config:.*planContract\.planFile\.requiredHeadings must be a non-empty array/,
+  )
+  assert.throws(
+    () =>
+      validateConfig(
+        {
+          ...DEFAULT_CONFIG,
+          planContract: {
+            ...DEFAULT_CONFIG.planContract,
+            planFile: { requiredHeadings: ['## Decisions', 7], minimumAdditionalHeadings: 1 },
+          },
+        },
+        'test',
+      ),
+    /skill-config:.*planContract\.planFile\.requiredHeadings entries must be non-empty strings/,
+  )
+  for (const minimumAdditionalHeadings of [-1, 1.5, '1', null]) {
+    assert.throws(
+      () =>
+        validateConfig(
+          {
+            ...DEFAULT_CONFIG,
+            planContract: {
+              ...DEFAULT_CONFIG.planContract,
+              planFile: { requiredHeadings: ['## Decisions'], minimumAdditionalHeadings },
+            },
+          },
+          'test',
+        ),
+      /skill-config:.*planContract\.planFile\.minimumAdditionalHeadings must be a non-negative integer/,
+    )
+  }
+})
+
 test('mergeConfig preserves reviewDefaults delta keys beside a rounds override', () => {
   const merged = mergeConfig(DEFAULT_CONFIG, {
     reviewDefaults: {
@@ -562,6 +649,7 @@ test('DEFAULT_CONFIG documents a 360-minute child wall clock and the reader retu
   // 360, not 90: children on a repo of this class measure 2-4 h, so a short clock expires on
   // healthy work. Pin the number here so a silent reduction has to change a test.
   assert.equal(EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES, 360)
+  assert.equal(EPIC_MAX_CHILD_WALL_CLOCK_MINUTES, 1440)
   assert.equal(DEFAULT_CONFIG.epicDefaults.childWallClockMinutes, 360)
   assert.equal(epicChildWallClockMinutes(DEFAULT_CONFIG), 360)
   validateConfig(DEFAULT_CONFIG, 'test')
@@ -584,6 +672,10 @@ test('mergeConfig honors an epicDefaults.childWallClockMinutes override', () => 
   const shorter = mergeConfig(DEFAULT_CONFIG, { epicDefaults: { childWallClockMinutes: 45 } })
   validateConfig(shorter, 'test')
   assert.equal(epicChildWallClockMinutes(shorter), 45)
+
+  const maximum = mergeConfig(DEFAULT_CONFIG, { epicDefaults: { childWallClockMinutes: 1440 } })
+  validateConfig(maximum, 'test')
+  assert.equal(epicChildWallClockMinutes(maximum), 1440)
 })
 
 test('validateConfig rejects a non-object epicDefaults block', () => {
@@ -598,7 +690,7 @@ test('validateConfig rejects a non-object epicDefaults block', () => {
 test('validateConfig warns and coerces a malformed epicDefaults.childWallClockMinutes', () => {
   // Note 0 and -1 are both invalid here, unlike reviewDefaults.deltaFileThreshold where zero is a
   // meaningful setting: a zero-minute clock would expire every child at launch.
-  for (const childWallClockMinutes of [undefined, null, '360', 1.5, 0, -1, NaN, {}]) {
+  for (const childWallClockMinutes of [undefined, null, '360', 1.5, 0, -1, NaN, {}, 1441, 36000]) {
     const cfg = mergeConfig(DEFAULT_CONFIG, { epicDefaults: { childWallClockMinutes } })
     const originalWarn = console.warn
     const warnings = []
@@ -611,9 +703,15 @@ test('validateConfig warns and coerces a malformed epicDefaults.childWallClockMi
     assert.equal(cfg.epicDefaults.childWallClockMinutes, 360)
     assert.equal(epicChildWallClockMinutes(cfg), 360)
     assert.match(warnings.join('\n'), /epicDefaults\.childWallClockMinutes/)
-    assert.match(warnings.join('\n'), /must be a positive integer/)
+    assert.match(warnings.join('\n'), /must be an integer in \[1, 1440\]/)
     assert.match(warnings.join('\n'), /using 360/)
   }
+})
+
+test('epicChildWallClockMinutes rejects an above-ceiling value without validation', () => {
+  assert.equal(epicChildWallClockMinutes({ epicDefaults: { childWallClockMinutes: 1 } }), 1)
+  assert.equal(epicChildWallClockMinutes({ epicDefaults: { childWallClockMinutes: 1440 } }), 1440)
+  assert.equal(epicChildWallClockMinutes({ epicDefaults: { childWallClockMinutes: 36000 } }), 360)
 })
 
 test('validateConfig rejects a default round with an empty or non-string capability', () => {
@@ -1418,6 +1516,34 @@ test('requiredPlanSections excludes the conditional and optional sections', () =
   assert.ok(req.includes('## Summary') && req.includes('## Original notes'))
 })
 
+test('mode-aware section accessors discriminate child-plan and epic-parent contracts', () => {
+  assert.deepEqual(
+    planSectionsForDescriptionMode(DEFAULT_CONFIG, 'child-plan').map((s) => s.heading),
+    planSections(DEFAULT_CONFIG).map((s) => s.heading),
+  )
+  assert.deepEqual(
+    planSectionsForDescriptionMode(DEFAULT_CONFIG, 'epic-parent').map((s) => s.heading),
+    ['## Summary', '## Child tickets', '## Planning', '## Original notes'],
+  )
+  assert.deepEqual(requiredSectionsForDescriptionMode(DEFAULT_CONFIG, 'epic-parent'), [
+    '## Summary',
+    '## Child tickets',
+    '## Planning',
+    '## Original notes',
+  ])
+  assert.deepEqual(requiredPlanSections(DEFAULT_CONFIG), [
+    '## Summary',
+    '## Approach',
+    '## Key changes',
+    '## Testing',
+    '## Risks / unknowns',
+    '## Acceptance criteria',
+    '## Required proof',
+    '## Planning',
+    '## Original notes',
+  ])
+})
+
 // Build a plan description whose ## Planning body carries `planningLine`, laid out in the real
 // emitted order (## Planning before the terminal ## Original notes).
 const planDesc = (planningLine) =>
@@ -1453,6 +1579,19 @@ test('validatePlanDescription accepts an explicit epic-parent overview mode', ()
     unknown: [],
     unsupportedVersion: false,
   })
+})
+
+test('planDescriptionSections accepts an explicit epic-parent overview mode', () => {
+  assert.deepEqual(
+    planDescriptionSections(DEFAULT_CONFIG, epicParentDesc(), { mode: 'epic-parent' }).map(
+      (s) => s.heading,
+    ),
+    ['## Summary', '## Child tickets', '## Planning', '## Original notes'],
+  )
+  assert.deepEqual(
+    planDescriptionSections(DEFAULT_CONFIG, epicParentDesc()).map((s) => s.heading),
+    ['## Summary', '## Child tickets', '## Planning', '## Original notes'],
+  )
 })
 
 test('validatePlanDescription keeps the default child-plan contract unchanged', () => {
@@ -1528,6 +1667,23 @@ test('planDescriptionSections ignores a `##` line inside a fenced code block', (
   assert.equal(r.ok, true)
   // A real heading outside the fence is still a section — skipping can only REMOVE spurious ones.
   assert.ok(headings.includes('## Key changes'))
+})
+
+test('planDescriptionSections follows Markdown H2 indentation rules', () => {
+  assert.equal(markdownH2Heading('## Summary'), '## Summary')
+  assert.equal(markdownH2Heading('   ## Summary'), '## Summary')
+  assert.equal(markdownH2Heading('    ## Summary'), null)
+
+  const desc = planDesc('- Contract: v1').replace(
+    '## Key changes\n\nx',
+    '## Key changes\n\n    ## quoted code, not a section',
+  )
+  const headings = planDescriptionSections(DEFAULT_CONFIG, desc).map((s) => s.heading)
+  assert.ok(!headings.includes('## quoted code, not a section'))
+  const r = validatePlanDescription(DEFAULT_CONFIG, desc)
+  assert.deepEqual(r.unknown, [])
+  assert.deepEqual(r.missing, [])
+  assert.equal(r.ok, true)
 })
 
 test('validatePlanDescription treats a registered `optional` section as recognised, not unknown', () => {

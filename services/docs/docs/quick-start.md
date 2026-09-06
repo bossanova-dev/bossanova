@@ -39,7 +39,7 @@ cli="boss daemon install"
 />
 
 Registering the service touches this machine's launchd, so there is no MCP tool
-for it — the tabs say so rather than hiding the gap.
+for it; the tabs say so rather than hiding the gap.
 
 </TabItem>
 <TabItem value="linux" label="Linux (x86_64)">
@@ -57,12 +57,12 @@ cli="boss daemon install"
 />
 
 Registering the service touches this machine's service manager, so there is no
-MCP tool for it — the tabs say so rather than hiding the gap. On Linux that
+MCP tool for it; the tabs say so rather than hiding the gap. On Linux that
 manager is a **systemd user service**, so `systemctl --user` must be available
 (most desktop and server distros; minimal containers and some WSL setups are not
 supported).
 
-**Alternative — install script.** The install script downloads the binaries,
+**Alternative: install script.** The install script downloads the binaries,
 configures plugins, and registers the systemd daemon for you (so you can skip the
 separate `boss daemon install` step):
 
@@ -74,7 +74,7 @@ The script currently requires the [Claude Code CLI](https://claude.ai/download) 
 be installed first; if you use a different agent plugin, install with Homebrew above
 instead.
 
-**Linux arm64** is not prebuilt yet — [build from source](./install.md#build-from-source).
+**Linux arm64** is not prebuilt yet; [build from source](./install.md#build-from-source).
 
 </TabItem>
 </Tabs>
@@ -88,7 +88,7 @@ cli="boss daemon status"
 Daemon status inspects this machine's service manager and socket, so it has no
 MCP tool either.
 
-Expected output, abridged — the command also prints the settings, app-data, and
+Expected output, abridged. The command also prints the settings, app-data, and
 socket paths, among other daemon details (the service path is a launchd plist on
 macOS and a systemd unit on Linux; PID and paths vary by machine):
 
@@ -109,7 +109,7 @@ cli="boss"
 />
 
 The TUI is a terminal program on this machine, so there is no chat prompt and no
-MCP tool for launching it — an agent reaches the same session data through read
+MCP tool for launching it; an agent reaches the same session data through read
 tools such as `list_sessions` instead.
 
 The interface tabs above are their own group: picking **Chat**, **CLI**, or
@@ -229,6 +229,9 @@ multiple machines in one place. Sessions are securely streamed to the browser so
 you can work from anywhere.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-cloud-sign-in.cast" />
+
+For the sign-in flow step by step, see
+[Signing In](./guides/login.md#tui).
 
 See [Web App](./guides/web.md) for the full cloud setup.
 

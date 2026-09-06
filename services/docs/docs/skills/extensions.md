@@ -7,16 +7,16 @@ slug: /skills/extensions
 # Extension System
 
 A core `boss-*` skill ships a project-agnostic workflow. The **extension system**
-lets one repository plug in its own behaviour — an extra review lens, an extra proof
-surface, an opinionated implementation methodology — **without editing the skill
-body and without forcing that behaviour on any other repo**. Extensions live in the
+lets one repository plug in its own behaviour (an extra review lens, an extra proof
+surface, an opinionated implementation methodology) without editing the skill body
+and without forcing that behaviour on any other repo. Extensions live in the
 repository, are discovered at run time, and an absent extension is a silent no-op.
 
 ## The model: core + repo-local extension
 
 Every core skill discovers its extensions from the repository's own
-`.claude/skills/` directory. Because a Bossanova worktree — including cron
-checkouts — runs with its working directory set to the worktree, and the repo commits
+`.claude/skills/` directory. Because a Bossanova worktree (including cron
+checkouts) runs with its working directory set to the worktree, and the repo commits
 its extensions, every checkout carries and finds its own add-ons. The core skills are
 installed globally; the extensions live in the repository.
 
@@ -29,7 +29,7 @@ implementation methodology for `boss-build` is `.claude/skills/boss-build-ce/`.
 
 ## The `x-boss-extension` discovery marker
 
-The name prefix is not enough on its own — a directory is only treated as an extension
+The name prefix is not enough on its own. A directory is only treated as an extension
 when its `SKILL.md` frontmatter carries an `x-boss-extension` marker block:
 
 ```yaml
@@ -54,7 +54,7 @@ x-boss-extension:
 - `capability` — optional, and meaningful only for `role: round`: the id of the review capability
   this round already covers, such as `second-voice` or `code-review`. It is what lets a core tell
   that a repo-local round already does the job of a **default round** it would otherwise run itself,
-  so the repository gets one pass instead of two. Declaring none is safe — the round still runs, it
+  so the repository gets one pass instead of two. Declaring none is safe; the round still runs, it
   just suppresses nothing.
 
 ### Discovery command
@@ -67,7 +67,7 @@ node scripts/skill-extensions.mjs discover --core <core> --role <role> --json
 
 It prints an ordered `extensions` array of matched descriptors plus a `skipped` array
 recording any directory that was excluded and why. With nothing installed it prints
-`{"extensions":[],"skipped":[]}` and exits `0` — never an error.
+`{"extensions":[],"skipped":[]}` and exits `0`, never an error.
 
 Each `skipped` entry carries four fields — the human `reason`, plus a stable `code` to branch on
 and a `deliberate` classification:
@@ -94,20 +94,20 @@ and a `deliberate` classification:
 
 `deliberate: true` means the skip is the contract working as designed: the directory is a
 same-prefix skill that simply is not an extension of this core — a markerless helper, or one
-extending a core that this one's prefix merely nests into (`boss-` also matches `boss-plan-notes`)
-— so reporting it would cry wolf on every run. Only two codes are classified that way
+extending a core that this one's prefix merely nests into (`boss-` also matches `boss-plan-notes`).
+Reporting it would cry wolf on every run. Only two codes are classified that way
 (`missing-marker` and `extends-other-core`).
 
 A wrong `extends` is **not** one of them. An extension of `<core>` is a directory named
 `<core>-<suffix>`, so `boss-review-x` declaring `extends: boss-plan` is unreachable from
-`boss-plan` too — nothing anywhere would report it. That case gets its own reportable code,
+`boss-plan` too, so nothing anywhere would report it. That case gets its own reportable code,
 `extends-unrelated-core`, with the same `reason` sentence.
 
 Every other code is a real misconfiguration, and a core **must record each one** as
 `extension <name>: skipped (<reason>)` in its ledger, at every site that calls `discover`. A
 misconfigured extension that vanishes with no ledger line is indistinguishable from one that was
 never installed, so the core's fallback tier reads as though it had always been the intended tier.
-Recording is all that is due — a discovery skip is never fatal and never changes control flow.
+Recording is all that is due; a discovery skip is never fatal and never changes control flow.
 
 ## Extension roles
 
@@ -137,14 +137,14 @@ discovers the `lens` role once per run and indexes the returned descriptors by t
 one declares, then resolves every matched lens through three tiers: the bound extension, read from
 its descriptor's `skillPath` on disk; then that lens's configured review skill; then that lens's
 inline fallback rubric. A lens with no bound extension simply starts at the second tier, so
-declaring the binding is purely additive — nothing about the lens registry changes. A bound
+declaring the binding is purely additive, and nothing about the lens registry changes. A bound
 extension that fails to run is recorded as skipped and its lens falls through to the next tier
 rather than going unreviewed.
 
 ### Default rounds and the `capability` binding
 
-A core can also run a **default round**: a review capability it attempts on every run — an
-independent second opinion from the other coding agent, say — and quietly does without when the
+A core can also run a **default round**: a review capability it attempts on every run (an
+independent second opinion from the other coding agent, say) and quietly does without when the
 machine cannot supply it. Which capabilities a repository wants is configuration, not something
 baked into the portable core, so the core knows a capability only by its id and how to probe for it.
 
@@ -152,9 +152,9 @@ Two things make this safe to leave on by default:
 
 - A **default round** is checked against the `capability` each discovered round extension declares.
   When a repo-local round already covers that capability and actually ran, the default round is
-  dropped — the repository gets its own round, not a duplicate pass.
-- When the capability is unavailable — the other agent's CLI is not installed or not signed in, the
-  configured review skill is not present — the round is **silently** skipped. It is recorded in the
+  dropped, and the repository gets its own round, not a duplicate pass.
+- When the capability is unavailable (the other agent's CLI is not installed or not signed in, the
+  configured review skill is not present), the round is **silently** skipped. It is recorded in the
   run's ledger and nowhere else: never a warning, never a blocked run. Absence is the normal case on
   most machines, and a default round is additive, so it is never a substitute for the core's own
   guaranteed review pass.
@@ -165,13 +165,13 @@ Extensions are additive and never load-bearing:
 
 - **No extension installed** for a core → the phase is a silent no-op; the core runs
   exactly as if the extension system were not present.
-- **A malformed extension** (bad frontmatter, wrong `extends`, or a mismatched `role`) is
+- A **malformed extension** (bad frontmatter, wrong `extends`, or a mismatched `role`) is
   recorded in the discovery `skipped` array and passed over with a warning; likewise an
   extension that is discovered but returns a failing result at run time is skipped by the
-  core rather than folded in. Neither is ever a hard failure — it can never abort a core run
+  core rather than folded in. Neither is ever a hard failure; it can never abort a core run
   or block a merge.
 - Where a core defines a **fallback tier**, it uses that when no extension **ran
-  successfully** — not merely when none was discovered. A discovered extension that fails to
+  successfully**, not merely when none was discovered. A discovered extension that fails to
   load or returns no valid result is recorded as skipped and the core falls through to the
   next tier, so the layer is never silently dropped. `boss-review`, for instance, reviews
   through an inline rubric declared in the lens's `.boss-skills.json` row when the lens skill

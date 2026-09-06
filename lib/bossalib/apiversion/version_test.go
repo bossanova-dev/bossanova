@@ -186,22 +186,24 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry has seventeen versions ordered oldest→newest:
+	// Production registry has twenty-seven versions ordered oldest→newest:
 	// Baseline, V20260704, V20260705, V20260706, V20260711, V20260718,
-	// V20260723, V20260803, V20260804, V20260812, V20260816, V20260820 and
-	// V20260821, V20260825, V20260902, V20260903, and V20260904. Current is
-	// V20260904 (newest behavior) while
-	// Default stays Baseline (header-less callers pin to the oldest version).
+	// V20260723, V20260803, V20260804, V20260812, V20260816, V20260820,
+	// V20260821, V20260825, V20260902, V20260903, V20260904, V20260905,
+	// V20260906, V20260907, V20260908, V20260909, V20260910, V20260911,
+	// V20260912, V20260913, and V20260914. Current is V20260914 (newest
+	// behavior) while Default stays Baseline (header-less callers pin to the
+	// oldest version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20260904 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260904)
+	if reg.Current() != apiversion.V20260914 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260914)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 17 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 17", len(all))
+	if len(all) != 27 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 27", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -250,6 +252,21 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 	if !reg.IsSupported(apiversion.V20260903) {
 		t.Errorf("DefaultRegistry().IsSupported(V20260903) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260907) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260907) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260908) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260908) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260909) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260909) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260910) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260910) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260911) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260911) = false, want true")
 	}
 	// V20260701 is an exported example const but must not be in the production registry.
 	if reg.IsSupported(apiversion.V20260701) {
@@ -302,17 +319,40 @@ func TestConstants(t *testing.T) {
 	if apiversion.V20260903.String() != "2026-09-03" {
 		t.Errorf("V20260903 = %q, want 2026-09-03", apiversion.V20260903)
 	}
+	if apiversion.V20260905.String() != "2026-09-05" {
+		t.Errorf("V20260905 = %q, want 2026-09-05", apiversion.V20260905)
+	}
+	if apiversion.V20260906.String() != "2026-09-06" {
+		t.Errorf("V20260906 = %q, want 2026-09-06", apiversion.V20260906)
+	}
+	if apiversion.V20260907.String() != "2026-09-07" {
+		t.Errorf("V20260907 = %q, want 2026-09-07", apiversion.V20260907)
+	}
+	if apiversion.V20260908.String() != "2026-09-08" {
+		t.Errorf("V20260908 = %q, want 2026-09-08", apiversion.V20260908)
+	}
+	if apiversion.V20260909.String() != "2026-09-09" {
+		t.Errorf("V20260909 = %q, want 2026-09-09", apiversion.V20260909)
+	}
+	if apiversion.V20260910.String() != "2026-09-10" {
+		t.Errorf("V20260910 = %q, want 2026-09-10", apiversion.V20260910)
+	}
+	if apiversion.V20260911.String() != "2026-09-11" {
+		t.Errorf("V20260911 = %q, want 2026-09-11", apiversion.V20260911)
+	}
+	if apiversion.V20260912.String() != "2026-09-12" {
+		t.Errorf("V20260912 = %q, want 2026-09-12", apiversion.V20260912)
+	}
+	if apiversion.V20260913.String() != "2026-09-13" {
+		t.Errorf("V20260913 = %q, want 2026-09-13", apiversion.V20260913)
+	}
 }
 
-// TestDefaultRegistry_CurrentIsNewestReleasedLiteral pins Current to the RAW
-// date literal of the newest shipped version, for the same reason
-// ReleasedVersions stores raw literals (see released.go): referencing the
-// V2026xxxx constant here would let the constant and the registry be re-pointed
-// at a different date together and the guard would never notice. Bumping the API
-// version is therefore a deliberate two-line edit — the registry and this
-// literal — not an accident.
-func TestDefaultRegistry_CurrentIsNewestReleasedLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-09-04")
+// TestDefaultRegistry_CurrentIsRawLiteral pins Current independently of its
+// named constant. Current may be one trailing unreleased contract; released.go
+// remains the immutable ledger of versions that have actually shipped.
+func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
+	const wantCurrent = apiversion.Version("2026-09-14")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}
@@ -320,8 +360,148 @@ func TestDefaultRegistry_CurrentIsNewestReleasedLiteral(t *testing.T) {
 	if len(released) == 0 {
 		t.Fatal("ReleasedVersions is empty")
 	}
-	if got := released[len(released)-1]; got != wantCurrent {
-		t.Errorf("newest ReleasedVersions entry = %q, want %q — Current and the golden ledger must be appended in lockstep", got, wantCurrent)
+	const wantNewestReleased = apiversion.Version("2026-09-14")
+	if got := released[len(released)-1]; got != wantNewestReleased {
+		t.Errorf("newest ReleasedVersions entry = %q, want %q", got, wantNewestReleased)
+	}
+}
+
+// TestIsCrossOrgCronReads pins the BOS-1158 handler boundary: V20260909 and
+// older keep the claimed-organization result, while V20260910 opens the union.
+func TestIsCrossOrgCronReads(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	assertResolved := func(t *testing.T, version apiversion.Version) bool {
+		t.Helper()
+		req := connect.NewRequest(&struct{}{})
+		req.Header().Set(apiversion.HeaderName, version.String())
+		var got bool
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			got = apiversion.IsCrossOrgCronReads(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", version, err)
+		}
+		return got
+	}
+
+	for _, version := range reg.All() {
+		want := !reg.Newer(apiversion.V20260910, version)
+		if got := assertResolved(t, version); got != want {
+			t.Errorf("IsCrossOrgCronReads(%s) = %v, want %v", version, got, want)
+		}
+	}
+	if got := assertResolved(t, apiversion.V20260909); got {
+		t.Error("IsCrossOrgCronReads(V20260909) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260910); !got {
+		t.Error("IsCrossOrgCronReads(V20260910) = false, want true")
+	}
+}
+
+func TestIsCrossOrgSessionReads(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+	assertResolved := func(t *testing.T, version apiversion.Version) bool {
+		t.Helper()
+		req := connect.NewRequest(&struct{}{})
+		req.Header().Set(apiversion.HeaderName, version.String())
+		var got bool
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			got = apiversion.IsCrossOrgSessionReads(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", version, err)
+		}
+		return got
+	}
+	if got := assertResolved(t, apiversion.V20260911); got {
+		t.Fatal("IsCrossOrgSessionReads(V20260911) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260912); !got {
+		t.Fatal("IsCrossOrgSessionReads(V20260912) = false, want true")
+	}
+}
+
+func TestIsInvitationRevocation(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	assertResolved := func(t *testing.T, version apiversion.Version) bool {
+		t.Helper()
+		req := connect.NewRequest(&struct{}{})
+		req.Header().Set(apiversion.HeaderName, version.String())
+		var got bool
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			got = apiversion.IsInvitationRevocation(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", version, err)
+		}
+		return got
+	}
+
+	if got := apiversion.IsInvitationRevocation(context.Background()); got {
+		t.Fatal("IsInvitationRevocation(background) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260909); got {
+		t.Fatal("IsInvitationRevocation(V20260909) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260910); got {
+		t.Fatal("IsInvitationRevocation(V20260910) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260911); !got {
+		t.Fatal("IsInvitationRevocation(V20260911) = false, want true")
+	}
+}
+
+// TestIsCrossOrgSessionCommands pins the handler-gate boundary: only clients
+// at or after V20260908 may route session commands through another member org.
+func TestIsCrossOrgSessionCommands(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	assertResolved := func(t *testing.T, header string) bool {
+		t.Helper()
+		req := connect.NewRequest(&struct{}{})
+		if header != "" {
+			req.Header().Set(apiversion.HeaderName, header)
+		}
+		var got bool
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			got = apiversion.IsCrossOrgSessionCommands(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", header, err)
+		}
+		return got
+	}
+
+	if got := apiversion.IsCrossOrgSessionCommands(context.Background()); got {
+		t.Errorf("IsCrossOrgSessionCommands(background) = true, want false")
+	}
+	for _, version := range reg.All() {
+		want := !reg.Newer(apiversion.V20260908, version)
+		if got := assertResolved(t, version.String()); got != want {
+			t.Errorf("IsCrossOrgSessionCommands(%s) = %v, want %v", version, got, want)
+		}
+	}
+	if got := assertResolved(t, ""); got {
+		t.Errorf("IsCrossOrgSessionCommands(no header) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260906.String()); got {
+		t.Errorf("IsCrossOrgSessionCommands(V20260906) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260907.String()); got {
+		t.Errorf("IsCrossOrgSessionCommands(V20260907) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260908.String()); !got {
+		t.Errorf("IsCrossOrgSessionCommands(V20260908) = false, want true")
 	}
 }
 
@@ -360,5 +540,78 @@ func TestIsOrgScopedVisibility(t *testing.T) {
 	}
 	if got := assertResolved(t, apiversion.V20260825.String()); got {
 		t.Errorf("IsOrgScopedVisibility(V20260825) = true, want false")
+	}
+}
+
+func TestIsCrossOrgDaemonReads(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+	for _, version := range reg.All() {
+		version := version
+		t.Run(version.String(), func(t *testing.T) {
+			req := connect.NewRequest(&struct{}{})
+			req.Header().Set(apiversion.HeaderName, version.String())
+			var got bool
+			next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+				got = apiversion.IsCrossOrgDaemonReads(ctx)
+				return connect.NewResponse(&struct{}{}), nil
+			}
+			if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			want := !reg.Newer(apiversion.V20260905, version)
+			if got != want {
+				t.Fatalf("IsCrossOrgDaemonReads(%s) = %v, want %v", version, got, want)
+			}
+		})
+	}
+	if apiversion.IsCrossOrgDaemonReads(context.Background()) {
+		t.Fatal("IsCrossOrgDaemonReads(background) = true, want false")
+	}
+}
+
+// TestIsMemberOrgCloudAccess is the V20260906 half of the same handler-gate
+// proof: the gate must open for exactly the versions at or after V20260906 and
+// for no others, so a client that negotiated an older version keeps being judged
+// from its claimed organization alone.
+func TestIsMemberOrgCloudAccess(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, nil)
+
+	assertResolved := func(t *testing.T, header string) bool {
+		t.Helper()
+		req := connect.NewRequest(&struct{}{})
+		if header != "" {
+			req.Header().Set(apiversion.HeaderName, header)
+		}
+		var got bool
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			got = apiversion.IsMemberOrgCloudAccess(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", header, err)
+		}
+		return got
+	}
+
+	if got := apiversion.IsMemberOrgCloudAccess(context.Background()); got {
+		t.Errorf("IsMemberOrgCloudAccess(background) = true, want false")
+	}
+	for _, version := range reg.All() {
+		want := !reg.Newer(apiversion.V20260906, version)
+		if got := assertResolved(t, version.String()); got != want {
+			t.Errorf("IsMemberOrgCloudAccess(%s) = %v, want %v", version, got, want)
+		}
+	}
+	if got := assertResolved(t, ""); got {
+		t.Errorf("IsMemberOrgCloudAccess(no header) = true, want false")
+	}
+	// One version back must still be closed — the boundary the gate exists for.
+	if got := assertResolved(t, apiversion.V20260905.String()); got {
+		t.Errorf("IsMemberOrgCloudAccess(V20260905) = true, want false")
+	}
+	if got := assertResolved(t, apiversion.V20260906.String()); !got {
+		t.Errorf("IsMemberOrgCloudAccess(V20260906) = false, want true")
 	}
 }

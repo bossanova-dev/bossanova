@@ -168,6 +168,19 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// accounts-superseded: the demo world plus a fourth codex account whose
+		// stored refresh chain has been superseded by an ambient `codex login`
+		// (BOS-1175). Separate from demo rather than folded into it because demo
+		// is the shared baseline every other accounts scenario captures against,
+		// and an extra eligible codex account would change what those captures
+		// show — including the no-eligible-codex-account hint `boss account ls`
+		// renders from the demo world. Carries the same cloud-access e2e pin as
+		// demo so the settings screens stay identical.
+		"accounts-superseded": {
+			World:      SupersededCredentialWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// repo-organization: the demo board with a git origin URL on every repo,
 		// for the BOS-1061 repo-settings organization proof. Separate from demo
 		// rather than folded into it because an origin URL also switches on the

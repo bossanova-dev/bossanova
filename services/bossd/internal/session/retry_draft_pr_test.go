@@ -199,6 +199,67 @@ func TestRetryFailedDraftPRsSkipsInFlightMarkerReason(t *testing.T) {
 	}
 }
 
+// An auth failure is terminal in a way the sweep cannot clear: gh has no usable
+// credentials, so every re-attempt reissues the same unauthenticated request.
+// It is a REGRESSION GUARD on the nesting, not a restatement of it — the auth
+// marker sits inside the failure prefix, so IsDraftPRCreationFailure says yes to
+// this row and only the narrower predicate rejects it. Delete the exclusion in
+// shouldRetryDraftPR and this test goes red while every other test here stays
+// green.
+func TestRetryFailedDraftPRsSkipsTerminalAuthFailure(t *testing.T) {
+	lc, sessions, ensurer, _ := newDraftPRRetryLifecycle(t)
+
+	reason := sessionreason.DraftPRCreationAuthFailure(errors.New("gh pr create: HTTP 401: Requires authentication"))
+	sess := failedDraftPRSession("sess-1")
+	sess.BlockedReason = &reason
+	sessions.addSession(sess)
+
+	// The reason must still satisfy the broad predicate, or this test would pass
+	// for the wrong reason (a row the sweep never selected in the first place).
+	if !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
+		t.Fatal("auth reason must still satisfy IsDraftPRCreationFailure — the nesting is load-bearing")
+	}
+
+	n, err := lc.RetryFailedDraftPRsPeriodic(context.Background())
+	if err != nil {
+		t.Fatalf("sweep returned error: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("retried = %d, want 0 — an auth failure is unrecoverable by retry", n)
+	}
+	if ensurer.count() != 0 {
+		t.Fatalf("EnsurePR calls = %v, want none", ensurer.callsCopy())
+	}
+	// No attempt may be charged either: a later RECOVERABLE failure on this same
+	// session must arrive with a full budget.
+	if _, ok := lc.draftPRRetryStateFor("sess-1"); ok {
+		t.Fatal("a skipped auth failure must not consume an attempt from the ladder")
+	}
+}
+
+// The companion guard: excluding auth must NOT be over-applied to transient
+// failures. A flapping remote is precisely what the sweep exists for, so this
+// pins that the narrower predicate — not the broad one — is what gates the skip.
+func TestRetryFailedDraftPRsStillRetriesTransientFailure(t *testing.T) {
+	lc, sessions, ensurer, _ := newDraftPRRetryLifecycle(t)
+
+	reason := sessionreason.DraftPRCreationTransientFailure(errors.New("gh pr create: HTTP 502"))
+	sess := failedDraftPRSession("sess-1")
+	sess.BlockedReason = &reason
+	sessions.addSession(sess)
+
+	n, err := lc.RetryFailedDraftPRsPeriodic(context.Background())
+	if err != nil {
+		t.Fatalf("sweep returned error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("retried = %d, want 1 — a transient failure stays eligible", n)
+	}
+	if got := ensurer.callsCopy(); len(got) != 1 || got[0] != "sess-1" {
+		t.Fatalf("EnsurePR calls = %v, want [sess-1]", got)
+	}
+}
+
 func TestRetryFailedDraftPRsSkipsRegisteredInFlightCreate(t *testing.T) {
 	lc, sessions, ensurer, _ := newDraftPRRetryLifecycle(t)
 	sessions.addSession(failedDraftPRSession("sess-1"))

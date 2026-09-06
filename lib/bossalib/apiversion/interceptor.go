@@ -90,20 +90,33 @@ func (vi *versionInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFun
 		resp, err := next(ctx, req)
 		if err != nil {
 			// Error-path transforms for older-version clients. A change opts in
-			// by implementing ErrorTransform; ApplyError skips the rest, so this
+			// by implementing ErrorTransform or ErrorRecoveryTransform; the
+			// response-aware entry point skips the rest, so this
 			// returns err untouched for every procedure no change targets. Uses
 			// the same resolved version v as the success path below, so a client
 			// cannot see a response down-converted to one version and an error
 			// down-converted to another.
 			//
-			// This is the ONLY ApplyError call site. WrapStreamingHandler below
+			// This is the ONLY response-aware error-transform call site. WrapStreamingHandler below
 			// returns its handler's error raw, so the error-path seam is
 			// unary-only by construction — see the SCOPE note on ErrorTransform
 			// in transform.go, and the test that pins it.
 			if vi.changes != nil {
-				err = vi.changes.ApplyError(req.Spec().Procedure, err, v)
+				var response any
+				if resp != nil {
+					response = resp.Any()
+				}
+				err = vi.changes.ApplyErrorWithResponse(req.Spec().Procedure, response, err, v)
 			}
-			return nil, err
+			if err != nil {
+				return nil, err
+			}
+			// An ErrorRecoveryTransform may restore a legacy success when the
+			// handler returned a validated response alongside its typed error.
+			// Continue through the normal response-transform and header path below.
+			if resp == nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("api version error transform returned success without a response"))
+			}
 		}
 		// Apply response transforms for older-version clients (newest→resolved order).
 		if vi.changes != nil {

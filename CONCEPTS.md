@@ -164,6 +164,12 @@ navigated away mid-keystroke by something they never asked for. The signal is he
 either recovers the session or lands on the cold-load redirect, so a persisted flag could only
 outlive the condition it describes.
 
+### Login organization hint
+
+The organization a previous signed-in session was in, remembered so the next sign-in redirect can name it and the identity provider does not ask a returning user to choose an organization the app already knows.
+
+It is a hint and never an authority, and the rules that follow from that are the concept. It is **consumed on use**: the anonymous cold-load redirect reads it, forgets it, and only then redirects, because that hop is the one place a stale hint can fail and also the one place the failure is unobservable — the identity provider rejects a revoked or deleted organization on its own hosted page and returns the browser with nothing the app can react to. A rejected hint therefore costs one failed attempt rather than a permanent lock-out, and a successful sign-in immediately rewrites it from the live session claim. It is written only from a session that is genuinely the signer's own: an impersonation session's organization is the impersonated user's, not the admin's, and is never persisted. It is cleared on **session expiry** and on sign-out. It holds the identity provider's own organization identifier, which is a different value from the local mirror's identifier for the same organization; the mid-session re-authentication path needs no hint at all, because the expiring session's claim is still in hand.
+
 ## Web announcement contracts
 
 ### Inert control
@@ -470,6 +476,58 @@ that was released out of band is cleared before a new one is created. Neither si
 alone — a released workspace stays registered until the registration is cleared, so registration
 proves only that the workspace once existed, and presence has to be read from the directory itself.
 
+### Chat identity
+
+The durable name a chat is known by everywhere outside its own record — what resume, routing, and
+message delivery all address it by, and what the coding agent's own conversation is anchored to.
+It is distinct from the record's internal key, which nothing outside storage uses.
+
+Identity is not recoverable, and that asymmetry is the whole reason it is a concept rather than a
+field. A chat that keeps its identity keeps the provider's conversation, so reopening it continues
+the same discussion; a chat whose record is destroyed and replaced by a fresh one answering to the
+same name comes back looking entirely healthy while the agent has forgotten everything said to it.
+Nothing later can tell those two apart, which makes every restore path an identity-preservation
+problem first and a process-restart problem second. Because the identity is also the only thing a
+restore has to go on, it must be single-valued: if two records could answer to one name, the writes
+addressed to it would be ambiguous rather than merely wrong.
+
+### Rebind
+
+Restarting a chat's agent process against the chat's **existing** record — the chat-level
+counterpart of a session-level **Resurrect**, and the only sanctioned way to reopen a chat whose
+**Chat pane** is gone.
+
+A rebind writes only the fields the restore actually re-establishes and leaves every other field
+standing, because the fields it does not name are the **Chat identity** it exists to preserve. It
+refuses when no record carries the identity it was asked to restore, rather than falling back to
+creating one: a create would satisfy the request and destroy exactly what the rebind existed to
+keep, so the refusal is load-bearing and must not be routed through any error that existing
+recovery paths already read as "then make one".
+
+### Partial session read
+
+A session listing that reached some of the caller's organizations but not all of them, and which
+names the organizations it could not read alongside the sessions it did.
+
+A read across many organizations has three outcomes, not two: it served everything, it served part
+and can say which part is missing, or it served nothing. Collapsing the middle outcome into either
+neighbour is a defect in both directions. Reported as a failure, a single unreachable organization
+hides every session that was successfully read; reported as a plain success, the listing silently
+presents itself as complete while sessions are absent from it, which is indistinguishable on screen
+from the user simply having none. The missing organizations are therefore carried beside the results
+rather than in place of them, and a failure signal keeps its stronger meaning: nothing was read at
+all.
+
+Partial-ness is a property of the fan-out, not of every reader. A caller reading a single source
+that either answers or fails has no partial outcome to report, and its empty list of unreachable
+organizations is a true statement about its own topology rather than a value standing in for an
+answer nobody computed.
+
+Widening a listing across organizations also silently separates it from the single-item read that
+opens one of its rows. A list that surfaces sessions the caller cannot then open is worse than the
+narrower list it replaced, so the scope of the item read is verified alongside the scope of the
+list.
+
 ## Chat panes and reaping
 
 ### Chat pane
@@ -592,6 +650,20 @@ likely to be stale is the one it consults first. When no candidate resolves, the
 one tried and why it lost: a tool that cannot be located is otherwise indistinguishable from a
 capability the environment does not have, and that confusion turns a missing file into a silent,
 permanent degrade (see **Callback**).
+
+### Local-only mode
+
+The posture in which a Bossanova process does no orchestrator communication at all — no upstream
+sync, no account or subscription check — running entirely against local state.
+
+Local-only mode is a property of one process, not of the machine or the account: it is selected by
+giving a process an explicitly empty orchestrator endpoint, and a sibling process that did not
+receive it keeps talking upstream. Two things make it easy to half-apply. It is reached by an
+explicitly empty endpoint rather than an absent one, so it can only be expressed where the reading
+code distinguishes an empty value from an unset one — where a read collapses those two, the setting
+is inert and silently does nothing. And because the daemon and the terminal UI each read the
+endpoint from their own environment, applying it to one leaves the other fully connected; the result
+is a partial effect, which is a weaker failure signal than none at all.
 
 ## Boss-build runs
 
@@ -861,15 +933,37 @@ That projection is a reconciliation repeated before every spawn, and it does not
 
 ### Credential injection
 
-Realising a bound Account's credential into the environment an agent process is actually started with — assembling the Account home and handing the process the environment pointing at it. Injection is best-effort by policy: a failure does not block the spawn, it degrades it to the implicit system-default account, so the session runs normally to completion under a credential nobody selected and the bound account records no usage at all.
+Realising a bound Account's credential into the environment an agent process is actually started with — assembling the Account home and handing the process the environment pointing at it. Injection for a bound Account fails closed: a failure refuses the spawn rather than degrading it to the implicit system-default account.
 
-That outcome is indistinguishable from success at the moment it happens, and stays indistinguishable for as long as the ambient login happens to hold the same credential that was intended — so a degrade that is announced only in a log is, in practice, not announced. A failed injection is therefore recorded on the Account itself, where every surface that already lists accounts renders it.
+The degrade it replaces was indistinguishable from success at the moment it happened, and stayed indistinguishable for as long as the ambient login happened to hold the same credential that was intended — the session ran normally to completion under a credential nobody selected, attributed and rate-limited against the wrong identity, while the bound account recorded no usage at all. A degrade announced only in a log is, in practice, not announced. A run that cannot be given the identity it was bound to therefore does not run. Only a spawn with no binding to honour still uses the ambient login, which there is the explicit choice rather than a substitution for one.
+
+A refusal is typed by the layer that knows why it failed, and the type separates a credential that cannot serve from an evaluation that could not be completed — the second fails the spawn just as closed, but must never be reported as a credential fault or recorded as durable credential state, because a guard that cannot tell the two apart reports every outage as a bad credential. No caller re-derives that distinction by matching on the message text. The refusal is recorded on the Account itself, where every surface that already lists accounts renders it, and its operator-facing form is masked while the raw form is kept for the log and for unwrapping.
 
 ### Account health
 
 Whether an Account is currently usable, as distinct from whether an operator has enabled it: Rotation selects only an account that is both enabled and healthy. Several unrelated events write it — a credential the provider rejected, a confirmed suspension, a Credential injection that could not be completed — and each records a reason alongside it saying which, because the remedies differ and the health value alone does not separate them.
 
 The writers differ in what they prove, so they differ in how their records may be withdrawn. A failure that indicts the credential itself must stand until something re-establishes the credential, and no later success on an unrelated path may clear it. A Credential injection failure is a local condition that says nothing about the credential, so it withdraws itself on the next injection that succeeds — but only its own record: a reason another writer left is preserved, and each writer's automatic clear is scoped to the reasons attributable to it, so no writer can launder another's diagnosis into a self-clearing one. A record that erased state it could not restore would not be withdrawable at all, which is why a self-clearing writer must leave everything outside its own reason untouched. Withdrawal also depends on a later attempt actually being made, and an unhealthy account is one Rotation will not normally select — so the automatic clear is a convenience, not a guarantee.
+
+Health answers only whether the account is usable right now, which is why it does not subsume the Credential check: health has no way to say that nobody has asked, and no way to distinguish a provider that rejected the credential from a provider that could not be reached to ask. The two are recorded separately and rendered side by side for that reason.
+
+### Credential check
+
+The daemon's own recorded verdict on whether a stored credential still works, kept on the Account with when it was obtained. It is a durable, redacted record rather than a live probe result, so every surface reads the same answer and none of them has to re-ask.
+
+Its point is to keep three answers apart that a single health cell collapses. _Nobody has asked_ is not a clean bill of health, so it renders as its own value and carries no age — inventing one would claim a verification that never happened. _Asked and accepted_ is the only clean answer. _Asked and rejected_ is a confirmed fault in the credential itself, and _asked but no verdict reached_ — rate-limited, provider transient, runner unavailable — is not evidence about the credential at all.
+
+The reason is always a short token drawn from a closed set, never the provider's own message: that text can embed credential material, so it is kept for unwrapping and never rendered. An unrecognised value classifies as undetermined, never as invalid.
+
+A confirmed-rejected credential is refused before anything is materialised, so a known-dead Account never reaches the keyring, a worktree, or a spawned agent. That verdict stands until a new credential replaces the rejected one; no later success on an unrelated path withdraws it.
+
+### Reauthentication
+
+Re-running a provider's interactive login and storing the result on the **existing** Account, replacing only the secret. The id, label, priority, and every session binding survive it — which is the whole point: adding a fresh Account instead leaves the rejected row in place, still named by whatever sessions were bound to it, and turns one broken binding into two rows an operator has to reconcile.
+
+It is a distinct verb from the two neighbours it is easily confused with, because they differ in what they need and what they prove: one _acquires_ a credential through the provider, one _writes_ a credential the operator already holds, and one _asks_ the provider whether the stored credential still works and records the answer.
+
+Success is reported only once the daemon's post-save verification has returned a verdict; a save that merely did not error is not a success, and a verification that could not run is reported as such rather than rounded up. A failed verification leaves the Account in place rather than removing it, so a partial recovery never silently destroys the binding it was trying to repair.
 
 ### Rotation
 
@@ -879,7 +973,13 @@ The daemon's automatic response to a usage-capped account: put the limited accou
 
 The daemon operation that moves a chat from its currently bound Account to a different target: validate the target Account, stop the chat's pane, rebind it, and resume or start fresh under the new Account. A manual account change, a Rotation, and a Respawn-in-place all ultimately issue a Switch.
 
-Validation happens before anything about the chat is touched, so a Switch can be refused — the target Account is disabled, failed, or cooling, or the chat is mid-turn — without disturbing the chat at all. That refused-before-touched distinction matters to anything that charges a budget per Switch attempt: a refusal that touched nothing must not spend the same budget as an attempt that reached the chat and then failed.
+Validation happens before anything about the chat is touched, so a Switch can be refused — the target Account is disabled, failed, or cooling, or the chat is mid-turn — without disturbing the chat at all. That refused-before-touched distinction matters to anything that charges a budget per Switch attempt: a refusal that touched nothing must not spend the same budget as an attempt that reached the chat and then failed. A Switch rebinds the chat and deliberately leaves the session's own Account seed untouched, so everything that later resolves an Account for that chat must read the chat's binding rather than the session's — see Account authority.
+
+### Account authority
+
+Which layer's Account binding governs a particular spawn: a chat's own binding when it has one, otherwise the session's seed. Because a Switch rebinds the chat and leaves the session's seed alone, the two can legitimately disagree — and a chat that has never bound an Account of its own is a distinct state from one explicitly bound to the system-default account 0.
+
+Authority is a property of the layer that supplied the binding, never of the value it supplied: a chat's Account frequently equals its session's, so comparing the two values cannot distinguish a chat-bound spawn from a session-seeded one. Every resolver on the spawn path must therefore be keyed on the authority the caller already determined rather than re-deriving it — including the one that tells the Failover proxy which Account's credential to present downstream. A resolver still keyed on the session after a chat-scoped Switch does not fail: it presents a valid credential for the wrong Account, and the run proceeds, and bills, normally.
 
 ### Respawn in place
 
@@ -1025,6 +1125,22 @@ explicit returning-from-checkout signal; narrowing the inference alone is not th
 the provider's propagation window it would tell a user who has just paid that their checkout is
 unfinished.
 
+### Organization mirror
+
+The local record of an organization whose authoritative identity lives in the external identity
+directory, holding the reference that binds the two together.
+
+The mirror is what every surface in the product reads, so an organization the mirror does not know
+about is invisible here even when the directory still has it. That asymmetry decides the ordering of
+any operation spanning both stores: the two cannot be written atomically, so a failure between them
+leaves an inconsistency either way, and the tolerable direction is the one that stays visible and
+therefore actionable — a mirror record whose directory organization is gone, rather than a live
+directory organization no mirror record references, which is reachable only from the provider's own
+console. Choosing that direction is only safe when a repeated attempt can actually finish the job,
+which requires the directory half to treat "already gone" as its own success rather than as a
+failure; a mirror record may also exist before it is ever bound to a directory organization, in which
+case it has no directory half at all.
+
 ### Organization membership
 
 The project-specific relationship that grants a user access inside an organization and carries the
@@ -1034,11 +1150,55 @@ Membership changes are access changes first. Adding a membership can require bil
 the access grant; removing one must revoke access even when billing reconciliation is temporarily
 unavailable.
 
+### Pending organization invitation
+
+A directory-provider invitation to join an organization that has not yet become an Organization
+membership.
+
+It may appear beside active members in a directory view, but it grants no access and does not count
+as a member or billable seat. Its identity and lifecycle remain provider-owned until acceptance
+creates the real user-to-organization relationship.
+
+### Claimed organization
+
+The single organization a request asserts it is acting within, as distinct from the set of
+organizations the caller belongs to.
+
+The two are not interchangeable, and the gap between them is an authorization boundary rather than a
+convenience. A claim is an assertion the caller makes, honoured only once it has been checked against
+membership; the member set is derived server-side and is the whole of what a cross-organization read
+may span. Because the answer depends on who is asking, a verdict that is correct for one caller can
+be wrong for another whose member set differs. Such verdicts are caller-relative, and they cannot be
+adjusted after the fact from the response alone, because by then the response no longer carries the
+caller who earned it.
+
+An access question therefore resolves in one of two modes: judged from the claimed organization
+alone, or folded across every organization the caller belongs to. The folded reading is the default,
+so a caller that expresses no opinion — an internal process with no client on the other end — gets
+the broader answer, and only a request serving a client that predates the widening is narrowed back
+to its claim.
+
+Where the fold spans several organizations it is ordered rather than arbitrary, and the ordering
+exists to keep the fan-out from costing the caller anything: a failed sibling read may degrade an
+answer that would otherwise be a denial, but never one the claim alone already authorises. Without
+that asymmetry the widening could revoke access it was never able to grant.
+
+### Resolved organization
+
+The single organization selected server-side when an organization-spanning lookup finds the resource
+a deferred operation will act on, distinct from both the caller's Claimed organization and the full
+set of Organization memberships.
+
+Resolution fixes resource identity, not future authority. A token-bound continuation carries the
+Resolved organization so later lookups cannot repeat broad discovery and silently select a duplicate
+identifier in another organization; it still refreshes Organization membership before use, and a
+failure to refresh remains an infrastructure error rather than proof that access was revoked.
+
 ### Trial eligibility
 
-Whether a Cloud account may be granted an introductory free trial on its next
-subscription checkout, decided server-side from the subscription provider's own record
-of that account's prior subscriptions rather than inferred from local state.
+Whether a person may be granted an introductory free trial on their next subscription
+checkout, decided server-side from the subscription provider's own record of their prior
+subscriptions rather than inferred from local state.
 
 Eligibility has three answers, not two: eligible, ineligible, and undetermined — the
 provider could not be asked. The distinction is load-bearing because the same question
@@ -1046,9 +1206,19 @@ is asked twice on one journey, once to render the offer and once to create the
 checkout. An undetermined answer fails the checkout rather than quietly withdrawing the
 trial the offer may have just promised, while a determined ineligibility proceeds
 without one; the offer copy correspondingly withholds the promise instead of asserting
-its negative. Eligibility is scoped to the Cloud account, and a Cloud account is minted
-per organization rather than per person, so the same human can reach a fresh trial
-through a new organization.
+its negative. Eligibility is scoped to the person, not to the Cloud account: a Cloud
+account is minted per organization, so the question is resolved across every Cloud
+account sharing the caller's user id and a trial consumed under any one of them makes
+the person ineligible under all of them. Sameness is a shared account holder and nothing
+more — a second sign-up email is still a second person.
+
+Resolving over several accounts makes a partial answer possible, and the fold is ordered
+so that a determined answer outranks a missing one: a provider query that succeeds and
+reports prior history settles the question as ineligible whatever the other accounts
+did, eligibility requires every query to have succeeded and none to report history, and
+only "no history found, and at least one account could not be asked" is undetermined. A
+resolution that yields no accounts is never eligible; the caller's own account is always
+in the set.
 
 ### Seat reconciliation
 
@@ -1059,24 +1229,59 @@ Seat reconciliation treats membership mutations and subscription webhooks as rep
 when the observed billed quantity already matches the desired membership count, it writes nothing;
 when they differ, it sets the billed quantity to the desired count.
 
+### Account setup state
+
+The rung a Cloud account currently occupies on the ladder from merely linked to a billing customer,
+through a checkout in flight, to actively subscribed — the value the access decision reads and the
+value the checkout claim compare-and-swaps on.
+
+Movement up and down the ladder is not symmetric. Read-time refresh only re-examines accounts that
+could still be waiting on a subscription, plus those already active, so an account demoted off the
+active rung is outside the set anything ever re-checks. Over-granting access therefore costs at most
+one staleness window and repairs itself; wrongly demoting an account strands it until a human
+intervenes or the customer pays a second time. Any write that moves an account down the ladder on
+the strength of an external assertion must be treated as irreversible and refuse to proceed on an
+answer it could not confirm.
+
+### Read-time subscription verification
+
+The bounded check that asks the payment provider whether a Cloud account's customer still holds a
+live subscription, memoised per customer for a short window so the entitlement path is not a provider
+call per request.
+
+It survives the arrival of pushed subscription events rather than being displaced by them. Event
+delivery is at-least-once but not guaranteed, and a delivery is recorded as seen before its effect
+runs, so a redelivery of an event whose effect failed is acknowledged and dropped. A failed demotion
+leaves the account on the active rung, which is exactly what the read-time check re-examines — making
+it the floor the entitlement state self-heals down to, not duplicated work. Only successful answers
+are memoised; a provider error must not be cached as a verdict.
+
 ## Chat coordination
 
 ### Callback
 
 A standing, one-shot request to be told when a pull request reaches a named state — its checks
 resolving, the PR merging or closing, or the PR becoming ready for review or ready to merge — so a
-run waiting on that event is woken the moment it happens instead of blocking on a poll loop. Registering one is an alternative to waiting, never a
-substitute for deciding: the woken run still reconciles the real state authoritatively before acting.
+waiting run can be woken promptly when delivery succeeds, while a bounded poll remains its safety
+net. Registering one is an alternative to waiting, never a substitute for deciding: the woken run
+still reconciles the real state authoritatively before acting.
 
-Callbacks are usable only where two independent things hold: the run is daemon-managed, so something
-is behind the callback interface to answer, **and** the CLI that issues the registration actually
-resolves here as a file this process can execute. An environment can supply the first without the
-second — a scheduled one may export the managed-session marker while leaving the CLI off its search
-path — so a gate keyed on the marker alone reports callbacks usable, arms a registration that cannot
-run, and burns the attempt. Where callbacks are unavailable the waiting run degrades to bounded
-polling, and because that fallback is legitimate behavior rather than an error, the unavailability
-must carry a stated reason: nothing else in the system will ever raise it, so an unexplained degrade
-is indistinguishable from normal operation and can persist indefinitely while runs keep succeeding.
+For callback-wait workflows using the CLI adapter, callbacks are usable only where two independent
+things hold: the run is daemon-managed, so something is behind the callback interface to answer,
+**and** the CLI that issues the registration actually resolves here as a file this process can
+execute. An environment can supply the first without the second — a scheduled one may export the
+managed-session marker while leaving the CLI off its search path — so a gate keyed on the marker
+alone reports callbacks usable, arms a registration that cannot run, and burns the attempt. Where
+callbacks are unavailable the waiting run degrades to bounded polling, and because that fallback is
+legitimate behavior rather than an error, the unavailability must carry a stated reason: nothing
+else in the system will ever raise it, so an unexplained degrade can be mistaken for normal
+operation across successful runs.
+
+Callback capability and callback selection are separate. Capability is the complete vocabulary a
+callback interface accepts; selection is the narrower set a particular waiting workflow arms by
+default. Widening the former never widens the latter implicitly. Watches match the current state by
+default; transition matching is an explicit opt-in that suppresses an initially satisfied match and
+makes the watch eligible on a later evaluation. It does not guarantee a false-to-true edge.
 
 ### Broadcast
 
@@ -2005,6 +2210,30 @@ capture one surface. That answer carries a fallthrough default, so it can name a
 deliberately excluded. Where the two disagree the surface plan wins, and only the surface plan is
 safe to publish — printing the single-select answer beside it offers a consumer two answers to one
 question with no signal about which is authoritative.
+
+### Stage script
+
+A snippet a proof run installs into the page before its first paint, so that the surface being
+photographed is already in the state the capture is meant to demonstrate.
+
+Stage scripts come in two shapes that are not interchangeable. One **extends** the shared fixture,
+adding the few fields its own capture branches on and leaving everything else standing. The other
+**rebuilds** the fixture into a different shape derived from what is already there. Only the
+extending shape may publish a **Fixture mirror**; a rebuild must not, because its output is
+deliberately partial with respect to the whole fixture.
+
+### Fixture mirror
+
+A second global name the same staged fixture is published under, because the application fakes
+resolve the two names by precedence rather than merging them — the first name present wins outright,
+so a fixture written under only one name is invisible on any page where the other name is already
+installed.
+
+Mirroring is all-or-nothing per staged fixture, never per stage script: half a mirror is worse than
+no mirror, because precedence means the incomplete half is what the fake resolves. Where nothing in
+a given run installs the winning name, the mirror is **latent** — written as a guard against a
+future writer rather than as a fix for a live defect. That distinction is stated wherever the mirror
+is written, so the guard is neither deleted as dead code nor over-claimed as a live fix.
 
 ## Flagged ambiguities
 

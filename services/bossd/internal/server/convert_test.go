@@ -1412,3 +1412,98 @@ func TestClampInt32(t *testing.T) {
 		})
 	}
 }
+
+// --- BOS-1141: durable, redacted auth-check state on the wire ---------------
+
+func TestAccountToProto_AuthCheckRoundTrip(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	checkedAt := now.Add(-10 * time.Minute)
+	retryAt := now.Add(20 * time.Minute)
+	account := &models.Account{
+		ID:        "acct-authcheck",
+		Provider:  models.AccountProviderCodex,
+		Label:     "work",
+		Status:    models.AccountStatusActive,
+		Health:    models.AccountHealthOK,
+		CreatedAt: now,
+		UpdatedAt: now,
+		AuthCheck: models.AuthCheck{
+			CheckedAt:    &checkedAt,
+			Outcome:      models.AuthCheckOutcomeTransient,
+			FailureClass: "transient_provider",
+			NextRetryAt:  &retryAt,
+		},
+	}
+
+	got := accountToProto(account)
+	if got.AuthCheck == nil {
+		t.Fatal("AuthCheck = nil, want populated")
+	}
+	wire, err := goproto.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.Account
+	if err := goproto.Unmarshal(wire, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.GetAuthCheck().GetOutcome() != string(models.AuthCheckOutcomeTransient) {
+		t.Errorf("outcome = %q, want %q", decoded.GetAuthCheck().GetOutcome(), models.AuthCheckOutcomeTransient)
+	}
+	if decoded.GetAuthCheck().GetFailureClass() != "transient_provider" {
+		t.Errorf("failure_class = %q, want transient_provider", decoded.GetAuthCheck().GetFailureClass())
+	}
+	if !decoded.GetAuthCheck().GetCheckedAt().AsTime().Equal(checkedAt) {
+		t.Errorf("checked_at = %v, want %v", decoded.GetAuthCheck().GetCheckedAt().AsTime(), checkedAt)
+	}
+	if !decoded.GetAuthCheck().GetNextRetryAt().AsTime().Equal(retryAt) {
+		t.Errorf("next_retry_at = %v, want %v", decoded.GetAuthCheck().GetNextRetryAt().AsTime(), retryAt)
+	}
+}
+
+func TestAccountToProto_AuthCheckAbsentWhenNeverChecked(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	got := accountToProto(&models.Account{
+		ID:        "acct-unchecked",
+		Provider:  models.AccountProviderCodex,
+		Label:     "work",
+		Status:    models.AccountStatusActive,
+		Health:    models.AccountHealthOK,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if got.AuthCheck != nil {
+		t.Fatalf("AuthCheck = %#v, want nil for a never-checked account", got.AuthCheck)
+	}
+}
+
+// TestAccountToProto_AuthCheckAuthInvalidNoCredentialMaterial is AC-6's
+// redaction half: the wire form carries the classification and nothing else.
+func TestAccountToProto_AuthCheckAuthInvalidNoCredentialMaterial(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	got := accountToProto(&models.Account{
+		ID:        "acct-invalid",
+		Provider:  models.AccountProviderCodex,
+		Label:     "work",
+		Status:    models.AccountStatusActive,
+		Health:    models.AccountHealthOK,
+		CreatedAt: now,
+		UpdatedAt: now,
+		AuthCheck: models.AuthCheck{
+			CheckedAt:    &now,
+			Outcome:      models.AuthCheckOutcomeAuthInvalid,
+			FailureClass: "auth_invalidated",
+		},
+	})
+	if got.AuthCheck.GetOutcome() != string(models.AuthCheckOutcomeAuthInvalid) {
+		t.Fatalf("outcome = %q", got.AuthCheck.GetOutcome())
+	}
+	if got.AuthCheck.GetNextRetryAt() != nil {
+		t.Errorf("next_retry_at = %v, want nil when unset", got.AuthCheck.GetNextRetryAt())
+	}
+	// The AuthCheck message has exactly the four redacted metadata fields; any
+	// new field is a deliberate schema decision, not an accidental leak.
+	if n := got.AuthCheck.ProtoReflect().Descriptor().Fields().Len(); n != 4 {
+		t.Fatalf("AuthCheck has %d fields, want the 4 redacted metadata fields", n)
+	}
+}

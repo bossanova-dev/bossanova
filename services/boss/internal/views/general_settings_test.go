@@ -1644,3 +1644,49 @@ func TestGeneralSettings_CapturesMachineHostnameAtConstruction(t *testing.T) {
 		t.Fatalf("hostname = %q, want the machine hostname %q", m.hostname, want)
 	}
 }
+
+// TestEnabledAgentNamesIncludesOptedInExperimental pins the default-agent picker
+// against the same opt-in path: the persisted entry stays "enabled": false while
+// experimental_plugins is what the daemon honours, so reading the persisted flag
+// omitted an agent the daemon had actually loaded.
+func TestEnabledAgentNamesIncludesOptedInExperimental(t *testing.T) {
+	settings := config.Settings{
+		ExperimentalPlugins: []string{"opencode"},
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "opencode", Enabled: false},
+		},
+	}
+	agents := []client.AgentInfo{{Name: "claude"}, {Name: "opencode"}}
+
+	got := enabledAgentNames(settings, agents)
+
+	found := false
+	for _, n := range got {
+		if n == "opencode" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("enabledAgentNames = %v, want the opted-in opencode included", got)
+	}
+}
+
+// TestEnabledAgentNamesExcludesLegacyEnabledExperimental is the other direction:
+// a pre-gate "enabled": true entry with no opt-in is forced off by the daemon, so
+// offering it as a default would name an agent that will not load.
+func TestEnabledAgentNamesExcludesLegacyEnabledExperimental(t *testing.T) {
+	settings := config.Settings{
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "opencode", Enabled: true},
+		},
+	}
+	agents := []client.AgentInfo{{Name: "claude"}, {Name: "opencode"}}
+
+	for _, n := range enabledAgentNames(settings, agents) {
+		if n == "opencode" {
+			t.Errorf("enabledAgentNames offered opencode as a default with no opt-in; the daemon forces it off")
+		}
+	}
+}

@@ -121,3 +121,56 @@ func TestAccountRefreshJSONSchema(t *testing.T) {
 		t.Fatalf("json output echoed credential: %q", out.String())
 	}
 }
+
+// --- reauth subcommand (BOS-1142) ------------------------------------------
+
+func findReauthSubcommand(t *testing.T) *cobra.Command {
+	t.Helper()
+	account := accountCmd()
+	for _, c := range account.Commands() {
+		if c.Name() == "reauth" {
+			return c
+		}
+	}
+	t.Fatalf("account command has no `reauth` subcommand")
+	return nil
+}
+
+func TestAccountReauthCommandShape(t *testing.T) {
+	reauth := findReauthSubcommand(t)
+	if reauth.Flags().Lookup("timeout") == nil {
+		t.Error("expected --timeout flag on `account reauth`")
+	}
+	// Reauth ACQUIRES a credential; it must not also accept one, or the two
+	// verbs collapse and `refresh` loses its reason to exist.
+	for _, name := range []string{"token", "credential-file"} {
+		if reauth.Flags().Lookup(name) != nil {
+			t.Errorf("`account reauth` must not take --%s; that is `account refresh`", name)
+		}
+	}
+	if reauth.Args == nil {
+		t.Fatal("expected Args validator on `account reauth`")
+	}
+	if err := reauth.Args(reauth, []string{"acct-1"}); err != nil {
+		t.Errorf("expected one account id to be accepted, got %v", err)
+	}
+	if err := reauth.Args(reauth, []string{}); err == nil {
+		t.Error("expected missing account id to be rejected")
+	}
+	if err := reauth.Args(reauth, []string{"acct-1", "acct-2"}); err == nil {
+		t.Error("expected two account ids to be rejected")
+	}
+}
+
+// `refresh` and `reauth` must stay distinct verbs: one takes a credential you
+// already hold, the other goes and gets one.
+func TestAccountRefreshAndReauthAreDistinctVerbs(t *testing.T) {
+	refresh := findRefreshSubcommand(t)
+	reauth := findReauthSubcommand(t)
+	if refresh.Name() == reauth.Name() {
+		t.Fatal("refresh and reauth collapsed to one command")
+	}
+	if refresh.Flags().Lookup("credential-file") == nil {
+		t.Error("`account refresh` lost its credential input")
+	}
+}

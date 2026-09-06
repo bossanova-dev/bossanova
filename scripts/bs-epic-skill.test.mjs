@@ -234,7 +234,9 @@ test('size ratchet', () => {
   // `cli-only mode (expected):`, and reserving the word "degraded" for a capability absent on
   // BOTH transports. The wording has to sit at the report site in the body -- a reference would
   // be read after the line it governs has already been printed.
-  const RATCHET = 66808
+  // BOS-1129 re-baselines 66808 -> 66872 (+64 B) so the resident callback contract points at the
+  // policy-owned CLI vocabulary and draft-aware set instead of shipping another literal list.
+  const RATCHET = 66872
 
   // Eight separate gates in this file iterate EPIC_MIRRORS. A list that silently shortened
   // would leave every one of them asserting against a single mirror with nothing going red
@@ -1388,13 +1390,17 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     )
     assert.match(
       prose,
-      /Arm \*\*`checks_passed_ready`\*\* \(green \*\*and\*\* not\s+a\s+draft/,
-      `${dir}/SKILL.md must prescribe checks_passed_ready as the green trigger`,
+      /Arm `policy\.draftAwareTriggers`:[\s\S]{0,100}\*\*`checks_passed_ready`\*\* \(green \*\*and\*\* not\s+a\s+draft/,
+      `${dir}/SKILL.md must source checks_passed_ready from the draft-aware policy`,
     )
     assert.match(
       prose,
       /optionally \*\*`ready_for_review`\*\*/,
       `${dir}/SKILL.md must offer ready_for_review for the un-draft flip`,
+    )
+    assert.ok(
+      skill.includes('policy.draftAwareTriggers'),
+      `${dir}/SKILL.md must source the draft-aware set from callback policy`,
     )
     // A wake still proves nothing — the BOS-522 merge gate stays authoritative.
     assert.match(
@@ -1496,12 +1502,17 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
       /Green\s+on\s+a\s+draft\s+PR\s+is\s+expected\s+CI\s+noise, not\s+merge-eligibility/,
       `${dir}/references/callback-watches.md must state green-on-draft is CI noise`,
     )
-    // The armed set in the copyable snippet must match the policy above it — a
-    // snippet that still loops over bare `checks_passed` is the burn shipped.
+    // The armed set in the copyable snippet must come from the adapter policy —
+    // a second literal list would drift independently from the contract.
     assert.match(
       refProse,
+      /policy\.draftAwareTriggers\.join\(" "\)/,
+      `${dir}/references/callback-watches.md arm snippet must read draftAwareTriggers`,
+    )
+    assert.doesNotMatch(
+      refProse,
       /for[ ]T[ ]in[ ]checks_passed_ready[ ]checks_failed[ ]merged; do/,
-      `${dir}/references/callback-watches.md arm snippet must use checks_passed_ready`,
+      `${dir}/references/callback-watches.md must not duplicate the draft-aware set`,
     )
     // Cron caveats: `*/N` step syntax may be rejected → enumerate the minutes, and
     // never on the herd minutes. Both were learned from a rejected schedule.

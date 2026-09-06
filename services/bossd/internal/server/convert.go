@@ -467,6 +467,21 @@ func accountToProto(a *models.Account) *pb.Account {
 			p.Usage.FetchedAt = timestamppb.New(*a.Usage.FetchedAt)
 		}
 	}
+	// Durable credential-verification state (BOS-1141): redacted
+	// classification tokens and timestamps only, never credential material.
+	// Absent when the account has never been verified.
+	if a.AuthCheck.Outcome != models.AuthCheckOutcomeUnknown || a.AuthCheck.CheckedAt != nil {
+		p.AuthCheck = &pb.AuthCheck{
+			Outcome:      string(a.AuthCheck.Outcome),
+			FailureClass: a.AuthCheck.FailureClass,
+		}
+		if a.AuthCheck.CheckedAt != nil {
+			p.AuthCheck.CheckedAt = timestamppb.New(*a.AuthCheck.CheckedAt)
+		}
+		if a.AuthCheck.NextRetryAt != nil {
+			p.AuthCheck.NextRetryAt = timestamppb.New(*a.AuthCheck.NextRetryAt)
+		}
+	}
 	return p
 }
 

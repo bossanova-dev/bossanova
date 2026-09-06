@@ -89,31 +89,6 @@ func TestNotifyingAgentChatStore_UpdateTitleByAgentSessionID_FiresUpdated(t *tes
 	}
 }
 
-func TestNotifyingAgentChatStore_UpdateAgentSessionID_FiresUpdated(t *testing.T) {
-	store, sessionID, got := newSeededNotifyingStore(t)
-	ctx := context.Background()
-
-	chat, err := store.Create(ctx, CreateAgentChatParams{
-		SessionID:      sessionID,
-		AgentSessionID: "claude-orphaned",
-		Title:          "Resumed chat",
-	})
-	if err != nil {
-		t.Fatalf("seed create: %v", err)
-	}
-	*got = nil
-
-	if err := store.UpdateAgentSessionID(ctx, chat.ID, "claude-orphaned", "claude-resumed"); err != nil {
-		t.Fatalf("update agent session id: %v", err)
-	}
-	if len(*got) != 1 || (*got)[0].kind != ChatChangeUpdated {
-		t.Fatalf("hook = %+v, want one Updated", *got)
-	}
-	if (*got)[0].chat.AgentSessionID != "claude-resumed" {
-		t.Errorf("hook agent session id = %q, want claude-resumed", (*got)[0].chat.AgentSessionID)
-	}
-}
-
 func TestNotifyingAgentChatStore_UpdateTmuxSessionName_FiresUpdated(t *testing.T) {
 	store, sessionID, got := newSeededNotifyingStore(t)
 	ctx := context.Background()
@@ -255,5 +230,91 @@ func TestNotifyingAgentChatStore_CreateError_NoHook(t *testing.T) {
 	}
 	if len(*got) != 0 {
 		t.Fatalf("hook fired %d times on failed Create, want 0", len(*got))
+	}
+}
+
+// TestNotifyingAgentChatStore_RebindResumedChat_FiresUpdated pins BOS-1143
+// acceptance criterion 7: the resume path's in-place update reaches the
+// notifying decorator and emits ChatChangeUpdated, so a resumed chat still
+// repaints in the UI. The old delete+create emitted Deleted then Created; a
+// store method that skipped the decorator would emit nothing at all and the
+// chat would silently go stale.
+func TestNotifyingAgentChatStore_RebindResumedChat_FiresUpdated(t *testing.T) {
+	store, sessionID, got := newSeededNotifyingStore(t)
+	ctx := context.Background()
+
+	provider := "codex-rollout-abc"
+	if _, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:         sessionID,
+		AgentSessionID:    "agent-old",
+		ProviderSessionID: &provider,
+		AgentName:         "codex",
+		Title:             "Original",
+	}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	*got = nil // discard the create hook
+
+	title := "Resumed"
+	if err := store.RebindResumedChat(ctx, "agent-old", RebindResumedChatParams{Title: &title}); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("hook fired %d times, want 1", len(*got))
+	}
+	if (*got)[0].kind != ChatChangeUpdated {
+		t.Errorf("kind = %v, want Updated", (*got)[0].kind)
+	}
+	if (*got)[0].chat.Title != title {
+		t.Errorf("hook chat title = %q, want %q (post-update read)", (*got)[0].chat.Title, title)
+	}
+	if (*got)[0].chat.AgentName != "codex" {
+		t.Errorf("hook chat agent_name = %q, want codex preserved", (*got)[0].chat.AgentName)
+	}
+}
+
+// TestNotifyingAgentChatStore_RebindResumedChat_NotifiesUnderNewID pins the
+// re-key case: when the rebind moves the row onto a new agent_session_id, the
+// post-update read has to use the NEW id. Reading the old one would find
+// nothing and the hook would either miss or carry a stale snapshot.
+func TestNotifyingAgentChatStore_RebindResumedChat_NotifiesUnderNewID(t *testing.T) {
+	store, sessionID, got := newSeededNotifyingStore(t)
+	ctx := context.Background()
+
+	if _, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:      sessionID,
+		AgentSessionID: "agent-old",
+		Title:          "Original",
+	}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	*got = nil
+
+	newID := "agent-new"
+	if err := store.RebindResumedChat(ctx, "agent-old", RebindResumedChatParams{NewAgentSessionID: &newID}); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+	if len(*got) != 1 || (*got)[0].kind != ChatChangeUpdated {
+		t.Fatalf("hook = %+v, want one Updated", *got)
+	}
+	if (*got)[0].chat == nil {
+		t.Fatal("hook carried a nil chat; the post-update read used the stale id")
+	}
+	if (*got)[0].chat.AgentSessionID != newID {
+		t.Errorf("hook agent session id = %q, want %q", (*got)[0].chat.AgentSessionID, newID)
+	}
+}
+
+// TestNotifyingAgentChatStore_RebindResumedChatError_NoHook asserts a failed
+// rebind emits nothing: a refusal must not repaint the UI as though the resume
+// succeeded.
+func TestNotifyingAgentChatStore_RebindResumedChatError_NoHook(t *testing.T) {
+	store, _, got := newSeededNotifyingStore(t)
+
+	if err := store.RebindResumedChat(context.Background(), "agent-nonexistent", RebindResumedChatParams{}); err == nil {
+		t.Fatal("expected an error rebinding an unknown agent_session_id")
+	}
+	if len(*got) != 0 {
+		t.Errorf("hook fired %d times after a failed rebind, want 0", len(*got))
 	}
 }

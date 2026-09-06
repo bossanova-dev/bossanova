@@ -8,17 +8,23 @@ import (
 )
 
 // fakeHostAccountEnv is an accountEnvResolver returning a fixed overlay.
-type fakeHostAccountEnv struct{ env map[string]string }
+type fakeHostAccountEnv struct {
+	env map[string]string
+	err error
+}
 
-func (f fakeHostAccountEnv) Resolve(context.Context, *models.Session) map[string]string {
-	return f.env
+func (f fakeHostAccountEnv) Resolve(context.Context, *models.Session) (map[string]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.env, nil
 }
 
 // TestHostServiceResolveAccountEnvNil confirms a host service with no account
 // resolver wired degrades to nil rather than panicking.
 func TestHostServiceResolveAccountEnvNil(t *testing.T) {
 	s := &HostServiceServer{}
-	if got := s.resolveAccountEnv(context.Background(), &models.Session{}); got != nil {
+	if got, _ := s.resolveAccountEnv(context.Background(), &models.Session{}); got != nil {
 		t.Errorf("expected nil overlay with no resolver, got %v", got)
 	}
 }
@@ -29,7 +35,7 @@ func TestHostServiceResolveAccountEnvInjected(t *testing.T) {
 	s := &HostServiceServer{}
 	want := map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}
 	s.SetAccountEnvResolver(fakeHostAccountEnv{env: want})
-	if got := s.resolveAccountEnv(context.Background(), &models.Session{AccountID: strp("a1")}); got["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
+	if got, _ := s.resolveAccountEnv(context.Background(), &models.Session{AccountID: strp("a1")}); got["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("resolveAccountEnv = %v, want token x", got)
 	}
 }

@@ -812,6 +812,9 @@ func (s *stubRepoClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb
 func (s *stubRepoClient) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
 	panic("unused")
 }
+func (s *stubRepoClient) RefreshAccount(context.Context, *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) RemoveAccount(context.Context, string) error { panic("unused") }
 func (s *stubRepoClient) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
 	panic("unused")
@@ -837,4 +840,11 @@ func (s *stubRepoClient) ListPlugins(context.Context) ([]*pb.InstalledPlugin, er
 
 func (s *stubRepoClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
 	panic("unused")
+}
+
+// ListSessionsWithReadFailures satisfies the BossClient seam: this fake reads
+// one place, so it never reports a partial read.
+func (s *stubRepoClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	sessions, err := s.ListSessions(ctx, req, opts)
+	return sessions, nil, err
 }

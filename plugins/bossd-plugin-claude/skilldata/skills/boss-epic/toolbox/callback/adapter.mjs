@@ -1,7 +1,8 @@
 // skills-toolbox/callback/adapter.mjs
 // Pluggable callback-notifier adapter for the boss-build / boss-epic skills.
 // Abstracts one-shot GitHub PR-event callbacks (register / list / remove a durable
-// watch) so any host exposing a `boss callback`-style interface can slot
+// watch, with optional transition-only arming) so any host exposing a
+// `boss callback`-style interface can slot
 // in behind resolveCallbackAdapter. This is the fourth instance of the adapter
 // pattern (tracker, finalize, session-runner). Like the
 // session-runner adapter it is DECLARATIVE: the boss reference records the CLI
@@ -84,7 +85,8 @@ export function resolveCallbackAdapter(env = process.env) {
 
 /**
  * Validate that an adapter exposes every callback capability plus the callback-watch
- * policy the spine depends on (trigger list, mutually exclusive grouping, reconcile-before-act, re-arm).
+ * policy the spine depends on (available/default/draft-aware trigger lists,
+ * mutually exclusive grouping, reconcile-before-act, re-arm).
  * @returns the adapter, for chaining.
  */
 export function assertConforms(adapter) {
@@ -100,6 +102,12 @@ export function assertConforms(adapter) {
   const policy = adapter.policy
   if (!policy || !Array.isArray(policy.watchTriggers) || policy.watchTriggers.length === 0) {
     throw new Error(`callback adapter '${adapter.notifier}': missing policy.watchTriggers`)
+  }
+  if (!Array.isArray(policy.availableTriggers) || policy.availableTriggers.length === 0) {
+    throw new Error(`callback adapter '${adapter.notifier}': missing policy.availableTriggers`)
+  }
+  if (!Array.isArray(policy.draftAwareTriggers) || policy.draftAwareTriggers.length === 0) {
+    throw new Error(`callback adapter '${adapter.notifier}': missing policy.draftAwareTriggers`)
   }
   if (
     typeof policy.reconcileBeforeAct !== 'boolean' ||

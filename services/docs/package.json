@@ -49,8 +49,9 @@
   "scripts": {
     "build": "docusaurus build",
     "dev": "docusaurus start --port 3001",
-    "format": "prettier --write 'docs/**/*.{md,mdx}' '*.{ts,tsx,json}' 'src/**/*.{ts,tsx,css}' 'sidebars.ts' 'docusaurus.config.ts'",
-    "lint": "prettier --check 'docs/**/*.{md,mdx}' '*.{ts,tsx,json}' 'src/**/*.{ts,tsx,css}' 'sidebars.ts' 'docusaurus.config.ts'",
+    "format": "prettier --write 'docs/**/*.{md,mdx}' '*.{md,ts,tsx,json}' 'src/**/*.{ts,tsx,css}' 'scripts/**/*.mjs' 'sidebars.ts' 'docusaurus.config.ts'",
+    "lint": "prettier --check 'docs/**/*.{md,mdx}' '*.{md,ts,tsx,json}' 'src/**/*.{ts,tsx,css}' 'scripts/**/*.mjs' 'sidebars.ts' 'docusaurus.config.ts' && pnpm run lint:prose",
+    "lint:prose": "node scripts/prose-density.mjs && node scripts/prose-lint.mjs",
     "start": "docusaurus serve",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit"

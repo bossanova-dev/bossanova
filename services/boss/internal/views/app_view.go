@@ -100,6 +100,9 @@ func (a App) bannerOpts() bannerOpts {
 		opts.line1 = "Edit Account"
 	case ViewAccountRegister:
 		opts.line1 = "Add Account"
+		if a.accountRegister.reauthAccountID != "" {
+			opts.line1 = "Reauthenticate Account"
+		}
 	case ViewOnboarding:
 		opts.line1 = "Welcome to Bossanova"
 	}

@@ -86,6 +86,14 @@ type AccountsListModel struct {
 	disabling map[string]bool
 	removing  map[string]bool
 
+	// reauthing tracks account IDs whose in-place reauthentication has been
+	// dispatched. The dispatch is a view switch rather than an RPC, and the
+	// switch is delivered as a message, so a second keypress in the same frame
+	// would otherwise start a second isolated device login against the same
+	// account. This model is rebuilt when the flow returns, so the flag never
+	// has to be cleared.
+	reauthing map[string]bool
+
 	// confirm gates the destructive/semi-destructive disable+remove prompts
 	// through the shared value-safe confirmPrompt (BOS-268), mirroring
 	// cron_list.go. Polling is not used here, but the confirm still suppresses
@@ -124,6 +132,7 @@ func NewAccountsListModel(c client.BossClient, ctx context.Context) AccountsList
 		testing:   make(map[string]bool),
 		disabling: make(map[string]bool),
 		removing:  make(map[string]bool),
+		reauthing: make(map[string]bool),
 		spinner:   newStatusSpinner(),
 		table:     newBossTable(nil, nil, 0),
 		loading:   true,
@@ -362,6 +371,39 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.rebuildTable()
 		return m, m.testAccountCmd(id)
 
+	case "R":
+		// [R]eauth — replace this account's stored credential in place through a
+		// fresh isolated device login (BOS-1142). Deliberately shift-R, kept
+		// distinct from the lowercase [r]efresh-usage key: refresh re-probes
+		// usage read-only and touches no credential, while this one reauthenticates.
+		// Collapsing the two would make a routine usage probe capable of
+		// replacing a credential.
+		acct := m.selectedAccount()
+		if acct == nil {
+			return m, nil
+		}
+		id := acct.GetId()
+		// One dispatch per row. The action leaves this view, so a second press
+		// before the switch lands would open a second device login.
+		if m.reauthing[id] {
+			return m, nil
+		}
+		// The device login is provider-specific and only Codex is implemented.
+		// Refuse in place with the alternative named, rather than opening a flow
+		// that would fail after the operator has already been sent to a browser.
+		if !accountReauthSupported(acct) {
+			m.setStatus(accountReauthUnsupportedStatus(acct.GetProvider()), true)
+			return m, nil
+		}
+		m.reauthing[id] = true
+		return m, func() tea.Msg {
+			return switchViewMsg{
+				view:            ViewAccountRegister,
+				reauthAccountID: id,
+				returnView:      ViewAccounts,
+			}
+		}
+
 	case "space":
 		// [space] toggle disable/enable (BOS-392 unifies this with the cron
 		// list's [space] toggle; behavior unchanged since BOS-268). Enabling
@@ -494,7 +536,7 @@ func (m AccountsListModel) selectedAccount() *pb.Account {
 
 func (m AccountsListModel) tableHeight() int {
 	actionLines := actionBarLineCount(m.width,
-		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[r]efresh", "[space] toggle", "[d] remove"},
+		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[R]eauth", "[r]efresh", "[space] toggle", "[d] remove"},
 		[]string{"[esc] back"},
 	)
 	return clampedTableHeight(len(m.accounts), m.height, bannerOverhead+1+actionBarPadY+actionLines)
@@ -517,6 +559,8 @@ func (m *AccountsListModel) rebuildTable() {
 	usageAges := make([]string, n)
 	cooldowns := make([]string, n)
 	lastTests := make([]string, n)
+	checks := make([]string, n)
+	checkAges := make([]string, n)
 
 	now := time.Now()
 	for i, a := range m.accounts {
@@ -530,6 +574,8 @@ func (m *AccountsListModel) rebuildTable() {
 		usageAges[i] = accountUsageAgeCell(u, now)
 		cooldowns[i] = accountCooldownCell(a, now)
 		lastTests[i] = accountLastTestCell(a)
+		checks[i] = accountCheckLabel(a)
+		checkAges[i] = accountCheckAgeCell(a)
 	}
 
 	// Keep the account identity and actionable status at narrow widths. The
@@ -540,6 +586,13 @@ func (m *AccountsListModel) rebuildTable() {
 		{col: table.Column{Title: "PROVIDER", Width: maxColWidth("PROVIDER", providers, 12) + tableColumnSep}, priority: 4, minWidth: 1},
 		{col: table.Column{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 12) + tableColumnSep}, priority: 1, minWidth: 1},
 		{col: table.Column{Title: "HEALTH", Width: maxColWidth("HEALTH", healths, 10) + tableColumnSep}, priority: 3, minWidth: 1},
+		// CHECK drops just before HEALTH, never before it: the health fold
+		// already refuses a dominant green once a check has failed, so the
+		// narrowest terminals still carry the signal. It is capped wide enough
+		// for the longest "failed:<class>" the daemon emits — truncating the
+		// class away would leave a bare "failed" that names no remedy (BOS-892).
+		{col: table.Column{Title: "CHECK", Width: maxColWidth("CHECK", checks, 24) + tableColumnSep}, priority: 4, minWidth: 1},
+		{col: table.Column{Title: "CHECKED", Width: maxColWidth("CHECKED", checkAges, 8) + tableColumnSep}, priority: 5, minWidth: 1},
 		{col: table.Column{Title: "UTIL5H", Width: maxColWidth("UTIL5H", util5hs, 12) + tableColumnSep}, priority: 2, minWidth: 1},
 		{col: table.Column{Title: "UTIL7D", Width: maxColWidth("UTIL7D", util7ds, 12) + tableColumnSep}, priority: 5, minWidth: 1},
 		{col: table.Column{Title: "AGE", Width: maxColWidth("AGE", usageAges, 6) + tableColumnSep}, priority: 5, minWidth: 1},
@@ -565,6 +618,7 @@ func (m *AccountsListModel) rebuildTable() {
 		// never render a secret, even accidentally.
 		label, provider, status := labels[i], providers[i], statuses[i]
 		health, cooldown, lastTest := healths[i], cooldowns[i], lastTests[i]
+		check, checkAge := checks[i], checkAges[i]
 		util5h, util7d := util5hs[i], util7ds[i]
 		usageAge := usageAges[i]
 
@@ -574,7 +628,8 @@ func (m *AccountsListModel) rebuildTable() {
 			// uniformly below (an inner color survives an outer muted style,
 			// so pre-coloring a to-be-muted cell would leak the accent —
 			// see cron_list BOS-313).
-			health = accountHealthCell(health)
+			health = accountHealthCellFor(a, health)
+			check = accountCheckCell(check)
 		}
 		switch {
 		case m.removing[a.GetId()]:
@@ -596,6 +651,8 @@ func (m *AccountsListModel) rebuildTable() {
 			provider = muted.Render(provider)
 			status = muted.Render(status)
 			health = muted.Render(health)
+			check = muted.Render(check)
+			checkAge = muted.Render(checkAge)
 			util5h = muted.Render(util5h)
 			util7d = muted.Render(util7d)
 			usageAge = muted.Render(usageAge)
@@ -603,7 +660,7 @@ func (m *AccountsListModel) rebuildTable() {
 			lastTest = muted.Render(lastTest)
 		}
 
-		rows[i] = projectRow(fitted, table.Row{indicator, label, provider, status, health, util5h, util7d, usageAge, cooldown, lastTest})
+		rows[i] = projectRow(fitted, table.Row{indicator, label, provider, status, health, check, checkAge, util5h, util7d, usageAge, cooldown, lastTest})
 	}
 
 	setTableContent(&m.table, cols, rows)
@@ -764,7 +821,7 @@ func (m AccountsListModel) View() tea.View {
 		b.WriteString("\n")
 	}
 	b.WriteString(actionBarWidth(m.width,
-		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[r]efresh", "[space] toggle", "[d] remove"},
+		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[R]eauth", "[r]efresh", "[space] toggle", "[d] remove"},
 		[]string{"[esc] back"},
 	))
 

@@ -14,6 +14,18 @@ var ErrRepoNotReady = errors.New("repository is not ready for pull requests: pus
 // request for the requested head/base branch pair.
 var ErrPRAlreadyExists = errors.New("pull request already exists")
 
+// ErrGitHubAuthUnavailable is returned when the daemon's gh CLI could not
+// authenticate to GitHub at all — it is logged out, or (the case this sentinel
+// was added for) it cannot read its stored token and silently fell back to
+// unauthenticated requests.
+//
+// It exists so the session layer can branch on a sentinel rather than on gh's
+// error text: the provider owns the string signatures, and everything upstream
+// tests it with errors.Is. It is deliberately distinct from a transient failure
+// — an auth outage persists until an operator fixes credentials, and retrying it
+// only burns budget while reporting the wrong cause.
+var ErrGitHubAuthUnavailable = errors.New("the daemon's gh CLI could not authenticate to GitHub")
+
 // PRState represents the state of a pull/merge request.
 type PRState int
 

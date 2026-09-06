@@ -135,7 +135,7 @@ func (m NewSessionModel) keyTypeSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // keyPRSelect handles keys in the PR picker.
 func (m NewSessionModel) keyPRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// While the filter input is focused, route keys through it (with
-	// special handling for commit/clear/navigation).
+	// special handling for activation/clear/navigation).
 	if m.prFilter.Active() {
 		return m.keyPRFilter(msg)
 	}
@@ -149,16 +149,6 @@ func (m NewSessionModel) keyPRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.buildPRTable()
 		return m, cmd
 	case "esc":
-		if m.prFilter.Applied() {
-			m.prFilter.Reset()
-			m.prTable.SetCursor(0)
-			m.buildPRTable()
-			if len(m.prTable.Rows()) > 0 {
-				m.prTable.GotoTop()
-			}
-			updateCursorColumn(&m.prTable)
-			return m, nil
-		}
 		m.phase = newSessionPhaseTypeSelect
 		m.forceBranch = false
 		return m, nil
@@ -181,9 +171,10 @@ func (m NewSessionModel) keyPRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m NewSessionModel) keyPRFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		if !m.prFilter.Commit() {
-			m.prFilter.Dismiss()
-			m.buildPRTable()
+		idx := m.prTable.Cursor()
+		if idx >= 0 && idx < len(m.prsFiltered) {
+			cmd := m.startCreating()
+			return m, cmd
 		}
 		return m, nil
 	case "esc":
@@ -221,17 +212,13 @@ func (m NewSessionModel) keyIssueSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Bumping seq here invalidates any in-flight fetch whose
 		// response would otherwise snap the user back to issue select.
 		m.issueSearchSeq++
+		m.pendingIssueActivate = false
 		m.phase = newSessionPhaseTypeSelect
 		m.forceBranch = false
 		return m, nil
 	case "enter":
-		idx := m.issueTable.Cursor()
-		if idx >= 0 && idx < len(m.issuesFiltered) {
-			m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
-			cmd := m.startCreating()
-			return m, cmd
-		}
-		return m, nil
+		cmd := m.activateHighlightedIssue()
+		return m, cmd
 	}
 
 	var cmd tea.Cmd
@@ -244,20 +231,20 @@ func (m NewSessionModel) keyIssueSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m NewSessionModel) keyIssueFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
+		if m.issuesFetching {
+			m.pendingIssueActivate = true
+			return m, nil
+		}
 		// Live debounced search means there is nothing to "commit"
 		// — pressing Enter selects the highlighted row, mirroring
 		// how Enter behaves once the filter input is blurred.
-		idx := m.issueTable.Cursor()
-		if idx >= 0 && idx < len(m.issuesFiltered) {
-			m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
-			cmd := m.startCreating()
-			return m, cmd
-		}
-		return m, nil
+		cmd := m.activateHighlightedIssue()
+		return m, cmd
 	case "esc":
 		// Clear the filter and refetch the unfiltered list. The
 		// seq bump invalidates any in-flight tick or fetch.
 		m.issueFilter.Reset()
+		m.pendingIssueActivate = false
 		m.err = nil
 		m.issueSearchSeq++
 		m.issueSearchQuery = ""
@@ -265,6 +252,7 @@ func (m NewSessionModel) keyIssueFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.buildIssueTable()
 		return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.trackerSource(), m.issueSearchSeq)
 	case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
+		m.pendingIssueActivate = false
 		var cmd tea.Cmd
 		m.issueTable, cmd = m.issueTable.Update(msg)
 		updateCursorColumn(&m.issueTable)
@@ -272,6 +260,15 @@ func (m NewSessionModel) keyIssueFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	cmd := m.updateIssueFilterInput(msg)
 	return m, cmd
+}
+
+func (m *NewSessionModel) activateHighlightedIssue() tea.Cmd {
+	idx := m.issueTable.Cursor()
+	if idx < 0 || idx >= len(m.issuesFiltered) {
+		return nil
+	}
+	m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
+	return m.startCreating()
 }
 
 // keyForm handles keys in the form phase. esc tears the form down and returns
@@ -345,6 +342,7 @@ func (m *NewSessionModel) updatePRFilterInput(msg tea.Msg) tea.Cmd {
 func (m *NewSessionModel) updateIssueFilterInput(msg tea.Msg) tea.Cmd {
 	cmd, changed := m.issueFilter.Update(msg)
 	if changed {
+		m.pendingIssueActivate = false
 		m.issueTable.SetCursor(0)
 		m.buildIssueTable()
 		if len(m.issueTable.Rows()) > 0 {

@@ -50,8 +50,8 @@ func (s *scriptedTmux) lastCall() []string {
 
 func TestListSessions_ParsesNameAndCreationTime(t *testing.T) {
 	fake := &scriptedTmux{
-		stdout: "boss-abcdef12-34567890\t1754870000\n" +
-			"work\t1754860000\n",
+		stdout: "boss-abcdef12-34567890\t1754870000\t0\n" +
+			"work\t1754860000\t2\n",
 	}
 	c := NewClient(WithCommandFactory(fake.factory))
 
@@ -74,6 +74,12 @@ func TestListSessions_ParsesNameAndCreationTime(t *testing.T) {
 	if !got[1].Created.Equal(time.Unix(1754860000, 0)) {
 		t.Errorf("got[1].Created = %v, want %v", got[1].Created, time.Unix(1754860000, 0))
 	}
+	if got[0].AttachedClients != 0 {
+		t.Errorf("got[0].AttachedClients = %d, want 0", got[0].AttachedClients)
+	}
+	if got[1].AttachedClients != 2 {
+		t.Errorf("got[1].AttachedClients = %d, want 2", got[1].AttachedClients)
+	}
 }
 
 // TestListSessions_Argv pins the exact command line. The format string is the
@@ -87,7 +93,7 @@ func TestListSessions_Argv(t *testing.T) {
 		t.Fatalf("ListSessions() error = %v, want nil", err)
 	}
 
-	want := []string{"tmux", "list-sessions", "-F", "#{session_name}\t#{session_created}"}
+	want := []string{"tmux", "list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_attached}"}
 	got := fake.lastCall()
 	if len(got) != len(want) {
 		t.Fatalf("argv = %q, want %q", got, want)
@@ -145,9 +151,11 @@ func TestListSessions_SkipsMalformedLines(t *testing.T) {
 	fake := &scriptedTmux{
 		stdout: "no-tab-here\n" +
 			"bad-time\tnot-a-number\n" +
+			"bad-attached\t1754870000\tnot-a-number\n" +
+			"missing-attached\t1754870000\n" +
 			"\tleading-empty-name\n" +
 			"\n" +
-			"boss-abcdef12-34567890\t1754870000\n",
+			"boss-abcdef12-34567890\t1754870000\t0\n",
 	}
 	c := NewClient(WithCommandFactory(fake.factory))
 

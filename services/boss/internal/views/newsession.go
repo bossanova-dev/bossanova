@@ -56,6 +56,9 @@ type NewSessionModel struct {
 	issueSearchSeq   uint64
 	issueSearchQuery string
 	issuesFetching   bool
+	// pendingIssueActivate defers an Enter pressed during live search until
+	// the matching result set lands, so stale rows are never activated.
+	pendingIssueActivate bool
 
 	// Filters — indices into m.prs / m.trackerIssues that match the current query.
 	prFilter       listFilter
@@ -170,7 +173,10 @@ func (m *NewSessionModel) SetPreferredAgent(name string) {
 func (m *NewSessionModel) SetAgentSettings(settings config.Settings) {
 	enabled := make(map[string]bool)
 	for _, plugin := range settings.Plugins {
-		if plugin.Enabled {
+		// Effective state, not the persisted flag: for an experimental plugin
+		// experimental_plugins is authoritative and the daemon never persists its
+		// override, so plugins[].enabled stays false for a runner it has loaded.
+		if config.PluginEnabledForSettings(settings, plugin.Name) {
 			enabled[plugin.Name] = true
 		}
 	}

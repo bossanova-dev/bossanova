@@ -21,6 +21,9 @@ type fakeChatOrchestrator struct {
 	sendReq       *pb.ProxySendChatMessageRequest
 	getSessReq    *pb.ProxyGetSessionRequest
 	listSessReq   *pb.ProxyListSessionsRequest
+	// listSessResp, when set, replaces the canned response so a test can stage a
+	// partial cross-organization read.
+	listSessResp  *pb.ProxyListSessionsResponse
 	mergeSessReq  *pb.ProxyMergeSessionRequest
 	createCronReq *pb.ProxyCreateCronJobRequest
 	updateCronReq *pb.ProxyUpdateCronJobRequest
@@ -65,6 +68,9 @@ func (f *fakeChatOrchestrator) ProxyGetSession(_ context.Context, req *connect.R
 
 func (f *fakeChatOrchestrator) ProxyListSessions(_ context.Context, req *connect.Request[pb.ProxyListSessionsRequest]) (*connect.Response[pb.ProxyListSessionsResponse], error) {
 	f.listSessReq = req.Msg
+	if f.listSessResp != nil {
+		return connect.NewResponse(f.listSessResp), nil
+	}
 	return connect.NewResponse(&pb.ProxyListSessionsResponse{Sessions: []*pb.Session{{Id: "sess-1"}}}), nil
 }
 
@@ -484,5 +490,81 @@ func TestRemoteClient_GetAuthStateIsLocalOnly(t *testing.T) {
 	}
 	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
 		t.Fatalf("connect.CodeOf(err) = %v, want %v", got, connect.CodeUnimplemented)
+	}
+}
+
+// TestRemoteClient_ListSessionsReadsAcrossOrganizations is the BOS-1151 pin.
+// The remote read used to issue the single-organization ProxyListSessions, so a
+// user whose sessions lived in two organizations saw only the active one's —
+// and the sessions the list omitted could not be opened from the TUI at all.
+// The assertion is two-sided on purpose: reaching the union RPC is not enough
+// if the old single-organization call is still made alongside it.
+func TestRemoteClient_ListSessionsReadsAcrossOrganizations(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	repoID := "repo-7"
+	sessions, failures, err := c.ListSessionsWithReadFailures(context.Background(), &pb.ListSessionsRequest{
+		IncludeArchived: true,
+		RepoId:          &repoID,
+		States:          []pb.SessionState{pb.SessionState_SESSION_STATE_BLOCKED},
+	}, SessionReadOptions{})
+	if err != nil {
+		t.Fatalf("ListSessionsWithReadFailures: %v", err)
+	}
+	if len(sessions) != 1 || len(failures) != 0 {
+		t.Fatalf("unexpected read: %d sessions, %d failures", len(sessions), len(failures))
+	}
+	if fake.listSessReq == nil {
+		t.Fatal("ProxyListSessions was not reached")
+	}
+	if !fake.listSessReq.GetIncludeArchived() {
+		t.Fatalf("include_archived was not forwarded: %+v", fake.listSessReq)
+	}
+	if fake.listSessReq.GetRepoId() != repoID {
+		t.Fatalf("repo_id not forwarded: %+v", fake.listSessReq)
+	}
+	if got := fake.listSessReq.GetStates(); len(got) != 1 || got[0] != pb.SessionState_SESSION_STATE_BLOCKED {
+		t.Fatalf("states not forwarded: %+v", fake.listSessReq)
+	}
+}
+
+// TestRemoteClient_ListSessionsServesPartialRead pins the degrade rule: the
+// union is a fan-out, and one organization failing must yield the sessions that
+// WERE read plus a report of what is missing — never an error, which would
+// empty a list the user needs.
+func TestRemoteClient_ListSessionsServesPartialRead(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	fake.listSessResp = &pb.ProxyListSessionsResponse{
+		Sessions: []*pb.Session{{Id: "sess-1"}, {Id: "sess-2"}},
+		FailedOrganizations: []*pb.OrganizationSessionReadFailure{{
+			OrganizationId:   "org-2",
+			OrganizationName: "Acme",
+			Reason:           "sessions for this organization are temporarily unavailable",
+		}},
+	}
+
+	sessions, failures, err := c.ListSessionsWithReadFailures(context.Background(), &pb.ListSessionsRequest{}, SessionReadOptions{})
+	if err != nil {
+		t.Fatalf("a partial read must not be an error: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("served sessions dropped: got %d, want 2", len(sessions))
+	}
+	if len(failures) != 1 || failures[0].GetOrganizationName() != "Acme" {
+		t.Fatalf("read failures not reported: %+v", failures)
+	}
+	if failures[0].GetReason() != "sessions for this organization are temporarily unavailable" {
+		t.Fatalf("reason not passed through verbatim: %q", failures[0].GetReason())
+	}
+
+	// ListSessions itself keeps its exact signature and still serves the union.
+	plain, err := c.ListSessions(context.Background(), &pb.ListSessionsRequest{}, SessionReadOptions{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(plain) != 2 {
+		t.Fatalf("ListSessions dropped served sessions: got %d, want 2", len(plain))
 	}
 }

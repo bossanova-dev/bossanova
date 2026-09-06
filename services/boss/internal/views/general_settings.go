@@ -307,7 +307,13 @@ func fallbackAgentInfos() []client.AgentInfo {
 func enabledAgentNames(settings config.Settings, agents []client.AgentInfo) []string {
 	out := make([]string, 0, len(agents))
 	for _, agent := range agents {
-		if pluginEnabled(settings, agent.Name) {
+		// Effective state rather than pluginEnabled's persisted read: an opted-in
+		// experimental agent is loaded by the daemon with plugins[].enabled still
+		// false, and offering a legacy enabled entry the gate forces off would
+		// name a default that never loads. pluginEnabled itself stays as-is — it
+		// also backs the per-agent Enabled toggle, whose write is inert for a
+		// registry member, and showing that toggle on would be a worse lie.
+		if config.PluginEnabledForSettings(settings, agent.Name) {
 			out = append(out, agent.Name)
 		}
 	}

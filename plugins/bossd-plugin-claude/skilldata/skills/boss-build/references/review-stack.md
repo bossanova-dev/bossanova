@@ -872,10 +872,18 @@ actually land, and its **first line** is the marker literal so every downstream 
 Upsert exactly **one** such comment per PR — edit the existing marker comment in place on a resume,
 never stack duplicates — with Step 7's own block:
 
+The leading-marker constraint rejects quoted markers, while the authenticated-author constraint
+rejects a foreign comment that happens to begin with the marker. If the login is unavailable,
+retain the leading-marker constraint so resumes do not stack duplicate review comments.
+
 ```bash
-BS_REVIEW_BODY="$(mktemp)"   # the open-findings ledger; its FIRST line is <!-- bs-review -->
+BS_REVIEW_BODY="$(mktemp)"   # boss-review report, or the honest fallback note — both lead with <!-- bs-review -->
+ME="$(gh api user --jq '.login' 2>/dev/null || true)"
 CID=$(gh pr view "$PR_NUMBER" --json comments \
-  --jq '[.comments[] | select(.body | contains("<!-- bs-review -->")) | .url][-1] // ""')
+  | jq -r --arg me "$ME" '[.comments[]
+      | select(.body | startswith("<!-- bs-review -->"))
+      | select($me == "" or (.author.login // "") == $me)
+      | .url][-1] // ""')
 if [ -n "$CID" ]; then
   gh api -X PATCH "repos/{owner}/{repo}/issues/comments/${CID##*-}" -F body=@"$BS_REVIEW_BODY"
 else

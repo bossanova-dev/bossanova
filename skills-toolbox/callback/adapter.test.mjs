@@ -152,6 +152,11 @@ test('registerWatch documents the grouped one-shot flags (group, message, expire
   }
 })
 
+test('registerWatch exposes transition-only arming', () => {
+  const { operationMap } = resolveCallbackAdapter({})
+  assert.ok(operationMap.registerWatch.args.includes('onTransition'))
+})
+
 test('callback operations declare their supported chat and repository scopes', () => {
   const { operationMap } = resolveCallbackAdapter({})
 
@@ -176,9 +181,40 @@ test('the message body is a secret: it is never echoed in ANY capability respons
   }
 })
 
-test('policy names the grouped green/red/merged triggers', () => {
+test('policy names the CLI vocabulary without changing the default wait set', () => {
   const { policy } = resolveCallbackAdapter({})
+  const callbackRef = readFileSync(
+    new URL('../../lib/bossalib/githubcallback/callbackref.go', import.meta.url),
+    'utf8',
+  )
+  const triggerModels = readFileSync(
+    new URL('../../lib/bossalib/models/github_callback.go', import.meta.url),
+    'utf8',
+  )
+  const validTriggersBody = callbackRef.match(
+    /func ValidTriggers\(\) \[\]models\.GithubCallbackTrigger \{[\s\S]*?return \[\]models\.GithubCallbackTrigger\{([\s\S]*?)\n\s*\}/,
+  )?.[1]
+  assert.ok(validTriggersBody, 'expected to parse githubcallback.ValidTriggers')
+  const constants = [...validTriggersBody.matchAll(/models\.(GithubCallbackTrigger\w+)/g)].map(
+    ([, name]) => name,
+  )
+  const values = new Map(
+    [
+      ...triggerModels.matchAll(
+        /(GithubCallbackTrigger\w+)\s+GithubCallbackTrigger\s*=\s*"([^"]+)"/g,
+      ),
+    ].map(([, name, value]) => [name, value]),
+  )
+  assert.deepEqual(
+    policy.availableTriggers,
+    constants.map((name) => values.get(name)),
+    'adapter vocabulary must equal githubcallback.ValidTriggers in stable order',
+  )
   assert.deepEqual(policy.watchTriggers, ['checks_passed', 'checks_failed', 'merged'])
+  assert.deepEqual(policy.draftAwareTriggers, ['checks_passed_ready', 'checks_failed', 'merged'])
+  assert.equal(Object.isFrozen(policy.availableTriggers), true)
+  assert.equal(Object.isFrozen(policy.watchTriggers), true)
+  assert.equal(Object.isFrozen(policy.draftAwareTriggers), true)
 })
 
 test('boss callback policy comments require mutually exclusive groups', () => {
@@ -216,6 +252,17 @@ test('boss callback policy comments guard re-arm on false trigger state', () => 
   )
 })
 
+test('boss callback comments document transition arming and the sanctioned fallback loop', () => {
+  const source = readFileSync(new URL('./boss.mjs', import.meta.url), 'utf8')
+  const prose = source.replace(/\/\/\s?/g, ' ').replace(/\s+/g, ' ')
+  assert.match(prose, /state-match(?:ed|ing)\s+by\s+default/i)
+  assert.match(prose, /onTransition[\s\S]{0,80}--on-transition[\s\S]{0,80}transition-match/i)
+  assert.match(
+    prose,
+    /fallbackPoll[\s\S]{0,240}consuming\s+workflow's\s+Protocol\s+step\s+5\s+bounded\s+loop/i,
+  )
+})
+
 test('policy enables reconcile-before-act, re-arm-while-waiting, dedup, and a fallback poll', () => {
   const { policy } = resolveCallbackAdapter({})
   assert.equal(policy.reconcileBeforeAct, true)
@@ -249,6 +296,44 @@ test('assertConforms throws when policy.watchTriggers is empty', () => {
   )
 })
 
+test('assertConforms throws when the available trigger vocabulary is missing or malformed', () => {
+  const map = Object.fromEntries(CALLBACK_CAPABILITIES.map((cap) => [cap, {}]))
+  for (const availableTriggers of [undefined, [], 'merged']) {
+    assert.throws(
+      () =>
+        assertConforms({
+          notifier: 'stub',
+          operationMap: map,
+          policy: {
+            availableTriggers,
+            draftAwareTriggers: ['merged'],
+            watchTriggers: ['merged'],
+          },
+        }),
+      /missing policy\.availableTriggers/,
+    )
+  }
+})
+
+test('assertConforms throws when the draft-aware trigger set is missing or malformed', () => {
+  const map = Object.fromEntries(CALLBACK_CAPABILITIES.map((cap) => [cap, {}]))
+  for (const draftAwareTriggers of [undefined, [], 'merged']) {
+    assert.throws(
+      () =>
+        assertConforms({
+          notifier: 'stub',
+          operationMap: map,
+          policy: {
+            availableTriggers: ['merged'],
+            draftAwareTriggers,
+            watchTriggers: ['merged'],
+          },
+        }),
+      /missing policy\.draftAwareTriggers/,
+    )
+  }
+})
+
 test('assertConforms throws when reconcile/re-arm policy flags are missing', () => {
   const map = Object.fromEntries(CALLBACK_CAPABILITIES.map((cap) => [cap, {}]))
   assert.throws(
@@ -256,7 +341,11 @@ test('assertConforms throws when reconcile/re-arm policy flags are missing', () 
       assertConforms({
         notifier: 'stub',
         operationMap: map,
-        policy: { watchTriggers: ['merged'] },
+        policy: {
+          availableTriggers: ['merged'],
+          draftAwareTriggers: ['merged'],
+          watchTriggers: ['merged'],
+        },
       }),
     /missing reconcile\/re-arm policy/,
   )
@@ -270,7 +359,13 @@ test('assertConforms throws when the dedup/fallback policy the prose depends on 
         notifier: 'stub',
         operationMap: map,
         // Has reconcile/re-arm but omits dedupById + fallbackPoll.
-        policy: { watchTriggers: ['merged'], reconcileBeforeAct: true, rearmWhileWaiting: true },
+        policy: {
+          availableTriggers: ['merged'],
+          draftAwareTriggers: ['merged'],
+          watchTriggers: ['merged'],
+          reconcileBeforeAct: true,
+          rearmWhileWaiting: true,
+        },
       }),
     /missing dedup\/fallback policy/,
   )

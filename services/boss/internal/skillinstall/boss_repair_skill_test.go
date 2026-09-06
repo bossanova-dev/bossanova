@@ -2226,8 +2226,13 @@ func TestBossRepairPendingChecksWaitIsCallbackFirst(t *testing.T) {
 			// The rule is only executable if the callback seam it names resolves from this skill's
 			// own installed toolbox — boss-repair cannot reach into another core's copy.
 			assertContains(t, watchMode, "$BOSS_REPAIR_TOOLBOX/callback/adapter.mjs")
+			assertContains(t, watchMode, "export BOSS_REPAIR_CALLBACK")
 			assertContains(t, watchMode, "callbacksAvailable")
+			assertContains(t, watchMode, "callbacksUnavailableReason")
 			assertContains(t, watchMode, "policy.watchTriggers")
+			if strings.Contains(watchMode, "gate.available") || strings.Contains(watchMode, "gate.reason") {
+				t.Error("watch mode treats callbacksAvailable's boolean result as an object")
+			}
 
 			// The step-2 heading names what the poll precedes. Left as "before every sleep" it
 			// still describes a loop paced by a clock.

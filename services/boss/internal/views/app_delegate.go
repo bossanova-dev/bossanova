@@ -2,6 +2,7 @@ package views
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/accountflow"
 	"github.com/recurser/boss/internal/auth"
 )
 
@@ -368,6 +369,35 @@ func (a App) updateAccounts(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.accountsList.Cancelled() {
 		return a, a.switchToReturn(a.accountsList.returnView)
 	}
+	// Re-stamp the carried reauthentication verdict once the rebuilt list has
+	// finished loading. The toast is a 5-second transient whose clock starts
+	// when it is set, and it is set at the moment the register view pops —
+	// BEFORE ListAccounts is even dialled, while View() is still in its loading
+	// branch, which returns early and renders no status at all. Without this the
+	// only surface carrying the daemon's post-save verification verdict can
+	// spend its whole window behind a spinner and expire unseen. Stamping it
+	// again here starts the clock when the operator can actually read it.
+	//
+	// A FAILED load consumes nothing. AccountsListModel.View returns its
+	// full-screen error before it reaches the status line, so a verdict stamped
+	// onto a failed load is written to a surface that renders none of it, and
+	// clearing the marker there would discard the daemon's verification verdict
+	// permanently — the operator would be left with a dial error and no idea
+	// whether the credential they just replaced actually works. Holding the
+	// marker instead costs nothing: the accounts list reloads on [r] and on
+	// re-entry, and the first load that succeeds re-stamps the verdict onto a
+	// screen that can show it. It is not held forever either — a fresh
+	// AccountRegisterModel is built on every entry to ViewAccountRegister
+	// (handleSwitchView), so an unread verdict dies with the next flow.
+	if loaded, ok := msg.(accountsLoadedMsg); ok && loaded.err == nil && a.accountRegister.reauthAccountID != "" {
+		if detail := a.accountRegister.flowVerdictLine(); detail != "" {
+			a.accountsList.setStatus(detail, !accountflow.ReauthLineIsVerified(detail))
+		}
+		// One carry per reauthentication: clearing the marker keeps a later
+		// visit to the accounts list from re-toasting a verdict the operator
+		// has already read.
+		a.accountRegister.reauthAccountID = ""
+	}
 	return a, cmd
 }
 
@@ -395,6 +425,25 @@ func (a App) updateAccountRegister(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.accountsList.returnView = ViewSettings
 		a.accountsList.width = a.width
 		a.accountsList.height = a.height
+		// An add is self-evidencing: the new row appears. A reauthentication is
+		// not — it replaces a secret on a row that was already there, and this
+		// pop is immediate, so the flow's own closing verdict (which is the only
+		// place the daemon's post-save verification is reported) would otherwise
+		// never reach a screen. Carry it onto the list the operator lands on
+		// (BOS-1142).
+		//
+		// The tier is DERIVED from the verdict, never assumed: the flow's
+		// closing line either asserts the new credential verified or says
+		// "verification couldn't run", and reporting the second in the info tier
+		// would dress an unverified credential as a clean result — the exact
+		// fail-open this change exists to close. updateAccounts re-stamps this
+		// once the list has loaded so the transient window is not spent behind
+		// the loading spinner.
+		if a.accountRegister.reauthAccountID != "" {
+			if detail := a.accountRegister.flowVerdictLine(); detail != "" {
+				a.accountsList.setStatus(detail, !accountflow.ReauthLineIsVerified(detail))
+			}
+		}
 		return a, a.accountsList.Init()
 	}
 	return a, cmd

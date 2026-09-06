@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/recurser/bossalib/config"
@@ -264,6 +266,245 @@ func TestConfigInitIdempotent(t *testing.T) {
 	if len(s2.Plugins) > 0 {
 		if s1.Plugins[0].Path != s2.Plugins[0].Path {
 			t.Errorf("Plugin path changed on second run")
+		}
+	}
+}
+
+// newConfigInitCmd builds the minimal cobra command runConfigInit reads its
+// flag from, so the handler can be driven without the whole CLI tree.
+func newConfigInitCmd(t *testing.T, pluginDir string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{}
+	cmd.Flags().String("plugin-dir", "", "")
+	if err := cmd.Flags().Set("plugin-dir", pluginDir); err != nil {
+		t.Fatalf("set --plugin-dir: %v", err)
+	}
+	return cmd
+}
+
+// writePluginBinaries populates a directory the way the official installer does.
+func writePluginBinaries(t *testing.T, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write %s: %v", n, err)
+		}
+	}
+	return dir
+}
+
+// readPluginEnabledFlags reads the raw JSON rather than round-tripping through
+// config.Settings, so the assertion is about the bytes `config init` wrote into
+// the user's settings.json.
+func readPluginEnabledFlags(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var parsed struct {
+		Plugins []struct {
+			Name    string `json:"name"`
+			Enabled bool   `json:"enabled"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("parse settings %s: %v", raw, err)
+	}
+	got := make(map[string]bool, len(parsed.Plugins))
+	for _, p := range parsed.Plugins {
+		got[p.Name] = p.Enabled
+	}
+	return got
+}
+
+// TestConfigInitWritesExperimentalPluginDisabled pins BOS-1145 at the site the
+// official installer runs: `boss config init --plugin-dir` scans the directory
+// the installer populated, so it DOES author an opencode entry. bossd's gate
+// would turn it off at load anyway, but leaving "enabled": true in the file the
+// installer writes is a misleading half-state.
+func TestConfigInitWritesExperimentalPluginDisabled(t *testing.T) {
+	settingsPath, cleanup := setupTestConfigEnv(t)
+	defer cleanup()
+	dir := writePluginBinaries(t, "bossd-plugin-claude", "bossd-plugin-opencode")
+
+	if err := runConfigInit(newConfigInitCmd(t, dir)); err != nil {
+		t.Fatalf("runConfigInit: %v", err)
+	}
+
+	got := readPluginEnabledFlags(t, settingsPath)
+	if enabled, ok := got["claude"]; !ok || !enabled {
+		t.Errorf("claude enabled = %v (present=%v), want true", enabled, ok)
+	}
+	if enabled, ok := got["opencode"]; !ok {
+		t.Errorf("opencode entry missing; it must still be listed so it can be turned on: %v", got)
+	} else if enabled {
+		t.Error(`opencode enabled = true, want false (experimental plugins are opt-in)`)
+	}
+}
+
+// TestConfigInitNamesTheDisabledExperimentalPlugin pins the operator-facing half
+// of BOS-1145. `config init` writes "enabled": false for opencode, but its only
+// output was "Configured N plugins" — a count that includes the plugin it just
+// turned off, so it reads as "all of these are on". The other two places this
+// state surfaces (a bossd log line and the settings reference) do not reach the
+// person who just ran the installer's own command, and settings.json cannot
+// carry a comment, so this line is the only hint at the point of use. It must
+// name both the plugin and the settings key that turns it on.
+func TestConfigInitNamesTheDisabledExperimentalPlugin(t *testing.T) {
+	_, cleanup := setupTestConfigEnv(t)
+	defer cleanup()
+	dir := writePluginBinaries(t, "bossd-plugin-claude", "bossd-plugin-opencode")
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runConfigInit(newConfigInitCmd(t, dir))
+	})
+	if runErr != nil {
+		t.Fatalf("runConfigInit: %v", runErr)
+	}
+
+	if !strings.Contains(out, "opencode") {
+		t.Errorf("output does not name the plugin it disabled; got:\n%s", out)
+	}
+	if !strings.Contains(out, "experimental_plugins") {
+		t.Errorf("output does not name the settings key that would enable it; got:\n%s", out)
+	}
+	if strings.Contains(out, "claude,") || strings.Contains(out, "left off: claude") {
+		t.Errorf("a non-experimental plugin was reported as left off; got:\n%s", out)
+	}
+}
+
+// TestConfigInitSaysNothingWhenTheUserHasOptedIn is the other half: the notice
+// is keyed on the opt-in list, so a user who already opted in must not be told
+// to opt in again. The seed deliberately pairs a present experimental_plugins
+// entry with "enabled": false, because that is the pair config init itself
+// authors — it writes the entry disabled and never rewrites the flag, so the
+// persisted flag stays false however the user opts in.
+func TestConfigInitSaysNothingWhenTheUserHasOptedIn(t *testing.T) {
+	settingsPath, cleanup := setupTestConfigEnv(t)
+	defer cleanup()
+	dir := writePluginBinaries(t, "bossd-plugin-claude", "bossd-plugin-opencode")
+
+	s := config.DefaultSettings()
+	s.ExperimentalPlugins = []string{"opencode"}
+	s.Plugins = []config.PluginConfig{{Name: "opencode", Path: "/stale/bossd-plugin-opencode", Enabled: false}}
+	if err := config.SaveTo(settingsPath, s); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runConfigInit(newConfigInitCmd(t, dir))
+	})
+	if runErr != nil {
+		t.Fatalf("runConfigInit: %v", runErr)
+	}
+
+	if strings.Contains(out, "left off") {
+		t.Errorf("told an opted-in user to opt in again; got:\n%s", out)
+	}
+}
+
+// TestConfigInitSaysNothingWhenTheOptInIsPrefixed pins that the notice asks the
+// gate rather than re-deriving membership: ApplyExperimentalPluginGate trims the
+// bossd-plugin- prefix on both sides, so the fully-qualified spelling is a valid
+// opt-in that the daemon honours. A hand-rolled membership test here would pass
+// every other case in this file and still nag this user.
+func TestConfigInitSaysNothingWhenTheOptInIsPrefixed(t *testing.T) {
+	settingsPath, cleanup := setupTestConfigEnv(t)
+	defer cleanup()
+	dir := writePluginBinaries(t, "bossd-plugin-claude", "bossd-plugin-opencode")
+
+	s := config.DefaultSettings()
+	s.ExperimentalPlugins = []string{"bossd-plugin-opencode"}
+	if err := config.SaveTo(settingsPath, s); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runConfigInit(newConfigInitCmd(t, dir))
+	})
+	if runErr != nil {
+		t.Fatalf("runConfigInit: %v", runErr)
+	}
+
+	if strings.Contains(out, "left off") {
+		t.Errorf("told a user who opted in by qualified name to opt in again; got:\n%s", out)
+	}
+}
+
+// TestConfigInitNamesALegacyEnabledExperimentalPlugin covers the installed base
+// BOS-1145 exists to repair: an entry carrying "enabled": true from before the
+// gate, with no experimental_plugins opt-in. The daemon forces it off at load
+// and deliberately does not persist that, so the stored flag stays true and says
+// nothing about what will actually run. The notice must still fire, or the one
+// user who most needs it is the one who never sees it.
+func TestConfigInitNamesALegacyEnabledExperimentalPlugin(t *testing.T) {
+	settingsPath, cleanup := setupTestConfigEnv(t)
+	defer cleanup()
+	dir := writePluginBinaries(t, "bossd-plugin-claude", "bossd-plugin-opencode")
+
+	s := config.DefaultSettings()
+	s.Plugins = []config.PluginConfig{{Name: "opencode", Path: "/stale/bossd-plugin-opencode", Enabled: true}}
+	if err := config.SaveTo(settingsPath, s); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runConfigInit(newConfigInitCmd(t, dir))
+	})
+	if runErr != nil {
+		t.Fatalf("runConfigInit: %v", runErr)
+	}
+
+	if !strings.Contains(out, "opencode") {
+		t.Errorf("output does not name the plugin the daemon will force off; got:\n%s", out)
+	}
+	if !strings.Contains(out, "experimental_plugins") {
+		t.Errorf("output does not name the settings key that would enable it; got:\n%s", out)
+	}
+}
+
+// TestConfigInitPreservesExistingExperimentalEntry guards the documented
+// preserve-existing branch: config init repairs an existing entry's path and
+// version but must never rewrite its Enabled flag, in either direction.
+func TestConfigInitPreservesExistingExperimentalEntry(t *testing.T) {
+	settingsPath, cleanup := setupTestConfigEnv(t)
+	defer cleanup()
+	dir := writePluginBinaries(t, "bossd-plugin-claude", "bossd-plugin-opencode")
+
+	s := config.DefaultSettings()
+	s.Plugins = []config.PluginConfig{
+		{Name: "opencode", Path: "/stale/bossd-plugin-opencode", Enabled: true},
+		{Name: "claude", Path: "/stale/bossd-plugin-claude", Enabled: false},
+	}
+	if err := config.SaveTo(settingsPath, s); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	if err := runConfigInit(newConfigInitCmd(t, dir)); err != nil {
+		t.Fatalf("runConfigInit: %v", err)
+	}
+
+	got := readPluginEnabledFlags(t, settingsPath)
+	if !got["opencode"] {
+		t.Errorf("opencode enabled = false, want the user's existing true preserved: %v", got)
+	}
+	if got["claude"] {
+		t.Errorf("claude enabled = true, want the user's existing false preserved: %v", got)
+	}
+
+	loaded, err := config.LoadFrom(settingsPath)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	for _, p := range loaded.Plugins {
+		if want := filepath.Join(dir, "bossd-plugin-"+p.Name); p.Path != want {
+			t.Errorf("%s.Path = %q, want the repaired %q", p.Name, p.Path, want)
 		}
 	}
 }

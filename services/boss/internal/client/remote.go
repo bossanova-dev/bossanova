@@ -300,7 +300,16 @@ func (c *RemoteClient) GetSession(ctx context.Context, id string, _ SessionReadO
 
 // ListSessions ignores opts entirely (see GetSession): the orchestrator never
 // carries machine-local endpoints.
-func (c *RemoteClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, _ SessionReadOptions) ([]*pb.Session, error) {
+func (c *RemoteClient) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, opts SessionReadOptions) ([]*pb.Session, error) {
+	sessions, _, err := c.ListSessionsWithReadFailures(ctx, req, opts)
+	return sessions, err
+}
+
+// ListSessionsWithReadFailures reads across every organization the caller
+// belongs to. That union is the default of ProxyListSessions; a failed
+// organization is reported, never promoted to an error, so sessions that were
+// read still reach the screen.
+func (c *RemoteClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, _ SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
 	proxyReq := &pb.ProxyListSessionsRequest{
 		IncludeArchived: req.IncludeArchived,
 		States:          req.States,
@@ -310,9 +319,9 @@ func (c *RemoteClient) ListSessions(ctx context.Context, req *pb.ListSessionsReq
 	}
 	resp, err := c.rpc.ProxyListSessions(ctx, connect.NewRequest(proxyReq))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resp.Msg.Sessions, nil
+	return resp.Msg.GetSessions(), resp.Msg.GetFailedOrganizations(), nil
 }
 
 func (c *RemoteClient) AttachSession(ctx context.Context, id string) (AttachStream, error) {

@@ -57,6 +57,16 @@ type BossClient interface {
 	// machine-local endpoint hydration (LocalClient only); the zero value is a
 	// plain read. See SessionReadOptions.
 	ListSessions(ctx context.Context, req *pb.ListSessionsRequest, opts SessionReadOptions) ([]*pb.Session, error)
+	// ListSessionsWithReadFailures is ListSessions plus the partial-read report.
+	// It exists because a cloud read now fans out across every organization the
+	// caller belongs to, and one organization failing must not fail the whole
+	// list: the served sessions come back in the first return and the
+	// organizations that could not be read come back in the second, so a caller
+	// that can say so on screen (the TUI home list) can, while every caller that
+	// only wants sessions keeps using ListSessions unchanged. A non-nil error
+	// still means nothing was read. LocalClient reads one daemon, so it never
+	// reports failures.
+	ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error)
 	AttachSession(ctx context.Context, id string) (AttachStream, error)
 	StopSession(ctx context.Context, id string) (*pb.Session, error)
 	PauseSession(ctx context.Context, id string) (*pb.Session, error)
@@ -185,6 +195,12 @@ type BossClient interface {
 	// Accounts (agent credential registry). Local-daemon only, like cron jobs.
 	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
 	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
+	// RefreshAccount replaces an existing account's stored credential in place.
+	// It is the recovery verb for an account whose credential the provider has
+	// rejected: reauthenticating must not leave the failed row behind next to a
+	// new one (BOS-1142). Promoted onto the interface so callers depend on the
+	// contract instead of type-asserting the concrete client.
+	RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
 	UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
 	RemoveAccount(ctx context.Context, id string) error
 	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)

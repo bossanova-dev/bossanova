@@ -16,14 +16,18 @@ import (
 // it was asked to resolve so tests can assert the binding is threaded through.
 type fakeAccountEnvResolver struct {
 	env     map[string]string
+	err     error
 	gotSess *models.Session
 	calls   int
 }
 
-func (f *fakeAccountEnvResolver) Resolve(_ context.Context, sess *models.Session) map[string]string {
+func (f *fakeAccountEnvResolver) Resolve(_ context.Context, sess *models.Session) (map[string]string, error) {
 	f.calls++
 	f.gotSess = sess
-	return f.env
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.env, nil
 }
 
 // newTestLifecycleWithProxy builds a bare Lifecycle wired for proxyBaseURL
@@ -85,7 +89,7 @@ func TestResolveAccountEnv_InjectsProxyBaseURL(t *testing.T) {
 	t.Run("flag on + live: injects loopback base URL, drops subprocess OAuth token", func(t *testing.T) {
 		lc := newLC()
 		enableFailoverProxy(lc)
-		got := lc.resolveAccountEnv(context.Background(), claude)
+		got, _ := lc.resolveAccountEnv(context.Background(), claude)
 		if got["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:5555/s/path-tok" {
 			t.Fatalf("ANTHROPIC_BASE_URL = %q, want the loopback proxy URL", got["ANTHROPIC_BASE_URL"])
 		}
@@ -102,7 +106,7 @@ func TestResolveAccountEnv_InjectsProxyBaseURL(t *testing.T) {
 		lc := newLC()
 		off := false
 		lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &off})
-		got := lc.resolveAccountEnv(context.Background(), claude)
+		got, _ := lc.resolveAccountEnv(context.Background(), claude)
 		if _, ok := got["ANTHROPIC_BASE_URL"]; ok {
 			t.Fatalf("ANTHROPIC_BASE_URL must not be injected when the flag is off: %v", got)
 		}
@@ -123,7 +127,7 @@ func TestResolveAccountEnv_InjectsSentinelWithBaseURL(t *testing.T) {
 	l.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{claudeOAuthTokenEnvKey: "acct-bearer"}})
 	acctID := "acct-1"
 	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
-	env := l.resolveAccountEnv(context.Background(), sess)
+	env, _ := l.resolveAccountEnv(context.Background(), sess)
 	if env["ANTHROPIC_BASE_URL"] == "" {
 		t.Fatal("precondition: ANTHROPIC_BASE_URL should be injected")
 	}
@@ -142,7 +146,7 @@ func TestResolveAccountEnv_NoProxyOrSentinelForUnmanagedAccount(t *testing.T) {
 		"empty-account": {ID: "s2", AgentName: "claude", AccountID: &emptyAccountID},
 	} {
 		t.Run(name, func(t *testing.T) {
-			env := l.resolveAccountEnv(context.Background(), sess)
+			env, _ := l.resolveAccountEnv(context.Background(), sess)
 			if _, ok := env["ANTHROPIC_BASE_URL"]; ok {
 				t.Fatalf("ANTHROPIC_BASE_URL must not be injected for unmanaged account: %v", env)
 			}
@@ -160,7 +164,7 @@ func TestResolveAccountEnv_NoProxyOrSentinelWithoutMaterializedBearer(t *testing
 	acctID := "acct-1"
 	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
 
-	env := l.resolveAccountEnv(context.Background(), sess)
+	env, _ := l.resolveAccountEnv(context.Background(), sess)
 	if env["CODEX_HOME"] != "/synthetic/home" {
 		t.Fatalf("resolver overlay changed: %v", env)
 	}
@@ -176,7 +180,8 @@ func TestResolveAccountEnv_NoSentinelWhenProxyOff(t *testing.T) {
 	no := false
 	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &no})
 	sess := &models.Session{ID: "s1", AgentName: "claude"}
-	if _, ok := l.resolveAccountEnv(context.Background(), sess)["ANTHROPIC_API_KEY"]; ok {
+	resolved, _ := l.resolveAccountEnv(context.Background(), sess)
+	if _, ok := resolved["ANTHROPIC_API_KEY"]; ok {
 		t.Error("sentinel ANTHROPIC_API_KEY must not be injected when the proxy is off")
 	}
 }
@@ -274,7 +279,8 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID, WorktreePath: "/wt"}
 
 	// Interactive tmux call-site expression.
-	tmuxEnv := mergeSessionEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), l.resolveAccountEnv(ctx, sess), l.resolveProofEnv())
+	tmuxAccountEnv, _ := l.resolveAccountEnv(ctx, sess)
+	tmuxEnv := mergeSessionEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), tmuxAccountEnv, l.resolveProofEnv())
 	if tmuxEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("tmux: account token missing: %v", tmuxEnv)
 	}
@@ -286,7 +292,8 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 	}
 
 	// Headless / resume call-site expression (no managed layer).
-	headlessEnv := mergeEnv(l.resolveAccountEnv(ctx, sess), l.resolveProofEnv())
+	headlessAccountEnv, _ := l.resolveAccountEnv(ctx, sess)
+	headlessEnv := mergeEnv(headlessAccountEnv, l.resolveProofEnv())
 	if headlessEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("headless: account token missing: %v", headlessEnv)
 	}
@@ -300,7 +307,7 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 // than panicking, mirroring TestLifecycleResolveProofEnvNilResolver.
 func TestLifecycleResolveAccountEnvNilResolver(t *testing.T) {
 	l := &Lifecycle{}
-	if got := l.resolveAccountEnv(context.Background(), &models.Session{}); got != nil {
+	if got, _ := l.resolveAccountEnv(context.Background(), &models.Session{}); got != nil {
 		t.Errorf("expected nil overlay with no resolver, got %v", got)
 	}
 }
@@ -316,7 +323,7 @@ func TestLifecycleResolveAccountEnvInjectedResolver(t *testing.T) {
 	l.SetAccountEnvResolver(fake)
 
 	sess := &models.Session{ID: "s1", AgentName: "claude"}
-	if got := l.resolveAccountEnv(context.Background(), sess); !reflect.DeepEqual(got, want) {
+	if got, _ := l.resolveAccountEnv(context.Background(), sess); !reflect.DeepEqual(got, want) {
 		t.Errorf("resolveAccountEnv() = %v, want %v", got, want)
 	}
 	if fake.calls != 1 {

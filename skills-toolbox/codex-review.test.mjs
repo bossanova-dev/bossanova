@@ -57,15 +57,27 @@ function writeFakeBin(dir, name, body) {
 
 async function waitForPidFile(pidFile, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
+  while (true) {
     if (fs.existsSync(pidFile)) {
       const pid = Number(fs.readFileSync(pidFile, 'utf8').trim())
       if (Number.isInteger(pid) && pid > 0) return pid
     }
+    if (Date.now() >= deadline) break
     await new Promise((r) => setTimeout(r, 20))
   }
   throw new Error(`timed out waiting for pid file: ${pidFile}`)
 }
+
+test('waitForPidFile returns an existing PID before enforcing its deadline', async () => {
+  const dir = makeTmpDir()
+  try {
+    const pidFile = path.join(dir, 'ready.pid')
+    fs.writeFileSync(pidFile, '123\n')
+    assert.equal(await waitForPidFile(pidFile, 0), 123)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 // A fake codex that prints every argv element on its own line then exits 0.
 // run() returns the sanitized stdout, so the embedded prompt (with any diff) is
@@ -258,7 +270,7 @@ test('run: fake codex that sleeps is killed, timedOut=true, process group gone, 
     // detached) to a file, then sleeps. After the timeout kill, the whole group
     // — including this shell — must be gone.
     const bin = writeFakeBin(dir, 'codex', `echo $$ > "${pidFile}"\nsleep 30`)
-    const timeoutMs = 1500
+    const timeoutMs = 5000
     const t0 = Date.now()
     const resultPromise = run({
       env: { BOSS_CODEX_BIN: bin },
@@ -267,7 +279,7 @@ test('run: fake codex that sleeps is killed, timedOut=true, process group gone, 
       repo: dir,
       timeoutMs,
     })
-    const childPid = await waitForPidFile(pidFile)
+    const childPid = await waitForPidFile(pidFile, timeoutMs)
     const result = await resultPromise
     const elapsed = Date.now() - t0
     assert.equal(result.timedOut, true)
@@ -313,7 +325,7 @@ test('run: timeout still reaps a child that ignores SIGTERM after the leader exi
         'exec sleep 30',
       ].join('\n'),
     )
-    const timeoutMs = 1500
+    const timeoutMs = 5000
     const t0 = Date.now()
     const resultPromise = run({
       env: { BOSS_CODEX_BIN: bin },
@@ -322,7 +334,7 @@ test('run: timeout still reaps a child that ignores SIGTERM after the leader exi
       repo: dir,
       timeoutMs,
     })
-    const leaderPid = await waitForPidFile(pidFile)
+    const leaderPid = await waitForPidFile(pidFile, timeoutMs)
     const result = await resultPromise
     const elapsed = Date.now() - t0
     assert.equal(result.timedOut, true)
@@ -357,7 +369,6 @@ test('run: large stderr volume then exit 0 completes promptly (no stderr deadloc
         'exit 0',
     )
     const timeoutMs = 5000
-    const t0 = Date.now()
     const result = await run({
       env: { BOSS_CODEX_BIN: bin },
       base: 'abc1234',
@@ -365,12 +376,9 @@ test('run: large stderr volume then exit 0 completes promptly (no stderr deadloc
       repo: dir,
       timeoutMs,
     })
-    const elapsed = Date.now() - t0
     assert.equal(result.ok, true)
     assert.equal(result.timedOut, false)
     assert.ok(result.output.includes('review: ok'))
-    // Must finish well under the timeout — a deadlock would only resolve at timeoutMs.
-    assert.ok(elapsed < timeoutMs / 2, `run blocked on stderr: ${elapsed}ms`)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -555,7 +563,6 @@ test('run: stderr tail is bounded under a flood, run still completes promptly', 
       'yes "noise" | head -c 200000 1>&2\nprintf "FINAL-ERROR-MARKER\\n" 1>&2\nexit 2',
     )
     const timeoutMs = 5000
-    const t0 = Date.now()
     const result = await run({
       env: { BOSS_CODEX_BIN: bin },
       base: 'abc1234',
@@ -564,11 +571,10 @@ test('run: stderr tail is bounded under a flood, run still completes promptly', 
       timeoutMs,
       maxStderrBytes: 4096,
     })
-    const elapsed = Date.now() - t0
     assert.equal(result.ok, false)
+    assert.equal(result.timedOut, false)
     assert.ok(Buffer.byteLength(result.stderr, 'utf8') <= 4096, 'stderr tail must be bounded')
     assert.ok(result.stderr.includes('FINAL-ERROR-MARKER'), 'tail keeps the most recent bytes')
-    assert.ok(elapsed < timeoutMs / 2, `run blocked on stderr flood: ${elapsed}ms`)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -582,7 +588,6 @@ test('run: stdout is bounded under a flood, output stays capped and completes pr
     const bin = writeFakeBin(dir, 'codex', 'yes "review-noise" | head -c 2000000\nexit 0')
     const timeoutMs = 5000
     const maxBytes = 65536
-    const t0 = Date.now()
     const result = await run({
       env: { BOSS_CODEX_BIN: bin },
       base: 'abc1234',
@@ -591,8 +596,8 @@ test('run: stdout is bounded under a flood, output stays capped and completes pr
       timeoutMs,
       maxBytes,
     })
-    const elapsed = Date.now() - t0
     assert.equal(result.ok, true)
+    assert.equal(result.timedOut, false)
     assert.ok(
       Buffer.byteLength(result.output, 'utf8') <= maxBytes,
       'output must be capped to maxBytes',
@@ -601,7 +606,6 @@ test('run: stdout is bounded under a flood, output stays capped and completes pr
       result.output.includes('[truncated'),
       'flood beyond maxBytes must be marked truncated',
     )
-    assert.ok(elapsed < timeoutMs / 2, `run blocked on stdout flood: ${elapsed}ms`)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

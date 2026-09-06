@@ -1,6 +1,7 @@
 package status
 
 import (
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -1125,5 +1126,260 @@ func TestTracker_LivenessReclaimedOnRemoveAndCleanup(t *testing.T) {
 		if _, ok := tracker.liveness["chat-1"]; ok {
 			t.Error("liveness marker survived Cleanup of a stale entry")
 		}
+	})
+}
+
+// --- BOS-1096: eviction from entries is an edge -------------------------------
+//
+// A chat that simply stops heartbeating produces no tracker transition, so the
+// session's persisted display_label stands until a daemon restart. These tests
+// pin the hook that makes the eviction itself observable, from BOTH paths that
+// delete from entries (Cleanup's staleness sweep and Remove's explicit delete).
+
+// evictionRecorder captures every batch the eviction hook is handed, so a test
+// can assert on the number of INVOCATIONS as well as their contents — the
+// batched signature exists precisely so several chats of one session cost one
+// call, and only a per-invocation record can show that.
+type evictionRecorder struct {
+	mu      sync.Mutex
+	batches [][]string
+}
+
+func (r *evictionRecorder) record(ids []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.batches = append(r.batches, append([]string(nil), ids...))
+}
+
+func (r *evictionRecorder) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.batches)
+}
+
+// only returns the single batch recorded, sorted for determinism (Cleanup walks
+// a map, so batch order is not stable). It fails the test unless exactly one
+// invocation happened.
+func (r *evictionRecorder) only(t *testing.T) []string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.batches) != 1 {
+		t.Fatalf("eviction hook fired %d times, want exactly 1 (batches=%v)", len(r.batches), r.batches)
+	}
+	out := append([]string(nil), r.batches[0]...)
+	sort.Strings(out)
+	return out
+}
+
+// staleEntry backdates an entry past StaleThreshold, the idiom the existing
+// Cleanup tests use to drive staleness without sleeping.
+func staleEntry(t *testing.T, tr *Tracker, id string) {
+	t.Helper()
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	e, ok := tr.entries[id]
+	if !ok {
+		t.Fatalf("staleEntry: no entry %q to backdate", id)
+	}
+	e.ReceivedAt = time.Now().Add(-StaleThreshold - time.Second)
+}
+
+func TestCleanup_FiresOnEntriesEvictedForStaleEntry(t *testing.T) {
+	tr := NewTracker()
+	rec := &evictionRecorder{}
+	tr.SetOnEntriesEvicted(rec.record)
+
+	tr.Update("stale", pb.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+	staleEntry(t, tr, "stale")
+
+	tr.Cleanup()
+
+	if got := rec.only(t); len(got) != 1 || got[0] != "stale" {
+		t.Fatalf("evicted batch = %v, want [stale]", got)
+	}
+}
+
+// The hook must report what was actually destroyed. Reporting a live chat would
+// cost a pointless recompute; failing to report the dead one is the bug.
+func TestCleanup_FiresOnEntriesEvictedOnlyForStaleEntries(t *testing.T) {
+	tr := NewTracker()
+	rec := &evictionRecorder{}
+	tr.SetOnEntriesEvicted(rec.record)
+
+	tr.Update("fresh", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	tr.Update("stale", pb.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+	staleEntry(t, tr, "stale")
+
+	tr.Cleanup()
+
+	if got := rec.only(t); len(got) != 1 || got[0] != "stale" {
+		t.Fatalf("evicted batch = %v, want [stale]", got)
+	}
+	if e := tr.Get("fresh"); e == nil {
+		t.Error("fresh entry did not survive Cleanup")
+	}
+}
+
+// The batched signature is the whole point: a hook fired per id inside the loop
+// has no view of the tick's other evictions, so a multi-chat session would pay a
+// full Recompute read-set per evicted chat.
+func TestCleanup_FiresOnEntriesEvictedOnceForWholeBatch(t *testing.T) {
+	tr := NewTracker()
+	rec := &evictionRecorder{}
+	tr.SetOnEntriesEvicted(rec.record)
+
+	for _, id := range []string{"stale-a", "stale-b", "stale-c"} {
+		tr.Update(id, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+		staleEntry(t, tr, id)
+	}
+
+	tr.Cleanup()
+
+	got := rec.only(t)
+	want := []string{"stale-a", "stale-b", "stale-c"}
+	if len(got) != len(want) {
+		t.Fatalf("evicted batch = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("evicted batch = %v, want %v", got, want)
+		}
+	}
+}
+
+// An idle daemon runs this sweep every 30s forever. An empty-batch call would
+// make the wiring do a pointless pass on every one of them.
+func TestCleanup_DoesNotFireOnEntriesEvictedWhenNothingStale(t *testing.T) {
+	tr := NewTracker()
+	rec := &evictionRecorder{}
+	tr.SetOnEntriesEvicted(rec.record)
+
+	tr.Update("fresh", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	tr.Cleanup()
+
+	if n := rec.calls(); n != 0 {
+		t.Fatalf("eviction hook fired %d times with nothing stale, want 0", n)
+	}
+}
+
+// Remove is the second site that deletes from entries, reached by DeleteChat.
+// Deleting a session's last chat freezes its label exactly as staleness does.
+func TestRemove_FiresOnEntriesEvictedForPresentEntry(t *testing.T) {
+	tr := NewTracker()
+	rec := &evictionRecorder{}
+	tr.SetOnEntriesEvicted(rec.record)
+
+	tr.Update("chat-1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	tr.Remove("chat-1")
+
+	if got := rec.only(t); len(got) != 1 || got[0] != "chat-1" {
+		t.Fatalf("evicted batch = %v, want [chat-1]", got)
+	}
+}
+
+// A no-op removal — an already-absent key, e.g. losing the race to a concurrent
+// Cleanup that just evicted the same id — must not double-fire the recompute.
+func TestRemove_DoesNotFireOnEntriesEvictedForAbsentEntry(t *testing.T) {
+	tr := NewTracker()
+	rec := &evictionRecorder{}
+	tr.SetOnEntriesEvicted(rec.record)
+
+	tr.Remove("never-tracked")
+
+	if n := rec.calls(); n != 0 {
+		t.Fatalf("eviction hook fired %d times for an absent id, want 0", n)
+	}
+}
+
+// The overlap with the pre-existing waiting hook is intended: neither suppresses
+// the other. The eviction hook is not NEW coverage for a chat that happened to
+// hold a waiting marker — it is new coverage for every chat that did not.
+func TestCleanup_EvictedEntryWithWaitingMarkerFiresBothHooks(t *testing.T) {
+	tr := NewTracker()
+	rec := &evictionRecorder{}
+	tr.SetOnEntriesEvicted(rec.record)
+
+	tr.Update("parked", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	tr.SetWaiting("parked", "waiting on CI")
+	staleEntry(t, tr, "parked")
+
+	// Wired only after the setup: SetWaiting fires onWaitingChange itself on the
+	// absent → present edge, and counting that would say nothing about Cleanup.
+	var waitingMu sync.Mutex
+	var waitingFired []string
+	tr.SetOnWaitingChange(func(agentSessionID string) {
+		waitingMu.Lock()
+		defer waitingMu.Unlock()
+		waitingFired = append(waitingFired, agentSessionID)
+	})
+
+	tr.Cleanup()
+
+	if got := rec.only(t); len(got) != 1 || got[0] != "parked" {
+		t.Fatalf("evicted batch = %v, want [parked]", got)
+	}
+	waitingMu.Lock()
+	defer waitingMu.Unlock()
+	if len(waitingFired) != 1 || waitingFired[0] != "parked" {
+		t.Fatalf("onWaitingChange fired %v, want [parked]", waitingFired)
+	}
+}
+
+// BOS-353's deadlock-avoidance shape: hooks fire AFTER the mutex is released.
+// A regression here deadlocks rather than fails, so the assertion is a bounded
+// wait — the hook calls back into a tracker method that takes the lock.
+func TestEvictionHookFiresOutsideMutex(t *testing.T) {
+	run := func(t *testing.T, name string, seed func(tr *Tracker), trigger func(tr *Tracker)) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			tr := NewTracker()
+			reentered := make(chan struct{}, 1)
+			tr.SetOnEntriesEvicted(func(ids []string) {
+				// Re-entering a lock-taking method deadlocks if the hook is
+				// still holding t.mu — sync.RWMutex is not reentrant.
+				for _, id := range ids {
+					_ = tr.Get(id)
+				}
+				_ = tr.Snapshot()
+				select {
+				case reentered <- struct{}{}:
+				default:
+				}
+			})
+			seed(tr)
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				trigger(tr)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("eviction hook deadlocked: it was fired while t.mu was held")
+			}
+			select {
+			case <-reentered:
+			default:
+				t.Fatal("eviction hook never fired")
+			}
+		})
+	}
+
+	run(t, "cleanup", func(tr *Tracker) {
+		tr.Update("stale", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+		staleEntry(t, tr, "stale")
+	}, func(tr *Tracker) {
+		tr.Cleanup()
+	})
+
+	run(t, "remove", func(tr *Tracker) {
+		tr.Update("chat-1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	}, func(tr *Tracker) {
+		tr.Remove("chat-1")
 	})
 }

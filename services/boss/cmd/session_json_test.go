@@ -143,3 +143,58 @@ func sortedStringKeys(fields map[string]string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// TestSessionDetailJSONCarriesBlockedReason pins the machine-readable half of
+// the 2026-09-03 fix. `boss show --json` is what a driver or a follow-up agent
+// reads, and before this the blocked reason reached no CLI surface at all.
+func TestSessionDetailJSONCarriesBlockedReason(t *testing.T) {
+	const reason = "draft PR creation failed: create PR: HTTP 401: Requires authentication\nTry authenticating with:  gh auth login"
+	detail := newSessionDetailJSON(&pb.Session{Id: "sess-1", BlockedReason: &[]string{reason}[0]})
+
+	if detail.BlockedReason == nil {
+		t.Fatal("BlockedReason = nil, want the reason")
+	}
+	if *detail.BlockedReason != reason {
+		t.Fatalf("BlockedReason = %q, want %q — it must be verbatim and untruncated", *detail.BlockedReason, reason)
+	}
+
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"blocked_reason":`) {
+		t.Fatalf("encoded detail has no blocked_reason key: %s", encoded)
+	}
+}
+
+// TestSessionDetailJSONBlockedReasonIsNullWhenUnblocked pins the pointer choice.
+// null ("not blocked") must stay distinguishable from "" so a driver can tell
+// the two apart, which is why the field is not a bare string.
+func TestSessionDetailJSONBlockedReasonIsNullWhenUnblocked(t *testing.T) {
+	detail := newSessionDetailJSON(&pb.Session{Id: "sess-1"})
+	if detail.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil", *detail.BlockedReason)
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"blocked_reason":null`) {
+		t.Fatalf("encoded detail did not carry an explicit null: %s", encoded)
+	}
+}
+
+// TestSessionRowJSONOmitsBlockedReason records the deliberate decision that
+// `boss ls --json` does NOT carry it: that row shape is the widest contract in
+// the file, and a raw multi-line daemon error on every row is noise for a list.
+// Detail is where triage happens.
+func TestSessionRowJSONOmitsBlockedReason(t *testing.T) {
+	row := newSessionRowJSON(&pb.Session{Id: "sess-1", BlockedReason: &[]string{"draft PR creation failed: boom"}[0]})
+	encoded, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "blocked_reason") {
+		t.Fatalf("the ls row grew a blocked_reason field: %s", encoded)
+	}
+}

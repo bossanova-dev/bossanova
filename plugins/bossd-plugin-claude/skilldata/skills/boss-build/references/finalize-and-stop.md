@@ -308,16 +308,17 @@ node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BU
 
 ## Step 10: Settle loop (capped)
 
-Late reviews sometimes land minutes after ready, so this step **waits on state, never on a clock**:
-run [`callback-watches.md`](callback-watches.md) Protocol step 5's bounded poll over `"$PR_NUMBER"`,
-capped by `policy.settleCap`, and route `timeout`/`unknown` the way that step routes them. Never a
-fixed `sleep` and never a "wait N minutes" — a duration guessed here returns before the late review
-lands or spends settle allowance after it already did, and either way it is a clock standing in for a
-reading. Arming is deliberately **not** what this step opens with: Step 9 gated the branch green
-before Step 10 runs, so `checks_passed` already reads satisfied and re-arming a satisfied trigger
-fires it immediately and burns the watch (Protocol step 4), and no `policy.watchTriggers` trigger
-reports review activity at all — arm only on a later cycle whose reconcile reads that trigger false.
-Then **partition late feedback by
+Late reviews sometimes land minutes after ready, so this step **waits on state, never on a clock**.
+When `callbacksAvailable(env)` is true, use Protocol step 1 to resolve the callback adapter and arm
+`checks_failed` and `checks_passed_ready` in separate per-trigger groups with `--on-transition`: a
+bare state-matched `checks_passed_ready` watch would fire immediately on the already-green, ready PR
+and burn the watch. A transition-armed watch that never fires because nothing transitions is
+expected, not a hang: [`callback-watches.md`](callback-watches.md) Protocol step 5's bounded poll
+backs the wait whether or not a watch is armed. Run that poll over `"$PR_NUMBER"`, capped by
+`policy.settleCap`, and route `timeout`/`unknown` the way that step routes them. Never a fixed `sleep`
+and never a "wait N minutes" — a duration guessed here returns before the late review lands or
+spends settle allowance after it already did, and either way it is a clock standing in for a
+reading. Then **partition late feedback by
 source before acting** — the source decides whether a settle cycle is spent at all. Read
 `REVIEW_VERDICT` from the run note Step 6 wrote at
 `$(git rev-parse --git-dir)/boss-build-review-verdict`.

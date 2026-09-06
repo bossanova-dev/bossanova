@@ -4433,7 +4433,11 @@ type Account struct {
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	// Cached per-account rate-limit usage snapshot (BOS-297). METADATA ONLY —
 	// never a credential. Absent = never probed.
-	Usage         *UsageSnapshot `protobuf:"bytes,16,opt,name=usage,proto3" json:"usage,omitempty"` // NO credential field. Ever.
+	Usage *UsageSnapshot `protobuf:"bytes,16,opt,name=usage,proto3" json:"usage,omitempty"`
+	// Durable, redacted credential-verification state (BOS-1141). METADATA
+	// ONLY — a classification token, a timestamp, and a retry instant. Absent
+	// = never verified.
+	AuthCheck     *AuthCheck `protobuf:"bytes,17,opt,name=auth_check,json=authCheck,proto3" json:"auth_check,omitempty"` // NO credential field. Ever.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4573,6 +4577,108 @@ func (x *Account) GetUsage() *UsageSnapshot {
 	return nil
 }
 
+func (x *Account) GetAuthCheck() *AuthCheck {
+	if x != nil {
+		return x.AuthCheck
+	}
+	return nil
+}
+
+// AuthCheck is the durable record of the last daemon-owned credential
+// verification for one account (BOS-1141). Every field is redacted metadata:
+// a closed-set outcome, a closed-set failure-class token, the check time, and
+// the next retry instant. It NEVER contains a credential, provider log text,
+// or anything derived from credential bytes.
+type AuthCheck struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// "" (never checked) | "healthy" | "auth_invalid" | "transient" |
+	// "unavailable" | "refresh_chain_unproven"
+	//
+	// "refresh_chain_unproven" (BOS-1174) is a clean verification on a credential
+	// whose own access token says a token refresh should already have happened
+	// and which produced no credential write — a live access token above a
+	// possibly dead refresh chain. It is a WARNING, not an accusation:
+	// "auth_invalid" remains the only outcome that removes an account from
+	// selection. The field is a plain string, so a client that predates a value
+	// must treat an unrecognized outcome as undetermined — never as invalid, and
+	// never as healthy.
+	Outcome string `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// Short redacted classification token; "" when there is nothing to classify
+	// (e.g. "auth_invalidated", "rate_limited", "transient_provider",
+	// "runner_unavailable", "refresh_not_observed").
+	//
+	// It normally qualifies a non-healthy outcome. The one exception is
+	// "credential_superseded", which the daemon writes ALONGSIDE a "healthy"
+	// outcome: an ambient `codex login` for the same provider account holds a
+	// different refresh token, so the stored refresh chain is dead even though the
+	// provider still accepts the stored access token. It is a warning about the
+	// future and does NOT affect eligibility. A client that does not know the token
+	// must render the outcome alone rather than a class it cannot interpret.
+	FailureClass  string                 `protobuf:"bytes,2,opt,name=failure_class,json=failureClass,proto3" json:"failure_class,omitempty"`
+	CheckedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`         // when the verification completed
+	NextRetryAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=next_retry_at,json=nextRetryAt,proto3" json:"next_retry_at,omitempty"` // earliest next scheduled check
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuthCheck) Reset() {
+	*x = AuthCheck{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuthCheck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuthCheck) ProtoMessage() {}
+
+func (x *AuthCheck) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuthCheck.ProtoReflect.Descriptor instead.
+func (*AuthCheck) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *AuthCheck) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *AuthCheck) GetFailureClass() string {
+	if x != nil {
+		return x.FailureClass
+	}
+	return ""
+}
+
+func (x *AuthCheck) GetCheckedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CheckedAt
+	}
+	return nil
+}
+
+func (x *AuthCheck) GetNextRetryAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextRetryAt
+	}
+	return nil
+}
+
 // UsageSnapshot is a cached rate-limit usage reading for one account. It is
 // derived from the BOS-293 probe result and carries METADATA ONLY:
 // utilization fractions, reset instants, a status string, a plan-tier string,
@@ -4592,7 +4698,7 @@ type UsageSnapshot struct {
 
 func (x *UsageSnapshot) Reset() {
 	*x = UsageSnapshot{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[27]
+	mi := &file_bossanova_v1_models_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4604,7 +4710,7 @@ func (x *UsageSnapshot) String() string {
 func (*UsageSnapshot) ProtoMessage() {}
 
 func (x *UsageSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[27]
+	mi := &file_bossanova_v1_models_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4617,7 +4723,7 @@ func (x *UsageSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UsageSnapshot.ProtoReflect.Descriptor instead.
 func (*UsageSnapshot) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{27}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *UsageSnapshot) GetUtil_5H() float64 {
@@ -4685,7 +4791,7 @@ type ChatMessage struct {
 
 func (x *ChatMessage) Reset() {
 	*x = ChatMessage{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[28]
+	mi := &file_bossanova_v1_models_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4697,7 +4803,7 @@ func (x *ChatMessage) String() string {
 func (*ChatMessage) ProtoMessage() {}
 
 func (x *ChatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[28]
+	mi := &file_bossanova_v1_models_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4710,7 +4816,7 @@ func (x *ChatMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatMessage.ProtoReflect.Descriptor instead.
 func (*ChatMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{28}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ChatMessage) GetRole() string {
@@ -5107,7 +5213,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12:\n" +
 	"\x19should_require_transition\x18\x15 \x01(\bR\x17shouldRequireTransition\x122\n" +
-	"\x15has_observed_baseline\x18\x16 \x01(\bR\x13hasObservedBaseline\"\xf4\x04\n" +
+	"\x15has_observed_baseline\x18\x16 \x01(\bR\x13hasObservedBaseline\"\xac\x05\n" +
 	"\aAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
@@ -5127,7 +5233,15 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"created_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x121\n" +
-	"\x05usage\x18\x10 \x01(\v2\x1b.bossanova.v1.UsageSnapshotR\x05usageJ\x04\b\x04\x10\x05R\x05email\"\x9f\x02\n" +
+	"\x05usage\x18\x10 \x01(\v2\x1b.bossanova.v1.UsageSnapshotR\x05usage\x126\n" +
+	"\n" +
+	"auth_check\x18\x11 \x01(\v2\x17.bossanova.v1.AuthCheckR\tauthCheckJ\x04\b\x04\x10\x05R\x05email\"\xc5\x01\n" +
+	"\tAuthCheck\x12\x18\n" +
+	"\aoutcome\x18\x01 \x01(\tR\aoutcome\x12#\n" +
+	"\rfailure_class\x18\x02 \x01(\tR\ffailureClass\x129\n" +
+	"\n" +
+	"checked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\x12>\n" +
+	"\rnext_retry_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRetryAt\"\x9f\x02\n" +
 	"\rUsageSnapshot\x12\x17\n" +
 	"\autil_5h\x18\x01 \x01(\x01R\x06util5h\x12\x17\n" +
 	"\autil_7d\x18\x02 \x01(\x01R\x06util7d\x125\n" +
@@ -5317,7 +5431,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 21)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),             // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),             // 1: bossanova.v1.SessionEvent
@@ -5367,45 +5481,46 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*CronJob)(nil),               // 45: bossanova.v1.CronJob
 	(*GithubCallback)(nil),        // 46: bossanova.v1.GithubCallback
 	(*Account)(nil),               // 47: bossanova.v1.Account
-	(*UsageSnapshot)(nil),         // 48: bossanova.v1.UsageSnapshot
-	(*ChatMessage)(nil),           // 49: bossanova.v1.ChatMessage
-	(*timestamppb.Timestamp)(nil), // 50: google.protobuf.Timestamp
+	(*AuthCheck)(nil),             // 48: bossanova.v1.AuthCheck
+	(*UsageSnapshot)(nil),         // 49: bossanova.v1.UsageSnapshot
+	(*ChatMessage)(nil),           // 50: bossanova.v1.ChatMessage
+	(*timestamppb.Timestamp)(nil), // 51: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.RotationEvent.trigger:type_name -> bossanova.v1.RotationTrigger
-	50, // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
+	51, // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
 	3,  // 2: bossanova.v1.RotationEvent.outcome:type_name -> bossanova.v1.RotationOutcome
-	50, // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
-	50, // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	50, // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	51, // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
+	51, // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	51, // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	12, // 6: bossanova.v1.SecretUpdate.action:type_name -> bossanova.v1.SecretAction
 	11, // 7: bossanova.v1.RepoSettings.merge_strategy:type_name -> bossanova.v1.MergeStrategy
-	50, // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
+	51, // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 9: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	6,  // 10: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
 	6,  // 11: bossanova.v1.Session.last_check_state_observed:type_name -> bossanova.v1.ChecksOverall
-	50, // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
-	50, // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
-	50, // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	50, // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	50, // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	51, // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
+	51, // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
+	51, // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	51, // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	51, // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	15, // 17: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
 	42, // 18: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	16, // 19: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
 	13, // 20: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
-	50, // 21: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
+	51, // 21: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
 	15, // 22: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
-	50, // 23: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	50, // 24: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
+	51, // 23: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	51, // 24: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
 	43, // 25: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
-	50, // 26: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
+	51, // 26: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
 	21, // 27: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
 	25, // 28: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HttpEndpoint
-	50, // 29: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
+	51, // 29: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
 	9,  // 30: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
 	10, // 31: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	50, // 32: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	50, // 33: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	51, // 32: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	51, // 33: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
 	7,  // 34: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	4,  // 35: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	5,  // 36: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
@@ -5420,36 +5535,39 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	29, // 45: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
 	30, // 46: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
 	14, // 47: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	50, // 48: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	51, // 48: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
 	20, // 49: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
 	15, // 50: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
-	50, // 51: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	50, // 52: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	50, // 53: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	50, // 54: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	50, // 55: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	51, // 51: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	51, // 52: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	51, // 53: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	51, // 54: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	51, // 55: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
 	19, // 56: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
-	50, // 57: bossanova.v1.GithubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
-	50, // 58: bossanova.v1.GithubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
-	50, // 59: bossanova.v1.GithubCallback.triggered_at:type_name -> google.protobuf.Timestamp
-	50, // 60: bossanova.v1.GithubCallback.delivered_at:type_name -> google.protobuf.Timestamp
-	50, // 61: bossanova.v1.GithubCallback.expires_at:type_name -> google.protobuf.Timestamp
-	50, // 62: bossanova.v1.GithubCallback.created_at:type_name -> google.protobuf.Timestamp
-	50, // 63: bossanova.v1.GithubCallback.updated_at:type_name -> google.protobuf.Timestamp
-	50, // 64: bossanova.v1.Account.cooldown_until:type_name -> google.protobuf.Timestamp
-	50, // 65: bossanova.v1.Account.last_used_at:type_name -> google.protobuf.Timestamp
-	50, // 66: bossanova.v1.Account.last_test_ok_at:type_name -> google.protobuf.Timestamp
-	50, // 67: bossanova.v1.Account.created_at:type_name -> google.protobuf.Timestamp
-	50, // 68: bossanova.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
-	48, // 69: bossanova.v1.Account.usage:type_name -> bossanova.v1.UsageSnapshot
-	50, // 70: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
-	50, // 71: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
-	50, // 72: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
-	73, // [73:73] is the sub-list for method output_type
-	73, // [73:73] is the sub-list for method input_type
-	73, // [73:73] is the sub-list for extension type_name
-	73, // [73:73] is the sub-list for extension extendee
-	0,  // [0:73] is the sub-list for field type_name
+	51, // 57: bossanova.v1.GithubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
+	51, // 58: bossanova.v1.GithubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
+	51, // 59: bossanova.v1.GithubCallback.triggered_at:type_name -> google.protobuf.Timestamp
+	51, // 60: bossanova.v1.GithubCallback.delivered_at:type_name -> google.protobuf.Timestamp
+	51, // 61: bossanova.v1.GithubCallback.expires_at:type_name -> google.protobuf.Timestamp
+	51, // 62: bossanova.v1.GithubCallback.created_at:type_name -> google.protobuf.Timestamp
+	51, // 63: bossanova.v1.GithubCallback.updated_at:type_name -> google.protobuf.Timestamp
+	51, // 64: bossanova.v1.Account.cooldown_until:type_name -> google.protobuf.Timestamp
+	51, // 65: bossanova.v1.Account.last_used_at:type_name -> google.protobuf.Timestamp
+	51, // 66: bossanova.v1.Account.last_test_ok_at:type_name -> google.protobuf.Timestamp
+	51, // 67: bossanova.v1.Account.created_at:type_name -> google.protobuf.Timestamp
+	51, // 68: bossanova.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
+	49, // 69: bossanova.v1.Account.usage:type_name -> bossanova.v1.UsageSnapshot
+	48, // 70: bossanova.v1.Account.auth_check:type_name -> bossanova.v1.AuthCheck
+	51, // 71: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
+	51, // 72: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
+	51, // 73: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
+	51, // 74: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
+	51, // 75: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
+	76, // [76:76] is the sub-list for method output_type
+	76, // [76:76] is the sub-list for method input_type
+	76, // [76:76] is the sub-list for extension type_name
+	76, // [76:76] is the sub-list for extension extendee
+	0,  // [0:76] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -5480,7 +5598,7 @@ func file_bossanova_v1_models_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
 			NumEnums:      21,
-			NumMessages:   29,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

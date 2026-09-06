@@ -30,6 +30,7 @@ const sidebars: SidebarsConfig = {
         'guides/pr-lifecycle',
         'guides/remote-daemons',
         'guides/scheduled-sessions',
+        'guides/login',
         'guides/web',
       ],
     },

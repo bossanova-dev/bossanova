@@ -27,6 +27,19 @@ beforeEach(() => {
   sentryMock.setTag.mockReset()
 })
 
+describe('initSentry', () => {
+  it('does not initialize Sentry from the development server', () => {
+    const nodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'development'
+
+    initSentry()
+
+    process.env.NODE_ENV = nodeEnv
+    expect(sentryMock.init).not.toHaveBeenCalled()
+    expect(sentryMock.setTag).not.toHaveBeenCalled()
+  })
+})
+
 describe('scrub', () => {
   it.each([
     {

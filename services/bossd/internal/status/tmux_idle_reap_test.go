@@ -120,9 +120,10 @@ func TestEvaluateIdleReap(t *testing.T) {
 			wantIdleFor: idleTestThreshold - 1,
 		},
 		{
-			// D5: waking a chat with no provider session id yields a fresh
-			// agent with no memory of the conversation.
-			name: "idle long enough but not resumable: no provider session id",
+			// BOS-1179: provider_session_id is only one possible resume id.
+			// Claude commonly resumes from agent_session_id, so a missing
+			// provider id is not a keep reason by itself.
+			name: "idle long enough with no provider session id but an agent resume id",
 			ev: func() idleReapEvidence {
 				owner := idleTestOwner()
 				owner.chat.ProviderSessionID = nil
@@ -130,13 +131,15 @@ func TestEvaluateIdleReap(t *testing.T) {
 					owner:             owner,
 					entry:             idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 9*time.Hour),
 					transcriptPresent: present,
+					resumeSessionID:   owner.chat.AgentSessionID,
 				}
 			}(),
-			wantReason:  reasonIdleNoProviderSession,
+			wantReap:    true,
+			wantReason:  reasonIdleTooLong,
 			wantIdleFor: 9 * time.Hour,
 		},
 		{
-			name: "idle long enough but the provider session id is empty",
+			name: "idle long enough with empty provider session id but an agent resume id",
 			ev: func() idleReapEvidence {
 				owner := idleTestOwner()
 				owner.chat.ProviderSessionID = ptr("")
@@ -144,9 +147,33 @@ func TestEvaluateIdleReap(t *testing.T) {
 					owner:             owner,
 					entry:             idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 9*time.Hour),
 					transcriptPresent: present,
+					resumeSessionID:   owner.chat.AgentSessionID,
 				}
 			}(),
-			wantReason:  reasonIdleNoProviderSession,
+			wantReap:    true,
+			wantReason:  reasonIdleTooLong,
+			wantIdleFor: 9 * time.Hour,
+		},
+		{
+			name: "idle long enough but the resolved resume id is empty",
+			ev: idleReapEvidence{
+				owner:             idleTestOwner(),
+				entry:             idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 9*time.Hour),
+				transcriptPresent: present,
+			},
+			wantReason:  reasonIdleNoResumeSessionID,
+			wantIdleFor: 9 * time.Hour,
+		},
+		{
+			name: "idle long enough but a tmux client is attached",
+			ev: idleReapEvidence{
+				owner:             idleTestOwner(),
+				entry:             idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 9*time.Hour),
+				transcriptPresent: present,
+				resumeSessionID:   "provider-1",
+				attachedClients:   1,
+			},
+			wantReason:  reasonIdleAttachedClient,
 			wantIdleFor: 9 * time.Hour,
 		},
 		{
@@ -155,6 +182,7 @@ func TestEvaluateIdleReap(t *testing.T) {
 				owner:             idleTestOwner(),
 				entry:             idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 9*time.Hour),
 				transcriptPresent: absent,
+				resumeSessionID:   "provider-1",
 			},
 			wantReason:  reasonIdleTranscriptMissing,
 			wantIdleFor: 9 * time.Hour,
@@ -164,10 +192,11 @@ func TestEvaluateIdleReap(t *testing.T) {
 			// fail closed, not read as "no objection".
 			name: "idle long enough but no transcript oracle is wired",
 			ev: idleReapEvidence{
-				owner: idleTestOwner(),
-				entry: idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 9*time.Hour),
+				owner:           idleTestOwner(),
+				entry:           idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 9*time.Hour),
+				resumeSessionID: "provider-1",
 			},
-			wantReason:  reasonIdleTranscriptMissing,
+			wantReason:  reasonIdleTranscriptOracle,
 			wantIdleFor: 9 * time.Hour,
 		},
 		{
@@ -176,6 +205,7 @@ func TestEvaluateIdleReap(t *testing.T) {
 				owner:             idleTestOwner(),
 				entry:             idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, idleTestThreshold),
 				transcriptPresent: present,
+				resumeSessionID:   "provider-1",
 			},
 			wantReap:    true,
 			wantReason:  reasonIdleTooLong,
@@ -187,6 +217,7 @@ func TestEvaluateIdleReap(t *testing.T) {
 				owner:             idleTestOwner(),
 				entry:             idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 30*time.Hour),
 				transcriptPresent: present,
+				resumeSessionID:   "provider-1",
 			},
 			wantReap:    true,
 			wantReason:  reasonIdleTooLong,
@@ -228,6 +259,7 @@ func TestEvaluateIdleReap_TranscriptProbeIsLazy(t *testing.T) {
 				owner:             idleTestOwner(),
 				entry:             tc.entry,
 				transcriptPresent: func() bool { probes++; return true },
+				resumeSessionID:   "provider-1",
 			}
 			evaluateIdleReap(ev, idleTestNow, idleTestThreshold)
 			if probes != tc.wantProbes {

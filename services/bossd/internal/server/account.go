@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -23,6 +24,26 @@ import (
 // liveSmokeUnavailableDetail is recorded as last_test_error and returned as the
 // TestAccount detail when no AccountSmokeRunner is wired.
 const liveSmokeUnavailableDetail = "provider verification unavailable"
+
+// liveSmokeInconclusiveDetail is recorded when verification RAN but could not
+// be attributed to the stored credential because it was replaced mid-run.
+// Distinct from liveSmokeUnavailableDetail because the reasons differ — one
+// means no runner, the other means a race — and reporting "unavailable" for a
+// race would misdescribe a verification that actually executed.
+const liveSmokeInconclusiveDetail = "provider verification inconclusive: credential changed during verification"
+
+// authCheckClearer withdraws a row's durable credential-verification state.
+// It is an optional seam rather than a db.AccountStore method for the same
+// reason RecordAuthCheck is: the auth_check_* columns are owned by the
+// credential maintainer (accountwiring.AuthCheckStore), not by the broad
+// account-registry interface. The assertion below is what keeps that
+// indirection honest — a signature drift on *db.SQLiteAccountStore becomes a
+// compile error here instead of a silently skipped clear at runtime.
+type authCheckClearer interface {
+	ClearAuthCheck(ctx context.Context, id string) error
+}
+
+var _ authCheckClearer = (*db.SQLiteAccountStore)(nil)
 
 // usageProbeConcurrency bounds how many accounts a refresh=true ListAccounts
 // probes at once. The probes are independent — each loads its own credential
@@ -248,7 +269,7 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 	if err := s.rejectDuplicateCredential(ctx, string(account.Provider), credential, id); err != nil {
 		return nil, err
 	}
-	if err := s.saveRefreshedCredential(id, credential); err != nil {
+	if err := s.saveRefreshedCredential(ctx, id, credential); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
 	// The credential just changed on disk, but any session that already failed
@@ -264,15 +285,20 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 			s.deleteRefreshedCredentialOnNotFound(id, err)
 			return nil, err
 		}
-		smokeUnavailable := !testResp.Msg.GetLiveSmokeRan() && testResp.Msg.GetDetail() == liveSmokeUnavailableDetail
-		if testResp.Msg.GetAccount().GetLastTestError() == "" || smokeUnavailable {
+		// Both details mean "no verdict about this credential": no runner ran,
+		// or one ran against bytes that were replaced underneath it. Neither is
+		// evidence the credential is bad, so neither may fail health.
+		smokeIndeterminate := !testResp.Msg.GetLiveSmokeRan() &&
+			(testResp.Msg.GetDetail() == liveSmokeUnavailableDetail ||
+				testResp.Msg.GetDetail() == liveSmokeInconclusiveDetail)
+		if testResp.Msg.GetAccount().GetLastTestError() == "" || smokeIndeterminate {
 			account, err := s.restoreAccountHealth(ctx, id)
 			if err != nil {
 				s.deleteRefreshedCredentialOnNotFound(id, err)
 				return nil, err
 			}
 			testResp.Msg.Account = accountToProto(account)
-		} else if testResp.Msg.GetLiveSmokeRan() || testResp.Msg.GetDetail() != liveSmokeUnavailableDetail {
+		} else if !smokeIndeterminate {
 			account, err := s.failAccountHealth(ctx, id)
 			if err != nil {
 				s.deleteRefreshedCredentialOnNotFound(id, err)
@@ -301,12 +327,63 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 // with credmaterialize's load-merge-save reconciliation. The lock covers this
 // whole write, so a materializer either reloads this explicit refresh before it
 // merges or saves first and lets the explicit refresh win afterwards.
-func (s *Server) saveRefreshedCredential(id string, credential []byte) error {
-	save := func() error { return s.accountCreds.Save(id, credential) }
+//
+// It also withdraws the durable auth-check row inside that same critical
+// section. The row describes the credential that was JUST replaced, so it now
+// describes bytes that are no longer stored: left standing, an auth_invalid
+// verdict benches the account in both selection tiers and refuses
+// materialization (account.binding) until the next maintenance sweep — six
+// hours or more, because an auth-invalid outcome records no retry deadline.
+// Clearing it restores eligibility immediately and, with auth_checked_at NULL,
+// makes the account due on the next tick.
+//
+// Both halves must be under the one lock, not merely ordered. The maintainer
+// reads its baseline credential generation under this same lock
+// (accountwiring.runVerification), so a concurrent verification either takes
+// its baseline BEFORE the save — making it a verification of the old
+// credential, which the maintainer's generation guard discards — or AFTER the
+// clear, in which case its verdict describes the credential that is actually
+// stored and must be allowed to stand. Clearing outside the lock leaves a
+// window in between: a verification that baselines on the REPLACEMENT commits a
+// legitimate auth_invalid verdict, and this clear then erases it, returning a
+// credential known to be bad to rotation until the next sweep.
+//
+// The clear stays best-effort even here: the credential write has already
+// committed inside the closure, so a clear failure must not fail the RPC.
+// Nothing it reaches re-enters this lock — ClearAuthCheck is a bare account-row
+// UPDATE — which matters because the lock is not reentrant.
+func (s *Server) saveRefreshedCredential(ctx context.Context, id string, credential []byte) error {
+	save := func() error {
+		if err := s.accountCreds.Save(id, credential); err != nil {
+			return err
+		}
+		s.clearAuthCheckAfterRefresh(ctx, id)
+		return nil
+	}
 	if locker, ok := s.accountCreds.(accountCredentialLocker); ok {
 		return locker.WithCredentialLock(id, save)
 	}
 	return save()
+}
+
+// clearAuthCheckAfterRefresh withdraws the durable credential-verification
+// state belonging to a credential that has just been replaced.
+//
+// It is best-effort by design. The credential write has already committed at
+// this point, so failing the RPC here would report failure for a refresh that
+// actually succeeded and leave the caller with no way to retry the clear. A
+// stale row costs eligibility until the next sweep re-verifies; a failed RPC
+// would cost the credential. sql.ErrNoRows is the account-disappeared race and
+// is handled by the caller's existing not-found cleanup, so it is not logged.
+func (s *Server) clearAuthCheckAfterRefresh(ctx context.Context, id string) {
+	clearer, ok := s.accounts.(authCheckClearer)
+	if !ok {
+		return
+	}
+	if err := clearer.ClearAuthCheck(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		s.logger.Warn().Err(err).Str("account_id", id).
+			Msg("RefreshAccount: could not clear stale credential-verification state")
+	}
 }
 
 func (s *Server) deleteRefreshedCredentialOnNotFound(id string, err error) {
@@ -496,6 +573,27 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 		return s.recordAndRespond(ctx, id, false, liveSmokeUnavailableDetail)
 	}
 	if err := s.accountSmoke.Smoke(ctx, id, provider, blob); err != nil {
+		if errors.Is(err, accountwiring.ErrAuthCheckNotRecorded) {
+			// The verification ran, but its durable result could not be
+			// committed, so the row's eligibility state still describes an
+			// older run. Reporting the live outcome here would let a caller
+			// read "credential works" while the resolver keeps refusing the
+			// account on a stale auth_invalid verdict.
+			//
+			// This is an infrastructure failure, treated like a locked keyring
+			// above, and deliberately NOT routed through recordAndRespond: a
+			// transient store failure must not be written into last_test_error,
+			// which would flip a working account to health=failed.
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if errors.Is(err, accountwiring.ErrVerificationInconclusive) {
+			// Verification ran but raced a credential replacement, so its
+			// result says nothing about what is stored now. Degrade like an
+			// unavailable runner rather than recording a credential failure:
+			// the credential may be perfectly good, and writing this into
+			// last_test_error would bench it via failAccountHealth.
+			return s.recordAndRespond(ctx, id, false, liveSmokeInconclusiveDetail)
+		}
 		if errors.Is(err, agent.ErrAgentRunnerNotLoaded) {
 			// Verification couldn't run (no agent plugin loaded to execute the
 			// smoke check) — not a credential failure. Degrade to the same

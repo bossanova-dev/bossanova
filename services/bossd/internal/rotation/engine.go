@@ -460,12 +460,23 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	return out, nil
 }
 
-// isSelectable reports whether an account is eligible to run: active and
-// healthy. It is the single source of the eligibility predicate shared by
-// selectCandidate (who can rotate in now) and minFutureCooldown (who will be
-// selectable once a cooldown expires), so the two never drift.
+// isSelectable reports whether an account is eligible to run: active, healthy,
+// and not benched by durable credential-verification state. It is the single
+// source of the eligibility predicate shared by selectCandidate (who can rotate
+// in now) and minFutureCooldown (who will be selectable once a cooldown
+// expires), so the two never drift.
+//
+// The auth-invalid clause is load-bearing and cannot be inferred from Health:
+// RecordAuthCheck writes only the auth_check_* columns and deliberately leaves
+// Health alone, so a status+health predicate selects credentials already known
+// to be rejected. Downstream that is not a loud failure — resolveSpawnEnv
+// returns a nil overlay, and the session silently runs on the agent CLI's
+// ambient login (BOS-973) — while the failover proxy materializes the account
+// directly and never consults the resolver at all.
 func isSelectable(a *models.Account) bool {
-	return a.Status == models.AccountStatusActive && a.Health == models.AccountHealthOK
+	return a.Status == models.AccountStatusActive &&
+		a.Health == models.AccountHealthOK &&
+		!a.IsAuthInvalid()
 }
 
 // selectCandidate returns the first account (list is pre-ordered) that is

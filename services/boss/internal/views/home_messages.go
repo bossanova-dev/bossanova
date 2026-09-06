@@ -22,7 +22,13 @@ type sessionListMsg struct {
 	// acme/widget#123". Only populated for sessions whose aggregate status is
 	// waiting; nil on an older daemon that does not stamp the field.
 	daemonWaitingReasons map[string]string
-	err                  error
+	// sessionReadFailures carries the organizations whose sessions could not be
+	// read on this poll (BOS-1151). A cloud read fans out across every
+	// organization the caller belongs to, so one organization failing yields a
+	// partial list rather than an error: sessions is what was served, and this
+	// says what is missing. Always empty against a local daemon.
+	sessionReadFailures []*pb.OrganizationSessionReadFailure
+	err                 error
 }
 
 // homeGenerationSequence gives each HomeModel a process-unique identity. It

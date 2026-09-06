@@ -32,8 +32,8 @@ one row per job, sorted by next fire time. The columns are:
 The `gating` and `gated` statuses come from the optional **gate command**
 (see [Gate command](#gate-command) below): `gating` shows while the gate is
 running, and `gated` is remembered when the last tick was blocked because the
-gate **ran and said no**. A gate that could not run at all reads `failed`
-instead — see [Outcome](#outcome).
+gate **ran** and said no. A gate that could not run at all reads `failed`
+instead; see [Outcome](#outcome).
 
 The action bar shows the available keys: `[n]ew`, `[e/enter]dit`,
 `[d]elete`, `[space] toggle`, `[r]un now`. `esc` returns to Settings.
@@ -90,29 +90,29 @@ similar second-level expressions are rejected.
 ## Gate command
 
 Some cron jobs run often and carry heavy, token-expensive prompts, but
-only actually need to run when a cheap mechanical condition holds — for
+only actually need to run when a cheap mechanical condition holds: for
 example, "there is an open PR with label `needs-triage`." The **gate
 command** is that cheap check. It runs _before_ the job fires; a zero
 exit lets the run proceed, and a non-zero exit blocks it. Because the
 gate runs before any worktree is created, a blocked tick costs nothing
-beyond the gate command itself — no worktree, no setup script, no agent
+beyond the gate command itself: no worktree, no setup script, no agent
 session, no tokens.
 
-Leave the field empty for no gate (the default — every tick fires).
+Leave the field empty for no gate (the default; every tick fires).
 
 ### Command vs. path
 
 The command is interpreted one of two ways:
 
 - **Path to an executable** when it starts with `/`, `./`, or `../`. The
-  command is split on whitespace and run **directly, without a shell**.
+  command is split on whitespace and run **directly**, without a shell.
   Relative paths resolve against the repo clone (the working directory).
 - **Shell command** otherwise: run as `sh -c "<command>"`, so pipes,
   `&&`, environment expansion, and other shell features work.
 
 ### Outcome
 
-Anything other than exit `0` blocks the fire — the gate contract deliberately
+Anything other than exit `0` blocks the fire; the gate contract deliberately
 fails closed, because an unverifiable condition should skip the run rather than
 burn tokens. But **blocking is not one thing**, and the two ways of blocking are
 recorded differently:
@@ -120,7 +120,7 @@ recorded differently:
 | Gate result                               | Outcome       | `STATUS` | Meaning                                                                              |
 | ----------------------------------------- | ------------- | -------- | ------------------------------------------------------------------------------------ |
 | Exit `0`                                  | —             | —        | The job fires normally (worktree, setup, agent session).                             |
-| Exit `1` (or any other non-zero code)     | `gated`       | `gated`  | The gate **ran and decided** there is no work. Healthy.                              |
+| Exit `1` (or any other non-zero code)     | `gated`       | `gated`  | The gate **ran** and decided there is no work. Healthy.                              |
 | Exit `127` — command not found            | `gate_failed` | `failed` | The gate could not be found. Nothing was evaluated.                                  |
 | Exit `126` — found but not executable     | `gate_failed` | `failed` | The gate could not be executed. Nothing was evaluated.                               |
 | Timeout (default **60s**)                 | `gate_failed` | `failed` | The gate never finished. The slot is released so a hung gate can't wedge the runner. |
@@ -131,27 +131,27 @@ recorded differently:
 Both outcomes block the fire, create no session, and still advance
 `next_run_at`. What differs is what an operator sees. `gated` is a warning-styled
 "waiting, healthy" row: the gate is doing its job. `gate_failed` is a red
-`failed` row: **the gate is broken and nothing is being checked**.
+`failed` row: the gate is **broken** and nothing is being checked.
 
 That split exists because collapsing the two hid a real outage. When a daemon
 host lost its `node` from `PATH`, every `node …/gate.mjs` gate exited `127`,
 every tick recorded `gated`, and the cron list looked like a quiet, healthy
 backlog sweep while eighteen pull requests piled up behind it. A `failed` row and
-a `warn`-level daemon log line — carrying the gate's own output, its classified
-failure, and its exit code — now name the problem instead.
+a `warn`-level daemon log line (carrying the gate's own output, its classified
+failure, and its exit code) now name the problem instead.
 
 :::tip Signal "no work" with exit 1
 
 Exit `126` and `127` are the shell's own convention for "could not run what you
 asked", so a gate that exits with either is reported as broken rather than as a
 skip. If your gate wants to say _"there is nothing to do right now"_, **exit
-`1`** — which is also what a bare `grep`, `test`, or `[ … ]` already does, and
+`1`**, which is also what a bare `grep`, `test`, or `[ … ]` already does, and
 what the shipped example gates below use. Any non-zero code other than `126` and
 `127` is treated the same way.
 
 :::
 
-Both are **remembered** — the outcome is written to `last_run_outcome`, so it
+Both are **remembered**: the outcome is written to `last_run_outcome`, so it
 survives a daemon restart and stays visible in the list until a later fire
 supersedes it. A manual [Run now](#run-a-job-ad-hoc) reports them distinctly too:
 `blocked by gate command` for a real gate decision, and
@@ -165,7 +165,7 @@ heavy work.
 
 ### Environment
 
-The gate runs on the **daemon host** (not in a worktree — none exists
+The gate runs on the **daemon host** (not in a worktree; none exists
 yet), with its working directory set to the repo's main clone. The
 following environment variables are provided so a gate script can talk to
 the repo's services without hard-coding anything:
@@ -181,7 +181,7 @@ the repo's services without hard-coding anything:
 
 These keys come from the repo's settings (the same trust boundary as the
 setup script). The gate's combined stdout+stderr is captured and logged
-by the daemon — **don't print secret values** from your gate script.
+by the daemon; **don't print secret values** from your gate script.
 
 :::note Worktree variables point at the repo clone
 
@@ -195,7 +195,7 @@ the checkout; don't expect a clean per-run worktree.
 ### Example
 
 A gate that only lets a triage job run when there's at least one open PR
-labelled `needs-triage` (exits non-zero — gating the job — when there is
+labelled `needs-triage` (exits non-zero, gating the job, when there is
 nothing to do):
 
 ```sh
@@ -211,7 +211,7 @@ setup hadn't run; others are light enough that paying the full setup cost
 on every tick is wasteful.
 
 **Run setup command** is the per-job toggle for this. It defaults to
-**on** (so the safe default is preserved — setup always runs unless you
+**on** (so the safe default is preserved; setup always runs unless you
 opt out). Turn it **off** to keep a light job fast: the fire skips the
 setup script entirely and starts the agent in the bare worktree.
 
@@ -220,8 +220,8 @@ Internally this maps to the session's `SkipSetupScript` option
 
 ## Zero output
 
-Some jobs only ever report somewhere else — they post to Slack, probe a
-health endpoint, or file a ticket — and are never expected to change a
+Some jobs only ever report somewhere else (they post to Slack, probe a
+health endpoint, or file a ticket) and are never expected to change a
 line of this repository. Provisioning a worktree, a branch and a draft PR
 for those is pure overhead.
 
@@ -234,7 +234,7 @@ checkout itself, the setup script is skipped regardless of
 benign no-op recorded with the `zero_output` outcome.
 
 Because the agent runs in your real checkout rather than an isolated
-worktree, a zero-output job that does write files leaves them there —
+worktree, a zero-output job that does write files leaves them there;
 nothing cleans them up and no PR is opened. Keep the prompt to jobs that
 genuinely produce no repository changes.
 
@@ -259,13 +259,13 @@ runs `fire()`:
    (`DefaultMaxConcurrent` in `scheduler.go`). Extra fires block
    until a slot frees up.
 4. **Gate command.** If a [gate command](#gate-command) is set, it runs
-   now — _before_ any worktree exists. A zero exit lets the fire
+   now, _before_ any worktree exists. A zero exit lets the fire
    proceed; anything else blocks it, with `next_run_at` still advancing
    and no session created. A non-zero exit records `gated` (`STATUS`
-   `gated`); a gate that could not run at all — timeout, launch error,
-   shell exit `126`/`127` — records `gate_failed` (`STATUS` `failed`).
-   See [Outcome](#outcome). The gate runs on **every** fire — scheduled
-   and manual [Run now](#run-a-job-ad-hoc) alike — so a manual run is
+   `gated`); a gate that could not run at all (timeout, launch error,
+   shell exit `126`/`127`) records `gate_failed` (`STATUS` `failed`).
+   See [Outcome](#outcome). The gate runs on **every** fire (scheduled
+   and manual [Run now](#run-a-job-ad-hoc) alike), so a manual run is
    also blocked when the gate fails.
 5. **Spawn.** A worktree is created on a fresh branch; your repo's
    [setup script](setup-scripts.md) runs **unless [Run setup
@@ -327,11 +327,11 @@ Specifically:
 - **`STATUS`** reflects the spawned session's state: `Running` while
   the agent is active, `gating` while a [gate command](#gate-command) is
   running, `gated` if the last tick was blocked because the gate ran and
-  said no, `failed` if the last fire's session ended in failure **or the
-  gate could not run at all** (outcome `gate_failed`), `idle` otherwise.
+  said no, `failed` if the last fire's session ended in failure or the
+  gate **could not run at all** (outcome `gate_failed`), `idle` otherwise.
   Both gate outcomes are remembered across restarts; a later successful
   fire supersedes them. A `failed` row on a job that has a gate command is
-  worth checking first — see [Outcome](#outcome).
+  worth checking first; see [Outcome](#outcome).
 
 There is no separate "history view". Every fire produces a normal
 session, so to drill into a specific run, find its session in the
@@ -341,13 +341,13 @@ home view (it will have a `cron-…` branch name) or via `boss ls`.
 
 Press `r` on the highlighted row in the cron list. This calls
 `RunCronJobNow` and spawns a session immediately, regardless of
-schedule. The same overlap, concurrency, **and gate** rules apply. If
+schedule. The same overlap, concurrency, and **gate** rules apply. If
 the previous fire is still running, you'll see a `Skipped: previous run
 still active` toast at the bottom of the list.
 
-**Run now honors the [gate command](#gate-command).** A manual run is
+Run now honors the **[gate command](#gate-command)**. A manual run is
 gated exactly like a scheduled fire: if the gate exits non-zero the run
-is blocked and you'll see a `Skipped: blocked by gate command` toast —
+is blocked and you'll see a `Skipped: blocked by gate command` toast,
 so pressing `r` is the way to test a gated job on demand.
 
 Use this when you want to manually re-trigger a cron job without

@@ -2,6 +2,7 @@ package skillinstall
 
 import (
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -367,7 +368,7 @@ func TestBossBuildCappedReviewShipsReviewReady(t *testing.T) {
 			// arm, so a `Contains` check would stay green while two of the three arms
 			// were routed back to BLOCKED. The leading `I` is dropped from the needle
 			// because the provisional arm spells it mid-sentence as `it becomes`.
-			assertContains(t, step6, "published, not fatal")
+			assertContains(t, unwrapped(step6), "published, not fatal")
 			const blockedOnly = "ecomes `BLOCKED` **only** when the push or the quality gates fail."
 			if got := strings.Count(unwrapped(step6), blockedOnly); got != 3 {
 				t.Errorf("%s: want the BLOCKED-only routing sentence on all 3 non-clean arms, got %d", label, got)
@@ -457,6 +458,28 @@ func TestBossBuildBlockedHasExactlyFourCauses(t *testing.T) {
 			partialGate := step9[gateIdx:]
 			assertContains(t, unwrapped(partialGate), "**only** in-scope acceptance criteria this run did not meet")
 			assertContains(t, unwrapped(partialGate), "and it is usually not `BLOCKED`")
+
+			const (
+				listStart = "1. **quality gates are red**"
+				listEnd   = "**That list is exhaustive.**"
+			)
+			listStartIdx := strings.Index(step12, listStart)
+			if listStartIdx < 0 {
+				t.Fatalf("%s: Step 12 BLOCKED list has no start marker %q", label, listStart)
+			}
+			listEndOffset := strings.Index(step12[listStartIdx:], listEnd)
+			if listEndOffset < 0 {
+				t.Fatalf("%s: Step 12 BLOCKED list has no end marker %q", label, listEnd)
+			}
+			blockedList := step12[listStartIdx : listStartIdx+listEndOffset]
+			listItems := regexp.MustCompile(`(?m)^\s*(?:\d+\.|-)\s+.+$`).FindAllString(blockedList, -1)
+			if len(listItems) != 4 {
+				t.Fatalf("%s: Step 12 BLOCKED list must carry exactly four items, found %d: %q", label, len(listItems), listItems)
+			}
+			boldSpans := regexp.MustCompile(`\*\*[^*]+\*\*`).FindAllString(blockedList, -1)
+			if len(boldSpans) != 4 {
+				t.Fatalf("%s: Step 12 BLOCKED list must carry exactly four bold cause spans, found %d: %q", label, len(boldSpans), boldSpans)
+			}
 		})
 	}
 }
@@ -592,11 +615,10 @@ func TestBossBuildReviewTierIsPickedFromTheDiff(t *testing.T) {
 // never by a clock. Four properties are load-bearing and each is deletable on its own without any
 // other gate here going red — the prohibition and its carve-out (a blanket ban would outlaw the
 // bounded poll's own pacing, so the exemption must be pinned beside the ban), Step 9's waits being
-// callback-driven under the gate rather than optionally so, and Step 10's opener waiting on the
-// bounded poll while deliberately NOT re-arming. That last one reads like an omission and is not:
-// Step 9 already gated the branch green, so `checks_passed` reads satisfied, and a watch armed on a
-// satisfied trigger fires immediately (callback-watches.md Protocol step 4) — arming there burns the
-// watch and cancels its group siblings instead of waiting for anything.
+// callback-driven under the gate rather than optionally so, and Step 10's opener arming transition-
+// matched watches while the bounded poll remains the wait. Transition matching is load-bearing:
+// Step 9 already left the PR green and ready, so a bare state-matched `checks_passed_ready` watch
+// fires immediately and burns the watch instead of waiting for a new edge.
 var falsificationCiWaitProhibitionPins = regProsePins([]falsificationProsePin{
 	{
 		name:         "ci-wait-forbids-fixed-sleep",
@@ -652,8 +674,8 @@ var falsificationStep9CallbackWaitPins = regProsePins([]falsificationProsePin{
 	},
 })
 
-// falsificationSettleOpenerWaitPins pin Step 10's opener: it waits on the bounded poll, and it
-// deliberately does not arm.
+// falsificationSettleOpenerWaitPins pin Step 10's opener: it waits on the bounded poll and arms
+// watches with transition semantics rather than immediately consuming an already-satisfied state.
 var falsificationSettleOpenerWaitPins = regProsePins([]falsificationProsePin{
 	{
 		name:         "settle-opener-waits-on-state-not-clock",
@@ -667,17 +689,30 @@ var falsificationSettleOpenerWaitPins = regProsePins([]falsificationProsePin{
 		},
 	},
 	{
-		name:         "settle-opener-does-not-rearm-a-satisfied-trigger",
-		pattern:      "`checks_passed`\\s+already\\s+reads\\s+satisfied\\s+and\\s+re-arming\\s+a\\s+satisfied\\s+trigger\\s+fires\\s+it\\s+immediately\\s+and\\s+burns\\s+the\\s+watch",
-		live:         "`checks_passed` already reads satisfied and re-arming a satisfied trigger fires it immediately and burns the watch",
-		tokenRemoved: "`checks_passed` already reads satisfied and re-arming a satisfied trigger is harmless",
+		name:         "settle-opener-arms-transition-watches",
+		pattern:      "Arm\\s+`checks_failed`\\s+and\\s+`checks_passed_ready`\\s+in\\s+separate\\s+per-trigger\\s+groups\\s+with\\s+`--on-transition`:\\s+a\\s+bare\\s+state-matched\\s+`checks_passed_ready`\\s+watch\\s+would\\s+fire\\s+immediately\\s+on\\s+the\\s+already-green,\\s+ready\\s+PR\\s+and\\s+burn\\s+the\\s+watch\\.",
+		live:         "Arm `checks_failed` and `checks_passed_ready` in separate per-trigger groups with `--on-transition`: a bare state-matched `checks_passed_ready` watch would fire immediately on the already-green, ready PR and burn the watch.",
+		tokenRemoved: "Arm `checks_failed` and `checks_passed_ready` in separate per-trigger groups: a bare state-matched `checks_passed_ready` watch would fire immediately on the already-green, ready PR and burn the watch.",
 		alsoRemoved: []string{
-			// The consequence dropped — an immediate fire reads as a cheap no-op rather than a
-			// spent watch, so the reason not to arm here evaporates.
-			"`checks_passed` already reads satisfied and re-arming a satisfied trigger fires it immediately",
-			// The precondition dropped — the rule stops saying WHICH trigger is already satisfied,
-			// and generalises into "never re-arm", contradicting Protocol step 4's re-arm rule.
-			"re-arming a satisfied trigger fires it immediately and burns the watch",
+			// The consequence dropped — immediate delivery reads as a cheap no-op rather than a
+			// spent watch, so the transition opt-out looks optional.
+			"Arm `checks_failed` and `checks_passed_ready` in separate per-trigger groups with `--on-transition`: a bare state-matched `checks_passed_ready` watch would fire immediately on the already-green, ready PR.",
+			// The precondition dropped — the warning no longer says the already-green, ready state
+			// is exactly what makes default state matching consume this watch immediately.
+			"Arm `checks_failed` and `checks_passed_ready` in separate per-trigger groups with `--on-transition`: a bare state-matched watch would fire immediately and burn the watch.",
+		},
+	},
+	{
+		name:         "settle-opener-unfired-watch-cannot-hang",
+		pattern:      "A\\s+transition-armed\\s+watch\\s+that\\s+never\\s+fires\\s+because\\s+nothing\\s+transitions\\s+is\\s+expected,\\s+not\\s+a\\s+hang:\\s+\\[`callback-watches\\.md`\\]\\(callback-watches\\.md\\)\\s+Protocol\\s+step\\s+5's\\s+bounded\\s+poll\\s+backs\\s+the\\s+wait\\s+whether\\s+or\\s+not\\s+a\\s+watch\\s+is\\s+armed\\.",
+		live:         "A transition-armed watch that never fires because nothing transitions is expected, not a hang: [`callback-watches.md`](callback-watches.md) Protocol step 5's bounded poll backs the wait whether or not a watch is armed.",
+		tokenRemoved: "A transition-armed watch that never fires because nothing transitions is expected; wait for the callback before continuing.",
+		alsoRemoved: []string{
+			// The bounded fallback dropped, so an unfired transition watch can once again be read
+			// as the only wait mechanism.
+			"A transition-armed watch that never fires because nothing transitions is expected, not a hang.",
+			// The armed branch dropped, so the fallback is promised only when callbacks are absent.
+			"A transition-armed watch that never fires because nothing transitions is expected, not a hang: [`callback-watches.md`](callback-watches.md) Protocol step 5's bounded poll backs the wait when no watch is armed.",
 		},
 	},
 })

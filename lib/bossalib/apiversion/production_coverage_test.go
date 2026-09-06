@@ -24,6 +24,9 @@ func TestProductionChanges_CoverDerivedCarrierProcedures(t *testing.T) {
 			if _, ok := change.(ErrorTransform); ok {
 				continue
 			}
+			if _, ok := change.(ErrorRecoveryTransform); ok {
+				continue
+			}
 			t.Fatalf("%T has no response coverage probe", change)
 		}
 		for _, probe := range probes {
@@ -44,6 +47,15 @@ func TestProductionChanges_CoverDerivedCarrierProcedures(t *testing.T) {
 
 func productionCoverageProbes(change VersionChange) []responseProbe {
 	switch change.(type) {
+	case SupersededCredentialClassChange:
+		return accountProbes(func() *pb.Account {
+			return &pb.Account{
+				Id:        "acct-superseded",
+				AuthCheck: &pb.AuthCheck{Outcome: authOutcomeHealthy, FailureClass: authFailureClassCredentialSuperseded},
+			}
+		}, func(a *pb.Account) bool {
+			return a.GetAuthCheck().GetOutcome() == authOutcomeHealthy && a.GetAuthCheck().GetFailureClass() == ""
+		})
 	case StaleCheckStateChange:
 		return sessionProbes(func() *pb.Session {
 			return &pb.Session{
@@ -182,6 +194,41 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		return gateFailedProbes()
 	case AbandonedCheckoutStatusChange:
 		return abandonedCheckoutProbes()
+	case CloudAccessOrganizationChange:
+		return cloudAccessOrganizationProbes()
+	case PendingInvitationResponseChange:
+		return []responseProbe{
+			{
+				procedure: bossanovav1connect.OrchestratorServiceInviteOrganizationMemberProcedure,
+				build: func() any {
+					return &pb.InviteOrganizationMemberResponse{Member: &pb.OrganizationMember{IsInvitePending: true}}
+				},
+				mutated: func(msg any) bool {
+					return !msg.(*pb.InviteOrganizationMemberResponse).GetMember().GetIsInvitePending()
+				},
+			},
+			{
+				procedure: bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,
+				build: func() any {
+					return &pb.ListOrganizationMembersResponse{Members: []*pb.OrganizationMember{{UserId: "active"}, {IsInvitePending: true}}}
+				},
+				mutated: func(msg any) bool {
+					return len(msg.(*pb.ListOrganizationMembersResponse).GetMembers()) == 1
+				},
+			},
+		}
+	case RefreshChainUnprovenOutcomeChange:
+		return refreshChainUnprovenProbes()
+	case AcceptedInvitationResponseChange:
+		return []responseProbe{{
+			procedure: bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,
+			build: func() any {
+				return &pb.ListOrganizationMembersResponse{Members: []*pb.OrganizationMember{{UserId: "active"}, {IsInviteAccepted: true}}}
+			},
+			mutated: func(msg any) bool {
+				return len(msg.(*pb.ListOrganizationMembersResponse).GetMembers()) == 1
+			},
+		}}
 	default:
 		return nil
 	}
@@ -222,7 +269,9 @@ func sessionResponse(procedure string, sess *pb.Session) (any, func(any) *pb.Ses
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
 		return &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{sess}}, func(msg any) *pb.Session { return msg.(*pb.ProxyListSessionsResponse).GetSessions()[0] }
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure:
+		//nolint:staticcheck // Coverage must keep exercising the deprecated wire response.
 		return &pb.ProxyListSessionsAcrossOrganizationsResponse{Sessions: []*pb.Session{sess}}, func(msg any) *pb.Session {
+			//nolint:staticcheck // Coverage must keep exercising the deprecated wire response.
 			return msg.(*pb.ProxyListSessionsAcrossOrganizationsResponse).GetSessions()[0]
 		}
 	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
@@ -316,6 +365,35 @@ func abandonedCheckoutProbes() []responseProbe {
 					!st.GetCanCreateCheckout() &&
 					st.GetCheckoutStarted() &&
 					st.GetDenialReason() == cloudPendingEntitlementDenialReason
+			},
+		})
+	}
+	return probes
+}
+
+// cloudAccessOrganizationProbes derives its procedure list from the proto
+// descriptors for the same reason abandonedCheckoutProbes does: a fourth response
+// that starts carrying a CloudAccessStatus fails this test until
+// CloudAccessOrganizationChange covers it too.
+func cloudAccessOrganizationProbes() []responseProbe {
+	var probes []responseProbe
+	for _, procedure := range UnaryProceduresContainingCarrier(
+		(&pb.CloudAccessStatus{}).ProtoReflect().Descriptor().FullName(),
+		"OrchestratorService",
+	) {
+		procedure := procedure
+		probes = append(probes, responseProbe{
+			procedure: procedure,
+			build: func() any {
+				msg, _ := cloudAccessResponse(procedure, &pb.CloudAccessStatus{
+					State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+					WorkosOrgId: "org_01COVERAGE",
+				})
+				return msg
+			},
+			mutated: func(msg any) bool {
+				_, get := cloudAccessResponse(procedure, nil)
+				return get(msg).GetWorkosOrgId() == ""
 			},
 		})
 	}
@@ -421,4 +499,92 @@ func procedureMethod(procedure string) string {
 		return procedure
 	}
 	return method
+}
+
+// accountProbes builds one coverage probe per OrchestratorService procedure that
+// carries an Account, so a new account-bearing procedure cannot quietly escape a
+// transform that targets the embedded AuthCheck.
+//
+// The list is DERIVED from the generated descriptors, exactly as sessionProbes
+// and its siblings are, and that is load-bearing rather than stylistic. A
+// hand-maintained list makes this gate structurally blind to the one defect it
+// exists to catch: BOS-1175 shipped a down-convert covering four of the six
+// carriers, and a hardcoded four-entry list here reported full coverage of it,
+// because the probe set and the transform had drifted in the same direction. A
+// derived list fails instead — which is what a gate is for.
+func accountProbes(buildAccount func() *pb.Account, mutated func(*pb.Account) bool) []responseProbe {
+	var probes []responseProbe
+	for _, procedure := range UnaryProceduresContainingCarrier(
+		(&pb.Account{}).ProtoReflect().Descriptor().FullName(),
+		"OrchestratorService",
+	) {
+		procedure := procedure
+		probes = append(probes, responseProbe{
+			procedure: procedure,
+			build: func() any {
+				msg, _ := accountResponse(procedure, buildAccount())
+				return msg
+			},
+			mutated: func(msg any) bool {
+				_, get := accountResponse(procedure, nil)
+				return mutated(get(msg))
+			},
+		})
+	}
+	return probes
+}
+
+func accountResponse(procedure string, acct *pb.Account) (any, func(any) *pb.Account) {
+	switch procedure {
+	case bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure:
+		return &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{acct}}, func(msg any) *pb.Account {
+			return msg.(*pb.ProxyListAccountsResponse).GetAccounts()[0]
+		}
+	case bossanovav1connect.OrchestratorServiceProxyManageListAccountsProcedure:
+		return &pb.ProxyManageListAccountsResponse{Accounts: []*pb.Account{acct}}, func(msg any) *pb.Account {
+			return msg.(*pb.ProxyManageListAccountsResponse).GetAccounts()[0]
+		}
+	case bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure:
+		return &pb.ProxyAddAccountResponse{Account: acct}, func(msg any) *pb.Account {
+			return msg.(*pb.ProxyAddAccountResponse).GetAccount()
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRefreshAccountProcedure:
+		return &pb.ProxyRefreshAccountResponse{Account: acct}, func(msg any) *pb.Account {
+			return msg.(*pb.ProxyRefreshAccountResponse).GetAccount()
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateAccountProcedure:
+		return &pb.ProxyUpdateAccountResponse{Account: acct}, func(msg any) *pb.Account {
+			return msg.(*pb.ProxyUpdateAccountResponse).GetAccount()
+		}
+	case bossanovav1connect.OrchestratorServiceProxyTestAccountProcedure:
+		return &pb.ProxyTestAccountResponse{Account: acct}, func(msg any) *pb.Account {
+			return msg.(*pb.ProxyTestAccountResponse).GetAccount()
+		}
+	default:
+		panic("unhandled account procedure: " + procedure)
+	}
+}
+
+// refreshChainUnprovenProbes covers every OrchestratorService procedure that can
+// carry an Account, by DERIVING the set from the generated descriptors through
+// accountProbes above rather than listing it by hand.
+//
+// The hand-maintained list this replaces was the same defect accountProbes's own
+// comment describes: it reported full coverage from a literal set that could not
+// notice a procedure added later. Deriving it means a new Account-bearing
+// response fails here instead of silently serving an older client a value it was
+// never built to read.
+func refreshChainUnprovenProbes() []responseProbe {
+	return accountProbes(
+		func() *pb.Account {
+			return &pb.Account{AuthCheck: &pb.AuthCheck{
+				Outcome:      "refresh_chain_unproven",
+				FailureClass: "refresh_not_observed",
+			}}
+		},
+		func(a *pb.Account) bool {
+			return a.GetAuthCheck().GetOutcome() == "healthy" &&
+				a.GetAuthCheck().GetFailureClass() == ""
+		},
+	)
 }

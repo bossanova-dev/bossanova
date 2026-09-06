@@ -74,7 +74,7 @@ test('buildSpec stages a closing attach socket only for the reconnecting chat re
 
 test('buildSpec stages a signed-in organization only for the recipes that name one', () => {
   // The shared web fixture stages no organization, so a recipe entering the
-  // organization-scoped settings subtree without this init script photographs
+  // organization-subject settings route without this init script photographs
   // OrgScopedSettings' notice instead of its subject. Applied globally it would
   // instead hand every unrelated web still an organization it never asked for.
   const orgSpec = buildSpec({
@@ -98,9 +98,128 @@ test('buildSpec stages a signed-in organization only for the recipes that name o
   // bossanovaE2e-only write is invisible on a page that already has the other.
   assert.match(
     orgSpec,
-    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, organizationId/,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
   )
   assert.doesNotMatch(otherSpec, /__BOSSANOVA_E2E__/)
+})
+
+// The ratchet on the dual-global staging convention. Every stage script that
+// mirrors into the second fixture global now routes through stageFixtureScript
+// -- 11 call sites across 10 functions, all of the runner's mirroring sites --
+// and the reason it has to (the fakes resolve `__BOSSANOVA_E2E__ ??
+// bossanovaE2e`, a precedence rather than a merge) is stated once, on that
+// helper. A hand-written copy would restate the convention in a second place and
+// could drift from it silently, so pin the count: exactly one ASSIGNMENT to the
+// mirror global exists in the runner's own source. Assignments, not mentions --
+// the module's prose names the global many times over, and matching the bare
+// identifier would count comments as copies. Deliberately not covered: the stage
+// scripts that write `bossanovaE2e` alone (sessionOrganizationStageScript and
+// its siblings, which explain their own reason) and the ones that stage no
+// fixture global at all.
+test('the runner assigns the mirror fixture global in exactly one place', () => {
+  const source = fs.readFileSync(new URL('./proof-playwright-runner.mjs', import.meta.url), 'utf8')
+
+  const assignments = source.match(/window\.__BOSSANOVA_E2E__ = \{/g) ?? []
+
+  assert.equal(
+    assignments.length,
+    1,
+    `expected exactly one window.__BOSSANOVA_E2E__ assignment (stageFixtureScript's), found ${assignments.length} -- route the new staging through stageFixtureScript instead of copying the mirror`,
+  )
+})
+
+test('buildSpec stages repository holder organizations only for repository list proof', () => {
+  const repositorySpec = buildSpec({
+    recipe: { id: 'web-repositories', surface: 'web', route: '/org-e2e/settings/repos' },
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+  const editSpec = buildSpec({
+    recipe: {
+      id: 'web-repository-organization-refusal',
+      surface: 'web',
+      route: '/org-e2e/settings/repos/example',
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+
+  assert.match(repositorySpec, /repoOrganizations:/)
+  assert.match(repositorySpec, /org-proof-acme/)
+  assert.match(repositorySpec, /org-proof-globex/)
+  assert.match(repositorySpec, /org-proof-initech/)
+  assert.doesNotMatch(editSpec, /repoOrganizations:/)
+})
+
+test('repository filter proof captures all organizations before a narrowed-empty state', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find(
+    (candidate) => candidate.id === 'web-repositories-daemon-filter-flow',
+  )
+  assert.ok(recipe, 'web-repositories-daemon-filter-flow recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  assert.match(recipe.title, /Organization Filter Flow/)
+  assert.match(recipe.description, /All organizations/)
+
+  const allOrganizationsIndex = recipe.steps.findIndex(
+    (step) =>
+      step.action === 'select' &&
+      step.selector === '[data-testid="repository-organization-filter"]' &&
+      step.value === '',
+  )
+  const emptyOrganizationIndex = recipe.steps.findIndex(
+    (step) =>
+      step.action === 'select' &&
+      step.selector === '[data-testid="repository-organization-filter"]' &&
+      step.value === 'org-proof-initech',
+  )
+  const emptyStateIndex = recipe.steps.findIndex(
+    (step) =>
+      step.action === 'wait' &&
+      step.selector === 'text=No repositories belong to the selected organization',
+  )
+  assert.ok(allOrganizationsIndex >= 0, 'catalog must show All organizations')
+  assert.ok(
+    allOrganizationsIndex < emptyOrganizationIndex && emptyOrganizationIndex < emptyStateIndex,
+    'catalog must select the empty Initech organization before waiting for its empty state',
+  )
+
+  const spec = buildSpec({
+    recipe,
+    outputDir: '/tmp/out',
+    surface: 'web',
+    stageEnv: { VITE_E2E: '1' },
+  })
+
+  const allOrganizationsStep = region(
+    spec,
+    "caption(t), 'All organizations are included'",
+    "caption(t), 'Filter to an organization with no matching repositories'",
+    'all-organizations proof step',
+  )
+  assert.match(allOrganizationsStep, /repository-organization-filter/)
+  assert.match(allOrganizationsStep, /selectOption\('\'\)/)
+  const emptyOrganizationStep = region(
+    spec,
+    "caption(t), 'Filter to an organization with no matching repositories'",
+    "caption(t), 'No repositories belong to the selected organization'",
+    'empty-organization proof step',
+  )
+  assert.match(emptyOrganizationStep, /repository-organization-filter/)
+  assert.match(emptyOrganizationStep, /selectOption\('org-proof-initech'\)/)
+  assert.ok(
+    precedes(
+      spec,
+      "caption(t), 'All organizations are included'",
+      "caption(t), 'Filter to an organization with no matching repositories'",
+      "page.locator('text=No repositories belong to the selected organization')",
+    ),
+    'organization proof must show the all-organizations control before selecting an empty organization and waiting for its empty state',
+  )
 })
 
 test('the shipped catalog keeps the org-create-modal recipe wired to the web path rule', () => {
@@ -595,6 +714,72 @@ test('the daemon give-up spec waits for the notice before it screenshots', () =>
   assert.doesNotMatch(specFor('web-sessions'), /Try again/)
 })
 
+test('the repo-organization refusal recipe stages a PermissionDenied set into both e2e globals', () => {
+  const specFor = (id) =>
+    buildSpec({
+      recipe: { id, surface: 'web', capture: 'still', route: '/org-e2e/settings/repos' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+
+  const staged = specFor('web-repository-organization-refusal')
+  assert.match(
+    staged,
+    /setRepoOrganization: \{ message: 'organization membership required', code: 7 \}/,
+  )
+  // Code 7 is PERMISSION_DENIED, and the classifier keys on it and on nothing
+  // else — any other code falls straight through to the server's own sentence,
+  // which is the pre-BOS-1114 behaviour this capture is evidence against.
+  assert.match(staged, /code: 7/)
+  // Only the WRITE is refused. Refusing the read as well would leave the field
+  // never learning the repo is unmapped, and refusing the clear would break a
+  // release this recipe never drives.
+  assert.doesNotMatch(staged, /getRepoOrganization:/)
+  assert.doesNotMatch(staged, /clearRepoOrganization:/)
+  // Same latent-mirror reasoning as the session-expired test above.
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+  assert.match(
+    staged,
+    /window\.__BOSSANOVA_E2E__ = \{ \.\.\.window\.__BOSSANOVA_E2E__, \.\.\.staged \}/,
+  )
+
+  // The live control. Staged globally it would refuse the write on every other
+  // repository recipe, whose subjects are not this one.
+  assert.doesNotMatch(specFor('web-repository-edit'), /setRepoOrganization/)
+})
+
+test('the shipped catalog keeps the repo-organization refusal recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-repository-organization-refusal')
+  assert.ok(recipe, 'web-repository-organization-refusal recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // Absent from the pathRule it is never selected for a services/web diff, and
+  // BOS-1114's required proof would silently never run.
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule.recipeIds.includes('web-repository-organization-refusal'))
+  // The refusal only exists after a selection, and buildSpec's still branch
+  // never runs a recipe's steps — a "still" here would photograph the bare
+  // repository list with no control and no refusal in it.
+  assert.equal(recipe.capture, 'video')
+  // The negative evidence IS the ticket: the picker offers only organizations
+  // the caller belongs to, so a non-membership claim would be certainly wrong.
+  // A fresh-context judge grades against the description, so the prohibition has
+  // to be stated there or it is graded by nobody.
+  assert.match(recipe.description, /not a member/)
+  assert.match(recipe.description, /must NOT appear/)
+  // The refusal sentence has to be waited for, or the video ends before the
+  // banner it is evidence of has rendered.
+  const waited = recipe.steps.some(
+    (step) =>
+      step.action === 'wait' &&
+      (step.selector ?? '').includes('check that your Bossanova Cloud subscription is active'),
+  )
+  assert.ok(waited, 'the refusal recipe never waits for the classified sentence')
+})
+
 test('the shipped catalog keeps the daemon give-up recipe wired to the web path rule', () => {
   const catalog = JSON.parse(
     fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
@@ -710,7 +895,7 @@ test('the shipped catalog keeps the cold-start probe-failure recipe wired to the
   // gate on is the id the catalog ships; a drift between them captures a
   // healthy accounts table instead of the probe failure.
   assert.equal(recipe.capture, 'still')
-  assert.equal(recipe.route, '/org-e2e/settings/accounts')
+  assert.equal(recipe.route, '/settings/accounts')
   // NOT the accounts-section testid the sibling accounts recipes crop to: that
   // node lives inside AccountsView, which the page does not render while the
   // first read is still in flight. Cropping to it here would fail the
@@ -1017,6 +1202,45 @@ test('buildSpec stages a checkout-CTA state so the subscribe eligibility capture
   // Unstaged, and for a recipe that is not about the CTA, neither field is touched.
   assert.doesNotMatch(specFor('web-subscribe', undefined), /cloudAccessState/)
   assert.doesNotMatch(specFor('web-sessions', { VITE_E2E: '1' }), /cloudTrialEligibility/)
+})
+
+test('buildSpec stages an active account and waits for the redirect destination', () => {
+  // BOS-1148. The redirect recipe is the mirror of the CTA recipes above, and
+  // it fails silently in two directions if either half is dropped. Without the
+  // 'active' staging the fake answers from an unstaged fixture and the capture
+  // is just another view of the offer; without the readiness gate the still is
+  // taken at `load`, before the status RPC answers, and photographs the
+  // pre-verdict /subscribe render -- a green run proving the loop is still
+  // there. The absent .subscribe-actions is the fix; .data-table-wrap is the
+  // destination the user was routed to.
+  const specFor = (id, stageEnv) =>
+    buildSpec({
+      recipe: { id, surface: 'web', route: '/subscribe', cropToSelector: '.data-table-wrap' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv,
+    })
+
+  const staged = specFor('web-subscribe-active-redirect', { VITE_E2E: '1' })
+  assert.match(staged, /cloudAccessState: 'active'/)
+  assert.ok(precedes(staged, 'cloudAccessState', 'page.goto('))
+  assert.ok(staged.includes(String.raw`page.locator('.data-table-wrap')).toBeVisible(`))
+  assert.ok(staged.includes(String.raw`page.locator('.subscribe-actions')).toHaveCount(0)`))
+  // Anchored on the whole gate expression, not the bare class: the shared spec
+  // preamble mentions .data-table-wrap in a comment long before the navigation.
+  assert.ok(
+    precedes(staged, 'page.goto(', String.raw`page.locator('.data-table-wrap')).toBeVisible(`),
+  )
+  assert.ok(precedes(staged, '.subscribe-actions', 'page.screenshot('))
+
+  // It must NOT inherit the CTA gate: that waits for an enabled .subscribe-cta,
+  // which an active account never renders, so the wait would hang and fail.
+  assert.doesNotMatch(staged, /subscribe-cta/)
+  // And it must not stage a trial verdict it has no use for.
+  assert.doesNotMatch(staged, /cloudTrialEligibility/)
+
+  // Unstaged there is no fixture to answer from, so nothing is staged or waited on.
+  assert.doesNotMatch(specFor('web-subscribe-active-redirect', undefined), /cloudAccessState/)
 })
 
 test('validateRecipe requires a key for press steps and accepts a valid one', () => {
@@ -1793,16 +2017,15 @@ test('buildSpec stages the web fixture only when a stageEnv is supplied', () => 
 })
 
 // BOS-1065, extended by BOS-1067/BOS-1072 and generalised by BOS-1073: some web
-// captures need a signed-in organization. Two reasons, and since BOS-1073 they
-// are staged by route: everything under `/<orgId>/settings/...` is guarded by
-// OrgScopedSettings, which reconciles the URL against the WorkOS claim and
-// renders "Switching to ..." until it agrees. Twenty-five catalog recipes live
-// there, so an allowlist would be a standing invitation to add a recipe and
-// photograph the spinner.
+// captures need a signed-in organization. Organization-subject settings
+// captures are staged by route because OrgScopedSettings reconciles the URL
+// against the WorkOS claim and renders "Switching to ..." until it agrees. Route
+// detection prevents a new scoped recipe from silently photographing the
+// spinner.
 //
 // Every OTHER web recipe must keep the unset organizationId, so both halves are
-// pinned: what enters the subtree is seeded, and the staging does not leak to
-// recipes that need no organization.
+// pinned: what enters a scoped route is seeded, and the staging does not leak
+// to recipes that need no organization.
 // A direct CLI run reaches the staging payloads while every `const` declared
 // below the `if (invokedDirectly) run(...)` block is still in its temporal dead
 // zone, so a module-level const used by staging fails the capture with

@@ -319,18 +319,6 @@ func (m *mockChatStore) UpdateTitleByAgentSessionID(_ context.Context, agentSess
 	c.Title = title
 	return nil
 }
-func (m *mockChatStore) UpdateAgentSessionID(_ context.Context, _ string, oldAgentSessionID, newAgentSessionID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	c, ok := m.chats[oldAgentSessionID]
-	if !ok {
-		return nil
-	}
-	delete(m.chats, oldAgentSessionID)
-	c.AgentSessionID = newAgentSessionID
-	m.chats[newAgentSessionID] = c
-	return nil
-}
 func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, agentSessionID string, name *string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -357,7 +345,11 @@ func (m *mockChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *
 func (m *mockChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
-func (m *mockChatStore) MarkStartFailed(_ context.Context, _, _ string) error     { return nil }
+func (m *mockChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }
+func (m *mockChatStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+	return nil
+}
+
 func (m *mockChatStore) DeleteByAgentSessionID(_ context.Context, _ string) error { return nil }
 func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
 	m.mu.Lock()
@@ -486,6 +478,9 @@ type mockTmuxFactory struct {
 	// for an unset variable (non-zero exit), which is how an unstamped pane is
 	// expressed.
 	env map[string]map[string]string
+	// attached is the tmux `session_attached` count reported by list-sessions.
+	// A missing entry reports 0, matching an unattached pane.
+	attached map[string]int
 	// listSessionsStderr, when non-empty, makes list-sessions fail with that
 	// stderr and a non-zero exit. Set it to "no server running on ..." for the
 	// idle-host case and to anything else for the unreadable-tmux case.
@@ -560,7 +555,8 @@ func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...stri
 			// Without this arm the fall-through below runs `true`, whose empty
 			// stdout parses as "no live sessions" — a reaper suite would then
 			// be uniformly green while proving nothing. Emit the real
-			// production format instead: "#{session_name}\t#{session_created}"
+			// production format instead:
+			// "#{session_name}\t#{session_created}\t#{session_attached}"
 			// with session_created as Unix seconds.
 			if f.listSessionsStderr != "" {
 				return exec.CommandContext(ctx, "sh", "-c",
@@ -571,7 +567,7 @@ func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...stri
 				if !f.sessions[sessName] {
 					continue
 				}
-				fmt.Fprintf(&b, "%s\t%d\n", sessName, f.created[sessName].Unix())
+				fmt.Fprintf(&b, "%s\t%d\t%d\n", sessName, f.created[sessName].Unix(), f.attached[sessName])
 			}
 			cmd := exec.CommandContext(ctx, "cat")
 			cmd.Stdin = strings.NewReader(b.String())

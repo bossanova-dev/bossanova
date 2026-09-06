@@ -1,0 +1,6 @@
+extends: occurrence
+message: 'Use at most one em dash per sentence.'
+level: warning
+scope: sentence
+max: 1
+token: '—'

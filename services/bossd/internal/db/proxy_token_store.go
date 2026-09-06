@@ -184,10 +184,12 @@ func (s *SQLiteProxyTokenStore) DeleteBySessionID(ctx context.Context, sessionID
 }
 
 // DeleteByAgentSessionID removes a single chat's token registration. This is
-// the eviction the schema cannot express as a cascade:
-// agent_chats.agent_session_id is indexed but NOT unique, so no foreign key can
-// point at it, and deleting the chat row alone would leave the token behind.
-// Idempotent.
+// the eviction the schema does not express as a cascade: proxy_tokens carries no
+// foreign key onto agent_chats.agent_session_id, so deleting the chat row alone
+// would leave the token behind. The column was not a legal parent key when this
+// table was added; 20260904000000 made it UNIQUE without adding the FK, so the
+// explicit delete below is now a deliberate choice rather than a workaround --
+// and it is still the only thing that evicts the row. Idempotent.
 func (s *SQLiteProxyTokenStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
 	if agentSessionID == "" {
 		return nil

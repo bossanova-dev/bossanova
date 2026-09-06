@@ -436,6 +436,10 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	h.latchValueDeliveredIfNeeded()
 	h.daemonStatuses = msg.daemonStatuses
 	h.daemonWaitingReasons = msg.daemonWaitingReasons
+	// A poll that succeeded is the whole truth about which organizations are
+	// readable right now, so replace rather than merge: an organization that
+	// recovered must stop being reported.
+	h.sessionReadFailures = msg.sessionReadFailures
 	h.applyMergedOptimisticOverride()
 	h.reconcileArchivingSessions()
 	h = h.cancelRenameIfHidden()
@@ -489,7 +493,7 @@ func (h *HomeModel) restoreTableCursor(selectedID string) {
 
 func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pollID uint64) tea.Cmd {
 	return func() tea.Msg {
-		sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+		sessions, readFailures, err := c.ListSessionsWithReadFailures(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
 		if err != nil {
 			return sessionListMsg{homeGeneration: homeGeneration, pollID: pollID, err: err}
 		}
@@ -526,6 +530,7 @@ func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pol
 			sessions:             sessions,
 			daemonStatuses:       daemonStatuses,
 			daemonWaitingReasons: daemonWaitingReasons,
+			sessionReadFailures:  readFailures,
 		}
 	}
 }

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -216,5 +218,102 @@ func TestBackfillCodexProviderSessionIDPersistsBeforeAttachResume(t *testing.T) 
 	call := calls[0]
 	if !call.allowLegacyBackfill || call.chatCreatedAt != createdAt || call.requestedSessionID != "boss-session-id" {
 		t.Fatalf("resolver called with %+v", call)
+	}
+}
+
+// reasonOnlyInteractiveSessionResolver never resolves an id and always explains
+// why — the shape the codex plugin returns while a chat's rollout fd has not
+// appeared yet.
+type reasonOnlyInteractiveSessionResolver struct {
+	reason string
+}
+
+func (r reasonOnlyInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.Context, _, _, _ string, _, _ time.Time, _ bool, _ int) (interactiveSessionResolution, error) {
+	return interactiveSessionResolution{Reason: r.reason}, nil
+}
+
+// lineSignalWriter closes done the first time a written log line contains want.
+// It lets the test join the discovery goroutine on the log line it is asserting
+// about rather than on a sleep.
+type lineSignalWriter struct {
+	mu   sync.Mutex
+	buf  []byte
+	want string
+	done chan struct{}
+	hit  bool
+}
+
+func (w *lineSignalWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	if !w.hit && strings.Contains(string(p), w.want) {
+		w.hit = true
+		close(w.done)
+	}
+	return len(p), nil
+}
+
+func (w *lineSignalWriter) contents() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return string(w.buf)
+}
+
+// TestBackgroundProviderSessionIDDiscoveryLogsResolverReasonOnTimeout pins the
+// far end of the BOS-1144 reason path: the plugin's account of why it could not
+// bind an id has to survive the resolver hop and land on the timeout warning.
+// Without it, an operator reading the daemon log cannot tell a chat whose codex
+// was merely slow from one whose rollout never existed.
+func TestBackgroundProviderSessionIDDiscoveryLogsResolverReasonOnTimeout(t *testing.T) {
+	oldTimeout := providerSessionIDBackgroundDiscoveryTimeout
+	oldInterval := providerSessionIDBackgroundDiscoveryPollInterval
+	providerSessionIDBackgroundDiscoveryTimeout = 20 * time.Millisecond
+	providerSessionIDBackgroundDiscoveryPollInterval = time.Millisecond
+	defer func() {
+		providerSessionIDBackgroundDiscoveryTimeout = oldTimeout
+		providerSessionIDBackgroundDiscoveryPollInterval = oldInterval
+	}()
+
+	const reason = "codex process tree visible but no rollout fd open yet"
+	sink := &lineSignalWriter{
+		want: "background provider session id discovery timed out",
+		done: make(chan struct{}),
+	}
+	s := &Server{
+		agentChats: &backgroundDiscoveryChatStore{updated: make(chan string, 1)},
+		logger:     zerolog.New(sink),
+	}
+
+	s.discoverProviderSessionIDInBackground(&models.AgentChat{
+		AgentSessionID: "boss-session-id",
+		AgentName:      "codex",
+	}, "/tmp/worktree", "", time.Now(), reasonOnlyInteractiveSessionResolver{reason: reason})
+
+	select {
+	case <-sink.done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no discovery timeout warning was logged; log was:\n%s", sink.contents())
+	}
+
+	// Assert the structured field, not merely the substring: an operator (and
+	// any log query) reads `reason`, so the value landing under some other key
+	// would not actually surface it.
+	var warned map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(sink.contents()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["message"] == "background provider session id discovery timed out" {
+			warned = entry
+			break
+		}
+	}
+	if warned == nil {
+		t.Fatalf("no parseable discovery timeout warning; log was:\n%s", sink.contents())
+	}
+	if got, _ := warned["reason"].(string); got != reason {
+		t.Fatalf("timeout warning reason = %q, want the resolver's %q; log was:\n%s", got, reason, sink.contents())
 	}
 }

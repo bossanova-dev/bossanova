@@ -131,7 +131,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     // still making progress. Expiry is a budget fact, not death evidence — a genuinely dead child
     // is caught far earlier by the liveness and frozen-repair-lease classifiers, so the cost of a
     // long clock is only that a hung child holds its DAG slot longer, never a missed death. Must
-    // be a POSITIVE integer: zero or negative would expire every child at launch.
+    // be a POSITIVE integer: zero or negative would expire every child at launch. An over-large
+    // clock is the symmetric failure: an operator typo can hold a hung child's DAG slot for weeks,
+    // and expiry is the only mechanism that ever reclaims that slot.
     childWallClockMinutes: 360,
   },
   // Cadence of the post-terminal `notes` phase (and, in a core that also runs a pre-PR
@@ -204,6 +206,13 @@ export const DEFAULT_CONFIG = Object.freeze({
       { heading: '## Planning', required: 'always' },
       { heading: '## Original notes', required: 'always' },
     ],
+    // Producer-side floor for the attached plan file. This is deliberately a sibling of
+    // `sections`: arrays in repo config replace wholesale during mergeConfig(), so a repo that
+    // declares `planFile.requiredHeadings` owns the full list rather than extending this default.
+    planFile: {
+      requiredHeadings: ['## Problem Frame', '## Requirements', '## Implementation Units'],
+      minimumAdditionalHeadings: 1,
+    },
   },
 })
 
@@ -249,6 +258,9 @@ export const REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS =
 
 export const EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES =
   DEFAULT_CONFIG.epicDefaults.childWallClockMinutes
+// Unlike maxDispatchedRounds, whose default and ceiling are both 6, the child wall-clock default
+// and ceiling differ, so callers need a distinct constant for the upper bound.
+export const EPIC_MAX_CHILD_WALL_CLOCK_MINUTES = 1440
 export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
 
 // The `required` classifications a planContract section may carry. `optional` means RECOGNISED but
@@ -393,14 +405,15 @@ export function validateConfig(config, source) {
     }
     // Note the `< 1`: unlike reviewDefaults.deltaFileThreshold, zero is NOT valid here. A
     // zero-minute clock expires every child the instant it launches, fail-isolating the whole
-    // epic's work; the key is a positive integer or it is the default.
+    // epic's work; the key is an integer in the closed range or it is the default.
     if (
       config.epicDefaults.childWallClockMinutes === undefined ||
       !Number.isInteger(config.epicDefaults.childWallClockMinutes) ||
-      config.epicDefaults.childWallClockMinutes < 1
+      config.epicDefaults.childWallClockMinutes < 1 ||
+      config.epicDefaults.childWallClockMinutes > EPIC_MAX_CHILD_WALL_CLOCK_MINUTES
     ) {
       console.warn(
-        `skill-config: ${source}: epicDefaults.childWallClockMinutes must be a positive integer; using ${EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES}`,
+        `skill-config: ${source}: epicDefaults.childWallClockMinutes must be an integer in [1, ${EPIC_MAX_CHILD_WALL_CLOCK_MINUTES}]; using ${EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES}`,
       )
       config.epicDefaults.childWallClockMinutes = EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES
     }
@@ -638,6 +651,30 @@ export function validateConfig(config, source) {
         `planContract.sections entry "${section.heading}" required must be one of ${[...PLAN_SECTION_REQUIRED_KINDS].join(', ')}`,
       )
     }
+  }
+  if (
+    !config.planContract.planFile ||
+    typeof config.planContract.planFile !== 'object' ||
+    Array.isArray(config.planContract.planFile)
+  ) {
+    fail('planContract.planFile must be an object')
+  }
+  if (
+    !Array.isArray(config.planContract.planFile.requiredHeadings) ||
+    config.planContract.planFile.requiredHeadings.length === 0
+  ) {
+    fail('planContract.planFile.requiredHeadings must be a non-empty array')
+  }
+  for (const heading of config.planContract.planFile.requiredHeadings) {
+    if (typeof heading !== 'string' || heading.length === 0) {
+      fail('planContract.planFile.requiredHeadings entries must be non-empty strings')
+    }
+  }
+  if (
+    !Number.isInteger(config.planContract.planFile.minimumAdditionalHeadings) ||
+    config.planContract.planFile.minimumAdditionalHeadings < 0
+  ) {
+    fail('planContract.planFile.minimumAdditionalHeadings must be a non-negative integer')
   }
 }
 
@@ -948,11 +985,13 @@ export function reviewMaxDispatchedRoundDefault(config) {
  * block resolve a usable clock; a caller must never have to reach into the raw block, because a
  * missing key there reads as `undefined` and every `elapsed > undefined` comparison is false, i.e.
  * a child that can never expire.
- * @returns {number} a positive integer
+ * @returns {number} an integer in [1, EPIC_MAX_CHILD_WALL_CLOCK_MINUTES]
  */
 export function epicChildWallClockMinutes(config) {
   const value = config?.epicDefaults?.childWallClockMinutes
-  return Number.isInteger(value) && value >= 1 ? value : EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES
+  return Number.isInteger(value) && value >= 1 && value <= EPIC_MAX_CHILD_WALL_CLOCK_MINUTES
+    ? value
+    : EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES
 }
 
 // notesSampleRate resolves the per-run reporting cadence for a core's post-terminal `notes`
@@ -1265,12 +1304,24 @@ export function planContractVersion(config) {
   return config.planContract.version
 }
 
-/** The full ordered `{ heading, required }` section list, as emitted. */
+/** The full ordered `{ heading, required }` child-plan section list, as emitted. */
+// Mode-blind by design: config authors and existing callers use this as the child-plan contract.
 export function planSections(config) {
   return config.planContract.sections
 }
 
-/** Headings whose `required === 'always'`, in order — the sections every plan MUST carry. */
+/**
+ * The producer-side structure floor for attached plan files.
+ *
+ * `requiredHeadings` and other arrays replace wholesale through mergeConfig(); repo overrides are
+ * therefore complete declarations, not extensions of DEFAULT_CONFIG.
+ */
+export function planFileFloor(config) {
+  return config.planContract.planFile
+}
+
+/** Headings whose `required === 'always'`, in order — the child-plan sections every plan MUST carry. */
+// Mode-blind by design: epic-parent callers use requiredSectionsForDescriptionMode explicitly.
 export function requiredPlanSections(config) {
   return config.planContract.sections.filter((s) => s.required === 'always').map((s) => s.heading)
 }
@@ -1292,11 +1343,13 @@ function normalisePlanDescriptionMode(mode) {
   return 'child-plan'
 }
 
-function planSectionsForDescriptionMode(config, mode) {
-  return mode === 'epic-parent' ? EPIC_PARENT_PLAN_SECTIONS : planSections(config)
+export function planSectionsForDescriptionMode(config, mode) {
+  return normalisePlanDescriptionMode(mode) === 'epic-parent'
+    ? EPIC_PARENT_PLAN_SECTIONS
+    : planSections(config)
 }
 
-function requiredSectionsForDescriptionMode(config, mode) {
+export function requiredSectionsForDescriptionMode(config, mode) {
   return planSectionsForDescriptionMode(config, mode)
     .filter((s) => s.required === 'always')
     .map((s) => s.heading)
@@ -1350,6 +1403,11 @@ export function scanFences(text) {
   return { lines, unterminated: fence !== null }
 }
 
+export function markdownH2Heading(line) {
+  const match = /^ {0,3}(##\s.*)$/.exec(String(line ?? '').replace(/\r$/, ''))
+  return match ? match[1].trimEnd() : null
+}
+
 /**
  * Split a plan description into its emitted top-level `##` sections, in order.
  *
@@ -1379,11 +1437,11 @@ function splitPlanDescriptionSections(contractSections, description) {
   const lines = String(description ?? '').split('\n')
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    const trimmed = line.trim()
-    if (!inTerminal && outside.has(index) && /^##\s/.test(trimmed)) {
-      current = { heading: trimmed, bodyLines: [] }
+    const heading = markdownH2Heading(line)
+    if (!inTerminal && outside.has(index) && heading) {
+      current = { heading, bodyLines: [] }
       sections.push(current)
-      if (trimmed === terminalHeading) inTerminal = true
+      if (heading === terminalHeading) inTerminal = true
       continue
     }
     if (current) current.bodyLines.push(line)
@@ -1391,8 +1449,12 @@ function splitPlanDescriptionSections(contractSections, description) {
   return sections
 }
 
-export function planDescriptionSections(config, description) {
-  return splitPlanDescriptionSections(planSections(config), description)
+export function planDescriptionSections(config, description, { mode = 'child-plan' } = {}) {
+  const resolvedMode = normalisePlanDescriptionMode(mode)
+  return splitPlanDescriptionSections(
+    planSectionsForDescriptionMode(config, resolvedMode),
+    description,
+  )
 }
 
 /**

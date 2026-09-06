@@ -351,6 +351,61 @@ func TestSelectProactiveCandidate_OnlyCoolingOrFailedYieldsNil(t *testing.T) {
 	}
 }
 
+// TestSelectProactiveCandidateSkipsAuthInvalid pins the auth-check clause in
+// isSelectable. An auth-invalid account is ACTIVE and HEALTHY — recording that
+// verdict deliberately leaves Health alone — so a status+health predicate
+// selects it, resolveSpawnEnv then returns a nil overlay, and the respawn runs
+// on the agent CLI's ambient login instead of the account that was chosen.
+func TestSelectProactiveCandidateSkipsAuthInvalid(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	capped := mkAcct("A", 0, ok, active, nil, tp(0))
+	benched := mkAcct("benched", 1, ok, active, nil, tp(-1*time.Hour))
+	benched.AuthCheck = models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid}
+	store := newFakeStore(capped, benched)
+	eng := newEngineForTest(store)
+
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A",
+		map[string]float64{"A": 0.85, "benched": 0.1})
+	if err != nil {
+		t.Fatalf("SelectProactiveCandidate error: %v", err)
+	}
+	if chosen != nil {
+		t.Errorf("chosen = %s, want nil: an auth-invalid account is active and healthy but unusable", chosen.ID)
+	}
+}
+
+// TestSelectableRejectsAuthInvalidButAcceptsHealthy pins the exported predicate
+// the binding-validation surfaces share, so they cannot drift from the engine.
+func TestSelectableRejectsAuthInvalidButAcceptsHealthy(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	good := mkAcct("good", 0, ok, active, nil, tp(0))
+	benched := mkAcct("benched", 1, ok, active, nil, tp(0))
+	benched.AuthCheck = models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid}
+
+	if !Selectable(good) {
+		t.Error("Selectable(good) = false, want true")
+	}
+	if Selectable(benched) {
+		t.Error("Selectable(auth-invalid) = true, want false")
+	}
+	now := base
+	if !BindableNow(good, now) {
+		t.Error("BindableNow(good) = false, want true")
+	}
+	if BindableNow(benched, now) {
+		t.Error("BindableNow(auth-invalid) = true, want false")
+	}
+	cooling := mkAcct("cooling", 2, ok, active, tp(2*time.Hour), tp(0))
+	if !Selectable(cooling) {
+		t.Error("Selectable(cooling) = false: cooling is bindable-later, still selectable")
+	}
+	if BindableNow(cooling, now) {
+		t.Error("BindableNow(cooling) = true, want false")
+	}
+}
+
 func TestDecideUtilizationAwareSelection(t *testing.T) {
 	ok := models.AccountHealthOK
 	active := models.AccountStatusActive

@@ -6,7 +6,7 @@
 // BOS-1035 rewrote the course and added this checker so the next agent to touch
 // these files cannot quietly regress the arc, the voice, or the accuracy.
 //
-// Eight rule groups, each independently reported:
+// Nine rule groups, each independently reported:
 //
 //   structure    eight bodies, one `**Subject:**` line each, every subject and
 //                send offset recorded in README.md, offsets exactly 0-6 plus 12.
@@ -15,6 +15,8 @@
 //   concreteness every teaching body carries at least one fenced code block, so a
 //                reader has something to run. Day 12 is exempt.
 //   voice        the banned register from VOICE.md matches nowhere in the prose.
+//   punctuation  a sentence contains at most one em dash. Separate understated
+//                asides remain valid; only the rhythm-crutch cluster fails.
 //   skill-names  every `boss-*` token names a skill the binary actually publishes.
 //                The allowlist is PARSED from skills_manifest_test.go rather than
 //                copied, so it tracks the source of truth instead of drifting from
@@ -101,24 +103,33 @@ export const TEACHING_MAX_WORDS = 450
 export const RECAP_MAX_WORDS = 250
 export const TRIAL_DAYS = 14
 
-// The banned register, straight out of docs/email-course/VOICE.md. Marketing verbs
-// and the CTA stamp are slop; the hedges drain the authority the course is trying to
-// build. Multi-word entries are matched with `\s+` rather than a literal space so a
-// paragraph rewrap cannot make the pin miss (the root .prettierrc sets no proseWrap,
-// so these paragraphs keep whatever breaks their author gave them).
-export const BANNED_PHRASES = [
-  'unlock',
-  'supercharge',
-  'seamless',
-  'leverage',
-  'empower',
-  'robust',
-  'can',
-  'may',
-  'optional',
-  'if needed',
-  'try this now',
-]
+const BANNED_WORDS_STYLE = path.join(
+  'services',
+  'docs',
+  'styles',
+  'BossanovaProse',
+  'BannedWords.yml',
+)
+
+// The Vale rule is the shared register for the docs site and email course. Parse
+// its token list instead of copying it here, so either prose gate changing the
+// register changes both surfaces in the same commit.
+export function parseBannedPhrases(source) {
+  const block = source.match(/^tokens:\s*\n((?:\s+- [^\n]+\n?)+)/m)?.[1]
+  if (!block) throw new Error('BannedWords.yml: non-empty tokens list not found')
+  const tokens = block.split(/\r?\n/).filter(Boolean)
+  if (tokens.some((line) => !/^  - [a-z]+(?: [a-z]+)*$/.test(line))) {
+    throw new Error('BannedWords.yml: tokens must be unquoted lowercase words without comments')
+  }
+  return tokens.map((line) => line.slice(4))
+}
+
+export const BANNED_PHRASES = parseBannedPhrases(
+  fs.readFileSync(
+    path.join(findRepoRoot(path.dirname(fileURLToPath(import.meta.url))), BANNED_WORDS_STYLE),
+    'utf8',
+  ),
+)
 
 const DOC_URL_RE = /https:\/\/docs\.bossanova\.dev(\/[^\s)\]"'`]*)?/g
 const SKILL_TOKEN_RE = /\bboss(?:-[a-z0-9]+)+/g
@@ -334,6 +345,37 @@ export function bannedPhraseRegex(phrase) {
   return new RegExp(`(?<![A-Za-z0-9'])${body}(?![A-Za-z0-9'])`, 'gi')
 }
 
+/** Split prose at sentence-ending punctuation or paragraph boundaries. */
+export function proseSentences(prose) {
+  const protectedPeriod = '\uE000'
+  const protectedProse = prose
+    .replace(/\b(?:e\.g|i\.e|vs|etc)\./gi, (abbreviation, offset, source) => {
+      const nextCharacter = source.slice(offset + abbreviation.length).match(/^\s+(\S)/u)?.[1]
+      const finalPeriod = nextCharacter && /[\p{Ll}\d]/u.test(nextCharacter) ? protectedPeriod : '.'
+      return abbreviation.slice(0, -1).replaceAll('.', protectedPeriod) + finalPeriod
+    })
+    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.(?=\s+\p{L})/gu, (abbreviation) =>
+      abbreviation.replace('.', protectedPeriod),
+    )
+    .replace(/\b(?:[A-Z]\.[ \t]*){2,}(?=[A-Z]\p{Ll})/gu, (initials) =>
+      initials.replaceAll('.', protectedPeriod),
+    )
+    .replace(/\b[A-Z]\.(?=\s+[A-Z]\p{Ll})/gu, (initial) => initial.replace('.', protectedPeriod))
+
+  return protectedProse
+    .split(/(?<=[.!?])(?:\s+|$)|\n\s*\n|\n(?=\s*[-*]\s)/u)
+    .map((sentence) => sentence.replaceAll(protectedPeriod, '.').trim())
+    .filter(Boolean)
+}
+
+/** Paired dashes around code or a comma-separated list are structure, not rhythm. */
+export function isStructuredDashAside(sentence) {
+  const parts = sentence.split('—')
+  if (parts.length !== 3) return false
+  const aside = parts[1]
+  return /`[^`]+`/.test(aside) || (aside.match(/,/g)?.length ?? 0) >= 2
+}
+
 /**
  * The body of a `## <heading>` section, up to the next heading of the same or a
  * higher level. Returns null when the section is absent, so the caller can report
@@ -543,6 +585,14 @@ export function checkCourse({ files, routes, publishedSkills, trialEnrolmentEven
       const hits = prose.match(bannedPhraseRegex(phrase))
       if (hits) {
         fail('voice', name, `banned phrase "${phrase}" appears ${hits.length}x — see VOICE.md`)
+      }
+    }
+
+    // --- punctuation -------------------------------------------------------
+    for (const sentence of proseSentences(prose)) {
+      const dashes = sentence.match(/—/g)?.length ?? 0
+      if (dashes > 1 && !isStructuredDashAside(sentence)) {
+        fail('punctuation', name, `${dashes} em dashes in one sentence; use at most one`)
       }
     }
   }

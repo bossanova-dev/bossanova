@@ -1,4 +1,4 @@
-.PHONY: all deps format lint test dev clean build typecheck
+.PHONY: all deps format lint lint-prose test dev clean build typecheck
 
 ## all: Clean, format, and test
 all: clean format test
@@ -22,6 +22,10 @@ test: typecheck
 ## lint: Typecheck and prettier format check
 lint: typecheck
 	pnpm run lint
+
+## lint-prose: Check Vale rules and the em-dash density ratchet
+lint-prose:
+	pnpm run lint:prose
 
 ## typecheck: Run TypeScript without emitting
 typecheck:

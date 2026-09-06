@@ -1,5 +1,12 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
+# Exported so the host's accountwiring test can read this file and fail when
+# the non-execution sentinel drifts from the marker bossd matches on
+# (BOS-1172). A data dependency on a source file, not a package import: the
+# plugin and the host must not share packages (CLAUDE.md, "Module
+# boundaries"). Same shape as //docs/analytics:events.md.
+exports_files(["unavailable.go"])
+
 # Package marker only — required so Gazelle's go_deps.from_file(go_work = "//:go.work")
 # can resolve //plugins/bossd-plugin-codex:go.mod as a Bazel label. This module is not yet bazelified
 # (its BUILD targets land in BOS-344); it intentionally contains zero targets.
@@ -23,6 +30,7 @@ go_library(
         "runner.go",
         "server.go",
         "transcript.go",
+        "unavailable.go",
     ],
     importpath = "github.com/recurser/bossd-plugin-codex",
     visibility = ["//visibility:private"],
@@ -72,6 +80,7 @@ go_test(
         "runner_test.go",
         "server_test.go",
         "transcript_test.go",
+        "unavailable_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":bossd-plugin-codex_lib"],

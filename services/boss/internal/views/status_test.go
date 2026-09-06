@@ -1947,3 +1947,65 @@ func TestSessionSubRowCount_AgreesWithBuildTableRows(t *testing.T) {
 		t.Errorf("several-hint session sub-rows = %d, want %d", got, want)
 	}
 }
+
+func authDraftPRFailureReason(detail string) *string {
+	r := sessionreason.DraftPRCreationAuthFailure(errors.New(detail))
+	return &r
+}
+
+// TestDraftPRFailureHint_AuthRendersAPurposeWrittenString is the 2026-09-03
+// fix, and it is BOS-877's lesson applied to a second cause. That incident's
+// reason was `Permission denied (publickey)`, truncated onto the row and sending
+// an operator hunting a key bug that did not exist. This one's was
+// `HTTP 401: Requires authentication`, truncated to "draft PR creation failed:
+// creat…" — which names nothing at all, because the 26-rune prefix consumes most
+// of the 48-rune budget before the error starts. An auth failure gets a fixed
+// sentence naming the condition instead.
+func TestDraftPRFailureHint_AuthRendersAPurposeWrittenString(t *testing.T) {
+	sess := &pb.Session{
+		BlockedReason: authDraftPRFailureReason(
+			"create PR: HTTP 401: Requires authentication (https://api.github.com/graphql)\nTry authenticating with:  gh auth login",
+		),
+	}
+	const want = "PR blocked — bossd's gh cannot authenticate"
+	if got := draftPRFailureHint(sess); got != want {
+		t.Fatalf("draftPRFailureHint = %q, want %q", got, want)
+	}
+	// Same guard the transient constant carries, and for the same reason:
+	// draftPRFailureHint returns this constant directly and truncates only the
+	// generic terminal case, so an over-length reword renders whole and drags the
+	// NAME column toward its width cap. This assertion is the only thing that
+	// catches it.
+	if n := len([]rune(want)); n > hintReasonMaxRunes {
+		t.Fatalf("the auth hint is %d runes, over the %d-rune cap", n, hintReasonMaxRunes)
+	}
+	// The raw transport error must not reach the row — hiding it is the point.
+	if strings.Contains(draftPRFailureHint(sess), "401") {
+		t.Fatal("the auth hint still leaks the raw 401 the fix exists to hide")
+	}
+}
+
+// TestDraftPRFailureHint_AuthAndTransientDoNotCollide guards the branch order in
+// draftPRFailureHint. The two markers are mutually exclusive by construction, so
+// each reason must reach exactly its own constant and the generic terminal case
+// must still truncate as before.
+func TestDraftPRFailureHint_AuthAndTransientDoNotCollide(t *testing.T) {
+	auth := &pb.Session{BlockedReason: authDraftPRFailureReason("HTTP 401: Requires authentication")}
+	transient := &pb.Session{BlockedReason: transientDraftPRFailureReason("remote end hung up")}
+	terminal := &pb.Session{BlockedReason: draftPRFailureReason("ERROR: Repository not found")}
+
+	if got := draftPRFailureHint(auth); got != "PR blocked — bossd's gh cannot authenticate" {
+		t.Fatalf("auth hint = %q", got)
+	}
+	if got := draftPRFailureHint(transient); got != transientDraftPRHint {
+		t.Fatalf("transient hint = %q, want %q", got, transientDraftPRHint)
+	}
+	// The generic terminal branch is unchanged: still prefix + truncation.
+	got := draftPRFailureHint(terminal)
+	if !strings.HasPrefix(got, "draft PR creation failed: ") {
+		t.Fatalf("terminal hint = %q, want the untouched prefixed form", got)
+	}
+	if len([]rune(got)) > hintReasonMaxRunes+1 {
+		t.Fatalf("terminal hint = %q, %d runes — truncation regressed", got, len([]rune(got)))
+	}
+}

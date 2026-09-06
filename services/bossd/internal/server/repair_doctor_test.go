@@ -1057,3 +1057,230 @@ func TestProtectedRootsReadableCheckWithholdsResidualOnPartialRead(t *testing.T)
 		t.Fatalf("detail = %q, must not claim nothing selects the root when the repo list could not be read", check.GetDetail())
 	}
 }
+
+// TestClassifyGitHubAuthProbePinsEachUnauthenticatedMarker gives every marker in
+// classifyGitHubAuthProbe's `unauthenticated` disjunction its own case, with an
+// output that matches ONLY that marker.
+//
+// # Why the assertion is what it is
+//
+// Both failing branches return Ok=false, so Ok alone proves nothing about WHICH
+// fired. The generic remedy tokens are worse than useless here: "gh auth login",
+// "boss daemon restart" and "not authenticated" all sit in one fixed format
+// string, so a case asserting them passes as long as SOME unauthenticated marker
+// matched — delete four of the five and the suite stays green.
+//
+// The discriminator is the phrase unique to the unauthenticated branch,
+// "is not authenticated to GitHub", set against the err branch's "cannot reach
+// GitHub". Every case here passes a non-nil err, so if its marker did NOT match,
+// classification necessarily falls through to the err branch and the assertion
+// fails. That makes each row a real per-marker guard. Each row additionally
+// pins that gh's own output was echoed, which is the token an operator
+// diagnoses from.
+func TestClassifyGitHubAuthProbePinsEachUnauthenticatedMarker(t *testing.T) {
+	// The phrase only the unauthenticated branch emits.
+	const unauthTell = "is not authenticated to GitHub"
+	// The phrase only the err (reachability) branch emits.
+	const unreachableTell = "cannot reach GitHub"
+
+	tests := []struct {
+		name string
+		// output carries exactly ONE of the five markers and nothing that would
+		// satisfy any of the others.
+		output string
+		// echoed is the substring of gh's own output the detail must carry.
+		echoed string
+	}{
+		{
+			name: "http 401",
+			// NOTE the exact spelling. The marker is the literal "http 401",
+			// which the status-line form "HTTP/2.0 401 Unauthorized" does NOT
+			// contain — that shape is gh's `-i` header dump, and it only ever
+			// classified because the body beside it said "Requires
+			// authentication". This row uses gh's error spelling so the
+			// "http 401" fragment is genuinely the thing under test.
+			output: "gh: HTTP 401 (https://api.github.com/user)",
+			echoed: "HTTP 401",
+		},
+		{
+			name: "requires authentication",
+			// Deliberately no "401": this row must be carried by the message
+			// text alone, so deleting that fragment reds exactly this case.
+			output: "{\"message\":\"Requires authentication\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+			echoed: "Requires authentication",
+		},
+		{
+			name:   "bad credentials",
+			output: "{\"message\":\"Bad credentials\"}",
+			echoed: "Bad credentials",
+		},
+		{
+			name: "anonymous rate limit",
+			// A 403 whose text is about QUOTA while its cause is missing
+			// credentials. GitHub's parenthetical is the only tell.
+			output: "{\"message\":\"API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated requests get a higher rate limit.)\"}",
+			echoed: "Authenticated requests get a higher rate limit",
+		},
+		{
+			name:   "logged-out banner",
+			output: "To get started with GitHub CLI, please run:  gh auth login",
+			echoed: "To get started with GitHub CLI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyGitHubAuthProbe(tt.output, errors.New("exit status 1"))
+			if got.GetOk() {
+				t.Fatalf("Ok = true, want false (detail: %s)", got.GetDetail())
+			}
+			if got.GetName() != "github auth" {
+				t.Fatalf("Name = %q, want %q", got.GetName(), "github auth")
+			}
+			// The load-bearing assertion: this marker, not merely some marker.
+			if !strings.Contains(got.GetDetail(), unauthTell) {
+				t.Fatalf("detail %q lacks %q — the marker did not match and classification fell through to the reachability branch",
+					got.GetDetail(), unauthTell)
+			}
+			if strings.Contains(got.GetDetail(), unreachableTell) {
+				t.Fatalf("detail %q took the reachability branch", got.GetDetail())
+			}
+			if !strings.Contains(got.GetDetail(), tt.echoed) {
+				t.Fatalf("detail %q dropped gh's own output %q", got.GetDetail(), tt.echoed)
+			}
+		})
+	}
+}
+
+// TestClassifyGitHubAuthProbeSeparatesUnreachableFromUnauthenticated is the
+// negative half, and it is what stops the guard above from being satisfiable by
+// an over-broad matcher. Two outputs that must NOT read as unauthenticated:
+// a plain failure with no auth marker at all, and — the subtle one — a REAL
+// authenticated over-limit 403, whose "for user ID N" form proves credentials
+// were sent. Widen any fragment to catch the bare "api rate limit" and the
+// second row reds.
+func TestClassifyGitHubAuthProbeSeparatesUnreachableFromUnauthenticated(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{"no auth marker", "dial tcp: lookup api.github.com: no such host"},
+		{"authenticated over-limit", "{\"message\":\"API rate limit exceeded for user ID 12345.\"}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyGitHubAuthProbe(tt.output, errors.New("exit status 1"))
+			if got.GetOk() {
+				t.Fatal("Ok = true, want false")
+			}
+			if strings.Contains(got.GetDetail(), "is not authenticated to GitHub") {
+				t.Fatalf("detail %q claims an auth failure; credentials were not the cause", got.GetDetail())
+			}
+			if !strings.Contains(got.GetDetail(), "cannot reach GitHub") {
+				t.Fatalf("detail %q does not report a reachability problem", got.GetDetail())
+			}
+		})
+	}
+}
+
+// TestClassifyGitHubAuthProbeHealthy pins the success shape, including that a
+// clean probe carries no remedy text an operator could act on by mistake.
+func TestClassifyGitHubAuthProbeHealthy(t *testing.T) {
+	got := classifyGitHubAuthProbe("HTTP/2.0 200 OK\nX-Oauth-Scopes: repo, workflow\n", nil)
+	if !got.GetOk() {
+		t.Fatalf("Ok = false, want true (detail: %s)", got.GetDetail())
+	}
+	if strings.Contains(got.GetDetail(), "gh auth login") {
+		t.Fatalf("a healthy check offers a login remedy: %s", got.GetDetail())
+	}
+}
+
+// TestClassifyGitHubAuthProbeSurfacesTheKeychainOSStatus pins the reason gh's own
+// output is embedded in the detail: when the cause is a keychain bossd cannot
+// reach, that string is the single most useful token in the diagnosis.
+func TestClassifyGitHubAuthProbeSurfacesTheKeychainOSStatus(t *testing.T) {
+	const output = "error getting credentials: User interaction is not allowed.\nHTTP 401: Requires authentication"
+	got := classifyGitHubAuthProbe(output, errors.New("exit status 1"))
+	if got.GetOk() {
+		t.Fatal("Ok = true, want false")
+	}
+	if !strings.Contains(got.GetDetail(), "User interaction is not allowed") {
+		t.Fatalf("detail dropped the keychain OSStatus: %s", got.GetDetail())
+	}
+	// And it must name the detached-daemon cause, not only the logged-out one.
+	if !strings.Contains(got.GetDetail(), "boss daemon restart") {
+		t.Fatalf("detail does not offer the detached-daemon remedy: %s", got.GetDetail())
+	}
+}
+
+// TestGithubWorkflowScopeCheckGatedDoesNotMisdiagnoseAn401. The scope check's
+// usual remedy is `gh auth refresh -s workflow`, which is the wrong advice for an
+// unauthenticated client — it sends an operator after a scope problem they do
+// not have.
+func TestGithubWorkflowScopeCheckGatedDoesNotMisdiagnoseAn401(t *testing.T) {
+	got := githubWorkflowScopeCheckGated(context.Background(), false)
+	if got.GetOk() {
+		t.Fatal("Ok = true, want false")
+	}
+	if !strings.Contains(got.GetDetail(), "not evaluated") {
+		t.Fatalf("detail = %q, want an explicit not-evaluated", got.GetDetail())
+	}
+	if strings.Contains(got.GetDetail(), "gh auth refresh") {
+		t.Fatalf("detail still offers the scope remedy for an auth failure: %s", got.GetDetail())
+	}
+}
+
+// TestDaemonLogSinkCheckNamesTheLiveLogPathNotAVerdict pins the corrected
+// behaviour. An earlier draft failed this check when stderr was /dev/null and
+// told the operator the daemon wrote "no logs at all" — which was false: bossd
+// logs through a lumberjack file sink as well as stderr, and every line was
+// being recorded the whole time. The useful output is the live path.
+func TestDaemonLogSinkCheckNamesTheLiveLogPathNotAVerdict(t *testing.T) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { _ = devNull.Close() })
+
+	previous := os.Stderr
+	os.Stderr = devNull
+	t.Cleanup(func() { os.Stderr = previous })
+
+	got := daemonLogSinkCheck()
+	// A discarded stderr is normal for a service and must not read as a fault.
+	if !got.GetOk() {
+		t.Fatalf("Ok = false on a /dev/null stderr; that is not a fault (detail: %s)", got.GetDetail())
+	}
+	if strings.Contains(got.GetDetail(), "no logs at all") {
+		t.Fatalf("detail repeats the false claim it was corrected for: %s", got.GetDetail())
+	}
+	// It must name the live path, and warn that the plist's stderr file is not it.
+	if !strings.Contains(got.GetDetail(), "bossd.log") {
+		t.Fatalf("detail does not name the live log file: %s", got.GetDetail())
+	}
+	if !strings.Contains(got.GetDetail(), "stale") {
+		t.Fatalf("detail does not warn that the LaunchAgent stderr file is stale: %s", got.GetDetail())
+	}
+}
+
+// TestDaemonLogSinkCheckOnARealStderrOmitsTheStaleWarning is the anti-vacuity
+// guard: the stale-stderr sentence must be conditional, not boilerplate.
+func TestDaemonLogSinkCheckOnARealStderrOmitsTheStaleWarning(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	previous := os.Stderr
+	os.Stderr = f
+	t.Cleanup(func() { os.Stderr = previous })
+
+	got := daemonLogSinkCheck()
+	if !got.GetOk() {
+		t.Fatalf("Ok = false (detail: %s)", got.GetDetail())
+	}
+	if strings.Contains(got.GetDetail(), "stale") {
+		t.Fatalf("the stale-stderr warning fired on a real stderr: %s", got.GetDetail())
+	}
+}

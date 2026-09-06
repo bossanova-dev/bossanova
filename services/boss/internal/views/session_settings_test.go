@@ -219,6 +219,9 @@ func (s *stubSessionSettingsClient) RemoveAccount(context.Context, string) error
 func (s *stubSessionSettingsClient) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
 	panic("unused")
 }
+func (s *stubSessionSettingsClient) RefreshAccount(context.Context, *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	panic("unused")
+}
 func (s *stubSessionSettingsClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
 	panic("unused")
 }
@@ -556,4 +559,11 @@ func TestSessionSettingsView(t *testing.T) {
 
 func (s *stubSessionSettingsClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
 	panic("unused")
+}
+
+// ListSessionsWithReadFailures satisfies the BossClient seam: this fake reads
+// one place, so it never reports a partial read.
+func (s *stubSessionSettingsClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	sessions, err := s.ListSessions(ctx, req, opts)
+	return sessions, nil, err
 }

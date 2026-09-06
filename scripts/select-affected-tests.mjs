@@ -121,6 +121,22 @@ export const externalInputRules = [
     patterns: ['//services/bossd/...'],
     ledgerModules: ['services/bossd'],
   },
+  {
+    // //services/bossd/internal/accountwiring:accountwiring_test declares
+    // //plugins/bossd-plugin-codex:unavailable.go as a `data` dep;
+    // TestRunnerUnavailableMarkersMatchPluginSource reads that source so the plugin's
+    // non-execution sentinel and the host's runnerUnavailableMarkers cannot drift apart
+    // unnoticed (BOS-1172). That reader is an ordinary sandboxed graph target, not a
+    // bazel-`manual` ledger row, so it feeds `patterns` and adds no ledger module.
+    //
+    // The match is the whole plugin directory because that IS the bazel package the label
+    // points at: plugins/bossd-plugin-codex has no sub-BUILD files, so testdata/ and the
+    // root sources are one package and a change anywhere in it can move the exported file.
+    match: (f) => f.startsWith('plugins/bossd-plugin-codex/'),
+    samplePath: 'plugins/bossd-plugin-codex/unavailable.go',
+    patterns: ['//services/bossd/...'],
+    ledgerModules: [],
+  },
 ]
 
 // Shared modules: a change here can break a dependent module's NATIVE ledger row, which no

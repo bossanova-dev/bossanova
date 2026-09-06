@@ -228,11 +228,24 @@ func CronJobs() []*pb.CronJob {
 }
 
 // Accounts returns the managed rotation accounts so the Settings → Accounts
-// list (BOS-265) is non-empty. Three entries exercise both providers and every
+// list (BOS-265) is non-empty. The entries exercise both providers and every
 // health/status combination the list renders: an active/ok "claude" account, a
 // disabled/failed "codex" account that is cooling down and carries a last-test
 // error, and (BOS-973) an ACTIVE/failed "codex" account whose credentials could
-// not be injected. Fields
+// not be injected.
+//
+// The first three also cover all three BOS-1142 credential-check states,
+// deliberately one per row: checked-and-clean (claude), NEVER checked
+// (personal-codex, which keeps no AuthCheck on purpose), and checked-and-rejected
+// (team-codex). A fixture where every row had been checked could not demonstrate
+// that "never checked" and "ok" are different answers, which is the whole point
+// of the column.
+//
+// A fourth row (BOS-1174, unproven-codex) carries the refresh-chain-unproven
+// outcome: a check that PASSED on a credential whose refresh chain has never
+// been observed working. It is a fourth row rather than a repurposed existing
+// one because each of the three above is the sole carrier of a state the
+// BOS-1142 captures assert by exact text. Fields
 // are display-safe metadata only — the Account proto has no credential field —
 // and all timestamps derive from the pinned clock so captures stay byte-stable.
 func Accounts() []*pb.Account {
@@ -249,6 +262,15 @@ func Accounts() []*pb.Account {
 			LastTestOkAt: ts(-2 * time.Hour),
 			CreatedAt:    ts(-720 * time.Hour),
 			UpdatedAt:    ts(-30 * time.Minute),
+			// BOS-1141/BOS-1142: the daemon asked the provider two hours ago and
+			// the credential answered. This is the only one of the three rows
+			// entitled to a green CHECK cell, and it exists so a capture can show
+			// "asked and clean" beside "never asked" — the pair BOS-892 says must
+			// never render the same way.
+			AuthCheck: &pb.AuthCheck{
+				Outcome:   "healthy",
+				CheckedAt: ts(-2 * time.Hour),
+			},
 			// A populated usage snapshot so the Accounts list AGE column and the
 			// detail-screen usage rows (BOS-270) render real values for this
 			// probed account, while the sibling codex account below stays
@@ -305,9 +327,18 @@ func Accounts() []*pb.Account {
 			//
 			// Deliberately status=active (unlike the disabled sibling above): the
 			// point of the capture is an account an operator BELIEVES is in
-			// service. It is also why this row makes the codex provider render
-			// the no-eligible-account hint in `boss account ls` — active but
-			// health=failed is not eligible.
+			// service. Active but health=failed is NOT eligible for rotation,
+			// so this row contributes no eligibility to the codex provider.
+			//
+			// It no longer makes `boss account ls` render the
+			// no-eligible-account hint, though: the BOS-1174 unproven-codex row
+			// appended below is active AND health=ok, so codex now HAS an
+			// eligible account in this preset and the hint correctly stays
+			// silent. That is deliberate rather than a regression — an unproven
+			// refresh chain is reported, never condemned, so it must not bench
+			// the provider. The hint's own coverage lives in
+			// services/boss/cmd/account_ls_test.go, which builds a
+			// single-account stub instead of depending on this preset.
 			//
 			// The reason string is the real recorded shape:
 			// db.InjectionFailureReasonPrefix + the materialize error. It carries
@@ -325,6 +356,55 @@ func Accounts() []*pb.Account {
 				"\"~/.config/accounts/codex/acct-codex-2/config.toml\": existing entry is not a symlink",
 			CreatedAt: ts(-240 * time.Hour),
 			UpdatedAt: ts(-15 * time.Minute),
+			// BOS-1142: the durable verdict behind the failed health. The
+			// closed-set failure class is what makes the row actionable — a bare
+			// "failed" names no remedy, while "failed:auth_invalidated" says
+			// reauthenticate. Note there is no credential text here and there
+			// cannot be: AuthCheck carries redacted metadata only, which is why
+			// the row can be rendered while LastTestError still has to be masked.
+			AuthCheck: &pb.AuthCheck{
+				Outcome:      "auth_invalid",
+				FailureClass: "auth_invalidated",
+				CheckedAt:    ts(-15 * time.Minute),
+				NextRetryAt:  ts(500 * 24 * time.Hour),
+			},
+		},
+		{
+			// BOS-1174: the state that used to be invisible. This account is
+			// ACTIVE, its health is ok, and its last live check passed — under
+			// the old classification it was an unqualified green. What the
+			// check now also records is that the credential's own access token
+			// says a refresh should already have happened and none was
+			// observed, which is the shape of a live access token sitting above
+			// a dead refresh chain.
+			//
+			// It is appended LAST, after the three BOS-1142 rows, on purpose:
+			// that scenario asserts exact normalized text for rows 0-2 and
+			// navigates by relative cursor movement from the top, so a row
+			// added at the end leaves every one of its expectations intact.
+			//
+			// The row exists to show the state is REPORTED, not condemned: the
+			// status stays active and the health cell keeps its ok (wearing the
+			// unproven "?" veto mark), because auth_invalid remains the only
+			// outcome that removes an account from selection.
+			Id:        "acct-codex-3",
+			Provider:  "codex",
+			Label:     "unproven-codex",
+			Status:    "active",
+			Priority:  3,
+			Health:    "ok",
+			Tier:      "plus",
+			CreatedAt: ts(-300 * time.Hour),
+			UpdatedAt: ts(-40 * time.Minute),
+			// No LastTestError: nothing failed. That is the entire point — this
+			// row carries no diagnostic text at all, redacted or otherwise, and
+			// there is no credential material anywhere in it. The closed-set
+			// outcome and failure-class tokens below are the whole record.
+			AuthCheck: &pb.AuthCheck{
+				Outcome:      "refresh_chain_unproven",
+				FailureClass: "refresh_not_observed",
+				CheckedAt:    ts(-40 * time.Minute),
+			},
 		},
 	}
 }
@@ -1140,5 +1220,54 @@ func AsyncCreateWorld() World {
 			}},
 		}},
 	}
+	return w
+}
+
+// SupersededCredentialWorld is the demo world plus a FOURTH codex account whose
+// stored refresh chain has been superseded by an ambient `codex login`
+// (BOS-1175): the provider still accepts the stored credential, so the row is
+// active/ok and fully eligible, but its CHECK cell carries the
+// credential_superseded class that says the refresh token bossd holds is no
+// longer the live one.
+//
+// It APPENDS rather than mutating one of the three demo accounts on purpose.
+// The existing rows are asserted verbatim by committed scenarios (notably
+// bos1142-accounts-failed-check), so changing one would rewrite another PR's
+// evidence; and keeping an unqualified healthy row on screen beside this one is
+// what demonstrates the render rule that matters — the class qualifies a healthy
+// verdict ONLY on an exact value match, so `work-claude` still reads a bare
+// "ok" while this row reads "ok:credential_superseded". Priority 3 sorts it
+// last, leaving every existing row at the index the other scenarios navigate to.
+//
+// There is deliberately no LastTestError and no token-shaped text anywhere on
+// this row. AuthCheck carries redacted metadata only — a closed-set outcome and
+// a closed-set class — which is precisely the property BOS-1175 preserves: the
+// state reaches a screen while no credential material ever does.
+func SupersededCredentialWorld() World {
+	w := DemoWorld()
+	w.Accounts = append(w.Accounts, &pb.Account{
+		Id:           "acct-codex-3",
+		Provider:     "codex",
+		Label:        "shared-codex",
+		Status:       "active",
+		Priority:     3,
+		Health:       "ok",
+		Tier:         "plus",
+		LastUsedAt:   ts(-50 * time.Minute),
+		LastTestOkAt: ts(-90 * time.Minute),
+		CreatedAt:    ts(-600 * time.Hour),
+		UpdatedAt:    ts(-90 * time.Minute),
+		// Healthy outcome AND a failure class: the one combination the daemon
+		// writes together (accountwiring.withSupersededClass). The outcome is
+		// what eligibility reads, and it is untouched — this account is still
+		// selectable and still bindable. The class is the warning about the
+		// future that the operator needs in order to reach for
+		// `boss account reauth` before the access token expires.
+		AuthCheck: &pb.AuthCheck{
+			Outcome:      "healthy",
+			FailureClass: "credential_superseded",
+			CheckedAt:    ts(-90 * time.Minute),
+		},
+	})
 	return w
 }

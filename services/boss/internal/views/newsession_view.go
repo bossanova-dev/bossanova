@@ -99,10 +99,14 @@ func (m NewSessionModel) renderIssueSelect() string {
 	if !m.issueTableReady {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("Loading %s issues…", m.trackerSourceLabel())))
 	} else {
+		searchStatus := "searching…"
+		if m.pendingIssueActivate {
+			searchStatus = "starting when results land…"
+		}
 		if m.issueFilter.Engaged() && len(m.issuesFiltered) == 0 {
 			placeholder := "no matches"
-			if m.issuesFetching {
-				placeholder = "searching…"
+			if m.issuesFetching && !m.pendingIssueActivate {
+				placeholder = searchStatus
 			}
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(placeholder))
 			b.WriteString("\n")
@@ -112,8 +116,8 @@ func (m NewSessionModel) renderIssueSelect() string {
 		}
 		if m.issueFilter.Engaged() {
 			b.WriteString(m.issueFilter.View())
-			if m.issuesFetching && len(m.issuesFiltered) > 0 {
-				b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  searching…"))
+			if m.issuesFetching && (len(m.issuesFiltered) > 0 || m.pendingIssueActivate) {
+				b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  " + searchStatus))
 			}
 			b.WriteString("\n")
 		}
@@ -129,6 +133,10 @@ func (m NewSessionModel) renderCreating() string {
 	// Render "initializing" indicator using INFO/blue style with an animated
 	// Dot spinner (same style as the session-list spinner).
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render(m.spinner.View() + "initializing")))
+	if issue := m.selectedIssue; issue != nil && issue.Title != "" {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Issue: " + issue.Title))
+	}
 	// Once the daemon has accepted the create (BOS-720) the session row exists
 	// and is addressable even though its bootstrap is still running, so show the
 	// id straight away rather than making the user wait for the settled frame.
@@ -218,17 +226,10 @@ func (m NewSessionModel) formPrefix() string {
 // prSelectActionBar renders the action bar for the filterable select phases
 // (PR select and issue select). The bar adapts to the filter state:
 //   - filtering (input focused): replaces the bar with the filter help.
-//   - applied (query committed): offers to edit or clear the filter.
 //   - idle: normal "[enter] select" plus discoverability hint for "/".
 func prSelectActionBar(width int, f listFilter, hasItems bool) string {
 	if f.Active() {
 		return actionBarWidth(width, f.ActionBar())
-	}
-	if f.Applied() {
-		return actionBarWidth(width,
-			[]string{"[enter] select"},
-			[]string{"[/] edit filter", "[esc] clear"},
-		)
 	}
 	primary := []string{"[enter] select"}
 	if hasItems {
@@ -240,12 +241,6 @@ func prSelectActionBar(width int, f listFilter, hasItems bool) string {
 func prSelectActionBarLineCount(width int, f listFilter, hasItems bool) int {
 	if f.Active() {
 		return actionBarLineCount(width, f.ActionBar())
-	}
-	if f.Applied() {
-		return actionBarLineCount(width,
-			[]string{"[enter] select"},
-			[]string{"[/] edit filter", "[esc] clear"},
-		)
 	}
 	primary := []string{"[enter] select"}
 	if hasItems {

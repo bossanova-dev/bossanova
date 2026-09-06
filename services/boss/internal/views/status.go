@@ -287,6 +287,28 @@ func attentionHintDemotable(reason pb.AttentionReason) bool {
 // budget is spent, not to reword this constant.
 const transientDraftPRHint = "PR retrying — GitHub was unreachable"
 
+// authDraftPRHint is the same treatment for a draft-PR failure whose cause is
+// that bossd's gh CLI could not authenticate at all.
+//
+// It exists for the reason transientDraftPRHint does, and for the same incident
+// shape. The 2026-09-03 case persisted `HTTP 401: Requires authentication`,
+// which this hint's terminal branch truncated to "draft PR creation failed:
+// creat…" — 22 runes of a 26-rune prefix's remainder, naming nothing. Diagnosis
+// took an hour and ended in sqlite3. A fixed sentence naming the condition beats
+// a truncated transport error, exactly as BOS-877 concluded for the transient
+// case.
+//
+// The same non-truncation warning applies verbatim: draftPRFailureHint returns
+// this constant directly and applies truncateHintReason only to the generic
+// terminal case, so an over-length reword renders in FULL and drags the NAME
+// column toward its width cap instead of being cut. The rune assertion in
+// TestDraftPRFailureHint_AuthRendersAPurposeWrittenString is what catches that.
+//
+// The operator's route to the full text is `boss show`, which prints the raw
+// reason untruncated, and `boss repair doctor`, whose gh-auth check names the
+// remedy.
+const authDraftPRHint = "PR blocked — bossd's gh cannot authenticate"
+
 // draftPRFailureHint surfaces a failed background draft-PR creation as a warning
 // sub-row (BOS-855).
 //
@@ -309,8 +331,16 @@ func draftPRFailureHint(sess *pb.Session) string {
 	if sess == nil || !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
 		return ""
 	}
-	// Narrower predicate first: every transient reason also satisfies
-	// IsDraftPRCreationFailure above, by design.
+	// Narrower predicates first: every auth and every transient reason also
+	// satisfies IsDraftPRCreationFailure above, by design. The two are mutually
+	// exclusive by construction — both markers are anchored immediately after the
+	// shared prefix, so at most one can match — which makes the order between
+	// them cosmetic rather than load-bearing. It is fixed anyway so the branch a
+	// reason takes is readable off the page, and so a future third marker has to
+	// think about where it goes rather than inheriting an accident.
+	if sessionreason.IsDraftPRCreationAuthFailure(sess.BlockedReason) {
+		return authDraftPRHint
+	}
 	if sessionreason.IsDraftPRCreationTransientFailure(sess.BlockedReason) {
 		return transientDraftPRHint
 	}

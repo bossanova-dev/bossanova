@@ -1,12 +1,12 @@
 ---
-title: GitHub PR Callbacks
+title: GitHub Callbacks
 description: 'Get notified in an agent chat the moment a pull request merges, closes, goes green, or leaves draft.'
 slug: /guides/github-callbacks
 ---
 
 import CommandTabs from '@site/src/components/CommandTabs';
 
-# GitHub PR Callbacks
+# GitHub Callbacks
 
 ## What a callback is
 
@@ -333,7 +333,7 @@ redacting wrapper to read it back from Bossanova.
 
 ## See also
 
-- [PR Lifecycle](./pr-lifecycle.md) — the bigger picture of what happens
+- [PR Lifecycle](./pr-lifecycle.md) covers the bigger picture of what happens
   between opening a PR and merging it, and where a callback fits if something
   stalls.
 - [MCP Server](./mcp.md) — connecting an agent to drive callbacks (and

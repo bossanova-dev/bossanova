@@ -193,6 +193,94 @@ gap at the moment you need the value is how a repair run stalls with the PR half
 
 ---
 
+## GraphQL exhaustion: REST substitutions and degraded reads
+
+GitHub's GraphQL and REST APIs have **separate quotas**, and GraphQL exhausts first. Most `gh pr`
+subcommands are GraphQL-backed while `gh api repos/...` is REST, so a pass can be unable to read PR
+metadata while still able to read — and write — review comments. This section is what keeps that
+asymmetry from stranding a pass or, worse, turning it into a false clean.
+
+**Route on the probe's printed failure class, never on stderr wording.** The review-feedback probe
+classifies every `gh` failure it sees and prints the result as `probe_failure_class`. That field is
+the definition; this document does not restate the signature list, because a second copy of a
+decision ladder drifts from the first.
+
+| `probe_failure_class` | Meaning                                                              | Routing                                                                       |
+| --------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `rate_limited`        | Quota exhausted; the reset horizon is printed as `probe_retry_after` | Transient. Report a **residual**, retry after the horizon. Never a true stop. |
+| `auth`                | 401 or bad credentials                                               | Permanent. **True stop.**                                                     |
+| `not_found`           | The repository or PR does not exist or is unreadable                 | Permanent. **True stop.**                                                     |
+| `environment`         | `gh` is missing, or the working directory is not a git repository    | Permanent. **True stop.**                                                     |
+| `other`               | Unrecognised signature                                               | Treated as **unobserved**. Report a residual; never route it as clean.        |
+| `none`                | Nothing failed                                                       | Read `repair_status` normally.                                                |
+
+### REST substitutions for the GraphQL-backed reads
+
+Each row names the GraphQL-backed command and a REST command answering the **same question**. The
+GraphQL spelling stays primary — these are fallbacks for when it is blocked, not replacements.
+
+| Question        | GraphQL-backed (primary)                        | REST substitute                                                                                    |
+| --------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| PR head SHA     | `gh pr view --json headRefOid -q .headRefOid`   | `gh api repos/OWNER/REPO/pulls/PR_NUM -q .head.sha`                                                |
+| PR base ref     | `gh pr view --json baseRefName -q .baseRefName` | `gh api repos/OWNER/REPO/pulls/PR_NUM -q .base.ref`                                                |
+| Mergeability    | `gh pr view --json mergeable -q .mergeable`     | `gh api repos/OWNER/REPO/pulls/PR_NUM -q '.mergeable, .mergeable_state'`                           |
+| Check results   | `gh pr checks --json name,bucket,state,link`    | `gh api repos/OWNER/REPO/commits/HEAD_SHA/check-runs`                                              |
+| Review comments | (probe's GraphQL thread query)                  | `gh api repos/OWNER/REPO/pulls/PR_NUM/comments` — the probe already does this on its degraded path |
+
+The check-runs substitute returns the whole payload; narrow it outside the table, where a `jq` pipe
+is not a column separator:
+
+```bash
+gh api repos/OWNER/REPO/commits/HEAD_SHA/check-runs \
+  --paginate -f per_page=100 \
+  --jq '.check_runs[] | "\(.name) \(.status) \(.conclusion)"'
+```
+
+A check run whose `conclusion` is empty has not finished. That is pending, not passing — the same
+unobserved-is-not-clean rule the mergeability row below states.
+
+**The two APIs do not share a vocabulary, and the difference is where a false clean gets in.**
+`gh pr view --json mergeable` returns GraphQL's `MERGEABLE`, `CONFLICTING`, or `UNKNOWN`. The REST
+substitute returns a **boolean-or-null** `mergeable` plus a `mergeable_state` from a different
+vocabulary entirely: `clean`, `dirty`, `blocked`, `unstable`, `behind`, `unknown`.
+
+| GraphQL       | REST `mergeable` | REST `mergeable_state`                      |
+| ------------- | ---------------- | ------------------------------------------- |
+| `MERGEABLE`   | `true`           | `clean`, `unstable`, `behind`, or `blocked` |
+| `CONFLICTING` | `false`          | `dirty`                                     |
+| `UNKNOWN`     | `null`           | `unknown`                                   |
+
+**A REST `mergeable` of `null`, or a `mergeable_state` of `unknown`, is an unobserved result and
+must never be routed as "not conflicting".** GitHub computes mergeability asynchronously, so the
+first read after a push routinely returns exactly that. Poll again; if it is still unobserved, report
+it as a residual. Reading it as "not `CONFLICTING`" is the same false-clean this whole section
+exists to prevent, reappearing in the substitute path.
+
+### Which degraded reads continue, and which still block
+
+Adding a fallback to a read that currently blocks relaxes a gate, so every case is adjudicated here.
+A case not listed is unlisted, not permitted: treat it as the unrecognised row.
+
+| Condition                                                    | Verdict                                                                       |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| GraphQL rate-limited, REST answered                          | **Warn and continue, degraded.** The observation is partial but real.         |
+| GraphQL rate-limited, REST also rate-limited                 | **Block.** Neither transport answered; there is no observation to degrade to. |
+| `auth` on any transport                                      | **Block.** Not transient; continuing would report an unobserved PR.           |
+| Genuine 404 on the repository or PR                          | **Block.** The subject is unreadable.                                         |
+| Missing `gh`, or not a git repository                        | **Block.** The environment is unusable, and this must stay loud.              |
+| Unrecognised failure text                                    | **Warn and continue, degraded, treated as unobserved.**                       |
+| REST `mergeable` is `null` or `mergeable_state` is `unknown` | **Warn and continue, treated as unobserved.**                                 |
+
+**A degraded read may downgrade an outcome; it may never upgrade one.** No degraded read may move a
+verdict toward `clean`, `MERGEABLE`, or passing.
+
+**Degraded is never silent.** Every degraded read emits one uniform line beginning with the token
+`DEGRADED_READ`, so one search over a transcript finds every relaxed read in it. A relaxed gate whose
+failures are no longer visible anywhere has been deleted, not relaxed — if you take a degraded path,
+say so with that token.
+
+---
+
 ## Repair Workflow
 
 ### Phase 1: Assess Current State
@@ -207,6 +295,10 @@ git status                    # Check for conflicts and uncommitted changes
 git log --oneline -5          # Recent commits
 gh pr view                    # PR details, checks, and review status
 ```
+
+Both `gh pr view` reads above are GraphQL-backed. If either is blocked by quota, do not stop the
+pass here — take the [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads)
+for the head SHA, emit the `DEGRADED_READ` line, and continue.
 
 **1.1a Read any work already in the tree**
 
@@ -448,7 +540,13 @@ newer commit.** Report it as a **residual** naming both SHAs, and do not claim t
 **Resolution**:
 
 1. Fetch and rebase onto the PR base branch — never merge it in, per the
-   [Linear-History Invariant](#linear-history-invariant):
+   [Linear-History Invariant](#linear-history-invariant).
+
+   The `gh pr view --json baseRefName` read below is GraphQL-backed, and its `2>/dev/null || true`
+   swallows a quota failure into an empty `BASE_BRANCH` — which the guard then reads as "no
+   resolvable base", a permanent-looking outcome from a transient cause. When the base comes back
+   empty, take the [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads)
+   row for the base ref before concluding there is no base:
 
    ```bash
    BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
@@ -696,16 +794,31 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    - The first line is a probe contract version. Treat an unrecognised contract version as
      `repair_status=not_evaluated`, never as a content verdict.
    - `probe_status=failed`: the probe failed. Fix the command or auth issue; do not report "no review feedback."
+   - `probe_status=degraded`: GraphQL was exhausted, so the probe fell back to a REST-only read. It
+     printed the REST-visible review comments clustered by reply parentage under
+     `DEGRADED_COMMENT_CLUSTERS`, but REST cannot see thread resolution state, so this is an
+     explicitly **partial** observation. Act on the printed comments; never read it as clean.
    - `probe_status=suspicious_zero`: `latestReviews` contains `COMMENTED`, but both probes found zero comments. Treat this as not evaluated for repair routing; do not conclude no feedback exists.
+   - `probe_degraded`, `probe_failure_class`, and `probe_retry_after` are printed on **every** path,
+     so an absent field is never ambiguous. `probe_failure_class` is what makes residual-versus-true-stop
+     mechanical: route it through the class table in
+     [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads) rather than by
+     reading the error text yourself. `probe_retry_after` is the reset horizon in epoch seconds, or
+     `unknown`, or `none` when nothing failed.
+   - The probe's exit status distinguishes the same three cases: `0` observed, `1` hard failure,
+     `2` suspicious zero, `3` degraded. A non-zero status is **not** by itself a true stop — read
+     `probe_failure_class` before deciding.
    - Empty stdout, or stdout without a `probe_status=` line, is a probe failure, not a zero-comment result.
    - Trust `repair_status` as the normalized result only when `probe_status=ok`.
    - `repair_status=clean`: there are no unresolved review threads. Historical REST `inline_comments`, resolved GraphQL `review_threads`, and `COMMENTED` latest reviews do not require action by themselves.
    - `repair_status=needs_repair`: handle every printed unresolved thread.
    - `repair_status=parked`: every unresolved thread is waiting on a human. Do not re-dispatch repair work unless a later probe reports `needs_repair`.
    - `repair_status=not_evaluated`: review state was not successfully observed. It is never
-     `clean`. A repository or PR unreadable because of auth or a real 404 is a true stop; a wrong
-     probe path, rate limit, transient service failure, or other tooling failure is a reported
-     residual.
+     `clean`. **Decide residual versus true stop by reading `probe_failure_class`, not by judging
+     the error text by eye**: `auth`, `not_found`, and `environment` are true stops; `rate_limited`
+     and `other` are reported residuals, and `rate_limited` carries a `probe_retry_after` horizon to
+     retry after. The full mapping is the class table in
+     [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads).
 
      A park keys on the **reviewer's last-comment identity**, not on the branch head, so the branch can move underneath a park and address the complaint without ever unparking it. **Never carry a prior pass's parked verdict forward.** Before reporting a parked thread as a residual, **re-derive its premise against current HEAD**: grep the files the parked comment names for the feature keyword it disputes. That check is decisive in both directions — the same files and keyword that established the premise settle whether it still holds. If the premise no longer holds, clear the park, reply citing the file and line that now satisfies it, and resolve the thread:
 
@@ -780,6 +893,19 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
          }
        }'
      ```
+   - **If that resolve fails on GraphQL quota, defer it — do not re-post the reply.** Thread
+     resolution is GraphQL-only; REST has no equivalent, so the fallback here is deferral, not
+     substitution. The reply above has already landed, so record the owed resolve and move on:
+     ```bash
+     BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+     if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+     node "$BOSS_REPAIR_PROBE" defer --thread THREAD_ID --reply REPLY_URL --repo OWNER/REPO --pr PR_NUM --host HOST
+     ```
+     A deferred resolve is a **transient residual** with a retry horizon — never a permanent
+     residual, and never a true stop. Report it as such and exit zero. A later pass drains it with
+     `node "$BOSS_REPAIR_PROBE" drain --repo OWNER/REPO --pr PR_NUM --host HOST`, which retries the
+     **resolve only**: the stored record holds no reply body and no reply endpoint, so a drain
+     cannot double-post the comment that already landed.
 
    **b) Premise does not hold — decline and resolve:**
    The finding is by design, stale (references old code), a low-priority style suggestion, or already satisfied in the tree. For these:
@@ -811,6 +937,19 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
          }
        }'
      ```
+   - **If that resolve fails on GraphQL quota, defer it — do not re-post the reply.** Thread
+     resolution is GraphQL-only; REST has no equivalent, so the fallback here is deferral, not
+     substitution. The reply above has already landed, so record the owed resolve and move on:
+     ```bash
+     BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+     if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+     node "$BOSS_REPAIR_PROBE" defer --thread THREAD_ID --reply REPLY_URL --repo OWNER/REPO --pr PR_NUM --host HOST
+     ```
+     A deferred resolve is a **transient residual** with a retry horizon — never a permanent
+     residual, and never a true stop. Report it as such and exit zero. A later pass drains it with
+     `node "$BOSS_REPAIR_PROBE" drain --repo OWNER/REPO --pr PR_NUM --host HOST`, which retries the
+     **resolve only**: the stored record holds no reply body and no reply endpoint, so a drain
+     cannot double-post the comment that already landed.
 
    **c) Premise holds, remedy declined — affirm, record, resolve:**
    The finding is factually correct, but the change it suggests must not be applied as written. This is neither "fix it" nor "premise false", and it is not an escape hatch for a round that would rather not do the work: choosing it costs more reporting than fixing would. Three shapes recur:
@@ -991,6 +1130,11 @@ After applying the repair:
    gh pr view --json mergeable -q .mergeable
    ```
 
+   `gh pr checks` and `gh pr view --json mergeable` are both GraphQL-backed. A blocked read here is
+   **not** "no failing checks" and **not** "not `CONFLICTING`" — take the
+   [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads) for checks and
+   mergeability, apply that section's null-is-unobserved rule, and emit the `DEGRADED_READ` line.
+
 4. If `repair_status=needs_repair`, `repair_status=unknown`, or `repair_status=not_evaluated`, handle
    or report the review feedback before exiting; do not treat unknown or not-evaluated review status
    as clean. If checks are still pending, failed, or timed out after known review feedback is handled,
@@ -1063,8 +1207,10 @@ and each outcome records which existing token it maps to.
   zero actionable threads, so no strategy fires and no mandated dispatch was skipped.
   The parked thread or threads are the residual. Exit zero. Watch token: `parked`.
 - **residual** — the pass ran and something remains: pending CI, the bounded-pass limit, review
-  feedback that arrived after the final push, `repair_status=not_evaluated` for a probe/tooling
-  failure that is not repository/PR unreadability, a superseded CI view, a re-rolled flake, a concurrent
+  feedback that arrived after the final push, `repair_status=not_evaluated` whose
+  `probe_failure_class` is `rate_limited` or `other` (read the printed class — do not judge the
+  error text by eye), a review thread whose reply landed but whose resolution was deferred on quota,
+  a superseded CI view, a re-rolled flake, a concurrent
   writer that replaced the branch or this run's commit, or an escalated edge case.
   Report it and exit zero, per
   [Residuals vs true stops](#residuals-vs-true-stops).
@@ -1089,6 +1235,16 @@ choosing an exit code.
   is unreadable, `repair_status=not_evaluated` because auth or a real repository or PR 404 prevented
   observation, or an unexpected exception aborted the pass. There is no repair outcome to report, so
   **exit non-zero** and let the breakage surface loudly.
+
+**Split the two by the printed failure class, not by eye.** When the probe reports
+`repair_status=not_evaluated`, `probe_failure_class` decides: `auth`, `not_found`, and `environment`
+are true stops; `rate_limited` and `other` are residuals, and a `rate_limited` one carries a
+`probe_retry_after` horizon. A quota failure read as permanent is the misclassification this rule
+exists to prevent — see
+[REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads) for the full table.
+A **deferred thread resolution** — a reply that landed while its GraphQL resolve was rate-limited —
+is likewise a transient residual with a retry horizon, never a permanent residual and never a true
+stop.
 
 Both outcomes describe how the **pass itself** ends. The `exit 1` guards inside the command snippets
 above are narrower: they abort that step — refusing to push a branch that would poison the PR, or a
@@ -1339,6 +1495,10 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    PREV_PASS_HEAD=$ROUND_HEAD   # hand this pass's head to the next pass; record it in your notes too
    ```
 
+   `gh pr view --json headRefOid` is GraphQL-backed. A pass blocked here has no freshness baseline
+   at all, so take the [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads)
+   row for the head SHA and emit the `DEGRADED_READ` line rather than abandoning the watch.
+
    The empty-`PREV_PASS_HEAD` arm is not decoration. Without it `merge-base` is handed an empty
    operand, errors, and falls into the `else`, so pass 1 would announce a rewrite that did not happen
    and order the agent to discard the triage it had just completed.
@@ -1363,6 +1523,10 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    node "$BOSS_REPAIR_PROBE"
    gh pr view --json mergeable -q .mergeable
    ```
+
+   When quota blocks `gh pr checks` or `gh pr view --json mergeable`, poll through the
+   [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads) rather than
+   treating the blocked read as a passing signal, and emit the `DEGRADED_READ` line for each one.
 
 3. Interpret the full PR state:
 

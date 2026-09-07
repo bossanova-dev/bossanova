@@ -57,14 +57,8 @@ change.
 
 ### The `.boss-skills.json` config
 
-A consuming repo drops a single `.boss-skills.json` file at its root. The skills read
-it instead of any hard-coded settings: the loader walks up from the working
-directory, merges the file over built-in defaults, and validates it. Alongside the
-adapter selection, the config declares the review `lensMap`, the build/lint/test
-`commands`, the headless-mode `env` signals, and the versioned `planContract` that
-`boss-plan` emits and `boss-build` consumes.
-
-The adapter block in Bossanova's own config reads:
+A consuming repo selects its adapters in a single `.boss-skills.json` file at its
+root. Bossanova's own selection reads:
 
 ```json
 {
@@ -77,13 +71,15 @@ The adapter block in Bossanova's own config reads:
 }
 ```
 
-Editing `.boss-skills.json` is how a repo retargets the suite: change an adapter value
-to swap a seam, adjust `commands` to match the repo's build system, or reclassify a
-`planContract` section. Because the config is declarative and validated, the skills
-fail fast on an unknown adapter selector rather than silently misbehaving.
+Changing an adapter value swaps a seam. The same file carries the review lenses,
+the build commands, the tracker identity, and the plan contract, and the loader
+validates all of it before a skill acts on it.
 
 ## Learn more
 
-- [Extension System](/skills/extensions) — how to extend a core skill's behaviour
+- [Skill Configuration](/skills/config) covers every section of
+  `.boss-skills.json`, the smallest config that switches the tracker-driven skills
+  on, and what happens when a section is absent or wrong.
+- [Extension System](/skills/extensions) covers extending a core skill's behaviour
   with repo-local add-ons (extra review lenses, proof surfaces, plan reviewers, and
   implementation methodologies) without editing the skill body.

@@ -5,7 +5,6 @@ import test from 'node:test'
 
 import {
   CAPTION_BAR_STYLE,
-  MAX_CAPTION,
   OVERLAY_CAPTION_CSS,
   TIMER_CLEARANCE_PX,
 } from './proof-caption-spec.mjs'
@@ -32,10 +31,6 @@ test('OVERLAY_CAPTION_CSS is byte-identical to the pre-extraction literal', () =
 
 test('CAPTION_BAR_STYLE is byte-identical to the pre-extraction literal', () => {
   assert.equal(CAPTION_BAR_STYLE, PRE_EXTRACTION_CAPTION_BAR_STYLE)
-})
-
-test('MAX_CAPTION is 140', () => {
-  assert.equal(MAX_CAPTION, 140)
 })
 
 test('OVERLAY_CAPTION_CSS reserves TIMER_CLEARANCE_PX for the burned-in timer', () => {

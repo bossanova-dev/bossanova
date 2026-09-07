@@ -38,6 +38,42 @@ esac
 
 echo "PR number: #$PR_NUM"
 
+# The one definition of "is this commit empty" lives in the shared predicate module,
+# vendored beside this script. Both places that used to answer the question by hand --
+# the rebase --exec helper and the post-condition below -- now read one classification
+# produced by it, so they cannot drift apart the way two hand-written copies did.
+# Resolve it BEFORE any fetch or rebase: a missing dependency must fail with history
+# untouched, never half-rewritten.
+COMMIT_WORK_PREDICATE="$SCRIPT_DIR/toolbox/commit-work-predicate.mjs"
+if [ ! -f "$COMMIT_WORK_PREDICATE" ]; then
+  echo "Error: shared commit predicate not found at $COMMIT_WORK_PREDICATE" >&2
+  exit 1
+fi
+if ! command -v node > /dev/null 2>&1; then
+  echo "Error: node is required to classify empty commits ($COMMIT_WORK_PREDICATE)." >&2
+  exit 1
+fi
+
+# Print the SHA of every empty commit in "$1"..HEAD, one per line.
+#
+# ONE node invocation per phase, never one per commit: the inner helper runs inside
+# `git rebase --exec`, where a per-commit subprocess that fails strands the worktree
+# mid-rebase. The base commit is included so the oldest commit in the range has a
+# parent tree to compare against; its own emptiness is never asked, and the module
+# reports a commit whose first parent is outside the batch as non-empty -- the
+# fail-safe direction, since an unclassifiable commit is then treated as real work
+# that still owes a tag.
+empty_commit_shas() {
+  local base empty_tree rows
+  base="$1"
+  empty_tree=$(git hash-object -t tree /dev/null) || return 1
+  rows=$(
+    git show -s --format='%H%x09%T%x09%P' "$base"
+    git log --format='%H%x09%T%x09%P' "$base"..HEAD
+  ) || return 1
+  printf '%s\n' "$rows" | node "$COMMIT_WORK_PREDICATE" empty-commits --empty-tree "$empty_tree"
+}
+
 # Find the base commit (where branch diverged from the PR base branch)
 if [ -z "$BASE_BRANCH" ]; then
   BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
@@ -91,6 +127,18 @@ echo ""
 HELPER_SCRIPT="/tmp/add-pr-to-commit-$$.sh"
 PR_TAG_SKIP_REPORT="/tmp/add-pr-skips-$$.tsv"
 export PR_TAG_SKIP_REPORT
+# Classify the range ONCE, here, and hand the answer to the helper through the
+# environment -- the only channel across the quoted heredoc boundary below. Keyed on
+# the PRE-rebase SHAs, which is what the helper's current_commit() reads out of the
+# rebase done-file. On the rare fall-back path where it reports the rewritten HEAD
+# instead, the SHA is simply absent from the set and the helper proceeds to the amend,
+# where git's own "would make it empty" rejection is already converted to a skip.
+# Fail here, before the rebase, rather than mid-rewrite.
+PR_TAG_EMPTY_SHAS=$(empty_commit_shas "$BASE_COMMIT") || {
+  echo "ERROR: could not classify the empty commits in $BASE_COMMIT..HEAD." >&2
+  exit 1
+}
+export PR_TAG_EMPTY_SHAS
 cleanup_temp() {
   rm -f "$PR_TAG_SKIP_REPORT"
   # Keep the helper if the rebase stopped part-way (a conflict when the branch carries a
@@ -124,20 +172,16 @@ if [ -z "$PR_NUM" ]; then
 fi
 MSG=$(git log -1 --format=%B)
 
-# Keep this predicate aligned with the outer post-condition copy below. A commit
-# is empty when its tree matches its parent's tree; a root commit compares
-# against the empty tree Git computes for the repository hash algorithm.
-is_empty_commit() {
-  local commit tree parent parent_tree
-  commit="$1"
-  tree=$(git show -s --format=%T "$commit") || return 1
-  parent=$(git rev-parse --verify "$commit^" 2>/dev/null || true)
-  if [ -n "$parent" ]; then
-    parent_tree=$(git show -s --format=%T "$parent") || return 1
-  else
-    parent_tree=$(git hash-object -t tree /dev/null) || return 1
-  fi
-  [ "$tree" = "$parent_tree" ]
+# Emptiness is NOT re-derived here. The caller classified the whole range through the
+# shared predicate module and passed the answer in as PR_TAG_EMPTY_SHAS, because this
+# helper runs inside the quoted heredoc and cannot see the outer shell's functions --
+# the duplication that boundary used to force is exactly what drifted.
+is_known_empty_commit() {
+  # Refuse an empty needle. `grep -qxF ""` MATCHES the blank line printf emits for an
+  # empty set, so without this an unresolved commit id would classify as empty and skip
+  # the amend -- the one direction this predicate must never fail in.
+  [ -n "$1" ] || return 1
+  printf '%s\n' "$PR_TAG_EMPTY_SHAS" | grep -qxF "$1"
 }
 
 current_commit() {
@@ -155,7 +199,7 @@ current_commit() {
 }
 
 CURRENT_COMMIT=$(current_commit)
-if is_empty_commit "$CURRENT_COMMIT"; then
+if is_known_empty_commit "$CURRENT_COMMIT"; then
   echo "Skipped empty commit $(git show -s --format=%h "$CURRENT_COMMIT") $(git show -s --format=%s "$CURRENT_COMMIT")"
   exit 0
 fi
@@ -242,20 +286,18 @@ if [ -z "$COMMIT_LOG" ]; then
 fi
 SKIPPED_COUNT=0
 
-# Keep this predicate aligned with the rebase-helper copy above. It is repeated
-# across the quoted heredoc boundary so the post-condition independently
-# classifies empty commits the same way the inner helper does.
+# Re-classify through the SAME module, over the rebased range. The pre-rebase set
+# cannot be reused: the rebase rewrote every SHA in it. Re-deriving the truth from the
+# log is the whole point of this post-condition -- it must not trust the helper's exit
+# code or its prose -- so an unclassifiable range fails closed here too.
+POST_EMPTY_SHAS=$(empty_commit_shas "$BASE_COMMIT") || {
+  echo "ERROR: could not classify the empty commits in $BASE_COMMIT..HEAD." >&2
+  exit 1
+}
 is_empty_commit() {
-  local commit tree parent parent_tree
-  commit="$1"
-  tree=$(git show -s --format=%T "$commit") || return 1
-  parent=$(git rev-parse --verify "$commit^" 2>/dev/null || true)
-  if [ -n "$parent" ]; then
-    parent_tree=$(git show -s --format=%T "$parent") || return 1
-  else
-    parent_tree=$(git hash-object -t tree /dev/null) || return 1
-  fi
-  [ "$tree" = "$parent_tree" ]
+  # Same empty-needle refusal as the rebase helper's copy, for the same reason.
+  [ -n "$1" ] || return 1
+  printf '%s\n' "$POST_EMPTY_SHAS" | grep -qxF "$1"
 }
 
 while IFS=$'\t' read -r short sha subject; do

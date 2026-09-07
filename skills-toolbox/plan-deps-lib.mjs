@@ -110,6 +110,7 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'declared-related-unresolved',
   'no-candidates-compared',
   'no-subject-areas',
+  'subject-unresolved-areas',
   'all-pairs-downgraded-unknown-state',
 ])
 
@@ -151,6 +152,11 @@ const DEFAULT_REPO_WIDE_TOKENS = Object.freeze([
   'dist',
   'vendor',
   'node_modules',
+  // Not a repo's convention but THIS core's: boss-plan emits a "copy the plan to
+  // docs/plans/<id>.md" line into every plan it writes, so co-appearance there is
+  // an artifact of the template and never an ordering constraint. It ships as a
+  // default because the line ships as a default.
+  'docs/plans',
 ])
 
 // The state roles a candidate must occupy to be a valid blocker. Cleared
@@ -181,9 +187,26 @@ const KEY_CHANGES_TITLE = 'key changes'
 const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+[.)])\s+/
 const HEADING_RE = /^\s*#{1,6}\s/
 const BACKTICK_SPAN_RE = /`([^`]+)`/g
-// A colon or a dash separates an area from its description in the drafting
-// template; real plan bodies use an em dash far more often than a colon.
-const AREA_DESCRIPTION_SPLIT_RE = /[:—–]/
+// A trailing `.ext` is the one signal inside the token itself that says "this
+// names a file", which is what lets a path under an undeclared root still be
+// recognised as path-shaped rather than read as prose.
+//
+// The extension must START with a letter, and a one-letter stem is prose. Without
+// those two guards `e.g`, `i.e`, `v1.2`, `2.10` and `22.1` all read as filenames,
+// so a plan body carrying an ordinary version number or a dotted abbreviation
+// raised the `subject-unresolved-areas` warning below. A warning that fires on
+// nearly every run is how a real one stops being read — the same signal-destroying
+// failure this scan refuses on the area side.
+const FILE_EXTENSION_RE = /\.[a-z][a-z0-9]{0,9}$/
+const PROSE_DOTTED_ABBREVIATION_RE = /^[a-z]\.[a-z]$/
+
+// `node.js` still reads as a filename, deliberately: by shape alone it is
+// indistinguishable from one, and the only rules that could separate them — an
+// extension allowlist or a stem allowlist — would hard-code one language
+// ecosystem into a core that ships into every repository.
+function namesAFile(value) {
+  return FILE_EXTENSION_RE.test(value) && !PROSE_DOTTED_ABBREVIATION_RE.test(value)
+}
 
 // ---------------------------------------------------------------------------
 // Small shared helpers
@@ -193,10 +216,31 @@ const AREA_DESCRIPTION_SPLIT_RE = /[:—–]/
 // export. Duplicated rather than imported because it is module-private there;
 // the alternative is a swapped call parsing a config object as a description
 // and reporting every ticket as arealess.
+//
+// It reports TWO distinct faults, and they need OPPOSITE fixes. A value that
+// cannot be a config but could be a description — a string, above all — is a
+// genuinely swapped call, and the remedy is to reorder the arguments. A value
+// that IS config-shaped, or is simply absent, but carries no `planContract` is
+// correctly ordered; the remedy is to load a real config. Reporting the second
+// as "arguments look swapped" sends the fix toward argument order when the
+// caller passed `{}` in exactly the right position. Fault CLASSIFICATION is
+// kept identical to the `skill-config.mjs` original this mirrors; the message
+// TEXT is not (that one also names the config file it merges), so do not diff
+// the two byte-for-byte. Nothing gates them staying in step — a new fault class
+// added there must be added here by hand.
+function isConfigShaped(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
 function assertConfigFirst(config, fn) {
-  if (typeof config === 'string' || !config || typeof config !== 'object' || !config.planContract) {
+  if (!isConfigShaped(config)) {
     throw new Error(
       `plan-deps-lib: ${fn}(config, description) — arguments look swapped; pass the config first`,
+    )
+  }
+  if (!config.planContract) {
+    throw new Error(
+      `plan-deps-lib: ${fn}(config, description) — no plan contract loaded; the first argument is config-shaped but carries no planContract. Pass a config from loadSkillConfig(), not an empty object.`,
     )
   }
 }
@@ -383,12 +427,30 @@ function joinWrappedLines(lines) {
 /**
  * The candidate tokens in one entry. Backtick-delimited spans win outright when
  * present: real plan bodies write paths in backticks and prose around them, so
- * splitting on the description separator first would take a sentence fragment.
+ * scanning the surrounding sentence too would add every bare word to the pile.
+ *
+ * With no span to prefer, every whitespace-delimited token of the JOINED entry
+ * is a candidate — not just the leading fragment. Taking only the fragment
+ * before the description separator is how a path written mid-sentence
+ * ("replace the two maps in services/x/y.go with …") contributed no area at
+ * all and a real overlap scored `no-overlap`.
+ *
+ * Each token carries whether the author MARKED it as code. The widened split
+ * feeds ordinary English words to the shape gate, and a slash-free word cannot
+ * be told apart from a module root by shape alone — so the gate needs the
+ * provenance to refuse `web` in "the web and services teams" while still
+ * admitting a backticked `` `web` ``.
+ *
+ * @returns {{value: string, marked: boolean}[]}
  */
 function entryTokens(entry) {
   const spans = [...entry.matchAll(BACKTICK_SPAN_RE)].map((match) => match[1])
-  if (spans.length > 0) return spans
-  return [entry.replace(LIST_MARKER_RE, '').split(AREA_DESCRIPTION_SPLIT_RE)[0]]
+  if (spans.length > 0) return spans.map((value) => ({ value, marked: true }))
+  return entry
+    .replace(LIST_MARKER_RE, '')
+    .split(/\s+/)
+    .filter((token) => token !== '')
+    .map((value) => ({ value, marked: false }))
 }
 
 const BRACE_EXPANSION_LIMIT = 64
@@ -432,43 +494,84 @@ function braceAreaTokens(token, limit = BRACE_EXPANSION_LIMIT) {
 }
 
 /**
- * A token normalized to an area, or `null` when it is not path-shaped. Drops
- * commands (anything with whitespace), URLs, flags, and bare symbol names that
- * are not one of the caller's module roots.
+ * Classify one token into exactly THREE outcomes, never two:
+ *
+ * - `{area}` — a change site, resolvable to a repo-relative path.
+ * - `{unresolved}` — path-shaped, but NOT resolvable here: a bare basename with
+ *   no directory, or a slashed token under a root the caller never declared.
+ * - `{}` — prose: a command, a URL, a flag, a bare word.
+ *
+ * The middle outcome is the point. Collapsing it into `{}` is what made a real
+ * missed area byte-identical to a bullet that named nothing, and collapsing it
+ * into `{area}` is what let a git ref quoted in prose (`origin/main`) or a URL
+ * route prefix-match a whole module and write a fabricated blocking edge. The
+ * two errors are not symmetric — a fabricated edge writes durable false tracker
+ * state that strands a buildable ticket, while a missed one costs a rebase — so
+ * an unresolvable token is REPORTED, never guessed at.
+ *
+ * The shape gate applies only when the caller declared `moduleRoots`: with no
+ * roots to test against there is nothing to resolve a leading segment against,
+ * so the classifier degrades to the older admit-any-slash behaviour rather than
+ * rejecting every area at once.
  */
-function normalizeArea(token, moduleRoots) {
+function classifyAreaToken(token, moduleRoots, marked) {
   let value = text(token).replace(/\r/g, '').replace(/\*\*/g, '').trim()
   value = value.replace(/^[`'"(<[]+/, '').replace(/[`'")>\],;.]+$/, '')
   value = value.replace(/:\d+(?:[-–]\d+)?$/, '') // a `path:12-20` line anchor is still that path
   value = value.trim()
-  if (value === '') return null
-  if (/\s/.test(value)) return null // a command or a phrase, never an area
-  if (value.includes('://')) return null // a URL
-  if (value.startsWith('-')) return null // a flag
+  if (value === '') return {}
+  if (/\s/.test(value)) return {} // a command or a phrase, never an area
+  if (value.includes('://')) return {} // a URL
+  if (value.startsWith('-')) return {} // a flag
   value = value.replace(/^\.\//, '').replace(/^~\//, '')
   value = value.replace(/\/?\*+$/, '') // a glob suffix names the directory
   value = value.replace(/\/+$/, '')
   value = value.replace(/[.,;:]+$/, '')
   value = value.toLowerCase()
-  if (value === '') return null
-  if (value.includes('/')) return value
-  return moduleRoots.has(value) ? value : null
+  if (value === '') return {}
+  const named = namesAFile(value)
+  if (value.includes('/')) {
+    if (moduleRoots.size === 0) return { area: value }
+    // A leading segment the caller never declared: `origin/main`, a `/route`
+    // string, a `vendor/legacy` tree named parenthetically. Path-shaped, but
+    // nothing here can say whether it is a change site.
+    if (moduleRoots.has(value.split('/')[0])) return { area: value }
+    return named ? { area: value } : { unresolved: value }
+  }
+  // A bare module-root name is a change site ONLY where the author marked it as
+  // code. Unmarked it is just an English word, and admitting it re-opened the
+  // fabrication this scan exists to close: "so the web and services teams share
+  // one shape" contributed `web` and `services` as areas, which `areasOverlap`
+  // then containment-matched against every file beneath them.
+  if (moduleRoots.has(value)) return marked ? { area: value } : {}
+  // A basename with no directory — `SKILL.md`, `finalize.go`. It names a file
+  // and matches dozens of them; resolving it here would trade one recorded
+  // missed edge for an unbounded new source of fabricated ones.
+  return named ? { unresolved: value } : {}
 }
 
 function areasFromLines(lines, moduleRoots) {
-  const seen = new Set()
+  const seenAreas = new Set()
+  const seenUnresolved = new Set()
   const areas = []
+  const unresolved = []
   for (const entry of joinWrappedLines(lines)) {
-    for (const token of entryTokens(entry)) {
-      for (const expanded of braceAreaTokens(token)) {
-        const area = normalizeArea(expanded, moduleRoots)
-        if (area === null || seen.has(area)) continue
-        seen.add(area)
-        areas.push(area)
+    for (const { value, marked } of entryTokens(entry)) {
+      for (const expanded of braceAreaTokens(value)) {
+        const outcome = classifyAreaToken(expanded, moduleRoots, marked)
+        if (outcome.area !== undefined) {
+          if (seenAreas.has(outcome.area)) continue
+          seenAreas.add(outcome.area)
+          areas.push(outcome.area)
+        } else if (outcome.unresolved !== undefined) {
+          if (seenUnresolved.has(outcome.unresolved)) continue
+          seenUnresolved.add(outcome.unresolved)
+          unresolved.push(outcome.unresolved)
+        }
       }
     }
   }
-  return areas
+  return { areas, unresolved }
 }
 
 /**
@@ -484,13 +587,20 @@ function areasFromLines(lines, moduleRoots) {
  * @param {{moduleRoots?: string[], keyChangesHeading?: string}} [options]
  *   `moduleRoots` admits bare, slash-free tokens (a repo's top-level module names)
  *   as areas; `keyChangesHeading` overrides the heading resolved from the contract.
- * @returns {{areas: string[], source: 'key-changes'|'fallback-text'|'none'}}
+ * @returns {{areas: string[], unresolved: string[], source: 'key-changes'|'fallback-text'|'none'}}
  *   `source` distinguishes THREE outcomes that must never be conflated: the
  *   section was parsed (`key-changes`), the section was absent so the whole
  *   description was scanned (`fallback-text`), or there was no body to read at
  *   all (`none`). A parsed-but-arealess section is `key-changes` with an empty
  *   `areas` — different from `none`, because "we looked and found nothing" and
  *   "there was nothing to look at" carry different weight downstream.
+ *
+ *   `unresolved` is the ADDITIVE fourth outcome: tokens this scan recognised as
+ *   path-shaped but could not resolve to a repo-relative area. It is a new field
+ *   beside the existing two rather than a replacement for them, so a caller
+ *   reading `.areas` keeps working unchanged. Feed it back as
+ *   `subjectUnresolvedAreas` to `planDependencyEdges` and an arealess scan stops
+ *   looking like a clean one.
  */
 export function extractKeyChangeAreas(config, description, options = {}) {
   assertConfigFirst(config, 'extractKeyChangeAreas')
@@ -507,12 +617,14 @@ export function extractKeyChangeAreas(config, description, options = {}) {
 
   if (!section) {
     const lines = scanFences(body).lines.map((entry) => entry.line)
-    return { areas: areasFromLines(lines, moduleRoots), source: 'fallback-text' }
+    return { ...areasFromLines(lines, moduleRoots), source: 'fallback-text' }
   }
 
   const lines = scanFences(section.bodyLines.join('\n')).lines.map((entry) => entry.line)
-  if (!lines.some((line) => line.trim() !== '')) return { areas: [], source: 'none' }
-  return { areas: areasFromLines(lines, moduleRoots), source: 'key-changes' }
+  if (!lines.some((line) => line.trim() !== '')) {
+    return { areas: [], unresolved: [], source: 'none' }
+  }
+  return { ...areasFromLines(lines, moduleRoots), source: 'key-changes' }
 }
 
 // ---------------------------------------------------------------------------
@@ -568,11 +680,21 @@ function sharedRegion(a, b) {
  *
  * @param {string[]} a subject areas
  * @param {string[]} b candidate areas
- * @param {{repoWideTokens?: string[], areaAliases?: Record<string,string|string[]>}} [options]
+ * @param {{repoWideTokens?: string[], replaceRepoWideTokens?: boolean,
+ *   areaAliases?: Record<string,string|string[]>}} [options]
  *   `repoWideTokens` names areas too broad to count as a conflict; they are
  *   excluded from `shared`, not merely from the boolean, so a caller reading
  *   `shared` never sees a token the boolean already ignored, and the exclusion
- *   applies to EITHER side of a containment, not only to the shared region. `areaAliases` maps
+ *   applies to EITHER side of a containment, not only to the shared region.
+ *   They EXTEND `DEFAULT_REPO_WIDE_TOKENS` rather than replacing them: a caller
+ *   adding one repo-specific noisy path used to drop every shipped default it
+ *   did not restate, quietly re-enabling exactly the fabricated edges those
+ *   defaults exist to suppress. A caller that genuinely wants the shipped list
+ *   gone has to say so by name, with `replaceRepoWideTokens: true`.
+ *   A wide token carrying a SLASH suppresses every area beneath it; a
+ *   single-segment one keeps exact-match semantics, so declaring a broad root
+ *   noisy does not also hide a concrete file two tickets really do share.
+ *   `areaAliases` maps
  *   an area onto the other areas it stands for — the seam a repo uses to close
  *   a known false negative (generated mirrors of one logical file) WITHOUT
  *   making this module know anything about that repo.
@@ -580,11 +702,19 @@ function sharedRegion(a, b) {
  *   re-plan of unchanged tickets produces an unchanged dependency line.
  */
 export function areasOverlap(a, b, options = {}) {
+  const supplied = Array.isArray(options.repoWideTokens) ? options.repoWideTokens : []
   const wide = new Set(
-    (Array.isArray(options.repoWideTokens) ? options.repoWideTokens : DEFAULT_REPO_WIDE_TOKENS).map(
-      (token) => normalizeAreaValue(token),
-    ),
+    (options.replaceRepoWideTokens === true
+      ? supplied
+      : [...DEFAULT_REPO_WIDE_TOKENS, ...supplied]
+    ).map((token) => normalizeAreaValue(token)),
   )
+  // Split once rather than per comparison. A single-segment token stays an exact
+  // match: `docs` naming a whole tree noisy must not also hide `docs/api.md` when
+  // two tickets genuinely both edit that file.
+  const wideRoots = [...wide].filter((token) => token.includes('/'))
+  const isWide = (area) =>
+    wide.has(area) || wideRoots.some((root) => area === root || area.startsWith(`${root}/`))
   const left = expandAreas(a, options.areaAliases)
   const right = expandAreas(b, options.areaAliases)
   const shared = new Set()
@@ -597,7 +727,7 @@ export function areasOverlap(a, b, options = {}) {
       // passes the denylist, and lets a subject whose only area is a repo-wide token
       // phantom-overlap everything beneath it — which rung 5 then orients into a real
       // blocking write.
-      if (region === null || wide.has(region) || wide.has(x) || wide.has(y)) continue
+      if (region === null || isWide(region) || isWide(x) || isWide(y)) continue
       shared.add(region)
     }
   }
@@ -994,6 +1124,9 @@ function sameEpicMember(subject, candidate) {
  * @param {object} input
  * @param {object} input.subject
  * @param {string[]} [input.subjectAreas] defaults to `subject.areas`
+ * @param {string[]} [input.subjectUnresolvedAreas] the subject's `unresolved` list
+ *   from `extractKeyChangeAreas` (defaults to `subject.unresolvedAreas`). Supplying
+ *   it is what turns a silently-dropped path-shaped token into a `warning` note
  * @param {object[]} [input.candidates] fetched candidates; each MAY carry its own
  *   `areas` (from `extractKeyChangeAreas`) — otherwise it is compared as arealess
  * @param {string[]} [input.declaredRelatedIds] ids of existing declared relations
@@ -1026,6 +1159,15 @@ export function planDependencyEdges(input = {}) {
     : Array.isArray(subject.areas)
       ? subject.areas
       : []
+  const subjectUnresolved = (
+    Array.isArray(input.subjectUnresolvedAreas)
+      ? input.subjectUnresolvedAreas
+      : Array.isArray(subject.unresolvedAreas)
+        ? subject.unresolvedAreas
+        : []
+  )
+    .map((token) => text(token).trim())
+    .filter((token) => token !== '')
   const declared = idSet(declaredRelatedIds)
   const verdicts =
     logicalDependencies && typeof logicalDependencies === 'object' ? logicalDependencies : {}
@@ -1234,6 +1376,22 @@ export function planDependencyEdges(input = {}) {
         issueLabel(subject),
         'no-subject-areas',
         `${issueLabel(subject)} contributed no comparable change areas, so overlap was never testable against any of the ${compared} candidates compared. This run found no dependencies because it had nothing to compare them on — not because none exist. Give the subject a \`## Key changes\` section naming concrete paths, or judge each candidate logically, before treating the dependency line as complete.`,
+      ),
+    )
+  }
+  // Deliberately its OWN `if`, not another rung of the chain above: a subject can
+  // both contribute zero areas and carry tokens that were dropped for being
+  // unresolvable, and those are two different things to tell the caller. Folded
+  // into the chain, the more specific of the two — the one naming the actual
+  // tokens a human can go resolve — is the one that would be suppressed.
+  if (subjectUnresolved.length > 0) {
+    notes.push(
+      note(
+        'warning',
+        'risks',
+        issueLabel(subject),
+        'subject-unresolved-areas',
+        `${issueLabel(subject)}'s \`## Key changes\` named ${subjectUnresolved.length} path-shaped token(s) this scan could not resolve to a repo-relative area: ${subjectUnresolved.join(', ')}. They were NOT compared, so any overlap they carry was missed rather than ruled out. Rewrite them as repo-relative paths, or declare their leading directory in \`moduleRoots\`, before treating the dependency line as complete.`,
       ),
     )
   }

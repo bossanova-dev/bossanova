@@ -146,7 +146,20 @@ ships.
 See [Agent Plugins](/guides/agent-runners) and
 [Settings](./reference/settings.md) for the full configuration surface.
 
-## 5. Start a session
+## 5. Bootstrap the boss-* skills config
+
+The `boss-*` skills read a `.boss-skills.json` file from the repo root. Run
+`boss init` inside the repository to write a starting one:
+
+<CommandTabs
+cli="boss init"
+/>
+
+Most repositories need no config file at all. See
+[Skill Configuration](./skills/config.md) for which skills run without one, and
+for the smallest config that switches the tracker-driven skills on.
+
+## 6. Start a session
 
 Press `n` from the home screen.
 
@@ -163,7 +176,7 @@ Pick the session type that matches the job:
 - **Sentry** when you want to start from an unresolved error. (Shown once
   the repo has Sentry credentials set in its Integrations settings.)
 
-## 6. Chat with the agent
+## 7. Chat with the agent
 
 Open a session and attach to the chat.
 
@@ -176,7 +189,7 @@ twice to stop the session and exit.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-chat.cast" />
 
-## 7. Watch PR and CI state
+## 8. Watch PR and CI state
 
 Return to the dashboard to see whether work is running, waiting for review,
 blocked on CI, or ready to merge.
@@ -186,7 +199,7 @@ blocked on CI, or ready to merge.
 For the full pull request flow, see
 [PR Lifecycle](./guides/pr-lifecycle.md).
 
-## 8. Set up scheduled jobs
+## 9. Set up scheduled jobs
 
 Press `s` to open Settings, then `c` to open the scheduled sessions view and
 create recurring agent work.
@@ -199,7 +212,7 @@ cleanup, release prep, or any coding task that starts from the same prompt.
 See [Scheduled Sessions](./guides/scheduled-sessions.md) for schedule format and
 failure behavior.
 
-## 9. Archive finished work
+## 10. Archive finished work
 
 Select a completed session with `enter`, then press `a` from the session view
 (beside the merge action).
@@ -209,7 +222,7 @@ history available.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-archive.cast" />
 
-## 10. Clean up old chats
+## 11. Clean up old chats
 
 Press `s` to open Settings, then `t` to open Trash, where you can review
 archived chats and permanently delete the ones you no longer need.
@@ -219,7 +232,7 @@ final cleanup step when a branch, PR, or chat history is no longer useful.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-trash.cast" />
 
-## 11. Sign in to Bossanova Cloud
+## 12. Sign in to Bossanova Cloud
 
 Sign in from the TUI when you want browser access to the same local sessions.
 

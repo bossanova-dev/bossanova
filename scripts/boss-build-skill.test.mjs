@@ -647,7 +647,15 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // marker selector that prevents the review upsert from overwriting a quoted-marker linkback.
   // BOS-1118 re-baselines 81130 -> 81391 (+261 B) so reviewed-tip comparison selects one of two
   // shipping routes instead of gating PR creation on a matching tip.
-  const RATCHET = 81391 // exact measured resident body, re-measured 2026-09-05 (BOS-1118)
+  // BOS-1186 re-baselines 81391 -> 81878 (+487 B). The premise/AC re-verification paragraph left
+  // the resume-only Step 4.5 for a Step 4.6 of its own that runs on EVERY build -- the paragraph
+  // itself moved rather than grew, so the cost is its new heading plus the unconditional-scope
+  // sentence -- and the Step 4 staleness paragraph now states in its own text that a
+  // `createdAt`-vs-`updatedAt` comparison cannot see an acceptance criterion invalidated by a
+  // merged code change, routing that case to Step 4.6. Both are resident by necessity: a fresh
+  // build never opens the resume reference, and the staleness blind spot has to be readable at the
+  // moment the run is deciding whether a fresh timestamp is proof.
+  const RATCHET = 81878 // exact measured resident body, re-measured 2026-09-07 (BOS-1186)
   // When this reds upward, the fix is a trim somewhere in an 80 KB body, not in whatever file you
   // were editing; the cheap move is to put the new prose in a reference and leave the resident body
   // a pointer. When it reds downward, you trimmed something: bank the new number here in the same
@@ -663,9 +671,9 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
       measured: measureFile(path.join(rootDir, skillPath)),
       path: skillPath,
       previous: {
-        value: 81130,
-        delta: 261,
-        label: 'BOS-1118 reviewed-tip route selection',
+        value: 81391,
+        delta: 487,
+        label: 'BOS-1186 unconditional premise/AC re-verification step',
       },
       residual:
         'the references/ files this body points at — content moved out of the resident body ' +
@@ -5235,6 +5243,74 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
       step5,
       /Never\s+assume\s+the\s+per-task\s+form/i,
       `${dir}/SKILL.md's restart path must forbid defaulting to the per-task label`,
+    )
+  }
+})
+
+// BOS-1186: the premise/AC re-verification obligation was correct but sat inside
+// `## Step 4.5: Assess adopted work (resume only)`, whose heading and opening clause both scope it
+// to resumes -- so a FRESH build that reads the heading literally never ran it. The discriminator
+// pinned here is the ENCLOSING SECTION, not the paragraph's own wording: an assertion that merely
+// found the sentence somewhere in the body would have passed before this fix and after it.
+test('BOS-1186: premise/AC re-verification is unconditional, outside resume-only Step 4.5', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    const resumeOnly = region(
+      skill,
+      '## Step 4.5:',
+      '## Step 4.6:',
+      `${dir}/SKILL.md resume-only section`,
+    )
+    const reverify = region(
+      skill,
+      '## Step 4.6:',
+      '## Step 5:',
+      `${dir}/SKILL.md re-verification step`,
+    )
+
+    assert.doesNotMatch(
+      resumeOnly,
+      /verify\s+`## Premises`/,
+      `${dir}/SKILL.md must not leave premise/AC re-verification inside the resume-only section`,
+    )
+    assert.match(
+      reverify,
+      /verify\s+`##\s+Premises`\s*\/\s*`##\s+Acceptance\s+criteria`[\s\S]{0,120}resolve\s+`path:line`s/,
+      `${dir}/SKILL.md Step 4.6 must carry the premise/AC re-verification instruction`,
+    )
+    assert.match(
+      reverify,
+      /every\s+build/i,
+      `${dir}/SKILL.md Step 4.6 must state that it runs on every build`,
+    )
+    assert.match(
+      reverify,
+      /\*\*Unconditional[\s\S]{0,120}never\s+skipped/i,
+      `${dir}/SKILL.md Step 4.6 must read as unconditional, not as a resume-scoped step`,
+    )
+    assert.match(
+      reverify,
+      /merged-work\s+inversion\s+⇒\s+departure[\s\S]{0,80}stop\s+BLOCKED/,
+      `${dir}/SKILL.md Step 4.6 must keep the false-premise routing it had in Step 4.5`,
+    )
+
+    // The Step 4 staleness comparison must admit its blind spot in its own text and route the
+    // case it cannot see to the unconditional step, rather than reading a fresh timestamp as proof.
+    const step4 = region(skill, '## Step 4:', '## Step 4.5:', `${dir}/SKILL.md Step 4`)
+    assert.match(
+      step4,
+      /cannot\s+detect\s+an\s+acceptance\s+criterion\s+invalidated\s+by\s+a[\s\S]{0,40}merged\s+code\s+change/i,
+      `${dir}/SKILL.md Step 4 must state that the timestamp comparison misses a merged-code invalidation`,
+    )
+    assert.match(
+      step4,
+      /`createdAt`[\s\S]{0,200}`updatedAt`/,
+      `${dir}/SKILL.md Step 4 must name both timestamps it compares`,
+    )
+    assert.match(
+      step4,
+      /fresh\s+timestamp\s+is\s+therefore\s+not\s+proof[\s\S]{0,120}Step\s+4\.6/,
+      `${dir}/SKILL.md Step 4 must route the undetectable case to the unconditional re-verification step`,
     )
   }
 })
@@ -11424,4 +11500,120 @@ test('BOS-1116: review comment upserts require an anchored marker and matching a
     },
     label: 'authoring skill roots: whole-body marker-substring selector prohibition',
   })
+})
+
+// BOS-1195: three misreports the finalize/review prose used to invite — a failed tag
+// injection read as a merge blocker, a non-zero exit read as "nothing happened", and a
+// rejected amend blamed on a disallowed scope — plus the fresh-workspace route whose
+// skip note went unsurfaced. One pin per added sentence, over BOTH mirrors.
+//
+// R7 binds every line of it: these references install into every user's global skill
+// dir, so the prose names the CLASS of check and never this project's tool. That
+// absence is asserted here as well as over review-stack.md, because the new
+// finalize-and-stop.md sentences are exactly where naming the tool would be tempting.
+test('BOS-1195: injector-failure and rejection guidance is corrected (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const finalize = finalizeAndStop(dir)
+
+    // --- R5a: a failed injection is a disclosure item, not a merge blocker. ---
+    assert.match(
+      finalize,
+      /A\s+failed\s+injection\s+is\s+a\s+disclosure\s+item,\s+not\s+a\s+merge\s+blocker/i,
+      `${dir}: the guidance must say a failed injection is disclosed, not merge-blocking`,
+    )
+    assert.match(
+      finalize,
+      /no\s+commit-message\s+check\s+in\s+CI/i,
+      `${dir}: and must condition that on whether the project runs such a check at all`,
+    )
+
+    // --- R5b: a non-zero exit may follow a partially-applied rewrite. ---
+    assert.match(
+      finalize,
+      /history\s+may\s+already\s+be\s+partly\s+rewritten/i,
+      `${dir}: a non-zero exit must not be read as "nothing happened"`,
+    )
+    assert.match(
+      finalize,
+      // Prettier normalises emphasis markers, so accept either spelling.
+      /re-running\s+[_*]blind[_*][\s\S]{0,200}?is\s+not/i,
+      `${dir}: a blind re-run over a partly-rewritten history must be called out`,
+    )
+    // The captured head is only evidence if it is captured BEFORE the injector runs.
+    const capturedAt = finalize.indexOf('PRE_INJECT_HEAD="$(git rev-parse HEAD)"')
+    const invokedAt = finalize.indexOf('inject-pr-tag "$PR_NUMBER" >"$TAG_LOG"')
+    assert.ok(capturedAt !== -1, `${dir}: Step 8 must capture the pre-injection HEAD`)
+    assert.ok(invokedAt !== -1, `${dir}: Step 8 must invoke inject-pr-tag with a log`)
+    assert.ok(
+      capturedAt < invokedAt,
+      `${dir}: the head must be captured BEFORE the injector runs, or it records nothing`,
+    )
+    assert.match(
+      finalize,
+      /HEAD\s+was\s+\$PRE_INJECT_HEAD\s+before\s+it\s+ran/,
+      `${dir}: the captured head must be surfaced on failure, not merely captured`,
+    )
+
+    // --- R6: name the rules that are actually enforced. ---
+    assert.match(
+      finalize,
+      /\*\*disallowed\s+type\*\*/i,
+      `${dir}: the rejection guidance must name the enforced type allow-list`,
+    )
+    assert.match(
+      finalize,
+      /\*\*missing\s+scope\*\*/i,
+      `${dir}: the rejection guidance must name the mandatory scope`,
+    )
+    assert.match(
+      finalize,
+      /\*\*subject\s+line\s+over\s+its\s+length\s+limit\*\*/i,
+      `${dir}: the rejection guidance must name the subject length limit`,
+    )
+    assert.match(
+      finalize,
+      /\*\*body\s+line\s+over\s+its\s+length\s+limit\*\*/i,
+      `${dir}: the rejection guidance must name the body line-length limit`,
+    )
+    assert.match(
+      finalize,
+      /does\s+not\s+reject\s+for\s+a\s+[_*]disallowed[_*]\s+scope/i,
+      `${dir}: and must refute the disallowed-scope guess that costs the hunt`,
+    )
+
+    // --- R7: the class of check, never this project's tool. ---
+    assert.doesNotMatch(
+      finalize,
+      /commitlint/i,
+      `${dir}: these references ship to every project — name the class of check, never one project's tool`,
+    )
+
+    // --- R5c: the fresh-workspace route surfaces its skip note. ---
+    const reviewStack = reviewStackFor(dir)
+    assert.match(
+      reviewStack,
+      /When\s+no\s+PR\s+maps\s+to\s+the\s+branch\s+yet,\s+the\s+skip\s+is\s+the\s+finding/i,
+      `${dir}: the fresh-workspace route must name its skip as the finding`,
+    )
+    assert.match(
+      reviewStack,
+      /Report\s+that\s+note\s+in\s+the\s+same\s+breath\s+as\s+`PUSHED=yes`/i,
+      `${dir}: the skip note must be reported, not left to be noticed`,
+    )
+    assert.match(
+      reviewStack,
+      /Ordering\s+is\s+what\s+prevents\s+it,\s+not\s+a\s+later\s+rewrite/i,
+      `${dir}: the fix is ordering — a later rewrite is the retro-tagging non-goal`,
+    )
+    // …and it must not sit INSIDE the honesty paragraph, whose own assertions are
+    // window-scoped: text inserted between those two anchors widens the window
+    // silently while every positive assertion in it still passes.
+    const skipAt = reviewStack.indexOf('When no PR maps to the branch yet')
+    const honestyAt = reviewStack.indexOf('Say what an untagged commit actually costs')
+    assert.ok(honestyAt >= 0)
+    assert.ok(
+      skipAt >= 0 && skipAt < honestyAt,
+      `${dir}: the skip-note paragraph must sit outside the honesty window it would otherwise widen`,
+    )
+  }
 })

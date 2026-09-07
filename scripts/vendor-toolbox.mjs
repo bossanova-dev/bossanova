@@ -192,8 +192,20 @@ export const VENDOR_MAP = {
     'plan-epic-phase25.mjs',
     'plan-image-guard.mjs',
     'plan-contract-guard.mjs',
+    // plan-writeback-verify.mjs (BOS-1199) is the post-save read-back the finalize phase names by
+    // path. Without it here the installed tree lacks a helper the SKILL invokes, which is a gate
+    // that cannot RUN rather than a gate that fails. Its imports (skill-config.mjs,
+    // plan-image-guard.mjs, main-module.mjs) are already vendored for this skill.
+    'plan-writeback-verify.mjs',
     'plan-run-guards.mjs',
     'plan-deps-lib.mjs',
+    // plan-scratch-paths.mjs (BOS-1193) is the canonical scratch contract the payload's
+    // path citations and its Phase 5 cleanup both read: the scratch root, this run's
+    // `run-<RUN-ID>/` directory, and the declared name of every artifact a run writes.
+    // It ships beside the reap because the two are one contract — the reap removes what
+    // this registry lets a run create — and it imports nothing outside node: and
+    // main-module.mjs, already vendored here.
+    'plan-scratch-paths.mjs',
     'plan-scratch-reap.mjs',
     'plan-slug.mjs',
     'skill-extensions.mjs',
@@ -247,6 +259,12 @@ export const VENDOR_MAP = {
     'bs-dispatch-await.mjs',
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
+    // commit-work-predicate.mjs (BOS-1195) owns "is this a non-empty work commit"
+    // for every consumer. add-pr-numbers.sh classifies its rebase range through it,
+    // so it must resolve beside the script in an INSTALLED skill tree — a user repo
+    // has no repo-root skills-toolbox/ to reach back into. It imports main-module.mjs,
+    // already vendored here.
+    'commit-work-predicate.mjs',
   ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],

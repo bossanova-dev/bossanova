@@ -668,6 +668,10 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'tracker/preflight.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
+  // Asserted BY NAME, not by count: the planning core's finalize phase invokes the write-back
+  // verification by path, so an installed tree without it is a gate that cannot RUN rather than a
+  // gate that fails, and a count assertion would stay green while the wrong helper was listed.
+  assert.ok(VENDOR_MAP['boss-plan'].includes('plan-writeback-verify.mjs'))
   assert.ok(VENDOR_MAP['boss-build'].includes('worktree-lock.sh'))
   for (const files of Object.values(VENDOR_MAP)) {
     assert.ok(files.includes('main-module.mjs'), 'every toolbox payload vendors main-module.mjs')

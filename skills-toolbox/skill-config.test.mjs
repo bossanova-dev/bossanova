@@ -42,6 +42,8 @@ import {
   isHeadless,
   adapterFor,
   trackerConfigFor,
+  toleratedDescriptionTransforms,
+  DESCRIPTION_NORMALIZATION_TRANSFORMS,
   publishConfigFor,
   planStorageFor,
   stateName,
@@ -1632,6 +1634,73 @@ test('validatePlanDescription throws a named argument-order error when arguments
   )
 })
 
+// The config-first guard reports TWO faults that need OPPOSITE fixes, so they must not share one
+// message. `{}` passed FIRST is correctly ordered — the remedy is to load a real config — but the
+// old single predicate reported it as "arguments look swapped", sending the fix toward argument
+// order. Both directions are pinned at all three sites, because a relaxation with only the new
+// message asserted would still pass if the swapped-argument branch were deleted outright.
+test('a correctly ordered contractless config reports the missing contract, not argument order', () => {
+  const description = planDesc('- Contract: v1')
+  const sites = [
+    ['validatePlanDescription', () => validatePlanDescription({}, description)],
+    ['parseAcceptanceCriteria', () => parseAcceptanceCriteria({}, description)],
+    ['parsePremises', () => parsePremises({}, description)],
+    ['validateVerifyOnlyEvidence', () => validateVerifyOnlyEvidence({}, description)],
+  ]
+  for (const [name, call] of sites) {
+    assert.throws(
+      call,
+      (error) => {
+        assert.match(error.message, /^skill-config: /, `${name} must stay module-prefixed`)
+        assert.match(error.message, new RegExp(`${name}\\(config, description\\)`))
+        assert.match(error.message, /no plan contract loaded/)
+        assert.match(
+          error.message,
+          /loadSkillConfig\(\)/,
+          'must name where a real config comes from',
+        )
+        assert.doesNotMatch(
+          error.message,
+          /arguments look swapped/,
+          `${name}: a correctly ordered empty config must not be diagnosed as an argument-order fault`,
+        )
+        return true
+      },
+      `${name} must diagnose an empty config distinctly`,
+    )
+  }
+  // The BOUNDARY of the relaxation, pinned deliberately. Only a CONFIG-SHAPED first argument earns
+  // the new message; a nullish or non-object one keeps the argument-order error it has always had.
+  // Widening it to nullish would be a second behaviour change this ticket did not measure, and the
+  // narrow split is what keeps the relaxation to exactly the fault that was recorded.
+  assert.throws(() => validatePlanDescription(null, description), /arguments look swapped/)
+  assert.throws(() => validatePlanDescription(undefined, description), /arguments look swapped/)
+  assert.throws(() => validatePlanDescription([], description), /arguments look swapped/)
+})
+
+test('a genuinely swapped call still throws the module-prefixed argument-order error', () => {
+  const description = planDesc('- Contract: v1')
+  const sites = [
+    ['validatePlanDescription', () => validatePlanDescription(description, DEFAULT_CONFIG)],
+    ['parseAcceptanceCriteria', () => parseAcceptanceCriteria(description, DEFAULT_CONFIG)],
+    ['parsePremises', () => parsePremises(description, DEFAULT_CONFIG)],
+    ['validateVerifyOnlyEvidence', () => validateVerifyOnlyEvidence(description, DEFAULT_CONFIG)],
+  ]
+  for (const [name, call] of sites) {
+    assert.throws(
+      call,
+      (error) => {
+        assert.match(error.message, new RegExp(`^skill-config: ${name}\\(config, description\\)`))
+        assert.match(error.message, /arguments look swapped; pass the config first/)
+        assert.doesNotMatch(error.message, /no plan contract loaded/)
+        assert.doesNotMatch(error.message, /Cannot read properties/)
+        return true
+      },
+      `${name} must still catch the natural-reading swapped call`,
+    )
+  }
+})
+
 test('validatePlanDescription detects an asterisk-bullet Contract stamp', () => {
   // A tracker may renormalise `-` to `*` on save, which made the stamp undetectable on read-back.
   const r = validatePlanDescription(DEFAULT_CONFIG, planDesc('* Contract: v1'))
@@ -2705,6 +2774,8 @@ test('classifyCheckCommand reports blocking and advisory shapes without executin
     ['make test|tee out.log', 'pipe-without-pipefail'],
     ['git grep -E "\\bneedle\\b"', 'git-grep-word-boundary'],
     ['bazel test //services/boss/...', 'cached-bazel-test'],
+    ["grep -c '<th' f", 'substring-count-overmatch'],
+    ["sed '1{/^$/d}' f", 'gnu-only-sed-address'],
   ]
   for (const [command, code] of cases) {
     const result = classifyCheckCommand(command)
@@ -2720,6 +2791,106 @@ test('classifyCheckCommand reports blocking and advisory shapes without executin
   )
   assert.deepEqual(classifyCheckCommand("node --include='*.md' # pass 2").advisory, [])
   assert.deepEqual(classifyCheckCommand('node --include "*.md" # pass 2').advisory, [])
+})
+
+// A negated check command is legitimate: `! grep -q needle file` is the natural way to assert a
+// pattern is ABSENT. `!` is the POSIX negation keyword and must be its own word, so it landed as
+// the segment head and resolved to no executable, making the whole shape unrecordable.
+//
+// This is a RELAXATION, so both directions are pinned. Pinning only the positive case would make
+// the gate vacuous: a later change that dropped head resolution entirely would still pass.
+test('classifyCheckCommand accepts a leading `!` negation without excusing the head', () => {
+  // Positive: the negation is stripped and the real head classifies normally.
+  // Heads here must be PATH-guaranteed on a bare CI runner: `classifyCheckCommand` resolves the
+  // head against PATH, so an example like `rg` (not installed on GitHub's ubuntu image) reports
+  // `command-unresolvable` and reds this test for a reason that has nothing to do with negation.
+  // `grep` and `make` are both present everywhere this suite runs.
+  assert.deepEqual(classifyCheckCommand('! grep -q needle file').blocking, [])
+  assert.deepEqual(classifyCheckCommand('! make test').blocking, [])
+  // ...in any segment, not only the first.
+  assert.deepEqual(classifyCheckCommand('make test && ! grep -q needle file').blocking, [])
+  assert.deepEqual(classifyCheckCommand('true; ! grep -q needle file').blocking, [])
+
+  // Negative 1 — a segment that is ONLY `!` has no head at all and must stay unresolvable.
+  assert.equal(classifyCheckCommand('!').blocking[0].code, 'command-unresolvable')
+  assert.equal(classifyCheckCommand('make test && !').blocking[0].code, 'command-unresolvable')
+
+  // Negative 2 — negating an unknown head does not make it resolve. The relaxation removes `!`
+  // from the head position; it does not excuse the head from resolving.
+  assert.equal(
+    classifyCheckCommand('! this-command-does-not-exist-bos1189').blocking[0].code,
+    'command-unresolvable',
+  )
+  assert.equal(
+    classifyCheckCommand('make test && ! this-command-does-not-exist-bos1189').blocking[0].code,
+    'command-unresolvable',
+  )
+
+  // Only ONE leading `!` is stripped, so a doubled negation still leaves `!` as the head.
+  assert.equal(
+    classifyCheckCommand('! ! grep -q needle file').blocking[0].code,
+    'command-unresolvable',
+  )
+})
+
+// BOS-1186: the two measured false-drift shapes. Both are advisory by design — a blocking finding
+// here would make the verification instrument more brittle than the premise it re-checks, which is
+// the failure this ticket exists to avoid.
+test('classifyCheckCommand flags the two measured false-drift shapes as advisory only', () => {
+  const overmatch = classifyCheckCommand("grep -c '<th' f")
+  assert.deepEqual(
+    overmatch.advisory.map((finding) => finding.code),
+    ['substring-count-overmatch'],
+  )
+  assert.match(overmatch.advisory[0].message, /superstring/)
+  assert.deepEqual(overmatch.blocking, [])
+
+  // Anchoring by flag suppresses it — this is the correction the BOS-1159 note recorded.
+  assert.deepEqual(classifyCheckCommand("grep -cw '<th' f").advisory, [])
+  assert.deepEqual(classifyCheckCommand("grep -cw '<th' f").blocking, [])
+  // Anchoring inside the pattern suppresses it too.
+  assert.deepEqual(classifyCheckCommand("grep -c '^th' f").advisory, [])
+  // A count with no anchor is the shape, whichever tool spells it.
+  assert.deepEqual(
+    classifyCheckCommand('rg --count needle f').advisory.map((finding) => finding.code),
+    ['substring-count-overmatch'],
+  )
+  // `-C` is context, not count, and must not be read as one.
+  assert.deepEqual(classifyCheckCommand("grep -C 3 '<th' f").advisory, [])
+  // A grep with no count flag is not this shape at all.
+  assert.deepEqual(classifyCheckCommand("grep -n '<th' f").advisory, [])
+
+  const sedAddress = classifyCheckCommand("sed '1{/^$/d}' f")
+  assert.deepEqual(
+    sedAddress.advisory.map((finding) => finding.code),
+    ['gnu-only-sed-address'],
+  )
+  assert.match(sedAddress.advisory[0].message, /BSD sed/)
+  assert.deepEqual(sedAddress.blocking, [])
+
+  assert.deepEqual(classifyCheckCommand("sed -n '1,5p' f").advisory, [])
+  assert.deepEqual(classifyCheckCommand("sed -n '1,5p' f").blocking, [])
+  // The `-e` spelling carries the same script and the same risk.
+  assert.deepEqual(
+    classifyCheckCommand("sed -e '1{/^$/d}' f").advisory.map((finding) => finding.code),
+    ['gnu-only-sed-address'],
+  )
+  // ...and so does the ATTACHED spelling, where the script rides on the option token itself. The
+  // detector's non-option test never sees these, so before BOS-1186 they evaded it silently.
+  for (const command of ["sed -e'1{/^$/d}' f", "sed --expression='1{/^$/d}' f"]) {
+    assert.deepEqual(
+      classifyCheckCommand(command).advisory.map((finding) => finding.code),
+      ['gnu-only-sed-address'],
+      command,
+    )
+    assert.deepEqual(classifyCheckCommand(command).blocking, [], command)
+  }
+  // An attached option that carries no brace block is still not this shape.
+  assert.deepEqual(classifyCheckCommand("sed -e'1,5p' f").advisory, [])
+  // Neither finding may reach the blocking tier through the plan-contract vacuity gate.
+  for (const command of ["grep -c '<th' f", "sed '1{/^$/d}' f"]) {
+    assert.deepEqual(classifyCheckCommand(command).blocking, [], command)
+  }
 })
 
 test('classifyCheckCommand requires executable files for PATH and repo-relative commands', () => {
@@ -2860,4 +3031,99 @@ test('parsePremises throws the named swapped-argument error', () => {
     () => parsePremises('## Premises', DEFAULT_CONFIG),
     /parsePremises\(config, description\)/,
   )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1199 U3 — the tolerated description-normalization transform seam.
+//
+// A tracker that normalizes markdown on write reshapes a description without changing what it
+// means. The post-save read-back must tell that apart from a transcription slip, so a repo declares
+// the transforms it has OBSERVED — from a closed vocabulary, defaulting to the empty (strictest)
+// set. Absence must never be readable as "tolerate all"; that is what turns tier 2 into a rubber
+// stamp.
+// ---------------------------------------------------------------------------
+
+const withNormalization = (tolerated) =>
+  mergeConfig(DEFAULT_CONFIG, {
+    adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+    trackerConfig: {
+      demo: {
+        mcpServer: 'demo-tracker',
+        team: 'Demo',
+        ...(tolerated === undefined ? {} : { descriptionNormalization: { tolerated } }),
+      },
+    },
+  })
+
+test('U3: a config declaring a valid subset loads and the accessor returns exactly that set', () => {
+  const config = withNormalization([
+    'unordered-list-marker-substitution',
+    'terminal-newline-trimming',
+  ])
+  validateConfig(config, 'test')
+  assert.deepEqual(
+    toleratedDescriptionTransforms(config),
+    new Set(['unordered-list-marker-substitution', 'terminal-newline-trimming']),
+  )
+})
+
+test('U3: an absent normalization block yields the empty set (default strict)', () => {
+  const config = withNormalization(undefined)
+  validateConfig(config, 'test')
+  assert.deepEqual(toleratedDescriptionTransforms(config), new Set())
+})
+
+test('U3: an id outside the closed vocabulary fails validation, naming the offending id', () => {
+  assert.throws(
+    () =>
+      validateConfig(
+        withNormalization(['unordered-list-marker-substitution', 'tabs-to-spaces']),
+        'test',
+      ),
+    /skill-config:.*descriptionNormalization\.tolerated contains unknown transform id "tabs-to-spaces"/,
+  )
+})
+
+test('U3: a non-array tolerated fails validation, naming the expected type', () => {
+  for (const bad of ['unordered-list-marker-substitution', { id: 'x' }]) {
+    assert.throws(
+      () => validateConfig(withNormalization(bad), 'test'),
+      /skill-config:.*descriptionNormalization\.tolerated must be an array of transform ids/,
+    )
+  }
+  assert.throws(
+    () =>
+      validateConfig(
+        mergeConfig(DEFAULT_CONFIG, {
+          adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+          trackerConfig: {
+            demo: { mcpServer: 'demo-tracker', team: 'Demo', descriptionNormalization: [] },
+          },
+        }),
+        'test',
+      ),
+    /skill-config:.*descriptionNormalization must be an object when present/,
+  )
+})
+
+test('U3: an explicitly empty array is equivalent to an absent block — never "tolerate all"', () => {
+  const explicit = withNormalization([])
+  const absent = withNormalization(undefined)
+  validateConfig(explicit, 'test')
+  validateConfig(absent, 'test')
+  assert.deepEqual(toleratedDescriptionTransforms(explicit), toleratedDescriptionTransforms(absent))
+  assert.equal(toleratedDescriptionTransforms(explicit).size, 0)
+})
+
+test("U3: the repo's own .boss-skills.json parses and validates under the new rules", () => {
+  const config = loadSkillConfig({ cwd: REPO_ROOT })
+  validateConfig(config, 'repo')
+  const declared = toleratedDescriptionTransforms(config)
+  assert.ok(declared.size > 0, 'this repo declares the transforms its tracker was observed to make')
+  for (const id of declared) {
+    assert.ok(
+      DESCRIPTION_NORMALIZATION_TRANSFORMS.includes(id),
+      `declared transform ${id} must be in the closed vocabulary`,
+    )
+  }
 })

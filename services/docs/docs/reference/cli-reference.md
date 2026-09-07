@@ -476,6 +476,36 @@ Check for and install Bossanova upgrades.
 
 See [Upgrade](/upgrade) for the full upgrade guide.
 
+### `boss init`
+
+Write a detected `.boss-skills.json` for the repository, giving the `boss-*`
+skills a starting config.
+
+| Flag           | Description                                                                     |
+| -------------- | ------------------------------------------------------------------------------- |
+| `--dir <path>` | repository directory to inspect and write into (default: the working directory) |
+| `--force`      | replace an existing `.boss-skills.json` instead of refusing                     |
+
+The file it writes carries only what detection produced, so in practice a
+`commands` block or an empty object. Every other block is left out and reported
+with the reason it is absent. The report also prints the MCP server declaration for
+each coding-agent harness it detects, and for both when it detects neither. It
+writes none of those harness files.
+
+Without `--force` the command refuses to replace an existing file. It checks
+twice: a stat before any work, then the filesystem's own `O_EXCL` at the moment of
+writing, which closes the window between the two. Both decline a symlink standing
+where the config should be, a dangling one included, so the link is never written
+through. `--force` rewrites rather than refreshes. It writes detected output only,
+so the previous file is discarded whole, including hand-tuned values inside
+`commands`.
+
+`boss init` is a different command from `boss config init`, which initialises
+bossd plugin settings in `settings.json` and touches no `.boss-skills.json`.
+
+See [Skill Configuration](/skills/config) for the sections this file carries and
+the smallest config that switches the tracker-driven skills on.
+
 ### `boss new` and `boss chat` (scripted chat control)
 
 Create a session non-interactively and drive its chat from the shell (or, with the

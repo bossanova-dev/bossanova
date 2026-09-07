@@ -1373,6 +1373,62 @@
       ]
     },
     {
+      "id": "web-org-create-switch-failed",
+      "surface": "web",
+      "title": "Web New Organization Switch Failure Recovery",
+      "description": "The New organization modal after the create RPC succeeded but the AuthKit claim switch was made to reject. The modal does NOT reset to an empty form: it names the organization that was created ('Proof Org was created, but switching to it failed'), and its action row offers Cancel beside a primary 'Try again' button. Crucially there is no 'Create organization' button on screen any more, because retrying the create would mint a SECOND durable WorkOS organization -- which is the defect this recovery exists to prevent.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "cropToSelector": ".org-create-form",
+      "viewport": { "width": 1024, "height": 900 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-e2e/settings/organization",
+          "label": "Open organization settings",
+          "caption": "Open the organization settings page"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-settings-section",
+          "label": "Settings loaded",
+          "caption": "Organization settings page loads"
+        },
+        {
+          "action": "click",
+          "selector": "button:has-text('New organization')",
+          "label": "New organization",
+          "caption": "Choose New organization"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-create-form",
+          "label": "Modal open",
+          "caption": "The New organization modal opens"
+        },
+        {
+          "action": "type",
+          "selector": ".org-create-form input",
+          "value": "Proof Org",
+          "label": "Name it",
+          "caption": "Name the organization"
+        },
+        {
+          "action": "click",
+          "selector": ".org-create-form button:has-text('Create organization')",
+          "label": "Create organization",
+          "caption": "Create it -- the organization is created, then the claim switch fails"
+        },
+        {
+          "action": "wait",
+          "selector": ".org-create-form button:has-text('Try again')",
+          "label": "Switch failed",
+          "caption": "The created organization is kept and only the switch is offered for retry"
+        }
+      ]
+    },
+    {
       "id": "web-org-danger-zone",
       "surface": "web",
       "title": "Web Organization Danger Zone",
@@ -2545,6 +2601,7 @@
         "web-sessions-reconnecting-dark",
         "web-header-menu",
         "web-org-create-modal",
+        "web-org-create-switch-failed",
         "web-org-settings",
         "web-org-danger-zone",
         "web-org-delete-confirm",

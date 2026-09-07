@@ -6,7 +6,7 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url'
 import {
   checkPlanCitations,
   checkPlanContract,
+  DYNAMIC_VIOLATION_CODE_PREFIXES,
+  VIOLATION_CODES,
   checkPlanFileStructure,
   checkPrBodyOnlyEvidence,
   checkVerifyOnlyCommandVacuity,
@@ -21,6 +23,7 @@ import {
   emittedContractHeadings,
   hasUnterminatedFence,
   isContractOrdered,
+  lineSpanningEmphasis,
   linesOutsideFences,
   parseContractGuardArgs,
   placeholderResidue,
@@ -436,7 +439,7 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.match(result.violations[0].message, /escapes the working tree root/)
   })
 
-  test('unresolvable-citation fires only for premises and acceptance criteria citations', () => {
+  test('unresolvable-citation fires only in the scanned sections', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-citation-'))
     writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
     const description = conformant()
@@ -445,8 +448,8 @@ describe('checkPlanContract — each violation code fires', () => {
         [
           '## Premises',
           '',
-          '- [ ] present.md:2 resolves',
-          '- [ ] present.md:5 does not',
+          '- [ ] `two` at present.md:2 resolves',
+          '- [ ] `two` at present.md:5 does not',
           '',
           '## Acceptance criteria',
           '',
@@ -465,6 +468,186 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.match(result.violations[0].message, /present\.md:5/)
     assert.match(result.violations[1].message, /missing\.md:1/)
     assert.doesNotMatch(result.violations.map((v) => v.message).join('\n'), /stale\.md/)
+  })
+
+  // BOS-1186: `## Key changes` pins call sites as often as a criterion does, and nothing read them.
+  test('unresolvable-citation covers `## Key changes` in both directions', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-key-changes-'))
+    writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
+    const keyChanges = (bullet) =>
+      conformant().replace(
+        '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        `## Key changes\n\n${bullet}`,
+      )
+
+    const past = checkPlanCitations(DEFAULT_CONFIG, keyChanges('- `present.md:9` is rewritten'), {
+      cwd: dir,
+    })
+    assert.deepEqual(
+      past.violations.map((v) => v.code),
+      ['unresolvable-citation'],
+    )
+    assert.match(past.violations[0].message, /##\s+Key\s+changes\s+cites\s+present\.md:9/)
+
+    const resolves = checkPlanCitations(
+      DEFAULT_CONFIG,
+      keyChanges('- `present.md:2` is rewritten'),
+      { cwd: dir },
+    )
+    assert.deepEqual(resolves.violations, [])
+
+    // A `## Key changes` bullet naming a file this ticket will CREATE carries no `:<line>` suffix,
+    // so it is not a citation at all — this is why the widening cannot false-positive.
+    const creates = checkPlanCitations(
+      DEFAULT_CONFIG,
+      keyChanges('- `not-yet-created.md`: new module added by this ticket'),
+      { cwd: dir },
+    )
+    assert.deepEqual(creates.violations, [])
+  })
+
+  describe('premise citation anchors (BOS-1186)', () => {
+    const anchorFixture = () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-anchor-'))
+      writeFileSync(
+        path.join(dir, 'target.mjs'),
+        ['zero', 'one', 'const ANCHOR_TOKEN = 1', 'three', 'four'].join('\n') + '\n',
+      )
+      return dir
+    }
+    const premises = (bullet) =>
+      conformant().replace(
+        '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        [
+          '## Premises',
+          '',
+          bullet,
+          '',
+          '## Acceptance criteria',
+          '',
+          '- [ ] the criterion is unrelated to the anchor rule',
+        ].join('\n'),
+      )
+
+    test('a premise whose only span is its check command is unanchored', () => {
+      const result = checkPlanCitations(
+        DEFAULT_CONFIG,
+        premises('- [ ] target.mjs:3 still pins the token — check: `sed -n 3p target.mjs`'),
+        { cwd: anchorFixture() },
+      )
+      assert.deepEqual(
+        result.violations.map((v) => v.code),
+        ['unanchored-premise-citation'],
+      )
+      assert.match(
+        result.violations[0].message,
+        /add\s+a\s+backticked\s+token\s+copied\s+from\s+that\s+location/,
+      )
+    })
+
+    test('a premise anchored on a token that has moved away is stale', () => {
+      const result = checkPlanCitations(
+        DEFAULT_CONFIG,
+        premises('- [ ] the `GONE_TOKEN` at `target.mjs:3` — check: `sed -n 3p target.mjs`'),
+        { cwd: anchorFixture() },
+      )
+      assert.deepEqual(
+        result.violations.map((v) => v.code),
+        ['stale-premise-citation'],
+      )
+      assert.match(result.violations[0].message, /within\s+5\s+of\s+line\s+3\s+in\s+target\.mjs/)
+      assert.match(result.violations[0].message, /"GONE_TOKEN"/)
+    })
+
+    test('a premise whose anchor resolves in the window raises neither violation', () => {
+      const result = checkPlanCitations(
+        DEFAULT_CONFIG,
+        premises('- [ ] the `ANCHOR_TOKEN` at `target.mjs:3` — check: `sed -n 3p target.mjs`'),
+        { cwd: anchorFixture() },
+      )
+      assert.deepEqual(result.violations, [])
+    })
+
+    test('the escape hatch is citing the file without a line number', () => {
+      const result = checkPlanCitations(
+        DEFAULT_CONFIG,
+        premises(
+          '- [ ] `target.mjs` still pins the token — check: `rg -n ANCHOR_TOKEN target.mjs`',
+        ),
+        { cwd: anchorFixture() },
+      )
+      assert.deepEqual(result.violations, [])
+    })
+
+    test('the anchor rule is scoped to `## Premises`', () => {
+      const dir = anchorFixture()
+      const inCriteria = conformant().replace(
+        '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        '## Acceptance criteria\n\n- [ ] target.mjs:3 still pins the token',
+      )
+      assert.deepEqual(checkPlanCitations(DEFAULT_CONFIG, inCriteria, { cwd: dir }).violations, [])
+
+      const inKeyChanges = conformant().replace(
+        '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        '## Key changes\n\n- target.mjs:3 gains the new branch',
+      )
+      assert.deepEqual(
+        checkPlanCitations(DEFAULT_CONFIG, inKeyChanges, { cwd: dir }).violations,
+        [],
+      )
+    })
+
+    test('a premise citation whose file is missing reports only the existence defect', () => {
+      const result = checkPlanCitations(
+        DEFAULT_CONFIG,
+        premises('- [ ] the `ANCHOR_TOKEN` at `absent.mjs:3` — check: `sed -n 3p absent.mjs`'),
+        { cwd: anchorFixture() },
+      )
+      assert.deepEqual(
+        result.violations.map((v) => v.code),
+        ['unresolvable-citation'],
+      )
+    })
+  })
+
+  test('VIOLATION_CODES covers every static violation literal in the module', () => {
+    const source = readFileSync(GUARD, 'utf8')
+    const emitted = new Set(
+      [...source.matchAll(/violation\(\s*'([a-z0-9-]+)'/g)].map((match) => match[1]),
+    )
+    assert.ok(emitted.size > 0, 'the extraction must find literals, or it proves nothing')
+    for (const code of emitted) {
+      assert.ok(
+        VIOLATION_CODES.includes(code),
+        `VIOLATION_CODES is missing the emitted code ${code}`,
+      )
+    }
+    // ...and the REVERSE direction, or removal rots silently. A code deleted from the module would
+    // otherwise linger in this export advertising something the guard can no longer emit — and,
+    // because the prose lists in the two skill bodies are ratcheted against this export, stay
+    // mandatory in four copies with nothing reading them. That is the copied-forward-claim rot the
+    // export exists to retire, so the anti-rot chain has to close in both directions.
+    for (const code of VIOLATION_CODES) {
+      assert.ok(
+        emitted.has(code),
+        `VIOLATION_CODES declares ${code}, which no violation() literal in the module emits`,
+      )
+    }
+    assert.deepEqual(
+      VIOLATION_CODES,
+      [...VIOLATION_CODES].sort(),
+      'VIOLATION_CODES must stay sorted so a prose list can be diffed against it',
+    )
+    assert.deepEqual(
+      VIOLATION_CODES,
+      [...new Set(VIOLATION_CODES)],
+      'VIOLATION_CODES must not repeat a code',
+    )
+    // The dynamic family is a documented residual, not an enumerated member.
+    assert.deepEqual(DYNAMIC_VIOLATION_CODE_PREFIXES, ['vacuous-*'])
+    for (const code of VIOLATION_CODES) {
+      assert.doesNotMatch(code, /^vacuous-/)
+    }
   })
 
   test('pr-body-only-evidence fires unless the criterion is verify-only or orchestrator-owned', () => {
@@ -500,6 +683,38 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.deepEqual(
       findings.map((finding) => finding.code),
       ['vacuous-criterion-command-command-unresolvable'],
+    )
+  })
+
+  // The vacuity check delegates to `classifyCheckCommand` verbatim and only re-labels the blocking
+  // code, so it inherits the `!` negation fix with NO edit of its own. Pinning that here is what
+  // stops a future change re-implementing head resolution locally and re-breaking the shape only in
+  // this caller. Both directions again: negation accepted, unresolvable head still `vacuous-…`.
+  test('verify-only command vacuity guard inherits the negation fix without its own change', () => {
+    const withCheck = (command) =>
+      conformant().replace(
+        '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        [
+          '## Acceptance criteria',
+          '',
+          `- [ ] (verify-only) criterion — check: \`${command}\``,
+        ].join('\n'),
+      )
+
+    // The head must be PATH-guaranteed on a bare CI runner — see the sibling note in
+    // `skill-config.test.mjs`; `rg` is not installed on GitHub's ubuntu image.
+    assert.deepEqual(
+      checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, withCheck('! grep -rq needle skills-toolbox')),
+      [],
+      'a negated absence assertion is a legitimate verify-only check',
+    )
+    assert.deepEqual(
+      checkVerifyOnlyCommandVacuity(
+        DEFAULT_CONFIG,
+        withCheck('! this-command-does-not-exist-bos1189'),
+      ).map((finding) => finding.code),
+      ['vacuous-criterion-command-command-unresolvable'],
+      'negating an unknown head must not make it resolve',
     )
   })
 
@@ -963,6 +1178,117 @@ describe('exported helpers', () => {
     assert.throws(
       () => parseContractGuardArgs(['--description', 'd.md', 'p.md']),
       /unknown argument: p[.]md/,
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1199 U5 — the normalizer-hostile line-spanning emphasis lint.
+//
+// A tracker's markdown normalizer can close an emphasis span at a hard line break and store the
+// remainder as a literal delimiter run, silently damaging the only surviving copy of the
+// description. The lint is deliberately narrow: the verbatim block, fenced blocks and inline code
+// spans are excluded, and the suite is weighted toward over-detection guards because a sibling
+// ticket owns the broader false-rejection problem.
+// ---------------------------------------------------------------------------
+
+describe('line-spanning emphasis lint (BOS-1199)', () => {
+  // Splice a body into the ## Summary section of a conformant description.
+  const withSummary = (body) =>
+    conformant().replace(
+      '## Summary\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      `## Summary\n\n${body}`,
+    )
+
+  const spans = (description) => lineSpanningEmphasis(DEFAULT_CONFIG, description)
+
+  test('a span opened and closed on the same line passes', () => {
+    assert.deepEqual(spans(withSummary('This is **one bold span** on a single line.')), [])
+  })
+
+  test('a span opened on one line and closed on the next is reported with line and column', () => {
+    const description = withSummary('found **7 of the 17\nalready fixed** and 10 still live.')
+    const found = spans(description)
+    assert.equal(found.length, 1)
+    // The Summary body starts on line 3 (heading, blank, body), and the run opens after `found `.
+    assert.equal(found[0].line, 3)
+    assert.equal(found[0].column, 7)
+    assert.ok(
+      codes(checkPlanContract({ description, config: DEFAULT_CONFIG })).includes(
+        'line-spanning-emphasis',
+      ),
+      'the lint must surface as a contract violation',
+    )
+  })
+
+  test('the same line-spanning span inside the verbatim block passes (exemption is load-bearing)', () => {
+    const description = conformant().replace(
+      '## Original notes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      '## Original notes\n\nfound **7 of the 17\nalready fixed** and 10 still live.',
+    )
+    assert.deepEqual(spans(description), [], 'the copied block is not ours to rewrap')
+    assert.ok(
+      !codes(checkPlanContract({ description, config: DEFAULT_CONFIG })).includes(
+        'line-spanning-emphasis',
+      ),
+    )
+  })
+
+  test('the same line-spanning span inside a fenced code block passes', () => {
+    assert.deepEqual(
+      spans(withSummary('```md\nfound **7 of the 17\nalready fixed** here.\n```')),
+      [],
+    )
+  })
+
+  test('a line-spanning span inside an inline code span passes', () => {
+    assert.deepEqual(
+      spans(withSummary('The literal `**7 of the 17` and\n`already fixed**` tokens.')),
+      [],
+    )
+  })
+
+  test('an odd number of delimiter runs does not crash and reports no unpairable span', () => {
+    assert.deepEqual(spans(withSummary('This **is bold** and this **is not closed\nanywhere.')), [])
+  })
+
+  test('multiple offending spans are each reported, not only the first', () => {
+    const found = spans(
+      withSummary('first **span opens\nand closes** here, then **another opens\nand closes** too.'),
+    )
+    assert.equal(found.length, 2)
+    assert.deepEqual(
+      found.map((f) => f.line),
+      [3, 4],
+    )
+  })
+
+  test('nested and adjacent same-line spans pass (over-detection guard)', () => {
+    assert.deepEqual(spans(withSummary('**alpha** and **beta** and *gamma* all on one line.')), [])
+    assert.deepEqual(
+      spans(withSummary('An ***emphatic*** phrase plus **bold *inner* bold** text.')),
+      [],
+    )
+  })
+
+  test('arithmetic prose across a hard wrap does not pair into a phantom span', () => {
+    // Flanking, not shape, is what keeps this out: neither `*` is adjacent to a non-space.
+    assert.deepEqual(
+      spans(withSummary('The budget is 2 * 3 units\nand the ceiling is 4 * 5 units.')),
+      [],
+    )
+  })
+
+  test('a leading list marker is not an emphasis delimiter', () => {
+    assert.deepEqual(spans(withSummary('* first item with **bold** text\n* second item here.')), [])
+  })
+
+  test('a conformant description with no offending span produces no violation', () => {
+    assert.deepEqual(spans(conformant()), [])
+    assert.ok(
+      !codes(checkPlanContract({ description: conformant(), config: DEFAULT_CONFIG })).includes(
+        'line-spanning-emphasis',
+      ),
     )
   })
 })

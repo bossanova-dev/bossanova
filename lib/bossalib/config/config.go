@@ -1529,6 +1529,30 @@ type Settings struct {
 	// XML) is dropped when the service file is rendered. Read at render time,
 	// so a change takes effect on the next `boss daemon restart`.
 	DaemonPathExtra []string `json:"daemon_path_extra,omitempty"`
+	// DaemonSupervisionMode selects the SUBSTRATE that supervises bossd on
+	// macOS. It is a static configuration choice, not an observation of a
+	// running daemon — `boss daemon status`'s `supervision:` line is the
+	// separate, unrelated question of who owns the live process (BOS-1183).
+	//
+	// Empty (the key absent from a fresh settings.json, and from every
+	// settings.json written before BOS-1184) means "launch-agent": the per-user
+	// LaunchAgent in the gui/<uid> Aqua domain that has always been bossd's
+	// only substrate, so the default path stays byte-identical to today.
+	//
+	// The other recognised value, "unattended", is for a multi-user host where
+	// fast user switching backgrounds the daemon's user: a backgrounded Aqua
+	// domain keeps running services alive but refuses NEW spawns, so a crash
+	// respawn, a restart and a reboot all leave bossd down until a human
+	// intervenes. That mode is RECOGNISED but NOT YET IMPLEMENTED, and
+	// selecting it fails closed rather than falling back — see
+	// daemon.ResolveSupervisionMode, which owns every reading of this string.
+	//
+	// It is a raw string rather than the typed daemon.SupervisionMode for the
+	// same reason SubagentDispatchGrant below is: an unknown value round-trips
+	// through settings.json untouched instead of being silently rewritten.
+	// Unlike that key this one resolves FAIL-CLOSED, because its fallback is
+	// the substrate an operator selects a mode to escape.
+	DaemonSupervisionMode string `json:"daemon_supervision_mode,omitempty"`
 	// SubagentDispatchGrant selects which boss-managed chats receive the bounded
 	// subagent-dispatch grant in their appended system prompt. It is a raw
 	// string rather than the typed SubagentDispatchGrant so an unknown value
@@ -1946,6 +1970,10 @@ func Save(s Settings) error {
 
 // SaveTo writes settings to a specific path, creating parent directories as needed.
 func SaveTo(path string, s Settings) error {
+	return saveTo(path, s, syncDir)
+}
+
+func saveTo(path string, s Settings, syncParentDir func(string) error) error {
 	if err := guardRealDefaultWrite(
 		path,
 		testing.Testing(),
@@ -1996,7 +2024,9 @@ func SaveTo(path string, s Settings) error {
 		return err
 	}
 	cleanup = false
-	_ = syncDir(dir)
+	if err := syncParentDir(dir); err != nil {
+		return fmt.Errorf("sync settings directory: %w", err)
+	}
 	return nil
 }
 

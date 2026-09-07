@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -259,6 +260,20 @@ func prepareEnsureRunningEnvironment(t *testing.T) (sourcePath, plistPath, socke
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+
+	// BOS-1203: pin BOTH facts platformEnsureRunning now routes on, so no
+	// verdict below can be a property of the developer's machine.
+	//
+	// Neither was pinned before and both were live exposures rather than
+	// theoretical ones. loadServiceSettings survived only because
+	// t.Setenv("HOME", …) incidentally redirects config.Path() — protection that
+	// is void the moment BOSS_SETTINGS_PATH is set in the environment, which is
+	// a supported way to run a second daemon. And watchdogFilesystemRoot was
+	// still "/", so on a machine that genuinely has the unattended watchdog
+	// installed every test in this family would take the watchdog route and buy
+	// a real wait, silently proving something other than what it says.
+	stubDefaultServiceSettings(t)
+	useTempWatchdogRoot(t)
 
 	sourcePath = writeFakeCellarBossd(t, home, "version one")
 	stubExecutableNextTo(t, sourcePath)
@@ -1800,5 +1815,782 @@ func TestGetSpawnHistoryDelegates(t *testing.T) {
 	}
 	if got.Target != "gui/"+strconv.Itoa(os.Getuid())+"/"+Label {
 		t.Errorf("Target = %q, want the gui/<uid>/<label> form", got.Target)
+	}
+}
+
+// TestPlatformInstallDefaultSupervisionModeMatchesAbsentKey is the BOS-1184 R5
+// pin: introducing a supervision-mode seam must leave the default install path
+// byte-identical to what it produced before the key existed.
+//
+// It compares artifacts rather than asserting "we did not branch", because the
+// branch is genuinely there now — an absent key and an explicit "launch-agent"
+// take the same path only because the resolver maps them to the same mode, and
+// that mapping is the thing worth pinning.
+func TestPlatformInstallDefaultSupervisionModeMatchesAbsentKey(t *testing.T) {
+	originalSettings := loadServiceSettings
+	t.Cleanup(func() { loadServiceSettings = originalSettings })
+
+	// One HOME for both renders, not one per subtest. The rendered plist
+	// embeds HOME-derived PATH entries, so a per-subtest temp directory makes
+	// the two artifacts differ for a reason that has nothing to do with the
+	// supervision mode — and the comparison this test exists to make would be
+	// meaningless noise rather than a signal.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	sourcePath := writeFakeCellarBossd(t, home, "version one")
+
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+
+	renderWith := func(t *testing.T, configured string) []byte {
+		t.Helper()
+		loadServiceSettings = func() (config.Settings, error) {
+			return config.Settings{DaemonSupervisionMode: configured}, nil
+		}
+		if err := platformInstall(sourcePath, true); err != nil {
+			t.Fatalf("platformInstall(%q): %v", configured, err)
+		}
+		plist, err := os.ReadFile(plistPath)
+		if err != nil {
+			t.Fatalf("read plist: %v", err)
+		}
+		return plist
+	}
+
+	absent := renderWith(t, "")
+	explicit := renderWith(t, "launch-agent")
+
+	if !bytes.Equal(absent, explicit) {
+		t.Errorf("default install path differs between an absent key and an explicit launch-agent:\nabsent:\n%s\nexplicit:\n%s", absent, explicit)
+	}
+}
+
+// TestPlatformInstallFailsClosedOnUnusableSupervisionMode pins that a mode the
+// resolver refuses stops the install BEFORE anything is written.
+//
+// Both halves matter. Returning an error while still writing the LaunchAgent
+// would leave a multi-user host with exactly the substrate it configured a mode
+// to escape — installed, loadable, and reported by every later status read as
+// the thing the operator asked for.
+func TestPlatformInstallFailsClosedOnUnusableSupervisionMode(t *testing.T) {
+	originalSettings := loadServiceSettings
+	t.Cleanup(func() { loadServiceSettings = originalSettings })
+
+	for _, tt := range []struct {
+		name       string
+		configured string
+		wantErr    error
+	}{
+		{"recognised but needing root", "unattended", ErrUnattendedRequiresRoot},
+		{"unrecognised", "system-daemon", ErrUnknownSupervisionMode},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+			// Pinned rather than inherited: were this suite ever run as root,
+			// the unattended row would take the install path instead of the
+			// refusal and this test would silently stop asserting anything.
+			stubNonRootEUID(t)
+			loadServiceSettings = func() (config.Settings, error) {
+				return config.Settings{DaemonSupervisionMode: tt.configured}, nil
+			}
+			sourcePath := writeFakeCellarBossd(t, home, "version one")
+
+			err := platformInstall(sourcePath, false)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("platformInstall error = %v, want %v", err, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.configured) {
+				t.Errorf("install refusal %q does not name the configured value %q", err, tt.configured)
+			}
+
+			plistPath, pathErr := platformServicePath()
+			if pathErr != nil {
+				t.Fatalf("platformServicePath: %v", pathErr)
+			}
+			if _, statErr := os.Stat(plistPath); !os.IsNotExist(statErr) {
+				t.Errorf("a refused supervision mode still wrote a LaunchAgent at %s (stat err = %v)", plistPath, statErr)
+			}
+		})
+	}
+}
+
+// TestPlatformRestartFailsClosedOnUnusableSupervisionMode is the companion pin
+// for the OTHER path that creates the substrate. BOS-1184 U3 changed WHY the
+// unattended row is refused — it needs root now, rather than being unbuilt —
+// and left the property intact: restart must not fall back to writing a
+// gui/<uid> LaunchAgent on a host that asked for something else.
+//
+// platformInstall's gate alone did not make the seam fail closed: refreshStagedPlist
+// writes the plist when it is ABSENT and platformRestart then bootstraps it into
+// gui/<uid>, so on a host with a refused mode `boss daemon install` correctly
+// installed nothing and `boss daemon restart` went on to install and load
+// exactly the substrate the configuration refused — and reported success.
+func TestPlatformRestartFailsClosedOnUnusableSupervisionMode(t *testing.T) {
+	originalSettings := loadServiceSettings
+	t.Cleanup(func() { loadServiceSettings = originalSettings })
+
+	for _, tt := range []struct {
+		name       string
+		configured string
+		wantErr    error
+	}{
+		{"recognised but needing root", "unattended", ErrUnattendedRequiresRoot},
+		{"unrecognised", "system-daemon", ErrUnknownSupervisionMode},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+			sourcePath := writeFakeCellarBossd(t, home, "version one")
+			stubExecutableNextTo(t, sourcePath)
+			// The LaunchAgents directory has to exist, or the plist write
+			// would fail for a reason that has nothing to do with the gate and
+			// the assertion below would pass vacuously.
+			mkdirLaunchAgents(t)
+			stubNonRootEUID(t)
+			loadServiceSettings = func() (config.Settings, error) {
+				return config.Settings{DaemonSupervisionMode: tt.configured}, nil
+			}
+
+			err := platformRestart()
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("platformRestart error = %v, want %v", err, tt.wantErr)
+			}
+
+			plistPath, pathErr := platformServicePath()
+			if pathErr != nil {
+				t.Fatalf("platformServicePath: %v", pathErr)
+			}
+			if _, statErr := os.Stat(plistPath); !os.IsNotExist(statErr) {
+				t.Errorf("a refused supervision mode still had restart write a LaunchAgent at %s (stat err = %v)", plistPath, statErr)
+			}
+		})
+	}
+}
+
+// TestPlatformRestartDefaultSupervisionModeIsUnchanged is the AC6 half of the
+// gate above: with no mode configured, and with the default named explicitly,
+// restart still restages and rewrites the plist exactly as before. A gate that
+// regressed the default path would be worse than the gap it closes.
+func TestPlatformRestartDefaultSupervisionModeIsUnchanged(t *testing.T) {
+	originalSettings := loadServiceSettings
+	t.Cleanup(func() { loadServiceSettings = originalSettings })
+
+	for _, configured := range []string{"", "launch-agent"} {
+		t.Run("configured="+configured, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+			sourcePath := writeFakeCellarBossd(t, home, "version one")
+			stubExecutableNextTo(t, sourcePath)
+			mkdirLaunchAgents(t)
+			loadServiceSettings = func() (config.Settings, error) {
+				return config.Settings{DaemonSupervisionMode: configured}, nil
+			}
+
+			if err := platformRestart(); err != nil {
+				t.Fatalf("platformRestart: %v", err)
+			}
+			plistPath, pathErr := platformServicePath()
+			if pathErr != nil {
+				t.Fatalf("platformServicePath: %v", pathErr)
+			}
+			plist, readErr := os.ReadFile(plistPath)
+			if readErr != nil {
+				t.Fatalf("read plist after restart: %v", readErr)
+			}
+			stagedPath := expectedStagedBossdPath(t)
+			if !strings.Contains(string(plist), "<string>"+stagedPath+"</string>") {
+				t.Errorf("restart plist does not point at staged path %q:\n%s", stagedPath, plist)
+			}
+		})
+	}
+}
+
+// mkdirLaunchAgents creates the per-user LaunchAgents directory the plist lives
+// in. platformInstall does this itself; platformRestart does not, and a
+// restart-only test that skips it watches the plist write fail for the wrong
+// reason.
+func mkdirLaunchAgents(t *testing.T) {
+	t.Helper()
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
+		t.Fatalf("create LaunchAgents dir: %v", err)
+	}
+}
+
+// stubLaunchctlWithDeadAgent records launchctl invocations and answers `list`
+// the way launchd answers for a job that is NOT loaded: a non-zero exit.
+//
+// That detail decides whether every zero-`load` assertion in this file means
+// anything. platformGetStatus sets Running = true on ANY successful `list`, so
+// a stub that answered every verb with (nil, nil) would report the LaunchAgent
+// as already running, platformEnsureRunning would skip its LaunchAgent arm for
+// that reason instead of the routing one, and `countLaunchctlVerb(calls,
+// "load") == 0` would hold on a build with no routing in it at all. Measured:
+// with the permissive stub, TestPlatformEnsureRunningLoadsTheLaunchAgentWhenNoWatchdogIsInstalled
+// recorded zero loads.
+func stubLaunchctlWithDeadAgent(t *testing.T, onCall func(args []string)) *[][]string {
+	t.Helper()
+	return stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		if onCall != nil {
+			onCall(args)
+		}
+		if args[0] == "list" {
+			return []byte("Could not find service"), fakeExitError(t, 113)
+		}
+		return nil, nil
+	})
+}
+
+// stubDefaultServiceSettings pins the supervision mode to the default, so a
+// test's route is stated by the test rather than read off the host's
+// settings.json (or off BOSS_SETTINGS_PATH, which overrides HOME entirely).
+func stubDefaultServiceSettings(t *testing.T) {
+	t.Helper()
+	original := loadServiceSettings
+	loadServiceSettings = func() (config.Settings, error) { return config.Settings{}, nil }
+	t.Cleanup(func() { loadServiceSettings = original })
+}
+
+// stubUnreadableServiceSettings makes the settings seam FAIL, which is the
+// SettingsErr != nil state: settings.json exists and could not be read or
+// parsed, so LoadSupervisionModeStatus resolves Mode to the DEFAULT while the
+// root job may still be loaded.
+//
+// It is a distinct fixture from stubConfiguredSupervisionMode because the two
+// states reach classifyEnsureRunningRoute by different fields — an unparseable
+// file never produces a raw value to resolve — and a mode-only branch loads the
+// LaunchAgent on this one.
+func stubUnreadableServiceSettings(t *testing.T) {
+	t.Helper()
+	original := loadServiceSettings
+	loadServiceSettings = func() (config.Settings, error) {
+		return config.Settings{}, errors.New("settings.json: unexpected end of JSON input")
+	}
+	t.Cleanup(func() { loadServiceSettings = original })
+}
+
+// stubConfiguredSupervisionMode repoints the settings seam at one raw value,
+// including values that are not modes at all — which is how the KTD1 rows below
+// state "the operator typed a typo OF unattended".
+func stubConfiguredSupervisionMode(t *testing.T, raw string) {
+	t.Helper()
+	original := loadServiceSettings
+	loadServiceSettings = func() (config.Settings, error) {
+		return config.Settings{DaemonSupervisionMode: raw}, nil
+	}
+	t.Cleanup(func() { loadServiceSettings = original })
+}
+
+// stubDialReachableWhen replaces the dial seam with a predicate the test owns,
+// so "the socket came back" is an event the test causes rather than a count of
+// probes it has to keep in step with the implementation.
+//
+// It is the darwin counterpart of systemd_test.go's stubSocketReachableAfter,
+// which is //go:build linux and therefore not visible here. A net.Pipe end is
+// used rather than a real listener because unix socket paths have a length
+// limit that t.TempDir() paths already exceed.
+func stubDialReachableWhen(t *testing.T, reachable func() bool) {
+	t.Helper()
+	original := dialUnixSocket
+	t.Cleanup(func() { dialUnixSocket = original })
+	dialUnixSocket = func(string, string, time.Duration) (net.Conn, error) {
+		if reachable() {
+			conn, _ := net.Pipe()
+			return conn, nil
+		}
+		return nil, errors.New("socket not reachable")
+	}
+}
+
+// shrinkWatchdogRespawnWait removes the watchdog arm's wait budget, so a test
+// that expects the wait to expire cannot sleep for it.
+func shrinkWatchdogRespawnWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	original := watchdogRespawnWait
+	watchdogRespawnWait = d
+	t.Cleanup(func() { watchdogRespawnWait = original })
+}
+
+// captureWatchdogCannotServeWarnings observes the KTD5 warning.
+func captureWatchdogCannotServeWarnings(t *testing.T) *[]UnattendedInstall {
+	t.Helper()
+	warned := &[]UnattendedInstall{}
+	original := warnUnattendedWatchdogCannotServe
+	warnUnattendedWatchdogCannotServe = func(install UnattendedInstall) {
+		*warned = append(*warned, install)
+	}
+	t.Cleanup(func() { warnUnattendedWatchdogCannotServe = original })
+	return warned
+}
+
+// prepareWatchdogEnsureRunningEnvironment builds the host state BOS-1203 is
+// about: a per-user LaunchAgent installed and NOT running — the only state in
+// which platformEnsureRunning would load it — with a root-owned watchdog
+// installed beside it, and a configured mode the caller names.
+//
+// The watchdog is really installed rather than planted as a file, because
+// observeUnattendedInstall runs verifyWatchdogPaths over the entire layout: a
+// bare plist reads UnattendedInstallInsecure, not Present, and would prove the
+// wrong row.
+//
+// BOSS_DAEMON_SKIP_LAUNCHCTL is CLEARED on the way out. It has to be, because
+// platformRestartUnattended's kickstart sits behind that gate and the root arm's
+// whole assertion is that the kickstart happened.
+//
+// Clearing it puts the burden of the "installed and NOT running" state on the
+// launchctl stub, so callers MUST use stubLaunchctlWithDeadAgent rather than a
+// permissive one — see the reason written out there. TestPlatformEnsureRunningLoadsTheLaunchAgentWhenNoWatchdogIsInstalled
+// pins the resulting counterfactual directly, and is what caught the permissive
+// stub in the first place.
+func prepareWatchdogEnsureRunningEnvironment(t *testing.T, configuredMode string) (socketPath string, layout watchdogLayout) {
+	t.Helper()
+	_, _, socketPath = prepareEnsureRunningEnvironment(t)
+	layout = watchdogPaths()
+
+	// Root only for the duration of the install; the test states its own euid.
+	originalEUID := currentEUID
+	currentEUID = func() int { return 0 }
+	watchdogSource := writeFakeCellarBossd(t, t.TempDir(), "watchdog build")
+	if err := platformInstallUnattended(watchdogSource, false); err != nil {
+		currentEUID = originalEUID
+		t.Fatalf("install the watchdog beside the LaunchAgent: %v", err)
+	}
+	currentEUID = originalEUID
+
+	if _, err := os.Stat(layout.PlistPath); err != nil {
+		t.Fatalf("watchdog plist is not on disk after install: %v", err)
+	}
+	if _, err := platformServicePath(); err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+
+	stubConfiguredSupervisionMode(t, configuredMode)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	return socketPath, layout
+}
+
+// TestPlatformEnsureRunningLoadsTheLaunchAgentWhenNoWatchdogIsInstalled is the
+// vacuity guard for every zero-`load` assertion below.
+//
+// "Zero loads" only means anything if this fixture is capable of producing a
+// load at all. This is the identical fixture with the watchdog left off, and it
+// must record exactly one — so a change that stopped entering the LaunchAgent
+// arm for some unrelated reason fails HERE rather than silently turning the
+// watchdog tests green for the wrong reason.
+func TestPlatformEnsureRunningLoadsTheLaunchAgentWhenNoWatchdogIsInstalled(t *testing.T) {
+	_, _, socketPath := prepareEnsureRunningEnvironment(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+
+	served := false
+	stubDialReachableWhen(t, func() bool { return served })
+	calls := stubLaunchctlWithDeadAgent(t, func(args []string) {
+		if args[0] == "load" {
+			served = true
+		}
+	})
+
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if mode != StartModeServiceManager {
+		t.Errorf("StartMode = %v, want %v", mode, StartModeServiceManager)
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 1 {
+		t.Fatalf("`launchctl load` invocations = %d, want 1 — without this the zero-load assertions below prove nothing", got)
+	}
+}
+
+// TestPlatformEnsureRunningNeverLoadsTheLaunchAgentBesideAWatchdog is the
+// ticket, at the platformEnsureRunning level: on a host running the root-owned
+// watchdog, no boss command may bootstrap the gui/<uid> LaunchAgent (R1).
+//
+// The rows are the configured-mode states, and the three where the mode
+// DISAGREES with the machine are the ones that carry KTD1. A mode-only branch
+// passes the first row and loads the LaunchAgent on the other three.
+func TestPlatformEnsureRunningNeverLoadsTheLaunchAgentBesideAWatchdog(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode string
+		// unreadableSettings states the SettingsErr != nil row, which no raw
+		// mode value can express: the file is unparseable, so Mode silently
+		// carries the default while the root job is still loaded.
+		unreadableSettings bool
+	}{
+		{name: "the ordinary unattended host", mode: "unattended"},
+		{name: "an unrecognised value (a typo OF unattended)", mode: "unattnded"},
+		{name: "the key reverted to the default", mode: "launch-agent"},
+		{name: "no key at all, with the root job still loaded", mode: ""},
+		{name: "an unparseable settings.json", unreadableSettings: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socketPath, _ := prepareWatchdogEnsureRunningEnvironment(t, tc.mode)
+			if tc.unreadableSettings {
+				// AFTER the fixture: it stubs the seam itself, and this row
+				// replaces that stub with a failing one. Cleanups run LIFO, so
+				// the fixture's restore still lands last.
+				stubUnreadableServiceSettings(t)
+			}
+			shrinkWatchdogRespawnWait(t, 0)
+			captureResidueWarnings(t)
+			captureWatchdogCannotServeWarnings(t)
+
+			served := false
+			stubDialReachableWhen(t, func() bool { return served })
+			calls := stubLaunchctlWithDeadAgent(t, nil)
+
+			originalStart := startDetachedBossd
+			startDetachedBossd = func(string) error {
+				served = true
+				return nil
+			}
+			t.Cleanup(func() { startDetachedBossd = originalStart })
+
+			mode, err := platformEnsureRunning(socketPath)
+			if err != nil {
+				t.Fatalf("platformEnsureRunning: %v", err)
+			}
+			// R3: the fail-open fallback still runs, so the host is never left
+			// with no daemon over a settings value that could not be honoured.
+			if mode != StartModeDetached {
+				t.Errorf("StartMode = %v, want %v — the unsupervised fallback must stay reachable", mode, StartModeDetached)
+			}
+			if got := countLaunchctlVerb(*calls, "load"); got != 0 {
+				t.Errorf("`launchctl load` invocations = %d, want 0 — a second supervisor was bootstrapped beside the watchdog", got)
+			}
+		})
+	}
+}
+
+// TestPlatformEnsureRunningReportsTheWatchdogsRecoveryAsAlreadyRunning covers
+// the non-root arm's success case.
+//
+// The verdict is StartModeAlreadyRunning rather than StartModeServiceManager on
+// purpose: this process started nothing, and StartModeServiceManager's contract
+// claims the service manager started the daemon and that it is therefore
+// supervised — a claim this arm cannot support and one `boss daemon doctor`
+// would contradict.
+func TestPlatformEnsureRunningReportsTheWatchdogsRecoveryAsAlreadyRunning(t *testing.T) {
+	socketPath, _ := prepareWatchdogEnsureRunningEnvironment(t, "unattended")
+	shrinkWatchdogRespawnWait(t, 5*time.Second)
+
+	// Unreachable at the entry probe, served by the time the wait polls.
+	probes := 0
+	stubDialReachableWhen(t, func() bool {
+		probes++
+		return probes > 1
+	})
+	calls := stubLaunchctlWithDeadAgent(t, nil)
+
+	originalStart := startDetachedBossd
+	startDetachedBossd = func(path string) error {
+		t.Errorf("the fallback spawned %q although the watchdog served the socket during the wait", path)
+		return nil
+	}
+	t.Cleanup(func() { startDetachedBossd = originalStart })
+
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if mode != StartModeAlreadyRunning {
+		t.Errorf("StartMode = %v, want %v", mode, StartModeAlreadyRunning)
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 0 {
+		t.Errorf("`launchctl load` invocations = %d, want 0", got)
+	}
+}
+
+// TestPlatformEnsureRunningKickstartsTheWatchdogAsRoot pins R2's positive half:
+// with the privilege to act on a system-domain job, the recovery path acts on
+// the watchdog rather than on the LaunchAgent.
+//
+// The socket is made reachable BY the kickstart, so the assertion is causal:
+// a run that skipped the kickstart could not observe a served socket.
+func TestPlatformEnsureRunningKickstartsTheWatchdogAsRoot(t *testing.T) {
+	socketPath, _ := prepareWatchdogEnsureRunningEnvironment(t, "unattended")
+	shrinkWatchdogRespawnWait(t, 5*time.Second)
+	stubRootEUID(t)
+
+	served := false
+	stubDialReachableWhen(t, func() bool { return served })
+	calls := stubLaunchctlWithDeadAgent(t, func(args []string) {
+		if args[0] == "kickstart" {
+			served = true
+		}
+	})
+
+	originalStart := startDetachedBossd
+	startDetachedBossd = func(path string) error {
+		t.Errorf("R4 violated: the root path spawned a detached bossd at %q", path)
+		return nil
+	}
+	t.Cleanup(func() { startDetachedBossd = originalStart })
+
+	mode, err := platformEnsureRunning(socketPath)
+	if err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if mode != StartModeAlreadyRunning {
+		t.Errorf("StartMode = %v, want %v", mode, StartModeAlreadyRunning)
+	}
+	if got := countLaunchctlVerb(*calls, "kickstart"); got != 1 {
+		t.Fatalf("`launchctl kickstart` invocations = %d, want exactly 1", got)
+	}
+	// The verb alone is not enough — it must name the SYSTEM-domain watchdog,
+	// not the gui agent.
+	wantTarget := "system/" + WatchdogLabel
+	found := false
+	for _, call := range *calls {
+		if call[0] == "kickstart" {
+			for _, arg := range call {
+				if arg == wantTarget {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Errorf("kickstart calls = %v, want one naming %q", *calls, wantTarget)
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 0 {
+		t.Errorf("`launchctl load` invocations = %d, want 0", got)
+	}
+}
+
+// TestPlatformEnsureRunningRefusesToSpawnARootDaemon is R4, and it is the
+// assertion that has to be about the STUB's call count rather than about the
+// returned error.
+//
+// Under `sudo` the detached spawn produces a ROOT-owned bossd holding the
+// user's socket, app-data directory and singleton lock — a state that user's own
+// daemon can never reclaim without manual cleanup. An error return that still
+// spawned would satisfy a "did it error" assertion while leaving exactly that
+// behind, so the spawn count is what is pinned.
+func TestPlatformEnsureRunningRefusesToSpawnARootDaemon(t *testing.T) {
+	socketPath, _ := prepareWatchdogEnsureRunningEnvironment(t, "unattended")
+	shrinkWatchdogRespawnWait(t, 0)
+	stubRootEUID(t)
+
+	stubDialReachableWhen(t, func() bool { return false })
+	calls := stubLaunchctlWithDeadAgent(t, nil)
+
+	spawns := 0
+	originalStart := startDetachedBossd
+	startDetachedBossd = func(string) error {
+		spawns++
+		return nil
+	}
+	t.Cleanup(func() { startDetachedBossd = originalStart })
+
+	mode, err := platformEnsureRunning(socketPath)
+	if spawns != 0 {
+		t.Fatalf("startDetachedBossd invocations = %d, want 0 — running as root this spawns a bossd the user can never reclaim", spawns)
+	}
+	if !errors.Is(err, ErrWatchdogRecoveryFailed) {
+		t.Fatalf("error = %v, want one wrapping ErrWatchdogRecoveryFailed", err)
+	}
+	if mode != StartModeUnknown {
+		t.Errorf("StartMode = %v, want %v", mode, StartModeUnknown)
+	}
+	// The refusal has to be actionable: an operator sent here needs the log to
+	// read and the command to run.
+	for _, want := range []string{WatchdogInstallCommand, "bossd-watchdog.stderr.log"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q", err, want)
+		}
+	}
+	if got := countLaunchctlVerb(*calls, "kickstart"); got != 1 {
+		t.Errorf("`launchctl kickstart` invocations = %d, want 1 — the recovery must still target the watchdog before refusing", got)
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 0 {
+		t.Errorf("`launchctl load` invocations = %d, want 0", got)
+	}
+}
+
+// TestPlatformEnsureRunningDoesNotWaitForAnInsecureWatchdog is KTD5.
+//
+// verifyWatchdogPaths failing is a durable HOST fault — a group-writable
+// /usr/local, or in this case a plist whose binary is gone — and such a state
+// cannot repair itself between two boss commands, so the wait is known-futile
+// before it is spent. The budget is deliberately left LARGE here: the elapsed
+// time is the assertion, and it would be meaningless against a budget already
+// shrunk to zero.
+func TestPlatformEnsureRunningDoesNotWaitForAnInsecureWatchdog(t *testing.T) {
+	socketPath, layout := prepareWatchdogEnsureRunningEnvironment(t, "unattended")
+	// Break the layout the way an operator's host does: the plist survives, the
+	// root-owned binary it names does not.
+	if err := os.Remove(layout.BinaryPath); err != nil {
+		t.Fatalf("remove watchdog binary: %v", err)
+	}
+	if got := observeUnattendedInstall().State; got != UnattendedInstallInsecure {
+		t.Fatalf("install state = %d, want UnattendedInstallInsecure — this test would otherwise prove the Present row", got)
+	}
+
+	const budget = 30 * time.Second
+	shrinkWatchdogRespawnWait(t, budget)
+	warned := captureWatchdogCannotServeWarnings(t)
+
+	served := false
+	stubDialReachableWhen(t, func() bool { return served })
+	calls := stubLaunchctlWithDeadAgent(t, nil)
+
+	originalStart := startDetachedBossd
+	startDetachedBossd = func(string) error {
+		served = true
+		return nil
+	}
+	t.Cleanup(func() { startDetachedBossd = originalStart })
+
+	start := time.Now()
+	mode, err := platformEnsureRunning(socketPath)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if mode != StartModeDetached {
+		t.Errorf("StartMode = %v, want %v — the fallback must still be reached", mode, StartModeDetached)
+	}
+	if elapsed >= budget {
+		t.Errorf("platformEnsureRunning took %s against a %s budget — the insecure watchdog was waited for", elapsed, budget)
+	}
+	if len(*warned) != 1 {
+		t.Fatalf("cannot-serve warnings = %d, want exactly 1", len(*warned))
+	}
+	// The warning must carry the REASON, not just the fact, or the operator has
+	// no path from "unsupervised" to a fixed host.
+	if (*warned)[0].Err == nil {
+		t.Error("the cannot-serve warning carried no reason, so it names no offending path")
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 0 {
+		t.Errorf("`launchctl load` invocations = %d, want 0", got)
+	}
+}
+
+// TestPlatformEnsureRunningWarnsAboutResidueOnTheWatchdogRoute pins the other
+// warning on this route: when the configured mode no longer describes the host,
+// the operator is told the root job is still there AND given the remedy.
+//
+// It is a separate warning from the KTD5 one because the two states have
+// different fixes — remove the root job versus repair the offending path — and
+// the assertion below is that the residue warning fires on exactly the arm
+// where its remedy is the true one.
+func TestPlatformEnsureRunningWarnsAboutResidueOnTheWatchdogRoute(t *testing.T) {
+	socketPath, layout := prepareWatchdogEnsureRunningEnvironment(t, "launch-agent")
+	shrinkWatchdogRespawnWait(t, 0)
+	warned := captureResidueWarnings(t)
+
+	served := false
+	stubDialReachableWhen(t, func() bool { return served })
+	stubLaunchctlWithDeadAgent(t, nil)
+
+	originalStart := startDetachedBossd
+	startDetachedBossd = func(string) error {
+		served = true
+		return nil
+	}
+	t.Cleanup(func() { startDetachedBossd = originalStart })
+
+	if _, err := platformEnsureRunning(socketPath); err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if len(*warned) != 1 || (*warned)[0] != layout.PlistPath {
+		t.Fatalf("residue warnings = %v, want exactly one naming %s", *warned, layout.PlistPath)
+	}
+}
+
+// TestPlatformEnsureRunningWatchdogRouteIssuesNoLaunchctlCallWhenSkipped is the
+// U2 integration row: with BOSS_DAEMON_SKIP_LAUNCHCTL set the watchdog arm must
+// reach launchd not at all and still return a DEFINED StartMode rather than
+// falling into an unhandled shape.
+func TestPlatformEnsureRunningWatchdogRouteIssuesNoLaunchctlCallWhenSkipped(t *testing.T) {
+	socketPath, _ := prepareWatchdogEnsureRunningEnvironment(t, "unattended")
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	shrinkWatchdogRespawnWait(t, 0)
+	stubRootEUID(t)
+
+	served := false
+	stubDialReachableWhen(t, func() bool { return served })
+	calls := stubLaunchctlWithDeadAgent(t, nil)
+
+	originalStart := startDetachedBossd
+	startDetachedBossd = func(string) error {
+		served = true
+		return nil
+	}
+	t.Cleanup(func() { startDetachedBossd = originalStart })
+
+	mode, err := platformEnsureRunning(socketPath)
+	// Root with the kickstart skipped still refuses rather than spawning (R4).
+	if !errors.Is(err, ErrWatchdogRecoveryFailed) {
+		t.Fatalf("error = %v, want one wrapping ErrWatchdogRecoveryFailed", err)
+	}
+	if mode != StartModeUnknown {
+		t.Errorf("StartMode = %v, want %v", mode, StartModeUnknown)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("launchctl calls = %v, want none under BOSS_DAEMON_SKIP_LAUNCHCTL", *calls)
+	}
+}
+
+// TestPlatformEnsureRunningTreatsAFailedKickstartAsNonFatal pins the
+// best-effort half of the root arm.
+//
+// The kickstart is a recovery attempt, not a lifecycle command the operator
+// invoked, so a launchctl failure must not swallow the refusal that follows it:
+// the operator still needs to be told the socket is unserved and that a root
+// spawn was refused. Without this the failure would be reported only as
+// "kickstart failed", and R4's reason for not spawning would never be stated.
+func TestPlatformEnsureRunningTreatsAFailedKickstartAsNonFatal(t *testing.T) {
+	socketPath, _ := prepareWatchdogEnsureRunningEnvironment(t, "unattended")
+	shrinkWatchdogRespawnWait(t, 0)
+	stubRootEUID(t)
+
+	var kickstartErrors []error
+	originalWarn := warnWatchdogKickstartFailed
+	warnWatchdogKickstartFailed = func(err error) { kickstartErrors = append(kickstartErrors, err) }
+	t.Cleanup(func() { warnWatchdogKickstartFailed = originalWarn })
+
+	stubDialReachableWhen(t, func() bool { return false })
+	stubLaunchctlWithDeadAgent(t, nil)
+	originalRun := runLaunchctl
+	runLaunchctl = func(args ...string) ([]byte, error) {
+		if args[0] == "kickstart" {
+			return []byte("Could not kickstart service"), fakeExitError(t, 5)
+		}
+		return originalRun(args...)
+	}
+	t.Cleanup(func() { runLaunchctl = originalRun })
+
+	spawns := 0
+	originalStart := startDetachedBossd
+	startDetachedBossd = func(string) error {
+		spawns++
+		return nil
+	}
+	t.Cleanup(func() { startDetachedBossd = originalStart })
+
+	_, err := platformEnsureRunning(socketPath)
+	if len(kickstartErrors) != 1 {
+		t.Fatalf("kickstart warnings = %d, want exactly 1", len(kickstartErrors))
+	}
+	// The failure is reported, then superseded by the refusal — not returned in
+	// its place.
+	if !errors.Is(err, ErrWatchdogRecoveryFailed) {
+		t.Fatalf("error = %v, want one wrapping ErrWatchdogRecoveryFailed", err)
+	}
+	if spawns != 0 {
+		t.Errorf("startDetachedBossd invocations = %d, want 0 even when the kickstart failed", spawns)
 	}
 }

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import {
   extractImageRefs,
   findDroppedImages,
+  originalNotesBodies,
   parseImageGuardArgs,
   uploadIdentity,
 } from './plan-image-guard.mjs'
@@ -438,6 +439,7 @@ test('parseImageGuardArgs reads --original and --rewritten', () => {
     requireVerbatim: false,
     requireSafeSource: false,
     requireUnsignedUploads: false,
+    printOriginalNotes: false,
   })
 })
 
@@ -481,6 +483,7 @@ test('parseImageGuardArgs reads --expect-images and guard requirements', () => {
       requireVerbatim: true,
       requireSafeSource: true,
       requireUnsignedUploads: true,
+      printOriginalNotes: false,
     },
   )
 })
@@ -1583,4 +1586,91 @@ test('CLI: --allow-empty-original with an unreadable rewritten still fails close
     { encoding: 'utf8' },
   )
   assert.equal(res.status, 1)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1199 U2 — guard ergonomics: notes extraction and safe-source misuse.
+//
+// Two guard-usage traps produced messages that read like content corruption. The extraction mode
+// removes the reason a caller hand-slices after the heading (the slice keeps the separator newline
+// this extractor consumes, yielding a phantom one-byte difference at offset 0); the misuse detector
+// names --require-verbatim when the composed description is fed to the safe-source pairing.
+// ---------------------------------------------------------------------------
+
+const NOTES_SOURCE = 'Reporter context.\n\n* one\n* two\n'
+
+test('U2: --print-original-notes returns the body from the separator to EOF, byte-exact', () => {
+  const composed = `## Summary\n\nplanned.\n\n## Original notes\n\n${NOTES_SOURCE}`
+  const res = runCli(NOTES_SOURCE, composed, ['--print-original-notes'])
+  assert.equal(res.status, 0)
+  assert.equal(res.stdout, NOTES_SOURCE, 'extraction must consume only the separator newline')
+  assert.equal(res.stderr, '')
+})
+
+test('U2: originalNotesBodies is exported and consumes exactly one separator newline', () => {
+  const composed = `## Original notes\n\n${NOTES_SOURCE}`
+  assert.deepEqual(originalNotesBodies(composed), [NOTES_SOURCE])
+})
+
+test('U2: --print-original-notes selects the wrapper whose payload matches the source', () => {
+  // The copied source itself carries an unfenced `## Original notes` heading. The wrapper — not the
+  // nested one — is the section whose full payload equals the source, matching the verbatim
+  // comparison's own selection rule.
+  const nested = `Reporter wrote:\n\n## Original notes\n\ninner payload\n`
+  const composed = `## Summary\n\nplanned.\n\n## Original notes\n\n${nested}`
+  const res = runCli(nested, composed, ['--print-original-notes'])
+  assert.equal(res.status, 0)
+  assert.equal(res.stdout, nested)
+})
+
+test('U2: --print-original-notes ignores a heading inside a fenced code block', () => {
+  const composed = '## Summary\n\n```md\n## Original notes\n\nfenced content\n```\n'
+  const res = runCli('Reporter context.\n', composed, ['--print-original-notes'])
+  assert.equal(res.status, 1, 'a fenced heading is not a section')
+  assert.ok(!res.stdout.includes('fenced content'), 'must not return fenced content')
+  assert.match(res.stderr, /no `## Original notes` section found/)
+})
+
+test('U2: --print-original-notes exits non-zero with a distinct message when no section exists', () => {
+  const res = runCli('Reporter context.\n', '## Summary\n\nplanned.\n', ['--print-original-notes'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /no `## Original notes` section found/)
+  assert.ok(
+    !res.stderr.includes('safe source drops or alters'),
+    'the extraction failure must not borrow the safe-source message',
+  )
+})
+
+test('U2: safe-source pairing given a composed description names --require-verbatim', () => {
+  const raw = `Reporter context that must survive.\n\n![build](${UPLOAD})\n`
+  const composed = `## Summary\n\nplanned.\n\n## Original notes\n\n${raw}`
+  const res = runCli(raw, composed, ['--require-safe-source'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /use --require-verbatim for that pairing/)
+  assert.ok(
+    !res.stderr.includes('safe source drops or alters unredacted original notes'),
+    'the misuse message must replace the dropped-or-altered message, not accompany it',
+  )
+})
+
+test('U2: safe-source pairing still passes on a genuine redacted copy', () => {
+  // Regression: the misuse detector must not fire on the correct pairing.
+  const raw = `Reporter context.\n\n![build](${UPLOAD}?signature=LIVESECRET)\n`
+  const safe = `Reporter context.\n\n![build](${UPLOAD})\n`
+  const res = runCli(raw, safe, ['--require-safe-source'])
+  assert.equal(res.status, 0)
+  assert.equal(res.stderr.trim(), '')
+})
+
+test('U2: safe-source pairing still reports genuinely dropped prose', () => {
+  // Regression: the misuse detector must not mask a real finding.
+  const raw = `Reporter context that must survive.\n\n![build](${UPLOAD})\n`
+  const safe = `![build](${UPLOAD})\n`
+  const res = runCli(raw, safe, ['--require-safe-source'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /safe source drops or alters unredacted original notes/)
+  assert.ok(
+    !res.stderr.includes('--require-verbatim'),
+    'a real dropped-prose finding must not be reported as guard misuse',
+  )
 })

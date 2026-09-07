@@ -267,6 +267,39 @@ export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
 // never required: the section may appear without tripping unknown-heading detection, and
 // requiredPlanSections() still excludes it. It exists so a template the skill itself prescribes can
 // be registered without newly requiring it of the plans already stamped against this contract.
+/**
+ * The CLOSED vocabulary of description-normalization transform ids a repo may declare as tolerated.
+ *
+ * A tracker that normalizes markdown on write reshapes a description without changing what it
+ * means. The post-save read-back has to tell that apart from a transcription slip, and the only
+ * honest way to do it is to name the reshapings this repo has OBSERVED — measured, one id each —
+ * and treat everything else as drift. The list is closed on purpose: the failure mode of a
+ * free-text tolerance list is a typo that silently disables the gate, so an unknown id is a config
+ * error rather than a silently widened tolerance.
+ *
+ * Every id is generic. No tracker vendor, product, or hostname appears here or may be added: this
+ * file ships inside globally installed cores, and vendor-specific knowledge belongs in the
+ * consuming repo's own `.boss-skills.json` entry.
+ *
+ * - `unordered-list-marker-substitution` — a leading `-`/`+` list marker rewritten to `*` (or any
+ *   other single canonical marker). Byte-count neutral, so a size comparison cannot detect it.
+ * - `emphasis-delimiter-whitespace-migration` — whitespace moving across an emphasis delimiter,
+ *   e.g. `**1.** ` stored as `**1. **`.
+ * - `emphasis-span-restructuring` — one emphasis span containing an inline code span rewritten as
+ *   emphasis + code + emphasis. Renders identically; adds bytes.
+ * - `trailing-whitespace-trimming` — trailing spaces/tabs removed from a line.
+ * - `terminal-newline-trimming` — trailing newlines removed from the end of the document.
+ */
+export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
+  'unordered-list-marker-substitution',
+  'emphasis-delimiter-whitespace-migration',
+  'emphasis-span-restructuring',
+  'trailing-whitespace-trimming',
+  'terminal-newline-trimming',
+])
+
+const DESCRIPTION_NORMALIZATION_TRANSFORM_SET = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
+
 export const PLAN_SECTION_REQUIRED_KINDS = new Set([
   'always',
   'needs-human',
@@ -549,6 +582,33 @@ export function validateConfig(config, source) {
       for (const [role, name] of Object.entries(tc[field])) {
         if (typeof name !== 'string' || name.length === 0) {
           fail(`trackerConfig.${adapter}.${field}.${role} must be a non-empty string`)
+        }
+      }
+    }
+    // descriptionNormalization: optional. Declares which markdown transforms this repo has OBSERVED
+    // its tracker perform on write, so the post-save read-back can class a reshaped description as
+    // normalized-equivalent instead of drift. Absent means the EMPTY set — the strictest check —
+    // never "tolerate everything"; a repo that declares nothing must not be silently granted
+    // tolerance. An id outside the closed vocabulary fails here rather than widening the gate.
+    if ('descriptionNormalization' in tc) {
+      const dn = tc.descriptionNormalization
+      if (!dn || typeof dn !== 'object' || Array.isArray(dn)) {
+        fail(`trackerConfig.${adapter}.descriptionNormalization must be an object when present`)
+      }
+      if ('tolerated' in dn) {
+        if (!Array.isArray(dn.tolerated)) {
+          fail(
+            `trackerConfig.${adapter}.descriptionNormalization.tolerated must be an array of transform ids`,
+          )
+        }
+        for (const id of dn.tolerated) {
+          if (typeof id !== 'string' || !DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id)) {
+            fail(
+              `trackerConfig.${adapter}.descriptionNormalization.tolerated contains unknown transform id ${JSON.stringify(
+                id,
+              )}; expected one of ${DESCRIPTION_NORMALIZATION_TRANSFORMS.join(', ')}`,
+            )
+          }
         }
       }
     }
@@ -1082,6 +1142,21 @@ export function trackerConfigFor(config, adapter = adapterFor(config, 'tracker')
   return tc && typeof tc === 'object' ? tc : null
 }
 
+/**
+ * The description-normalization transform ids this repo declares its tracker performs on write.
+ *
+ * Returns a `Set`. An ABSENT `descriptionNormalization` block and an explicitly EMPTY `tolerated`
+ * array are deliberately equivalent — both yield the empty set, i.e. the strictest check — so
+ * absence can never be read as "tolerate all". Validation has already rejected any id outside
+ * `DESCRIPTION_NORMALIZATION_TRANSFORMS`, so every member here is in the closed vocabulary.
+ *
+ * @returns {Set<string>}
+ */
+export function toleratedDescriptionTransforms(config, adapter = adapterFor(config, 'tracker')) {
+  const tolerated = trackerConfigFor(config, adapter)?.descriptionNormalization?.tolerated
+  return new Set(Array.isArray(tolerated) ? tolerated : [])
+}
+
 function trackerRoleName(config, field, role, required = true) {
   const adapter = adapterFor(config, 'tracker')
   const roleMap = trackerConfigFor(config, adapter)?.[field]
@@ -1490,11 +1565,9 @@ export function planDescriptionSections(config, description, { mode = 'child-pla
 export function validatePlanDescription(config, description, { mode = 'child-plan' } = {}) {
   // A config is an object carrying a planContract object; a description is a string. That makes the
   // swapped call unambiguously detectable, so diagnose it here instead of failing obscurely below.
-  if (typeof config === 'string' || !config || typeof config !== 'object' || !config.planContract) {
-    throw new Error(
-      'skill-config: validatePlanDescription(config, description) — arguments look swapped; pass the config first',
-    )
-  }
+  // DELEGATED, not duplicated: this used to be an inline copy of `assertConfigFirst`, which meant
+  // it did not inherit fixes to the shared helper — the empty-config split among them.
+  assertConfigFirst(config, 'validatePlanDescription')
   const resolvedMode = normalisePlanDescriptionMode(mode)
   const contractSections = planSectionsForDescriptionMode(config, resolvedMode)
   const sections = splitPlanDescriptionSections(contractSections, description)
@@ -1577,14 +1650,42 @@ const LIST_ITEM_RE = /^[-*+]\s|^\d+[.)]\s/
 const RESULT_SEPARATOR_RE = new RegExp(`\\s*${VERIFY_ONLY_RESULT.trim()}\\s*`)
 
 /**
- * Both new exports are **config-first**, exactly like `validatePlanDescription`. Diagnose the
- * natural-reading swapped call by name instead of letting it surface as a TypeError from deep
- * inside `planSections()`.
+ * A config OBJECT — the shape `loadSkillConfig()` returns — as opposed to a description.
+ *
+ * This is the discriminator that separates the two config-first faults. It is shape-only on
+ * purpose: it asks whether the value could be a config at all, never whether it is a complete one.
+ */
+function isConfigShaped(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * Every config-first export is **config-first**, exactly like `validatePlanDescription`. Diagnose
+ * the natural-reading swapped call, and the correctly ordered contractless config, by name instead
+ * of letting either surface as a TypeError from deep inside `planSections()`.
+ *
+ * **Every config-first export in this module shares this guard, and it reports TWO distinct
+ * faults** — conflating them sends the caller to the wrong fix. A value that cannot be a config but
+ * could be a description (a string, above all) is a genuinely swapped call, and the remedy is to
+ * reorder the arguments. A value that IS config-shaped, or is simply absent, but carries no
+ * `planContract` is correctly ordered — the remedy is to load a real config, not to reorder
+ * anything. Reporting the second as "arguments look swapped" was measured sending a fix toward
+ * argument order when the caller had passed `{}` in exactly the right position.
+ *
+ * Both messages stay module-prefixed and both name `fn(config, description)`, so the call site is
+ * identifiable from the message alone. `plan-deps-lib.mjs` carries its own copy of this guard
+ * rather than importing it, and the two are kept in step BY HAND: a third fault class added here
+ * must be added there too, and nothing fails if it is not.
  */
 function assertConfigFirst(config, fn) {
-  if (typeof config === 'string' || !config || typeof config !== 'object' || !config.planContract) {
+  if (!isConfigShaped(config)) {
     throw new Error(
       `skill-config: ${fn}(config, description) — arguments look swapped; pass the config first`,
+    )
+  }
+  if (!config.planContract) {
+    throw new Error(
+      `skill-config: ${fn}(config, description) — no plan contract loaded; the first argument is config-shaped but carries no planContract. Pass a config from loadSkillConfig() (which merges ${CONFIG_FILENAME} over the built-in defaults), not an empty object.`,
     )
   }
 }
@@ -1702,6 +1803,14 @@ function advisory(code, message) {
 
 function normalizeCommandTokens(tokens, { stripShellPreamble = true } = {}) {
   tokens = [...tokens]
+  // `!` is the POSIX negation KEYWORD, not a command. `! rg -q needle file` is the natural way to
+  // assert a pattern is ABSENT, and since `!` must be its own word to negate, it lands as the
+  // segment head and resolves to no executable — so a legitimate negated check was unrecordable.
+  // Strip exactly ONE leading `!` and no more: the real head is then classified normally, while a
+  // segment that is only `!` keeps an EMPTY token list, which `commandHeadResolvable` still
+  // rejects. That is what stops the relaxation becoming a blanket pass — the negation is removed
+  // from the head position, it does not excuse the head from resolving.
+  if (tokens[0] === '!') tokens.shift()
   while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens.shift()
   if (tokens[0] === 'env') {
     tokens.shift()
@@ -1758,6 +1867,70 @@ function commandSegments(tokens) {
   )
 }
 
+// Measured false-drift shape #1: `grep -c '<th' Daemons.tsx` returned 6 against a correct
+// five-column premise, because a bare-substring count also counts `<thead>`. The count flag is
+// matched as `-c`, a short cluster containing `c`, or `--count`; `--color` and `-C` (context) are
+// not counts and do not match.
+const COUNT_FLAG_RE = /^(?:-[A-Za-z]*c[A-Za-z]*|--count)$/
+// Word/line anchoring supplied as a FLAG rather than inside the pattern.
+const ANCHOR_FLAG_RE = /^(?:-[A-Za-z]*[wx][A-Za-z]*|--word-regexp|--line-regexp)$/
+// Word/line anchoring supplied inside the pattern itself.
+const REGEX_ANCHOR_RE = /[\^$]|\\b|\\</
+
+/**
+ * A count whose pattern is anchored neither by flag nor by the pattern text.
+ *
+ * Deliberately NOT decided: WHICH token is the pattern. Identifying it means modelling every
+ * value-taking option of two different tools, and a wrong guess fires on a correct command — the
+ * exact brittleness this finding exists to warn about. Instead any argument carrying an anchor
+ * suppresses the finding, so the only errors this can make are false NEGATIVES: `grep -cF '^x' f`
+ * (where `-F` makes `^` literal) and a filename that happens to contain `^` or `$` both stay
+ * silent. Advisory-only, so a silent correct run costs nothing and a false alarm blocks nothing.
+ */
+function hasSubstringCountOvermatch(segment) {
+  const head = segment[0]
+  if (head !== 'grep' && head !== 'rg') return false
+  if (!segment.some((token) => COUNT_FLAG_RE.test(token))) return false
+  if (segment.some((token) => ANCHOR_FLAG_RE.test(token))) return false
+  return !segment.slice(1).some((token) => REGEX_ANCHOR_RE.test(token))
+}
+
+// Measured false-drift shape #2: BSD `sed` rejects `sed '1{/^$/d}'` with `extra characters
+// at the end of d command`, producing a silent empty result that reads as a refuted premise.
+const SED_INLINE_BRACE_RE = /\{[^{}\n]*\}/
+// `-e<script>` and `--expression=<script>` carry the script ATTACHED to the option, so the
+// non-option test below never sees them. Both spellings are unambiguously the script — no filename
+// reaches this shape — so reading them adds true positives without admitting a false one.
+const SED_ATTACHED_SCRIPT_RE = /^(?:-e|--expression=)(.+)$/s
+
+/**
+ * A `sed` script carrying a brace block that opens and closes on one line.
+ *
+ * Deliberately NOT decided: which argument is the script, whether the block is GNU-only in the
+ * strict sense (BSD accepts some one-line brace forms), or whether the host running the check is
+ * BSD at all. Any non-option argument containing a same-line `{...}` is treated as the script,
+ * because a FILENAME containing a brace pair is not a shape this corpus produces. The finding says
+ * "verify on the host that will run it", which is true of every one-line brace block regardless of
+ * which side of the portability line it falls on.
+ *
+ * Two residual classes, both measured, neither blocking (this finding is advisory-only):
+ * - False POSITIVES on braces that are not a block at all — an ERE interval quantifier
+ *   (`sed -E 's/a{2,3}/b/' f`) and a literal brace pair in a substitution (`sed 's/{foo}/bar/' f`,
+ *   `sed -n 's/{a}/b/p' f`) each fire, and the emitted "verify on the host" message is then
+ *   factually wrong for them. Distinguishing a quantifier or a literal from an address block means
+ *   parsing the sed script language, which is the brittleness this finding exists to warn about.
+ * - False NEGATIVES for a script this cannot recognise as one — anything that is neither a bare
+ *   non-option argument nor an `-e`/`--expression=` attachment (a script read from `-f file`, say).
+ */
+function hasGnuOnlySedAddress(segment) {
+  if (segment[0] !== 'sed') return false
+  return segment.slice(1).some((token) => {
+    const attached = SED_ATTACHED_SCRIPT_RE.exec(token)
+    if (attached) return SED_INLINE_BRACE_RE.test(attached[1])
+    return !token.startsWith('-') && SED_INLINE_BRACE_RE.test(token)
+  })
+}
+
 function hasUnquotedOptionGlob(tokens) {
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]
@@ -1782,6 +1955,7 @@ function hasUnquotedOptionGlob(tokens) {
  */
 export function classifyCheckCommand(command, { cwd = process.cwd(), env = process.env } = {}) {
   const detailedTokens = tokenizeSimpleShellDetailed(command)
+  const segments = commandSegments(detailedTokens)
   const tokens = commandTokens(command)
   const blocking = []
   const advisoryFindings = []
@@ -1797,9 +1971,7 @@ export function classifyCheckCommand(command, { cwd = process.cwd(), env = proce
       advisory: advisoryFindings,
     }
   }
-  if (
-    commandSegments(detailedTokens).some((segment) => !commandHeadResolvable(segment, cwd, env))
-  ) {
+  if (segments.some((segment) => !commandHeadResolvable(segment, cwd, env))) {
     blocking.push({
       code: 'command-unresolvable',
       message:
@@ -1864,6 +2036,22 @@ export function classifyCheckCommand(command, { cwd = process.cwd(), env = proce
   ) {
     advisoryFindings.push(
       advisory('cached-bazel-test', 'a cached Bazel test can predate newly added inputs'),
+    )
+  }
+  if (segments.some(hasSubstringCountOvermatch)) {
+    advisoryFindings.push(
+      advisory(
+        'substring-count-overmatch',
+        'a bare-substring count also counts superstring matches, so the number can exceed the real one',
+      ),
+    )
+  }
+  if (segments.some(hasGnuOnlySedAddress)) {
+    advisoryFindings.push(
+      advisory(
+        'gnu-only-sed-address',
+        'BSD sed rejects some brace forms GNU sed accepts and can fail into an empty result, so verify it on the host that will run it',
+      ),
     )
   }
   return { blocking, advisory: advisoryFindings }

@@ -148,40 +148,81 @@ var startDetachedBossd = func(bossdPath string) error {
 // a real failure worth reporting.
 var bootoutVerifyTimeout = 2 * time.Second
 
-// bootoutLaunchdService bootouts a launchd service by label and verifies the
-// job is actually gone before reporting an error, rather than trusting
-// launchctl's exit code alone.
+// launchctlExitSaysAlreadyGone reports whether a launchctl error positively
+// means the target is not registered.
+//
+// It is the single home for that empirical, macOS-version-sensitive knowledge
+// (BOS-627): `bootout` exits 3 when the job is already unloaded, and 113 is
+// kept defensively across releases. Every caller that needs it -- the bootout
+// path and the watchdog's still-loaded probe, in both launchd domains -- reads
+// it here, so a release that changes the codes is one edit rather than a hunt.
+//
+// Note what it deliberately does NOT cover: exit 5 is a generic EIO that also
+// occurs when launchd simply has not finished tearing a job down, so it is not
+// "already gone" and callers must verify by probing instead.
+func launchctlExitSaysAlreadyGone(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	switch exitErr.ExitCode() {
+	case 3, 113:
+		return true
+	}
+	return false
+}
+
+// bootoutLaunchdService bootouts the gui-domain LaunchAgent for a label and
+// verifies the job is actually gone before reporting an error, rather than
+// trusting launchctl's exit code alone.
 //
 // BOS-627: on this macOS build, `launchctl bootout gui/<uid>/<label>` exits 3
 // ("No such process") when the service is already unloaded, and a separate,
 // unrelated `launchctl list <label>` exits 113 ("Could not find service").
 // bootout never returns 113. The prior code special-cased only 113, so every
-// bootout of an already-stopped service (which returns 3, or sometimes 5)
-// fell through to a hard error. 3 and 113 (kept defensively across macOS
-// versions) are treated as already-stopped. Any other non-zero exit —
-// notably 5, a generic EIO that can also mean "the job exists but could not
-// be removed" — is not trusted at face value: launchd can return before it
-// has finished tearing the job down, so stillRunning is polled until it
-// reports false or bootoutVerifyTimeout elapses.
+// bootout of an already-stopped service (which returns 3, or sometimes 5) fell
+// through to a hard error. Those codes now live in
+// launchctlExitSaysAlreadyGone; the verification lives in bootoutLaunchdTarget.
 func bootoutLaunchdService(label string, stillRunning func() bool) error {
-	target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + label
+	return bootoutLaunchdTarget("gui/"+strconv.Itoa(os.Getuid())+"/"+label, stillRunning)
+}
+
+// bootoutLaunchdTarget is bootoutLaunchdService over an arbitrary service
+// target, so the system-domain watchdog (BOS-1184) shares one implementation
+// with the gui-domain agent rather than carrying a second copy of it.
+//
+// The duplication mattered because of WHAT was duplicated: which launchctl exit
+// codes mean "already gone" is empirical, macOS-version-sensitive knowledge
+// (BOS-627 above), and a second copy is a second thing to update when a release
+// changes them. The copy had also dropped the nil-probe fail-closed guard
+// below, which is the rung that keeps an exit code we do not recognise from
+// being reported as a successful teardown.
+func bootoutLaunchdTarget(target string, stillRunning func() bool) error {
 	out, err := runLaunchctl("bootout", target)
 	if err == nil {
 		return nil
 	}
 
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		switch exitErr.ExitCode() {
-		case 3, 113:
-			return nil
-		}
+	if launchctlExitSaysAlreadyGone(err) {
+		return nil
 	}
 
-	// M7: no production caller passes a nil probe. Without one there is no way
-	// to verify the job is actually gone, so fail closed -- surface the
-	// launchctl error rather than silently reporting success for an exit code
-	// (e.g. 5, a generic EIO) that can also mean the job still exists.
+	// Without a probe there is no way to verify the job is actually gone, so
+	// fail closed -- surface the launchctl error rather than silently reporting
+	// success for an exit code (e.g. 5, a generic EIO) that can also mean the
+	// job still exists.
+	//
+	// M7 originally recorded that no production caller passed nil here.
+	// BOS-1203 added one: bootoutSupersededLaunchAgent, which boots out another
+	// user's gui/<uid> agent from a root install and has no probe it may run in
+	// that domain. It accepts the cost knowingly — its call is non-fatal and
+	// warning-only — so this arm's fail-closed direction is unchanged, but it is
+	// no longer unreachable in production. Note the interaction with
+	// launchctlExitSaysAlreadyGone above, which recognises only 3 and 113: the
+	// BOS-627 note on bootoutLaunchdService records that an already-gone bootout
+	// returns "3, or sometimes 5", and 5 is deliberately excluded there as
+	// ambiguous. A nil-probe caller therefore reports a false "may still be
+	// loaded" on a 5. Every probe-carrying caller verifies past it.
 	if stillRunning == nil {
 		return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -481,6 +522,52 @@ func platformMcpGetStatus() (*Status, error) {
 // platformInstall writes the LaunchAgent plist and loads it via launchctl.
 // When force is false and the plist already exists, it refuses to overwrite.
 func platformInstall(bossdPath string, force bool) error {
+	// BOS-1184 U2: the supervision substrate is an explicit choice now, and it
+	// is checked FIRST — before a plist path is resolved, a binary is staged or
+	// anything is written — so a host whose configured mode cannot be honoured
+	// installs nothing at all rather than acquiring a half-installed LaunchAgent
+	// it did not ask for.
+	//
+	// Failing here is the point. A silent fallback to the LaunchAgent would
+	// hand a multi-user host exactly the substrate it configured a mode to
+	// escape, and report a successful install while doing it. The default
+	// resolves clean, so this rung is invisible on every host that has not set
+	// the key. Deliberately macOS-only: there is no counterpart in systemd.go,
+	// which is what keeps the Linux path untouched.
+	st := LoadSupervisionModeStatus()
+	if st.Err != nil {
+		return fmt.Errorf("daemon supervision mode: %w", st.Err)
+	}
+	// BOS-1184 U3: the unattended substrate is a different artifact in a
+	// different launchd domain, so it gets its own install path rather than a
+	// variant of this one. Everything below stays byte-identical for the
+	// default mode — an absent key and an explicit "launch-agent" both fall
+	// straight through, which is what R5 pins.
+	if st.Mode == SupervisionModeUnattended {
+		return platformInstallUnattended(bossdPath, force)
+	}
+	// BOS-1184 R6: the sequence that backs the change out — install the
+	// watchdog, set the key back to launch-agent, run `boss daemon install` —
+	// otherwise bootstraps a gui/<uid> LaunchAgent while the root
+	// system/<label> job is still loaded with KeepAlive=true. Two supervisors
+	// then contend for one socket and nothing reports it: status reads the
+	// CONFIGURED mode and probes only the gui domain, and
+	// LoadSupervisionModeStatus never observes the watchdog once the mode is
+	// not unattended. The check stats the plist itself rather than trusting
+	// that status struct, which is exactly why it is correct here.
+	//
+	// BOS-1203 made this symmetric with platformUninstall, which has called
+	// removeStrandedWatchdog since BOS-1184. Warning alone left that back-out
+	// sequence producing a freshly bootstrapped gui agent beside a root job
+	// still loaded with KeepAlive=true — permanently, across reboots — while
+	// naming a remedy the operator had to run as a separate command. Under root
+	// the job is now removed; without root the observable behaviour is
+	// unchanged, because removeStrandedWatchdog degrades to exactly the warning
+	// that used to be here.
+	if err := removeStrandedWatchdog(st); err != nil {
+		return err
+	}
+
 	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
@@ -535,7 +622,31 @@ func platformInstall(bossdPath string, force bool) error {
 }
 
 // platformUninstall unloads the LaunchAgent and removes the plist file.
+//
+// BOS-1184 U3 added one branch and one warning, and both are deliberately
+// biased towards REMOVING things:
+//
+//   - The unattended substrate is torn down by its own path, because its job
+//     lives in the `system` domain and its artifacts are root-owned.
+//   - A REFUSED supervision mode falls through to the LaunchAgent teardown
+//     rather than failing, which is the opposite direction from platformInstall
+//     and platformRestart. Those two CREATE a substrate, so a settings value
+//     they cannot honour must stop them; this one DESTROYS a substrate, and a
+//     host must never be left unable to remove what is installed because of a
+//     typo in a file.
 func platformUninstall() error {
+	st := LoadSupervisionModeStatus()
+	if st.Err == nil && st.Mode == SupervisionModeUnattended {
+		return platformUninstallUnattended()
+	}
+	// A watchdog can still be installed here — the key may have been set back
+	// to the default with the root-owned job left loaded. Remove it when we
+	// have the privilege to, rather than only naming a command that would take
+	// this same branch and do nothing. See removeStrandedWatchdog.
+	if err := removeStrandedWatchdog(st); err != nil {
+		return err
+	}
+
 	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
@@ -623,6 +734,55 @@ var warnDaemonRefreshFailed = func(err error) {
 }
 
 func platformRestart() error {
+	// BOS-1184 U2: the same fail-closed gate platformInstall carries, for the
+	// same reason and for the same cost on the default path (none — the default
+	// resolves clean, so this rung is invisible on every host that has not set
+	// the key).
+	//
+	// It has to be here as well as in platformInstall because this function
+	// restages the binary, rewrites the plist and re-bootstraps it into
+	// gui/<uid>: without this check a host whose configured mode is refused
+	// would have `boss daemon install` correctly install nothing and then
+	// `boss daemon restart` re-establish and load exactly the substrate the
+	// configuration refused, reporting success. The gate belongs on every path
+	// that creates or re-bootstraps the substrate, not on the first one that
+	// happened to get it.
+	//
+	// It does NOT reach the case of restart installing the LaunchAgent from
+	// nothing, and does not need to: restartTakesStandalonePath sends a profile
+	// with no service file down the standalone path, which never calls this
+	// function.
+	//
+	// This is the SECOND line of defence, not the first. runDaemonRestart
+	// checks the mode before it stops anything; refusing only here would fire
+	// after the daemon had already been stopped, which is the BOS-1181 net-loss-
+	// of-service shape. See the comment there.
+	//
+	// platformEnsureRunning is ROUTED rather than gated (BOS-1203): it never
+	// refuses over a settings value — the unsupervised fallback stays reachable
+	// so a host is never left with no daemon — but it does pick its recovery
+	// substrate, keyed on whether a watchdog plist is on disk. That keeps it
+	// from bootstrapping the gui/<uid> LaunchAgent beside a root-owned
+	// watchdog. See classifyEnsureRunningRoute and
+	// docs/ops/daemon-supervision-modes.md.
+	st := LoadSupervisionModeStatus()
+	if st.Err != nil {
+		return fmt.Errorf("daemon supervision mode: %w", st.Err)
+	}
+	// BOS-1184 U3. Restarting the unattended substrate must NOT come through
+	// the path below: that path restages the binary into the per-user staged
+	// location and rewrites the gui/<uid> LaunchAgent, so on an unattended host
+	// it would re-establish the exact substrate the configuration selected a
+	// mode to escape — the same hole the U2 gate closed, one mode later.
+	if st.Mode == SupervisionModeUnattended {
+		return platformRestartUnattended()
+	}
+	// Same residue check platformInstall carries, for the same reason: this
+	// path re-bootstraps the gui/<uid> LaunchAgent, so on a host that still has
+	// the root watchdog loaded it creates the duplicate-supervisor state rather
+	// than merely leaving an orphan behind.
+	warnIfUnattendedWatchdogInstalled(st)
+
 	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
@@ -900,9 +1060,44 @@ func platformEnsureRunning(socketPath string) (StartMode, error) {
 	// a failed load.
 	var stagedPath string
 
-	// Try the LaunchAgent first (if installed).
-	st, err := platformGetStatus()
-	if err == nil && st.Installed && !st.Running {
+	// BOS-1203: pick the substrate BEFORE touching the LaunchAgent, because on
+	// a host running the root-owned watchdog a `launchctl load` here bootstraps
+	// a SECOND supervisor beside it — which is the socket-stealing shape the
+	// two isSocketReachable guards in this very function were added to prevent.
+	//
+	// This sits BELOW the early return above, deliberately diverging from
+	// platformInstall and platformRestart, which both put their supervision
+	// gate at the very top. Their first statement is a gate on an operation the
+	// operator explicitly asked for; this function's first statement is a
+	// re-probe whose placement is itself the fix for the socket-stealing storm,
+	// and this function is reached from newClient — so EVERY boss command runs
+	// it. Hoisting a settings read plus the layout stat above the re-probe
+	// would put that cost on the steady-state path of every invocation, where
+	// the hazard does not exist. Below the guard it is paid only in the
+	// socket-down window, which is the only window this routing is for.
+	supervision := LoadSupervisionModeStatus()
+	watchdogPlistPresent := false
+	if _, statErr := os.Stat(watchdogPaths().PlistPath); statErr == nil {
+		watchdogPlistPresent = true
+	}
+	route := classifyEnsureRunningRoute(ensureRunningFacts{
+		Mode:                 supervision.Mode,
+		ModeErr:              supervision.Err,
+		SettingsErr:          supervision.SettingsErr,
+		InstallState:         supervision.Unattended.State,
+		WatchdogPlistPresent: watchdogPlistPresent,
+	})
+
+	if route != ensureRunningRouteLaunchAgent {
+		mode, done, watchdogErr := ensureRunningOnWatchdog(socketPath, supervision, route)
+		if done {
+			return mode, watchdogErr
+		}
+		// Not root and the watchdog did not serve: fall through to the SAME
+		// detached-spawn block the LaunchAgent arm uses (R3). stagedPath is
+		// still empty, so that block resolves and stages for itself exactly as
+		// it does on a host with no LaunchAgent installed.
+	} else if st, err := platformGetStatus(); err == nil && st.Installed && !st.Running {
 		plistPath, _ := platformServicePath()
 
 		// BOS-977: the plist names the STAGED copy, so loading it without
@@ -944,10 +1139,11 @@ func platformEnsureRunning(socketPath string) (StartMode, error) {
 		if resolveErr != nil {
 			return StartModeUnknown, fmt.Errorf("cannot auto-start daemon because start failed: %w", resolveErr)
 		}
-		bossdPath, err = EnsureStaged(sourcePath)
-		if err != nil {
-			return StartModeUnknown, fmt.Errorf("stage fallback daemon: %w", err)
+		staged, stageErr := EnsureStaged(sourcePath)
+		if stageErr != nil {
+			return StartModeUnknown, fmt.Errorf("stage fallback daemon: %w", stageErr)
 		}
+		bossdPath = staged
 	}
 
 	// Final guard before spawning: don't race a daemon that just came up.
@@ -964,6 +1160,120 @@ func platformEnsureRunning(socketPath string) (StartMode, error) {
 	}
 
 	return StartModeDetached, nil
+}
+
+// watchdogRespawnWait bounds how long platformEnsureRunning waits for the
+// root-owned watchdog to bring bossd back up before giving up on it.
+//
+// It is a package var and NOT LifecycleStartupTimeout, for two reasons that
+// both matter. LifecycleStartupTimeout is a const — daemon_test.go asserts its
+// relationship to LifecycleShutdownTimeout — so it cannot be shrunk by a test,
+// and every test reaching this arm would sleep for real. And at 60s it is sized
+// for bossd's own startup after a DELIBERATE start, whereas a watchdog respawn
+// is launchd's sub-second KeepAlive plus that same startup on a job that is
+// already loaded. Since platformEnsureRunning runs on every boss command, a
+// budget sized for the deliberate case would make a watchdog that will never
+// serve cost a full minute per invocation.
+//
+// It is a CEILING that is polled, not a sleep: waitForSocket returns the
+// instant the socket answers.
+var watchdogRespawnWait = 5 * time.Second
+
+// warnWatchdogKickstartFailed reports a best-effort watchdog restart that did
+// not succeed. Package var for the warnDaemonRefreshFailed idiom.
+//
+// The kickstart is best-effort by design: this is a recovery path, not a
+// lifecycle command the operator invoked, and failing the whole call because
+// the restart verb errored would turn a degraded start into no start at all.
+var warnWatchdogKickstartFailed = func(err error) {
+	_, _ = fmt.Fprintf(os.Stderr,
+		"boss: could not restart the unattended supervision watchdog (%s): %v\n",
+		WatchdogLabel, err)
+}
+
+// warnUnattendedWatchdogCannotServe reports a watchdog that is installed but
+// cannot serve, so this command is about to start an UNSUPERVISED daemon
+// instead.
+//
+// It is a separate warning from warnUnattendedWatchdogResidue rather than a
+// reuse of it. That one's subject is a watchdog installed on a host no longer
+// configured for it, and its remedy is to remove the root job or restore the
+// key; this one's subject is a watchdog the host still wants whose paths are
+// not safe for a root-owned job, and its remedy is to fix the offending path.
+// Telling an operator in the second state to run `boss daemon uninstall` would
+// be advice for a problem they do not have.
+var warnUnattendedWatchdogCannotServe = func(install UnattendedInstall) {
+	reason := "it is installed but did not bring the daemon back up"
+	if install.Err != nil {
+		reason = install.Err.Error()
+	}
+	_, _ = fmt.Fprintf(os.Stderr,
+		"boss: the unattended supervision watchdog cannot serve this host: %s. Starting an UNSUPERVISED bossd instead — it will not come back after a reboot or a crash. Fix the path above and run `%s` to reinstall\n",
+		reason, WatchdogInstallCommand)
+}
+
+// ensureRunningOnWatchdog is platformEnsureRunning's recovery arm for a host
+// that has a watchdog plist on disk. It NEVER resolves platformServicePath and
+// NEVER issues `launchctl load`, which is the whole of R1.
+//
+// done reports whether the returned verdict is final. done=false means this arm
+// did what it could and the caller must fall through to the shared
+// detached-spawn block — the fail-open property R3 preserves. It is only ever
+// false off the root path, because R4 forbids a root detached spawn outright.
+//
+// The two "the socket came up while we waited" exits report
+// StartModeAlreadyRunning rather than StartModeServiceManager. This process
+// started nothing on those paths, and StartModeServiceManager's contract claims
+// the service manager started the daemon and that it is therefore supervised —
+// a claim this arm cannot support and one `boss daemon doctor` would contradict.
+// StartModeAlreadyRunning says exactly what happened: supervision is whatever
+// the running daemon already had, and this call did not change it.
+func ensureRunningOnWatchdog(socketPath string, supervision SupervisionModeStatus, route ensureRunningRoute) (StartMode, bool, error) {
+	// A key reverted to the default, a typo of "unattended", or an unreadable
+	// settings.json all land here with a root job still loaded. This is the
+	// existing residue warning, with its remedy, firing on exactly those arms —
+	// it no-ops when the resolved mode IS unattended, which is the ordinary
+	// host and needs no warning.
+	warnIfUnattendedWatchdogInstalled(supervision)
+
+	wait := route != ensureRunningRouteWatchdogNoWait
+
+	if currentEUID() == 0 {
+		// Root: act on the watchdog (R2). platformRestartUnattended kickstarts
+		// the system-domain job in place rather than rewriting a root-owned
+		// artifact, which is why it is safe from a recovery path.
+		if err := platformRestartUnattended(); err != nil {
+			warnWatchdogKickstartFailed(err)
+		}
+		if wait && waitForSocket(socketPath, watchdogRespawnWait) {
+			return StartModeAlreadyRunning, true, nil
+		}
+		layout := watchdogPaths()
+		return StartModeUnknown, true, fmt.Errorf(
+			"%w: %s is still not being served after restarting %s. Refusing to spawn bossd as root beside the watchdog — "+
+				"a root-owned daemon would hold this user's socket, app-data directory and singleton lock, and their own daemon "+
+				"could never reclaim them. Check %s/bossd-watchdog.stderr.log, then run `%s` to reinstall the watchdog",
+			ErrWatchdogRecoveryFailed, socketPath, WatchdogLabel, layout.LogDir, WatchdogInstallCommand)
+	}
+
+	// Not root: there is nothing this process may do to a system-domain job, so
+	// wait for the watchdog to win the race and otherwise fall open.
+	//
+	// The cannot-serve warning fires HERE rather than beside the `wait`
+	// assignment above, and the placement is the claim's truth condition: it
+	// says this command is about to start an UNSUPERVISED bossd, and the
+	// detached spawn it names is reachable only from this arm. Fired before the
+	// euid branch it also reached the root arm, which starts nothing and returns
+	// ErrWatchdogRecoveryFailed — announcing a spawn that was refused two lines
+	// later, with a remedy for a state the operator was not in. The root arm
+	// carries its own explanation in that error instead.
+	if !wait {
+		warnUnattendedWatchdogCannotServe(supervision.Unattended)
+	}
+	if wait && waitForSocket(socketPath, watchdogRespawnWait) {
+		return StartModeAlreadyRunning, true, nil
+	}
+	return StartModeUnknown, false, nil
 }
 
 // InstalledServiceEnvPath returns the PATH recorded in the LaunchAgent plist

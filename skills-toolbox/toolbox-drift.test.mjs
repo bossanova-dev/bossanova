@@ -242,3 +242,49 @@ test('the helper names no individual skill', () => {
     assert.equal(source.includes(core), false, `toolbox-drift.mjs must not name ${core}`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// The committed vendored mirror of the planning skill's toolbox.
+//
+// The mirror is GENERATED (scripts/vendor-toolbox.mjs VENDOR_MAP) and never hand-edited, so these
+// two assertions are the pair that matters: the mirror matches its canonical source right now, and
+// a hand-reverted mirror file is REPORTED rather than silently tolerated. Without the second half
+// the first is just a snapshot of a passing state.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
+const CANONICAL_TOOLBOX = path.join(REPO_ROOT, 'skills-toolbox')
+const PLAN_TOOLBOX_MIRROR = path.join(
+  REPO_ROOT,
+  'services/boss/internal/skillinstall/skills/boss-plan/toolbox',
+)
+const WRITEBACK_HELPER = 'plan-writeback-verify.mjs'
+
+test('the vendored planning toolbox ships the write-back helper and matches its source', () => {
+  assert.ok(
+    fs.existsSync(path.join(PLAN_TOOLBOX_MIRROR, WRITEBACK_HELPER)),
+    `${WRITEBACK_HELPER} must ship in the planning skill's vendored toolbox`,
+  )
+  const report = compareToolbox({
+    installedDir: PLAN_TOOLBOX_MIRROR,
+    sourceDir: CANONICAL_TOOLBOX,
+  })
+  assert.equal(report.sourcePresent, true)
+  assert.ok(report.checked > 0, 'the mirror must not be empty')
+  assert.deepEqual(report.drifted, [], 'the committed mirror must match skills-toolbox/')
+})
+
+test('a hand-reverted mirror of the write-back helper is reported as drift', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-toolbox-mirror-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const mirror = path.join(root, 'toolbox')
+  fs.cpSync(PLAN_TOOLBOX_MIRROR, mirror, { recursive: true })
+  fs.writeFileSync(path.join(mirror, WRITEBACK_HELPER), '// hand-edited\n')
+
+  const report = compareToolbox({ installedDir: mirror, sourceDir: CANONICAL_TOOLBOX })
+  assert.deepEqual(
+    report.drifted,
+    [{ file: WRITEBACK_HELPER, reason: 'content' }],
+    'a hand-edited mirror must be reported, and only that file',
+  )
+})

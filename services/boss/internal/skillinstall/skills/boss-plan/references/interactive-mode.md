@@ -165,11 +165,11 @@ runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath`
   The extension owns the interview and writes the plan.
 
   **Per-dispatch plan target.** The `planPath` you pass is **not** the shared
-  `.linear-plans/<ISSUE-ID>-<slug>.md` plan target: give each dispatch its own path under `runTmp`
+  `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md` plan target: give each dispatch its own path under `runTmp`
   (`<runTmp>/draft-<extension-name>/<ISSUE-ID>-<slug>.md`), unique to the dispatch you are about to
   classify, and create its parent directory before dispatching. You promote the winner yourself:
   copy the file produced by the **first** dispatch that succeeded under the predicate below to
-  `.linear-plans/<ISSUE-ID>-<slug>.md`, which is the plan target every later phase reads and the one
+  `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md`, which is the plan target every later phase reads and the one
   tiers 2 and 3 write directly. A later sibling never overwrites a promoted plan.
 
   **Draft success predicate** — one definition, used by every tier gate below. A dispatched draft
@@ -266,7 +266,7 @@ Use only when Phase 4 reaches Tier 3. Work these review dimensions yourself and 
 into the plan: scope challenge, architecture, code quality, tests, performance, and outside-voice.
 Follow the resident **## Phase 3 — Plan requirements** section in SKILL.md plus the shared drafting
 details in `references/headless-drafting-brief.md` **Step 5** and **Step 7** (plan-body requirements
-and the description summary template). Write to `.linear-plans/<ISSUE-ID>-<slug>.md` and stop after
+and the description summary template). Write to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md` and stop after
 saving the plan file. Do not continue into subagent-driven-development or executing-plans.
 The single-ticket plan file must retain the shared plan-file floor from that brief: required
 description-contract headings, `## Problem Frame`, `## Requirements`, `## Implementation Units`, and
@@ -275,7 +275,10 @@ redrafts use explicit exemption reasons; consumers do not require this structure
 
 **Preserve `## Original notes` VERBATIM** (all interactive tiers). When composing
 `## Original notes`, copy the ticket's prior description byte-for-byte from
-`DESCRIPTION_SNAPSHOT_PATH`; do not retype, summarize, or reconstruct it. Every image reference the
+`DESCRIPTION_SNAPSHOT_PATH`; do not retype, summarize, or reconstruct it. That snapshot holds the
+tracker's **stored** description bytes, not a rendering of them, and carries no byte the stored
+description does not — no trailing newline included; add none, because one extra terminal byte
+fails the verbatim gate late for a reason unrelated to content. Every image reference the
 ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
 `uploads.linear.app`/attachment URLs — must survive byte-for-byte, URLs intact except for required
 upload-signature stripping. **Never** replace an image with a `[screenshot: …]` text placeholder or

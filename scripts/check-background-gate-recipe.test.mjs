@@ -8,6 +8,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test, { after } from 'node:test'
 
+import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './env-failure-lib.mjs'
 import { VERDICTS } from './gate-run.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -43,10 +44,10 @@ function nodeGate(args, options = {}) {
 function startGate(command) {
   const result = nodeGate(['start', '--', ...command])
   assert.equal(result.code, 0, result.stderr)
-  const [runDir, pid] = result.stdout.trim().split('\n')
+  const [runDir, pid, printedLog] = result.stdout.trim().split('\n')
   assert.ok(fs.statSync(runDir).isDirectory())
   tempDirs.push(runDir)
-  return { runDir, pid: Number.parseInt(pid, 10) }
+  return { runDir, pid: Number.parseInt(pid, 10), printedLog }
 }
 
 function waitGate(runDir, timeout = 5_000) {
@@ -54,7 +55,18 @@ function waitGate(runDir, timeout = 5_000) {
 }
 
 function statusOf(runDir) {
+  // Never read `status` without waiting for it: the supervisor writes the file from its exit and
+  // SIGTERM handlers, so a bare read races that write and throws ENOENT under parallel load.
+  waitForFile(path.join(runDir, 'status'))
   return fs.readFileSync(path.join(runDir, 'status'), 'utf8').trim()
+}
+
+function firstLine(stdout) {
+  return stdout.split('\n')[0].trim()
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function waitForFile(file, timeoutMs = 5_000) {
@@ -64,6 +76,39 @@ function waitForFile(file, timeoutMs = 5_000) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
   }
   assert.fail(`timed out waiting for ${file}`)
+}
+
+function waitForNonEmptyFile(file, timeoutMs = 5_000) {
+  waitForFile(file, timeoutMs)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() <= deadline) {
+    if (fs.statSync(file).size > 0) return
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  }
+  assert.fail(`timed out waiting for content in ${file}`)
+}
+
+function waitForDeadPid(pid, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() <= deadline) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  }
+  assert.fail(`pid ${pid} still alive`)
+}
+
+function runDirSnapshot(runDir) {
+  return fs
+    .readdirSync(runDir)
+    .sort()
+    .map((entry) => {
+      const stat = fs.statSync(path.join(runDir, entry))
+      return `${entry}:${stat.size}:${stat.mtimeMs}`
+    })
 }
 
 function fixtureScript(body) {
@@ -85,30 +130,115 @@ test('passing and failing gates report the child status', () => {
   const failing = startGate([process.execPath, '-e', 'process.exit(3)'])
   const failed = waitGate(failing.runDir)
   assert.equal(statusOf(failing.runDir), '3')
-  assert.equal(failed.stdout.trim(), `${VERDICTS.failedPrefix}3)`)
+  assert.equal(firstLine(failed.stdout), `${VERDICTS.failedPrefix}3)`)
   assert.equal(failed.code, 1)
 })
 
-test('start prints a parent-created run directory before child output exists', () => {
+test('a non-zero gate whose log carries a transport signature is an environment failure', () => {
+  const script = fixtureScript(
+    'console.log(\'Post "https://api.github.com/graphql": read tcp 10.0.0.1:1->10.0.0.2:443: operation timed out\')\nprocess.exit(1)\n',
+  )
+  const { runDir } = startGate([process.execPath, script])
+  const result = waitGate(runDir)
+  assert.equal(statusOf(runDir), '1')
+  assert.equal(firstLine(result.stdout), `${VERDICTS.environmentPrefix}1)`)
+  assert.match(result.stdout, /kind: github-graphql-transport/)
+  assert.equal(result.code, ENV_FAILURE_EXIT_CODE)
+})
+
+test('a non-zero gate with no classified signature stays a plain failure', () => {
+  const script = fixtureScript("console.log('./main.go:12:3: undefined: Foo')\nprocess.exit(1)\n")
+  const { runDir } = startGate([process.execPath, script])
+  const result = waitGate(runDir)
+  assert.equal(firstLine(result.stdout), `${VERDICTS.failedPrefix}1)`)
+  assert.doesNotMatch(result.stdout, /ENVIRONMENT FAILURE/)
+  assert.equal(result.code, 1)
+})
+
+test('start prints a parent-created run directory, pid and the literal log path', () => {
   const script = fixtureScript('setTimeout(() => {}, 2000)\n')
-  const { runDir, pid } = startGate([process.execPath, script])
+  const { runDir, pid, printedLog } = startGate([process.execPath, script])
   assert.ok(Number.isInteger(pid))
   assert.ok(fs.statSync(runDir).isDirectory())
+  // The log file has no extension: `start` must print the path so no reader invents a `*.log` glob.
+  assert.equal(printedLog, path.join(runDir, 'log'))
+  assert.ok(fs.existsSync(printedLog))
   assert.equal(fs.readFileSync(path.join(runDir, 'log'), 'utf8'), '')
+})
+
+test('every non-passing verdict names the literal log path', () => {
+  const { runDir } = startGate([process.execPath, '-e', 'process.exit(5)'])
+  const failed = waitGate(runDir)
+  assert.match(
+    failed.stdout,
+    new RegExp(`log: ${path.join(runDir, 'log').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+  )
+
+  const missing = path.join(mkTemp('gate-run-vanished-log-'), 'missing-run')
+  const vanished = waitGate(missing, 100)
+  assert.equal(firstLine(vanished.stdout), VERDICTS.vanished)
+  assert.match(vanished.stdout, /log: .*[/\\]log$/m)
+})
+
+test('wait writes its verdict first line durably to the run dir', () => {
+  const passing = startGate([process.execPath, '-e', 'process.exit(0)'])
+  const passed = waitGate(passing.runDir)
+  assert.equal(
+    fs.readFileSync(path.join(passing.runDir, 'verdict'), 'utf8').trim(),
+    firstLine(passed.stdout),
+  )
+  assert.equal(
+    fs.readFileSync(path.join(passing.runDir, 'verdict'), 'utf8').trim(),
+    VERDICTS.passed,
+  )
+
+  const failing = startGate([process.execPath, '-e', 'process.exit(7)'])
+  const failed = waitGate(failing.runDir)
+  assert.equal(
+    fs.readFileSync(path.join(failing.runDir, 'verdict'), 'utf8').trim(),
+    firstLine(failed.stdout),
+  )
+
+  const script = fixtureScript('setTimeout(() => {}, 30000)\n')
+  const running = startGate([process.execPath, script])
+  try {
+    waitForFile(path.join(running.runDir, 'child-pid'))
+    const stillRunning = waitGate(running.runDir, 100)
+    assert.equal(
+      fs.readFileSync(path.join(running.runDir, 'verdict'), 'utf8').trim(),
+      firstLine(stillRunning.stdout),
+    )
+    assert.equal(
+      fs.readFileSync(path.join(running.runDir, 'verdict'), 'utf8').trim(),
+      VERDICTS.stillRunning,
+    )
+  } finally {
+    nodeGate(['stop', running.runDir])
+  }
+})
+
+test('this suite never reads a status file without waiting for it first', () => {
+  const source = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8')
+  const reads = source.match(/readFileSync\(path\.join\([^)]*'status'\)/g) ?? []
+  assert.equal(reads.length, 1, 'status must only be read through the waiting statusOf helper')
+  assert.match(
+    source,
+    /function statusOf\(runDir\) \{[\s\S]*?waitForFile\(path\.join\(runDir, 'status'\)\)[\s\S]*?readFileSync/,
+  )
 })
 
 test('dead pid with no status is vanished, not still running or passed', () => {
   const runDir = mkTemp('gate-run-vanished-')
   fs.writeFileSync(path.join(runDir, 'pid'), '99999999\n')
   const result = waitGate(runDir, 100)
-  assert.equal(result.stdout.trim(), VERDICTS.vanished)
+  assert.equal(firstLine(result.stdout), VERDICTS.vanished)
   assert.equal(result.code, 97)
 })
 
 test('missing run metadata is vanished without waiting for the full timeout', () => {
   const runDir = path.join(mkTemp('gate-run-missing-parent-'), 'missing-run')
   const result = waitGate(runDir, 60_000)
-  assert.equal(result.stdout.trim(), VERDICTS.vanished)
+  assert.equal(firstLine(result.stdout), VERDICTS.vanished)
   assert.equal(result.code, 97)
 })
 
@@ -129,11 +259,32 @@ test('live pid with no status at timeout is still running', () => {
   fs.writeFileSync(path.join(runDir, 'pid'), `${pid}\n`)
   try {
     const result = waitGate(runDir, 100)
-    assert.equal(result.stdout.trim(), VERDICTS.stillRunning)
+    assert.equal(firstLine(result.stdout), VERDICTS.stillRunning)
     assert.equal(result.code, 98)
   } finally {
     try {
       process.kill(-pid, 'SIGTERM')
+    } catch {}
+  }
+})
+
+test('a still-running gate names its elapsed time, log staleness and last log line', () => {
+  const script = fixtureScript(
+    "console.log('INFO: Waiting for another command to complete')\nsetTimeout(() => {}, 10000)\n",
+  )
+  const { runDir, pid } = startGate([process.execPath, script])
+  try {
+    waitForNonEmptyFile(path.join(runDir, 'log'))
+    const result = waitGate(runDir, 100)
+    const lines = result.stdout.trim().split('\n')
+    assert.equal(lines[0], VERDICTS.stillRunning)
+    assert.match(lines[1], /^elapsed: \d+s - log last written: \d+s ago - last log line: /)
+    assert.match(lines[1], /INFO: Waiting for another command to complete/)
+    assert.equal(lines[2], `log: ${path.join(runDir, 'log')}`)
+    assert.equal(result.code, 98)
+  } finally {
+    try {
+      process.kill(pid, 'SIGTERM')
     } catch {}
   }
 })
@@ -145,7 +296,104 @@ test('SIGTERM-killed gate writes a non-passing status', () => {
   process.kill(pid, 'SIGTERM')
   const result = waitGate(runDir)
   assert.notEqual(statusOf(runDir), '0')
-  assert.notEqual(result.stdout.trim(), VERDICTS.passed)
+  assert.notEqual(firstLine(result.stdout), VERDICTS.passed)
+})
+
+test('stop reclaims a live gate and guarantees a terminal non-zero status', () => {
+  const script = fixtureScript('setTimeout(() => {}, 30000)\n')
+  const { runDir } = startGate([process.execPath, script])
+  waitForFile(path.join(runDir, 'child-pid'))
+  const childPid = Number.parseInt(
+    fs.readFileSync(path.join(runDir, 'child-pid'), 'utf8').trim(),
+    10,
+  )
+
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  waitForDeadPid(childPid)
+  assert.notEqual(statusOf(runDir), '0')
+
+  const after = waitGate(runDir, 2_000)
+  assert.notEqual(firstLine(after.stdout), VERDICTS.stillRunning)
+  assert.equal(after.code, 1)
+})
+
+// The motivating case for `stop`: the supervisor is gone and the child ignores SIGTERM, so nothing
+// but an escalation can release the worktree/bazel lock. Without the SIGKILL escalation this test
+// fails on the liveness assertion while the status assertion still passes — which is exactly how a
+// terminal status over a live orphan can look like a successful reclamation.
+test('stop escalates past a TERM-ignoring orphan whose supervisor is gone', () => {
+  const { runDir, pid } = startGate(['/bin/sh', '-c', 'trap "" TERM; sleep 60'])
+  waitForFile(path.join(runDir, 'child-pid'))
+  const childPid = Number.parseInt(
+    fs.readFileSync(path.join(runDir, 'child-pid'), 'utf8').trim(),
+    10,
+  )
+  process.kill(pid, 'SIGKILL')
+  waitForDeadPid(pid)
+
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  // The lock is only released if the child is actually dead, not merely signalled.
+  waitForDeadPid(childPid)
+  assert.notEqual(statusOf(runDir), '0')
+
+  const after = waitGate(runDir, 2_000)
+  assert.notEqual(firstLine(after.stdout), VERDICTS.stillRunning)
+})
+
+test('stop writes a durable verdict on the path where it forces the status itself', () => {
+  const { runDir, pid } = startGate(['/bin/sh', '-c', 'trap "" TERM; sleep 60'])
+  waitForFile(path.join(runDir, 'child-pid'))
+  const childPid = Number.parseInt(
+    fs.readFileSync(path.join(runDir, 'child-pid'), 'utf8').trim(),
+    10,
+  )
+  process.kill(pid, 'SIGKILL')
+  waitForDeadPid(pid)
+
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  waitForDeadPid(childPid)
+  assert.equal(
+    fs.readFileSync(path.join(runDir, 'verdict'), 'utf8').trim(),
+    firstLine(stopped.stdout),
+  )
+  assert.match(stopped.stdout, new RegExp(`log: ${escapeRegExp(path.join(runDir, 'log'))}`))
+})
+
+test('a transport phrase inside a reported test failure stays a red gate', () => {
+  // Real fixtures in this repo carry the literal string, so an unbounded transport scan would
+  // reclassify a genuine red as an environment failure whose remedy is "re-run it, not a red gate".
+  const goFailure = [
+    '=== RUN   TestStreamReconnect',
+    '    terminal_stream_test.go:1269: got "connection reset by peer", want nil',
+    '--- FAIL: TestStreamReconnect (0.02s)',
+    'FAIL\tgithub.com/example/pkg\t0.031s',
+  ].join('\n')
+  assert.equal(classifyGateFailure(goFailure), null)
+
+  // A bare transport failure with no test-failure marker is still classified.
+  const transportOnly =
+    'Post "https://api.github.com/graphql": read tcp 10.0.0.1:1->10.0.0.2:443: operation timed out'
+  assert.equal(classifyGateFailure(transportOnly)?.kind, 'github-graphql-transport')
+
+  // A host-environment signature is NOT withheld by a test-failure marker: a disk that filled up
+  // during a test run really is a host failure, which is run-gate's shipped behaviour.
+  const diskDuringTests = ['--- FAIL: TestWrite (0.01s)', 'No space left on device'].join('\n')
+  assert.equal(classifyGateFailure(diskDuringTests)?.kind, 'disk-exhaustion')
+})
+
+test('stop on an already-terminal run dir changes no file and prints the existing verdict', () => {
+  const { runDir } = startGate([process.execPath, '-e', 'process.exit(4)'])
+  const waited = waitGate(runDir)
+  assert.equal(firstLine(waited.stdout), `${VERDICTS.failedPrefix}4)`)
+
+  const before = runDirSnapshot(runDir)
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  assert.equal(stopped.stdout.trim(), `${VERDICTS.failedPrefix}4)`)
+  assert.deepEqual(runDirSnapshot(runDir), before)
 })
 
 test('self-relaunch works from a helper path containing spaces', () => {
@@ -155,6 +403,10 @@ test('self-relaunch works from a helper path containing spaces', () => {
   fs.mkdirSync(scriptsDir)
   fs.mkdirSync(toolboxDir)
   fs.copyFileSync(GATE_RUN, path.join(scriptsDir, 'gate-run.mjs'))
+  fs.copyFileSync(
+    path.join(REPO_ROOT, 'scripts/env-failure-lib.mjs'),
+    path.join(scriptsDir, 'env-failure-lib.mjs'),
+  )
   fs.copyFileSync(
     path.join(REPO_ROOT, 'skills-toolbox/main-module.mjs'),
     path.join(toolboxDir, 'main-module.mjs'),
@@ -213,6 +465,7 @@ test('CLAUDE.md documents the gate-run verdict contract and retires the old reci
   for (const token of [
     VERDICTS.passed,
     `${VERDICTS.failedPrefix}N)`,
+    `${VERDICTS.environmentPrefix}N)`,
     VERDICTS.vanished,
     VERDICTS.stillRunning,
   ]) {
@@ -222,9 +475,35 @@ test('CLAUDE.md documents the gate-run verdict contract and retires the old reci
     )
   }
   assert.match(text, /absent\s+status\s+file\s+is\s+unknown\s+and\s+never\s+a\s+pass/)
+  assert.match(text, /<run-dir>\/verdict/)
+  assert.match(text, /node\s+scripts\/gate-run\.mjs\s+stop\s+<run-dir>/)
   assert.match(text, /docs\/testing\/backgrounded-gate-runs\.md/)
   assert.ok(fs.existsSync(DOC))
   assert.doesNotMatch(text, OLD_RECIPE)
+})
+
+test('the backgrounded-gate doc carries the verdicts, stop, and the live hazards', () => {
+  const doc = fs.readFileSync(DOC, 'utf8')
+  for (const token of [
+    VERDICTS.passed,
+    `${VERDICTS.failedPrefix}N)`,
+    `${VERDICTS.environmentPrefix}N)`,
+    VERDICTS.vanished,
+    VERDICTS.stillRunning,
+  ]) {
+    assert.match(
+      doc,
+      new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ /g, '\\s+')),
+    )
+  }
+  assert.match(doc, /node\s+scripts\/gate-run\.mjs\s+stop\s+<run-dir>/)
+  assert.match(doc, /<run-dir>\/verdict/)
+  // The three new live hazards.
+  assert.match(doc, /no\s+matches\s+found/)
+  assert.match(doc, /nothing\s+to\s+run/)
+  assert.match(doc, /launcher/)
+  // The retired-hazard table is still there and still labelled retired.
+  assert.match(doc, /These are the retired hazards/)
 })
 
 test('old recipe matcher catches an inline retired fixture', () => {

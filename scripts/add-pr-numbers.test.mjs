@@ -384,10 +384,69 @@ test('add-pr-numbers case 13: an all-empty range exits 0 without an untagged err
 
 test('add-pr-numbers case 14: empty predicates and fail-closed scans stay pinned', () => {
   const script = fs.readFileSync(scriptPath, 'utf8')
+  // BOS-1195: emptiness has ONE definition, in the shared predicate module. Neither the
+  // rebase helper nor the post-condition may re-derive it from trees by hand again --
+  // two hand-written copies across the heredoc boundary is the drift this replaced.
+  assert.doesNotMatch(
+    script,
+    /git show -s --format=%T "\$commit"/,
+    'no site may hand-derive emptiness from trees; the shared module owns it',
+  )
   assert.equal(
-    (script.match(/^is_empty_commit\(\) \{$/gm) ?? []).length,
+    (script.match(/^empty_commit_shas\(\) \{$/gm) ?? []).length,
+    1,
+    'the range classifier must be defined exactly once',
+  )
+  assert.match(
+    script,
+    /node "\$COMMIT_WORK_PREDICATE" empty-commits --empty-tree "\$empty_tree"/,
+    'classification must go through the shared predicate module',
+  )
+  // Resolve the dependency BEFORE anything rewrites history: a missing module must fail
+  // with the branch untouched, never half-rebased.
+  assert.ok(
+    script.indexOf('COMMIT_WORK_PREDICATE="$SCRIPT_DIR/toolbox/commit-work-predicate.mjs"') <
+      script.indexOf('git fetch origin "$BASE_BRANCH"'),
+    'the predicate must be resolved before the first history-touching command',
+  )
+  // The heredoc is unexpanded, so the environment is the ONLY channel into the helper.
+  assert.match(script, /^export PR_TAG_EMPTY_SHAS$/m, 'the helper is fed through the environment')
+  assert.match(
+    script,
+    /^is_known_empty_commit\(\) \{\n(?:  #[^\n]*\n)*  \[ -n "\$1" \] \|\| return 1\n  printf '%s\\n' "\$PR_TAG_EMPTY_SHAS" \| grep -qxF "\$1"\n\}$/m,
+    'the inner helper must consult the passed-in set, not re-derive it',
+  )
+  // `grep -qxF ""` matches the blank line an empty set prints, so an unguarded empty
+  // needle would classify an unresolved commit as empty and skip its amend. Both
+  // membership tests must refuse it.
+  assert.equal(
+    (script.match(/^  \[ -n "\$1" \] \|\| return 1$/gm) ?? []).length,
     2,
-    'inner helper and outer scan must each define the empty-commit predicate',
+    'both membership tests must refuse an empty commit id',
+  )
+  // The rebase rewrites every SHA, so the post-condition must re-classify rather than
+  // reuse the pre-rebase set — and must still fail closed when it cannot.
+  assert.match(
+    script,
+    /POST_EMPTY_SHAS=\$\(empty_commit_shas "\$BASE_COMMIT"\) \|\| \{/,
+    'the post-condition must re-classify the rebased range',
+  )
+  assert.equal(
+    (script.match(/ERROR: could not classify the empty commits in \$BASE_COMMIT\.\.HEAD\./g) ?? [])
+      .length,
+    2,
+    'both classifications must fail closed',
+  )
+  assert.ok(
+    script.lastIndexOf('"$PR_TAG_EMPTY_SHAS"') < script.indexOf('POST_EMPTY_SHAS='),
+    'the pre-rebase set must not be reused after the rebase rewrote its SHAs',
+  )
+  // A non-zero --exec strands the worktree mid-rebase, so the helper still swallows a
+  // rejected amend and lets the outer post-condition be the thing that fails.
+  assert.match(
+    script,
+    /# Deliberately exit 0: a non-zero --exec strands the worktree mid-rebase/,
+    'the exec helper must keep exiting zero on a rejected amend',
   )
   assert.match(script, /git hash-object -t tree \/dev\/null/, 'empty tree must be computed by git')
   assert.match(
@@ -402,18 +461,13 @@ test('add-pr-numbers case 14: empty predicates and fail-closed scans stay pinned
   )
   assert.match(
     script,
-    /CURRENT_COMMIT=\$\(current_commit\)\nif is_empty_commit "\$CURRENT_COMMIT"; then/,
+    /CURRENT_COMMIT=\$\(current_commit\)\nif is_known_empty_commit "\$CURRENT_COMMIT"; then/,
     'empty-commit skip must classify the current rebase pick, not only HEAD',
   )
   assert.match(
     script,
     /if printf '%s' "\$AMEND_ERR" \| grep -q "would make it empty"; then/,
     'git amend empty-commit rejection must be converted to an empty skip, not a skip-report row',
-  )
-  assert.equal(
-    (script.match(/git rev-parse --verify "\$commit\^"/g) ?? []).length,
-    2,
-    'parent probe must use --verify so root commits reach the empty-tree fallback',
   )
   assert.doesNotMatch(script, /4b825dc642cb6eb9a060e54bf8d69288fbee4904/, 'no SHA-1 literal')
   assert.match(
@@ -595,4 +649,74 @@ test('add-pr-numbers case 6: a non-conventional subject gets the tag on line 1, 
   const lastBodyLine = bodyLines[bodyLines.length - 1]
   assert.equal(lastBodyLine, 'last body line')
   assert.ok(!lastBodyLine.includes(TAG), `the tag must not land in the body: ${lastBodyLine}`)
+})
+
+// BOS-1195: emptiness is now answered by the shared predicate module vendored beside
+// this script rather than by two hand-written shell copies. The dependency is therefore
+// load-bearing, and the one thing that must never happen is discovering it is missing
+// half way through a rebase — a stranded worktree is worse than a refused run.
+test('add-pr-numbers case 15: a missing shared predicate fails closed, history untouched', () => {
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [
+      { subject: 'chore: [skip ci] create pull request', empty: true },
+      { subject: 'feat(core): add thing' },
+    ],
+  })
+  const before = git(repo, 'rev-parse', 'HEAD')
+
+  // A copy of the real script with no toolbox/ beside it.
+  const isolated = path.join(tempDir('pr-tag-noopt-'), 'add-pr-numbers.sh')
+  fs.copyFileSync(scriptPath, isolated)
+  fs.chmodSync(isolated, 0o755)
+
+  const errFile = path.join(tempDir('pr-tag-err-'), 'stderr.log')
+  let code = 0
+  try {
+    execFileSync('bash', ['-c', '"$0" "$1" 2>"$2"', isolated, String(PR_NUM), errFile], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...gitEnv, BASE_BRANCH: 'main' },
+    })
+  } catch (err) {
+    assert.equal(err.signal, null, `script was signalled (${err.signal}), not exited`)
+    code = err.status ?? 1
+  }
+  const stderr = fs.readFileSync(errFile, 'utf8')
+
+  assert.notEqual(code, 0, 'a missing predicate must not be a silent success')
+  assert.match(stderr, /shared commit predicate not found/, stderr)
+  assert.match(stderr, /commit-work-predicate\.mjs/, stderr)
+  assert.equal(git(repo, 'rev-parse', 'HEAD'), before, 'history must be untouched')
+  for (const dir of ['rebase-merge', 'rebase-apply']) {
+    assert.equal(fs.existsSync(path.join(repo, '.git', dir)), false, `no ${dir} may be left behind`)
+  }
+  assert.deepEqual(subjects(repo), [
+    'chore: [skip ci] create pull request',
+    'feat(core): add thing',
+  ])
+})
+
+// The routed classification must still be the one the whole range is judged by: the
+// module reads real trees, so a commit that only LOOKS like the bootstrap placeholder
+// while carrying a diff is real work and is tagged like any other.
+test('add-pr-numbers case 16: a non-empty commit wearing the bootstrap subject is tagged', () => {
+  const bootstrap = 'chore: [skip ci] create pull request'
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [
+      { subject: bootstrap, empty: true },
+      { subject: bootstrap },
+      { subject: 'feat(core): add thing' },
+    ],
+  })
+
+  const r = runScript(repo)
+  assert.equal(r.code, 0, `expected success:\n${r.stdout}\n${r.stderr}`)
+
+  const after = subjects(repo)
+  assert.equal(after[0], bootstrap, 'the EMPTY placeholder stays byte-identical')
+  assert.ok(after[1].includes(TAG), `the non-empty lookalike must be tagged: ${after[1]}`)
+  assert.ok(after[2].includes(TAG), `real work must be tagged: ${after[2]}`)
+  assert.doesNotMatch(r.stderr, /untagged/, r.stderr)
 })

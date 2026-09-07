@@ -55,7 +55,12 @@ git fetch origin "$BASE_BRANCH"
 # times out, check $(git rev-parse --git-path rebase-merge) and rebase-apply before
 # retrying, then follow add-pr-numbers.sh cleanup_temp guidance to continue or abort.
 TAG_LOG="$(mktemp -t boss-build-inject-pr-tag.XXXXXX.log)"
-BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER" >"$TAG_LOG" 2>&1
+# Capture HEAD BEFORE invoking. A non-zero exit does not mean nothing happened: the
+# injector rewrites commit by commit, so it can fail having already tagged part of the
+# range, and this is the commit that partially-applied rewrite started from.
+PRE_INJECT_HEAD="$(git rev-parse HEAD)"
+BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER" >"$TAG_LOG" 2>&1 ||
+  echo "inject-pr-tag exited non-zero; HEAD was $PRE_INJECT_HEAD before it ran. See $TAG_LOG" >&2
 git push --force-with-lease origin "$SESSION_BRANCH"
 test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upstream
 ```
@@ -67,6 +72,21 @@ test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upst
 > **Linear history:** sync with the base by rebasing only — never by merging it in. Keep
 > `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` at `0`; boss-repair carries the
 > full invariant and the linearize recovery.
+
+**A failed injection is a disclosure item, not a merge blocker.** Where the project runs no
+commit-message check in CI, an untagged commit is a gap in the commit-to-PR trail and nothing more —
+not a red check, and not a reason to hold the PR. Report it and carry on. Do not read a non-zero
+exit as "nothing happened" either: history may already be partly rewritten, which is why the block
+above records `PRE_INJECT_HEAD` and surfaces it on failure. Re-running the injection is safe and is
+the verification step — it is a no-op for commits already tagged — but re-running _blind_, without
+first checking whether HEAD moved and whether a rebase is still in progress, is not.
+
+**When an amend is rejected, name the rules that are actually enforced.** A commit-message policy
+hook of this shape rejects for a **disallowed type**, a **missing scope**, a **subject line over its
+length limit**, or a **body line over its length limit**. It does not reject for a _disallowed_ scope — that is the usual
+wrong guess, and it sends a run hunting through the configuration for an allow-list that is not
+there. The injector records the hook's own reported reason per commit; read that, and shorten or
+re-scope the message to what it names.
 
 Then run **boss-repair** (the finalize adapter's repair capability) to fix failing checks, rebase
 conflicts, and review comments. Cap at `policy.repairCap` (**5**) passes. If still red after the cap:

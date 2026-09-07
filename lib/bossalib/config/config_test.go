@@ -671,6 +671,25 @@ func TestSyncDirReturnsOpenError(t *testing.T) {
 	}
 }
 
+func TestSaveToReturnsDirectorySyncError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	syncErr := errors.New("directory sync failed")
+
+	err := saveTo(path, DefaultSettings(), func(gotDir string) error {
+		if gotDir != dir {
+			t.Fatalf("sync directory = %q, want %q", gotDir, dir)
+		}
+		return syncErr
+	})
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("saveTo() error = %v, want wrapped directory sync error", err)
+	}
+	if !strings.Contains(err.Error(), "sync settings directory") {
+		t.Fatalf("saveTo() error = %q, want directory sync context", err)
+	}
+}
+
 func TestSyncDirectoryReturnsOnlyUnexpectedSyncError(t *testing.T) {
 	unexpected := io.ErrUnexpectedEOF
 	other := errors.New("sync failed")

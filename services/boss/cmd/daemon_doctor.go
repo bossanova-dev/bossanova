@@ -765,19 +765,30 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// is genuinely cross-platform.
 	supervisionMetadata, supervisionMetadataErr := daemonMetadataForDoctor()
 	supervisionUnhealthy, supervisionRemediation := reportDaemonSupervision(out, supervisionMetadata, supervisionMetadataErr)
+	// BOS-1184 R4, and cross-platform for the same reason the ownership check
+	// above is: a settings key that the install path refuses to act on is not a
+	// macOS concept, and this line is the only place an operator learns their
+	// configured substrate is inert or rejected. It is kept OUT of
+	// unhealthyNonAuth deliberately — that flag's remedy ladder ends in "run
+	// 'boss daemon restart'", which cannot fix a value in settings.json, and
+	// printing it would send an operator to restart a daemon over a typo.
+	modeUnhealthy, modeRemediation := reportDaemonSupervisionMode(out)
 	if daemonDoctorGOOS != "darwin" {
 		_, _ = fmt.Fprintf(out, "macOS daemon install and protected-folder checks: not applicable on %s\n", daemonDoctorGOOS)
 		// The service-PATH and upstream-auth checks are NOT macOS-specific —
 		// the systemd unit carries an explicit PATH too — so their verdicts
 		// have to survive this early return. Returning nil here regardless
 		// would make both a no-op on exactly the platform they matter most on.
-		if servicePathStale || authUnhealthy || supervisionUnhealthy {
+		if servicePathStale || authUnhealthy || supervisionUnhealthy || modeUnhealthy {
 			_, _ = fmt.Fprintln(out, "\nRemediation:")
 			if servicePathStale || supervisionRemediation {
 				_, _ = fmt.Fprintln(out, "  run 'boss daemon restart'")
 			}
 			if authRemediation {
 				_, _ = fmt.Fprintln(out, "  run 'boss login'")
+			}
+			if modeUnhealthy {
+				_, _ = fmt.Fprintln(out, modeRemediation)
 			}
 			return errDaemonDoctorUnhealthy
 		}
@@ -964,7 +975,7 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	}
 	reportDaemonStartupFailureDirective(out, stagedPath, notServing)
 
-	if unhealthyNonAuth || authUnhealthy {
+	if unhealthyNonAuth || authUnhealthy || modeUnhealthy {
 		_, _ = fmt.Fprintln(out, "\nRemediation:")
 		if unhealthyNonAuth {
 			switch {
@@ -1017,12 +1028,74 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 			_, _ = fmt.Fprintln(out, "  Open System Settings > Privacy & Security > Files and Folders (or Full Disk Access).")
 			_, _ = fmt.Fprintf(out, "  Grant access to %s — look for the staged path, not a Homebrew/Cellar path.\n", stagedPath)
 		}
+		if modeUnhealthy {
+			_, _ = fmt.Fprintln(out, modeRemediation)
+		}
 	}
 
-	if unhealthyNonAuth || authUnhealthy {
+	if unhealthyNonAuth || authUnhealthy || modeUnhealthy {
 		return errDaemonDoctorUnhealthy
 	}
 	return nil
+}
+
+// daemonSupervisionModeSettingsRemediation is the remedy for a supervision mode
+// value this host will not act on. It is a settings edit, which is why it is
+// printed alongside the restart/login/permission remedies rather than inside
+// the unhealthyNonAuth ladder whose default branch is "run 'boss daemon
+// restart'".
+const daemonSupervisionModeSettingsRemediation = "  fix 'daemon_supervision_mode' in settings.json (remove the key to use the default)"
+
+// daemonSupervisionModeRemediation picks the remedy that matches WHY the
+// supervision substrate is unhealthy.
+//
+// BOS-1184 U3 made this a choice rather than a constant. A settings edit is the
+// right answer for a value the resolver refused, and the wrong one for the two
+// states the unattended substrate can be unhealthy in: an operator whose
+// watchdog is simply not installed does not have a bad key to fix, and one
+// whose watchdog sits on a user-writable path needs the path repaired, not the
+// key removed. Printing the settings line for either would send them to edit a
+// file that is already correct — the same misdirection this remedy was split
+// out of the restart ladder to avoid.
+//
+// It reads the SAME gathered status describeDaemonSupervisionMode renders, so
+// the verdict and its remedy cannot disagree about which state the host is in.
+func daemonSupervisionModeRemediation(st daemon.SupervisionModeStatus) string {
+	if st.Err == nil && st.Mode == daemon.SupervisionModeUnattended {
+		switch st.Unattended.State {
+		case daemon.UnattendedInstallAbsent:
+			return fmt.Sprintf("  run `%s` to install the root-owned unattended supervision watchdog (macOS will prompt for an administrator password)", daemon.WatchdogInstallCommand)
+		case daemon.UnattendedInstallInsecure:
+			return fmt.Sprintf("  make the path named above root-owned and unwritable by any other user, then run `%s` followed by `%s`", daemon.WatchdogUninstallCommand, daemon.WatchdogInstallCommand)
+		case daemon.UnattendedInstallPresent, daemon.UnattendedInstallNotApplicable:
+			// Nothing to remedy about the substrate itself. The settings line
+			// below is the honest fallback: this function is only consulted
+			// when SOMETHING is unhealthy, and if it was not the substrate then
+			// the configuration is the only thing left for it to speak to.
+		}
+	}
+	return daemonSupervisionModeSettingsRemediation
+}
+
+// reportDaemonSupervisionMode prints the CONFIGURED supervision substrate,
+// reports whether it is one this host refuses to act on, and returns the remedy
+// that matches.
+//
+// The verdict and the wording are both describeDaemonSupervisionMode's — the
+// same call `boss daemon status` makes — so the two surfaces cannot name
+// different modes for one settings file. Only the FAIL marker is chosen here,
+// which is this surface's own voice: status labels the fact, doctor grades it.
+// The status is loaded ONCE and fed to both the description and the remedy, so
+// a host cannot be described in one state and remediated for another.
+func reportDaemonSupervisionMode(out io.Writer) (unhealthy bool, remediation string) {
+	status := daemon.LoadSupervisionModeStatus()
+	description, unhealthy := describeDaemonSupervisionMode(status)
+	if unhealthy {
+		_, _ = fmt.Fprintf(out, "daemon supervision substrate: FAIL %s\n", description)
+	} else {
+		_, _ = fmt.Fprintf(out, "daemon supervision substrate: %s\n", description)
+	}
+	return unhealthy, daemonSupervisionModeRemediation(status)
 }
 
 func readLaunchAgentProgramArguments(plistPath string) ([]string, error) {

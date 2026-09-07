@@ -544,7 +544,10 @@ Check staleness deterministically. The selected artifact's `createdAt` is the au
 timestamp. Compare it to the issue `updatedAt`, ignoring this/prior boss-build bookkeeping edits
 (a resume finds the ticket `In Progress` with claim comments). If the issue was
 materially edited (scope/description/acceptance criteria) after that timestamp, comment that the plan
-is stale and stop BLOCKED. Copy the saved plan into the repo:
+is stale and stop BLOCKED. **This comparison cannot detect an acceptance criterion invalidated by a
+merged code change** — the issue was never edited, so the plan reads fresh while the code its premise
+named is already gone. A fresh timestamp is therefore not proof the plan still holds; that case is
+caught only by Step 4.6, which re-reads the code on every build. Copy the saved plan into the repo:
 
 ```bash
 mkdir -p docs/plans
@@ -570,9 +573,12 @@ On any resume or re-dispatch after an interruption, first inventory committed st
 standing instruction _continue from committed state; do not redo committed tasks_ into every
 re-dispatched subagent.
 
-Before Step 5, verify `## Premises` / `## Acceptance criteria`: resolve `path:line`s, re-derive
-claimed-complete sets, read symbols claimed missing; exclude `## Original notes`. False premise:
-merged-work inversion ⇒ departure; else comment refutation and stop BLOCKED.
+## Step 4.6: Re-verify premises and criteria against the code (every build)
+
+**Unconditional — fresh builds and resumes alike, never skipped.** Before Step 5, verify
+`## Premises` / `## Acceptance criteria`: resolve `path:line`s, re-derive claimed-complete sets, read
+symbols claimed missing; exclude `## Original notes`. False premise: merged-work inversion ⇒
+departure; else comment refutation and stop BLOCKED.
 
 ## Step 5: Implement — methodology resolution (strict precedence)
 

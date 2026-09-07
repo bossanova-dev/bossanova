@@ -873,6 +873,7 @@ export function parseImageGuardArgs(argv) {
     requireVerbatim: false,
     requireSafeSource: false,
     requireUnsignedUploads: false,
+    printOriginalNotes: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
@@ -894,6 +895,8 @@ export function parseImageGuardArgs(argv) {
       args.requireSafeSource = true
     } else if (flag === '--require-unsigned-uploads') {
       args.requireUnsignedUploads = true
+    } else if (flag === '--print-original-notes') {
+      args.printOriginalNotes = true
     }
   }
   if (!args.original) {
@@ -973,7 +976,17 @@ function canonicalizeImageUrls(
   })
 }
 
-function originalNotesBodies(markdown) {
+/**
+ * Every `## Original notes` body in `markdown`, in document order.
+ *
+ * Exported because callers were hand-slicing after the heading and getting a body ONE BYTE longer
+ * than this one: the template writes a single blank separator line between the heading and the
+ * content, and this extractor consumes exactly that newline. An ad-hoc slice keeps it, so the
+ * verbatim comparison reports a difference at offset 0 — which reads like a corrupted verbatim
+ * block rather than like an off-by-one in the caller's slice. Use this (or the `--print-original-notes`
+ * CLI mode) instead of re-deriving the rule.
+ */
+export function originalNotesBodies(markdown) {
   // Original notes is the terminal plan section. Its verbatim payload may itself contain H2
   // headings, so splitting at the next `##` would reject an otherwise exact copy. Locate headings
   // outside fenced code: a plan may document this template inside a fenced example.
@@ -1077,6 +1090,19 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/**
+ * True when the side passed as the safe source is really a COMPOSED plan description: it introduces
+ * an `## Original notes` wrapper the raw source does not have.
+ *
+ * Redaction only masks or removes text — it can never ADD a section heading — so a genuine redacted
+ * copy of the raw snapshot always carries the same number of `## Original notes` headings as the
+ * snapshot itself (usually zero). One more of them is the composed-description shape, and the
+ * pairing the caller wanted is `--require-verbatim`.
+ */
+function carriesComposedOriginalNotes(originalText, safeText) {
+  return originalNotesBodies(safeText).length > originalNotesBodies(originalText).length
+}
+
 function verifySafeSource(originalText, safeText) {
   // Canonical image identity permits the two mandatory URL transformations: stripping Linear
   // upload signatures and replacing external credential values with redactions. Any other
@@ -1095,6 +1121,18 @@ function verifySafeSource(originalText, safeText) {
   pattern += escapeRegex(safe.slice(cursor))
   pattern += '$'
   if (new RegExp(pattern).test(original)) return null
+
+  // Misuse, not corruption. --require-safe-source compares the two inputs as WHOLE texts with no
+  // notes extraction, so feeding it the composed description reports dropped-or-altered prose —
+  // a message that reads like the verbatim block was mangled and sends triage in the wrong
+  // direction. Name the flag that does pair a composed description against the source instead.
+  if (carriesComposedOriginalNotes(originalText, safeText)) {
+    return (
+      'plan-image-guard: --require-safe-source pairs a raw description snapshot against its own ' +
+      'redacted copy, but the rewritten side is a composed description carrying the source under ' +
+      '`## Original notes` — use --require-verbatim for that pairing'
+    )
+  }
 
   return 'plan-image-guard: safe source drops or alters unredacted original notes'
 }
@@ -1131,9 +1169,28 @@ function main() {
     requireVerbatim,
     requireSafeSource,
     requireUnsignedUploads,
+    printOriginalNotes,
   } = parseImageGuardArgs(process.argv.slice(2))
   const originalText = readFileSync(original, 'utf8')
   const rewrittenText = readFileSync(rewritten, 'utf8')
+
+  // Read-only extraction mode. Prints the `## Original notes` body of --rewritten, selected against
+  // --original exactly as the verbatim comparison selects it, so a caller never has to hand-slice
+  // after the heading and inherit the separator-newline off-by-one. It writes nothing and gates
+  // nothing: every other flag is ignored while this one is set.
+  if (printOriginalNotes) {
+    const body = originalNotesBody(rewrittenText, originalText)
+    if (body === null) {
+      console.error(
+        'plan-image-guard: no `## Original notes` section found outside fenced code — ' +
+          'nothing to extract',
+      )
+      process.exitCode = 1
+      return
+    }
+    process.stdout.write(body)
+    return
+  }
 
   // Refuse to CERTIFY a comparison we could not meaningfully perform. `findDroppedImages` is right
   // to return [] here — empty-in/empty-out is correct set-difference semantics, and it stays that

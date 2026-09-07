@@ -68,8 +68,8 @@ func TestBossRepairSkillReviewProbeContract(t *testing.T) {
 			if got := strings.Count(skill, relative); got != 0 {
 				t.Fatalf("relative probe command count = %d, want 0", got)
 			}
-			if got := strings.Count(skill, absolute); got != 8 {
-				t.Fatalf("absolute probe command count = %d, want 8", got)
+			if got := strings.Count(skill, absolute); got != 10 {
+				t.Fatalf("absolute probe command count = %d, want 10", got)
 			}
 			assertNotContains(t, skill, "from this skill directory")
 
@@ -99,6 +99,206 @@ func TestBossRepairSkillReviewProbeContract(t *testing.T) {
 			assertContains(t, residuals, "repository or PR 404")
 		})
 	}
+}
+
+// bossRepairSubstitutionAnchor is the in-document link every fenced `gh pr view --json` block must
+// carry so a reader blocked by GraphQL quota can reach the REST substitute from the block itself.
+const bossRepairSubstitutionAnchor = "#graphql-exhaustion-rest-substitutions-and-degraded-reads"
+
+// TestBossRepairSkillGraphQLExhaustionContract pins the REST substitution table: that it names a
+// substitute for every GraphQL-backed read the sibling-class enumeration marked `fix`, that it
+// carries the mergeability vocabulary mapping rather than hiding it, and that it states the
+// null-is-unobserved rule. Without that last statement an implementer reads a REST `null` as "not
+// conflicting", which is the same false-clean this whole change exists to close, reappearing in the
+// substitute path.
+//
+// Every assertion is scoped to the substitution section's own window. In a 100KB document an
+// unscoped `assertContains` can pass on incidental wording elsewhere, which would leave the gate
+// green while the statement it pins had been deleted.
+func TestBossRepairSkillGraphQLExhaustionContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			section := sectionBetween(t, skill,
+				"## GraphQL exhaustion: REST substitutions and degraded reads", "## Repair Workflow")
+
+			// A REST substitute for each read the enumeration marked `fix`.
+			assertContains(t, section, "gh api repos/OWNER/REPO/pulls/PR_NUM -q .head.sha")
+			assertContains(t, section, "gh api repos/OWNER/REPO/pulls/PR_NUM -q .base.ref")
+			assertContains(t, section, "gh api repos/OWNER/REPO/pulls/PR_NUM -q '.mergeable, .mergeable_state'")
+			assertContains(t, section, "gh api repos/OWNER/REPO/commits/HEAD_SHA/check-runs")
+			assertContains(t, section, "A check run whose `conclusion` is empty has not finished. That is pending, not passing")
+
+			// The vocabulary difference is stated, not assumed away.
+			assertContains(t, section, "The two APIs do not share a vocabulary")
+			assertContains(t, section, "`clean`, `dirty`, `blocked`, `unstable`, `behind`, `unknown`")
+			assertContains(t, section, "| `CONFLICTING` | `false`")
+			assertContains(t, section, "| `UNKNOWN`     | `null`")
+
+			// R6: REST's own unknowns are not clean either.
+			assertContains(t, section, "A REST `mergeable` of `null`, or a `mergeable_state` of `unknown`, is an unobserved result and")
+			assertContains(t, section, "must never be routed as \"not conflicting\".")
+
+			// The block-versus-warn adjudication, and the downgrade-only asymmetry.
+			assertContains(t, section, "Which degraded reads continue, and which still block")
+			assertContains(t, section, "**Warn and continue, degraded.**")
+			assertContains(t, section, "GraphQL rate-limited, REST also rate-limited")
+			assertContains(t, section, "A degraded read may downgrade an outcome; it may never upgrade one.")
+
+			// R9: degraded is never silent, and the token is uniform.
+			assertContains(t, section, "Degraded is never silent.")
+			assertContains(t, section, "`DEGRADED_READ`")
+
+			// The class table the routing sites key on. Per KTD5b the prose routes on the printed
+			// class and points at the probe as the definition; it must not restate the signature
+			// list, or prose and code become two copies of one ladder that then drift.
+			assertContains(t, section, "Route on the probe's printed failure class, never on stderr wording.")
+			assertContains(t, section, "this document does not restate the signature list")
+			for _, class := range []string{"rate_limited", "auth", "not_found", "environment", "other", "none"} {
+				assertContains(t, section, "| `"+class+"`")
+			}
+		})
+	}
+}
+
+// TestBossRepairSkillFencedPRViewBlocksNameTheirFallback is the "every executable spelling" layer.
+// The prose layer above can be satisfied while a later edit adds a fenced `gh pr view --json` block
+// in the old shape, and every other gate stays green — this one fails instead.
+//
+// The assertion is deliberately "the fallback is reachable from this block", not "the GraphQL
+// spelling is gone": the GraphQL command legitimately remains primary and the REST command is a
+// fallback, so demanding its removal would pin the wrong contract.
+func TestBossRepairSkillFencedPRViewBlocksNameTheirFallback(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			blocks := fencedBlocksContaining(t, skill, "gh pr view --json")
+			// A zero-block walk would make every check below pass vacuously. The document is known
+			// to carry these reads, so an empty result means the scanner broke, not that the
+			// contract holds.
+			if len(blocks) < 5 {
+				t.Fatalf("fenced `gh pr view --json` blocks found = %d, want at least 5; the block scanner is broken", len(blocks))
+			}
+			for _, block := range blocks {
+				window := skill[max(0, block.start-1500):min(len(skill), block.end+1500)]
+				if !strings.Contains(window, bossRepairSubstitutionAnchor) {
+					t.Errorf("fenced `gh pr view --json` block at byte %d has no %s reference within 1500 bytes; a quota-blocked reader cannot reach the REST substitute from it",
+						block.start, bossRepairSubstitutionAnchor)
+				}
+			}
+		})
+	}
+}
+
+// TestBossRepairSkillDeferredResolutionContract pins the deferral branch on BOTH resolveReviewThread
+// blocks. Resolution is GraphQL-only, so the fallback there is deferral rather than substitution,
+// and a deferred resolve must be reported as a transient residual — reporting it as permanent is the
+// "replied but still red" failure this change exists to end.
+func TestBossRepairSkillDeferredResolutionContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			const resolveMutation = "resolveReviewThread(input: {threadId: \"THREAD_ID\"})"
+			const deferBranch = "**If that resolve fails on GraphQL quota, defer it — do not re-post the reply.**"
+			resolves := strings.Count(strategyC, resolveMutation)
+			if resolves != 2 {
+				t.Fatalf("resolveReviewThread mutation count = %d, want 2", resolves)
+			}
+			if got := strings.Count(strategyC, deferBranch); got != resolves {
+				t.Errorf("deferred-resolution branch count = %d, want %d (one per resolveReviewThread block)", got, resolves)
+			}
+			if got := strings.Count(strategyC, "defer --thread THREAD_ID --reply REPLY_URL"); got != resolves {
+				t.Errorf("defer subcommand count = %d, want %d", got, resolves)
+			}
+			if got := strings.Count(strategyC, "A deferred resolve is a **transient residual** with a retry horizon"); got != resolves {
+				t.Errorf("transient-residual statement count = %d, want %d", got, resolves)
+			}
+			// R10: the drain retries the resolve only. The prose must say so, because a reader who
+			// thought the drain replayed the whole reply-then-resolve sequence would double-post.
+			assertContains(t, strategyC, "**resolve only**")
+			assertContains(t, strategyC, "cannot double-post the comment that already landed")
+
+			// Strategy C's four per-thread triage categories survive the insertion. A fifth would
+			// change the triage this change is only meant to make more trustworthy.
+			assertContains(t, strategyC, "For each thread, triage into one of four categories.")
+			for _, category := range []string{
+				"**a) Actionable — fix it:**",
+				"**b) Premise does not hold — decline and resolve:**",
+				"**c) Premise holds, remedy declined — affirm, record, resolve:**",
+				"**d) Unclear — ask for clarification:**",
+			} {
+				if got := strings.Count(strategyC, category); got != 1 {
+					t.Errorf("triage category %q count = %d, want 1", category, got)
+				}
+			}
+			for _, absent := range []string{"**e) ", "one of five categories"} {
+				assertNotContains(t, strategyC, absent)
+			}
+		})
+	}
+}
+
+// TestBossRepairSkillFailureClassRoutingContract pins the mechanical residual-versus-true-stop split
+// at every site that makes it. Before this change the document asked the agent to judge a rate limit
+// from an auth failure by eye, which is the misclassification the ticket's incidents record.
+func TestBossRepairSkillFailureClassRoutingContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			// Site 1: the probe interpretation rules in Strategy C.
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+			assertContains(t, strategyC, "probe_status=degraded")
+			assertContains(t, strategyC, "DEGRADED_COMMENT_CLUSTERS")
+			assertContains(t, strategyC, "`probe_degraded`, `probe_failure_class`, and `probe_retry_after` are printed on **every** path")
+			assertContains(t, strategyC, "**Decide residual versus true stop by reading `probe_failure_class`, not by judging")
+			assertContains(t, strategyC, "the error text by eye**")
+			assertContains(t, strategyC, "`auth`, `not_found`, and `environment` are true stops")
+			assertContains(t, strategyC, "A non-zero status is **not** by itself a true stop")
+
+			// Site 2: the terminal-outcome residual bullet.
+			outcomes := sectionBetween(t, skill, "## Terminal outcomes", "## Residuals vs true stops")
+			assertContains(t, outcomes, "`probe_failure_class` is `rate_limited` or `other` (read the printed class — do not judge the")
+			assertContains(t, outcomes, "a review thread whose reply landed but whose resolution was deferred on quota")
+
+			// Site 3: the residuals-versus-true-stops definition itself.
+			residuals := sectionBetween(t, skill, "## Residuals vs true stops", "## Edge Cases and Error Handling")
+			assertContains(t, residuals, "Split the two by the printed failure class, not by eye.")
+			assertContains(t, residuals, "`rate_limited` and `other` are residuals")
+			assertContains(t, residuals, "A **deferred thread resolution**")
+			assertContains(t, residuals, "never a permanent residual and never a true")
+		})
+	}
+}
+
+// fencedBlock is a half-open byte range covering one fenced code block in a markdown document.
+type fencedBlock struct{ start, end int }
+
+// fencedBlocksContaining returns every fenced code block whose body contains needle. Fences are
+// matched at the start of a line, allowing the leading indentation this document uses for blocks
+// nested inside list items.
+func fencedBlocksContaining(t *testing.T, markdown, needle string) []fencedBlock {
+	t.Helper()
+
+	var blocks []fencedBlock
+	offset, open, start, body := 0, false, 0, strings.Builder{}
+	for _, line := range strings.SplitAfter(markdown, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "```") {
+			if open {
+				if strings.Contains(body.String(), needle) {
+					blocks = append(blocks, fencedBlock{start: start, end: offset + len(line)})
+				}
+				open = false
+			} else {
+				open, start = true, offset
+				body.Reset()
+			}
+		} else if open {
+			body.WriteString(line)
+		}
+		offset += len(line)
+	}
+	if open {
+		t.Fatalf("unterminated fenced code block starting at byte %d", start)
+	}
+	return blocks
 }
 
 // TestBossRepairSkillPinsLinearHistoryInvariant pins the linear-history contract: a repair

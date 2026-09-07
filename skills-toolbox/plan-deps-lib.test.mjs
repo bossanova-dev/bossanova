@@ -365,6 +365,314 @@ test('extractKeyChangeAreas rejects a swapped argument order rather than reading
   )
 })
 
+// The duplicated guard splits the same two faults as its `skill-config.mjs` original: a correctly
+// ordered contractless config needs a config loaded, not arguments reordered. Both directions are
+// pinned — the swapped case above must keep failing, or this relaxation is a vacuous gate.
+test('extractKeyChangeAreas diagnoses a correctly ordered empty config as a missing contract', () => {
+  assert.throws(
+    () => extractKeyChangeAreas({}, '## Key changes\n\n- `app/api/x.ts`\n'),
+    (error) => {
+      assert.match(error.message, /^plan-deps-lib: extractKeyChangeAreas\(config, description\)/)
+      assert.match(error.message, /no plan contract loaded/)
+      assert.match(error.message, /loadSkillConfig\(\)/)
+      assert.doesNotMatch(error.message, /arguments look swapped/)
+      return true
+    },
+  )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1187 — one row per RECORDED extraction failure.
+//
+// Each row below quotes a shape that actually reached a tracker write. The two
+// directions are not symmetric and the rows are written to hold that asymmetry:
+// a fabricated area must vanish, an unresolvable one must be REPORTED, and a
+// resolvable one must survive — a gate that only ever rejects is the same defect
+// pointing the other way.
+// ---------------------------------------------------------------------------
+
+test('BOS-1173: a git ref quoted in prose contributes no area', () => {
+  const body = planBody('- Regenerate the fixtures — verified on `origin/main` `6a2b25eaa`\n')
+  assert.ok(
+    body.includes('origin/main'),
+    'non-vacuity: the fixture must genuinely quote the ref, or this row proves nothing',
+  )
+  const result = areas(body, { moduleRoots: ['services', 'scripts', 'skills-toolbox'] })
+  assert.deepEqual(
+    result.areas,
+    [],
+    'untuned, `origin/main` became an area and prefix-matched a ticket whose only other tie was a plan filename, writing a blockedBy edge that stranded a buildable ticket',
+  )
+  assert.deepEqual(
+    result.unresolved,
+    ['origin/main'],
+    'it is path-shaped, so it is reported rather than dropped in silence — the whole point is that a human can see what the scan refused to guess at',
+  )
+})
+
+test('BOS-1145: a bare directory named parenthetically yields no area while the real change site survives', () => {
+  const result = areas(
+    planBody('- `app/api/router.ts` — add the route (the `vendor/legacy` tree is untouched)\n'),
+    { moduleRoots: ['app'] },
+  )
+  assert.deepEqual(
+    result.areas,
+    ['app/api/router.ts'],
+    'a directory mentioned to say it is NOT touched must not prefix-match everything beneath it, and the narrowing must not take the real change site with it',
+  )
+  assert.deepEqual(result.unresolved, ['vendor/legacy'])
+})
+
+test('BOS-1056: a path in a sibling-enumeration table row is not promoted to a change site', () => {
+  // The rule is the shape gate, not table awareness: this module cannot read a
+  // row's verdict column, and a rule that could would have to parse markdown
+  // tables to decide dependency edges. What it can do is refuse a slashed token
+  // whose leading segment the caller never declared.
+  const table = [
+    '- `app/api/router.ts` — the fix',
+    '',
+    '| Site | Verdict |',
+    '| --- | --- |',
+    '| `vendor/legacy` | not a defect |',
+  ].join('\n')
+  const result = areas(planBody(`${table}\n`), { moduleRoots: ['app'] })
+  assert.deepEqual(
+    result.areas,
+    ['app/api/router.ts'],
+    'a row whose own verdict says "not a defect" must not inject its directory as a change site prefix-matching everything beneath it',
+  )
+  assert.deepEqual(result.unresolved, ['vendor/legacy'])
+  // The boundary, stated so it is argued with rather than discovered: a row
+  // naming a concrete FILE is still extracted, because a token carrying an
+  // extension is how a real path under an undeclared root stays visible. The
+  // recorded BOS-1056 edge came through a shared `docs/plans/…md` row, and that
+  // is closed one rung later by the suppression defaults, not here.
+  const withFile = areas(planBody('- `vendor/legacy/router.ts` — enumerated sibling\n'), {
+    moduleRoots: ['app'],
+  })
+  assert.deepEqual(
+    withFile.areas,
+    ['vendor/legacy/router.ts'],
+    'the extension escape hatch is deliberate: without it every real path under a root the caller forgot to declare would vanish',
+  )
+})
+
+test('BOS-1187 review: an unmarked module-root WORD in prose is not a change site', () => {
+  // The widened whitespace split feeds ordinary English to the shape gate, and a
+  // slash-free word is indistinguishable from a module root by shape alone. Before
+  // the provenance gate this bullet contributed `web` and `services` as areas —
+  // which `areasOverlap` then containment-matched against every file beneath them,
+  // fabricating exactly the blocking edge this scan exists to refuse.
+  const bullet = '- Rework the telemetry handler so the web and services teams share one shape'
+  assert.ok(
+    !bullet.includes('`'),
+    'non-vacuity: the bullet must carry NO backtick span, or the provenance gate is not what is under test',
+  )
+  const result = areas(planBody(`${bullet}\n`), { moduleRoots: ['web', 'services'] })
+  assert.deepEqual(result.areas, [], 'an unmarked English word is prose, never a change site')
+  assert.deepEqual(
+    result.unresolved,
+    [],
+    'and it is not path-shaped either, so it raises no warning',
+  )
+
+  // The same words MARKED as code still resolve: the gate reads provenance, not a denylist.
+  assert.deepEqual(
+    areas(planBody('- Rework the handler so `web` and `services` share one shape\n'), {
+      moduleRoots: ['web', 'services'],
+    }).areas,
+    ['web', 'services'],
+    'a backticked module root is a deliberate change site and must survive',
+  )
+})
+
+test('BOS-1187 review: a bare directory named parenthetically yields only the change site', () => {
+  // The AC names a BARE directory; the sibling BOS-1145 case pins the slash-bearing
+  // form (`vendor/legacy`), which travels a different branch of the classifier.
+  const result = areas(planBody('- Update services/boss/main.go (the docs tree is untouched)\n'), {
+    moduleRoots: ['services', 'docs'],
+  })
+  assert.deepEqual(
+    result.areas,
+    ['services/boss/main.go'],
+    'a directory named in prose to say it is NOT touched must not become a change site, and narrowing must not take the real one with it',
+  )
+})
+
+test('BOS-1187 review: dotted prose is not reported as an unresolved path', () => {
+  // `subject-unresolved-areas` tells a planner to rewrite the named tokens as
+  // repo-relative paths before writing any edge. That instruction is unsatisfiable
+  // for a version number or an abbreviation, so admitting them halts a scan that
+  // resolved every real path — and a warning raised on nearly every plan is how a
+  // real one stops being read.
+  const result = areas(
+    planBody('- Bump to v1.2 (2.10 in CI), e.g. for the release job, and touch README.md\n'),
+    { moduleRoots: ['services'] },
+  )
+  assert.deepEqual(result.areas, [], 'none of these is a resolvable change site')
+  assert.deepEqual(
+    result.unresolved,
+    ['readme.md'],
+    'only the genuine bare basename is reported; `v1.2`, `2.10` and `e.g` are prose',
+  )
+})
+
+test('BOS-946: a path written mid-sentence, with no backtick span in the bullet, is extracted', () => {
+  const bullet =
+    '- Replace the two maps in services/bosso/internal/telemetry_actions.go with one table'
+  assert.ok(
+    !bullet.includes('`'),
+    'non-vacuity: the bullet must carry NO backtick span, or the widened scan is not what is under test',
+  )
+  const result = areas(planBody(`${bullet}\n`), { moduleRoots: ['services'] })
+  assert.deepEqual(
+    result.areas,
+    ['services/bosso/internal/telemetry_actions.go'],
+    'taking only the leading fragment of an unbackticked bullet is how two tickets editing the same file both scored no-overlap',
+  )
+})
+
+test('BOS-1116: a bare basename with no directory is reported unresolved, never silently dropped', () => {
+  const result = areas(planBody('- boss-build SKILL.md + references\n'), {
+    moduleRoots: ['services', 'scripts'],
+  })
+  assert.deepEqual(
+    result.areas,
+    [],
+    'a basename matches dozens of real files; resolving it here would trade one recorded missed edge for an unbounded source of fabricated ones',
+  )
+  assert.deepEqual(
+    result.unresolved,
+    ['skill.md'],
+    'but it IS path-shaped, so the caller must be told the scan saw it and could not place it',
+  )
+  assert.equal(
+    result.source,
+    'key-changes',
+    'the section was read; "we looked and could not resolve it" is a third outcome, not the arealess one',
+  )
+})
+
+test('BOS-1176: an unresolved subject token raises its own warning beside the arealess one', () => {
+  const result = planDependencyEdges({
+    subject: { ...subject(), areas: [], unresolvedAreas: ['skill.md'] },
+    candidates: [{ ...candidate(), areas: ['app/api'] }],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  const reasons = result.notes.map((entry) => entry.reason)
+  assert.ok(
+    reasons.includes('subject-unresolved-areas'),
+    'a non-zero candidate count over unresolvable tokens printed `compared: 16, edges: []` — byte-identical to a real clean scan',
+  )
+  assert.ok(
+    reasons.includes('no-subject-areas'),
+    'BOTH fire: "nothing was comparable" and "here are the tokens we could not place" are different things to tell the caller, and folding them collapses the more specific one',
+  )
+  const warning = result.notes.find((entry) => entry.reason === 'subject-unresolved-areas')
+  assert.equal(warning.severity, 'warning')
+  assert.equal(warning.destination, 'risks')
+  assert.match(warning.text, /skill\.md/, 'the note must NAME the token so it can be resolved')
+})
+
+test('BOS-1164: repoWideTokens EXTENDS the shipped defaults instead of replacing them', () => {
+  // The recorded run had to restate eleven defaults just to add one token; the
+  // next caller that forgets one silently re-enables the edges it suppressed.
+  const result = areasOverlap(['node_modules', 'proof/recipes/default.json'], ['node_modules'], {
+    repoWideTokens: ['proof/recipes/default.json'],
+  })
+  assert.equal(
+    result.overlap,
+    false,
+    'adding one repo-specific token must not drop `node_modules` — the shipped default that was the only thing suppressing this pair',
+  )
+  assert.deepEqual(result.shared, [])
+})
+
+test('BOS-1164: the named replace-mode opt-out still replaces the shipped defaults', () => {
+  const result = areasOverlap(['node_modules'], ['node_modules'], {
+    repoWideTokens: ['proof/recipes/default.json'],
+    replaceRepoWideTokens: true,
+  })
+  assert.equal(
+    result.overlap,
+    true,
+    'a caller that genuinely wants the shipped list gone must be able to say so — but by name, never as the silent side effect of passing one token',
+  )
+  assert.deepEqual(result.shared, ['node_modules'])
+})
+
+test('BOS-1163: a slash-bearing suppression token suppresses areas beneath it, a single-segment one does not', () => {
+  const mirror = 'plugins/bossd-plugin-claude/skilldata'
+  const declared = [`${mirror}/skills/boss-plan`]
+  const beneath = [`${mirror}/skills/boss-plan/toolbox/x.mjs`]
+  assert.equal(
+    areasOverlap(declared, beneath).overlap,
+    true,
+    'non-vacuity: these two genuinely contain one another, so the suppression below is what makes the difference — not a pair that never overlapped',
+  )
+  const nested = areasOverlap(declared, beneath, { repoWideTokens: [mirror] })
+  assert.equal(
+    nested.overlap,
+    false,
+    'a generated mirror directory declared noisy must suppress everything it contains; an exact-match-only token never matches the deep paths that are the whole problem',
+  )
+  const concrete = areasOverlap(['docs/api.md'], ['docs/api.md'], { repoWideTokens: ['docs'] })
+  assert.equal(
+    concrete.overlap,
+    true,
+    'the narrowing must not reject everything: a single-segment token keeps exact-match semantics, so a concrete file two tickets really do share still overlaps',
+  )
+})
+
+test('BOS-1119: the boilerplate plan-copy directory alone produces no overlap and no edge', () => {
+  // "copy the plan to docs/plans/<id>.md" ships in every plan by construction,
+  // so the plans directory is the one area every candidate shares. A tracker-only
+  // ticket with no source change was scoring a blocking edge on exactly that.
+  const subjectAreas = areas(
+    planBody(
+      '- `app/api/router.ts` — the change\n- copy the plan to `docs/plans/bos-1.md` and commit it\n',
+    ),
+    { moduleRoots: ['app'] },
+  ).areas
+  assert.deepEqual(
+    subjectAreas,
+    ['app/api/router.ts', 'docs/plans/bos-1.md'],
+    'non-vacuity: the boilerplate line must genuinely still yield a docs/plans area, or the suppression below is passing for free',
+  )
+  const trackerOnly = ['docs/plans']
+  assert.equal(
+    areasOverlap(subjectAreas, ['app/api/router.ts']).overlap,
+    true,
+    'non-vacuity: the same subject still overlaps a ticket that really does touch its source file',
+  )
+  assert.equal(
+    areasOverlap(subjectAreas, trackerOnly).overlap,
+    false,
+    'co-appearing under the plans directory is an artifact of the template, never an ordering constraint',
+  )
+  const result = planDependencyEdges({
+    subject: { ...subject(), areas: subjectAreas },
+    candidates: [{ ...candidate(), areas: trackerOnly }],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.deepEqual(result.edges, [], 'and no edge reaches the tracker write')
+})
+
+test('an unresolved-token warning stands down when every token resolved', () => {
+  const clean = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'], unresolvedAreas: [] },
+    candidates: [{ ...candidate(), areas: ['app/api'] }],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.ok(
+    !clean.notes.some((entry) => entry.reason === 'subject-unresolved-areas'),
+    'non-vacuity: a warning that fires on every run carries no information at all',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Defect 2 — overlap is a precondition, and the granularity is stated
 // ---------------------------------------------------------------------------
@@ -1340,6 +1648,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
     'declared-related-unresolved',
     'no-candidates-compared',
     'no-subject-areas',
+    'subject-unresolved-areas',
     'all-pairs-downgraded-unknown-state',
     'same-epic-member',
   ]
@@ -1581,7 +1890,11 @@ test('a repo-wide token is excluded even when the other side is deeper than it',
     false,
     'the DEFAULT token list must behave the same way — `src` is on it',
   )
-  const kept = areasOverlap(['docs/plans/x.md'], ['docs/plans/x.md'])
+  // `docs/api/x.md`, not `docs/plans/x.md`: `docs/plans` is now a shipped default
+  // in its own right and carries a slash, so it suppresses what it contains. The
+  // single-segment `docs` above still keeps exact-match semantics, which is what
+  // this row exists to prove.
+  const kept = areasOverlap(['docs/api/x.md'], ['docs/api/x.md'])
   assert.equal(
     kept.overlap,
     true,

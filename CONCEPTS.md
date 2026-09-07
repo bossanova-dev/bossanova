@@ -700,6 +700,25 @@ or re-attempt the cleanup it names; what the missing stamp alone may not do is c
 state. Compare **Gate outcome**, which draws the same "ran and said no" versus "could not be
 evaluated at all" line on the fail-closed side.
 
+### Run scratch
+
+The intermediate artifacts a planning or build run writes while working — composed descriptions,
+guard inputs, dependency-scan payloads — held in a shared, version-ignored location and promised to
+be gone at every terminal state.
+
+Run scratch is addressed by the **run**, never by the subject the run is working on. Two runs can
+legitimately be working the same ticket at once, so a subject-scoped name identifies a set that spans
+both of them; only the run's own identity separates them. Each run therefore owns one scratch
+directory and removes exactly that directory, which is what makes cleanup safe to perform without
+first proving no peer is active.
+
+Ownership is exclusive and the shared root is not tidied: anything there that is not this run's own
+declared scratch belongs to a peer, including entries that look like obvious residue. Reclaiming
+genuinely abandoned scratch is the job of a separate age-based sweep, which is the only actor
+permitted to remove another run's directory, and only once it is old enough that no live run could
+still hold it. The names a run may write are declared in one place rather than restated at each
+cleanup site, so that the set cleanup removes and the set the run creates cannot drift apart.
+
 ## Scheduled sessions (cron)
 
 ### Cron gate
@@ -866,6 +885,60 @@ ticket is planned only once the artifact and the accompanying tracker metadata h
 A ticket that still carries the planning queue signal remains retryable even if an Implementation
 plan artifact already exists, because the artifact may have been written before the metadata commit
 point.
+
+### Premise anchor
+
+A token copied verbatim from a cited location and carried alongside the citation, so a consumer can
+confirm the coordinate still names what the citation claimed instead of trusting a line number that
+may since have moved.
+
+A citation into code that keeps moving is unverified until something re-opens the file at the cited
+coordinate, and the anchor is what makes that check mechanical: the consumer re-reads a small window
+around the cited line and looks for the token, so ordinary churn above the cited symbol is absorbed
+while a wholesale relocation is reported. Citing the file without a line number is the sanctioned
+escape — a citation that cannot be anchored drops the precision it cannot support rather than
+asserting it. The check is deliberately textual. It establishes that the cited token is still there,
+never that the token is the right one for the claim, and never that the claim itself is true.
+
+### Description write-back
+
+The measured comparison of what a tracker actually stored for an issue description against the bytes
+the skill intended to store, performed by reading the description back after the save.
+
+It exists because every other check around a description write is pre-write prevention read from
+local files: nothing observed what landed, and a tracker exposes no description history to an agent,
+so once a description is stored it is the only surviving copy. A write-back is therefore
+deliberately non-destructive — by the time it runs the text is already stored, so a failing verdict
+reports and retains evidence rather than attempting a corrective rewrite of a description the run
+has just proven it cannot reproduce faithfully.
+
+The verdict has three tiers, strongest first. **Byte-exact**: the stored text equals the intended
+text byte for byte, which also establishes that the write transport round-trips.
+**Normalized-equivalent**: every difference is attributable to a declared Tolerated transform, _and_
+the Plan contract still validates against the stored text, _and_ the quoted source notes and every
+uploaded asset survived the write — a conjunction, not a resemblance, because no one of those checks can see
+what the others cover. **Drift**: anything else. A comparison that could not meaningfully be
+performed at all — an empty stored description, an unreadable input — is a refusal rather than a
+tier, and is neither a pass nor drift; conflating the two is what makes a fidelity check vacuous.
+
+### Tolerated transform
+
+A named reshaping a tracker is known to apply to a description as it stores it, which a repository
+declares acceptable so a Description write-back may absorb it instead of reporting drift.
+
+The set of names is closed: an undeclared name is rejected rather than quietly ignored, and the
+default is empty, so a repository that declares nothing gets the strictest possible comparison.
+Each name is paired with a canonicalizer that maps both spellings of its reshaping onto one form and
+is idempotent, so it can be applied to the intended and the stored side alike without knowing which
+side was reshaped.
+
+A canonicalizer must recognise the specific reshaping rather than delete the characters that
+reshaping happens to involve. One written as a blanket deletion also erases genuine differences, so
+two texts that differ in exactly the way the write-back exists to catch reduce to one string and the
+loss is certified as equivalence — the check becomes a warrant for the defect it guards against.
+Because of that asymmetry the recognised shape is kept narrow: an unrecognised shape stays a byte
+difference and is reported as drift, which costs a human one triage look, where the opposite error
+silently blesses the destruction of the only surviving copy.
 
 ## Agent runtime gating
 
@@ -1364,6 +1437,17 @@ core's project-agnostic phrasing a hard requirement: repository-specific behavio
 through repo-local configuration and repo-local extensions, never by naming this project inside the
 core.
 
+Naming the project is not the only way a core stops being portable, and it is the easier half to
+see. A core's prose is instruction its readers execute, so an example citing a location that resolves
+only in the repository the core was authored in is unportable in the same way and harder to catch —
+it resolves for the author and for every reviewer, because all of them are standing in that one
+repository, and it fails only once someone elsewhere copies it. An example may name something the
+payload itself carries, or a placeholder shaped like a generic repository that names nothing real;
+the authoring repository's own layout is neither. Note also what a green portability check does and
+does not establish: these gates recognise an unportable reference by enumerating the spellings they
+know, so passing is evidence about the enumerated spellings rather than about portability at large,
+and a reference spelled a way nobody listed passes unremarked.
+
 ### Toolbox
 
 The set of shared helper modules a skill carries alongside its instructions. A toolbox is distributed
@@ -1401,7 +1485,10 @@ the exception that has to say why.
 
 An exact pin's number is _measured_, never derived — not from a plan document, a ticket, or a previous
 commit message, and never as the measurement plus a margin, which ships slack rather than recording a
-fact. Where a passing pin and the prose around it disagree, the pin is the truth and the prose is what
+fact. A pin's _location_ is derived the same way and rots on the same schedule: an unrelated ticket
+that repins the same ratchet moves the line it sits on without touching the document that cites it,
+so a coordinate naming a ratchet is re-resolved from the tree rather than carried forward. See
+**Premise anchor**. Where a passing pin and the prose around it disagree, the pin is the truth and the prose is what
 drifted. Because a red pin does not say which of its two halves moved, its failure message is part of
 the mechanism rather than decoration: it states what the number covers and what it does not, names a
 remedy the artifact can actually perform, and says how to check the pin's own provenance before
@@ -2118,6 +2205,41 @@ the concurrency actually produces, not by which one the wording evokes. A classi
 by the layer whose state it describes, which is what keeps nested retry ladders from retrying each
 other's failures — but that disjointness bounds recursion only, never the product of their attempt
 counts, which nothing but the caller's own deadline bounds.
+
+A signature set is bounded not only by what it matches but by whose voice its corpus carries. Where
+the text being matched is a combined log rather than the tool's own error stream — a gate log that
+also carries the output of the subject under test — the subject's own data is in the haystack, and a
+suite that legitimately quotes a transport phrase as fixture data will have that phrase echoed back
+on the very failure the classification is reading. The match is then evidence about the fixture and
+not about the host, and it answers _retry_ to a genuine defect. The repair is a rival signal drawn
+from the same text that the subject cannot forge in its own favour — a reported failure of the
+subject itself — consulted first and used to withhold the contaminated half of the set. Only that
+half: a host-level fault such as an exhausted disk is real whenever it appears, including during a
+run of the subject, so gating every signature on the rival signal trades one false reading for the
+opposite one.
+
+### Unestablished terminal marker
+
+A terminal state written on behalf of a subject whose termination was requested but never confirmed,
+so the marker records the request rather than the fact it names. It is the write-side member of the
+family that includes a **Vacuous gate** and a **Diagnostic conflation**, and it is the most costly of
+the three at the moment it is wrong: the marker does not merely fail to inform, it suppresses the
+evidence a reader would otherwise still have found.
+
+That suppression is what separates it from an ordinary optimistic write. A resource marked terminal
+stops being polled, stops being listed as outstanding, and stops attracting the cleanup that would
+have reached it — so a subject that outlived the request goes on holding whatever it held, now behind
+a record asserting it is finished. A reclamation routine that writes the marker straight after
+signalling is therefore capable of making the exact failure it exists to repair harder to see than if
+it had never run at all.
+
+Establishment has a shape. Escalate to a request the subject cannot decline; observe the subject
+afterwards rather than inferring its state from the request having been made; and treat the
+still-unconfirmed case as its own outcome — recorded so the marker stops reading as in-flight, but
+reported in-band and in the exit status as an unreleased resource rather than as a clean stop. Where
+the subject is addressed by an identifier the system reuses, the address is itself unestablished: an
+identifier read from a record that outlives its subject may name something else entirely by the time
+it is signalled, so the only safe target is one whose scope dies with the subject.
 
 ### Pure relocation
 

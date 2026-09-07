@@ -123,6 +123,15 @@ const TWO_ORGANIZATION_RECIPE_IDS = new Set([
   'web-org-billing-portal-second-org',
 ])
 
+// Recipes that need the fake AuthKit's switchToOrganization to REJECT.
+//
+// Opt-in and recipe-scoped, because a rejecting switch is poison for every
+// other organization recipe: the `/:orgId/settings/*` guard renders "Switching
+// to <org>" until the claim catches up, so a fixture-wide failure would leave
+// most of them photographing a spinner. Read by
+// services/web/tests/e2e/fakes/authkit-react.tsx (BOS-1191).
+const SWITCH_FAILURE_RECIPE_IDS = new Set(['web-org-create-switch-failed'])
+
 const invokedDirectly = isMainModule(import.meta.url)
 
 if (invokedDirectly) {
@@ -1777,10 +1786,17 @@ function organizationStageScript(recipe) {
         },
       ]
     : null
-  const stagedFields = organizations
-    ? `{ organizationId: '${organizationId}', organizations: ${JSON.stringify(organizations)} }`
-    : `{ organizationId: '${organizationId}' }`
-  return stageFixtureScript(stagedFields)
+  // Assembled as source text rather than via JSON.stringify: the emitted
+  // fixture literal is asserted verbatim by proof-playwright-runner.test.mjs,
+  // down to the single quotes.
+  const fields = [`organizationId: '${organizationId}'`]
+  if (organizations) {
+    fields.push(`organizations: ${JSON.stringify(organizations)}`)
+  }
+  if (SWITCH_FAILURE_RECIPE_IDS.has(recipe.id)) {
+    fields.push('authSwitchFails: true')
+  }
+  return stageFixtureScript(`{ ${fields.join(', ')} }`)
 }
 
 // captureReadyScript emits an extra readiness gate for recipes whose promised

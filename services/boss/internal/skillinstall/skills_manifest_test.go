@@ -2272,9 +2272,9 @@ func TestBossPlanPayloadDocumentsAtomicAttachmentPublish(t *testing.T) {
 
 func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 	dir := t.TempDir()
-	plansDir := filepath.Join(dir, ".linear-plans")
-	if err := os.Mkdir(plansDir, 0o755); err != nil {
-		t.Fatalf("mkdir .linear-plans: %v", err)
+	plansDir := filepath.Join(dir, ".linear-plans", bossPlanTestRunScratchDir)
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatalf("mkdir run scratch: %v", err)
 	}
 	childPlan := filepath.Join(plansDir, "BOS-0-child-api-BOS-1-add-api.md")
 	if err := os.WriteFile(childPlan, []byte("# child\n"), 0o644); err != nil {
@@ -2326,7 +2326,7 @@ func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 		paths := make([]string, 0, len(names)*3)
 		for _, name := range names {
 			for _, suffix := range []string{".image-guard-orig.md", ".attachment-guard-orig.md", ".image-guard-new.md"} {
-				rel := ".linear-plans/" + name + suffix
+				rel := ".linear-plans/run-test0001/" + name + suffix
 				body := []byte("# guard\n")
 				if strings.HasSuffix(suffix, "-orig.md") {
 					body = nil
@@ -2349,16 +2349,22 @@ func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 	defaultGuards := writeGuardSet(t, epicGuardNames("BOS-0", "BOS-1", "BOS-2")...)
 	dirGuards := writeGuardSet(t, epicGuardNames("BOS-0", "BOS-3")...)
 	parentOnlyGuards := writeGuardSet(t, "BOS-0")
-	nestedGuardPath := ".linear-plans/nested/BOS-0.child-BOS-2.image-guard-new.md"
+	nestedGuardPath := ".linear-plans/run-test0001/nested/BOS-0.child-BOS-2.image-guard-new.md"
 	if err := os.WriteFile(filepath.Join(dir, nestedGuardPath), []byte("# nested guard\n"), 0o644); err != nil {
 		t.Fatalf("write nested guard: %v", err)
 	}
-	nestedGuards := strings.Replace(defaultGuards, `".linear-plans/BOS-0.child-BOS-2.image-guard-new.md"`, `"`+nestedGuardPath+`"`, 1)
+	nestedGuards := strings.Replace(defaultGuards, `".linear-plans/run-test0001/BOS-0.child-BOS-2.image-guard-new.md"`, `"`+nestedGuardPath+`"`, 1)
 
+	// The fixture paths below spell the run scratch directory literally (they sit inside JSON
+	// bodies, where Go concatenation cannot reach), so pin the literal to the constant the
+	// verifier substitutes — otherwise a rename would silently split the two apart.
+	if bossPlanTestRunScratchDir != "run-test0001" {
+		t.Fatalf("fixture paths hard-code run-test0001; bossPlanTestRunScratchDir is %q", bossPlanTestRunScratchDir)
+	}
 	validator := bossPlanArtifactVerifier(t)
 	t.Run("valid child id to plan path map", func(t *testing.T) {
 		writeDefaultSpec(t)
-		read := `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`
+		read := `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/run-test0001/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`
 		cmd := exec.Command("node", "-e", validator, read, filepath.Join(dir, "plan.md"), "dispatch failed")
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
@@ -2374,43 +2380,43 @@ func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 	}{
 		{
 			name: "duplicate child plan paths",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
 			want: "childPlanPaths",
 		},
 		{
 			name: "unrelated path cannot cover missing child id",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-999":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md","BOS-999":".linear-plans/run-test0001/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
 			want: "childPlanPaths",
 		},
 		{
 			name: "child manifest must cover every spec child",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
 			want: "childPlanPaths",
 		},
 		{
 			name: "child manifest must use each spec child once",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-api-BOS-2-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
-			want: ".linear-plans/BOS-0-child-api-BOS-2-add-api.md",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/run-test0001/BOS-0-child-api-BOS-2-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/run-test0001/BOS-0-child-api-BOS-2-add-api.md",
 		},
 		{
 			name: "wrong canonical child artifact",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-anything.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
-			want: ".linear-plans/BOS-0-child-ui-anything.md",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/run-test0001/BOS-0-child-ui-anything.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/run-test0001/BOS-0-child-ui-anything.md",
 		},
 		{
 			name: "sentinel child key cannot forge missing child artifact",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-forged-BOS-1-add-forged.md"},"childPlanKeysById":{"BOS-1":"forged"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
-			want: ".linear-plans/BOS-0-child-forged-BOS-1-add-forged.md",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-forged-BOS-1-add-forged.md"},"childPlanKeysById":{"BOS-1":"forged"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/run-test0001/BOS-0-child-forged-BOS-1-add-forged.md",
 		},
 		{
 			name: "missing rehydrated epic spec scratch",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[]}}`,
 			want: "epicSpecPaths",
 		},
 		{
 			name: "directory child plan path",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-3"],"childPlanPaths":{"BOS-3":".linear-plans/BOS-0-child-dir-BOS-3-add-dir.md"},"guardScratchPaths":` + dirGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
-			want: ".linear-plans/BOS-0-child-dir-BOS-3-add-dir.md",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-3"],"childPlanPaths":{"BOS-3":".linear-plans/run-test0001/BOS-0-child-dir-BOS-3-add-dir.md"},"guardScratchPaths":` + dirGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/run-test0001/BOS-0-child-dir-BOS-3-add-dir.md",
 			setup: func(t *testing.T) {
 				t.Helper()
 				body := `{"parentId":"BOS-0","children":[{"key":"dir","title":"Add Dir"}]}`
@@ -2421,17 +2427,17 @@ func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 		},
 		{
 			name: "nested child plan path",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/nested/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
-			want: ".linear-plans/nested/BOS-0-child-api-BOS-1-add-api.md",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/nested/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/run-test0001/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/run-test0001/nested/BOS-0-child-api-BOS-1-add-api.md",
 		},
 		{
 			name: "noncanonical epic spec path cannot forge child metadata",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-forged-BOS-1-add-forged.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0-forged.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-forged-BOS-1-add-forged.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0-forged.epic-spec.json"]}}`,
 			want: "epicSpecPaths",
 		},
 		{
 			name: "canonical epic spec path must match parent id",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
 			want: "epicSpecPaths",
 			setup: func(t *testing.T) {
 				t.Helper()
@@ -2443,22 +2449,22 @@ func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 		},
 		{
 			name: "partial guard scratch manifest",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + parentOnlyGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/run-test0001/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + parentOnlyGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
 			want: "guardScratchPaths",
 		},
 		{
 			name: "nested guard scratch path",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + nestedGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/run-test0001/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + nestedGuards + `,"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
 			want: nestedGuardPath,
 		},
 		{
 			name: "missing guard scratch manifest",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md"},"epicSpecPaths":[".linear-plans/run-test0001/BOS-0.epic-spec.json"]}}`,
 			want: "guardScratchPaths",
 		},
 		{
 			name: "missing epic spec manifest",
-			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":[]}}`,
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/run-test0001/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":[]}}`,
 			want: "epicSpecPaths",
 		},
 	} {
@@ -2490,8 +2496,23 @@ func bossPlanArtifactVerifier(t *testing.T) string {
 	if len(m) != 2 {
 		t.Fatalf("boss-plan payload missing artifact verifier node command")
 	}
-	return m[1]
+	// The payload addresses scratch under `.linear-plans/run-<RUN-SCRATCH-ID>/`, where the agent
+	// substitutes the id Phase 0 minted. Do the same substitution here so the fixtures below sit
+	// where a real run would put them — and fail loudly if the placeholder is gone, because a
+	// silent no-op substitution would leave this test verifying an address nothing writes to.
+	verifier := m[1]
+	if !strings.Contains(verifier, bossPlanRunScratchPlaceholder) {
+		t.Fatalf("boss-plan artifact verifier no longer addresses scratch via %q — per-run scratch must stay run-scoped", bossPlanRunScratchPlaceholder)
+	}
+	return strings.ReplaceAll(verifier, bossPlanRunScratchPlaceholder, bossPlanTestRunScratchDir)
 }
+
+const (
+	// The template the published payload writes, and the concrete directory the tests substitute
+	// for it. Keeping both here is what lets a fixture path and the verifier agree.
+	bossPlanRunScratchPlaceholder = "run-<RUN-SCRATCH-ID>"
+	bossPlanTestRunScratchDir     = "run-test0001"
+)
 
 func TestBossPlanArtifactVerifierFailureCleansScratch(t *testing.T) {
 	b, err := SkillsFS.ReadFile("skills/boss-plan/SKILL.md")
@@ -2515,17 +2536,38 @@ func TestBossPlanArtifactVerifierFailureCleansScratch(t *testing.T) {
 	}
 	for _, want := range []string{
 		cleanupLine,
-		".linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json",
-		"-name '<ISSUE-ID>-child-*.md' -delete",
-		"-name '<ISSUE-ID>*.image-guard-*.md' -delete",
-		"-name '<ISSUE-ID>*.attachment-guard-orig.md' -delete",
-		"-name '<ISSUE-ID>*.attachment-headers-*.json' -delete",
-		"-name '<ISSUE-ID>*.epic-spec.json' -delete",
+		// One removal of this run's own scratch directory, plus a residual-existence assertion —
+		// `rm` can exit 0 on macOS having failed to remove an entry, so the post-condition is
+		// checked rather than the exit status.
+		"rm -rf .linear-plans/" + bossPlanRunScratchPlaceholder,
+		"if [ -e .linear-plans/" + bossPlanRunScratchPlaceholder + " ]; then CLEANUP_RC=1; fi",
 		"warning: scratch cleanup failed",
 		"exit 1",
 	} {
 		if !strings.Contains(block, want) {
 			t.Errorf("artifact verifier failure cleanup block missing %q", want)
+		}
+	}
+	// The ratchet half: an issue-scoped pattern must never come back. Two runs can plan the same
+	// ticket at once, so an `<ISSUE-ID>`-scoped delete reaches a concurrent peer's live scratch —
+	// observed happening even though the pattern was "correctly" scoped.
+	for _, forbidden := range []string{
+		"find .linear-plans -maxdepth 1",
+		"-name '<ISSUE-ID>",
+		".linear-plans/<ISSUE-ID>",
+	} {
+		// Scanned across the WHOLE payload, not just this branch. The same cleanup is spelled at
+		// FIVE sites — stale-sentinel abort, artifact failure (the one `block` bounds), epic
+		// reverify-fail, draft-metadata abort, and the Phase 5 success path — so a `block`-scoped
+		// ratchet leaves FOUR unguarded. The `want` list above stays scoped to `block`, because it
+		// asserts a positional property of this branch.
+		//
+		// Widening to `payload` puts the Phase 5 hazards prose in scope too. That prose must keep
+		// describing the anti-pattern abstractly: it writes `find … -name 'PREFIX*' -delete` and
+		// `<ISSUE-ID>*`, neither of which contains a forbidden substring. Spelling the concrete
+		// don't-do example literally would fire this ratchet on a correct payload — paraphrase it.
+		if strings.Contains(payload, forbidden) {
+			t.Errorf("boss-plan payload reintroduced issue-scoped cleanup %q; every scratch cleanup must name only this run's scratch directory", forbidden)
 		}
 	}
 }
@@ -2572,5 +2614,84 @@ func TestBossBuildPayloadReadsNativePlanAttachmentsOnly(t *testing.T) {
 		if strings.Contains(payload, forbidden) {
 			t.Errorf("boss-build payload still references retired plan storage %q", forbidden)
 		}
+	}
+}
+
+// TestBossPlanPayloadVerifiesTheDescriptionWriteBack pins the post-save read-back in EVERY shipped
+// payload (BOS-1199). Every other gate in the planning core is pre-write prevention read from local
+// files, so a transcription slip at the save step survived all of them — and the tracker exposes no
+// description history to an agent, which makes the written text the only surviving copy.
+//
+// A stale plugin mirror can transiently restore its embedded payload at daemon start, so the gate is
+// asserted in both payloads rather than only in the skillinstall home. The drift branch is asserted
+// by BEHAVIOUR, not by helper name: a name-exact pin stays green while the prose has stopped saying
+// the description is already stored and must not be rewritten, which is the whole point of the
+// branch.
+func TestBossPlanPayloadVerifiesTheDescriptionWriteBack(t *testing.T) {
+	for label, fsys := range shippedPayloads(t) {
+		b, err := fs.ReadFile(fsys, "skills/boss-plan/SKILL.md")
+		if err != nil {
+			t.Fatalf("%s: read boss-plan payload: %v", label, err)
+		}
+		payload := string(b)
+		for _, want := range []string{
+			`plan-writeback-verify.mjs" --intended "$WB_FINAL" --stored "$WB_STORED"`,
+			"STOP — write-back verification (mandatory, mechanical, do not skip)",
+			"**retain** the scratch",
+			"not** attempt a corrective rewrite",
+			"tracker's **stored, normalized** text",
+		} {
+			if !strings.Contains(payload, want) {
+				t.Errorf("%s: boss-plan payload missing %q", label, want)
+			}
+		}
+		// Exactly one read-back: the run writes the description twice by design, and verifying the
+		// intermediate state is a false red on a correct run.
+		if got := strings.Count(payload, "plan-writeback-verify.mjs"); got != 1 {
+			t.Errorf("%s: boss-plan payload names plan-writeback-verify.mjs %d times, want exactly 1", label, got)
+		}
+		// The helper the prose invokes must actually ship, or the gate cannot RUN rather than fail.
+		if _, err := fs.Stat(fsys, "skills/boss-plan/toolbox/plan-writeback-verify.mjs"); err != nil {
+			t.Errorf("%s: boss-plan toolbox does not ship plan-writeback-verify.mjs: %v", label, err)
+		}
+	}
+}
+
+// TestProjectAgnosticGateCoversTheWriteBackProse proves the zero-tolerance portability gate reaches
+// the bytes BOS-1199 ADDED, not merely the bytes that were already there. A gate asserted only over
+// old text would stay green while a vendor name entered a new paragraph, so the scan is exercised
+// against a synthetic payload holding the new prose with one forbidden identifier spliced in.
+func TestProjectAgnosticGateCoversTheWriteBackProse(t *testing.T) {
+	b, err := SkillsFS.ReadFile("skills/boss-plan/SKILL.md")
+	if err != nil {
+		t.Fatalf("read boss-plan payload: %v", err)
+	}
+	marker := "STOP — write-back verification (mandatory, mechanical, do not skip)"
+	at := strings.Index(string(b), marker)
+	if at < 0 {
+		t.Fatalf("boss-plan payload no longer carries the write-back gate; this test pins the wrong bytes")
+	}
+	added := string(b)[at:min(at+4000, len(b))]
+
+	clean := fstest.MapFS{
+		"skills":                    {Mode: fs.ModeDir},
+		"skills/boss-plan/SKILL.md": {Data: []byte(added)},
+	}
+	if leaks := identityLeaks(t, clean); len(leaks) != 0 {
+		t.Errorf("the added write-back prose is not project-agnostic: %v", leaks)
+	}
+
+	// Splice a project-specific MCP server name into the SAME added bytes. The scan must catch it;
+	// if it does not, the portability gate is vacuous over this text.
+	spliced := strings.Replace(added, "tracker adapter's `getIssue`", "bossanova-linear `get_issue`", 1)
+	if spliced == added {
+		t.Fatalf("probe splice matched nothing inside the pinned window: the anchor sentence moved or was reworded, so a red here would name the wrong cause; re-point the splice anchor at text the added write-back prose still carries")
+	}
+	dirty := fstest.MapFS{
+		"skills":                    {Mode: fs.ModeDir},
+		"skills/boss-plan/SKILL.md": {Data: []byte(spliced)},
+	}
+	if leaks := identityLeaks(t, dirty); len(leaks) == 0 {
+		t.Error("the project-agnostic scan did not flag a forbidden identifier inside the added write-back prose — the gate is vacuous over the new bytes")
 	}
 }

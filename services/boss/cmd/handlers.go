@@ -2739,6 +2739,17 @@ func runDaemonStatus(_ *cobra.Command) error {
 	if st.ServicePath != "" {
 		fmt.Printf("  service: %s\n", st.ServicePath)
 	}
+	// BOS-1184 R4. Printed unconditionally, unlike the `supervision:` line
+	// below: which substrate is CONFIGURED is knowable with nothing installed,
+	// nothing running and no state record, and it is exactly the host with no
+	// daemon whose operator needs to see it. The label says "configured ...
+	// substrate" rather than "supervision mode" so the two lines cannot be read
+	// as variations of one fact — `supervision:` six lines down is a live
+	// ownership observation, not a configuration. The wording comes from
+	// describeDaemonSupervisionMode, the single decision `boss daemon doctor`
+	// renders too, so the two surfaces cannot name different modes.
+	modeDescription, _ := describeDaemonSupervisionMode(daemon.LoadSupervisionModeStatus())
+	fmt.Printf("  configured supervision substrate: %s\n", modeDescription)
 	if profileErr == nil {
 		fmt.Printf("  settings: %s\n", profile.SettingsPath)
 		fmt.Printf("  app data: %s\n", profile.AppDataDir)
@@ -2998,6 +3009,31 @@ func runDaemonRestart(_ *cobra.Command) error {
 			fmt.Println("Started standalone bossd.")
 		}
 		return nil
+	}
+	// BOS-1184 U2: refuse a rejected supervision mode BEFORE anything is
+	// stopped, not after.
+	//
+	// platformRestart carries the same fail-closed check, and on its own that
+	// was a REGRESSION of exactly the failure BOS-1181 fixed. The launchd path
+	// below stops the running daemon first and only then calls restartDaemon();
+	// restartDaemon()'s error return exits immediately, and the
+	// daemonEnsureRunning fallback further down is reachable only from
+	// waitForDaemonRestartReady. So a refused mode stopped a healthy supervised
+	// daemon and then declined to replace it — a net loss of service caused by
+	// a settings value, which is the one outcome this seam must never produce.
+	//
+	// Refusing here changes nothing on the host: the daemon keeps running and
+	// the operator fixes the key. That dominates both of the alternatives —
+	// gating after the stop (an outage) and not gating restart at all (which
+	// silently installs and bootstraps the very substrate the configuration
+	// refused, because refreshStagedPlist writes the plist when it is absent).
+	//
+	// Scoped to the launchd path deliberately: the standalone path above has
+	// already returned, and it creates no substrate to refuse, so its previous
+	// behaviour is untouched. platformRestart keeps its own check as defence in
+	// depth for callers that do not come through here.
+	if modeStatus := daemon.LoadSupervisionModeStatus(); modeStatus.Err != nil {
+		return fmt.Errorf("daemon restart refused, daemon left running: daemon supervision mode: %w", modeStatus.Err)
 	}
 	if st.Running {
 		if err := daemonStop(); err != nil {

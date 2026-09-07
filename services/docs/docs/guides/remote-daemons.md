@@ -1,5 +1,5 @@
 ---
-title: Remote Daemons (boss --host)
+title: Remote Daemons
 description: Drive a bossd running on another machine over an SSH-forwarded unix socket.
 slug: /guides/remote-daemons
 ---
@@ -156,8 +156,8 @@ same reason `--host-socket` exists: a non-interactive SSH login gets a reduced
 `PATH`, and a `tmux` installed outside it (Homebrew's `/opt/homebrew/bin`,
 exported from a `~/.zprofile` that `zsh` does not read non-interactively) would
 otherwise fail every attach with `tmux: command not found`. Because the attach
-runs remotely, `boss --host` does **not** require `tmux` on your local machine —
-only `ssh`.
+runs remotely, `boss --host` requires only `ssh` on your local machine, not
+`tmux`.
 
 `Ctrl+X` detaches back to the local TUI as usual. If the connection drops
 mid-pane you are ejected back to the local TUI; the remote `tmux` session

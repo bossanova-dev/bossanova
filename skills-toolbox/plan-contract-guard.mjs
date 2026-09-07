@@ -106,6 +106,25 @@ const DESCRIPTION_MODES = new Set(['child-plan', 'epic-parent'])
 const PLAN_FILE_EXEMPTIONS = new Set(['epic-parent-overview', 'adopted-child-redraft', 'consumer'])
 const PREMISES_HEADING = '## Premises'
 const ACCEPTANCE_HEADING = '## Acceptance criteria'
+const KEY_CHANGES_HEADING = '## Key changes'
+
+// The sections whose `file:line` coordinates are resolved against the tree. `## Key changes` joined
+// the list because a plan pins call sites there as often as it pins them in a criterion, and
+// nothing was reading them. Widening is safe by CONSTRUCTION rather than by judgement — the
+// citation pattern requires a `:<digits>` suffix, so a `## Key changes` bullet naming a file the
+// ticket will CREATE is not a citation at all and cannot false-positive.
+//
+// Deliberately NOT scanned: `## Summary`, `## Approach`, `## Testing`, `## Risks / unknowns` and
+// every other section. Those are narrative, and a coordinate there is illustrative rather than
+// load-bearing; scanning them would make the guard's blast radius the whole document for no
+// measured defect. `## Original notes` stays out for the stronger reason that it is reporter text
+// required to survive byte-for-byte — see the module header.
+const CITATION_SECTIONS = [KEY_CHANGES_HEADING, PREMISES_HEADING, ACCEPTANCE_HEADING]
+
+// How far either side of a cited line a premise anchor may have drifted and still count as
+// resolved. Five lines absorbs the ordinary churn of an edit above the cited symbol without
+// absorbing a wholesale extraction, which is the shape this rule exists to catch.
+const ANCHOR_WINDOW = 5
 const CITATION_PATTERN = String.raw`(?<![\w:/.-])((?:\.{1,2}\/)?(?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9_-]+):(\d+)(?![\w.-])`
 const CITATION = new RegExp(CITATION_PATTERN, 'g')
 const CITATION_ONCE = new RegExp(CITATION_PATTERN)
@@ -115,6 +134,48 @@ const ORCHESTRATOR_OWNED = /\borchestrator-owned\b/i
 function violation(code, message) {
   return { code, message: `plan-contract-guard: ${message}` }
 }
+
+/**
+ * Every STATIC violation code this module can emit, sorted.
+ *
+ * The skill bodies enumerate these codes in prose, and a hand-maintained prose list is itself a
+ * copied-forward claim that goes stale the moment a code is added — so the list is exported and
+ * machine-checked rather than re-typed. The consuming repo's own gates assert that every entry
+ * appears verbatim in the producer skill's pre-write gate prose and its drafting brief, and that
+ * this array covers every `violation('<code>'` literal in this file.
+ *
+ * Deliberately NOT covered: the `couldNotEvaluate` codes (`citation-could-not-evaluate`), which are
+ * a separate could-not-decide channel and are not violations; and `unreadable-input`, which the CLI
+ * tags directly rather than through `violation()`. Both may still appear in the prose lists — the
+ * coverage test asserts a subset relation, not equality.
+ */
+export const VIOLATION_CODES = [
+  'line-spanning-emphasis',
+  'missing-sections',
+  'not-a-description',
+  'placeholder-residue',
+  'plan-file-residue',
+  'plan-file-structure',
+  'plan-file-structure-exemption',
+  'pr-body-only-evidence',
+  'section-order',
+  'self-falsified-literal-search',
+  'stale-premise-citation',
+  'unanchored-premise-citation',
+  'unknown-section',
+  'unresolvable-citation',
+]
+
+/**
+ * The one violation family this module composes at runtime instead of pinning as a literal.
+ *
+ * `checkVerifyOnlyCommandVacuity` emits `vacuous-<kind>-command-<finding.code>`, where `kind` is
+ * `criterion` or `premise` and `finding.code` comes from `classifyCheckCommand`'s blocking tier —
+ * a set owned by another module and free to grow. Enumerating the cross-product here would be a
+ * copied-forward claim of exactly the kind this export exists to retire, so the prose lists carry
+ * the PREFIX and the residual is written down instead of pretended away.
+ */
+export const DYNAMIC_VIOLATION_CODE_PREFIXES = ['vacuous-*']
 
 function couldNotEvaluate(code, message) {
   return { code, message: `plan-contract-guard: ${message}` }
@@ -382,29 +443,70 @@ function sectionText(config, description, heading, mode) {
 }
 
 function scanCitationSections(config, description, mode) {
-  return [PREMISES_HEADING, ACCEPTANCE_HEADING]
-    .flatMap((heading) =>
-      linesOutsideFences(sectionText(config, description, heading, mode)).map(
-        ({ line, index }) => ({
-          heading,
-          line,
-          index,
-        }),
-      ),
-    )
-    .flatMap(({ heading, line, index }) => {
-      const hits = []
-      for (const match of line.matchAll(CITATION)) {
-        hits.push({
-          heading,
-          citation: match[0],
-          file: match[1],
-          line: Number(match[2]),
-          sectionLine: index + 1,
-        })
-      }
-      return hits
-    })
+  return CITATION_SECTIONS.flatMap((heading) =>
+    linesOutsideFences(sectionText(config, description, heading, mode)).map(({ line, index }) => ({
+      heading,
+      line,
+      index,
+    })),
+  ).flatMap(({ heading, line, index }) => {
+    const hits = []
+    for (const match of line.matchAll(CITATION)) {
+      hits.push({
+        heading,
+        citation: match[0],
+        file: match[1],
+        line: Number(match[2]),
+        sectionLine: index + 1,
+      })
+    }
+    return hits
+  })
+}
+
+// The inline-code spans of a premise bullet that are candidate ANCHORS: a backticked token the
+// drafter copied out of the cited location so the guard can confirm it is still there.
+//
+// The `— check:`/`— checked:` command is excluded by reading `premise.claim`, which the shared
+// premise parse has already stripped it from — the exclusion is not re-derived by a second regex,
+// so a change to the check-clause grammar cannot leave the two spellings disagreeing.
+//
+// A span that is itself a `file:line` coordinate is excluded too: a bullet whose only span is the
+// coordinate it cites has named WHERE, never WHAT, so reporting it as unanchored is both the true
+// diagnosis and the actionable one. Deliberately NOT excluded: any other span shape. A drafter who
+// backticks an unrelated word gets a `stale-premise-citation` naming the token that failed, which
+// is a readable, one-keystroke fix — not a silent pass.
+function premiseAnchorSpans(premise) {
+  const spans = []
+  for (const match of premise.claim.matchAll(INLINE_CODE_SPAN)) {
+    const token = match[0].replace(/^`+/, '').replace(/`+$/, '').trim()
+    if (!token) continue
+    if (CITATION_ONCE.test(token)) continue
+    spans.push(token)
+  }
+  return spans
+}
+
+// Premise bullets paired with the coordinates they cite and the anchors they offer.
+//
+// Citations are read from `premise.claim` rather than the raw bullet so a `file:line` that appears
+// only INSIDE the check command is not mistaken for a premise coordinate — the command is a recipe
+// to re-run, not a claim about a location. That coordinate is still resolved for existence by
+// `scanCitationSections`, which scans the section's raw lines.
+function scanPremiseCitations(config, description) {
+  const hits = []
+  for (const premise of parsePremises(config, description)) {
+    const anchors = premiseAnchorSpans(premise)
+    for (const match of premise.claim.matchAll(CITATION)) {
+      hits.push({
+        anchors,
+        citation: match[0],
+        file: match[1],
+        line: Number(match[2]),
+      })
+    }
+  }
+  return hits
 }
 
 function fixedStringNeedle(command) {
@@ -469,6 +571,20 @@ export function checkPlanCitations(
     )
     return { violations, couldNotEvaluate: couldNotEvaluateItems }
   }
+  // One read per cited file, shared by the existence pass and the anchor pass below. A plan that
+  // cites the same file from several bullets is the normal shape, not the exception.
+  const bodyCache = new Map()
+  const readBody = (resolved) => {
+    if (!bodyCache.has(resolved)) {
+      try {
+        bodyCache.set(resolved, { body: fs.readFileSync(resolved, 'utf8'), error: null })
+      } catch (error) {
+        bodyCache.set(resolved, { body: null, error })
+      }
+    }
+    return bodyCache.get(resolved)
+  }
+
   for (const hit of scanCitationSections(config, description, mode)) {
     const resolved = resolveCitationPath(root, hit.file)
     if (!resolved) {
@@ -480,10 +596,8 @@ export function checkPlanCitations(
       )
       continue
     }
-    let body
-    try {
-      body = fs.readFileSync(resolved, 'utf8')
-    } catch (error) {
+    const { body, error } = readBody(resolved)
+    if (error) {
       violations.push(
         violation(
           'unresolvable-citation',
@@ -502,7 +616,176 @@ export function checkPlanCitations(
       )
     }
   }
+
+  // The premise ANCHOR pass. `## Premises` is the one section a drafter writes deliberately to
+  // declare "these are the facts to re-check", so it is the one section where a coordinate must
+  // resolve on CONTENT rather than on the file merely being long enough — the existence check
+  // stays green after the code at the cited line has been extracted away, which is the whole
+  // defect. `## Key changes` and `## Acceptance criteria` keep existence-only.
+  //
+  // Deliberately NOT checked here: whether the anchor is the RIGHT token for the claim (undecidable
+  // from text), whether it appears exactly once in the window (a repeated token is still evidence
+  // the region survived), and whether the claim the premise makes about that location is true (the
+  // guard reads bytes, not meaning). A coordinate whose file is missing, unreadable or too short is
+  // skipped here because the pass above has already reported it — one defect, one violation.
+  //
+  // MEASURED at introduction, against the authoring repo's whole archive of past plan bodies: of
+  // 168 documents carrying a `## Premises` section, 8 raised 12 findings (11 stale, 1 unanchored).
+  // Each was inspected: every one named a coordinate whose cited symbol had genuinely moved since
+  // the document was written, and NO case was found where the anchor still sat at the cited
+  // location. Four of the twelve were in the very document that specified this rule, whose own
+  // coordinates its own implementation invalidated — which is the defect, caught. The archive is a
+  // proxy rather than a live corpus: this guard has no consumer-side caller and runs only on a
+  // description about to be authored, so a tightened rule cannot retroactively reject a published
+  // plan. Re-run that survey before widening the rule, and argue against the new numbers.
+  for (const hit of scanPremiseCitations(config, description)) {
+    const resolved = resolveCitationPath(root, hit.file)
+    if (!resolved) continue
+    const { body, error } = readBody(resolved)
+    if (error) continue
+    const lines = body.split('\n')
+    if (hit.line > lines.length) continue
+    if (hit.anchors.length === 0) {
+      violations.push(
+        violation(
+          'unanchored-premise-citation',
+          `${PREMISES_HEADING} cites ${hit.citation} but carries no anchor token: add a backticked ` +
+            `token copied from that location, or cite ${hit.file} without a line number`,
+        ),
+      )
+      continue
+    }
+    const window = lines
+      .slice(Math.max(0, hit.line - 1 - ANCHOR_WINDOW), hit.line + ANCHOR_WINDOW)
+      .join('\n')
+    if (hit.anchors.some((anchor) => window.includes(anchor))) continue
+    violations.push(
+      violation(
+        'stale-premise-citation',
+        `${PREMISES_HEADING} cites ${hit.citation}, but no line within ${ANCHOR_WINDOW} of line ` +
+          `${hit.line} in ${hit.file} contains its anchor ` +
+          `${hit.anchors.map((anchor) => `"${anchor}"`).join(' or ')}`,
+      ),
+    )
+  }
   return { violations, couldNotEvaluate: couldNotEvaluateItems }
+}
+
+// An asterisk emphasis delimiter run. Underscore runs are deliberately EXCLUDED: `some_var_name`
+// and `__init__` are ordinary prose in a plan that names code, and a lint that pairs those runs
+// across a hard wrap would reject correct prose. The observed corrupting shape is `**…**`.
+const EMPHASIS_RUN = /\*+/g
+
+/** Replace every inline code span with same-length spaces, preserving column offsets. */
+function maskInlineCodeSpans(line) {
+  return line.replace(INLINE_CODE_SPAN, (span) => ' '.repeat(span.length))
+}
+
+/** Blank out a leading unordered-list marker so `* item` is not read as an emphasis delimiter. */
+function maskListMarker(line) {
+  return line.replace(/^([ \t]*)[-*+]([ \t])/, (_match, indent, space) => `${indent} ${space}`)
+}
+
+/**
+ * Pair the emphasis delimiter runs of ONE paragraph and return the opening run of every pair whose
+ * delimiters sit on different lines.
+ *
+ * Runs are classified by CommonMark's flanking idea rather than by shape alone: an opener must be
+ * followed by non-whitespace and a closer preceded by non-whitespace. That is what keeps `2 * 3` on
+ * one line and `4 * 5` on the next from pairing into a phantom span — the single most likely
+ * over-detection in a plan that does arithmetic in prose. Runs pair only with runs of the SAME
+ * length, and a leftover unpaired run is ignored rather than guessed at.
+ */
+function lineSpanningEmphasisInParagraph(lines) {
+  const runs = []
+  for (const { index, masked } of lines) {
+    for (const match of masked.matchAll(EMPHASIS_RUN)) {
+      const start = match.index
+      const previous = masked.charAt(start - 1)
+      const next = masked.charAt(start + match[0].length)
+      runs.push({
+        index,
+        column: start + 1,
+        length: match[0].length,
+        canOpen: next !== '' && !/\s/.test(next),
+        canClose: previous !== '' && !/\s/.test(previous),
+      })
+    }
+  }
+  const open = new Map()
+  const findings = []
+  for (const run of runs) {
+    const pending = open.get(run.length)
+    if (pending && run.canClose) {
+      open.delete(run.length)
+      if (pending.index !== run.index) findings.push(pending)
+      continue
+    }
+    if (!pending && run.canOpen) open.set(run.length, run)
+  }
+  return findings
+}
+
+/**
+ * Every emphasis span in an AGENT-AUTHORED section whose opening and closing delimiters sit on
+ * different lines.
+ *
+ * A tracker's markdown normalizer can close such a span at the line break and store the remainder
+ * as a literal delimiter run — one observed description holds `**7 of the 17****\n****already
+ * fixed**` where the drafter wrote one span across a hard wrap at this repo's ~100-column prose
+ * convention. That silently damages the only surviving copy of the description, so it is worth
+ * catching before the write.
+ *
+ * Two exclusions are load-bearing. The terminal verbatim section is copied, not composed, and
+ * rewrapping it to please a normalizer is exactly the corruption the verbatim gates exist to
+ * prevent. Fenced blocks and inline code spans are not prose at all.
+ *
+ * The detector is deliberately NARROW — a sibling ticket owns the broader gates-reject-legitimate-
+ * shapes problem, so the false-positive budget here is effectively zero and under-detection is
+ * preferred to blocking correct prose.
+ *
+ * @returns {{ line: number, column: number }[]} 1-based positions of each opening delimiter.
+ */
+export function lineSpanningEmphasis(config, description, { mode = 'child-plan' } = {}) {
+  const text = String(description ?? '')
+  const rawLines = text.split('\n').map((line) => line.replace(/\r$/, ''))
+  const outside = new Set(scanFences(text).lines.map(({ index }) => index))
+  const contractSections = planSectionsForDescriptionMode(config, mode)
+  const terminalHeading = contractSections[contractSections.length - 1]?.heading
+
+  let limit = rawLines.length
+  for (let index = 0; index < rawLines.length; index += 1) {
+    if (!outside.has(index)) continue
+    if (terminalHeading && markdownH2Heading(rawLines[index]) === terminalHeading) {
+      limit = index
+      break
+    }
+  }
+
+  const findings = []
+  let paragraph = []
+  const flush = () => {
+    if (paragraph.length > 0) findings.push(...lineSpanningEmphasisInParagraph(paragraph))
+    paragraph = []
+  }
+  for (let index = 0; index < limit; index += 1) {
+    if (!outside.has(index) || rawLines[index].trim() === '') {
+      flush()
+      continue
+    }
+    paragraph.push({ index, masked: maskListMarker(maskInlineCodeSpans(rawLines[index])) })
+  }
+  flush()
+  return findings.map(({ index, column }) => ({ line: index + 1, column }))
+}
+
+export function checkLineSpanningEmphasis(config, description, { mode = 'child-plan' } = {}) {
+  return lineSpanningEmphasis(config, description, { mode }).map(({ line, column }) =>
+    violation(
+      'line-spanning-emphasis',
+      `emphasis span opened at line ${line}, column ${column} is closed on a later line — a tracker's markdown normalizer can close it at the line break and store the rest as a literal delimiter run; keep the span on one line`,
+    ),
+  )
 }
 
 export function checkSelfFalsifiedLiteralSearch(config, description) {
@@ -686,6 +969,7 @@ export function checkPlanContract({
     violations.push(...structure.violations)
   }
 
+  violations.push(...checkLineSpanningEmphasis(config, description, { mode }))
   violations.push(...checkSelfFalsifiedLiteralSearch(config, description))
   const citation = checkPlanCitations(config, description, {
     cwd: citationCwd,

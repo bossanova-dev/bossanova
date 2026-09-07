@@ -18,18 +18,30 @@ small metadata object.
 ## Inputs the orchestrator hands you
 
 - `ISSUE-ID`, `title`, and `DESCRIPTION_SNAPSHOT_PATH` —
-  `.linear-plans/<ISSUE-ID>.image-guard-orig.md`, the byte-exact Phase 1 description snapshot
+  `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`, the byte-exact Phase 1 description snapshot
   written by the orchestrator before this dispatch. Build `## Original notes` from this file only.
+  Those bytes are the tracker's **stored** description, not a rendering of it, and the file carries
+  **no byte the stored description does not** — no trailing newline included. Copy from it
+  byte-for-byte and add nothing: one extra terminal byte fails `--require-verbatim` late in the
+  finalize phase for a reason that has nothing to do with content.
   Do not re-read the tracker description; signed upload URLs can rotate and make the parity gate
   fail even when the prose is otherwise unchanged. The file may be empty.
-- `PLAN_PATH` — the exact file to write the plan to: `.linear-plans/<ISSUE-ID>-<slug>.md`
+- `PLAN_PATH` — the exact file to write the plan to: `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md`
   (gitignored scratch; the slug is the issue id + hyphenated title). The orchestrator computed it
   with
   `node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`
   after running the toolbox preamble first — the toolbox dir is passed in as an argument,
   re-derived in the calling block, so the command never depends on an inherited export.
 - `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel context you write your terminal
-  decision to (see "Write the terminal sentinel" below).
+  decision to (see "Write the terminal sentinel" below). `RUN_DIR` is under `$TMPDIR`; it is **not**
+  where scratch goes.
+- `<RUN-SCRATCH-ID>` — the suffix of the orchestrator's `.linear-plans/run-<RUN-SCRATCH-ID>/`
+  directory, handed to you with the rest of the brief. Every local file you write goes in that
+  directory, under a basename declared in `$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs`
+  (`node "$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs" families` prints the set). **Never invent a
+  scratch filename and never write scratch anywhere else**: a name outside that registry is one no
+  cleanup pattern matches, so it survives into a checkout other runs share. It is not the sentinel
+  `RUN_ID`.
 
 ## Step 1 — Triage triviality
 
@@ -205,13 +217,13 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
      **either** store present ⇒ **skip
      this stage**, and stage 3 with it (the step-7 flip re-runs that same prefix-scoped strip);
      discard the spec just drafted, rehydrate the stored spec body into a fresh local
-     `.linear-plans/<ISSUE-ID>.epic-spec.json` validation scratch file for the terminal sentinel, and
+     `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json` validation scratch file for the terminal sentinel, and
      continue on the idempotent resume path against **the stored** one (a crash after stage 2
      leaves exactly this state and the parent is still unplanned, so the sweep re-picks it here). A
      legacy-sourced resume writes **no** attachment — it keeps its inline marker, carried verbatim
      through the step-6 save. Otherwise upload — first **set `spec.parentId` to this ticket's id**,
      since only a bound spec can pass `validateSpecIdentity`. That PUT takes a **file**, so write `serializeEpicSpec(spec)` to
-     `.linear-plans/<ISSUE-ID>.epic-spec.json` — the exact path SKILL.md's Phase 5 cleanup matches by
+     `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json` — the exact path SKILL.md's Phase 5 cleanup matches by
      name. **Verify those bytes BEFORE the PUT:**
      `validateSpecIdentity(parseEpicSpec(<the file's contents>), <ISSUE-ID>)` must be `ok` — nothing
      else catches an unbound spec, since `serializeEpicSpec` drops an unset `parentId` silently and
@@ -262,8 +274,8 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    `Implementation plan`, so an attachment under any other title is exposed `agent-friendly` yet
    silently skipped by `boss-epic` as "missing a plan". After tracker creation returns the child id,
    rename that child's local plan scratch file to
-   `.linear-plans/<PARENT>-child-<key>-<issueSlug(child-id, child-title)>.md`; do not prepend the
-   child id a second time to the `issueSlug` output. The sentinel verifier requires
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md`, the `child-plan` family, where `<slug>` is
+   `issueSlug(child-id, child-title)`; do not prepend the child id a second time to the `issueSlug` output. The sentinel verifier requires
    that exact basename, not only the `<PARENT>-child-<key>-` prefix. **On resume, first inspect every adopted
    shell for that exact canonical attachment. If it is missing, **always redraft** that synthetic
    child from its persisted spec metadata with `allowEpic:false`, re-run the child secret and
@@ -281,7 +293,10 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    outward edges mutate **non-epic** backlog tickets, so writing them before the parent gate would
    strand existing backlog work behind a child that a deterministic parent-gate failure leaves
    unexposed. **Gate, then
-   SAVE the parent overview BEFORE exposing any child:** compose the parent overview now and run its three
+   SAVE the parent overview BEFORE exposing any child:** compose the parent overview now — write it to
+   this run's declared `epic-overview` scratch, `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-overview.md`,
+   rather than to a path you invent, so the gates below read it from disk and Phase 5's single
+   `rm -rf` reaches it — and run its three
    Phase 4 gates (secret + image-parity + plan-contract with `--mode epic-parent`) FIRST — on a gate failure take the SAFE branch (no exposure, no
    parent write, abort), so a **deterministic** parent-gate failure (e.g. a dropped image or a secret in
    the parent's `## Original notes`) never leaves a child `agent-friendly`/`boss-build`-buildable while
@@ -423,6 +438,17 @@ it). If it is absent, either pull it into this ticket's scope or add a hard `blo
 that must deliver it. **Never author a step against an artifact you did not confirm exists** — a
 `Done` upstream ticket is not proof its contract actually landed; the code in the merged tree is. This
 is what stops a consumer plan from being written against an assumed-but-absent column/field/service.
+
+**Re-read every coordinate and constant the ticket supplies.** A `file:line`, a byte ratchet, a
+call-site count, a column count or a threshold that arrived in the reporter's notes, in a sibling
+ticket or in an earlier plan is an unverified claim until this run opens the file. Resolve each one
+in the **current** tree before carrying it into the plan: re-read the cited line and confirm the
+symbol is still there, and re-measure every number with the command that produces it (`wc -c`,
+`stat`, an enumerating `rg -n`) rather than a counting flag you did not check. A coordinate that no
+longer resolves is re-cited from the current tree or dropped — never copied forward. This is what
+stops the shape that keeps recurring: a follow-up ticket filed from the review of one PR, whose
+coordinates a sibling PR merged and invalidated before anyone planned it, so a full drafting pass
+produces a plan for work that has already shipped.
 
 **Re-triage after recon.** Recon is where the true size surfaces. Recompute the honest estimate now;
 if it is **≥ 5** and you are not already on the EPIC path, **re-triage to EPIC** (Step 1's
@@ -575,11 +601,41 @@ Include, in the plan body, all of the following (scaled to triage):
   reviewer could paste, not an intention. **Wrap the command in backticks**: the run's discharge
   form is parsed with the backticks as delimiters, so that an arrow inside the command is never
   mistaken for the `→` that introduces the result.
+  **Every segment's head must resolve to something runnable.** The classifier splits the command on
+  `;`, `|`, `&&` and `||`, and each resulting segment's first word must be a shell builtin, a binary
+  on `PATH`, or an executable path — otherwise the criterion is rejected as
+  `command-unresolvable` (as `vacuous-criterion-command-command-unresolvable` from the plan gate).
+  Two shapes fail this and each costs a gate round-trip. A **bare file path** names no runner:
+  `tests/widget.test.mjs` is rejected, `node --test tests/widget.test.mjs`
+  is not. And **prose inside the code span**, where the sentence rather than the command supplies the
+  first word: `Run make test` and `see tests/widget.test.mjs` are both rejected on
+  their `Run` and `see` heads. Backtick the command alone and leave the sentence outside it.
+  A leading `!` negation is fine — `! rg -q needle file` is the way to assert a pattern is absent —
+  but it does not excuse the head after it, and environment assignments, `env`, and
+  `set -o pipefail` are all understood. Note what this rule does **not** catch: it reads only each
+  segment's first word, so `make lint and make test` classifies clean while failing when run. Join
+  commands with `&&`, not with the word "and"; the gate will not catch that one for you.
 - A **## Premises** section when the plan rests on load-bearing facts that are not themselves
   acceptance criteria. Write premise bullets with the same checkbox and `— check: `<command>``notation, and mark exactly one central premise with `(central)` when the ticket's goal depends on
 it. Example:``- [ ] (central) the target helper does not already reject stale citations — check:
   `rg -n "stale citation" skills-toolbox` ``. Do not use premises as a dumping ground for source
   notes; name only facts the implementer must re-check before dispatch or before review-ready.
+  **A premise that cites `file:line` must carry an anchor**: a backticked token copied from that
+  location, so the claim can be re-checked by machine rather than by re-reading prose. The contract
+  guard resolves it — a bullet whose only inline-code span is its own `— check:` command is
+  `unanchored-premise-citation`, and an anchor absent from every line within five lines of the cited
+  line is `stale-premise-citation`. The escape hatch when no single token names the place is to cite
+  the file **without** a line number.
+  **Every citation must be repo-relative.** The guard resolves each `file:line` it finds in
+  `## Premises` and `## Acceptance criteria` from the **working-tree root**, then opens the file and
+  checks the line exists. A filename-only citation such as `Sidebar.tsx:42` therefore resolves to a
+  path at the root that does not exist and fails as `unresolvable-citation`, however unambiguous the
+  filename reads to a human. Write the whole path from the root — `app/components/Sidebar.tsx:42` —
+  and never a path that climbs out of the tree. **A pinned numeric constant is a premise, not a decoration**:
+  any byte ratchet, call-site count, column count or threshold the plan pins is written as a
+  `## Premises` bullet whose `— check: ` clause names the command that re-measures it, and the
+  number must be one this run measured from disk (Step 8's measured-size rule, which applies to
+  every pinned constant and not only to byte counts).
 - For semantic failure shapes the guard cannot decide safely, write the required judgement into the
   plan instead of pretending a green check proves it: state-mutating proof needs an offline
   equivalent named at plan time or a human-only marking; an absence assertion must be shown able to
@@ -647,6 +703,13 @@ The description-section contract governs `descriptionSummary` only. The plan fil
 additional drafting-layer headings and its native structure; do not flatten it to the Step 7
 template. `## Original notes` remains the terminal heading and its body runs to EOF. Every
 query-bearing upload URL anywhere in the plan file must be query-stripped.
+
+**The `##` list is a CLOSED allow-list.** The contract gate rejects any top-level `##` heading
+outside that allow-list as `unknown-section`, so inventing a section — `## Verification surface`, `## Rollout`,
+`## Notes` — blocks the plan outright however useful the content is. When the plan needs structure
+the contract does not name, put it **one level down, as an `###` under `## Approach`**. That is the
+shape that satisfies both the section guard and the dependency extractor, which reads `## Approach`
+for its area candidates. Do not reach for a new `##` and do not omit the content: demote it.
 
 The Phase 4 contract gate also enforces a producer-side plan-file floor for single-ticket plans:
 the plan file must carry every required description-contract heading, the configured plan-file
@@ -748,7 +811,9 @@ reconstruct, or retype it from any other source. Build the summary body as bytes
 `descriptionSummary` from those assembled file bytes:
 
 ```bash
-BODY="$(mktemp)"
+# The `description` family in $BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs. A bare `mktemp` here would
+# land outside the scratch contract entirely, where no cleanup and no TTL reap can ever see it.
+BODY=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"
 cat >"$BODY" <<'DESCRIPTION_SUMMARY_WITHOUT_ORIGINAL_NOTES'
 ## Summary
 
@@ -808,10 +873,10 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
   "$(jq -nc \
     --arg id "$ISSUE_ID" \
     --arg childId "<child-id>" \
-    --arg childPlan ".linear-plans/<child-plan-path>.md" \
+    --arg childPlan ".linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md" \
     --argjson childIds '["<child-id>"]' \
     --argjson epicSpecPaths '[]' \
-    --argjson guardScratchPaths '[".linear-plans/<ISSUE-ID>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.image-guard-new.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.child-<child-id>.image-guard-new.md",".linear-plans/<child-plan-path>.md.rejected"]' \
+    --argjson guardScratchPaths '[".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.image-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.attachment-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.image-guard-new.md",".linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md.rejected"]' \
     '{epic:true, epicParentId:$id, childIds:$childIds, childPlanPaths:{($childId):$childPlan}, epicSpecPaths:$epicSpecPaths, guardScratchPaths:$guardScratchPaths}')"
 ```
 
@@ -820,7 +885,7 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
 the sentinel records `epicParentId:""`, and the orchestrator's epic reverify reads an empty parent
 id and fails/cleans up as a failed run even though the parent was already repurposed. Replace the
 placeholder path values with **every actual child id**, a `childPlanPaths` object that maps each
-actual child id to that child's actual plan path, and the canonical `.linear-plans/<PARENT>.epic-spec.json`
+actual child id to that child's actual plan path, and the canonical `.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>.epic-spec.json`
 scratch file whose `parentId` matches the epic parent and whose spec contains every child's stable
 key and title. Do not copy child keys into the sentinel payload; the orchestrator derives key/title
 pairs from the parent-bound spec scratch and matches each reported child id by the exact canonical
@@ -841,8 +906,9 @@ Write it only after the epic is fully created + wired and the parent repurposed.
 failed and you fell back to a single-ticket plan, write the single-ticket sentinel above instead.
 
 Before writing the sentinel, **self-verify image parity**: first make a safe copy of
-`DESCRIPTION_SNAPSHOT_PATH` with the same mandatory secret/PII redactions and upload-signature stripping
-required for `descriptionSummary`, then anchor that safe copy against the real snapshot before using
+`DESCRIPTION_SNAPSHOT_PATH` at `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` — the
+declared `attachment-guard-orig` family, not a name of your own — with the same mandatory secret/PII
+redactions and upload-signature stripping required for `descriptionSummary`, then anchor that safe copy against the real snapshot before using
 it for the verbatim check. A safe source reproduced from memory makes the verbatim exit 0 vacuous:
 it proves only that two model-authored copies match, not that either one came from the tracker
 snapshot. Then confirm every image URL in that safe source (inline `![](…)`, `<img>`,
@@ -853,9 +919,11 @@ block, because this Bash call inherits nothing:
 ```bash
 BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 # Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
+SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"   # the safe source you just wrote
+NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"                    # the composed description ($BODY from Step 7)
 node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$DESCRIPTION_SNAPSHOT_PATH" \
-  --rewritten <safe-orig.md> --require-safe-source
-node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original <safe-orig.md> --rewritten <new.md> \
+  --rewritten "$SAFE_ORIG" --require-safe-source
+node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$NEW" \
   --require-verbatim --require-unsigned-uploads
 ```
 
@@ -868,7 +936,7 @@ The guard **refuses** an empty or whitespace-only original (exit 1, `cannot veri
 rather than certify a comparison it cannot make. `DESCRIPTION_SNAPSHOT_PATH` may legitimately be empty
 (see Inputs), and that is the one case where the refusal is a false alarm: pass
 `--allow-empty-original` then, and only then. If the description was **not** empty, an empty
-`<orig.md>` means your own extraction broke — fix the extraction, never silence it with the flag.
+`DESCRIPTION_SNAPSHOT_PATH` means your own extraction broke — fix the extraction, never silence it with the flag.
 
 Fix any drop before writing the `ok` sentinel — the orchestrator's mechanical guard will otherwise
 abort the whole run.
@@ -880,12 +948,16 @@ contract guard over it and the plan file:
 
 ```bash
 BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <new.md> --plan "$PLAN_PATH"
+NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the same composed description as above
+node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH"
 ```
 
-It prints one stderr line per violation, tagged `missing-sections`, `unknown-section`,
-`section-order`, `placeholder-residue`, `not-a-description`, `plan-file-residue`, or
-`plan-file-structure`, `plan-file-structure-exemption`, or `unreadable-input`. **A non-zero exit
+It prints one stderr line per violation, tagged `line-spanning-emphasis`, `missing-sections`,
+`not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
+`plan-file-structure-exemption`,
+`pr-body-only-evidence`, `section-order`, `self-falsified-literal-search`, `stale-premise-citation`,
+`unanchored-premise-citation`, `unknown-section`, `unresolvable-citation`, any `vacuous-*` code
+(the dynamic `vacuous-<kind>-command-<reason>` family), or `unreadable-input`. **A non-zero exit
 means write no `ok` sentinel** — fix the description or the plan file and re-run, or leave the
 sentinel absent so the orchestrator reads `missing` and takes the safe branch.
 
@@ -894,8 +966,11 @@ here turns an orchestrator-side abort into a self-describing dispatch failure, w
 gate remains the authoritative pre-write gate that does not trust this subagent.
 
 Any byte count or size you report must be one you just measured from disk with `stat` or `wc -c`.
-Do not estimate or infer sizes from editor output, returned prose, or intended content. If you
-cannot measure a size, report that size as `unmeasured` rather than inventing a number.
+The same rule governs **every pinned constant** — a call-site count, a column count, a threshold —
+each must be one this run re-measured from the current tree with the command it records as its
+`— check:`, never one copied from the ticket, a sibling plan or an earlier draft. Do not estimate or
+infer sizes from editor output, returned prose, or intended content. If you cannot measure a size,
+report that size as `unmeasured` rather than inventing a number.
 
 ## Step 9 — Return only bounded metadata (never the plan content)
 

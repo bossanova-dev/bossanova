@@ -31,6 +31,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
+import {
+  DYNAMIC_VIOLATION_CODE_PREFIXES,
+  VIOLATION_CODES,
+} from '../skills-toolbox/plan-contract-guard.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
 import { precedes, regionUntilNext } from './gate-region-lib.mjs'
 import { assertExactSize, measureFile } from './size-ratchet-lib.mjs'
@@ -402,7 +406,7 @@ test('an ok sentinel accepts only a path that resolves to the expected non-empty
   )
   assert.match(
     PHASE_4_SECTION,
-    /PLAN_FILE="\$\{PLAN_FILE:-\.linear-plans\/<ISSUE-ID>-<slug>\.md\}"/,
+    /PLAN_FILE="\$\{PLAN_FILE:-\.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>-<slug>\.md\}"/,
     'Phase 4 must carry forward the already validated headless PLAN_FILE instead of overwriting it',
   )
 })
@@ -514,7 +518,7 @@ test('the epic sentinel carries required artifact paths in both payload copies',
     )
     assert.match(
       payload.brief,
-      /<child-plan-path>[.]md[.]rejected/,
+      /<PARENT>-child-<key>-<slug>[.]md[.]rejected/,
       `${payload.name}: epic sentinel must retain rejected child plan structure artifacts in guardScratchPaths`,
     )
     assert.doesNotMatch(
@@ -596,6 +600,34 @@ test('Phase 4 step 5 supplies the three inputs the library cannot derive for its
     PHASE_4_SECTION,
     /add\s+every\s+parent\s+id\s+you\s+have\s+already\s+expanded\s+to\s+`excludeIds`/,
     'step 5(d) must bound the documented epic re-run loop, which resets the library depth cap',
+  )
+  // BOS-1187. The library can refuse to fabricate an edge, but only the caller can
+  // refuse to READ an arealess scan as a clean one — these four pins are the half
+  // of the fix that does not live in plan-deps-lib.mjs.
+  assert.match(
+    PHASE_4_SECTION,
+    /verbatim\*\*[\s\S]{0,200}coarsening/,
+    'step 5(b) must say a candidate’s `## Key changes` entries are fed in verbatim — paraphrasing a path into a coarser one manufactures an edge, because overlap is containment-based',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /`repoWideTokens`,\s+`areaAliases`/,
+    'step 5(c) must build the suppression and alias tuning into the classify payload, not only moduleRoots',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /subjectAreas[\s\S]{0,120}\*\*before\s+any\s+edge\s+is\s+written\*\*/,
+    'step 5(c) must require the printed subjectAreas line to be read BEFORE any edge write — a non-zero `compared` over an empty subjectAreas prints byte-identically to a clean scan',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /`no-subject-areas`\s+or\s+`subject-unresolved-areas`[\s\S]{0,200}could\s+not\s+evaluate/,
+    'step 5(d) must carry an imperative branch for both arealess warnings; a library warning that reaches no caller branch changes nothing',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /i\.subjectUnresolvedAreas=s\.unresolved/,
+    'the step 5(c) invocation must FEED the unresolved list back to planDependencyEdges — naming the branch in prose while the runnable line drops the input is the same silent miss',
   )
 })
 
@@ -760,6 +792,88 @@ test('Phase 4 permits required secret redaction without weakening attachment par
   )
 })
 
+// BOS-1199 — the post-save read-back. Every other gate is pre-write prevention over local bytes,
+// so nothing observed what actually landed until this one. The three assertions below are the
+// three prose changes the ticket lands; each is pinned so removing it fails.
+test('BOS-1199: Phase 2 states the snapshot is the STORED description with no added byte', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    const headless = sectionBetween(
+      payload.skill,
+      '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
+      '\n## Phase 2.5',
+    )
+    assert.match(
+      headless,
+      /tracker's\s+\*\*stored\*\*\s+description,\s+not\s+a\s+rendering\s+of\s+it/,
+      `${payload.name}: Phase 2 must state the snapshot's provenance`,
+    )
+    assert.match(
+      headless,
+      /no\s+byte\s+the\s+stored\s+description\s+does\s+not\*\*[\s\S]{0,120}no\s+trailing\s+newline/,
+      `${payload.name}: Phase 2 must state the snapshot's byte shape`,
+    )
+  }
+  assert.match(
+    BRIEF,
+    /tracker's\s+\*\*stored\*\*\s+description,\s+not\s+a\s+rendering\s+of\s+it/,
+    'the headless drafting brief must restate the snapshot provenance rule',
+  )
+  assert.match(
+    INTERACTIVE,
+    /tracker's\s+\*\*stored\*\*\s+description\s+bytes,\s+not\s+a\s+rendering\s+of\s+them/,
+    'the interactive reference must restate the snapshot provenance rule',
+  )
+})
+
+test('BOS-1199: Phase 4 runs the write-back verification once, after the final save', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    const phase4 = sectionBetween(payload.skill, '## Phase 4 —', '\n## Phase 5')
+    assert.match(
+      phase4,
+      /STOP\s+—\s+write-back\s+verification\s+\(mandatory,\s+mechanical,\s+do\s+not\s+skip\)/,
+      `${payload.name}: the read-back must be a mandatory mechanical STOP`,
+    )
+    assert.match(
+      phase4,
+      /plan-writeback-verify\.mjs" --intended "\$WB_FINAL" --stored "\$WB_STORED"/,
+      `${payload.name}: the read-back invocation must name both inputs`,
+    )
+    assert.match(
+      phase4,
+      /\*\*exactly\s+once\*\*[\s\S]{0,200}final\*\*\s+description\s+save/,
+      `${payload.name}: the read-back must run once, after the FINAL description save`,
+    )
+    // KTD5: loud but non-destructive. A corrective rewrite on a drift verdict is an unattended
+    // agent overwriting a description it just proved it cannot reproduce.
+    assert.match(
+      phase4,
+      /`drift`\s+verdict[\s\S]{0,700}\*\*retain\*\*\s+the\s+scratch[\s\S]{0,300}not\*\*\s+attempt\s+a\s+corrective\s+rewrite/,
+      `${payload.name}: the drift branch must retain scratch and forbid a corrective rewrite`,
+    )
+    assert.equal(
+      count(phase4, 'plan-writeback-verify.mjs'),
+      1,
+      `${payload.name}: exactly one read-back invocation`,
+    )
+  }
+})
+
+test('BOS-1199: the patch-anchor guidance names the stored normalized text', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    const phase4 = sectionBetween(payload.skill, '## Phase 4 —', '\n## Phase 5')
+    assert.match(
+      phase4,
+      /copy\s+every\s+anchor\s+from\s+the\s+tracker's\s+\*\*stored,\s+normalized\*\*\s+text/,
+      `${payload.name}: an anchor must come from the stored text`,
+    )
+    assert.match(
+      phase4,
+      /never\s+from\s+the\s+gated\s+local\s+draft/,
+      `${payload.name}: the anchor guidance must reject the local draft`,
+    )
+  }
+})
+
 test('Phase 4 carries a mandatory plan-contract STOP gate before the tracker write (BOS-741)', () => {
   // Assert on BEHAVIOURAL WORDING, not just the helper name: a name-exact ratchet stays green while
   // the surrounding prose has stopped saying the gate is mandatory or that failure means no write.
@@ -900,7 +1014,7 @@ test('epic sentinel childIds are required in the drafting brief (BOS-755)', () =
 test('the drafting brief runs the contract guard before the ok sentinel (BOS-741)', () => {
   assert.match(
     BRIEF,
-    /plan-contract-guard\.mjs" --description <new\.md> --plan "\$PLAN_PATH"/,
+    /plan-contract-guard\.mjs" --description "\$NEW" --plan "\$PLAN_PATH"/,
     'the brief must run the contract guard over the description and the plan file',
   )
   assert.match(
@@ -941,7 +1055,7 @@ test('BOS-769: headless Phase 2 snapshots the description before dispatch', () =
     )
     assert.match(
       headless,
-      /\.linear-plans\/<ISSUE-ID>\.image-guard-orig\.md[\s\S]{0,240}single\s+raw-description\s+snapshot/,
+      /\.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>\.image-guard-orig\.md[\s\S]{0,240}single\s+raw-description\s+snapshot/,
       `${payload.name}: Phase 2 must write the raw description snapshot before dispatch`,
     )
     assert.match(
@@ -1061,11 +1175,18 @@ test('Phase 4 counts canonical upload identities for the image guard (BOS-702)',
   )
 })
 
-test('Phase 4 deletes guard scratch before every failed-gate exit (BOS-702)', () => {
+test('Phase 4 deletes reporter-source scratch before every failed-gate exit (BOS-702)', () => {
+  // BOS-1189 narrowed the deleted set from four paths to three. The security property is
+  // unchanged and is the whole point of this test: `$ORIG` is the raw Phase 1 reporter source
+  // and may carry sensitive content, `$SAFE_ORIG`/`$NEW` are derived from it, and Phase 5 never
+  // runs after `exit 1` — so EVERY failing gate in Phase 4 must destroy all three itself.
+  // `$PLAN_FILE` is deliberately no longer deleted: it is the run's most expensive artifact and
+  // has already passed the secret gate upstream of this block, so retaining it turns a one-line
+  // formatting fault into an EDIT instead of a full redraft.
   assert.match(
     PHASE_4_SECTION,
-    /cleanup_guard_scratch\(\)[\s\S]{0,240}rm -f "\$ORIG" "\$SAFE_ORIG" "\$NEW" "\$PLAN_FILE"/,
-    'the failed-gate cleanup must remove raw, safe, rewritten, and plan scratch files',
+    /cleanup_guard_scratch\(\)[\s\S]{0,240}rm -f "\$ORIG" "\$SAFE_ORIG" "\$NEW"/,
+    'the failed-gate cleanup must remove the raw, safe, and rewritten source scratch files',
   )
   assert.equal(
     (PHASE_4_SECTION.match(/cleanup_guard_scratch\n>   exit\s+1/g) ?? []).length,
@@ -1074,15 +1195,27 @@ test('Phase 4 deletes guard scratch before every failed-gate exit (BOS-702)', ()
   )
   // Counting one helper name cannot see a failed-gate exit that cleans up some OTHER way — which is
   // how the BOS-741 contract gate shipped leaking `$ORIG`/`$SAFE_ORIG`. Assert the property instead:
-  // EVERY `exit 1` in Phase 4 must be preceded by a cleanup naming all four scratch paths.
+  // EVERY `exit 1` in Phase 4 must be preceded by a cleanup naming all three source scratch paths.
   const exits = PHASE_4_SECTION.split(/^>\s+exit\s+1$/m)
   assert.ok(exits.length - 1 >= 5, 'Phase 4 must carry the image gates plus the contract gate')
   for (const [i, before] of exits.slice(0, -1).entries()) {
     const tail = before.slice(-400)
     assert.ok(
-      /cleanup_guard_scratch$/m.test(tail) ||
-        /rm -f "\$ORIG" "\$SAFE_ORIG" "\$NEW" "\$PLAN_FILE"/.test(tail),
-      `failed-gate exit #${i + 1} must delete all four scratch paths — $ORIG may carry sensitive content and Phase 5 never runs after exit 1`,
+      /cleanup_guard_scratch$/m.test(tail) || /rm -f "\$ORIG" "\$SAFE_ORIG" "\$NEW"/.test(tail),
+      `failed-gate exit #${i + 1} must delete all three source scratch paths — $ORIG may carry sensitive content and Phase 5 never runs after exit 1`,
+    )
+  }
+  // The other half of the BOS-1189 contract, and the half a positive match cannot see: no
+  // failing-gate cleanup may delete the drafted plan. Without this, re-adding `"$PLAN_FILE"` to
+  // either `rm -f` leaves every assertion above green while restoring the full-redraft cost.
+  const removals = PHASE_4_SECTION.split('\n')
+    .map((line) => line.replace(/^>\s?/, ''))
+    .filter((line) => /^rm -(?:f|rf) /.test(line.trim()))
+  assert.ok(removals.length >= 2, 'Phase 4 must carry the helper and contract-gate removals')
+  for (const removal of removals) {
+    assert.ok(
+      !removal.includes('"$PLAN_FILE"'),
+      `no failing gate may delete the drafted plan — the secret gate has already cleared it and the next attempt edits it in place: ${removal.trim()}`,
     )
   }
 })
@@ -2483,119 +2616,54 @@ test('BOS-992: Phase 0 invokes the stale plan-scratch reaper before tracker read
   )
 })
 
-test('BOS-992: Phase 5 cleanup stays per-issue scoped', () => {
+test('BOS-1193: Phase 5 cleanup is run-scoped, never issue-scoped', () => {
+  // BOS-992 pinned an `<ISSUE-ID>`-scoped cleanup as the safety property. It is not one: two runs
+  // can plan the SAME ticket concurrently, and a correctly `<ISSUE-ID>`-scoped delete was observed
+  // removing a peer's live in-flight scratch. The run id is the only identifier that separates
+  // them, so cleanup removes one run directory and can no longer name anything outside it.
   const phase5 = sectionBetween(SKILL, '## Phase 5 — Discard local artifacts', '\n## Phase 6')
-  const expectedPatterns = [
-    '<ISSUE-ID>-child-*.md',
-    '<ISSUE-ID>-child-*.md.rejected',
-    '<ISSUE-ID>*.image-guard-*.md',
-    '<ISSUE-ID>*.attachment-guard-orig.md',
-    '<ISSUE-ID>*.attachment-headers-*.json',
-    '<ISSUE-ID>*.epic-spec.json',
-  ]
-  for (const pattern of expectedPatterns) {
-    assert.equal(
-      count(phase5, `-name '${pattern}' -delete`),
-      1,
-      `Phase 5 must keep exactly one deletion line for ${pattern}`,
-    )
+  assert.equal(
+    count(phase5, 'rm -rf .linear-plans/run-<RUN-SCRATCH-ID>'),
+    1,
+    "Phase 5 must remove this run's scratch directory exactly once",
+  )
+  assert.ok(
+    phase5.includes('if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi'),
+    'Phase 5 must assert the post-condition: `rm` can exit 0 on macOS having removed nothing',
+  )
+  for (const forbidden of ['find .linear-plans', "-name '<ISSUE-ID>", '.linear-plans/<ISSUE-ID>']) {
     assert.ok(
-      pattern.startsWith('<ISSUE-ID>'),
-      `Phase 5 pattern must remain issue-scoped: ${pattern}`,
+      !phase5.includes(forbidden),
+      `Phase 5 must not reintroduce issue-scoped cleanup (${forbidden}) — it reaches a same-ticket peer's live scratch`,
     )
   }
-  const deletionLines = phase5
-    .split('\n')
-    .filter((line) => line.includes('find .linear-plans') && line.includes('-delete'))
-  assert.equal(
-    deletionLines.length,
-    expectedPatterns.length,
-    'Phase 5 must not gain broadened cleanup globs',
-  )
 })
 
-test('every glob-bearing scratch-cleanup line carries exactly one pattern', () => {
-  // Under zsh and fish an UNMATCHED glob aborts the WHOLE command line. Three cleanup sites
-  // used to share one `rm -f` line across the child-plan, image-guard and attachment-header
-  // patterns, so a single-ticket run — which writes no child plan — aborted on the first
-  // pattern and left the other scratch behind. The fix is one `find … -delete` per pattern.
-  // Without this guard the property is prose only, and the next prose-shrinking edit
-  // recollapses it silently: the failure is invisible on the happy path.
-  const SITES = 4
+test("every scratch-cleanup site removes exactly this run's directory, with no glob surface", () => {
+  // Under zsh and fish an UNMATCHED glob aborts the WHOLE command line, so a cleanup line carrying
+  // one deletes nothing while reading as a clean pass (BOS-1160). The old shape mitigated that with
+  // one `find … -name 'PREFIX*' -delete` per line; removing a run directory retires the glob
+  // surface altogether, which is the strictly stronger form of the same property. Pin it: no
+  // scratch-cleanup line anywhere in the body may carry a glob.
+  // 5 since BOS-1193 review: the draft-metadata abort was the one path the collapse missed — it
+  // was re-addressed to the run directory but still enumerated filenames and carried no residual
+  // assertion, so it now uses the same shape as its four siblings.
+  const SITES = 5
   const lines = SKILL.split('\n')
-  // Deletion lines only. The residual `-print` sweep added below deliberately carries all three
-  // patterns on one line (it is a post-condition check, not a deletion), so key on `-delete`.
-  const globCleanupLines = lines.filter(
-    (line) =>
-      line.includes('.linear-plans') &&
-      line.includes('*') &&
-      /(^|\s)(rm -f|find) /.test(line) &&
-      line.includes('-delete'),
-  )
-  assert.ok(
-    globCleanupLines.length >= 12,
-    `expected at least 12 glob cleanup lines (4 sites x child-plan/image-guard/attachment-headers), got ${globCleanupLines.length}`,
-  )
-  const SAFE_SOURCE = '<ISSUE-ID>*.attachment-guard-orig.md'
-  const REJECTED_CHILD_PLAN = '<ISSUE-ID>-child-*.md.rejected'
   assert.equal(
-    lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}' -delete`)).length,
-    4,
-    'every cleanup path must delete the redacted safe-source scratch file',
-  )
-  assert.equal(
-    lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}'`) && l.includes('-print)')).length,
-    4,
-    'every residual sweep must detect a surviving redacted safe-source scratch file',
-  )
-  assert.equal(
-    lines.filter((l) => l.includes(`-name '${REJECTED_CHILD_PLAN}' -delete`)).length,
+    lines.filter((l) => l.includes('rm -rf .linear-plans/run-<RUN-SCRATCH-ID>')).length,
     SITES,
-    'every cleanup path must delete retained rejected child plans',
+    "every cleanup path must remove this run's scratch directory",
   )
-  assert.equal(
-    lines.filter((l) => l.includes(`-name '${REJECTED_CHILD_PLAN}'`) && l.includes('-print)'))
-      .length,
-    SITES,
-    'every residual sweep must detect retained rejected child plans',
-  )
-  assert.ok(
-    lines.filter((l) =>
-      l.includes('.linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json'),
-    ).length >= SITES,
-    'every cleanup path must delete precheck, draft-metadata, premises, and premise-state scratch',
-  )
-  for (const line of globCleanupLines) {
-    assert.match(
-      line.trim(),
-      /^if \[ -d \.linear-plans \]; then\s+find \.linear-plans -maxdepth\s+1 -type\s+f -name '[^']+' -delete \|\| CLEANUP_RC=1; fi$/,
-      `a glob cleanup line must use the one-pattern-per-line find form: ${line.trim()}`,
-    )
-  }
-  // A trailing `|| true` would swallow a REAL deletion error (permission denied, I/O) and let
-  // cleanup report success with plan text or signed headers still on disk. The `if` wrapper
-  // tolerates only the missing-directory case, so pin that: no cleanup line may force success.
-  for (const line of globCleanupLines) {
-    assert.ok(
-      !line.includes('|| true'),
-      `a cleanup line must not force success with \`|| true\` — real deletion errors must propagate: ${line.trim()}`,
-    )
-  }
-  // Two masking bugs, two guards, one per site. (1) A block's exit status is its LAST command's,
-  // so a failed delete followed by a no-match delete vanishes — hence CLEANUP_RC accumulation.
-  // (2) BSD find (/usr/bin/find on macOS, where cron worktrees run) exits 0 even when `-delete`
-  // hits EACCES, so the accumulator alone still misses it — hence the residual `-print` sweep,
-  // which checks the post-condition instead of trusting any find's exit status. Both were
-  // verified against /usr/bin/find; drop either and a real failure reports success again.
   assert.equal(
     lines.filter((l) => l.trim() === 'CLEANUP_RC=0').length,
     SITES,
     'each cleanup site must reset CLEANUP_RC before accumulating',
   )
   assert.equal(
-    lines.filter((l) => l.includes('-print)') && l.includes('CLEANUP_RC=1')).length,
+    lines.filter((l) => l.includes('[ -e .linear-plans/run-<RUN-SCRATCH-ID> ]')).length,
     SITES,
-    'each cleanup site must re-scan for surviving scratch — BSD find exits 0 on a failed -delete',
+    'each cleanup site must re-check existence — `rm` can exit 0 having removed nothing',
   )
   assert.equal(
     lines.filter((l) => /\[\s+"\$CLEANUP_RC"\s+(?:=|!=)\s+0\s+\]/.test(l)).length,
@@ -2603,9 +2671,50 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
     'each cleanup site must act on the accumulated status',
   )
   for (const line of lines) {
+    const isCleanup = /(^|\s)(rm -f|rm -rf|find) /.test(line) && line.includes('.linear-plans')
     assert.ok(
-      !(/(^|\s)rm -f /.test(line) && line.includes('*')),
-      `rm -f must never carry a glob — an unmatched one aborts the line under zsh and fish: ${line.trim()}`,
+      !(isCleanup && line.includes('*')),
+      `a scratch-cleanup line must never carry a glob — an unmatched one aborts the line under zsh and fish: ${line.trim()}`,
+    )
+    assert.ok(
+      !(isCleanup && line.includes('|| true')),
+      `a cleanup line must not force success with \`|| true\` — real deletion errors must propagate: ${line.trim()}`,
+    )
+  }
+})
+
+test('BOS-1193: the body records the scratch-concurrency hazards the notes paid for', () => {
+  // These are the corrections a future run needs before it touches `.linear-plans/`. Without them
+  // the shape above is a rule with no reason attached, and the next edit re-derives the defect.
+  for (const [needle, why] of [
+    ['shared mutable state', 'that `.linear-plans/` is shared across concurrent runs'],
+    ['is _not_ sufficient', 'that an issue-scoped pattern is not sufficient'],
+    ['belongs to a peer', "that a peer's untracked file is never deleted"],
+    ["-name 'PREFIX*' -delete", 'the load-bearing find spelling'],
+    ['aborts the **whole command line**', 'why a bare shell glob is unsafe under zsh and fish'],
+    ['never by grepping a ticket id', 'that a sentinel run dir is selected from the handed RUN_ID'],
+  ]) {
+    assert.ok(
+      SKILL.includes(needle),
+      `the skill body must record ${why} (missing ${JSON.stringify(needle)})`,
+    )
+  }
+})
+
+test('BOS-1193: the payload never instructs an agent to invent a scratch filename', () => {
+  for (const placeholder of [
+    '<safe-orig.md>',
+    '<new.md>',
+    'BODY="$(mktemp)"',
+    'scratch JSON file you just wrote',
+  ]) {
+    assert.ok(
+      !SKILL.includes(placeholder),
+      `SKILL.md still names scratch by placeholder: ${placeholder}`,
+    )
+    assert.ok(
+      !BRIEF.includes(placeholder),
+      `the drafting brief still names scratch by placeholder: ${placeholder}`,
     )
   }
 })
@@ -2628,7 +2737,7 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // for re-derivation — instead of prescribing one cause.
   // On a rebase this constant conflicts too; see the REBASE HAZARD note at RATCHET below for
   // how to resolve BOTH — this one is re-baselined above the new measurement, never set to it.
-  const PRE_SPLIT_BASELINE = 111842
+  const PRE_SPLIT_BASELINE = 122329
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -2826,7 +2935,88 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // plan-file floor, explicit exemptions, consumer non-goal, and structure-only `.rejected`
   // retention, including the review-found abort cleanup enumerations, because Phase 4 owns the
   // pre-write gate and cleanup behavior.
-  const RATCHET = 111805 // exact measured resident body, re-measured 2026-09-06 (BOS-1177)
+  // BOS-1187 re-baselines 111805 -> 113125 (+1320 B), carrying PRE_SPLIT_BASELINE 111842 ->
+  // 113162 to keep the existing 37-byte guard margin. Phase 4 step 5 now states the verbatim
+  // `## Key changes` rule, names `repoWideTokens`/`areaAliases` in the classify payload, requires
+  // the printed `subjectAreas`/unresolved line to be read before any edge write, and carries the
+  // imperative branch for the `no-subject-areas` and `subject-unresolved-areas` warnings. These
+  // bytes stay resident because step 5 IS the write path: a reference would be consulted after
+  // the fabricated or missed edge the prose exists to prevent had already been written.
+  // BOS-1186 re-baselines 113125 -> 113326 (+201 B), carrying PRE_SPLIT_BASELINE 113162 ->
+  // 113363 to keep the existing 37-byte guard margin. Phase 4's violation-code list was itself a
+  // copied-forward claim -- it named seven of the guard's codes and had gone out of date twice --
+  // so it now enumerates every entry of the guard's exported `VIOLATION_CODES` plus the dynamic
+  // `vacuous-*` family, and `scripts/bs-plan-skill.test.mjs` asserts the two against each other.
+  // These bytes stay resident because Phase 4 IS the pre-write gate: an operator reading a tagged
+  // stderr line it cannot find in the list has no way to tell a new code from a typo.
+  // BOS-1193 banks 113326 -> 112243 (-1083 B), leaving PRE_SPLIT_BASELINE at 113363 as the
+  // BOS-999 and BOS-1030 down-banks did: the baseline is carried only when the pin rises.
+  // Phase 4's scratch cleanup collapsed from a per-artifact enumeration to one run-scoped
+  // removal addressed through the registry, so the abort paths that each restated the list now
+  // name a single removal. The saving is deleted enumeration, not routed prose.
+  // BOS-1193 review re-pins 112243 -> 112608 (+365 B); PRE_SPLIT_BASELINE stays at 113363, so the
+  // guard margin narrows from 1120 to 755 bytes of headroom rather than being carried up — the one
+  // check that catches both numbers sliding together stays armed. The bytes are the draft-metadata
+  // abort adopting the same five-line removal its four siblings already use: it was the single
+  // cleanup path the collapse missed, re-addressed to the run directory but still enumerating
+  // `{precheck,premises,premise-states}.json` and carrying no residual-existence assertion, so it
+  // stranded the raw Phase 1 source every other failing gate deletes. These bytes are resident
+  // because they ARE the cleanup contract this ticket exists to make uniform; a reference cannot
+  // hold the shell an abort path has to run inline.
+  // BOS-1199 re-baselines 112608 -> 117028 (+4420 B), carrying PRE_SPLIT_BASELINE 113363 ->
+  // 117783 to keep the 755-byte guard margin BOS-1193's review narrowed it to -- the +4420 is
+  // this branch's own growth, re-derived against the rebased base rather than merged from a
+  // side. Phase 2 step 2 now states the snapshot's PROVENANCE (the tracker's stored
+  // description, not a rendering) and its byte shape (no added terminal byte), and Phase 4
+  // gains the post-save write-back verification with its
+  // loud-but-non-destructive drift branch plus the corrected patch-anchor guidance. All of it
+  // stays resident because it IS the write path: the snapshot rule is read before the dispatch
+  // that consumes it, and the read-back and anchor rules are consulted at the save itself -- a
+  // reference would be opened only after the damage the prose exists to prevent had been stored,
+  // and the tracker keeps no description history to recover it from.
+  // BOS-1199 review round re-baselines 117028 -> 118415 (+1387 B), carrying PRE_SPLIT_BASELINE
+  // 117783 -> 119170 to keep the 755-byte guard margin. Phase 6's report list now names the
+  // step-6 write-back verdict, Phase 5's cleanup rule carves out the drift branch that deliberately
+  // retains the scratch, and step 5(f)'s incremental `patch` path now says how it materializes the
+  // `--intended` bytes step 6 requires (the stored read-back with the same patch ops applied), with
+  // step 6 naming that input on its side. These bytes stay resident because they close a hole
+  // BETWEEN two resident steps: 5(f) writes and 6 verifies, and a reference would be consulted only
+  // after a patch save had already landed with nothing to verify it against.
+  // BOS-1199 rebase re-pins 118415 -> 118499 (+84 B); PRE_SPLIT_BASELINE stays at 119170, so the
+  // guard margin narrows from 755 to 671 bytes rather than being carried up. The bytes are four
+  // occurrences of `run-<RUN-SCRATCH-ID>/`: this branch wrote the write-back check's two scratch
+  // artifacts flat under `.linear-plans/`, which was the correct shape at the branch point and
+  // stopped being one when BOS-1193 landed run-scoped scratch on main. Nothing conflicted -- the
+  // two changes touch different lines -- so the defect arrived textually clean and was caught by
+  // BOS-1193's payload ratchet, which reds on any `.linear-plans/` token that is not run-scoped.
+  // Left flat, Phase 5's single `rm -rf .linear-plans/run-<RUN-SCRATCH-ID>` could never reach
+  // them and both files -- one of which holds the tracker's stored description -- would outlive
+  // the run. The matching `image-guard-final`/`image-guard-stored` families are declared in
+  // `skills-toolbox/plan-scratch-paths.mjs`, since run-scoping alone still leaves a name the
+  // registry does not know.
+  // BOS-1189 re-baselines 118499 -> 121658 (+3159 B), carrying PRE_SPLIT_BASELINE 119170 ->
+  // 122329 to keep the 671-byte guard margin the BOS-1199 rebase left. Four resident additions,
+  // each read at the point it fires on a write path, which is why none of them route to
+  // `references/headless-drafting-brief.md`:
+  //   +~1.4 kB, the retained-plan justification beside BOTH Phase 4 failing-gate cleanups. These
+  //   bytes ARE the cleanup contract — the same argument BOS-1193's review entry makes — and a
+  //   reference cannot hold the shell an abort path runs inline. Without the stated reason, the
+  //   next editor tidying the `rm -f` line re-adds `"$PLAN_FILE"` and silently restores the
+  //   full-redraft cost this ticket exists to remove.
+  //   +~380 B, the epic child-marker placement rule. `--require-verbatim` treats everything from
+  //   the terminal `## Original notes` heading onward as the compared block, so a marker written
+  //   after it is rejected by the guard. The resident epic orchestrator makes that child write
+  //   before it opens any reference, exactly as BOS-1178's parent-overview gate does.
+  //   +~500 B, the config-first argument-order rule generalized past `validatePlanDescription` to
+  //   its three siblings and `extractKeyChangeAreas`, plus which of the guard's two faults each
+  //   message names. The two faults need OPPOSITE fixes, and `extractKeyChangeAreas` is invoked
+  //   from resident Phase 4 step 5 — a reader who cannot tell "swapped" from "no contract loaded"
+  //   reorders a correct call and gets the same red back.
+  //   +~330 B, the interactive `agent-question` strip in Phase 4 step 3's labels bullet. That
+  //   bullet IS the single tracker save; interactive resolves every fork with the human and by
+  //   contract emits no `## Open Questions`, so a pre-existing label there is a claim the run has
+  //   disproved and no other path can clear it.
+  const RATCHET = 121658 // exact measured resident body, re-measured 2026-09-07 (BOS-1189)
   assertExactSize({
     below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
     constFile: 'scripts/bs-plan-skill.test.mjs',
@@ -2835,6 +3025,11 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
     label: 'boss-plan resident SKILL.md',
     measured: measureFile(abs(`${CORE}/SKILL.md`)),
     path: 'services/boss/internal/skillinstall/skills/boss-plan/SKILL.md',
+    previous: {
+      value: 118499,
+      delta: 3159,
+      label: 'BOS-1189 retaining the drafted plan across failing Phase 4 gates',
+    },
     residual:
       'the references/ files the body routes to, and whether the resident prose is worth its ' +
       'bytes — this pin only knows how many there are',
@@ -2939,4 +3134,96 @@ test('BOS-458: the published core carries no hard-coded ${TRACKER:-…} shell de
     0,
     'boss-plan SKILL.md must not hard-code a ${TRACKER:-<default>} shell fallback; resolve the tracker from adapters.tracker instead',
   )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1186 — the guard's violation vocabulary, machine-checked against the prose.
+// ---------------------------------------------------------------------------
+
+// The two prose lists that enumerate the contract guard's violation codes are themselves
+// copied-forward claims of exactly the kind this ticket is about: they were written once, went out
+// of date as codes were added, and nothing read them against the guard. This test is the durable
+// anti-rot mechanism -- it reads the guard's exported set rather than a literal list, so a code
+// added to the guard reds here until both bodies name it.
+//
+// Deliberately NOT asserted: that the lists carry NOTHING else. `unreadable-input` is tagged by the
+// CLI rather than by `violation()` and is legitimately in both lists, so this is a subset relation.
+// Also not asserted: that the codes appear in the guard's sorted order -- the prose is for a human
+// reading a stderr tag, and ordering churn is not a defect worth a red.
+test('BOS-1186: both prose lists enumerate every guard violation code', () => {
+  assert.ok(VIOLATION_CODES.length > 0, 'the exported code set must be non-empty')
+  assert.deepEqual(DYNAMIC_VIOLATION_CODE_PREFIXES, ['vacuous-*'])
+
+  for (const copy of PAYLOAD_COPIES) {
+    const phase4 = regionUntilNext(
+      copy.skill,
+      'One stderr line per violation',
+      '; a missing',
+      `${copy.name} boss-plan Phase 4 violation-code list`,
+    )
+    const step8 = regionUntilNext(
+      copy.brief,
+      'It prints one stderr line per violation',
+      '**A non-zero exit',
+      `${copy.name} drafting-brief Step 8 violation-code list`,
+    )
+
+    for (const code of VIOLATION_CODES) {
+      assert.ok(
+        phase4.includes(`\`${code}\``),
+        `${copy.name}: boss-plan Phase 4 list must name violation code ${code}`,
+      )
+      assert.ok(
+        step8.includes(`\`${code}\``),
+        `${copy.name}: drafting brief Step 8 list must name violation code ${code}`,
+      )
+    }
+    for (const prefix of DYNAMIC_VIOLATION_CODE_PREFIXES) {
+      assert.ok(
+        phase4.includes(`\`${prefix}\``),
+        `${copy.name}: boss-plan Phase 4 list must name the dynamic ${prefix} family`,
+      )
+      assert.ok(
+        step8.includes(`\`${prefix}\``),
+        `${copy.name}: drafting brief Step 8 list must name the dynamic ${prefix} family`,
+      )
+    }
+  }
+})
+
+// The producer side of the same defect: a premise coordinate the drafter never re-read, and a
+// constant copied out of a ticket's notes instead of re-measured.
+test('BOS-1186: the drafting brief requires anchored premises and re-measured constants', () => {
+  for (const copy of PAYLOAD_COPIES) {
+    assert.match(
+      copy.brief,
+      /A\s+premise\s+that\s+cites\s+`file:line`\s+must\s+carry\s+an\s+anchor[\s\S]{0,200}backticked\s+token\s+copied\s+from\s+that\s+location/,
+      `${copy.name}: Step 5 must require an anchor token on a premise citing file:line`,
+    )
+    assert.match(
+      copy.brief,
+      /unanchored-premise-citation[\s\S]{0,240}stale-premise-citation/,
+      `${copy.name}: Step 5 must name both anchor violations the guard can raise`,
+    )
+    assert.match(
+      copy.brief,
+      /cite\s+the\s+file\s+\*\*without\*\*\s+a\s+line\s+number/,
+      `${copy.name}: Step 5 must state the escape hatch`,
+    )
+    assert.match(
+      copy.brief,
+      /pinned\s+numeric\s+constant\s+is\s+a\s+premise[\s\S]{0,320}`—\s+check:\s+`\s+clause\s+names\s+the\s+command\s+that\s+re-measures\s+it/,
+      `${copy.name}: Step 5 must require a pinned constant to name its re-measuring command`,
+    )
+    assert.match(
+      copy.brief,
+      /The\s+same\s+rule\s+governs\s+\*\*every\s+pinned\s+constant\*\*[\s\S]{0,260}re-measured\s+from\s+the\s+current\s+tree/,
+      `${copy.name}: Step 8's measured-size rule must cover every pinned constant`,
+    )
+    assert.match(
+      copy.brief,
+      /Re-read\s+every\s+coordinate\s+and\s+constant\s+the\s+ticket\s+supplies[\s\S]{0,700}no\s+longer\s+resolves\s+is\s+re-cited\s+from\s+the\s+current\s+tree\s+or\s+dropped/,
+      `${copy.name}: Step 2 recon must re-read ticket-supplied coordinates and constants`,
+    )
+  }
 })

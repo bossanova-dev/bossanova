@@ -2371,3 +2371,66 @@ func TestObservedServingFactsRefusesUnverifiableAndForeignRecords(t *testing.T) 
 		})
 	}
 }
+
+// TestRunDaemonRestartRefusesARejectedSupervisionModeWithoutStoppingTheDaemon
+// pins the BOS-1184 regression fix.
+//
+// platformRestart's own fail-closed check is not enough on this path, and on
+// its own it reproduced the exact failure BOS-1181 exists to prevent: the
+// launchd branch stops the running daemon BEFORE calling restartDaemon(), whose
+// error return exits immediately — the daemonEnsureRunning fallback is reachable
+// only from waitForDaemonRestartReady, further down. A refused supervision mode
+// therefore stopped a healthy supervised daemon and then declined to replace it.
+//
+// The refusal must happen before anything is stopped, so the host keeps the
+// daemon it had. Asserting "no events" is the whole point: an implementation
+// that refuses only after the stop still returns an error and would pass a test
+// that checked the error alone.
+func TestRunDaemonRestartRefusesARejectedSupervisionModeWithoutStoppingTheDaemon(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	_, socketPath := daemonRestartProfileFixture(t)
+	writeSupervisionModeSettings(t, "definitely-not-a-mode")
+
+	var events []string
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 4242}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return true }
+	daemonStop = func() error {
+		events = append(events, "launchd-stop")
+		return nil
+	}
+	restartDaemon = func() error {
+		events = append(events, "launchd-restart")
+		return nil
+	}
+	waitForDaemonSocketGone = func(string) bool {
+		events = append(events, "socket-gone")
+		return true
+	}
+	terminateCurrentProfileBossd = func() (int, error) {
+		events = append(events, "terminate-standalone")
+		return 0, nil
+	}
+	daemonEnsureRunning = func(string) error {
+		events = append(events, "ensure-running")
+		return nil
+	}
+
+	var err error
+	captureStdout(t, func() { err = runDaemonRestart(&cobra.Command{}) })
+
+	if err == nil {
+		t.Fatal("a rejected supervision mode must refuse the restart, not report success")
+	}
+	if !strings.Contains(err.Error(), "daemon left running") {
+		t.Fatalf("error %q must tell the operator the daemon was left running", err)
+	}
+	if !strings.Contains(err.Error(), "definitely-not-a-mode") {
+		t.Fatalf("error %q must name the rejected value", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("nothing may be stopped or started when the mode is refused; got %v", events)
+	}
+}

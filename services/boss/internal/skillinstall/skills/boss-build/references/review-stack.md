@@ -1413,6 +1413,15 @@ combination most worth printing, and dropping the diagnostic because its compani
 loses the only record that the recovery did not finish — exactly the loss the two-field split exists
 to prevent.
 
+**When no PR maps to the branch yet, the skip is the finding.** On a fresh workspace this route
+reaches the push before any PR exists, so the injection has no number to work with, records
+`TAGGED=skipped` with `no open PR maps to $SESSION_BRANCH`, and every commit this run made ships
+untagged. Report that note in the same breath as `PUSHED=yes` rather than leaving it to be noticed:
+it is the only signal that a whole branch went out untagged, and once the push lands those commits
+are origin's, so the non-goal below applies and the tag becomes a closed loss rather than an open
+task. Ordering is what prevents it, not a later rewrite — a route that can open the PR before it
+pushes gives the injection a number while the commits are still unpublished and free to tag.
+
 Say what an untagged commit actually costs, and no more. The tag is a traceability link from commit
 to PR, so when the project runs no commit-message check in CI, an untagged commit is a gap in that
 link — not a red check. Where the project does run such a check, it is that too. Never assert a red

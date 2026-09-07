@@ -38,7 +38,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Skills',
       collapsed: false,
-      items: ['skills/overview', 'skills/extensions'],
+      items: ['skills/overview', 'skills/config', 'skills/extensions'],
     },
     {
       type: 'category',

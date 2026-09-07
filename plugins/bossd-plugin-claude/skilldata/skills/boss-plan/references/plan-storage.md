@@ -6,13 +6,16 @@ write a plan link. Before any description, labels, estimate, priority, or state 
 1. Call `preparePlanAttachment` with the **target issue id**, Markdown filename, `text/markdown`,
    and byte size.
 2. Save `uploadRequest.headers` in a private scratch JSON file named
-   `.linear-plans/<RUN-ISSUE-ID>.attachment-headers-<n>.json`, retain its exact path until the PUT
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<RUN-ISSUE-ID>.attachment-headers-<n>.json`, retain its exact path until the PUT
    returns, then invoke `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" put "$PLAN_FILE" <uploadRequest.url>
 <headers-json-file>` after running the toolbox preamble first. Delete that exact scratch file immediately after the PUT returns,
    whether it succeeds or fails; keep its path for terminal cleanup as a defense-in-depth fallback.
    `<RUN-ISSUE-ID>` is the planning run's issue id, not necessarily the target issue id: child epic
-   attachments still use the parent epic id here so every `.linear-plans/` scratch file is removable
-   by the run-prefixed cleanup globs.
+   attachments still use the parent epic id here, so one epic run's header scratch stays one
+   recognisable set. Removability no longer rests on that prefix — every file above is inside this
+   run's own `.linear-plans/run-<RUN-SCRATCH-ID>/` directory, which Phase 5 removes whole — but the basename
+   is part of the declared `attachment-headers` family in
+   `$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs`, so keep it.
    **A successful PUT writes the HTTP status line to stdout, and that line is the proof of work.**
    Treat an exit 0 that printed **no** status line on stdout as a **failed PUT**, never a success:
    a helper whose entry-point guard does not fire exits 0 having uploaded nothing, and finalization

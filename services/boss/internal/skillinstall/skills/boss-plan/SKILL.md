@@ -83,10 +83,27 @@ names generically everywhere else:
      echo "boss-plan: no configured tracker in .boss-skills.json for this repo — nothing to plan here; skipping."
      exit 0
    fi
-   # Amortized self-heal for regular plan-scratch files orphaned by runs that abort before cleanup.
+   # Amortized self-heal for plan scratch — files and directories alike — orphaned by runs
+   # that abort before cleanup. It is TTL-gated, so a live peer run's scratch is never touched.
    node "$BOSS_PLAN_TOOLBOX/plan-scratch-reap.mjs" .linear-plans ||
      echo "warning: stale plan-scratch reap failed (non-fatal)" >&2
+   # Mint this run's own scratch directory. `mktemp -d` creates it atomically, so two runs
+   # started at the same instant cannot collide on it even when they plan the same ticket.
+   mkdir -p .linear-plans
+   RUN_SCRATCH="$(mktemp -d .linear-plans/run-XXXXXXXX)" || { echo "boss-plan: cannot create run scratch directory" >&2; exit 1; }
+   echo "run scratch: $RUN_SCRATCH"
    ```
+   **`RUN_SCRATCH` is a substitution token, not an exported variable.** Each Bash tool call is a
+   fresh shell, so nothing survives this block. Read the printed `run scratch:` path once and
+   substitute it literally wherever the rest of this skill and its references write
+   `.linear-plans/run-<RUN-SCRATCH-ID>/` — exactly as you already substitute the real issue id for
+   `<ISSUE-ID>`. `<RUN-SCRATCH-ID>` is the suffix `mktemp` generated on the line above and **nothing
+   else**; in particular it is _not_ the `RUN_ID` of the Phase 2 sentinel context, which is minted
+   later and names a directory under `$TMPDIR`, not under `.linear-plans/`.
+   Every scratch path in this skill is declared in `toolbox/plan-scratch-paths.mjs`; running that
+   helper with the `families` argument prints the declared set. **Never invent a scratch filename.**
+   A name that is not in that registry is a name no cleanup pattern and no reviewer can find, which
+   is exactly how scratch escapes into a shared checkout.
    That first `.` line is the **toolbox preamble**. Each Bash tool call is a fresh shell, so every
    command block that dereferences `$BOSS_PLAN_TOOLBOX` must begin with it; an exported value never
    survives to the next block. It sources `toolbox/boss-plan-env.sh`, which is what actually resolves
@@ -171,12 +188,12 @@ names generically everywhere else:
     report that and stop.
 
 Before Phase 2 in both modes, run the idempotence precheck. Write the selected issue payload from
-the Phase 1 read to `.linear-plans/<ISSUE-ID>.precheck.json` and invoke the deterministic guard
+the Phase 1 read to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json` and invoke the deterministic guard
 (`planIdempotencePrecheck(...)` in `$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs`):
 
 ```bash
 BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-PRECHECK=".linear-plans/<ISSUE-ID>.precheck.json"
+PRECHECK=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json"
 node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" idempotence "$PRECHECK"
 ```
 
@@ -230,24 +247,38 @@ for the Phase 4 secret gate.
    RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
    test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
    DISPATCH_FAILURE="dispatch-failure"
-   PLAN_PATH=".linear-plans/<ISSUE-ID>-<slug>.md"   # compute the slug with plan-slug.mjs issueSlug
+   PLAN_PATH=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md"   # compute the slug with plan-slug.mjs issueSlug
    RUN="$(node "$RUN_SENTINEL" make-ctx boss-plan)"
    RUN_ID="${RUN%%$'\t'*}"; RUN_DIR="${RUN#*$'\t'}"
-   export RUN_SENTINEL DISPATCH_FAILURE PLAN_PATH RUN_ID RUN_DIR
+   RUN_SCRATCH=".linear-plans/run-<RUN-SCRATCH-ID>"   # Phase 0's directory; NOT $RUN_DIR, NOT $RUN_ID
+   export RUN_SENTINEL DISPATCH_FAILURE PLAN_PATH RUN_ID RUN_DIR RUN_SCRATCH
    ```
 
+   `RUN_ID`/`RUN_DIR` name the sentinel context under `$TMPDIR`; `RUN_SCRATCH` names this run's
+   `.linear-plans/` directory. They are different identifiers with similar names — never substitute
+   one for the other, or scratch lands in a directory Phase 5's removal does not name.
+
 2. Before dispatch, write the byte copy of the Phase 1 `get_issue` description to
-   `.linear-plans/<ISSUE-ID>.image-guard-orig.md`. This is the single raw-description snapshot for
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`. This is the single raw-description snapshot for
    the whole run: Phase 4 reuses it, and the worker receives this path as its **only** description
    source. Do not let the worker re-read the tracker description; signed upload URLs can rotate and
    fail the parity gate.
+
+   These bytes are the tracker's **stored** description, not a rendering of it, and the file must
+   carry **no byte the stored description does not** — in particular no trailing newline, so copy
+   the bytes exactly (`printf '%s'`) rather than writing them through a heredoc. Both halves are
+   reasons, not ritual: a rendering can differ in size from the stored text, so a run that snapshots
+   the rendering gates the wrong bytes; and one added terminal byte makes `--require-verbatim` fail
+   late in Phase 4 for a reason that has nothing to do with content, aborting a run that did
+   everything else right.
 
 3. **Dispatch ONE awaited `general-purpose` subagent** (`subagent_type: general-purpose`,
    <!-- tier: opus --> plan drafting is judgment, so **tier: opus**; **await** the dispatch —
 
    **never** `run_in_background`). Pass it the **path** `references/headless-drafting-brief.md` (not
-   its text), the ticket `id`/`title`, the description snapshot path, the target `PLAN_PATH`, and the sentinel context
-   `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`. The brief tells it to recon, work the review dimensions, write
+   its text), the ticket `id`/`title`, the description snapshot path, the target `PLAN_PATH`, the run scratch
+   directory `RUN_SCRATCH` (every local file it writes goes inside it, under a basename declared in
+   `toolbox/plan-scratch-paths.mjs`), and the sentinel context `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`. The brief tells it to recon, work the review dimensions, write
    the plan to `PLAN_PATH`, write the terminal sentinel with a `planPath` payload, and **return only**
    the bounded metadata object
    (`planPath`, `labels`, `agentFriendly`, `estimate`, `priority`, `openQuestions`,
@@ -278,31 +309,19 @@ for the Phase 4 secret gate.
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
      # Abort skips Phase 5; delete the epic/guard/run-boundary scratch families now.
      CLEANUP_RC=0
-     rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
-     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
-     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md.rejected' -delete || CLEANUP_RC=1; fi
-     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
-     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
-     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
-     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
-     if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>-child-*.md.rejected' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text, tracker state or signed upload headers" >&2; fi
+     rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
+     if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
+     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
      exit 1
    fi
-   node -e 'const f=require("fs"),p=require("path"),[r,L,F]=process.argv.slice(1),x=JSON.parse(r).payload||{},T=c=>c?.trim?.(),B="epicSpecPaths",H="guardScratchPaths",P="childPlanPaths",K=["planPath",H,P,B,"attachmentHeaderPaths"],v=k=>{const q=x[k]||[];return k===P&&q&&!Array.isArray(q)&&typeof q=="object"?Object.values(q):[].concat(q)},g=s=>s.toLowerCase().replace(/[^a-z\d]+/g,"-").replace(/^-+|-+$/g,""),n=(id,t)=>id.toUpperCase()+"-"+g(t);let b=0,E=c=>{console.error(`${F}: sentinel ok but artifact missing/empty or wrong path (${c}) — no Linear write, aborting`);b=1},S=v(B).filter(T),G=v(H).filter(T),D=p.resolve(".linear-plans");if(x.epic){const I=v("childIds").filter(T),M=typeof x[P]=="object"&&!Array.isArray(x[P])?x[P]:{},C=I.map(id=>M[id]).filter(T),R=T(x.epicParentId),A=[],U=new Set,O=p.resolve(D,`${R}.epic-spec.json`);for(const k of[H,B])if(!Array.isArray(x[k]))E(k);if(!S.length)E(B);for(const s of S){if(p.resolve(s)!==O){E(B);continue}try{const q=JSON.parse(f.readFileSync(s));if(T(q.parentId)!==R)E(B);for(const c of q.children||[])if(T(c.key)&&T(c.title))A.push([c.key,c.title])}catch{E(s)}}if(!R||I.some(id=>"image-guard-orig attachment-guard-orig image-guard-new".split` `.some(w=>!G.some(c=>p.basename(c)===`${R}.child-${id}.${w}.md`))))E(H);if(!R||!I.length||A.length!==I.length||C.length!==I.length||new Set(C.map(c=>p.resolve(c))).size!==I.length)E(P);for(const id of I){const c=T(M[id]);if(!c){E(`${P}.${id}`);continue}const j=A.findIndex(y=>p.basename(c)===`${R}-child-${y[0]}-${n(id,y[1])}.md`);if(j<0||U.has(j))E(c);else U.add(j)}if(U.size!==A.length)E(P)}else if(!v("planPath").some(T))E("planPath");const P0=p.resolve(L);for(const k of K)for(const c of v(k))if(T(c)){const z=p.resolve(c),a=z===P0||p.dirname(z)===D,m=a&&f.existsSync(z)&&f.statSync(z),s=m&&m.isFile()&&(m.size||k===H&&/-guard-orig[.]md$/.test(z));if(!s)E(c)}process.exit(b)' "$READ" "$PLAN_PATH" "$DISPATCH_FAILURE" ||
+   node -e 'const f=require("fs"),p=require("path"),[r,L,F]=process.argv.slice(1),x=JSON.parse(r).payload||{},T=c=>c?.trim?.(),B="epicSpecPaths",H="guardScratchPaths",P="childPlanPaths",K=["planPath",H,P,B,"attachmentHeaderPaths"],v=k=>{const q=x[k]||[];return k===P&&q&&!Array.isArray(q)&&typeof q=="object"?Object.values(q):[].concat(q)},g=s=>s.toLowerCase().replace(/[^a-z\d]+/g,"-").replace(/^-+|-+$/g,""),n=(id,t)=>id.toUpperCase()+"-"+g(t);let b=0,E=c=>{console.error(`${F}: sentinel ok but artifact missing/empty or wrong path (${c}) — no Linear write, aborting`);b=1},S=v(B).filter(T),G=v(H).filter(T),D=p.resolve(".linear-plans/run-<RUN-SCRATCH-ID>");if(x.epic){const I=v("childIds").filter(T),M=typeof x[P]=="object"&&!Array.isArray(x[P])?x[P]:{},C=I.map(id=>M[id]).filter(T),R=T(x.epicParentId),A=[],U=new Set,O=p.resolve(D,`${R}.epic-spec.json`);for(const k of[H,B])if(!Array.isArray(x[k]))E(k);if(!S.length)E(B);for(const s of S){if(p.resolve(s)!==O){E(B);continue}try{const q=JSON.parse(f.readFileSync(s));if(T(q.parentId)!==R)E(B);for(const c of q.children||[])if(T(c.key)&&T(c.title))A.push([c.key,c.title])}catch{E(s)}}if(!R||I.some(id=>"image-guard-orig attachment-guard-orig image-guard-new".split` `.some(w=>!G.some(c=>p.basename(c)===`${R}.child-${id}.${w}.md`))))E(H);if(!R||!I.length||A.length!==I.length||C.length!==I.length||new Set(C.map(c=>p.resolve(c))).size!==I.length)E(P);for(const id of I){const c=T(M[id]);if(!c){E(`${P}.${id}`);continue}const j=A.findIndex(y=>p.basename(c)===`${R}-child-${y[0]}-${n(id,y[1])}.md`);if(j<0||U.has(j))E(c);else U.add(j)}if(U.size!==A.length)E(P)}else if(!v("planPath").some(T))E("planPath");const P0=p.resolve(L);for(const k of K)for(const c of v(k))if(T(c)){const z=p.resolve(c),a=z===P0||p.dirname(z)===D,m=a&&f.existsSync(z)&&f.statSync(z),s=m&&m.isFile()&&(m.size||k===H&&/-guard-orig[.]md$/.test(z));if(!s)E(c)}process.exit(b)' "$READ" "$PLAN_PATH" "$DISPATCH_FAILURE" ||
      {
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
        # Artifact verification failure also skips Phase 5; remove the same scratch families.
        CLEANUP_RC=0
-       rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md.rejected' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>-child-*.md.rejected' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-       if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text, tracker state or signed upload headers" >&2; fi
+       rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
+       if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
+       if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
        exit 1
      }
    EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
@@ -326,15 +345,9 @@ for the Phase 4 secret gate.
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
        # Reverify-fail also skips Phase 5; remove the same scratch families.
        CLEANUP_RC=0
-       rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md.rejected' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>-child-*.md.rejected' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text, tracker state or signed upload headers" >&2; fi
+       rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
+       if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
+       if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
        exit 1
      fi
      # reverify PASSED: there is NO single-ticket plan file, and the single-ticket
@@ -369,15 +382,19 @@ for the Phase 4 secret gate.
 
    After an `ok` sentinel and the plan-file reverify pass, validate the returned bounded metadata
    before Phase 3.5. Write exactly the returned metadata object to
-   `.linear-plans/<ISSUE-ID>.draft-metadata.json` and run:
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json` and run:
 
    ```bash
    BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   METADATA=".linear-plans/<ISSUE-ID>.draft-metadata.json"
+   METADATA=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json"
    if ! node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata "$METADATA"; then
      echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs metadata — no Linear write, aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-    rm -f "$METADATA" .linear-plans/<ISSUE-ID>.{precheck,premises,premise-states}.json
+     # Abort skips Phase 5; remove this run's whole scratch directory, as every sibling abort does.
+     CLEANUP_RC=0
+     rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
+     if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
+     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
      exit 1
    fi
    ```
@@ -546,7 +563,7 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
      writes **no** attachment — it keeps its inline marker, carried verbatim through step 6's save. Otherwise upload — first **set `spec.parentId` to this
      ticket's id**, since only a bound spec can ever pass `validateSpecIdentity`. The PUT takes a
      **file**, so write
-     `serializeEpicSpec(spec)` to `.linear-plans/<ISSUE-ID>.epic-spec.json` (Phase 5 deletes this
+     `serializeEpicSpec(spec)` to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json` (Phase 5 deletes this
      scratch). **Then verify those bytes BEFORE the PUT:**
      `validateSpecIdentity(parseEpicSpec(<the file's contents>), <ISSUE-ID>)` must be `ok`. Nothing
      else catches an unbound spec — `serializeEpicSpec` omits an unset `parentId` silently rather
@@ -556,7 +573,7 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
      `epic-spec.json` attachment per the contract above; keep it for
      `epicSpecPaths` reverify when this stage ran. When this stage is skipped because a stored
      attachment or legacy marker already exists, write the stored spec to
-     `.linear-plans/<ISSUE-ID>.epic-spec.json`, report it in `epicSpecPaths`, and do not upload.
+     `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json`, report it in `epicSpecPaths`, and do not upload.
      **Then read the
      finalized spec back — still inside this stage, BEFORE any child is created** (step 5 of that
      contract, one retry on a transport error): the read must return non-empty content **and**
@@ -613,7 +630,11 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    `epicChildMarker(key)` embedded in that same write — canonical emitter only, never hand-written —
    but **not** `agent-friendly` yet (deferred exposure, step 6), in `topoOrderChildren` order,
    recording each new id against its `key`; later description saves must preserve that marker
-   byte-for-byte. For `tracker-attachment`, now
+   byte-for-byte. **Place the marker BEFORE the terminal `## Original notes` heading, never after
+   it.** `--require-verbatim` treats everything from that heading onward as the verbatim block, so a
+   marker line sitting after it is an added line inside the block the guard compares byte-for-byte,
+   and the guard rejects the write. Immediately before the heading satisfies the verbatim guard and
+   the marker parser both. For `tracker-attachment`, now
    prepare, PUT, finalize **and read back** that child's attachment (`references/plan-storage.md`;
    use the parent epic id as the signed-header scratch prefix)
    step 5), and only then move its shell to the planned state — otherwise an unwritten child plan
@@ -783,7 +804,7 @@ fully-built epic it is a clean no-op (never duplicates), even from a fresh workt
 ## Phase 3 — Plan requirements (shared drafting spec)
 
 Interactive or headless drafting (per `references/headless-drafting-brief.md`) produces
-`.linear-plans/<ISSUE-ID>-<slug>.md` (gitignored; slug = issue id + hyphenated title; compute with
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md` (gitignored; slug = issue id + hyphenated title; compute with
 `node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"` after running the toolbox preamble first).
 The **full drafting spec** — body requirements and fill-in description-summary template — lives once
 in **`references/headless-drafting-brief.md` § "Step 5"/"Step 7"**; both modes follow it.
@@ -827,6 +848,13 @@ criterion must not cap the number of changed files; scope comes from enumeration
 argument-order error. It returns `{ ok, version, missing, unknown, unsupportedVersion }`; `ok` covers
 only `missing`/`unsupportedVersion`, and `unknown` is enforced by the Phase 4 contract gate.
 
+**Every config-first export shares that guard**, not `validatePlanDescription` alone:
+`parseAcceptanceCriteria`, `parsePremises` and `validateVerifyOnlyEvidence` in the same module, plus
+`extractKeyChangeAreas` in `plan-deps-lib.mjs`. Call all of them `(config, description)`. The guard
+reports two faults that need **opposite** fixes, and the message says which: "arguments look swapped"
+means reorder the call, while "no plan contract loaded" means the first argument was in the right
+position but carried no contract — pass a loaded config rather than an empty object.
+
 **Headless open questions → `agent-question`.** The subagent records only genuinely **controversial**
 forks (high bar — could-have-gone-either-way calls, never routine ones) as `openQuestions`; a
 non-empty list drives the `agent-question` label (Phase 4) and the plan's `## Open Questions`
@@ -866,11 +894,11 @@ subagent → validate its envelope → fold or skip), against
 > silently drops the reporter's screenshots is "worse than none" (the Phase 0 edge rule), and the
 > drafting LLM cannot be trusted to preserve them — so verify parity **mechanically** before any
 > Linear write. Reuse the raw snapshot Phase 2 already wrote at
-> `.linear-plans/<ISSUE-ID>.image-guard-orig.md`; do not rewrite it here. An **empty** or
+> `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`; do not rewrite it here. An **empty** or
 > whitespace-only original is refused (exit 1); pass `--allow-empty-original` only if it truly is
-> empty. Write the returned `descriptionSummary` to `.linear-plans/<ISSUE-ID>.image-guard-new.md`
+> empty. Write the returned `descriptionSummary` to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md`
 > (per-issue paths avoid
-> clobbering). Also write `.linear-plans/<ISSUE-ID>.attachment-guard-orig.md` as the same Phase 1
+> clobbering). Also write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` as the same Phase 1
 > source with **only** the mandatory secret/PII redactions and upload-signature stripping applied;
 > do not derive it from either generated artifact. Both the returned `descriptionSummary` and the
 > final attachment must preserve this safe source under `## Original notes`. Set `EXPECTED_IMAGES`
@@ -879,14 +907,14 @@ subagent → validate its envelope → fold or skip), against
 >
 > ```bash
 > BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-> ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
-> PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
-> PLAN_REJECTED="$PLAN_FILE.rejected"
+> ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
+> PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
 > EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"
 > cleanup_guard_scratch() {
->   rm -f "$ORIG" "$SAFE_ORIG" "$NEW" "$PLAN_FILE" "$PLAN_REJECTED" || echo "warning: guard scratch cleanup failed" >&2
+>   rm -f "$ORIG" "$SAFE_ORIG" "$NEW" || echo "warning: guard scratch cleanup failed" >&2
 > }
 > # Keep scratch until all gates pass; every failing gate calls this helper before exiting.
+> # It removes the SOURCE copies only. `$PLAN_FILE` is deliberately NOT removed — see below.
 > if ! node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$ORIG" --rewritten "$NEW" \
 >   --expect-images "$EXPECTED_IMAGES" --require-unsigned-uploads; then
 >   echo "image-parity gate failed (guard message above) — no Linear write, aborting" >&2
@@ -915,6 +943,16 @@ subagent → validate its envelope → fold or skip), against
 >
 > Phase 5 removes these files after success. A failed gate instead calls `cleanup_guard_scratch`
 > before its non-zero exit, including the raw Phase 1 source which may contain sensitive content.
+>
+> **The drafted plan file is retained, deliberately.** `cleanup_guard_scratch` destroys every
+> scratch copy of the reporter's source — `$ORIG`, `$SAFE_ORIG` and `$NEW` — because that content
+> may be sensitive and its removal is non-negotiable. `$PLAN_FILE` is not one of those copies: it is
+> the most expensive artifact the run produced, and deleting it turned a one-line formatting fault
+> into a full redraft. Retaining it makes the next attempt an EDIT. This is safe here because the
+> secret gate above has already run and passed over `$PLAN_FILE` — every gate in this block is
+> downstream of it, so a retained plan has already been read for credentials and PII. A failure of
+> the secret gate itself is the one branch that must still destroy the plan bytes, and it aborts
+> before any of this runs.
 > `--require-verbatim` makes the tracker write reject rewritten Markdown in `## Original notes`, and
 > `--require-safe-source` permits only image normalization and explicit redaction markers, never dropped prose.
 > `--require-unsigned-uploads` rejects any query-bearing upload URL before it can persist a signature.
@@ -934,8 +972,8 @@ subagent → validate its envelope → fold or skip), against
 >
 > ```bash
 > BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-> ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
-> PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
+> ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
+> PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
 > PLAN_REJECTED="$PLAN_FILE.rejected"
 > if CONTRACT_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_FILE" 2>&1)"; then
 >   :
@@ -945,20 +983,35 @@ subagent → validate its envelope → fold or skip), against
 >     cp "$PLAN_FILE" "$PLAN_REJECTED" || echo "warning: failed to retain rejected plan structure artifact" >&2
 >   fi
 >   echo "plan-contract gate failed (guard message above) — no Linear write, aborting" >&2
->   rm -f "$ORIG" "$SAFE_ORIG" "$NEW" "$PLAN_FILE" || echo "warning: contract gate scratch cleanup failed" >&2
+>   rm -f "$ORIG" "$SAFE_ORIG" "$NEW" || echo "warning: contract gate scratch cleanup failed" >&2
 >   exit 1
 > fi
 > ```
 >
-> This is a **fifth** failed-gate exit, so it owes the same cleanup as the four above and removes all
-> four ordinary scratch paths — `$ORIG` included, the raw Phase 1 source that may carry sensitive content.
-> On a `plan-file-structure` violation only, the structure gate also retains the secret-checked plan
-> bytes at `$PLAN_FILE.rejected` for triage; every normal cleanup path enumerates that retained path.
+> This is a **fifth** failed-gate exit, owing the same cleanup as the four above: it removes the
+> named guard scratch, `$ORIG` included — the raw Phase 1 source that may carry sensitive content.
+> It names files rather than the run directory because the secret-checked plan bytes stay **inside**
+> that directory, which a `rm -rf` would destroy: `$PLAN_FILE` itself, now retained on every failing
+> gate so the next attempt is an edit rather than a redraft, and the `$PLAN_FILE.rejected` snapshot a
+> `plan-file-structure` violation additionally pins. The `.rejected` copy remains the artifact the
+> epic and Phase 5 cleanup paths already name; it now sits alongside a retained `$PLAN_FILE` rather
+> than standing in for a deleted one. It is **not** redundant with that retained plan: it is an
+> immutable snapshot of the bytes the structure gate actually rejected, and the retained
+> `$PLAN_FILE` is the copy the next attempt EDITS IN PLACE. Keeping both is what lets that attempt
+> diff what it changed against what was refused. Note the asymmetry that follows: no failing-gate
+> path deletes `$PLAN_REJECTED` — `cleanup_guard_scratch` does not name it and this gate's own
+> `rm -f` does not either — so on a failing run it outlives the run deliberately, and only the
+> Phase 5 success-path `rm -rf` of the run directory reclaims it.
 > "Discard the scratch (Phase 5 cleanup)" describes the SUCCESS path only: `exit 1` means Phase 5
-> never runs, which is exactly why each failing gate deletes the scratch itself.
+> never runs, which is exactly why each failing gate deletes the scratch itself. "The scratch" is
+> the reporter's source copies, never the drafted plan — no failing gate in Phase 4 deletes
+> `$PLAN_FILE`.
 >
-> One stderr line per violation, each tagged `missing-sections`, `unknown-section`, `section-order`,
-> `placeholder-residue`, `not-a-description`, `plan-file-residue`, `plan-file-structure`, or
+> One stderr line per violation, each tagged `line-spanning-emphasis`, `missing-sections`,
+> `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
+> `plan-file-structure-exemption`, `pr-body-only-evidence`, `section-order`,
+> `self-falsified-literal-search`, `stale-premise-citation`, `unanchored-premise-citation`,
+> `unknown-section`, `unresolvable-citation`, any `vacuous-*` code, or
 > `unreadable-input`; a missing
 > or unreadable file is itself a violation, never a pass, and an `unknown-section` message names both
 > the heading and its remedy. On non-zero exit take the **SAFE branch**: **no Linear write**, no
@@ -973,7 +1026,7 @@ subagent → validate its envelope → fold or skip), against
 >
 > ```bash
 > BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-> PREMISES_FILE=".linear-plans/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/<ISSUE-ID>.premise-states.json"
+> PREMISES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premise-states.json"
 > PREMISE_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE" 2>&1)"
 > PREMISE_RC=$?
 > ```
@@ -987,7 +1040,7 @@ subagent → validate its envelope → fold or skip), against
 
 1. Finalize the native tracker attachment before tracker writeback (failure: no plan metadata/state write). Follow
    [`references/plan-storage.md`](references/plan-storage.md). Set
-   `PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"` and `TRACKER` before write-back.
+   `PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"` and `TRACKER` before write-back.
    After `references/plan-storage.md` returns success, assert exactly one
    `Implementation plan (<ISSUE-ID>)` attachment remains; more than one exact-title attachment takes
    the SAFE branch: no plan metadata/state write, stderr naming duplicate ids, non-zero exit.
@@ -1000,7 +1053,7 @@ subagent → validate its envelope → fold or skip), against
    - **description**: the composed description-summary block (headless: the returned
      `descriptionSummary`, verbatim; interactive: composed per the drafting spec in
      `references/headless-drafting-brief.md` § "Step 7", matching the Phase 3 section contract).
-   - **labels**: union of existing labels + relevant ones (`bug`/`feature`/`improvement`/`docs`) minus `stripLabels`. **Agent-friendly is the default:** add **`agent-friendly`** to every plan **unless** an autonomous agent genuinely could not complete the task (headless: `agentFriendly == false`) — in that case add **`needs-human`** **instead** (never both) and ensure the plan body carries the **## Why this needs a human** section (see Phase 3). Complexity alone is not a reason for `needs-human` — a large but well-specced ticket is still `agent-friendly`. Add **`agent-question`** (headless only) **if and only if** ≥1 open question was recorded (`openQuestions` non-empty); union it in, never clobber — it is independent of the agent-friendly/needs-human call. Set `stripLabels` to `agent-plan` on a successful plan. When there are no open questions, do not add `agent-question`; when it is already present, do not strip it.
+   - **labels**: union of existing labels + relevant ones (`bug`/`feature`/`improvement`/`docs`) minus `stripLabels`. **Agent-friendly is the default:** add **`agent-friendly`** to every plan **unless** an autonomous agent genuinely could not complete the task (headless: `agentFriendly == false`) — in that case add **`needs-human`** **instead** (never both) and ensure the plan body carries the **## Why this needs a human** section (see Phase 3). Complexity alone is not a reason for `needs-human` — a large but well-specced ticket is still `agent-friendly`. Add **`agent-question`** (headless only) **if and only if** ≥1 open question was recorded (`openQuestions` non-empty); union it in, never clobber — it is independent of the agent-friendly/needs-human call. Set `stripLabels` to `agent-plan` on a successful plan. When there are no open questions, do not add `agent-question`; when it is already present, do not strip it — **headless only**. **Interactive** resolves every fork with the human and by contract produces no `## Open Questions` section at all, so a pre-existing `agent-question` there is a claim the run has just disproved and cannot otherwise clear: an interactive run adds it to `stripLabels`.
    - **estimate** (Fibonacci): `0` trivial/minimal · `1`/`2`/`3` well-defined single-PR ticket, clear path · `5`/`8` too big for one PR ⇒ **triage EPIC** (Phase 2.5), never a single-ticket estimate (sole exception: a genuinely atomic, un-splittable `5` with a recorded `- Atomic-5:` justification under `## Planning`). Every planned ticket gets a non-null estimate.
    - **priority** (`1-4`): honor a reporter-set priority. Otherwise rank against the current config-resolved planned (`stateName(config, 'planned')`) backlog, considering urgency, simplicity, positive/business impact, and security (security concerns bias toward Urgent/High). A planned ticket should not stay `0=None`.
 4. Single tracker save op (ops `moveState`/`setPriorityEstimate`; Linear uses `save_issue`) updating the issue by
@@ -1042,10 +1095,16 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    real inverted edge, and an omitted one asserts the candidate is the prerequisite. Overlap is
    computed for you by `extractKeyChangeAreas` + `areasOverlap`: tracker full-text search is **fuzzy
    and must never decide overlap** — the oracle is each candidate's `## Key changes` section, or its
-   whole description when it has none.
+   whole description when it has none. Feed those entries in **verbatim**: overlap is
+   containment-based, so coarsening `services/x/internal/views/y.go` to `services/x` before the scan
+   manufactures a blocking edge against work neither ticket touches.
 
    c. **Classify once.** Build `subject`, `candidates`, `declaredRelatedIds`, `logicalDependencies`,
-   `epicLabel` (`labelName(config, 'epic')`), `moduleRoots` and `stateRoles` (`stateRolesFor(config)`).
+   `epicLabel` (`labelName(config, 'epic')`), `moduleRoots`, `repoWideTokens`, `areaAliases` and
+   `stateRoles` (`stateRolesFor(config)`). `repoWideTokens` EXTENDS the shipped suppression defaults
+   (name this repo's append-only registries and generated mirror directories; a token carrying a
+   slash suppresses everything beneath it), and `areaAliases` maps a path onto the generated mirrors
+   of it.
    Include `epicParentId` on the subject and every candidate when exposed: the library keeps epic
    parents/siblings on the planning-note path instead of adding external dependency edges. `moduleRoots` is this
    repo's top-level module/package directory names: area extraction drops every slash-free token
@@ -1056,13 +1115,20 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    some. `stateRolesFor(config)` returns that role map. Omitting it is SILENT, not loud: every state
    resolves to unknown, every blocking edge downgrades to `relatedTo` under an `info` note, and a
    run that linked nothing reads exactly like one that found nothing to link. **Write that payload
-   to a scratch JSON file yourself** and name it below — the block does not create it, because an
-   empty `mktemp` file parses as nothing and throws.
+   to this run's declared dependency-scan input** — `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json`,
+   the `deps-input` family — rather than to a name you invent; the block does not create the file,
+   because an empty `mktemp` file parses as nothing and throws. The block prints `subjectAreas` and the
+   path-shaped tokens it could not resolve to stderr **before any edge is written**; read that line
+   first. A non-zero `compared` over an empty `subjectAreas` evaluated nothing and prints
+   byte-identically to a clean scan.
 
    ```bash
    BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-   DEPS_IN="<the scratch JSON file you just wrote>"
-   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]}).areas;i.stateRoles=i.stateRoles||c.stateRolesFor(g);i.subjectAreas=a(i.subject);i.candidates=i.candidates.map(x=>({...x,areas:a(x)}));console.log(JSON.stringify(d.planDependencyEdges(i)))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
+   DEPS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json"
+   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});i.stateRoles=i.stateRoles||c.stateRolesFor(g);const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved));console.log(JSON.stringify(d.planDependencyEdges(i)))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
+   # Removing it here keeps the scan's input from outliving the scan; it is inside this run's
+   # scratch directory either way, so an abort between the write and this line still leaves it
+   # for Phase 5's single `rm -rf` rather than stranding a file nothing names.
    rm -f "$DEPS_IN"
    ```
 
@@ -1087,6 +1153,10 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    - `skipped[]` `reason: 'declared-related-unresolved'` → fetch that id and re-run (c), or record an
      Open Question. Never drop it silently.
    - `compared === 0` → nothing was evaluated. Report _could not evaluate_, never _no dependencies_.
+   - a `notes[]` `reason` of `no-subject-areas` or `subject-unresolved-areas` → the scan compared
+     candidates it could never have matched. Report _could not evaluate_, never _no dependencies_,
+     and for the unresolved reason rewrite the named tokens as repo-relative paths (or declare their
+     leading directory in `moduleRoots`) and re-run (c) before writing any edge.
 
    e. **Cycle safety — after (d)'s downgrade, over blocking writes only.** For each surviving
    `write`, op `getIssue` with relations on both ids; skip that write when the opposite relation
@@ -1121,57 +1191,121 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    line is orchestrator-owned — keep it out of the drafting subagent's returned template. This keeps
    Step 4's other fields and (d)'s relations intact.
 
+   If you send an incremental `patch` rather than the whole description, copy every anchor from the
+   tracker's **stored, normalized** text — read the description back first and anchor on those bytes
+   — never from the gated local draft. A tracker may renormalize markers on write (a `-` bullet
+   stored as `*`), so an anchor transcribed from the local draft silently fails to match and the op
+   reports nothing you can act on. Anchoring on the stored form is also what lets a one-line
+   addition land without retyping a multi-kilobyte description, leaving `## Original notes`
+   byte-identical.
+
+   A `patch` sends anchors and fragments, never a whole description, so it produces no "bytes I
+   saved" for step 6 to compare against — and step 6's `--intended` input is mandatory. Materialize
+   it on this path: keep the stored read-back you just anchored on, apply the SAME patch operations
+   to that local copy, and the result is the intended bytes of this save. That is a local edit of
+   text the tracker itself returned, so it is the description the patch was constructed to produce,
+   not a re-derivation from the local draft the tracker never saw.
+
+6. **STOP — write-back verification (mandatory, mechanical, do not skip).** Every gate above is
+   pre-write prevention read from local bytes; nothing has yet observed what actually landed on the
+   tracker, so a transcription slip at the save step survives all of them — and the tracker exposes
+   no description history, so the written text is the only surviving copy. Run this **exactly once**,
+   after the run's **final** description save: the step-5(f) save when it happened, the step-4 save
+   otherwise. Never after each — the run writes the description twice by design, so verifying the
+   intermediate state fails on text the run is about to replace, which is a false red on a correct
+   run.
+
+   Write the exact bytes of that final save to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md`. On a
+   whole-description save those bytes are what you sent. On step 5(f)'s incremental `patch` path
+   there is no such payload, so use the bytes 5(f) materialized for exactly this purpose — the
+   stored read-back you anchored on, with the same patch operations applied locally. A `patch` save
+   whose intended bytes were never materialized cannot be verified, and an unverifiable write fails
+   the run; it is not a reason to skip this step. Then
+   read the issue's description back through the tracker adapter's `getIssue` capability and write
+   those bytes — the tracker's **stored** description, not a rendering of it — to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md`. That is one extra read and no extra write.
+
+   ```bash
+   BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+   WB_FINAL=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md"; WB_STORED=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md"
+   if ! node "$BOSS_PLAN_TOOLBOX/plan-writeback-verify.mjs" --intended "$WB_FINAL" --stored "$WB_STORED"; then
+     echo "write-back verification failed (verdict above) — the description is ALREADY stored; do NOT rewrite it" >&2
+     exit 1
+   fi
+   ```
+
+   The helper prints one machine-readable `writeback-verdict: <verdict>` line plus a human line, and
+   exits zero for `byte-exact` (the transport round-trips) and `normalized-equivalent` (the transport
+   normalizes, and the semantic contract, the verbatim block and every upload identity survived).
+   Which of the two a run observes is **measured, never configured**: a repo may declare which
+   normalization _transforms_ it tolerates, and never that its transport round-trips. Name the
+   observed verdict in the Phase 6 report.
+
+   A `drift` verdict takes a branch that is deliberately **not** the SAFE branch the pre-write gates
+   take: by this point the description is already stored, so there is no write left to withhold.
+   Exit non-zero carrying the helper's own message, **retain** the scratch — skip the Phase 5
+   cleanup, so the diff can be triaged — and do **not** attempt a corrective rewrite. An unattended
+   agent overwriting a description it has just proven it cannot reproduce faithfully is the worst
+   available response to that evidence. A read failure or an empty read-back is reported separately
+   and emits no verdict at all: an unverifiable write is neither drift nor a pass, and the run still
+   fails, by design.
+
 ## Phase 5 — Discard local artifacts
 
-The plan now lives in the tracker attachment from Phase 4. Remove every local file this run created so
-the worktree is left clean:
+The plan now lives in the tracker attachment from Phase 4. Every local file this run created lives in
+this run's own scratch directory, so removing that one directory leaves the worktree clean:
 
 ```bash
-rm -f ".linear-plans/<ISSUE-ID>-<slug>.md"
-rm -f ".linear-plans/<ISSUE-ID>-<slug>.md.rejected"
-# `references/plan-storage.md` records this exact private path for every PUT. The
-# normal path deletes it immediately after the PUT; repeat the removal here so a
-# prepare/PUT/finalize abort cannot strand signed-upload request headers.
-rm -f "${ATTACHMENT_HEADERS_FILE:-}"
-# EPIC runs also wrote one full plan per child (.linear-plans/<ISSUE-ID>-child-*.md — the planned
-# ticket is the parent) plus per-issue image-guard, attachment-guard, attachment-header and epic-spec-body scratch
-# (step 4 stage 2's `.linear-plans/<ISSUE-ID>.epic-spec.json`), which can carry `## Original notes`,
-# signed request data and the whole decomposition. Every `.linear-plans/` file this run writes begins
-# with this run's issue id, the sweeper contract. ONE PATTERN PER LINE: under zsh and fish an unmatched
-# glob aborts the WHOLE command line, so a single-ticket run — which writes no child plans — would
-# skip every pattern sharing it. `find … -delete` exits 0 on no match, so each line stands alone.
-# The `if` wrapper (not `… || true`, and not `2>/dev/null`) tolerates only the missing-directory
-# case: a real deletion error — permission denied, I/O failure — still propagates. `-type f` keeps
-# `rm -f` semantics by never removing a matching empty directory. Two separate masking bugs would
-# let a naive block report success with scratch still on disk, so guard BOTH: (1) exit status is
-# its LAST command's, so a failed child-plan delete followed by two no-match (exit 0) patterns
-# vanishes — hence CLEANUP_RC accumulates instead of trusting per-line status; (2) BSD `find`
-# (/usr/bin/find on macOS, where cron worktrees run) exits **0** even when `-delete` hits EACCES —
-# only GNU find returns 1 — so the accumulator alone still misses it there. The residual `-print`
-# sweep is the implementation-independent check: it asserts the post-condition we actually want
-# (no matching scratch survives) rather than trusting any find's exit status.
+# Everything this run wrote — the plan text, any `.md.rejected` structure artifact, every epic child
+# plan, the image-guard / attachment-guard scratch, the signed upload headers and the epic spec body —
+# is inside this directory, so one recursive removal covers all of it. `references/plan-storage.md`
+# already deletes each header file immediately after its PUT; this removal is what covers a
+# prepare/PUT/finalize abort that stranded one.
 CLEANUP_RC=0
-rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
-if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
-if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md.rejected' -delete || CLEANUP_RC=1; fi
-if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
-if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
-if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
-if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
-if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>-child-*.md.rejected' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-[ "$CLEANUP_RC" = 0 ] || { echo "scratch cleanup failed — .linear-plans may still hold plan text, tracker state, signed upload headers or the epic spec" >&2; exit 1; }
+rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
+# Assert the post-condition rather than trusting the exit status: BSD `find` and `rm` on macOS (where
+# cron worktrees run) can exit 0 having failed to remove an entry, so re-check existence.
+if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
+[ "$CLEANUP_RC" = 0 ] || { echo "scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state, signed upload headers or the epic spec" >&2; exit 1; }
 ```
+
+**Why the removal names a run directory and nothing else — the hazards this shape exists to avoid.**
+
+- **`.linear-plans/` is shared mutable state across concurrent runs.** Several planning runs work in
+  the same checkout at once, and one run has been observed holding scratch for nine other tickets
+  mid-flight. Nothing outside `.linear-plans/run-<RUN-SCRATCH-ID>/` is yours.
+- **An `<issue-id>`-scoped pattern is _not_ sufficient.** It is tempting to reason that a
+  `<ISSUE-ID>*` pattern only ever matches your own files. It does not: two runs can plan the **same**
+  ticket at the same time, and a correctly `<ISSUE-ID>`-scoped cleanup has been observed deleting a
+  concurrent peer's live in-flight scratch. The run id is the only identifier that separates them,
+  which is why cleanup names a run directory and never an issue-id pattern.
+- **An untracked file that is not this run's declared scratch belongs to a peer.** Never delete it, and
+  never "tidy" `.linear-plans/` beyond your own run directory — not even something that looks like
+  obvious residue. Stale entries are the TTL reap's job (Phase 0), not yours. Files a peer has not yet
+  committed are invisible to any tracked/untracked test you might reach for.
+- **If you ever do need a pattern, `find … -name 'PREFIX*' -delete` is the load-bearing spelling.** A
+  bare shell glob (`rm dir/PREFIX*`) is not equivalent: under zsh and fish a single unmatched wildcard
+  aborts the **whole command line** before anything runs, so the cleanup deletes nothing while reading
+  as a clean pass. `find … -delete` exits 0 on no match, so it has no such failure mode.
+- **A sentinel run directory is selected from the handed `RUN_ID`, never by grepping a ticket id out of
+  `$TMPDIR/bs-run-sentinel/`.** A peer run planning a different ticket can cite this one as a premise,
+  so its run directory contains this ticket's id too; acting on a ticket-id grep hit reads or deletes a
+  live peer's state.
 
 In **interactive** mode also remove the seeded design doc (see "Interactive cleanup" in
 `references/interactive-mode.md`); headless seeds none. Removal is best-effort (a missing file is
 fine). In a `BOSS_CRON` run do this on every terminal path — including the Phase 2 dispatch-failure
 abort, which also runs `bs-run-sentinel.mjs cleanup` — so an unattended run never leaves scratch.
+The ONE exception is Phase 4 step 6's `drift` verdict: that branch retains the scratch on purpose,
+so skip this whole phase there. The tracker keeps no description history, so the step-6 scratch is
+the only surviving copy of the intended bytes and deleting it destroys the diff to be triaged.
 
 ## Phase 6 — Report
 
 Print a concise summary: issue id + title, the finalized native plan attachment's **id** and exact
-title `Implementation plan (<ISSUE-ID>)`, final labels, estimate, priority, and the status change
-(unplanned → planned). When step 5 (e2) recorded any transitive-block warning, echo it
+title `Implementation plan (<ISSUE-ID>)`, final labels, estimate, priority, the status change
+(unplanned → planned), and the Phase 4 step-6 write-back verdict (`byte-exact` or
+`normalized-equivalent`). When step 5 (e2) recorded any transitive-block warning, echo it
 here too (e.g. `blocked by <BLOCKER-ID>, which is itself open and blocked by <UPSTREAM-BLOCKER-ID>`) so an unattended run
 leaves a visible trail before the operator opens Linear. The plan is attached natively with no local copy
 remaining (it is copied into `docs/plans/` at implementation time, per the plan's first dev step).

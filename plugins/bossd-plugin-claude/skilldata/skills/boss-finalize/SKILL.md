@@ -13,16 +13,16 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 
 **You MUST satisfy ALL of these before completing. No exceptions.**
 
-| #   | Requirement                     | How to Verify                                                                                                                                                                                                                                                                                     |
-| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **All quality gates pass**      | Discover and run the repo's quality gates. Prefer a single project-declared aggregate command when it covers build/lint/test; otherwise run the minimal non-duplicative command set. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on the PR base branch. |
-| 2   | **PR base is current**          | Fetch the PR base and verify `git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD` before rewriting commits, squashing, or pushing. If it fails, rebase onto `origin/$BASE_BRANCH` first — always rebase, never merge the base branch in.                                                     |
-| 3   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script.                                                                            |
-| 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                                                                                                               |
-| 5   | **GitHub checks not failing**   | After pushing, run `gh pr checks --json name,state,bucket` or `gh pr view --json statusCheckRollup` to verify without dumping raw logs. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.             |
-| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready "$PR_URL"` and verify `gh pr view "$PR_URL" --json isDraft -q .isDraft` returns `false`. Do NOT leave the PR as a draft.                                                                                                              |
-| 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                                                                                                                      |
-| 8   | **History stays linear**        | `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` MUST be `0` before the push in Step 6. A merge commit on the branch structurally breaks a rebase-merge repo, so GitHub refuses the PR however green the checks are. Linearize before pushing.                                         |
+| #   | Requirement                     | How to Verify                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **All quality gates pass**      | Discover and run the repo's quality gates. Prefer a single project-declared aggregate command when it covers build/lint/test; otherwise run the minimal non-duplicative command set. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on the PR base branch.                                                                                                                          |
+| 2   | **PR base is current**          | Fetch the PR base and verify `git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD` before rewriting commits, squashing, or pushing. If it fails, rebase onto `origin/$BASE_BRANCH` first — always rebase, never merge the base branch in.                                                                                                                                                                              |
+| 3   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script.                                                                                                                                                                                                     |
+| 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                                                                                                                                                                                                                                        |
+| 5   | **GitHub checks not failing**   | After pushing, gather `gh pr checks --json name,state,bucket` and the SHA-keyed `check-runs` payload without dumping raw logs, then decide the verdict with `$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs` (`toolbox/pr-check-state.mjs`) — this table states no green-or-red rule of its own. Only its `failing` state MUST be investigated and fixed; `pending` and `unknown` are not failures and not passes. See Step 6b. |
+| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready "$PR_URL"` and verify `gh pr view "$PR_URL" --json isDraft -q .isDraft` returns `false`. Do NOT leave the PR as a draft.                                                                                                                                                                                                                                       |
+| 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                                                                                                                                                                                                                                               |
+| 8   | **History stays linear**        | `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` MUST be `0` before the push in Step 6. A merge commit on the branch structurally breaks a rebase-merge repo, so GitHub refuses the PR however green the checks are. Linearize before pushing.                                                                                                                                                                  |
 
 **If you complete without satisfying ALL EIGHT requirements, you have failed this workflow.**
 
@@ -375,27 +375,38 @@ If push fails, resolve and retry until success.
 
 **This step is NON-NEGOTIABLE. You MUST verify checks are not failing.**
 
-After pushing, wait a moment for checks to register, then scan the rollup with a `--json` filter
-(keeps the raw check table out of the main thread — see the bulk-output discipline in Step 0):
+After pushing, wait a moment for checks to register, then gather the payloads with a `--json` filter
+(keeps the raw check table out of the main thread — see the bulk-output discipline in Step 0) and
+hand them to the shared classifier. **The verdict is the helper's, not this step's** — a bucket
+payload on its own cannot separate a gate that ran and passed from one that never attached:
 
 ```bash
-gh pr checks --json name,state,bucket
+BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
+if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+CHECK_DIR="$(mktemp -d)"
+HEAD_SHA="$(gh pr view --json headRefOid -q .headRefOid)"
+gh pr checks --json name,state,bucket > "$CHECK_DIR/checks.json"
+gh api "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate --slurp > "$CHECK_DIR/runs.json"
+node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify \
+  --head-sha "$HEAD_SHA" --observed-sha "$HEAD_SHA" \
+  --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json"
 ```
 
-**Acceptable statuses (session can complete):**
+**How to route each verdict `state`:**
 
-- ✅ **pass** — Check succeeded
-- ⏳ **pending** / **queued** — Check hasn't started yet (OK, not a failure)
-- 🔄 **in_progress** — Check is currently running (OK, not a failure)
-- ⏸️ **idle** — Check is waiting to run (OK, not a failure)
+- ✅ `green` — the session can complete. `provesGreen: true` additionally means a gate actually ran
+  and the check set was compared against the prior head; without it the set may be too small to
+  prove anything.
+- ⏳ `pending` — not a failure and not a pass. Keep waiting, **except** when the `reason` is
+  `absent-gate`: a named gate the prior head carried is missing from this one, so waiting never
+  resolves — report the missing gates instead of blocking on them.
+- ❓ `unknown` — an unreadable read, an unclassifiable state, a stale SHA, or a set in which nothing
+  ran. Never green and never red; report it as unobserved rather than completing on it.
+- ❌ `failing` — the only blocking state. You MUST investigate and fix it.
 
-**Blocking statuses (MUST be fixed before completing):**
+**If the verdict is `failing`:**
 
-- ❌ **fail** — Check has failed. You MUST investigate and fix it.
-
-**If any check is failing:**
-
-1. Run `gh pr checks --json name,state,bucket` to identify which check(s) failed
+1. Read `gh pr checks --json name,state,bucket` to identify which check(s) failed
 2. Read the failure logs **inside a subagent** (or `gh run view <run-id> --log-failed | tail`) and
    return only the relevant lines — do not paste the full log into the main thread
 3. Investigate the root cause and fix it locally

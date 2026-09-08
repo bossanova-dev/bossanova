@@ -21,13 +21,25 @@
 //     -> stdout: {"tool":"<adapter operationMap.updateComment.tool>","args":{"id":<commentId>,"body":<file contents>}}
 //     The descriptor is emitted for the driver to execute through the tracker MCP —
 //     drivers never issue raw GraphQL for the single-comment progress protocol.
+//   node tracker/cli.mjs write-description --id <issueId> --body-file <path>
+//     -> stdout: {"tool":"<adapter operationMap.writeDescription.tool>","args":{"id":<issueId>,
+//        "description":<file contents>},"bytes":<size of the file ON DISK>,"outcome":"descriptor-emitted"}
+//     The file-based description write: the caller composes and gates the description as a
+//     file, and those same bytes reach the tracker without ever being retyped into a tool
+//     argument. `bytes` is measured here with stat(2) rather than counted from the decoded
+//     string, so a multi-byte body reports its true size; a caller must never report a size
+//     it derived itself. `outcome` is the explicit success token the caller branches on, so
+//     a write that changed nothing cannot read as success.
+//     writeDescription is an OPTIONAL operation: an adapter that does not declare it exits 2
+//     with a diagnostic naming the missing capability and NOTHING on stdout, so the caller
+//     falls back to sending the description inline on its existing save.
 //
 // Verdict delegates to the resolved adapter's resolveClaim capability; the
 // Linear reference impl computes first-writer-wins over the claim comments, optionally after
 // liveness evidence forfeits claims whose owners are provably inactive.
 
 import crypto from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { resolveTrackerAdapter } from './adapter.mjs'
@@ -197,6 +209,79 @@ export function runCli(
       return 2
     }
     write(JSON.stringify({ tool: op.tool, args: { id, body } }) + '\n')
+    return 0
+  }
+  if (cmd === 'write-description') {
+    const { id, 'body-file': bodyFile } = parseFlags(rest)
+    if (!id) {
+      errWrite('write-description: --id <issueId> is required\n')
+      return 2
+    }
+    if (!bodyFile) {
+      errWrite('write-description: --body-file <path> is required\n')
+      return 2
+    }
+    let body
+    let bytes
+    try {
+      body = readFileSync(bodyFile, 'utf8')
+      // Measured with stat(2), not Buffer.byteLength over the decoded string: the
+      // contract is "the bytes on disk", and the two disagree the moment a body is
+      // re-encoded or carries a lone surrogate. A caller that re-derived this number
+      // itself would be reporting its own belief about a file it never opened.
+      bytes = statSync(bodyFile).size
+    } catch (err) {
+      errWrite(`write-description: could not read --body-file ${bodyFile}: ${err.message}\n`)
+      return 2
+    }
+    // The most destructive input this verb can receive. update-comment refuses a blank
+    // body because it would erase a comment's marker anchor; a blank DESCRIPTION erases
+    // the only surviving copy of the reporter's original notes, because the tracker
+    // exposes no description history to recover them from. Fail closed.
+    if (body.trim() === '') {
+      errWrite(
+        `write-description: --body-file ${bodyFile} is empty; refusing to blank the description\n`,
+      )
+      return 2
+    }
+    // The other way the bytes on disk can stop being the bytes that reach the tracker.
+    // readFileSync(..., 'utf8') does NOT throw on malformed input — it substitutes U+FFFD
+    // — so without this check `description` would carry the corruption while `bytes` still
+    // attests to the intact on-disk size and `outcome` still reads `descriptor-emitted`.
+    // The write replaces the whole description and the tracker keeps no history, so that
+    // corruption is unrecoverable. Re-encoding a cleanly decoded body always reproduces
+    // the file, so a mismatch means the decode was lossy (or the file changed under us
+    // between read and stat). Fail closed either way.
+    const decodedBytes = Buffer.byteLength(body, 'utf8')
+    if (decodedBytes !== bytes) {
+      errWrite(
+        `write-description: --body-file ${bodyFile} is not valid UTF-8 (${bytes} bytes on disk, ` +
+          `${decodedBytes} after decoding); refusing to write a corrupted description\n`,
+      )
+      return 2
+    }
+    const adapter = resolveAdapter({ env })
+    const op = adapter.operationMap?.writeDescription
+    if (!op) {
+      errWrite(
+        'write-description: resolved tracker adapter has no writeDescription operation; send the description inline instead\n',
+      )
+      return 2
+    }
+    if (typeof op.tool !== 'string' || op.tool.trim() === '') {
+      errWrite(
+        'write-description: resolved tracker adapter writeDescription operation has no tool\n',
+      )
+      return 2
+    }
+    write(
+      JSON.stringify({
+        tool: op.tool,
+        args: { id, description: body },
+        bytes,
+        outcome: 'descriptor-emitted',
+      }) + '\n',
+    )
     return 0
   }
   errWrite(`unknown tracker capability: ${cmd ?? '(none)'}\n`)

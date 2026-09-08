@@ -30,7 +30,7 @@ import { hasOpenCronPR } from './cron-open-pr.mjs'
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 import {
   NO_REFERENCE_REMEDY,
-  assertExactSize,
+  assertDescendingBudget,
   assertMirrorRegenerated,
   measureFile,
 } from './size-ratchet-lib.mjs'
@@ -765,19 +765,44 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // BOS-916 repins 17324 -> 17191 while updating the cron-gate prose from a deliberate
   // sound-subset claim to the expanded check-mode formatter mirror. The change banks the
   // shorter wording alongside the functional gate probes.
-  const SOURCE_BYTES = 17191 // exact measured .claude body, re-measured 2026-08-23
-  assertExactSize({
+  // BOS-1208 converts this from an exact pin to a DESCENDING BUDGET, seeded at the measured
+  // size so it binds on its first run. The exact pin fixed the old ceiling's silence on a trim
+  // but priced both directions the same: banking a deletion cost the identical one-line repin
+  // an addition did. Under the budget a shrink costs nothing at all, and only a raise costs a
+  // recorded `raise.justification` in the same commit. STEP_DOWN is 512 B because this body is under 20 000 bytes;
+  // bodies at or above that get ~1 KiB, so a bigger body is asked for a bigger step. The share is
+  // NOT equal across artifacts, and is deliberately not claimed to be: measured, the step runs
+  // from 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB
+  // bucket (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would
+  // give without equalising it.
+  const SOURCE_BYTES = 17191 // measured .claude body at migration, 2026-09-08
+  const STEP_DOWN = 512
+  const REVIEW_BY = '2026-12-08'
+  assertDescendingBudget({
     below: { name: 'PRE_EXTRACTION_BASELINE', value: 17365 },
+    budget: SOURCE_BYTES,
     constFile: 'scripts/bs-sweep-prettify-skill.test.mjs',
     constName: 'SOURCE_BYTES',
-    expected: SOURCE_BYTES,
     label: 'bs-sweep-prettify resident body',
     measured: measureFile(abs('../.claude/skills/bs-sweep-prettify/SKILL.md')),
     path: '.claude/skills/bs-sweep-prettify/SKILL.md',
+    raise: {
+      // A LITERAL, deliberately not `SOURCE_BYTES`. Aliasing the budget constant made this
+      // value move in lockstep with every raise, so `budget > from` could never be true
+      // and the one direction this primitive prices was free — the arm was structurally
+      // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+      // measurement, any later raise of SOURCE_BYTES above it reds until a reason is recorded.
+      // No `justification` is pre-supplied either: this commit raised nothing, and a
+      // stale sentence parked here would satisfy the next raise without anybody having
+      // to write a fresh reason for it, which is the same arm dead a second way.
+      from: 17191,
+    },
     remedy: NO_REFERENCE_REMEDY,
     residual:
       'gate/gate.mjs and the toolbox scripts this body invokes — a line moved out of the body ' +
-      'into one of those is invisible to this pin',
+      'into one of those is invisible to this budget',
+    reviewBy: REVIEW_BY,
+    stepDown: STEP_DOWN,
   })
 })
 

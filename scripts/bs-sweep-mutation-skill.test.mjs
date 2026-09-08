@@ -30,7 +30,7 @@ import {
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 import {
   NO_REFERENCE_REMEDY,
-  assertExactSize,
+  assertDescendingBudget,
   assertMirrorRegenerated,
   measureFile,
 } from './size-ratchet-lib.mjs'
@@ -462,19 +462,44 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // The remedy is NOT "move situational content into a reference": bs-sweep-mutation has no
   // references/ directory, only agents/, gate/ and toolbox/, so that advice named a
   // destination that does not exist and left the reader with no next step.
-  const SOURCE_BYTES = 28651 // exact measured .claude body; BOS-986 adds set -eo pipefail to the mutation capture fence (+19 B)
-  assertExactSize({
+  // BOS-1208 converts this from an exact pin to a DESCENDING BUDGET, seeded at the measured
+  // size so it binds on its first run. The exact pin fixed the old ceiling's silence on a trim
+  // but priced both directions the same: banking a deletion cost the identical one-line repin
+  // an addition did. Under the budget a shrink costs nothing at all, and only a raise costs a
+  // recorded `raise.justification` in the same commit. STEP_DOWN is ~1 KiB because this body is above 20 000 bytes;
+  // bodies under that get 512 B, so a bigger body is asked for a bigger step. The share is NOT
+  // equal across artifacts, and is deliberately not claimed to be: measured, the step runs from
+  // 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket
+  // (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would give
+  // without equalising it.
+  const SOURCE_BYTES = 28651 // measured .claude body at migration, 2026-09-08 (BOS-986 bytes)
+  const STEP_DOWN = 1024
+  const REVIEW_BY = '2026-12-08'
+  assertDescendingBudget({
     below: { name: 'PRE_EXTRACTION_BASELINE', value: 29845 },
+    budget: SOURCE_BYTES,
     constFile: 'scripts/bs-sweep-mutation-skill.test.mjs',
     constName: 'SOURCE_BYTES',
-    expected: SOURCE_BYTES,
     label: 'bs-sweep-mutation resident body',
     measured: measureFile(abs('../.claude/skills/bs-sweep-mutation/SKILL.md')),
     path: '.claude/skills/bs-sweep-mutation/SKILL.md',
+    raise: {
+      // A LITERAL, deliberately not `SOURCE_BYTES`. Aliasing the budget constant made this
+      // value move in lockstep with every raise, so `budget > from` could never be true
+      // and the one direction this primitive prices was free — the arm was structurally
+      // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+      // measurement, any later raise of SOURCE_BYTES above it reds until a reason is recorded.
+      // No `justification` is pre-supplied either: this commit raised nothing, and a
+      // stale sentence parked here would satisfy the next raise without anybody having
+      // to write a fresh reason for it, which is the same arm dead a second way.
+      from: 28651,
+    },
     remedy: NO_REFERENCE_REMEDY,
     residual:
       'the gate/, agents/ and toolbox/ files this body invokes — a line moved out of the body ' +
-      'into one of those is invisible to this pin',
+      'into one of those is invisible to this budget',
+    reviewBy: REVIEW_BY,
+    stepDown: STEP_DOWN,
   })
 })
 

@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +25,11 @@ import {
   uploadIdentity,
 } from './plan-image-guard.mjs'
 
+// Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(
+  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
+  'outcomes.tsv',
+)
 const GUARD = fileURLToPath(new URL('./plan-image-guard.mjs', import.meta.url))
 const UPLOAD = 'https://uploads.linear.app/abc-123/screenshot.png'
 const UPLOAD_B = 'https://uploads.linear.app/def-456/second.png'
@@ -1673,4 +1678,48 @@ test('U2: safe-source pairing still reports genuinely dropped prose', () => {
     !res.stderr.includes('--require-verbatim'),
     'a real dropped-prose finding must not be reported as guard misuse',
   )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1209: one gate-outcome line per invocation. Recording is telemetry, so
+// each case also asserts the exit code and stderr the caller actually greps.
+// ---------------------------------------------------------------------------
+
+function runCliRecording(originalMd, rewrittenMd, outcomes, extraArgs = []) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-image-guard-outcomes-'))
+  const original = path.join(dir, 'original.md')
+  const rewritten = path.join(dir, 'rewritten.md')
+  writeFileSync(original, originalMd)
+  writeFileSync(rewritten, rewrittenMd)
+  return spawnSync(
+    process.execPath,
+    [GUARD, '--original', original, '--rewritten', rewritten, ...extraArgs],
+    { encoding: 'utf8', env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes } },
+  )
+}
+
+test('records exactly one gate-outcome line per invocation without changing the verdict', () => {
+  const outcomes = path.join(
+    mkdtempSync(path.join(tmpdir(), 'plan-image-guard-record-')),
+    'outcomes.tsv',
+  )
+  const read = () =>
+    readFileSync(outcomes, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => line.split('\t').slice(1, 3))
+
+  const preserved = `![a](${UPLOAD})`
+  const pass = runCliRecording(preserved, preserved, outcomes)
+  assert.equal(pass.status, 0, `CLI must still exit 0 when no image is dropped: ${pass.stderr}`)
+  assert.equal(pass.stderr.trim(), '', 'recording must not add stderr output')
+  assert.deepEqual(read(), [['plan-image-guard', 'pass']])
+
+  const fire = runCliRecording(`![a](${UPLOAD})`, '[screenshot: session list]', outcomes)
+  assert.notEqual(fire.status, 0, 'CLI must still exit non-zero when an image is dropped')
+  assert.ok(fire.stderr.includes(UPLOAD), 'the dropped URL must still reach stderr')
+  assert.deepEqual(read(), [
+    ['plan-image-guard', 'pass'],
+    ['plan-image-guard', 'fire'],
+  ])
 })

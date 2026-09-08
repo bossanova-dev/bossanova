@@ -103,7 +103,10 @@ test('selectTargets routes declared external inputs to native module targets', (
     { kind: 'make', target: 'test-bossalib', env: {} },
     { kind: 'make', target: 'test-smoke', env: {} },
   ])
-  assert.deepEqual(selectTargets(['docs/skills/README.md']), [
+  // A docs/skills page that no script gate pins. The two that ARE pinned —
+  // docs/skills/authoring.md and docs/skills/README.md — additionally route to test-scripts and
+  // are asserted separately below, so they cannot stand in for the plain external-input shape.
+  assert.deepEqual(selectTargets(['docs/skills/extension-contract.md']), [
     { kind: 'make', target: 'test-boss', env: {} },
     { kind: 'make', target: 'test-smoke', env: {} },
   ])
@@ -162,12 +165,41 @@ test('selectTargets maps the build-and-ci reference doc to script tests', () => 
 })
 
 test('selectTargets maps manifest and agent instruction changes to manifest checks', () => {
+  // The two agent-instruction paths also select test-scripts: that target runs
+  // scripts/check-agent-test-guidance.test.mjs, which pins CLAUDE.md in lines AND bytes.
+  // Selecting only test-manifest here left the pin unrunnable in the local affected loop,
+  // so an author first met their own budget in CI (BOS-1207).
   assert.deepEqual(selectTargets(['AGENTS.md', 'CLAUDE.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-manifest', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['CLAUDE.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-manifest', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['AGENTS.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-manifest', env: {} },
   ])
   assert.deepEqual(selectTargets(['docs/testing/test-command-manifest.md']), [
     { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-manifest', env: {} },
+  ])
+})
+
+test('selectTargets maps the pinned skills reference docs to script tests', () => {
+  // scripts/check-agent-test-guidance.test.mjs pins these two pages as well as CLAUDE.md: the
+  // per-rule `**Enforcement.**` leads and worked-negative count in authoring.md, and the Contents
+  // and Reference index links to it in README.md. Routing them only to test-boss left those
+  // assertions unrunnable in the local affected loop, so deleting a lead was green locally and red
+  // in CI (BOS-1207) — the same gap this ticket closed for CLAUDE.md.
+  assert.deepEqual(selectTargets(['docs/skills/authoring.md']), [
+    { kind: 'make', target: 'test-boss', env: {} },
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['docs/skills/README.md']), [
+    { kind: 'make', target: 'test-boss', env: {} },
+    { kind: 'make', target: 'test-scripts', env: {} },
   ])
 })
 

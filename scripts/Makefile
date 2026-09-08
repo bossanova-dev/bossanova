@@ -56,6 +56,16 @@ format:
 # scripts/*skill*.test.mjs rather than a hand-list, so a new gate file is covered without
 # editing it, and it is unstamped like the two gates above — string scanning only, ~80ms
 # over the 20 files that glob matches today.
+# check-prose-pins.mjs refuses a NEW prose pin — an assert.match/doesNotMatch whose subject
+# is markdown read from a skill directory — in the same glob (BOS-1210). Where the gate
+# above governs HOW a retained pin is written, this one governs WHETHER a new one may be
+# written at all: once a regex matches a clause of a SKILL.md, deleting that clause reds a
+# test, so the cheapest correct action is always retention and the bodies cannot shrink. It
+# is a per-file EXACT-count ratchet, so the existing population keeps passing while a
+# deletion must also be banked; there is deliberately no inline opt-out, because a comment
+# marker would let a new pin land in the same commit that adds it. Policy and the per-site
+# inventory: docs/skills/prose-pins.md. Unstamped like the gates above — its inputs are the
+# skill test files rather than scripts/ sources, and it is string scanning only.
 # check-settings-readiness-figure.mjs asserts the worst-case session-start figure on
 # services/docs/docs/reference/settings.md equals the product the three Go constants
 # compose — DefaultSessionStartReadyDeadline (lib/bossalib/config), plus
@@ -126,6 +136,7 @@ lint:
 	@node check-template-literal-comments.mjs
 	@node check-proto-bool-prefix.mjs
 	@node check-prose-pin-whitespace.mjs
+	@node check-prose-pins.mjs
 	@node check-settings-readiness-figure.mjs
 	@node check-exec-waitdelay.mjs
 	@node check-email-course.mjs

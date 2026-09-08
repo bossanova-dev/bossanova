@@ -25,53 +25,76 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { sectionRegion } from './gate-region-lib.mjs'
-import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
+import { assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 const abs = (rel) => fileURLToPath(new URL(rel, import.meta.url))
 
-// The canonical committed home is the embedded skillinstall payload; the plugin
-// copy is the `make copy-skills` mirror. Both are asserted so a partial edit trips
-// this gate.
-const BOSS_MIRRORS = [
-  '../services/boss/internal/skillinstall/skills/boss',
-  '../plugins/bossd-plugin-claude/skilldata/skills/boss',
-]
+// BOS-1212: the plugin copy is an rsync of this tree (`make copy-skills`), and
+// scripts/skill-mirror-generation.test.mjs asserts that generation once for the whole
+// payload. Clauses are pinned against the canonical home only.
+const BOSS_CANONICAL = '../services/boss/internal/skillinstall/skills/boss'
 
-const CANONICAL = read(`${BOSS_MIRRORS[0]}/SKILL.md`)
+const CANONICAL = read(`${BOSS_CANONICAL}/SKILL.md`)
 
 test('size ratchet', () => {
-  // Exact pin, not a ceiling. The pin used to be the committed size rounded up to
-  // the next KiB, compared one-sidedly — which meant a reduction bought nothing:
-  // it just became headroom the resident body could regrow into with nothing going
-  // red. assertExactSize reds in BOTH directions, so a shrink is only cleared by
-  // banking it here. Never raise this casually — a growing SKILL.md erodes the
-  // context budget of EVERY session on the machine, because the boss core installs
-  // globally.
+  // A DESCENDING BUDGET, not a ceiling and no longer an exact pin. The number was
+  // once the committed size rounded up to the next KiB, compared one-sidedly, so a
+  // reduction bought nothing — it just became headroom the resident body could
+  // regrow into with nothing going red. The exact pin that replaced it fixed the
+  // silence and introduced a different problem: it charged the same repin for a
+  // deletion as for an addition, so trimming ceremony cost exactly what adding it
+  // did. BOS-1208 prices the two directions apart. Shrinking is FREE — the
+  // measurement sits further under the budget and nothing here is touched — while
+  // a raise costs a recorded `raise.justification` in the same commit. Never raise
+  // this casually: a growing SKILL.md erodes the context budget of EVERY session on
+  // the machine, because the boss core installs globally.
   //
   // Pre-split this file was 48624 bytes: the whole generated CLI reference was
   // inline. BOS-637 moved it to references/<group>.md behind an index table,
   // leaving the resident body at ~17 KB. If the reference ever creeps back inline
   // this pin is what catches it — regenerating with `make gen-skill` must not be
   // able to grow the resident payload by ~30 KB unnoticed.
-  const RATCHET = 17402 // exact measured resident body, re-measured 2026-08-19
+  // Seeded at the measured size, so the budget binds on its very first run rather
+  // than starting life as headroom. STEP_DOWN is 512 B because this body is under
+  // 20 000 bytes; the bodies at or above that get ~1 KiB, so a bigger body is asked for a bigger
+  // step. The share is NOT equal across artifacts, and is deliberately not claimed to be:
+  // measured, the step runs from 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the
+  // smallest in the 1 KiB bucket (bs-sweep-tests, 26600 B), so two buckets narrow the spread a
+  // single flat number would give without equalising it.
+  const RATCHET = 17402 // measured resident body at migration, 2026-09-08
+  const STEP_DOWN = 512
+  const REVIEW_BY = '2026-12-08'
 
-  // This pin measures BOSS_MIRRORS[0]; the mirror test at the bottom of this file
-  // compares BOSS_MIRRORS[1] against it. A shortened list would silently stop
-  // gating one of the two, with nothing going red — this is what prevents that.
-  assertArtifactSet(BOSS_MIRRORS, 2, 'BOSS_MIRRORS')
+  // BOS-1212 removed the guarded two-entry BOSS_MIRRORS list. The vacuity guard that
+  // stood here protected the pairing between this pin and the mirror byte-identity test
+  // below it; both the list and that test are gone, subsumed by the whole-tree comparison
+  // in scripts/skill-mirror-generation.test.mjs. There is no list left to shorten.
 
-  assertExactSize({
+  assertDescendingBudget({
+    budget: RATCHET,
     constFile: 'scripts/boss-skill.test.mjs',
     constName: 'RATCHET',
-    expected: RATCHET,
     label: 'boss resident SKILL.md',
-    measured: measureFile(abs(`${BOSS_MIRRORS[0]}/SKILL.md`)),
+    measured: measureFile(abs(`${BOSS_CANONICAL}/SKILL.md`)),
     path: 'services/boss/internal/skillinstall/skills/boss/SKILL.md',
+    raise: {
+      // A LITERAL, deliberately not `RATCHET`. Aliasing the budget constant made this
+      // value move in lockstep with every raise, so `budget > from` could never be true
+      // and the one direction this primitive prices was free — the arm was structurally
+      // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+      // measurement, any later raise of RATCHET above it reds until a reason is recorded.
+      // No `justification` is pre-supplied either: this commit raised nothing, and a
+      // stale sentence parked here would satisfy the next raise without anybody having
+      // to write a fresh reason for it, which is the same arm dead a second way.
+      from: 17402,
+    },
     residual:
-      'whether the resident body is any GOOD — only that it is this many bytes. A rewrite ' +
-      'landing on the identical byte count passes, and the references/ files this body routes ' +
-      'to are not measured at all, so content moved out of here is invisible to this pin',
+      'whether the resident body is any GOOD — only that it fits in this many bytes. A ' +
+      'rewrite landing under the budget passes, and the references/ files this body routes ' +
+      'to are not measured at all, so content moved out of here is invisible to this budget',
+    reviewBy: REVIEW_BY,
+    stepDown: STEP_DOWN,
   })
 })
 
@@ -92,7 +115,8 @@ const generatedRegion = (skill, label) => {
 }
 
 test('the generated region routes to per-group references instead of inlining them', () => {
-  for (const dir of BOSS_MIRRORS) {
+  {
+    const dir = BOSS_CANONICAL
     const region = generatedRegion(read(`${dir}/SKILL.md`), `${dir}/SKILL.md`)
 
     // Global flags stay resident: they apply to every command, so deferring them
@@ -156,7 +180,8 @@ const assertZeroChangePlacement = (skill, label) => {
 }
 
 test('the resident body tells an agent how to run a session that changes nothing', () => {
-  for (const dir of BOSS_MIRRORS) {
+  {
+    const dir = BOSS_CANONICAL
     const skill = read(`${dir}/SKILL.md`)
     assertZeroChangePlacement(skill, `${dir}/SKILL.md`)
     const section = sectionRegion(skill, ZERO_CHANGE_HEADING, `${dir}/SKILL.md`)
@@ -184,13 +209,4 @@ test('the resident body tells an agent how to run a session that changes nothing
       `${dir}: the ${ZERO_CHANGE_HEADING} section must label quick_chat/defer_pr as create_session fields`,
     )
   }
-})
-
-test('the plugin mirror is byte-identical to the canonical payload', () => {
-  const [canonicalDir, pluginDir] = BOSS_MIRRORS
-  assert.equal(
-    read(`${pluginDir}/SKILL.md`),
-    CANONICAL,
-    `${pluginDir}/SKILL.md has drifted from ${canonicalDir}/SKILL.md — run \`make copy-skills\``,
-  )
 })

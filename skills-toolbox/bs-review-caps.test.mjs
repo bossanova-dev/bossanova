@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,8 +26,14 @@ import {
   classifySentinels,
   DEFAULT_FIX_ROUND_SECONDS,
   FUNDING_STARVED,
+  FUNDING_UNPRICED,
+  FUNDING_REASONS,
   stepAllowanceSeconds,
   fundedFixRounds,
+  priceAllowance,
+  fundingDisclosure,
+  sentinelPayload,
+  isFundingReason,
   MUSTFIX_OVERRUN_ROUNDS,
   MUSTFIX_OVERRUN_SECONDS,
   ADMIT_FIX_ROUND_REASONS,
@@ -37,7 +43,13 @@ import {
   ADMIT_CONFIRMING_ROUND_REASONS,
   admitConfirmingRound,
 } from './bs-review-caps.mjs'
+import { isProvisional } from './bs-run-sentinel.mjs'
 
+// Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
+process.env.BOSS_GATE_OUTCOME_FILE = join(
+  mkdtempSync(join(tmpdir(), 'gate-outcome-suite-')),
+  'outcomes.tsv',
+)
 const scriptPath = fileURLToPath(new URL('./bs-review-caps.mjs', import.meta.url))
 
 /** Run the CLI block as a subprocess with an overlaid env; return trimmed stdout + status. */
@@ -565,6 +577,100 @@ test('funding helpers price initial legs and funded fix rounds at the boundary',
   )
 })
 
+test('priceAllowance refuses to price a malformed allowance instead of fabricating one', () => {
+  // Each shape below used to yield a confident priced verdict that a caller could not
+  // tell from a real one: `{}` reported a starved step priced from nothing, a zero
+  // `legSeconds` funded a round the caller could not afford, and a negative allowance
+  // was floored to 0 and reported as starved.
+  for (const bad of [
+    {},
+    { legSeconds: 300, initialLegs: 3 },
+    { allowanceSeconds: 900, initialLegs: 3 },
+    { allowanceSeconds: 900, legSeconds: 300 },
+    { allowanceSeconds: 2100, legSeconds: 0, initialLegs: 3 },
+    { allowanceSeconds: -900, legSeconds: 300, initialLegs: 3 },
+    { allowanceSeconds: 900, legSeconds: 300, initialLegs: 0 },
+    { allowanceSeconds: 900, legSeconds: 300, initialLegs: 1.5 },
+    { allowanceSeconds: '900', legSeconds: 300, initialLegs: 3 },
+    { allowanceSeconds: Number.NaN, legSeconds: 300, initialLegs: 3 },
+    { allowanceSeconds: Number.POSITIVE_INFINITY, legSeconds: 300, initialLegs: 3 },
+    { allowanceSeconds: 900, legSeconds: 300, initialLegs: 3, fixRoundSeconds: 0 },
+    { allowanceSeconds: 900, legSeconds: 300, initialLegs: 3, fixRoundSeconds: -1 },
+  ]) {
+    assert.throws(() => priceAllowance(bad), TypeError, `should refuse ${JSON.stringify(bad)}`)
+    assert.throws(() => fundingDisclosure(bad), TypeError)
+  }
+  // `fixRoundSeconds` alone stays optional — omitting it is how both shipped tiers call
+  // the verb, and the value actually used is echoed back.
+  assert.deepEqual(priceAllowance({ allowanceSeconds: 900, legSeconds: 300, initialLegs: 3 }), {
+    fundedFixRounds: 0,
+    allowanceSeconds: 900,
+    fixRoundSeconds: DEFAULT_FIX_ROUND_SECONDS,
+  })
+})
+
+test('fundingDisclosure narrates the same arithmetic it prices — one normalisation, not two', () => {
+  // The count and the two echoed numbers must come from ONE pricing call. Fractional
+  // terms are where two independent normalisations diverge: the allowance floors, the
+  // leg and the price ceil, and a disclosure that re-derived them separately could
+  // report an allowance that does not produce its own count.
+  const input = {
+    allowanceSeconds: 2100.9,
+    legSeconds: 299.1,
+    initialLegs: 3,
+    fixRoundSeconds: 1199.2,
+  }
+  const priced = priceAllowance(input)
+  const disclosure = fundingDisclosure(input)
+  assert.equal(disclosure.fundedFixRounds, priced.fundedFixRounds)
+  assert.equal(disclosure.allowanceSeconds, priced.allowanceSeconds)
+  assert.equal(disclosure.fixRoundSeconds, priced.fixRoundSeconds)
+  // The echoed numbers reproduce the count they explain, which is the whole promise.
+  assert.equal(
+    Math.max(
+      0,
+      Math.floor(
+        (disclosure.allowanceSeconds - Math.ceil(input.legSeconds) * input.initialLegs) /
+          disclosure.fixRoundSeconds,
+      ),
+    ),
+    disclosure.fundedFixRounds,
+  )
+})
+
+test('sentinelPayload builds the run-file payload over a CLOSED reason set', () => {
+  assert.deepEqual(FUNDING_REASONS, [FUNDING_STARVED, FUNDING_UNPRICED])
+  assert.equal(FUNDING_UNPRICED, 'funding-unpriced')
+  // A funded step names no reason at all — the key is ABSENT, never empty-valued,
+  // because `boss-review` reads absence as the assertion "this step was not starved".
+  for (const none of [undefined, '', null]) {
+    assert.deepEqual(sentinelPayload(none), { provisional: false })
+    assert.equal(JSON.stringify(sentinelPayload(none)), '{"provisional":false}')
+  }
+  assert.equal(
+    JSON.stringify(sentinelPayload(FUNDING_STARVED)),
+    '{"provisional":false,"funding":{"reason":"funding-starved"}}',
+  )
+  // A pricing call that FAILED is distinguishable from both — never silently equal to
+  // "not starved", which is what an unchecked exit status used to produce.
+  assert.equal(
+    JSON.stringify(sentinelPayload(FUNDING_UNPRICED)),
+    '{"provisional":false,"funding":{"reason":"funding-unpriced"}}',
+  )
+  // TOTAL, not throwing. The set stays closed for CONSUMERS — an unrecognised value is
+  // disclosed as unpriced — but the builder cannot refuse, because at every call site it
+  // is an unchecked command substitution whose failure empties the payload argument and
+  // costs the write its `provisional:false` marker as well as its reason.
+  for (const bad of ['starved', 'funding-starved ', 'unknown', 0, {}]) {
+    assert.equal(
+      JSON.stringify(sentinelPayload(bad)),
+      '{"provisional":false,"funding":{"reason":"funding-unpriced"}}',
+      `should disclose ${JSON.stringify(bad)} as unpriced, not throw`,
+    )
+    assert.equal(isFundingReason(bad), false)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Matcher — recognizes the prefixes callers route on.
 // ---------------------------------------------------------------------------
@@ -781,6 +887,245 @@ test('CLI `match` classifies a sentinel line as JSON', () => {
     'bs-review capped: unresolved must-fix findings or invalid evidence remain after 2 rounds.',
   ])
   assert.deepEqual(JSON.parse(r.stdout), { status: 'capped', rounds: 2 })
+})
+
+test('CLI `funding` prices a per-step allowance against one fix round', () => {
+  // The verb exists so a skill body can *compute* the funded-round count it used to
+  // narrate. Step 6c's shipped default is three 300s legs under a 900s allowance with
+  // each ordinary fix round costing 1200s: nothing is left over, so the step is starved.
+  const starved = runCli([
+    'funding',
+    '{"allowanceSeconds":900,"legSeconds":300,"initialLegs":3,"fixRoundSeconds":1200}',
+  ])
+  assert.equal(starved.status, 0)
+  assert.deepEqual(JSON.parse(starved.stdout), {
+    fundedFixRounds: 0,
+    reason: FUNDING_STARVED,
+    allowanceSeconds: 900,
+    fixRoundSeconds: 1200,
+  })
+
+  // One fix round becomes affordable exactly at initialLegs * legSeconds + fixRoundSeconds,
+  // and a funded step names no reason at all rather than an empty-string one.
+  const funded = runCli([
+    'funding',
+    '{"allowanceSeconds":2100,"legSeconds":300,"initialLegs":3,"fixRoundSeconds":1200}',
+  ])
+  assert.equal(funded.status, 0)
+  assert.deepEqual(JSON.parse(funded.stdout), {
+    fundedFixRounds: 1,
+    reason: null,
+    allowanceSeconds: 2100,
+    fixRoundSeconds: 1200,
+  })
+
+  // One second short of that boundary is still starved.
+  assert.deepEqual(
+    JSON.parse(
+      runCli([
+        'funding',
+        '{"allowanceSeconds":2099,"legSeconds":300,"initialLegs":3,"fixRoundSeconds":1200}',
+      ]).stdout,
+    ),
+    { fundedFixRounds: 0, reason: FUNDING_STARVED, allowanceSeconds: 2099, fixRoundSeconds: 1200 },
+  )
+
+  // The quick tier's two legs are strictly worse, and it leaves the price defaulted —
+  // the echoed `fixRoundSeconds` is the price actually used, not the argument passed.
+  assert.deepEqual(
+    JSON.parse(
+      runCli(['funding', '{"allowanceSeconds":600,"legSeconds":300,"initialLegs":2}']).stdout,
+    ),
+    {
+      fundedFixRounds: 0,
+      reason: FUNDING_STARVED,
+      allowanceSeconds: 600,
+      fixRoundSeconds: DEFAULT_FIX_ROUND_SECONDS,
+    },
+  )
+})
+
+test('CLI `funding` reads no clock and no env', () => {
+  // A per-step allowance is passed in, never sampled. Two runs a moment apart under a
+  // hostile env must agree byte for byte, or the verb could select an outcome by timing.
+  const args = ['funding', '{"allowanceSeconds":900,"legSeconds":300,"initialLegs":3}']
+  const a = runCli(args, { BS_REVIEW_MAX_ROUNDS: '9', BS_REVIEW_FIX_ROUND_SECONDS: '1' })
+  const b = runCli(args)
+  assert.equal(a.status, 0)
+  assert.equal(a.stdout, b.stdout)
+  assert.equal(JSON.parse(a.stdout).reason, FUNDING_STARVED)
+})
+
+test('CLI `funding` rejects malformed input instead of pricing a guess', () => {
+  for (const args of [
+    ['funding'],
+    ['funding', 'not json'],
+    ['funding', 'null'],
+    ['funding', '[]'],
+    ['funding', '3'],
+    ['funding', '"900"'],
+  ]) {
+    const r = runCli(args)
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /funding requires one JSON object argument/)
+    assert.equal(r.stdout, '')
+  }
+
+  // A malformed TERM is the dangerous case, because the argument parses: the verb used
+  // to print a priced verdict and exit 0, so a caller's `if` read the failure as a
+  // funded step. It must exit non-zero and print nothing on stdout.
+  for (const json of [
+    '{}',
+    '{"legSeconds":0,"allowanceSeconds":2100,"initialLegs":3}',
+    '{"allowanceSeconds":-900,"legSeconds":300,"initialLegs":3}',
+    '{"allowanceSeconds":900,"legSeconds":300,"initialLegs":0}',
+    '{"allowanceSeconds":"900","legSeconds":300,"initialLegs":3}',
+    '{"allowanceSeconds":900,"legSeconds":300,"initialLegs":3,"fixRoundSeconds":0}',
+  ]) {
+    const r = runCli(['funding', json])
+    assert.notEqual(r.status, 0, `${json} must not price`)
+    assert.match(r.stderr, /funding cannot price this allowance:/)
+    assert.equal(r.stdout, '')
+  }
+})
+
+test('CLI `sentinel-payload` builds the payload every terminal write carries', () => {
+  // The verb exists so no skill body hand-escapes JSON inside a double-quoted shell
+  // string, and so the reason cannot leak into the byte-stable sentinel LINE.
+  const none = runCli(['sentinel-payload'])
+  assert.equal(none.status, 0)
+  assert.equal(none.stdout, '{"provisional":false}')
+  // An UNSET caller variable expands to the empty string in the shell, which is the
+  // funded case — the same bytes, not an empty-valued reason key.
+  assert.equal(runCli(['sentinel-payload', '']).stdout, '{"provisional":false}')
+  assert.equal(
+    runCli(['sentinel-payload', FUNDING_STARVED]).stdout,
+    '{"provisional":false,"funding":{"reason":"funding-starved"}}',
+  )
+  assert.equal(
+    runCli(['sentinel-payload', FUNDING_UNPRICED]).stdout,
+    '{"provisional":false,"funding":{"reason":"funding-unpriced"}}',
+  )
+  // TOTALITY. Every call site is an UNCHECKED command substitution inside a
+  // `bs-run-sentinel.mjs write` argument list, so a non-zero exit here does not stop the
+  // write — it empties that argument. Measured at the real seam before this was total:
+  // the persisted payload was `{}`, losing `provisional:false` along with the reason, so
+  // the verdict read back as the caller's own pessimistic seed. An unrecognised reason
+  // must therefore still print a VALID payload, disclosed as unpriced (never as funded)
+  // and named on stderr.
+  for (const bad of ['starved', 'true', 'funding starved']) {
+    const r = runCli(['sentinel-payload', bad])
+    assert.equal(
+      r.status,
+      0,
+      `${bad} must not exit non-zero: an empty substitution drops the payload`,
+    )
+    assert.equal(r.stdout, '{"provisional":false,"funding":{"reason":"funding-unpriced"}}')
+    assert.match(r.stderr, /unrecognised funding reason/)
+  }
+  assert.equal(isFundingReason(''), true)
+  assert.equal(isFundingReason(FUNDING_STARVED), true)
+  assert.equal(isFundingReason('starved'), false)
+})
+
+test('`bs-run-sentinel write` lands the verdict when the payload argument collapses', () => {
+  // The other half of the same seam, and the direction that matters: the KIND is the
+  // verdict, the payload only an optional disclosure. Because the caller SEEDS a
+  // pessimistic `capped` + `provisional:true` line before dispatch, a refused terminal
+  // write leaves that seed standing verbatim — so refusing the write over a collapsed
+  // substitution DEMOTES a clean run to `review coverage unknown`. Measured at the real
+  // seam. A degraded disclosure must cost the disclosure, never the verdict.
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-run-sentinel-payload-'))
+  const sentinelCli = fileURLToPath(new URL('./bs-run-sentinel.mjs', import.meta.url))
+  const sentinelPath = join(scratch, 'review.json')
+  const write = (kind, ...args) =>
+    spawnSync(process.execPath, [sentinelCli, 'write', scratch, 'r1', 'review', kind, ...args], {
+      encoding: 'utf8',
+    })
+  const stored = () => JSON.parse(readFileSync(sentinelPath, 'utf8'))
+
+  // Seed the pessimistic provisional line the orchestrator writes before it dispatches.
+  assert.equal(write('seed capped', '{"provisional":true}').status, 0)
+  assert.equal(isProvisional({ status: 'ok', ...stored() }), true)
+
+  // The terminal clean write whose payload argument collapsed to empty: it LANDS, the
+  // seed is gone, and the run no longer reads as provisional.
+  const empty = write('earned clean', '')
+  assert.equal(empty.status, 0, empty.stderr)
+  assert.match(empty.stderr, /empty payload argument/)
+  assert.equal(stored().kind, 'earned clean')
+  assert.deepEqual(stored().payload, {})
+  assert.equal(isProvisional({ status: 'ok', ...stored() }), false)
+
+  // A PRESENT-but-MALFORMED payload is an unreadable disclosure, not an absent one, and is
+  // still refused — garbage must never be stored or reinterpreted as the funded case.
+  for (const bad of ['[1]', 'nope', 'null', '"x"']) {
+    const r = write('mangled', bad)
+    assert.notEqual(r.status, 0, `${bad} must be refused`)
+    assert.equal(stored().kind, 'earned clean', `${bad} must not overwrite the stored verdict`)
+  }
+
+  assert.equal(write('k', '{"provisional":false}').status, 0)
+  assert.deepEqual(stored().payload, { provisional: false })
+  // An OMITTED payload remains the no-payload case.
+  assert.equal(write('k').status, 0)
+  assert.deepEqual(stored().payload, {})
+  rmSync(scratch, { recursive: true, force: true })
+})
+
+test('the starved reason survives the whole funding → payload → run-file route', () => {
+  // The behavioural end-to-end this ticket exists for: a starved step's reason must
+  // ARRIVE in the payload a terminal sentinel write persists, and a funded step's
+  // payload must carry NO funding key — because the consumer reads absence as the
+  // assertion "this step was not starved".
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-caps-funding-'))
+  const sentinelCli = fileURLToPath(new URL('./bs-run-sentinel.mjs', import.meta.url))
+  const runSentinel = (args) =>
+    spawnSync(process.execPath, [sentinelCli, ...args], { encoding: 'utf8' })
+  const route = (allowanceSeconds, initialLegs, runId) => {
+    const dir = join(scratch, runId)
+    mkdirSync(dir, { recursive: true })
+    // 1. price the step, exactly as the skill body does
+    const funding = runCli([
+      'funding',
+      JSON.stringify({ allowanceSeconds, legSeconds: 300, initialLegs }),
+    ])
+    assert.equal(funding.status, 0)
+    const reason = JSON.parse(funding.stdout).reason ?? ''
+    // 2. build the payload from the reason it printed
+    const payload = runCli(['sentinel-payload', reason])
+    assert.equal(payload.status, 0)
+    // 3. generate the byte-stable line, and 4. persist both into the run file
+    const line = runCli(['sentinel', 'capped', '2'])
+    assert.equal(line.status, 0)
+    const write = runSentinel(['write', dir, runId, 'review', line.stdout, payload.stdout])
+    assert.equal(write.status, 0, write.stderr)
+    // 5. read it back the way the orchestrator does
+    const read = runSentinel(['read', dir, runId, 'review'])
+    assert.equal(read.status, 0, read.stderr)
+    return { reason, line: line.stdout, file: JSON.parse(read.stdout) }
+  }
+
+  // Step 6's shipped terms: three 300s legs under a 900s allowance — starved.
+  const starved = route(900, 3, 'starved-run')
+  assert.equal(starved.reason, FUNDING_STARVED)
+  assert.equal(starved.file.status, 'ok')
+  assert.equal(starved.file.payload.funding.reason, FUNDING_STARVED)
+  assert.equal(starved.file.payload.provisional, false)
+  // The reason travelled in the PAYLOAD only: the line is the helper's bytes, and
+  // `matchSentinel` still classifies it.
+  assert.equal(starved.file.kind, starved.line)
+  assert.doesNotMatch(starved.file.kind, /funding/)
+  assert.deepEqual(matchSentinel(starved.file.kind), { status: 'capped', rounds: 2 })
+
+  // A funded step: no `funding` key at all, so absence keeps meaning "not starved".
+  const funded = route(2100, 3, 'funded-run')
+  assert.equal(funded.reason, '')
+  assert.equal(funded.file.status, 'ok')
+  assert.ok(!Object.hasOwn(funded.file.payload, 'funding'))
+  assert.equal(funded.file.payload.provisional, false)
+
+  rmSync(scratch, { recursive: true, force: true })
 })
 
 test('CLI `verdict --in` prints the sentinel implied by report evidence', () => {
@@ -1306,3 +1651,77 @@ test(
     )
   },
 )
+
+// ---------------------------------------------------------------------------
+// BOS-1209: one gate-outcome line per admission. The three admit-* verbs ARE
+// the gate — one runs per review round and either admits it or refuses — so the
+// recorded reason reuses the decision's own closed reason vocabulary. Every
+// other verb is pure computation and must record nothing.
+// ---------------------------------------------------------------------------
+
+const recordedOutcomes = (outcomes) =>
+  readFileSync(outcomes, 'utf8')
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => line.split('\t').slice(1))
+
+test('admit-fix-round records one line per invocation, reusing its own reason token', () => {
+  const outcomes = join(mkdtempSync(join(tmpdir(), 'bs-review-caps-outcomes-')), 'outcomes.tsv')
+  const env = { BOSS_GATE_OUTCOME_FILE: outcomes }
+
+  const admitted = runCli(['admit-fix-round', JSON.stringify({ openMustFix: true })], env)
+  assert.equal(admitted.status, 0, admitted.stderr)
+  assert.deepEqual(JSON.parse(admitted.stdout), { admit: true, reason: 'within-budget' })
+  assert.deepEqual(recordedOutcomes(outcomes), [
+    ['bs-review-caps.admit-fix-round', 'pass', 'within-budget'],
+  ])
+
+  const refused = runCli(['admit-fix-round', JSON.stringify({ openMustFix: false })], env)
+  assert.equal(refused.status, 0, 'a refusal is a verdict on stdout, not a non-zero exit')
+  assert.deepEqual(JSON.parse(refused.stdout), { admit: false, reason: 'no-open-mustfix' })
+  assert.deepEqual(recordedOutcomes(outcomes)[1], [
+    'bs-review-caps.admit-fix-round',
+    'fire',
+    'no-open-mustfix',
+  ])
+  assert.ok(ADMIT_FIX_ROUND_REASONS.includes(recordedOutcomes(outcomes)[1][2]))
+})
+
+test('the other two admission verbs record under their own gate ids', () => {
+  const outcomes = join(mkdtempSync(join(tmpdir(), 'bs-review-caps-outcomes-')), 'outcomes.tsv')
+  const env = { BOSS_GATE_OUTCOME_FILE: outcomes }
+
+  const dispatched = runCli(['admit-dispatched-round', JSON.stringify({ guaranteed: true })], env)
+  assert.deepEqual(JSON.parse(dispatched.stdout), { admit: true, reason: 'guaranteed' })
+
+  const confirming = runCli(['admit-confirming-round', JSON.stringify({ tipUnchanged: true })], env)
+  assert.deepEqual(JSON.parse(confirming.stdout), { admit: false, reason: 'unchanged-tip' })
+
+  assert.deepEqual(recordedOutcomes(outcomes), [
+    ['bs-review-caps.admit-dispatched-round', 'pass', 'guaranteed'],
+    ['bs-review-caps.admit-confirming-round', 'fire', 'unchanged-tip'],
+  ])
+  assert.ok(ADMIT_DISPATCHED_ROUND_REASONS.includes('guaranteed'))
+  assert.ok(ADMIT_CONFIRMING_ROUND_REASONS.includes('unchanged-tip'))
+})
+
+test('a malformed admission argument records one fire line and still exits 2', () => {
+  const outcomes = join(mkdtempSync(join(tmpdir(), 'bs-review-caps-outcomes-')), 'outcomes.tsv')
+  const res = runCli(['admit-fix-round', '{not json'], { BOSS_GATE_OUTCOME_FILE: outcomes })
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /admit-fix-round requires one JSON object argument/)
+  assert.deepEqual(recordedOutcomes(outcomes), [
+    ['bs-review-caps.admit-fix-round', 'fire', 'malformed-input'],
+  ])
+})
+
+test('the pure-computation verbs record nothing — they have no verdict to record', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-caps-outcomes-'))
+  const outcomes = join(dir, 'outcomes.tsv')
+  const env = { BOSS_GATE_OUTCOME_FILE: outcomes }
+  for (const args of [['rounds'], ['dispatched-rounds'], ['sentinel', 'clean'], ['match', 'x']]) {
+    const res = runCli(args, env)
+    assert.equal(res.status, 0, `${args.join(' ')}: ${res.stderr}`)
+  }
+  assert.equal(existsSync(outcomes), false, 'a non-gate verb must not create an outcome file')
+})

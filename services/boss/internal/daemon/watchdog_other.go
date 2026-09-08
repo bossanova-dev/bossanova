@@ -14,3 +14,13 @@ package daemon
 func observeUnattendedInstall() UnattendedInstall {
 	return UnattendedInstall{State: UnattendedInstallNotApplicable}
 }
+
+// observeWatchdogOwnership reports no observation off macOS.
+//
+// Unreachable for the same reason observeUnattendedInstall above is — no
+// non-default supervision mode ever resolves here — and present for the same
+// reason: so ObserveWatchdogOwnership in watchdog.go compiles on both platforms
+// without a build tag of its own. The zero value is
+// WatchdogOwnershipNotObserved, so a Linux caller that ignored the platform and
+// asked anyway is told nothing was observed rather than handed a claim.
+func observeWatchdogOwnership() WatchdogOwnership { return WatchdogOwnership{} }

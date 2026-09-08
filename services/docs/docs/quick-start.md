@@ -146,7 +146,7 @@ ships.
 See [Agent Plugins](/guides/agent-runners) and
 [Settings](./reference/settings.md) for the full configuration surface.
 
-## 5. Bootstrap the boss-* skills config
+## 5. Bootstrap the boss-\* skills config
 
 The `boss-*` skills read a `.boss-skills.json` file from the repo root. Run
 `boss init` inside the repository to write a starting one:

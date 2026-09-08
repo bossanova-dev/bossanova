@@ -37,7 +37,7 @@ import {
 } from '../skills-toolbox/plan-contract-guard.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
 import { precedes, regionUntilNext } from './gate-region-lib.mjs'
-import { assertExactSize, measureFile } from './size-ratchet-lib.mjs'
+import { assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 const abs = (rel) => fileURLToPath(new URL(rel, import.meta.url))
@@ -47,7 +47,6 @@ const readIfExists = (rel) => {
 }
 
 const CORE = '../services/boss/internal/skillinstall/skills/boss-plan'
-const PLUGIN_COPY = '../plugins/bossd-plugin-claude/skilldata/skills/boss-plan'
 const SKILL = read(`${CORE}/SKILL.md`)
 const INTERACTIVE = read(`${CORE}/references/interactive-mode.md`)
 const BRIEF = read(`${CORE}/references/headless-drafting-brief.md`)
@@ -61,18 +60,14 @@ const PAYLOAD_REFERENCES = [
   ['references/plan-storage.md', PLAN_STORAGE],
 ]
 const PAYLOAD_TEXT = PAYLOAD_REFERENCES.map(([, body]) => body).join('\n')
-const PAYLOAD_COPIES = [
-  {
-    name: 'skillinstall',
-    skill: SKILL,
-    brief: BRIEF,
-  },
-  {
-    name: 'plugin mirror',
-    skill: read(`${PLUGIN_COPY}/SKILL.md`),
-    brief: read(`${PLUGIN_COPY}/references/headless-drafting-brief.md`),
-  },
-]
+// BOS-1212: the plugin mirror is an rsync of the skillinstall tree (`make copy-skills`),
+// asserted once for the whole payload by scripts/skill-mirror-generation.test.mjs. Running
+// every clause against the copy as well proved only that a copy copied.
+const CANONICAL_PAYLOAD = {
+  name: 'skillinstall',
+  skill: SKILL,
+  brief: BRIEF,
+}
 const DRAFT_NAME = 'boss-plan-compound-engineering'
 const DRAFT = readIfExists(`../.claude/skills/${DRAFT_NAME}/SKILL.md`)
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -411,8 +406,9 @@ test('an ok sentinel accepts only a path that resolves to the expected non-empty
   )
 })
 
-test('headless Phase 2 measures on-disk artifacts instead of trusting reported sizes in both payload copies', () => {
-  for (const payload of PAYLOAD_COPIES) {
+test('headless Phase 2 measures on-disk artifacts instead of trusting reported sizes', () => {
+  {
+    const payload = CANONICAL_PAYLOAD
     const headless = sectionBetween(
       payload.skill,
       '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
@@ -436,8 +432,9 @@ test('headless Phase 2 measures on-disk artifacts instead of trusting reported s
   }
 })
 
-test('post-sentinel re-verification covers all dispatch artifacts while retaining dispatch-failure shape in both payload copies', () => {
-  for (const payload of PAYLOAD_COPIES) {
+test('post-sentinel re-verification covers all dispatch artifacts while retaining dispatch-failure shape', () => {
+  {
+    const payload = CANONICAL_PAYLOAD
     const headless = sectionBetween(
       payload.skill,
       '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
@@ -499,8 +496,9 @@ test('post-sentinel re-verification covers all dispatch artifacts while retainin
   }
 })
 
-test('the epic sentinel carries required artifact paths in both payload copies', () => {
-  for (const payload of PAYLOAD_COPIES) {
+test('the epic sentinel carries required artifact paths', () => {
+  {
+    const payload = CANONICAL_PAYLOAD
     assert.match(
       payload.brief,
       /childPlanPaths:\{\(\$childId\):\$childPlan\}/,
@@ -554,8 +552,9 @@ test('the epic sentinel carries required artifact paths in both payload copies',
   }
 })
 
-test('the headless drafting brief requires measured reported sizes in both payload copies', () => {
-  for (const payload of PAYLOAD_COPIES) {
+test('the headless drafting brief requires measured reported sizes', () => {
+  {
+    const payload = CANONICAL_PAYLOAD
     assert.match(
       payload.brief,
       /any\s+(?:byte\s+count|size).{0,80}reports?.{0,80}measured.{0,80}(?:stat|wc\s+-c)/is,
@@ -795,8 +794,9 @@ test('Phase 4 permits required secret redaction without weakening attachment par
 // BOS-1199 — the post-save read-back. Every other gate is pre-write prevention over local bytes,
 // so nothing observed what actually landed until this one. The three assertions below are the
 // three prose changes the ticket lands; each is pinned so removing it fails.
-test('BOS-1199: Phase 2 states the snapshot is the STORED description with no added byte', () => {
-  for (const payload of PAYLOAD_COPIES) {
+test("BOS-1199: Phase 2 states the snapshot is the tracker's STORED description", () => {
+  {
+    const payload = CANONICAL_PAYLOAD
     const headless = sectionBetween(
       payload.skill,
       '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
@@ -806,11 +806,6 @@ test('BOS-1199: Phase 2 states the snapshot is the STORED description with no ad
       headless,
       /tracker's\s+\*\*stored\*\*\s+description,\s+not\s+a\s+rendering\s+of\s+it/,
       `${payload.name}: Phase 2 must state the snapshot's provenance`,
-    )
-    assert.match(
-      headless,
-      /no\s+byte\s+the\s+stored\s+description\s+does\s+not\*\*[\s\S]{0,120}no\s+trailing\s+newline/,
-      `${payload.name}: Phase 2 must state the snapshot's byte shape`,
     )
   }
   assert.match(
@@ -826,7 +821,8 @@ test('BOS-1199: Phase 2 states the snapshot is the STORED description with no ad
 })
 
 test('BOS-1199: Phase 4 runs the write-back verification once, after the final save', () => {
-  for (const payload of PAYLOAD_COPIES) {
+  {
+    const payload = CANONICAL_PAYLOAD
     const phase4 = sectionBetween(payload.skill, '## Phase 4 —', '\n## Phase 5')
     assert.match(
       phase4,
@@ -859,7 +855,8 @@ test('BOS-1199: Phase 4 runs the write-back verification once, after the final s
 })
 
 test('BOS-1199: the patch-anchor guidance names the stored normalized text', () => {
-  for (const payload of PAYLOAD_COPIES) {
+  {
+    const payload = CANONICAL_PAYLOAD
     const phase4 = sectionBetween(payload.skill, '## Phase 4 —', '\n## Phase 5')
     assert.match(
       phase4,
@@ -936,7 +933,8 @@ test('the resident body documents the config-first validatePlanDescription signa
 })
 
 test('epic reverify decodes spec attachments and rejects missing childIds distinctly (BOS-755)', () => {
-  for (const copy of PAYLOAD_COPIES) {
+  {
+    const copy = CANONICAL_PAYLOAD
     assert.ok(
       copy.skill.includes(
         'node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" decode <in-file> <out-file>',
@@ -978,7 +976,8 @@ test('epic parent validation mode is documented (BOS-755)', () => {
 })
 
 test('epic parent overview runs the contract guard in epic-parent mode before parent save', () => {
-  for (const payload of PAYLOAD_COPIES) {
+  {
+    const payload = CANONICAL_PAYLOAD
     assert.match(
       payload.skill,
       /plan-contract\s+gate[\s\S]{0,220}plan-contract-guard\.mjs\s+--mode\s+epic-parent[\s\S]{0,220}before\s+attachment\s+finalize\s+or\s+parent\s+save/i,
@@ -1003,7 +1002,8 @@ test('epic parent overview runs the contract guard in epic-parent mode before pa
 })
 
 test('epic sentinel childIds are required in the drafting brief (BOS-755)', () => {
-  for (const copy of PAYLOAD_COPIES) {
+  {
+    const copy = CANONICAL_PAYLOAD
     assert.ok(
       copy.brief.includes('childIds:     ["<ISSUE-ID>", ...]    // REQUIRED'),
       `${copy.name} drafting brief must declare childIds required`,
@@ -1027,7 +1027,8 @@ test('the drafting brief runs the contract guard before the ok sentinel (BOS-741
 })
 
 test('BOS-769: Phase 1 carries the idempotence precheck and clean no-op', () => {
-  for (const payload of PAYLOAD_COPIES) {
+  {
+    const payload = CANONICAL_PAYLOAD
     assert.match(
       payload.skill,
       /planIdempotencePrecheck\(\.\.\.\)[\s\S]{0,120}plan-run-guards\.mjs/,
@@ -1047,7 +1048,8 @@ test('BOS-769: Phase 1 carries the idempotence precheck and clean no-op', () => 
 })
 
 test('BOS-769: headless Phase 2 snapshots the description before dispatch', () => {
-  for (const payload of PAYLOAD_COPIES) {
+  {
+    const payload = CANONICAL_PAYLOAD
     const headless = sectionBetween(
       payload.skill,
       '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
@@ -1072,7 +1074,8 @@ test('BOS-769: headless Phase 2 snapshots the description before dispatch', () =
 })
 
 test('BOS-769: headless Phase 2 validates bounded metadata before Phase 3.5', () => {
-  for (const payload of PAYLOAD_COPIES) {
+  {
+    const payload = CANONICAL_PAYLOAD
     const headless = sectionBetween(
       payload.skill,
       '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
@@ -1094,7 +1097,8 @@ test('BOS-769: headless Phase 2 validates bounded metadata before Phase 3.5', ()
 })
 
 test('BOS-769: premises ride the sentinel and Phase 4 re-verifies them', () => {
-  for (const payload of PAYLOAD_COPIES) {
+  {
+    const payload = CANONICAL_PAYLOAD
     assert.match(
       payload.skill,
       /PREMISES="\$\(printf '%s' "\$READ" \| jq -c '\.payload\.premises \/\/ \[\]'\)"/,
@@ -1326,7 +1330,8 @@ test('the resident body documents the byte-identical description section contrac
 })
 
 test('the description contract does not flatten the plan attachment (BOS-1176)', () => {
-  for (const copy of PAYLOAD_COPIES) {
+  {
+    const copy = CANONICAL_PAYLOAD
     for (const [name, body] of [
       ['resident skill', copy.skill],
       ['headless drafting brief', copy.brief],
@@ -2066,8 +2071,9 @@ test('the shared drafting spec (plan-body requirements + template) lives in the 
   )
 })
 
-test('BOS-926: sibling-class enumeration and file-count cap rules are pinned in both drafting payloads', () => {
-  for (const payload of PAYLOAD_COPIES) {
+test('BOS-926: sibling-class enumeration and file-count cap rules are pinned', () => {
+  {
+    const payload = CANONICAL_PAYLOAD
     for (const [label, body] of [
       ['SKILL.md', payload.skill],
       ['headless-drafting-brief.md', payload.brief],
@@ -2121,10 +2127,6 @@ test('the resident body does not duplicate the full drafting spec', () => {
 // Proof-harness readiness guidance (BOS-111) — boss-plan decides at plan time
 // what proof each plan needs, and the stale screenshot-only claim is corrected.
 // ---------------------------------------------------------------------------
-
-const MIRROR_BRIEF = readIfExists(
-  '../plugins/bossd-plugin-claude/skilldata/skills/boss-plan/references/headless-drafting-brief.md',
-)
 
 test('the brief no longer claims boss-proof is screenshot-only (stills AND video today)', () => {
   assert.equal(
@@ -2190,44 +2192,16 @@ test('the brief Step 7 template carries a `## Proof harness analysis` block (adv
   )
 })
 
-test('the brief Step 7 byte-copy recipe does not strip trailing newlines', () => {
+test('the brief Step 7 recipe returns the assembled file, never a shell capture of it', () => {
   assert.match(
     BRIEF,
     /Return\s+the\s+contents\s+of `"\$BODY"` as `descriptionSummary`/,
     'the brief must tell the drafter to return the assembled file bytes',
   )
-  assert.match(
-    BRIEF,
-    /command\s+substitution\s+strips\s+trailing\s+newline\s+bytes/,
-    'the brief must explain why command substitution is unsafe for the byte contract',
-  )
   assert.doesNotMatch(
     BRIEF,
     /^DESCRIPTION_SUMMARY="\$\(cat "\$BODY"\)"$/m,
     'the executable recipe must not assign descriptionSummary through command substitution',
-  )
-})
-
-test('the regenerated plugin mirror brief matches the canonical brief on the new contract strings', () => {
-  assert.notEqual(
-    MIRROR_BRIEF,
-    '',
-    'the plugin-mirror brief must exist (make copy-skills committed)',
-  )
-  assert.equal(
-    count(MIRROR_BRIEF, 'screenshot-only'),
-    0,
-    'the mirror brief must also drop the stale screenshot-only claim (mirror committed in sync)',
-  )
-  assert.equal(
-    count(MIRROR_BRIEF, '## Proof harness analysis'),
-    2,
-    'the mirror brief must carry the same `## Proof harness analysis` blocks as the canonical brief',
-  )
-  assert.equal(
-    MIRROR_BRIEF,
-    BRIEF,
-    'the plugin mirror brief must be byte-identical to the canonical brief (run make copy-skills and stage it)',
   )
 })
 
@@ -2569,28 +2543,6 @@ test('BOS-475: epic parents carry configured label, summed estimate, and backlog
 })
 
 // ---------------------------------------------------------------------------
-// Mirror parity — the plugin SKILL.md mirror is byte-identical to the canonical
-// (make copy-skills committed in sync). Follows the MIRROR_BRIEF pattern above.
-// ---------------------------------------------------------------------------
-
-const MIRROR_SKILL = readIfExists(
-  '../plugins/bossd-plugin-claude/skilldata/skills/boss-plan/SKILL.md',
-)
-
-test('the plugin mirror SKILL.md is byte-identical to the canonical SKILL.md', () => {
-  assert.notEqual(
-    MIRROR_SKILL,
-    '',
-    'the plugin-mirror SKILL.md must exist (make copy-skills committed)',
-  )
-  assert.equal(
-    MIRROR_SKILL,
-    SKILL,
-    'the plugin mirror must be byte-identical to the canonical SKILL.md (run make copy-skills and stage it)',
-  )
-})
-
-// ---------------------------------------------------------------------------
 // Scratch cleanup — one glob pattern per command line.
 // ---------------------------------------------------------------------------
 
@@ -2720,6 +2672,120 @@ test('BOS-1193: the payload never instructs an agent to invent a scratch filenam
 })
 
 // ---------------------------------------------------------------------------
+// BOS-1198 — the description is WRITTEN from the file the gates validated.
+// ---------------------------------------------------------------------------
+
+test('BOS-1198: step 4 writes the description from the gated file, never retyped inline', () => {
+  // The defect this pins shut: the description is composed and mechanically gated as a FILE
+  // and was then re-emitted into an inline tool argument, so the bytes the guards validated
+  // and the bytes that reached the tracker stopped being provably the same object.
+  // Assertions are on the BEHAVIOURAL wording, not just the helper name — a step that named
+  // `write-description` while still describing an inline body would satisfy a name-only pin.
+  const step4 = regionUntilNext(SKILL, '- `description`:', '\n   - no plan link:')
+  assert.ok(step4, "step 4's description bullet must exist")
+  assert.match(
+    step4,
+    /written\s+from\s+the\s+file\s+the\s+gates\s+above\s+just\s+validated,\s+never\s+retyped\s+into\s+this[\s\S]{0,20}argument/,
+    'step 4 must say the description is written FROM the gated file and not retyped into the argument',
+  )
+  assert.match(
+    step4,
+    /tracker\/cli\.mjs["'`]?\s+write-description --id <ISSUE-ID> --body-file \S*image-guard-new\.md/,
+    'step 4 must invoke write-description with the gated image-guard-new.md as its --body-file',
+  )
+})
+
+test('BOS-1198: step 4 branches on the explicit outcome and bounds the inline fallback', () => {
+  // R4: an exit status alone cannot distinguish a write that landed from one that changed
+  // nothing, so the caller must branch on the emitted token. And the fallback must be bounded:
+  // falling back on an unusable BODY would send inline the very bytes the guard refused.
+  const step4 = regionUntilNext(SKILL, '- `description`:', '\n   - no plan link:')
+  assert.match(
+    step4,
+    /branch\s+on\s+the\s+emitted[\s\S]{0,40}explicit\s+`outcome`,\s+never\s+on\s+exit\s+status\s+alone/,
+    'step 4 must branch on the explicit outcome rather than the exit status',
+  )
+  assert.match(
+    step4,
+    /`descriptor-emitted`\s+means\s+execute\s+the\s+returned\s+`\{tool,\s+args\}`/,
+    'step 4 must name the success token and what to do with the descriptor',
+  )
+  assert.match(
+    step4,
+    /fall\s+back\s+to\s+an\s+inline[\s\S]{0,20}`description`\s+here\s+\*\*only\*\*\s+when\s+its\s+stderr\s+names[\s\S]{0,40}missing\s+`writeDescription`\s+operation/,
+    'the inline fallback must be gated on the missing-capability message alone',
+  )
+  assert.match(
+    step4,
+    /empty,\s+unreadable\s+or\s+missing\s+body\s+file\s+is\s+a\s+defect\s+in\s+what\s+this\s+run\s+composed/,
+    'an unusable body must be named as a run defect, not as a missing capability',
+  )
+})
+
+test('BOS-1198: step 4 forbids diffing the stored description against the sent buffer', () => {
+  // P7: the tracker renormalizes markdown AFTER every local gate has run, so a byte comparison
+  // against what was sent reds on every run for a cosmetic reason. The verification that counts
+  // reads the STORED document.
+  const step4 = regionUntilNext(SKILL, '- `description`:', '\n   - no plan link:')
+  assert.match(
+    step4,
+    /Never[\s\S]{0,20}diff\s+the\s+stored\s+description[\s\S]{0,40}against\s+the\s+bytes\s+you\s+sent/,
+    'step 4 must forbid a byte diff against the sent buffer',
+  )
+  assert.match(
+    step4,
+    /step\s+6\s+owns\s+that\s+comparison[\s\S]{0,20}makes\s+it\s+against\s+the\s+tracker's[\s\S]{0,20}\*\*stored\*\*[\s\S]{0,20}document/,
+    'step 4 must hand the comparison to step 6 and name the STORED document as its subject',
+  )
+})
+
+test('BOS-1198: step 5(f) states the post-append description/attachment divergence as expected', () => {
+  // R6. Step 5(f) mutates the description only, so on every run that writes relations the
+  // attachment legitimately keeps the pre-append bytes. Unstated, a reader meets a benign
+  // difference and reads it as a gate failure — or supersedes a correct attachment for parity.
+  assert.match(
+    SKILL,
+    /the\s+description\s+and\s+the\s+plan\s+attachment\s+\*\*legitimately\s+diverge\*\*\s+at\s+`##\s+Planning`/,
+    'step 5(f) must state the divergence in the step where a reader meets it',
+  )
+  assert.match(
+    SKILL,
+    /divergence\s+is\s+expected\s+behaviour,\s+not\s+a\s+gate\s+failure[\s\S]{0,60}never[\s\S]{0,20}supersede\s+a\s+correct\s+attachment\s+for\s+cosmetic\s+parity/,
+    'the divergence must be named as expected behaviour with the supersede trap called out',
+  )
+})
+
+test('BOS-1198: plan-storage.md carries the file-based write mechanics', () => {
+  // The resident body keeps the decision and the one call; the mechanics live here. A pin on
+  // each so a later trim cannot quietly drop the half that makes the verb usable.
+  assert.match(
+    PLAN_STORAGE,
+    /\*\*measured\s+on\s+disk\*\*\s+with\s+`stat\(2\)`,\s+not\s+counted\s+from\s+a\s+decoded\s+string/,
+    'plan-storage must state that the byte count is measured on disk, not derived from a string',
+  )
+  assert.match(
+    PLAN_STORAGE,
+    /Report\s+this\s+number;\s+never\s+substitute\s+one\s+you\s+derived/,
+    'plan-storage must forbid a caller-derived size standing in for the measured one',
+  )
+  assert.match(
+    PLAN_STORAGE,
+    /writes\s+a\s+one-line\s+reason\s+to\s+\*\*stderr\*\*\s+and\s+\*\*nothing\s+to\s+stdout\*\*/,
+    'plan-storage must state that no error path writes to stdout',
+  )
+  assert.match(
+    PLAN_STORAGE,
+    /Body\s+unusable[\s\S]{0,140}never\s+a\s+reason\s+to\s+fall\s+back/,
+    'plan-storage must separate an absent capability from an unusable body',
+  )
+  assert.match(
+    PLAN_STORAGE,
+    /same\s+file\s+every\s+Phase\s+4\s+gate\s+read,\s+not\s+a\s+fresh\s+copy\s+of\s+it/,
+    'plan-storage must say why the gated file itself is sent rather than a second rendering',
+  )
+})
+
+// ---------------------------------------------------------------------------
 // Size-ratchet — the resident body stays below the pre-split baseline.
 // ---------------------------------------------------------------------------
 
@@ -2737,7 +2803,7 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // for re-derivation — instead of prescribing one cause.
   // On a rebase this constant conflicts too; see the REBASE HAZARD note at RATCHET below for
   // how to resolve BOTH — this one is re-baselined above the new measurement, never set to it.
-  const PRE_SPLIT_BASELINE = 122329
+  const PRE_SPLIT_BASELINE = 124025
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -3016,23 +3082,67 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   //   bullet IS the single tracker save; interactive resolves every fork with the human and by
   //   contract emits no `## Open Questions`, so a pre-existing label there is a claim the run has
   //   disproved and no other path can clear it.
-  const RATCHET = 121658 // exact measured resident body, re-measured 2026-09-07 (BOS-1189)
-  assertExactSize({
+  // BOS-1198 re-baselines 121658 -> 123354 (+1696 B), carrying PRE_SPLIT_BASELINE 122329 ->
+  // 124025 so the 671-byte guard margin the BOS-1199 rebase left is preserved rather than
+  // collapsed. Two resident additions, both read BEFORE the write they govern, which is why the
+  // mechanics went to `references/plan-storage.md` and only these bytes stayed:
+  //   +~1.35 kB, step 4's description bullet. The description is composed and gated as a FILE and
+  //   was then retyped into an inline tool argument, which is what defeats the gate — a measured
+  //   incident recorded a two-character drift surviving every guard that way. The bullet names the
+  //   already-gated file to send (`image-guard-new.md`, the same bytes all four Phase 4 gates read,
+  //   not a second rendering of them), the explicit `outcome` token to branch on rather than the
+  //   exit status, and the ONE stderr message that legitimises an inline fallback. It has to be
+  //   resident because it fires at the save itself: a reference is opened only after the bytes have
+  //   already been sent, and the tracker keeps no description history to undo them from.
+  //   +~350 B, step 5(f)'s post-append divergence note. 5(f) mutates the description only, so the
+  //   attachment keeps the pre-append bytes on every run that writes relations. Without the note a
+  //   reader meets a benign difference and reads it as a gate failure — or supersedes a correct
+  //   attachment for cosmetic parity. It is resident because the reader meets the divergence in
+  //   this step, not in a reference they have no reason to open.
+  // BOS-1208 converts this from an exact pin to a DESCENDING BUDGET, seeded at the measured size
+  // so it binds immediately. Every re-baseline recorded above cost the same one-line repin a
+  // DELETION would have cost, which is the asymmetry this change removes: a shrink now costs
+  // nothing at all, and only a raise costs the written reason. STEP_DOWN is ~1 KiB because this
+  // body is far above 20 000 bytes; bodies under that get 512 B, so a bigger body is asked for a
+  // bigger step. The share is NOT equal across artifacts, and is deliberately not claimed to be:
+  // measured, the step runs from 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the
+  // smallest in the 1 KiB bucket (bs-sweep-tests, 26600 B), so two buckets narrow the spread a
+  // single flat number would give without equalising it.
+  // BOS-1214 is the first entry this ledger records as a FALL rather than a re-baseline, and it
+  // needs no edit to the constant — a shrink costs nothing under a descending budget. It also
+  // corrects the BOS-1199 entry above: Phase 2 step 2 no longer states the snapshot's byte SHAPE
+  // (no added terminal byte). That half was byte mechanics for hand-satisfying a check the
+  // write-back verifier already decides by normalized equivalence, so the step now states only
+  // what the snapshot must carry -- the tracker's stored description, nothing added -- and the
+  // behaviour the deleted sentences described is asserted over the helper in
+  // skills-toolbox/plan-writeback-verify.test.mjs. The measured body falls 123354 -> 123326 B.
+  const RATCHET = 123354 // measured resident body at migration, 2026-09-08 (BOS-1198 bytes)
+  const STEP_DOWN = 1024
+  const REVIEW_BY = '2026-12-08'
+  assertDescendingBudget({
     below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
+    budget: RATCHET,
     constFile: 'scripts/bs-plan-skill.test.mjs',
     constName: 'RATCHET',
-    expected: RATCHET,
     label: 'boss-plan resident SKILL.md',
     measured: measureFile(abs(`${CORE}/SKILL.md`)),
     path: 'services/boss/internal/skillinstall/skills/boss-plan/SKILL.md',
-    previous: {
-      value: 118499,
-      delta: 3159,
-      label: 'BOS-1189 retaining the drafted plan across failing Phase 4 gates',
+    raise: {
+      // A LITERAL, deliberately not `RATCHET`. Aliasing the budget constant made this
+      // value move in lockstep with every raise, so `budget > from` could never be true
+      // and the one direction this primitive prices was free — the arm was structurally
+      // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+      // measurement, any later raise of RATCHET above it reds until a reason is recorded.
+      // No `justification` is pre-supplied either: this commit raised nothing, and a
+      // stale sentence parked here would satisfy the next raise without anybody having
+      // to write a fresh reason for it, which is the same arm dead a second way.
+      from: 123354,
     },
     residual:
       'the references/ files the body routes to, and whether the resident prose is worth its ' +
-      'bytes — this pin only knows how many there are',
+      'bytes — this budget only knows how many there are',
+    reviewBy: REVIEW_BY,
+    stepDown: STEP_DOWN,
   })
 })
 
@@ -3096,7 +3206,8 @@ test('the resident body cross-references how to dispatch a zero-change planning 
 })
 
 test('BOS-1002: installed-skill gate degrades for an old boss CLI', () => {
-  for (const copy of PAYLOAD_COPIES) {
+  {
+    const copy = CANONICAL_PAYLOAD
     assert.match(copy.skill, /skills\s+check\s+--gate/, copy.name)
     assert.match(
       copy.skill,
@@ -3154,7 +3265,8 @@ test('BOS-1186: both prose lists enumerate every guard violation code', () => {
   assert.ok(VIOLATION_CODES.length > 0, 'the exported code set must be non-empty')
   assert.deepEqual(DYNAMIC_VIOLATION_CODE_PREFIXES, ['vacuous-*'])
 
-  for (const copy of PAYLOAD_COPIES) {
+  {
+    const copy = CANONICAL_PAYLOAD
     const phase4 = regionUntilNext(
       copy.skill,
       'One stderr line per violation',
@@ -3194,7 +3306,8 @@ test('BOS-1186: both prose lists enumerate every guard violation code', () => {
 // The producer side of the same defect: a premise coordinate the drafter never re-read, and a
 // constant copied out of a ticket's notes instead of re-measured.
 test('BOS-1186: the drafting brief requires anchored premises and re-measured constants', () => {
-  for (const copy of PAYLOAD_COPIES) {
+  {
+    const copy = CANONICAL_PAYLOAD
     assert.match(
       copy.brief,
       /A\s+premise\s+that\s+cites\s+`file:line`\s+must\s+carry\s+an\s+anchor[\s\S]{0,200}backticked\s+token\s+copied\s+from\s+that\s+location/,

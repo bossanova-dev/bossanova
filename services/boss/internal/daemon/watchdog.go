@@ -627,3 +627,136 @@ func classifyEnsureRunningRoute(facts ensureRunningFacts) ensureRunningRoute {
 		return ensureRunningRouteWatchdog
 	}
 }
+
+// WatchdogOwnershipState is what launchd's `system` domain says about the
+// watchdog job RIGHT NOW, as opposed to what is installed on disk.
+//
+// It is the third observation in the family UnattendedInstallState opened, and
+// the two answer genuinely different questions: UnattendedInstallState reads
+// the FILESYSTEM (is a plist there, and is every path it depends on safe for a
+// root job), while this reads the SERVICE MANAGER (has launchd got that job
+// loaded). A host can have a perfectly secure watchdog plist on disk that
+// nobody ever bootstrapped, and on such a host nothing is supervising bossd —
+// which is precisely the state a reporting surface must not certify as healthy.
+//
+// BOS-1204: it exists because `boss daemon status` and `boss daemon doctor`
+// could only ever see the per-user LaunchAgent, so a correctly supervised
+// unattended host was reported uninstalled and unsupervised.
+type WatchdogOwnershipState int
+
+const (
+	// WatchdogOwnershipNotObserved is the zero value: no probe was made,
+	// because this host is not on the unattended substrate or the substrate is
+	// not installed. It is the zero value on purpose — a report built without
+	// an observation must never read as an affirmative claim about one, the
+	// same discipline UnattendedInstallNotApplicable encodes.
+	WatchdogOwnershipNotObserved WatchdogOwnershipState = iota
+	// WatchdogOwnershipUnknown means the probe was made and could not be read.
+	// It is the fail-closed verdict: a launchctl that could not be executed, or
+	// that exited for a reason other than "no such service", lands here and
+	// NEVER on WatchdogOwnershipLoaded.
+	WatchdogOwnershipUnknown
+	// WatchdogOwnershipNotLoaded means launchd positively reported that no such
+	// service exists in the `system` domain. The watchdog is not supervising
+	// anything.
+	WatchdogOwnershipNotLoaded
+	// WatchdogOwnershipLoaded means launchd has the watchdog job registered in
+	// the `system` domain.
+	//
+	// Note what this does NOT claim: that bossd is healthy. It claims OWNERSHIP
+	// — launchd owns the watchdog and the watchdog owns bossd. Liveness stays
+	// the recorded-PID probe the reporting surfaces already make.
+	WatchdogOwnershipLoaded
+)
+
+// WatchdogOwnership carries that observation plus the target it was read from,
+// so a reporting surface can name what it asked about rather than re-deriving
+// it — the same reason SpawnHistory carries Target.
+type WatchdogOwnership struct {
+	State WatchdogOwnershipState
+	// Target is the service-manager target probed, e.g.
+	// "system/com.bossanova.bossd-watchdog". Always set when a probe was made.
+	Target string
+	// Reason explains a non-Loaded state in human-readable terms. Empty for
+	// WatchdogOwnershipLoaded and for the unprobed zero value.
+	Reason string
+}
+
+// WatchdogTarget is the launchd service target of the root-owned watchdog job.
+//
+// It is exported and lives here rather than being spelled out at each call
+// site: the ownership probe, the spawn-history target resolver and the
+// bootout path all name the same target, and three string concatenations of
+// "system/" + WatchdogLabel are three places for a future domain change to be
+// missed in two of.
+func WatchdogTarget() string { return "system/" + WatchdogLabel }
+
+// watchdogProbeOutcome is what one `launchctl print <watchdog target>` did,
+// reduced to the facts the verdict turns on.
+//
+// It exists so classifyWatchdogOwnership can be pure and its whole matrix
+// provable from EITHER platform's test run, exactly as classifyEnsureRunningRoute
+// and classifyWatchdogPathSecurity above are: the launchctl invocation and the
+// exit-code knowledge are darwin-only, the fail-closed rule is not.
+type watchdogProbeOutcome int
+
+const (
+	// watchdogProbeDisabled is the BOSS_DAEMON_SKIP_LAUNCHCTL short-circuit. It
+	// is the zero value so a caller that gathered nothing cannot accidentally
+	// produce an affirmative ownership claim.
+	watchdogProbeDisabled watchdogProbeOutcome = iota
+	// watchdogProbeUnexecutable means launchctl could not be run at all.
+	watchdogProbeUnexecutable
+	// watchdogProbeNoSuchService means launchctl ran and exited with a code
+	// that POSITIVELY means the target is not registered
+	// (launchctlExitSaysAlreadyGone).
+	watchdogProbeNoSuchService
+	// watchdogProbeExitedNonZero means launchctl ran and failed for some other
+	// reason — a refused read, or an exit code this build does not recognise.
+	watchdogProbeExitedNonZero
+	// watchdogProbeLoaded means launchctl ran and exited zero.
+	watchdogProbeLoaded
+)
+
+// classifyWatchdogOwnership maps a probe outcome onto the reported observation.
+//
+// The fail-closed direction is the whole content of this function: only
+// watchdogProbeLoaded produces WatchdogOwnershipLoaded, and only an exit code
+// that positively means "no such service" produces WatchdogOwnershipNotLoaded.
+// Everything else — including an outcome a future build adds — is unknown with
+// a reason, never a fault and never health. Reporting a fault from an
+// unreadable probe would invent a second false alarm in the surface BOS-1204
+// exists to stop making one.
+func classifyWatchdogOwnership(outcome watchdogProbeOutcome, target, detail string) WatchdogOwnership {
+	observation := WatchdogOwnership{Target: target}
+	switch outcome {
+	case watchdogProbeLoaded:
+		observation.State = WatchdogOwnershipLoaded
+	case watchdogProbeNoSuchService:
+		observation.State = WatchdogOwnershipNotLoaded
+		observation.Reason = fmt.Sprintf("launchctl reports no such service as %s (%s)", target, detail)
+	case watchdogProbeDisabled:
+		observation.State = WatchdogOwnershipUnknown
+		observation.Reason = "service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL"
+	case watchdogProbeUnexecutable:
+		observation.State = WatchdogOwnershipUnknown
+		observation.Reason = fmt.Sprintf("could not run launchctl print %s: %s", target, detail)
+	case watchdogProbeExitedNonZero:
+		observation.State = WatchdogOwnershipUnknown
+		observation.Reason = fmt.Sprintf("launchctl print %s failed: %s", target, detail)
+	default:
+		observation.State = WatchdogOwnershipUnknown
+		observation.Reason = fmt.Sprintf("unrecognised watchdog probe outcome %d", int(outcome))
+	}
+	return observation
+}
+
+// ObserveWatchdogOwnership reports whether launchd currently has the
+// root-owned watchdog job loaded in the `system` domain.
+//
+// It is the exported form of the platform probe, in the shape
+// GetSpawnHistory / platformSpawnHistory already use. Callers must gather it
+// LAZILY — only on a host whose reported verdict actually depends on it — so
+// the default LaunchAgent substrate performs no extra launchctl invocation at
+// all (BOS-1204 R5).
+func ObserveWatchdogOwnership() WatchdogOwnership { return observeWatchdogOwnership() }

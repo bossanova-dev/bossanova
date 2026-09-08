@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +18,9 @@ func TestBossRepairSkillWatchModePollingContract(t *testing.T) {
 	watchMode := markdownSection(t, skill, "## Watch Mode")
 
 	assertNotContains(t, skill, "gh pr checks --watch")
-	assertContains(t, watchMode, "gh pr checks --json bucket")
+	// BOS-1192 replaced the bucket-only poll with the shared classifier; the wait still re-reads
+	// check state before every wake, and this is now the spelling that proves it.
+	assertContains(t, watchMode, "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs\" classify")
 	assertContains(t, watchMode, "${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js")
 	assertContains(t, watchMode, "if checks are pending")
 	// BOS-1106 replaced the fixed sleep with a callback-driven wait; the three signals a wake
@@ -29,6 +32,37 @@ func TestBossRepairSkillWatchModePollingContract(t *testing.T) {
 	assertContains(t, watchMode, "mergeable is not `CONFLICTING`")
 	assertContains(t, watchMode, "captured immediately before that pass")
 	assertContains(t, watchMode, "refresh this baseline after every pushed repair")
+}
+
+// TestBossRepairSkillRoutesCheckStateThroughTheSharedClassifier pins BOS-1192's routing edit: both
+// of this body's check reads — the Phase 3 post-push poll and the Watch Mode interpretation step —
+// go through the one agent-callable verdict, and the body no longer carries an all-buckets-pass
+// rule of its own. Two prose rules for the same question is exactly how the pending/skipped/absent
+// class kept misclassifying in both directions.
+func TestBossRepairSkillRoutesCheckStateThroughTheSharedClassifier(t *testing.T) {
+	skill := readEmbeddedBossRepairSkill(t)
+
+	// The helper is cited by path in BOTH reads. `$BOSS_REPAIR_TOOLBOX/<file>` is the spelling the
+	// shipped-toolbox gate matches, so the citation also proves the file is in the payload.
+	if got := strings.Count(skill, "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs"); got < 2 {
+		t.Errorf("boss-repair cites $BOSS_REPAIR_TOOLBOX/pr-check-state.mjs %d time(s), want both check reads routed through it", got)
+	}
+
+	// The private rule is gone. This is the negative half: a body that cites the helper AND keeps
+	// its own bucket-only rule beside it has not been routed, it has been annotated.
+	assertNotContains(t, skill, "all checks pass only when every bucket is passing/successful")
+	assertNotContains(t, skill, "gh pr checks --json bucket")
+
+	// The four verdict states are named as such, so a reader never has to re-derive them, and the
+	// two reasons the daemon's own vocabulary does not carry are spelled out where they decide the
+	// route: an absent gate never resolves by waiting, and unknown is neither green nor red.
+	for _, phrase := range []string{
+		"absent-gate",
+		"provesGreen",
+		"neither green nor red",
+	} {
+		assertContains(t, skill, phrase)
+	}
 }
 
 func TestBossRepairSkillReviewRepliesUseGitHubReplyEndpoint(t *testing.T) {
@@ -1228,9 +1262,9 @@ func TestBossRepairSkillPushedHeadSurvivalContract(t *testing.T) {
 
 			// Both empty operands are handled inside the fence. `git branch --show-current` exits
 			// zero with empty output on a detached HEAD, and a round that pushed nothing has an
-			// empty `SENT_SHAS`; without the explicit `[ -z ]` arm the `for` would run zero times
-			// and print nothing at all, which reads downstream as "no residual" rather than as
-			// "nothing was checked".
+			// empty `SENT_SHAS`; without the explicit `[ -z ]` arm the loop body would run zero
+			// times and print nothing at all, which reads downstream as "no residual" rather than
+			// as "nothing was checked".
 			assertContains(t, phase2, `[ -n "$BRANCH" ] || exit 1`)
 			assertContains(t, phase2, `if [ -z "$SENT_SHAS" ]; then`)
 			assertContains(t, phase2, "this round sent nothing")
@@ -1246,7 +1280,21 @@ func TestBossRepairSkillPushedHeadSurvivalContract(t *testing.T) {
 			assertContains(t, phase2, "No shell variable set by the push")
 			assertContains(t, phase2, "is still in scope here")
 			assertContains(t, phase2, `SENT_SHAS="<paste the SHAs your notes recorded`)
-			assertContains(t, phase2, "for SENT_SHA in $SENT_SHAS; do")
+			// The ITERATION FORM is pinned, not merely the fact of a loop. `for SENT_SHA in
+			// $SENT_SHAS` relied on word-splitting an unquoted parameter expansion, which zsh —
+			// the shell the harness's Bash tool evaluates — does not do: both SHAs reached
+			// `git merge-base --is-ancestor` as ONE argument, it failed with `Not a valid object
+			// name`, and the else arm reported a fabricated RESIDUAL for commits that were fine.
+			// The newline-delimited read iterates identically under zsh and bash.
+			assertContains(t, phase2, "the SHAs your notes recorded, one per line;")
+			// The `tr` stage is part of the pinned form: SENT_SHAS is a free-text paste with no
+			// machine producer, so a space-separated paste would otherwise reach `git merge-base
+			// --is-ancestor` as one argument under BOTH shells (the expansion is quoted) and
+			// reproduce the same fabricated RESIDUAL. Normalising spaces and tabs to newlines
+			// before `read` makes the reader tolerant of either paste shape.
+			assertContains(t, phase2, `printf '%s\n' "$SENT_SHAS" | tr ' \t' '\n\n' | while IFS= read -r SENT_SHA; do`)
+			assertContains(t, phase2, `[ -n "$SENT_SHA" ] || continue`)
+			assertNotContains(t, phase2, "for SENT_SHA in $SENT_SHAS")
 			assertContains(t, phase2, "**Every** entry is checked and reported, not just the newest")
 			assertContains(t, phase2, "Stopping at the first survivor would")
 			assertContains(t, phase2, "a single residual anywhere in the list means the repair did")
@@ -1490,7 +1538,9 @@ func TestBossRepairSkillWatchPassFreshnessContract(t *testing.T) {
 			assertContains(t, watchMode, "only re-derived reads may be acted on")
 
 			// The no-progress stop, restated in terms of this pass's own push.
-			assertContains(t, watchMode, "So a pass made progress only when **this pass's own note entry exists**")
+			// Keyed on the entry RECORDING A SHA, not on the entry existing: step 1 writes an entry
+			// every pass now, pushing or not, so "existence" no longer distinguishes the two.
+			assertContains(t, watchMode, "So a pass made progress only when **this pass's own note entry records a SHA**")
 			assertContains(t, watchMode, "an ancestor of the current `origin/$BRANCH`")
 			assertContains(t, watchMode, "it is a re-derivation trigger")
 
@@ -1501,8 +1551,8 @@ func TestBossRepairSkillWatchPassFreshnessContract(t *testing.T) {
 			// tool calls a pass is made of) AND collided with Phase 2's requirement to keep every
 			// sent SHA. Pin that the shell carrier is refused outright, so a future edit cannot
 			// reintroduce a per-pass clear that silently empties the round-wide record.
-			assertContains(t, watchMode, "**Key every sent-SHA note entry to its pass number.**")
-			assertContains(t, watchMode, "`pass <n>: <sha>`, never overwritten and never erased")
+			assertContains(t, watchMode, "**Key every note entry to its pass number.**")
+			assertContains(t, watchMode, "`pass <n>: <sha>` when\n   it pushed, `pass <n>: (no push)` when it did not — never overwritten and never erased")
 			assertContains(t, watchMode, "**Do not carry a sent-SHA in a shell variable across the pass.**")
 			assertContains(t, watchMode, "does not survive")
 			assertContains(t, watchMode, "step 9 reads **this pass's own entry**")
@@ -1512,13 +1562,19 @@ func TestBossRepairSkillWatchPassFreshnessContract(t *testing.T) {
 			}
 
 			// The record must still be justified by the clobber it exists to catch.
-			assertContains(t, watchMode, "must keep **every SHA this round sent**, one entry per pass that pushed")
+			assertContains(t, watchMode, "must keep **every SHA this round sent**, because Phase 2's")
+			// ...and the superseded shape of the rule must not come back. The record keeps every
+			// SHA, but its ENTRIES are unconditional; "one entry per pass that pushed" was the
+			// pre-a6b1d681b wording, and leaving it pinned made the document assert both rules.
+			assertNotContains(t, skill, "one entry per pass that pushed")
 			assertContains(t, watchMode, "survival assertion runs over all of them")
 			assertContains(t, watchMode, "report \"sent nothing\" and never look")
 
 			// Position: the freshness rule runs at pass start, before the poll step.
 			freshnessAt := strings.Index(watchMode, "**Pass freshness — re-read the PR head")
-			pollAt := strings.Index(watchMode, "\n2. Poll all repair signals before every wait:")
+			// The heading's trailing clause names the classifier the poll routes through (BOS-1192),
+			// so the anchor stops at the invariant part of the sentence.
+			pollAt := strings.Index(watchMode, "\n2. Poll all repair signals before every wait")
 			if freshnessAt < 0 || pollAt < 0 || freshnessAt > pollAt {
 				t.Fatalf("the pass-freshness rule must sit at pass start, before the poll step (freshness at %d, poll at %d)", freshnessAt, pollAt)
 			}
@@ -2440,6 +2496,478 @@ func TestBossRepairPendingChecksWaitIsCallbackFirst(t *testing.T) {
 				t.Error("watch mode still frames its polling around a sleep; the loop waits on state")
 			}
 			assertContains(t, watchMode, "Poll all repair signals before every wait")
+		})
+	}
+}
+
+// TestBossRepairSkillSweepVerdictAnswersTheFixsQuestion pins the re-ask obligation on the shipped
+// sibling-class sweep rule. The shipped rule already enumerates sites and records a verdict per
+// site; what it never bound is the verdict to the question the FIX IN HAND raises. A sweep that
+// examines exactly the right site, re-answers the prompting thread's question, and records `not a
+// defect` leaves the actual defect standing, and every existing sweep pin stays green while it
+// does. The symbol clause is the same failure one level up: a verdict recorded against a file
+// clears a whitelist in one function while the defect sits in a different function of that file.
+//
+// The rationale is pinned alongside the restatement deliberately. A passage that cites a rule as
+// its REASON matches no grep for the rule's words, so it is the half that rots.
+func TestBossRepairSkillSweepVerdictAnswersTheFixsQuestion(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			// The obligation itself.
+			assertContains(t, strategyC, "**Each verdict answers the question the fix in hand raises, not the question that prompted the finding, and names the symbol it reasoned about rather than the file it lives in.**")
+			// Its rationale: the right site cleared for the wrong reason.
+			assertContains(t, strategyC, "A sweep can examine exactly the right site and still clear it, because it re-answered the prompting thread's question")
+			assertContains(t, strategyC, "the site was right, the recorded reason was about something else, and the defect stayed standing")
+			// The symbol half, and why a file-scoped verdict is not a verdict.
+			assertContains(t, strategyC, "says nothing about the different function in that same file the finding actually implicates")
+			assertContains(t, strategyC, "a verdict that cannot name its symbol has not been reached")
+		})
+	}
+}
+
+// TestBossRepairSkillSweepReportsSiblingKind pins the kind-may-differ obligation. The shipped rule
+// treats a class as one failure mode, so a sweep reports how MANY siblings it found and never that
+// some of them fail differently. Siblings can fail more quietly than the reported site — the
+// reported one surfaces an error, the serious ones continue past the failure and surface nothing —
+// and a count-only sweep reports the quiet ones as more of the same.
+func TestBossRepairSkillSweepReportsSiblingKind(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			assertContains(t, strategyC, "**Report each sibling's failure kind, not only the count.**")
+			// The rationale: quieter siblings are the dangerous ones.
+			assertContains(t, strategyC, "siblings can fail more quietly than the reported site")
+			assertContains(t, strategyC, "the most serious of them surface no error at all")
+			// The reporting obligation, including the explicit differs-from clause.
+			assertContains(t, strategyC, "Record the kind beside every verdict and say so explicitly when a sibling's kind differs from the reported site's")
+			assertContains(t, strategyC, "a silently-degrading sibling is the one nobody goes back for")
+		})
+	}
+}
+
+// TestBossRepairSkillTighteningFixCoversWhatItRejects pins the guard-tightening obligation. The
+// non-vacuity checklist it sits beside proves a guard still catches what it should; nothing in the
+// body told a TIGHTENING fix to test what the guard newly rejects, which is the opposite direction
+// and the one that ships undetected — the round that narrows the guard sees green and the next
+// review round pays for the over-rejection.
+func TestBossRepairSkillTighteningFixCoversWhatItRejects(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			assertContains(t, strategyC, "**A fix that tightens a guard states what the guard now rejects, and covers that.**")
+			// The obligation's mechanics: enumerate the newly rejected inputs and cover the moved boundary.
+			assertContains(t, strategyC, "write\n     down the inputs the narrowed form newly **rejects**")
+			assertContains(t, strategyC, "add coverage for the boundary that moved")
+			// The rationale, which is the half a restatement-only pin would miss.
+			assertContains(t, strategyC, "A round\n     that tests a tightening solely on what it still admits ships the over-rejection undetected")
+			assertContains(t, strategyC, "Loosening and tightening are not the same review")
+		})
+	}
+}
+
+// TestBossRepairSkillReportsARepeatingStrategy pins the repeating-strategy report AND the reason it
+// is not a stop. Two consecutive passes applying the identical strategy to the identical file each
+// push a real commit and each clear the signal they aimed at, so the progress test is satisfied
+// every time and no guard fires while the structural cost repeats.
+//
+// The rationale clause is load-bearing and is pinned by its MECHANISM, not by a paraphrase: the
+// progress test is this pass's own note entry resolving to an ancestor SHA, and the body elsewhere
+// explicitly rejects a raw HEAD comparison as the test. A passage that justified this report by
+// "HEAD was unchanged" would contradict the stop it sits beside, so the pin names the real test.
+func TestBossRepairSkillReportsARepeatingStrategy(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			watchMode := sectionBetween(t, skill, "## Watch Mode", "## Checklist")
+
+			assertContains(t, watchMode, "**A repeating strategy is not a no-progress stop, and that stop cannot see it.**")
+			// The mechanism, quoted from the stop it is distinguished from.
+			assertContains(t, watchMode, "satisfied by **this pass's own note entry existing with an ancestor SHA**")
+			assertContains(t, watchMode, "a\n   pass that pushed a real commit registers as progress however many times the same strategy has\n   already been applied to the same file")
+			// The report itself, and that it terminates nothing.
+			assertContains(t, watchMode, "add a `**Repeating strategy**` line to the Repair Summary naming\n   the strategy, the file, and how many consecutive passes have now run that pair")
+			assertContains(t, watchMode, "This is a report\n   and never a terminator")
+
+			// The carrier. The comparison needs the previous pass's strategy and primary file, and
+			// the orchestrator's carried state is exhaustively listed a few paragraphs above and
+			// excludes both — so without a written hand-off the report is inert and the field it
+			// fills reads `none` every pass while every gate stays green.
+			assertContains(t, watchMode, "**The comparison reads the record, not memory.**")
+			assertContains(t, watchMode, "**The per-pass entry carries more than the SHA.**")
+			assertContains(t, watchMode, "the **strategy and primary file** this pass ran")
+			assertContains(t, watchMode, "An absent previous entry is a\n   **first** pass, not a match.")
+			// The residual and strategy ledger must not hang off "the pass pushed". A residual is
+			// by definition what a pass could NOT resolve, so the passes most likely to report one
+			// are the passes least likely to push; an entry written only on a push drops exactly
+			// those sightings, and the reading rule above then reads the gap as a first pass. The
+			// entry is unconditional and "pushed nothing" is a missing SHA FIELD, not a missing
+			// entry — otherwise the fail-open the module closed re-enters through the wiring.
+			assertContains(t, watchMode, "**one entry per pass, written whether or not that pass pushed**")
+			assertContains(t, watchMode, "**Which is why the entry cannot be conditional on pushing.**")
+			assertContains(t, watchMode, "\"This pass pushed nothing\" is a **missing SHA field**, never a\n   missing entry.")
+			assertContains(t, watchMode, "step 9 reads **this pass's own entry**\n   (no SHA recorded ⇒ this pass pushed nothing)")
+
+			// And the Repair Summary actually carries the field, or the line has nowhere to land.
+			summary := sectionBetween(t, skill, "## Repair Summary", "## Terminal outcomes")
+			assertContains(t, summary, "**Repeating strategy**:")
+			assertContains(t, summary, "with the consecutive-pass count | none]")
+
+			// The false mechanism must not reappear anywhere in the body. The stop keys on the note
+			// entry, never on HEAD being unchanged, and a passage that says otherwise would make
+			// this report read as a duplicate of the stop rather than as the gap it fills.
+			assertNotContains(t, skill, "the no-progress stop only fires when `HEAD` is unchanged")
+			assertContains(t, skill, "A raw `HEAD` comparison is not by itself the progress test")
+		})
+	}
+}
+
+// TestBossRepairSkillEscalatesARefiringResidual pins the escalation ladder wiring: the call, the
+// branch table, and the sentence forbidding a round from re-deciding a rung in prose. A residual
+// nobody acts on re-fires byte-identically, and re-reporting it unchanged consumes a repair attempt
+// and changes nothing — the ladder is what makes the repeat cost something different from the first
+// sighting. The decision lives in the module; the body carries only the call and the routing.
+func TestBossRepairSkillEscalatesARefiringResidual(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			residuals := sectionBetween(t, skill, "## Residuals vs true stops", "## Edge Cases and Error Handling")
+
+			// The problem the ladder solves, stated where the routing happens.
+			assertContains(t, residuals, "A residual nobody acts on comes back byte-identically on the next round.")
+			assertContains(t, residuals, "consumes a repair attempt and changes nothing")
+			// The prohibition on re-deciding a rung in prose — the half that keeps the decision tested.
+			assertContains(t, residuals, "**Do not re-decide an\nescalation in prose:**")
+			assertContains(t, residuals, "a round that reasons its way to a\ndifferent one has replaced a tested decision with an untested one")
+			// One identity shared with review, not a second notion of sameness.
+			assertContains(t, residuals, "the `[file, line, title]` tuple the review-side oscillation guard already keys on")
+			assertContains(t, residuals, "the helper mirrors that guard's\nencoding down to the string `\"null\"` it gives a line-less finding")
+			// The parity claim has to stop where parity stops. Measured against a re-implementation
+			// of oscillationFindingKey: the null encoding matches, but the guard does NOT trim, so
+			// trimming can only make a derived key DIVERGE from the repair key, never converge —
+			// the old clause "so a hand-typed tuple keys the same as a derived one" was false in
+			// exactly the direction it claimed. Pin the narrowed statement, and the absence of the
+			// over-claim, so it cannot be widened back without this failing.
+			assertContains(t, residuals, "It additionally trims the file and\ntitle, which the guard does **not**")
+			assertNotContains(t, skill, "hand-typed tuple keys the same as a derived one")
+			// Same overclaim, reworded: exact transcription does NOT reconcile the two keys when
+			// the finding's own file or title carries stray whitespace, which is the case the two
+			// preceding clauses just described.
+			assertNotContains(t, skill, "the finding names it and the two agree")
+			// The carrier. The ladder branches on `<prior>` alone, so a body that never says where a
+			// round obtains it ships a ladder every round enters at rung 0 — the pre-branch behaviour,
+			// with every unit test still green because they exercise the module, not the wiring.
+			assertContains(t, residuals, "**`<prior>` comes from the record, never from memory.**")
+			// And the record it names has to be one something actually writes. The watch-mode note
+			// record is written by Watch Mode step 1; there is no default-mode equivalent — nothing
+			// in this body, in bossd-plugin-repair or in bossd persists a Repair Summary, and each
+			// default-mode dispatch is a fresh session. Naming a "posted Repair Summary" as the
+			// default-mode record was a claim about a carrier that does not exist, which reads to a
+			// round as an instruction to go find one. State the limit instead, and pin it: the body
+			// must say where the count accumulates and where it does not.
+			assertContains(t, residuals, "**The record is the watch-mode note record, and there is no other one.**")
+			assertContains(t, residuals, "**Outside watch mode nothing carries.**")
+			assertContains(t, residuals, "in default mode `<prior>` is `0` and the round\nenters at rung 0, every time")
+			assertNotContains(t, skill, "posted Repair Summary")
+			// And the replacement must not assert a second thing the same body falsifies: this
+			// document DOES instruct PR comments (the residual notice, the complex-conflict
+			// comment, the clarification request). The true reason to refuse them as a carrier is
+			// that they hold no identity key, not that nobody was told to write one.
+			assertNotContains(t, skill, "nothing was instructed to write")
+			assertContains(t, residuals, "**Reuse the recorded key string; do not re-derive a tuple from the moved file.**")
+			// The call, by the toolbox path the shipped-toolbox gate also matches.
+			assertContains(t, residuals, "node \"$BOSS_REPAIR_TOOLBOX/bs-repair-escalation.mjs\" classify")
+			// Taken by PATH, never spliced: a finding title is arbitrary prose and an apostrophe in it
+			// ends a single-quoted argument early.
+			assertContains(t, residuals, "**Write the identity to a file and pass the path.**")
+			assertContains(t, residuals, "--in \"<residual-json-path>\" <prior> <actionable>")
+			// The path is an angle-bracket PLACEHOLDER, like its two siblings on the same line, and
+			// never a shell variable. No shell state survives between the tool calls a pass is made
+			// of, so a `$RESIDUAL_JSON` spelling expands to the empty string and every classify
+			// exits on an unreadable path — a recipe that cannot run, which is how this branch's
+			// merge base found the same shape in the check-state recipes.
+			assertNotContains(t, skill, "$RESIDUAL_JSON")
+			// And the identity never returns to the command line. Round 1 removed an inline form
+			// that spliced an arbitrary English finding title into a single-quoted shell argument,
+			// but only the positive `--in` spelling was pinned. The module's USAGE still advertises
+			// the inline form and runCli reprints USAGE on every error return — i.e. it is shown to
+			// the agent at the exact moment its command just failed — so the sink has a live route
+			// back into the body that no gate would notice.
+			assertBossRepairEscalationCallsTakeIdentityByPath(t, name, skill)
+			// The branch table: every rung the module can return is routed here, or a rung arrives
+			// at a body that does not know what to do with it. The action set is read FROM the shipped
+			// module rather than retyped here, so a fifth rung fails this test instead of shipping a
+			// routing table with no row for it.
+			assertBossRepairEscalationTableRoutesEveryModuleAction(t, name, residuals)
+			// `actionable` is the sole rung-2-vs-rung-3 discriminator, and it is defined on BOTH
+			// sides of the module/skill seam. A looser definition in the module — "whether this
+			// pass has an action available" — answers `true` for "re-run the strategy that already
+			// failed, with a tweak", where the body answers `false`; that defers the terminal rung
+			// the ceiling exists to bound. The unit tests pass booleans directly and can never see
+			// it, so pin that the shipped module states the same narrow rule the body does. The
+			// module's USAGE is the copy that matters most: runCli reprints it on every error
+			// return, which is exactly when an agent is deciding what to pass.
+			assertContains(t, residuals, "`<actionable>` is `true` only when a\n**different** strategy from the one already applied to this identity is available and you can name\nit")
+			module := bossRepairEscalationModule(t, name)
+			assertContains(t, module, "DIFFERENT strategy from the one already applied to this identity is available and")
+			assertContains(t, module, "Re-running the strategy that already failed is not a different strategy.")
+			assertNotContains(t, module, "whether this pass has an action available")
+			// Rung 3 is a residual-level label, not the run-sentinel token a live consumer reads as a
+			// whole-run human takeover.
+			// Scope, not spelling. The module sets ACTION_BLOCKED = BLOCKED_ACTION deliberately,
+			// importing the run-sentinel token rather than retyping it, so "never the run-sentinel
+			// token" read as a claim about the STRING that the module contradicts. The rule is
+			// about where the label is written, and "run-sentinel token" appears nowhere else in
+			// this document, so a reader could not resolve it without opening the .mjs.
+			assertContains(t, residuals, "This is a **residual-level** label written into the Repair Summary.")
+			assertContains(t, residuals, "what is residual-level is the label's **scope**, not a second spelling")
+			assertNotContains(t, skill, "never the Watch Mode reason line and never the run-sentinel token")
+			// Fail-closed: a malformed identity is not routed as a first sighting.
+			assertContains(t, residuals, "a silent\ndefault would classify every repeat as a first sighting")
+			// And the repair is the escaping, never the wording: a reworded title is a different
+			// identity, so editing it until the command parses resets the count it was about to read.
+			assertContains(t, residuals, "**Fix the escaping or the file, never the wording:**")
+		})
+	}
+}
+
+// assertBossRepairEscalationCallsTakeIdentityByPath ratchets the removed injection sink out of the
+// payload. A finding title is arbitrary English prose: spliced into a single-quoted shell argument,
+// an apostrophe in it ends the argument early and a double quote makes the JSON unparseable — and
+// the only repair that looks available is rewording the title, which is a DIFFERENT identity and
+// silently resets the count the ladder exists to keep. Asserting the presence of the `--in` form
+// does not exclude an inline one appearing beside it, so assert the exclusion directly: every
+// classify invocation in the payload takes its identity by path, and none puts a JSON literal on
+// the command line. Fails closed — a payload with no invocation at all is an error, not a pass.
+func assertBossRepairEscalationCallsTakeIdentityByPath(t *testing.T, payload, skill string) {
+	t.Helper()
+
+	const call = "bs-repair-escalation.mjs\" classify"
+	calls := 0
+	for offset := 0; ; {
+		i := strings.Index(skill[offset:], call)
+		if i < 0 {
+			break
+		}
+		calls++
+		// The invocation's arguments run to the end of the fenced block that holds it, which
+		// covers the shipped form's single line continuation.
+		args := skill[offset+i+len(call):]
+		if end := strings.Index(args, "\n```"); end >= 0 {
+			args = args[:end]
+		}
+		if !strings.Contains(args, "--in ") {
+			t.Errorf("%s: a bs-repair-escalation classify invocation does not take the identity by path: %q", payload, args)
+		}
+		if strings.Contains(args, "'[") || strings.Contains(args, "'{") {
+			t.Errorf("%s: a bs-repair-escalation classify invocation splices a JSON identity into a shell literal: %q", payload, args)
+		}
+		offset += i + len(call)
+	}
+	if calls == 0 {
+		t.Errorf("%s: found no bs-repair-escalation classify invocation to check; the extraction is not working", payload)
+	}
+}
+
+// assertBossRepairEscalationTableRoutesEveryModuleAction checks the body's rung table against the
+// SHIPPED module's own action vocabulary rather than against a retyped list. The previous form
+// asserted four literal rows, so a fifth rung added to bs-repair-escalation.mjs would have left the
+// routing table with no row for it while this test, the shipped-toolbox gate (which only proves the
+// file is present in the payload) and every other gate stayed green — exactly the drift the table
+// pin exists to close.
+func assertBossRepairEscalationTableRoutesEveryModuleAction(t *testing.T, payload, residuals string) {
+	t.Helper()
+
+	actions := bossRepairEscalationActions(t, payload)
+	if len(actions) < 2 {
+		t.Fatalf("%s: parsed %d escalation actions from the shipped module; the extraction is not working", payload, len(actions))
+	}
+
+	rows := bossRepairEscalationTableRows(residuals)
+	if len(rows) != len(actions) {
+		t.Fatalf("%s: the branch table routes %d rungs but the module can return %d actions (%v vs %v)", payload, len(rows), len(actions), rows, actions)
+	}
+	for i, action := range actions {
+		want := fmt.Sprintf("%d=%s", i, action)
+		if rows[i] != want {
+			t.Errorf("%s: branch table row %d is %q, the module's action %d is %q", payload, i, rows[i], i, want)
+		}
+	}
+}
+
+var bossRepairEscalationRowPattern = regexp.MustCompile("(?m)^\\| `([0-9]+)` *\\| `([a-z-]+)` *\\|")
+
+// bossRepairEscalationTableRows returns the routing table's rows as "<rung>=<action>" pairs, in
+// document order.
+func bossRepairEscalationTableRows(residuals string) []string {
+	var rows []string
+	for _, m := range bossRepairEscalationRowPattern.FindAllStringSubmatch(residuals, -1) {
+		rows = append(rows, m[1]+"="+m[2])
+	}
+	return rows
+}
+
+var (
+	bossRepairEscalationLiteralPattern = regexp.MustCompile(`(?m)^(?:export )?const ([A-Z][A-Z0-9_]*) = '([^']*)'$`)
+	bossRepairEscalationListPattern    = regexp.MustCompile(`(?s)export const ESCALATION_ACTIONS = \[(.*?)\]`)
+	bossRepairEscalationNamePattern    = regexp.MustCompile(`[A-Z][A-Z0-9_]*`)
+)
+
+// bossRepairEscalationActions returns the action tokens ESCALATION_ACTIONS names, in rung order,
+// read from the escalation module shipped in the named payload tree. A member defined by reference
+// — the terminal action is derived from the run-sentinel vocabulary rather than retyped — is
+// resolved through the module's own literals so an alias is not silently dropped.
+func bossRepairEscalationActions(t *testing.T, payload string) []string {
+	t.Helper()
+
+	module := bossRepairEscalationModule(t, payload)
+	literals := map[string]string{}
+	for _, m := range bossRepairEscalationLiteralPattern.FindAllStringSubmatch(module, -1) {
+		literals[m[1]] = m[2]
+	}
+
+	list := bossRepairEscalationListPattern.FindStringSubmatch(module)
+	if list == nil {
+		t.Fatalf("%s: ESCALATION_ACTIONS not found in the shipped escalation module", payload)
+	}
+
+	var actions []string
+	for _, name := range bossRepairEscalationNamePattern.FindAllString(list[1], -1) {
+		token, ok := literals[name]
+		if !ok {
+			alias := regexp.MustCompile(`(?m)^export const ` + name + ` = ([A-Z][A-Z0-9_]*)$`).FindStringSubmatch(module)
+			if alias != nil {
+				token, ok = literals[alias[1]]
+			}
+		}
+		if !ok {
+			t.Fatalf("%s: cannot resolve escalation action %s to a string literal", payload, name)
+		}
+		actions = append(actions, token)
+	}
+	return actions
+}
+
+// bossRepairEscalationModule reads bs-repair-escalation.mjs out of the named payload tree, keyed the
+// way bossRepairSkillPayloads keys the body: a table checked only against the embedded copy would go
+// green on a mirror `make copy-skills` has not refreshed, and the mirror is what the plugin installs.
+func bossRepairEscalationModule(t *testing.T, payload string) string {
+	t.Helper()
+
+	const rel = "toolbox/bs-repair-escalation.mjs"
+	switch payload {
+	case "embedded":
+		moduleBytes, err := SkillsFS.ReadFile("skills/boss-repair/" + rel)
+		if err != nil {
+			t.Fatalf("read embedded boss-repair %s: %v", rel, err)
+		}
+		return string(moduleBytes)
+	case "mirror":
+		mirrorRoot := filepath.Join(findRepoRoot(t), "plugins", "bossd-plugin-claude", "skilldata", "skills", "boss-repair")
+		moduleBytes, err := fs.ReadFile(os.DirFS(mirrorRoot), rel)
+		if err != nil {
+			t.Fatalf("read bossd-plugin-claude boss-repair %s under %s: %v", rel, mirrorRoot, err)
+		}
+		return string(moduleBytes)
+	default:
+		t.Fatalf("unknown boss-repair payload %q", payload)
+		return ""
+	}
+}
+
+// TestBossRepairSkillDispatchBriefCarriesTheResidualRule pins the residual-versus-repair rule INTO
+// the Phase 2 dispatch brief, scoped to the Phase 2 lead-in rather than to the whole body. The
+// scoping is the entire point: the rule already exists further down the document, and a whole-skill
+// assertion would stay green while the brief lost it — which is the exact drift being pinned. A
+// dispatched worker inherits the brief, not the body, so a worker without it diagnoses correctly,
+// verifies a real fix, and has the change reverted as out of scope.
+func TestBossRepairSkillDispatchBriefCarriesTheResidualRule(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			brief := sectionBetween(t, skill, "### Phase 2: Execute Repair Strategy", "#### Strategy A: Merge Conflicts")
+
+			assertContains(t, brief, "**What the dispatch brief must carry.**")
+			// Why the brief and not the body: the child does not inherit the body.
+			assertContains(t, brief, "A dispatched worker does not inherit this body — it inherits\nthe brief")
+			assertContains(t, brief, "in the brief's own words rather than as a pointer back\nhere")
+			// The rule itself, stated in the brief.
+			assertContains(t, brief, "a cause\nconfirmed to be present on the PR's base is an inherited failure and therefore a **residual**")
+			assertContains(t, brief, "the worker reports it rather than fixing it")
+			// The consequence, which is what stops the rule being trimmed as redundant.
+			assertContains(t, brief, "it produces one who diagnoses correctly, verifies a real fix, and has\nthe whole change reverted afterwards")
+			assertContains(t, brief, "Asserting that\nthe caller knows a rule proves nothing about the child")
+		})
+	}
+}
+
+// bossRepairPerPremiseTriagePins pin the decomposition half of Strategy C's triage. The rules are
+// pure prose — nothing downstream reds when a round grades a finding wholesale — and the recorded
+// defects they prevent all shipped under a green build: a two-part remedy where only one part was
+// feasible got one verdict, a decline as premise-false left the sentence that asserted the premise
+// standing and re-seeded the identical finding, and a multi-link causal claim was accepted whole.
+//
+// The rule is written INLINE rather than routed through a reference: boss-repair ships no
+// references/ directory, and a cross-core path naming another core's tree is invalid in an installed
+// core, which carries only its own files.
+var bossRepairPerPremiseTriagePins = regProsePins([]falsificationProsePin{
+	{
+		// Both axes must decompose. Keeping either one whole-finding is what makes a verdict a
+		// wrong accept or a wrong reject the moment the parts disagree.
+		name:         "triage-axes-decompose",
+		pattern:      `premise\*+\s+—\s+is\s+each\s+factual\s+claim.*graded\s+one\s+premise\s+at\s+a\s+time.*remedy\*+\s+—\s+must\s+each\s+separable\s+part`,
+		live:         "the **premise** — is each factual claim the finding makes true against the tree, graded one premise at a time — and then the **remedy** — must each separable part of the suggested change be applied as written?",
+		tokenRemoved: "the **premise** — is the finding factually true against the tree? — and then the **remedy** — must each separable part of the suggested change be applied as written?",
+		alsoRemoved: []string{
+			"the **premise** — is each factual claim the finding makes true against the tree, graded one premise at a time — and then the **remedy** — must the suggested change be applied as written?",
+		},
+	},
+	{
+		// The decline is not finished at the reply. A refuted premise that in-tree prose ASSERTED
+		// leaves that prose as the next pass's seed, so the correction is part of the decline
+		// rather than a follow-up somebody files.
+		name:         "decline-corrects-the-asserting-prose",
+		pattern:      `premise\s+is\s+refuted\s+because\s+in-tree\s+prose\s+asserted\s+it,\s+the\s+decline\s+is\s+not\s+complete\s+until\s+that\s+prose\s+is\s+corrected\s+in\s+the\s+same\s+pass`,
+		live:         "When a premise is refuted because in-tree prose asserted it, the decline is not complete until that prose is corrected in the same pass",
+		tokenRemoved: "When a premise is refuted because in-tree prose asserted it, record the contradiction as a follow-up for a later pass",
+	},
+	{
+		// Per-part grading needs the per-part RESIDUAL too: affirming some parts and declining the
+		// rest into one lump loses every declined part but the first.
+		name:         "remedy-graded-per-separable-part",
+		pattern:      `Grade\s+each\s+separable\s+part\s+of\s+the\s+remedy\s+on\s+its\s+own\s+feasibility.*record\s+a\s+residual\s+for\s+each\s+declined\s+part\s+separately`,
+		live:         "Grade each separable part of the remedy on its own feasibility: affirm the parts that hold, decline the parts that cannot be applied as written, and record a residual for each declined part separately",
+		tokenRemoved: "Grade each separable part of the remedy on its own feasibility: affirm the parts that hold and decline the remainder in one residual",
+		alsoRemoved: []string{
+			"Grade the remedy on its feasibility: affirm it, decline it, and record a residual for each declined part separately",
+		},
+	},
+	{
+		// The general rule the existing causal-chain bullet is the chain-shaped special case of.
+		// "never act while one is unverified" is the teeth: without it the bullet licenses
+		// decomposing and then proceeding anyway.
+		name:         "decompose-before-any-verdict",
+		pattern:      `Decompose\s+the\s+finding\s+into\s+its\s+premises\s+before\s+any\s+verdict.*never\s+act\s+while\s+one\s+is\s+unverified`,
+		live:         "Decompose the finding into its premises before any verdict, record a verdict and its evidence for each, and never act while one is unverified",
+		tokenRemoved: "Decompose the finding into its premises before any verdict, record a verdict and its evidence for each, and use your judgement about the rest",
+		alsoRemoved: []string{
+			"Record a verdict and its evidence for each claim, and never act while one is unverified",
+		},
+	},
+})
+
+// TestBossRepairStrategyCAdjudicatesPerPremise asserts the per-premise contract against Strategy C
+// in every shipped payload, and re-asserts the two constraints that shape it: the rule is inline
+// (no cross-core reference path) and it added no reply block or probe invocation, so the occurrence
+// ratchets those tests own stay unmoved.
+func TestBossRepairStrategyCAdjudicatesPerPremise(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+			assertFalsificationPins(t, strategyC, bossRepairPerPremiseTriagePins)
+			// R8: an installed core carries only its own tree, so naming boss-review's reference
+			// here would be a path that resolves nowhere at run time.
+			assertNotContains(t, strategyC, "boss-review/references/")
 		})
 	}
 }

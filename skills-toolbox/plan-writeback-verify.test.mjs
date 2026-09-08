@@ -37,6 +37,11 @@ import {
   verifyWriteback,
 } from './plan-writeback-verify.mjs'
 
+// Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(
+  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
+  'outcomes.tsv',
+)
 const HELPER = fileURLToPath(new URL('./plan-writeback-verify.mjs', import.meta.url))
 const SKILL_CONFIG_SOURCE = fileURLToPath(new URL('./skill-config.mjs', import.meta.url))
 const UPLOAD = 'https://uploads.linear.app/abc-123/screenshot.png'
@@ -463,4 +468,189 @@ test('every declarable transform id is documented in the skill-config vocabulary
   for (const id of DESCRIPTION_NORMALIZATION_TRANSFORMS) {
     assert.ok(doc.includes(`\`${id}\``), `${id} is undocumented in the vocabulary JSDoc`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1209: one gate-outcome line per invocation, reusing the three verdicts as
+// its reason vocabulary. Recording is telemetry, so each case also asserts the
+// verdict line and exit code a caller reads.
+// ---------------------------------------------------------------------------
+
+function runCliRecording(intendedText, storedText, outcomes) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-outcomes-'))
+  const intended = path.join(dir, 'intended.md')
+  const stored = path.join(dir, 'stored.md')
+  writeFileSync(intended, intendedText)
+  writeFileSync(stored, storedText)
+  return spawnSync(process.execPath, [HELPER, '--intended', intended, '--stored', stored], {
+    encoding: 'utf8',
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes },
+  })
+}
+
+test('records exactly one gate-outcome line per invocation without changing the verdict', () => {
+  const outcomes = path.join(
+    mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-record-')),
+    'outcomes.tsv',
+  )
+  const read = () =>
+    readFileSync(outcomes, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => line.split('\t').slice(1))
+
+  const text = description()
+  const pass = runCliRecording(text, text, outcomes)
+  assert.equal(pass.status, 0, pass.stderr)
+  assert.match(pass.stdout, /^writeback-verdict: byte-exact$/m)
+  assert.deepEqual(read(), [['plan-writeback-verify', 'pass', 'byte-exact']])
+
+  const fire = runCliRecording(
+    text,
+    text.replace('Measure write-back', 'Measure writeback'),
+    outcomes,
+  )
+  assert.notEqual(fire.status, 0)
+  assert.match(fire.stdout, /^writeback-verdict: drift$/m)
+  assert.deepEqual(read(), [
+    ['plan-writeback-verify', 'pass', 'byte-exact'],
+    ['plan-writeback-verify', 'fire', 'drift'],
+  ])
+})
+
+test('an unreadable stored description records one fire line and stays non-zero', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-record-'))
+  const outcomes = path.join(dir, 'outcomes.tsv')
+  const intended = path.join(dir, 'intended.md')
+  writeFileSync(intended, description())
+  const res = spawnSync(
+    process.execPath,
+    [HELPER, '--intended', intended, '--stored', path.join(dir, 'absent.md')],
+    {
+      encoding: 'utf8',
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes },
+    },
+  )
+  assert.notEqual(res.status, 0)
+  assert.match(res.stderr, /cannot read stored description/)
+  const recorded = readFileSync(outcomes, 'utf8').split('\n').filter(Boolean)
+  assert.equal(recorded.length, 1, 'the latch must permit exactly one line')
+  assert.deepEqual(recorded[0].split('\t').slice(1), [
+    'plan-writeback-verify',
+    'fire',
+    'unreadable-stored',
+  ])
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1214 — the round-trip invariant, from both directions.
+//
+// The boss-plan body no longer derives byte mechanics; it states what must survive a tracker
+// round-trip and defers the decision to this helper. That deferral is only safe if the helper
+// keeps deciding the same way, so these tests pin the invariant in BOTH directions: a round trip
+// that reshaped nothing but the declared markdown still verifies, and a round trip that lost
+// content still fails. A framing that reads as softer must not BE softer.
+// ---------------------------------------------------------------------------
+
+test('BOS-1214: a renormalized round trip verifies — declared reshaping is not content loss', () => {
+  // The case the byte framing made look impossible. The tracker rewrites every `-` bullet to `*`
+  // and trims the terminal newline; not one word of the description changed.
+  const intended = description()
+  const stored = `${intended.replace(/^- /gm, '* ')}\n\n`.replace(/\n+$/, '')
+  assert.notEqual(stored, intended, 'the fixture must actually differ from the intended bytes')
+  const result = verify(intended, stored, [
+    'unordered-list-marker-substitution',
+    'terminal-newline-trimming',
+  ])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  assert.equal(result.exitCode, 0)
+})
+
+// AC2 ADJUDICATION — read this before reconciling the two tests above and below with the
+// acceptance criterion. AC2 asks for "a test that rewrites bullet markers AND escapes entities"
+// and verifies. That criterion is not satisfiable as written: entity escaping is deliberately
+// absent from the closed tolerance vocabulary, so a round trip that escapes entities is `drift`
+// by construction. Making it verify would mean declaring an `entity-escaping` id in
+// skill-config.mjs's DESCRIPTION_NORMALIZATION_TRANSFORMS — a file outside this plan's Key
+// changes — AND writing its normalizer in plan-writeback-verify.mjs's
+// DESCRIPTION_TRANSFORM_NORMALIZERS, which is in Key changes; the load-time cross-check throws if
+// either side lands without the other. That would widen what the gate ignores for a transform
+// this transport has never been observed to perform — the exact loosening the plan's Risks
+// section names as the thing to avoid. So AC2 is split: its
+// headline claim ("a renormalized round trip verifies") is proved by the test above, and its
+// "escapes entities" clause is proved in the only direction that is true — as drift, below.
+// The criterion is mis-scoped, not unimplemented; it needs amending, not a wider tolerance set.
+test('BOS-1214: an UNDECLARED reshaping — entity escaping — is drift, not a tolerated round trip', () => {
+  // The other direction, and the reason the test above is not a licence. Entity escaping is a
+  // markdown renormalization a transport could plausibly perform, and it is deliberately ABSENT
+  // from the closed tolerance vocabulary, so the helper must report it as drift rather than wave
+  // it through as "the tracker renormalizes". The tolerance set is what decides — never the
+  // intuition that a difference looks cosmetic.
+  const intended = description({
+    sections: { '## Approach': 'Compare stored & intended, then <report> the verdict.' },
+  })
+  const stored = intended
+    .replace(/^- /gm, '* ')
+    .replace('stored & intended', 'stored &amp; intended')
+    .replace('<report>', '&lt;report&gt;')
+  assert.ok(stored.includes('&amp;'), 'the fixture must actually escape an entity')
+  assert.ok(
+    !ALL_TRANSFORMS.has('entity-escaping'),
+    'this test is only meaningful while entity escaping is undeclared',
+  )
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.notEqual(result.exitCode, 0)
+})
+
+test('BOS-1214: a dropped WORD still fails, however tolerant the declared transform set is', () => {
+  // The loosened framing must not loosen the check. Every transform in the vocabulary is declared
+  // here — the widest tolerance this helper can ever be configured with — and a single deleted
+  // word in `## Original notes` must still be drift.
+  const intended = description()
+  const stored = intended.replace('- first observation', '- first')
+  assert.notEqual(stored, intended, 'the fixture must actually drop a word')
+  const result = verify(intended, stored, ALL_TRANSFORMS)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.notEqual(result.exitCode, 0)
+  assert.match(result.reason, /`## Original notes`/)
+})
+
+test('BOS-1214: a dropped IMAGE URL still fails, and the reason names the lost identity', () => {
+  // The most expensive loss the gate exists to catch: the tracker keeps no description history,
+  // so a dropped upload URL is permanent. Widest tolerance again, and the stored text is a valid
+  // description in every other respect — only the image is gone.
+  const intended = description()
+  const stored = intended.replace(`![shot](${UPLOAD})`, '[screenshot: a shot of the failure]')
+  assert.ok(!stored.includes(UPLOAD), 'the fixture must actually drop the upload URL')
+  const result = verify(intended, stored, ALL_TRANSFORMS)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.notEqual(result.exitCode, 0)
+  assert.match(result.reason, /upload identit/)
+  assert.ok(result.reason.includes(UPLOAD), 'the reason must name the URL that was lost')
+})
+
+test('BOS-1214 CLI: a failing run repeats the machine verdict on stderr', () => {
+  // The body defers to the verdict, so a caller must be able to READ the verdict on the stream it
+  // captured. Every failure branch in the skill bodies reads stderr; before this the verdict word
+  // existed on stdout alone and a stderr-only caller had to infer `drift` from the exit status.
+  const intended = description()
+  const stored = intended.replace('Measure write-back', 'Measure writeback')
+  const { res } = runCli(intended, stored)
+  assert.notEqual(res.status, 0)
+  assert.match(res.stdout, /^writeback-verdict: drift$/m)
+  assert.match(res.stderr, /^writeback-verdict: drift$/m)
+})
+
+test('BOS-1214 CLI: a PASSING run leaves stderr clean — the echo is failure-only', () => {
+  // The stderr echo must not become a second unconditional channel: a passing run that wrote to
+  // stderr would train callers to read failure into a clean round trip.
+  const intended = description()
+  const stored = intended.replace(/^- /gm, '* ')
+  const { res } = runCli(intended, stored)
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /^writeback-verdict: normalized-equivalent$/m)
+  assert.equal(res.stderr.trim(), '', 'a passing run says nothing on stderr')
 })

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,3 +194,62 @@ func TestParseLaunchdSpawnHistoryEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestSpawnHistoryTargetFollowsTheSubstrate pins BOS-1204's target resolution
+// from either platform's test run.
+//
+// The rejected-configuration row is the one worth stating explicitly: a typo OF
+// "unattended" is likeliest on precisely the host that has a watchdog, and
+// probing a root-owned job because a settings value did not parse is the
+// opposite of the fail-closed direction the resolver itself takes.
+func TestSpawnHistoryTargetFollowsTheSubstrate(t *testing.T) {
+	const launchAgentTarget = "gui/501/com.bossanova.bossd"
+
+	for _, tc := range []struct {
+		name        string
+		supervision SupervisionModeStatus
+		want        string
+	}{
+		{
+			name:        "launch-agent",
+			supervision: SupervisionModeStatus{Mode: SupervisionModeLaunchAgent, Configurable: true},
+			want:        launchAgentTarget,
+		},
+		{
+			name:        "unattended",
+			supervision: SupervisionModeStatus{Mode: SupervisionModeUnattended, Configurable: true},
+			want:        "system/" + WatchdogLabel,
+		},
+		{
+			name:        "a zero status names no mode and must not route to the watchdog",
+			supervision: SupervisionModeStatus{},
+			want:        launchAgentTarget,
+		},
+		{
+			name: "a rejected configuration keeps the LaunchAgent target",
+			supervision: SupervisionModeStatus{
+				Configured:   "unattnded",
+				Configurable: true,
+				Err:          ErrUnknownSupervisionMode,
+			},
+			want: launchAgentTarget,
+		},
+		{
+			name: "an unreadable settings file falls back with the default target",
+			supervision: SupervisionModeStatus{
+				Mode:         SupervisionModeLaunchAgent,
+				Configurable: true,
+				SettingsErr:  errSpawnHistoryTestSettings,
+			},
+			want: launchAgentTarget,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := spawnHistoryTarget(tc.supervision, launchAgentTarget); got != tc.want {
+				t.Fatalf("spawnHistoryTarget = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+var errSpawnHistoryTestSettings = errors.New("settings.json could not be parsed")

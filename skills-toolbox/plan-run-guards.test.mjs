@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,11 @@ import {
 } from './plan-run-guards.mjs'
 import { DEFAULT_CONFIG, requiredPlanSections } from './skill-config.mjs'
 
+// Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(
+  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
+  'outcomes.tsv',
+)
 const GUARD = fileURLToPath(new URL('./plan-run-guards.mjs', import.meta.url))
 const TEST_CONFIG = {
   ...DEFAULT_CONFIG,
@@ -239,4 +244,111 @@ test('premises CLI aborts when a premise cannot be re-read', () => {
 
   assert.equal(result.status, 1)
   assert.match(result.stderr, /premise-unresolved/)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1209: one gate-outcome line per invocation, and the gate id carries the
+// VERB — BOS-1211 needs per-verb firing rates, not one summed rate for a CLI
+// whose verbs run at different points and refuse for different reasons.
+// Recording is telemetry, so each case also asserts the exit code and stderr.
+// ---------------------------------------------------------------------------
+
+function runGuardRecording(args, outcomes) {
+  return spawnSync(process.execPath, [GUARD, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes },
+  })
+}
+
+const recordedOutcomes = (outcomes) =>
+  readFileSync(outcomes, 'utf8')
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => line.split('\t').slice(1))
+
+test('the premises verb records one line per invocation under its own verb id', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const outcomes = path.join(dir, 'outcomes.tsv')
+  const premisesPath = path.join(dir, 'premises.json')
+  const livePath = path.join(dir, 'live.json')
+  writeFileSync(premisesPath, JSON.stringify([{ id: 'BOS-1', state: 'Todo' }]))
+  writeFileSync(livePath, JSON.stringify({ 'BOS-1': 'Todo' }))
+
+  const pass = runGuardRecording(['premises', premisesPath, livePath], outcomes)
+  assert.equal(pass.status, 0, pass.stderr)
+  assert.deepEqual(recordedOutcomes(outcomes), [['plan-run-guards.premises', 'pass', 'ok']])
+
+  writeFileSync(livePath, JSON.stringify({}))
+  const fire = runGuardRecording(['premises', premisesPath, livePath], outcomes)
+  assert.equal(fire.status, 1)
+  assert.match(fire.stderr, /premise-unresolved/, 'the stderr code must be unchanged')
+  assert.deepEqual(recordedOutcomes(outcomes), [
+    ['plan-run-guards.premises', 'pass', 'ok'],
+    ['plan-run-guards.premises', 'fire', 'premise-unresolved'],
+  ])
+})
+
+test('the metadata verb records its own verb id for both a pass and a fire', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const outcomes = path.join(dir, 'outcomes.tsv')
+  const good = path.join(dir, 'good.json')
+  const bad = path.join(dir, 'bad.json')
+  writeFileSync(good, JSON.stringify(metadata()))
+  writeFileSync(bad, JSON.stringify({ ...metadata(), estimate: 4 }))
+
+  const pass = runGuardRecording(['metadata', good], outcomes)
+  assert.equal(pass.status, 0, pass.stderr)
+  assert.deepEqual(recordedOutcomes(outcomes), [['plan-run-guards.metadata', 'pass', 'ok']])
+
+  const fire = runGuardRecording(['metadata', bad], outcomes)
+  assert.equal(fire.status, 1)
+  assert.match(fire.stderr, /invalid estimate/)
+  assert.deepEqual(recordedOutcomes(outcomes)[1], [
+    'plan-run-guards.metadata',
+    'fire',
+    'invalid-metadata',
+  ])
+})
+
+test('an unreadable input and an unknown verb record distinct gate ids', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const outcomes = path.join(dir, 'outcomes.tsv')
+
+  const unreadable = runGuardRecording(['metadata', path.join(dir, 'absent.json')], outcomes)
+  assert.equal(unreadable.status, 1)
+  assert.match(unreadable.stderr, /unreadable-input/)
+
+  const usage = runGuardRecording(['not-a-verb'], outcomes)
+  assert.equal(usage.status, 2)
+  assert.match(usage.stderr, /^usage: plan-run-guards\.mjs/m)
+
+  assert.deepEqual(recordedOutcomes(outcomes), [
+    ['plan-run-guards.metadata', 'fire', 'unreadable-input'],
+    ['plan-run-guards.usage', 'fire', 'unknown-verb'],
+  ])
+})
+
+// The verb a throwing branch records under is derived from the branch that was entered, not from a
+// second list of verb names a future verb could be left out of. A verb added to the dispatch chain
+// but missing from such a list would record its refusals as `plan-run-guards.usage` — a wrong
+// firing rate for the exact mechanism this record exists to measure, with every test still green.
+test('every verb whose body throws records under its own gate id, never the usage id', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const absent = path.join(dir, 'absent.json')
+  const readable = path.join(dir, 'readable.json')
+  writeFileSync(readable, JSON.stringify({}))
+
+  for (const [verb, args] of [
+    ['metadata', ['metadata', absent]],
+    ['idempotence', ['idempotence', absent]],
+    ['premises', ['premises', absent, readable]],
+  ]) {
+    const outcomes = path.join(dir, `${verb}.tsv`)
+    const res = runGuardRecording(args, outcomes)
+    assert.equal(res.status, 1, `${verb}: ${res.stderr}`)
+    assert.match(res.stderr, /unreadable-input/)
+    assert.deepEqual(recordedOutcomes(outcomes), [
+      [`plan-run-guards.${verb}`, 'fire', 'unreadable-input'],
+    ])
+  }
 })

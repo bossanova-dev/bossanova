@@ -21,7 +21,13 @@ import {
   OPTIONAL_ROUTE_TOKENS,
   TERMINAL_ROUTES,
 } from '../skills-toolbox/finalize/route-contract.mjs'
-import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
+import { assertArtifactSet, assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
+// BOS-1216: the keep list is a DELETION gate over the review stack's load-bearing items. It exists
+// because the prose pins below cannot serve that role through a rewrite — they pin sentences, so
+// they red when a behaviour is preserved in different words and pass when one is dropped along with
+// the paragraph that happened to describe it. The helper's own suite
+// (scripts/skill-keep-list.test.mjs) carries the falsification fixtures that prove it can fire.
+import { KEEP_LIST, keepListMisses, readKeepListSources } from './skill-keep-list.mjs'
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
@@ -48,11 +54,10 @@ const KNOWLEDGE_EXTENSION_DIRS = [
 
 const RESIDENT_BODY_SKILLS = [`${CORE}/SKILL.md`]
 
-// BOS-495: the up-front callback reflex + the single `callbacksAvailable` gate must
-// be present in BOTH Go mirrors (byte-identical). The canonical home is skillinstall;
-// the plugin copy is the copy-skills mirror. Both are asserted so a partial edit trips
-// this gate.
-const BUILD_MIRRORS = [CORE, 'plugins/bossd-plugin-claude/skilldata/skills/boss-build']
+// BOS-495: the up-front callback reflex + the single `callbacksAvailable` gate must be
+// present in the canonical payload. BOS-1212: the plugin copy is an rsync of that tree
+// (`make copy-skills`), and scripts/skill-mirror-generation.test.mjs asserts the
+// generation once for the whole payload — so clauses are pinned against CORE only.
 
 // BOS-674: Steps 8-12 (tag → green gate → finalize → settle → proof → stop cleanly) were
 // extracted out of the always-resident body into this reference; the body keeps one pointer
@@ -141,7 +146,8 @@ test('BOS-711: ownership ranges use the resolved remote base, not a stale local 
     fs.rmSync(fixture, { recursive: true, force: true })
   }
 
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const resume = fs.readFileSync(
       path.join(rootDir, dir, 'references/resume-assessment.md'),
@@ -256,7 +262,7 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // a shrink is to bank it in `RATCHET`. A slack allowance ("measured + N") is precisely the
   // leak this shape exists to close.
   // BOS-1104 RE-DERIVES this baseline, 81364 -> 84574, and the re-derivation is the part that
-  // needs justifying, not the RATCHET repin beside it. `assertExactSize`'s `below` arm names the
+  // needs justifying, not the RATCHET repin beside it. The `below` arm names the
   // two readings and refuses to choose between them: either the pin was raised toward the
   // baseline (undo the growth) or the baseline no longer describes anything real (re-derive it).
   // This is the second reading, on the same grounds BOS-1002 used when it last moved this number:
@@ -284,7 +290,7 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // body rather than moving this number again (the Step 12 spine bullet and the `degraded:`
   // scoping note were both cut back after they were written).
   //
-  // BOS-1119 INVARIANT: `assertExactSize`'s `below` arm compares the pinned constant, not the
+  // BOS-1119 INVARIANT: the `below` arm compares the pinned constant, not the
   // measured size, so it fires at repin time before the exact-size comparison. `RATCHET` is
   // repinned every commit and therefore cannot accumulate growth; this historical baseline must
   // not move with it. Re-derive the baseline upward only under the `below` arm's second reading,
@@ -579,7 +585,7 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // references/code-reviewer-template.md (227 lines) is deleted outright — which is exactly the
   // residual below, so do NOT read +5 B as the change getting more expensive.
   // That +5 B landed on top of BOS-1099's +11 B — both re-baselined from the same 81352 body — and
-  // together they crossed PRE_EXTRACTION_BASELINE (81364), which `assertExactSize`'s `below` arm
+  // together they crossed PRE_EXTRACTION_BASELINE (81364), which the `below` arm
   // refuses outright. The bound is restored by trimming, not by sliding the baseline up: BOS-1097
   // banks 81368 -> 81344 (-24 B) by deleting the doubled "— all **non-routing**" tail from Step 6's
   // `**What comes back (thin, non-routing).**` paragraph, whose primary statement is that
@@ -655,31 +661,118 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // merged code change, routing that case to Step 4.6. Both are resident by necessity: a fresh
   // build never opens the resume reference, and the staleness blind spot has to be readable at the
   // moment the run is deciding whether a fresh timestamp is proof.
-  const RATCHET = 81878 // exact measured resident body, re-measured 2026-09-07 (BOS-1186)
+  // BOS-1197 (review round 2) re-baselines 81878 -> 81932 (+54 B). The dispatched pass's contract
+  // restated the terminal write with a hardcoded `'{"provisional":false}'` payload — the exact
+  // literal this ticket removed from review-stack.md and from boss-review's own caller sentinel
+  // contract — so the funding reason was dropped on every dispatched run by the one block a
+  // subagent copies. Routing it through the `sentinel-payload` verb costs a `CAPS=` line plus the
+  // second command substitution; the shorter spellings were tried first, and a pointer to
+  // references/review-stack.md was rejected because a copied fence is what a dispatched pass
+  // actually runs. Resident by necessity: this fence IS the contract the subagent executes.
+  // BOS-1208 converts this from an exact pin to a DESCENDING BUDGET, seeded at the measured size
+  // so it binds on the first run rather than starting life as headroom. The ledger above is the
+  // argument for the conversion: every entry in it is a repin, and the equality pin charged the
+  // same repin for the deletions as for the additions. Under the budget a shrink costs nothing —
+  // no entry, no edit, no commit to this constant — and only a raise costs a written reason.
+  // STEP_DOWN is ~1 KiB because this body is well above 20 000 bytes; bodies under that get 512 B,
+  // so a bigger body is asked for a bigger step. The share is NOT equal across artifacts, and is
+  // deliberately not claimed to be: measured, the step runs from 0.83% of the largest budget
+  // (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket (bs-sweep-tests, 26600 B),
+  // so two buckets narrow the spread a single flat number would give without equalising it.
+  const RATCHET = 81932 // measured resident body at migration, 2026-09-08 (BOS-1197 round 2)
+  const STEP_DOWN = 1024
+  const REVIEW_BY = '2026-12-08'
   // When this reds upward, the fix is a trim somewhere in an 80 KB body, not in whatever file you
   // were editing; the cheap move is to put the new prose in a reference and leave the resident body
-  // a pointer. When it reds downward, you trimmed something: bank the new number here in the same
-  // commit.
+  // a pointer. It can no longer red downward — that is the point — but it CAN red on the review
+  // date with nothing in the body changed, and the message says so when it does.
   assertArtifactSet(RESIDENT_BODY_SKILLS, 1, 'RESIDENT_BODY_SKILLS')
   for (const skillPath of RESIDENT_BODY_SKILLS) {
-    assertExactSize({
+    assertDescendingBudget({
       below: { name: 'PRE_EXTRACTION_BASELINE', value: PRE_EXTRACTION_BASELINE },
+      budget: RATCHET,
       constFile: 'scripts/boss-build-skill.test.mjs',
       constName: 'RATCHET',
-      expected: RATCHET,
       label: 'boss-build resident body',
       measured: measureFile(path.join(rootDir, skillPath)),
       path: skillPath,
-      previous: {
-        value: 81391,
-        delta: 487,
-        label: 'BOS-1186 unconditional premise/AC re-verification step',
+      raise: {
+        // A LITERAL, deliberately not `RATCHET`. Aliasing the budget constant made this
+        // value move in lockstep with every raise, so `budget > from` could never be true
+        // and the one direction this primitive prices was free — the arm was structurally
+        // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+        // measurement, any later raise of RATCHET above it reds until a reason is recorded.
+        // No `justification` is pre-supplied either: this commit raised nothing, and a
+        // stale sentence parked here would satisfy the next raise without anybody having
+        // to write a fresh reason for it, which is the same arm dead a second way.
+        // History the retired `previous` field recorded: BOS-1197 round 2, 81878 -> 81932
+        // (+54 B), because the dispatched pass's contract builds its sentinel payload through
+        // the verb rather than a hardcoded literal.
+        from: 81932,
       },
       residual:
         'the references/ files this body points at — content moved out of the resident body ' +
-        'leaves this pin entirely, so a trim here is not by itself proof the run got cheaper',
+        'leaves this budget entirely, so a trim here is not by itself proof the run got cheaper',
+      reviewBy: REVIEW_BY,
+      stepDown: STEP_DOWN,
     })
   }
+})
+
+// BOS-1216: references/review-stack.md is UNRATCHETED no longer. The resident-body budget above
+// names this exact gap in its own `residual` — content moved into a reference leaves that budget
+// entirely — and this reference is the case where the gap bites hardest: Step 6 always runs, so the
+// file is read on EVERY boss-build run and its size is a fixed per-run cost indistinguishable from
+// the resident body's. A budget that only measures SKILL.md prices an extraction as a saving when
+// nothing about the run got cheaper.
+//
+// Seeded at the measured size AFTER the procedure -> invariant rewrite, so it binds on the first run
+// rather than starting life as headroom — the same seeding rule the resident-body budget uses.
+// STEP_DOWN is 1024 B because this artifact is well above 20 000 bytes; bodies under that get 512 B.
+test('BOS-1216: the always-read review-stack reference stays under a descending budget', () => {
+  const REVIEW_STACK_PATH = `${CORE}/references/review-stack.md`
+  // Measured 2026-09-08, after the BOS-1216 rewrite (162041 B before it). A SHRINK costs nothing
+  // here — no edit to this constant, no recorded reason — so only growth is priced.
+  const REVIEW_STACK_RATCHET = 156053
+  assertDescendingBudget({
+    budget: REVIEW_STACK_RATCHET,
+    constFile: 'scripts/boss-build-skill.test.mjs',
+    constName: 'REVIEW_STACK_RATCHET',
+    label: 'boss-build review-stack reference',
+    measured: measureFile(path.join(rootDir, REVIEW_STACK_PATH)),
+    path: REVIEW_STACK_PATH,
+    raise: {
+      // A LITERAL, deliberately not `REVIEW_STACK_RATCHET`. Aliasing the budget constant makes this
+      // value move in lockstep with every raise, so `budget > from` can never be true and the one
+      // direction this primitive prices goes free — the structurally dead arm the BOS-1208 review
+      // found at every migrated call site. 155954 is the seed this rewrite first measured; the
+      // budget now sits 99 B above it, so this raise is priced and carries the reason below.
+      from: 155954,
+      justification:
+        'BOS-1216 review (boss-review round, thermonuclear): the rewrite dropped what a REFUSED ' +
+        'sentinel-payload write COSTS, and left the surviving clause next to the sentence saying an ' +
+        'empty payload still lands its verdict line. A top-down reader could infer malformed behaves ' +
+        'like empty, when the whole write is refused and the pessimistic seed publishes `coverage ' +
+        'unknown` over a review that really settled. Restoring that consequence is +99 B and is the ' +
+        'one direction this budget prices — the reference is still 5988 B below the 162041 B it ' +
+        'started at.',
+    },
+    residual:
+      'the OTHER references this protocol points at — callback-watches.md and ' +
+      'finalize-and-stop.md are read on these routes too and are measured by nothing here — and ' +
+      'the CONTENT of this one: a file under budget is not evidence its load-bearing items are ' +
+      'still stated, which is what scripts/skill-keep-list.mjs checks instead',
+    reviewBy: '2026-12-08',
+    stepDown: 1024,
+  })
+})
+
+// BOS-1216: every load-bearing review-side item is still STATED after the procedure -> invariant
+// rewrite of references/review-stack.md. Asserted as `deepEqual(misses, [])` over the helper's
+// output rather than as regexes over the document: a miss names the ITEM a reader lost, and the
+// rewrite stays free to re-word, re-site, or replace any of them with a helper call.
+test('BOS-1216: the review-stack keep list survives the rewrite', () => {
+  assert.deepEqual(keepListMisses(readKeepListSources(KEEP_LIST, rootDir), KEEP_LIST), [])
 })
 
 test('BOS-1119: pre-extraction baseline states its invariant without a live gap', () => {
@@ -887,7 +980,8 @@ test('BOS-1016: route-contract table and finalize stamp sites correspond exactly
   const knownTokens = new Set([...routeTokens, ...OPTIONAL_ROUTE_TOKENS])
   assertArtifactSet([...routeTokens], routeTokens.size, 'TERMINAL_ROUTES obligation tokens')
   assertArtifactSet([...knownTokens], knownTokens.size, 'known route-contract stamp tokens')
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const finalizeRef = finalizeAndStop(dir)
     const stampSites = [
       ...finalizeRef.matchAll(/route-contract\.mjs"\s+stamp[^\n]*--token\s+([a-z0-9-]+)/g),
@@ -917,7 +1011,8 @@ test('BOS-1016: route-contract table and finalize stamp sites correspond exactly
 })
 
 test('BOS-1016: resident Step 12 binds terminal printing to route-contract assert', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step12 = regionUntilNext(
       skill,
@@ -964,8 +1059,9 @@ test('BOS-1016: resident Step 12 binds terminal printing to route-contract asser
   }
 })
 
-test('BOS-910: ranked walk applies selection-time eligibility before claim (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-910: ranked walk applies selection-time eligibility before claim', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const abortList = region(skill, '## Decide vs ABORT', '## Mode detection', `${dir}: abort list`)
     const step2 = region(skill, '## Step 2:', '## Step 2.5:', `${dir}: Step 2`)
@@ -1056,7 +1152,8 @@ test('BOS-910: ranked walk applies selection-time eligibility before claim (both
 })
 
 test('BOS-909: claim body formatting failure stops before writeComment', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step3 = region(skill, '## Step 3:', '## Step 4:')
     const block = bashBlocksOf(step3).find((b) => /claim-comment --token/.test(b))
@@ -1079,8 +1176,9 @@ test('BOS-909: claim body formatting failure stops before writeComment', () => {
   }
 })
 
-test('BOS-913: Step 3 rejects lock and tracker_id filters as peer detectors (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-913: Step 3 rejects lock and tracker_id filters as peer detectors', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step3 = region(skill, '## Step 3:', '## Step 4:')
     const ref = claimAndEligibility(dir)
@@ -1122,8 +1220,9 @@ test('BOS-913: Step 3 rejects lock and tracker_id filters as peer detectors (bot
   }
 })
 
-test('BOS-913: Step 3 scans activity timestamps before claim-verdict (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-913: Step 3 scans activity timestamps before claim-verdict', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step3 = region(skill, '## Step 3:', '## Step 4:')
     const ref = claimAndEligibility(dir)
@@ -1190,8 +1289,9 @@ test('BOS-913: Step 3 scans activity timestamps before claim-verdict (both mirro
   }
 })
 
-test('BOS-913: Step 3 passes liveness evidence into claim-verdict (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-913: Step 3 passes liveness evidence into claim-verdict', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step3 = region(skill, '## Step 3:', '## Step 4:')
     const ref = claimAndEligibility(dir)
@@ -1278,8 +1378,9 @@ test('BOS-913: Step 3 passes liveness evidence into claim-verdict (both mirrors)
   }
 })
 
-test('BOS-913: stale, live, and unknown claim owners route explicitly (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-913: stale, live, and unknown claim owners route explicitly', () => {
+  {
+    const dir = CORE
     const ref = claimAndEligibility(dir)
 
     assert.match(
@@ -1330,11 +1431,12 @@ test('BOS-913: stale, live, and unknown claim owners route explicitly (both mirr
   }
 })
 
-test('BOS-851: the knowledge phase is resident and sits between Step 6 and Step 7 (both mirrors)', () => {
+test('BOS-851: the knowledge phase is resident and sits between Step 6 and Step 7', () => {
   // The phase commits to the session branch, so its position relative to Step 7's reviewed-tip
   // capture is load-bearing rather than cosmetic: moved after Step 7 it would either land outside
   // the PR or read as an unreviewed advance. Pin the ordering by byte offset, not by mere presence.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step6 = body.indexOf('## Step 6: Whole-branch review')
     const phase = body.indexOf('## Step 6.5: Knowledge extensions')
@@ -1393,7 +1495,8 @@ test('BOS-851: the published core names no knowledge methodology (project-agnost
   // in the repo-local `.claude/skills/boss-build-knowledge` extension, which is never published.
   // Naming a vendor plugin here would ship a dangling dependency to every one of those repos.
   const vendorCoupling = /compound-engineering|\bce-[a-z]/
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     for (const rel of ['SKILL.md', 'references/knowledge-extensions.md']) {
       const file = path.join(rootDir, dir, rel)
       assert.doesNotMatch(
@@ -1405,7 +1508,7 @@ test('BOS-851: the published core names no knowledge methodology (project-agnost
   }
 })
 
-test('BOS-674: every extracted step names the reference on its OWN resident line (both mirrors)', () => {
+test('BOS-674: every extracted step names the reference on its OWN resident line', () => {
   // The extraction left five summary bullets in the resident body and ONE preamble link. A
   // whole-body search for the filename — which is all the reachability test above does — passes
   // on that single preamble occurrence, so it cannot distinguish "each step points at its
@@ -1413,8 +1516,9 @@ test('BOS-674: every extracted step names the reference on its OWN resident line
   // That difference is the failure mode: an agent that works the bullets without opening the
   // reference skips the tag injection, the green gate, the deferral gate, proof, and the lock
   // release, while every assertion here stays green. Pin the pointer per step, on the step's own
-  // line, in both Go mirrors.
-  for (const dir of BUILD_MIRRORS) {
+  // line, in the canonical payload.
+  {
+    const dir = CORE
     const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     // Slice on markers that must exist: a missing marker makes `indexOf` return -1 and a negative
     // bound would hand back a slice from elsewhere in the file that could satisfy these checks.
@@ -1637,8 +1741,9 @@ test('Step 6 routes the review verdict from a run-file sentinel, not returned pr
   }
 })
 
-test('BOS-1002: installed-skill gate degrades for an old boss CLI (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1002: installed-skill gate degrades for an old boss CLI', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     assert.match(skill, /skills\s+check\s+--gate/)
     assert.match(
@@ -1674,7 +1779,8 @@ test('every documented capped-sentinel command is executable: persisted AND matc
   // (matchable, unwritten). Both land on `dispatch-failure`. A regex asserting either half alone
   // stays green through the other failure, so run the documented command for real and require the
   // sentinel to come back out of the RUN FILE classified as `capped`.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = fs.readFileSync(
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
@@ -1744,14 +1850,15 @@ test('every documented capped-sentinel command is executable: persisted AND matc
   }
 })
 
-test('the review pass is bounded by a hard deadline, not a 15-minute guess', () => {
+test('the review pass is bounded by a hard deadline, not a 15-minute guess', async () => {
   // The tier formula prices Step 6c at a flat 15 minutes, but `boss-review`'s own fix loop runs up
   // to $MAX_ROUNDS fix→confirm rounds — each a fix/test/lint pass plus another Phase R confirming
   // round. At exactly the full-tier boundary the blocking review may consume its whole estimate and
   // leave only this allowance plus the post-review reserve, so an unbounded Step 6c eats the reserve
   // and strands Steps 7-12 — an ADVISORY pass taking the terminal state down with it. 15 is
   // therefore only sound as a CAP Step 6c enforces; as an estimate it is simply wrong.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = fs.readFileSync(
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
@@ -1765,6 +1872,41 @@ test('the review pass is bounded by a hard deadline, not a 15-minute guess', () 
     // region, so such a pin could never fail. Deleted rather than left standing as decoration:
     // an assertion that cannot go red is the same false assurance this ticket exists to end.
     const step6c = region(reviewStack, '## Step 6: the review pass (`boss-review`)')
+    // BOS-1197: DERIVE every stated budget number rather than restating a literal. The terms the
+    // shell owns (leg price, leg counts) are read out of the shipped block itself; the products are
+    // computed by the VENDORED helper under THIS mirror. A term moved in either place — the markdown
+    // or the module — now reds the quote, where a literal `15`/`900`/`0` stayed green over a stale
+    // sentence. That staleness is the BOS-758 shape this ticket exists to end.
+    const caps = await import(
+      pathToFileURL(path.join(rootDir, dir, 'toolbox/bs-review-caps.mjs')).href
+    )
+    const shellTerm = (name, source, where) => {
+      const m = new RegExp(`${name}=(\\d+)`).exec(source)
+      assert.ok(m, `${dir}: ${name} must be assigned a literal in ${where}`)
+      return Number(m[1])
+    }
+    const legSeconds = shellTerm('DEADLINE_LEG_SECONDS', step6c, "Step 6c's stamping block")
+    const initialLegs = shellTerm('STEP_6C_INITIAL_LEGS', step6c, "Step 6c's stamping block")
+    const initialLegsSeconds = caps.stepAllowanceSeconds({ legSeconds, legs: initialLegs })
+    const stepMinutes = Math.ceil(initialLegsSeconds / 60)
+    // The shell stamps `STEP_6C_MINUTES * 60`, not the raw leg product, so price the funded count
+    // off the allowance the run actually gets — the ceil-to-minutes is part of the budget.
+    const stepAllowanceSeconds = stepMinutes * 60
+    const fundedRounds = caps.fundedFixRounds({
+      legSeconds,
+      initialLegs,
+      allowanceSeconds: stepAllowanceSeconds,
+    })
+    // Why the count is 0 at the shipped terms, and why that is STRUCTURAL rather than a coincidence
+    // of the current fix-round price: the stamped allowance IS the initial legs (rounded up to the
+    // minute), so nothing is left over to price a round against at any price. Assert that
+    // relationship directly — otherwise a reader could take the 0 above for a claim about
+    // `DEFAULT_FIX_ROUND_SECONDS`, which it is not, and a change to that constant would be expected
+    // to red this when it cannot.
+    assert.ok(
+      stepAllowanceSeconds - initialLegsSeconds < caps.DEFAULT_FIX_ROUND_SECONDS,
+      `${dir}: the stamped allowance (${stepAllowanceSeconds}s) leaves less than one fix round (${caps.DEFAULT_FIX_ROUND_SECONDS}s) after its ${initialLegs} initial legs — that remainder, not the round price, is what makes the funded count ${fundedRounds}`,
+    )
 
     // (a) The allowance must be derived from boss-review's own leg price while preserving the
     // shipped default. A bare literal goes stale when BOSS_SKILL_EXTENSION_TIMEOUT_MS moves.
@@ -1782,8 +1924,11 @@ test('the review pass is bounded by a hard deadline, not a 15-minute guess', () 
     )
     assert.match(
       step6c,
-      /DEADLINE_LEG_SECONDS=300`?,?\s*`?STEP_6C_INITIAL_LEGS=3`?,?\s*and\s*\n?\s*`?STEP_6C_MINUTES=15/,
-      `${dir}: the shipped default must stay written down, or a timeout change silently re-prices the step`,
+      new RegExp(
+        `DEADLINE_LEG_SECONDS=${legSeconds}\`?,?\\s*\`?STEP_6C_INITIAL_LEGS=${initialLegs}\`?,?` +
+          `\\s*and\\s*\\n?\\s*\`?STEP_6C_MINUTES=${stepMinutes}`,
+      ),
+      `${dir}: the shipped default must stay written down as the DERIVED ${stepMinutes} minutes, or a timeout change silently re-prices the step`,
     )
     // BOS-1103: and the decision block itself must NOT price anything. Its inputs are the diff's
     // lens hits and file count; a budget term reappearing there is the wall-clock ladder growing
@@ -1942,8 +2087,12 @@ test('the review pass is bounded by a hard deadline, not a 15-minute guess', () 
     )
     assert.match(
       step6c,
-      /funds\s+those\s+initial\s+legs\s+and\s+\*\*0\s+ordinary\s+fix\s+rounds\*\*/i,
-      `${dir}: Step 6c must state that 15 minutes funds no ORDINARY fix round, so the advisory-only outcome is deliberate`,
+      new RegExp(
+        `funds\\s+those\\s+initial\\s+legs\\s+and\\s+the\\s+\`fundedFixRounds\`` +
+          `[\\s\\S]{0,160}\\*\\*${fundedRounds}\\s+ordinary\\s+fix\\s+rounds\\*\\*`,
+        'i',
+      ),
+      `${dir}: Step 6c must state the COMPUTED funded-round count (${fundedRounds} at the shipped terms) and attribute it to fundedFixRounds, not narrate a literal`,
     )
     // ...and that claim is now narrowed rather than absolute, which the prose has to
     // say or it ships a falsehood. `boss-review` funds ONE overrun round for a
@@ -1979,6 +2128,242 @@ test('the review pass is bounded by a hard deadline, not a 15-minute guess', () 
       `${dir}: a capped-but-completed Step 6c pass must keep the \`full\` coverage token — only a skip or truncation is named as skipped`,
     )
 
+    // (c3) BOS-1197: the number above is only computed if the verb is actually CALLED. A prose
+    // sentence that says "computed" while nothing computes it is the inert-feature shape this
+    // ticket exists to end — indistinguishable from a wired one by every assertion above.
+    const step6cCore = region(
+      reviewStack,
+      '## Step 6: the review pass (`boss-review`)',
+      '### Base-drift check (at the review check point)',
+    )
+    assert.match(
+      step6cCore,
+      /bs-review-caps\.mjs"?\s+funding\s+\\?\n?\s*"\{/,
+      `${dir}: Step 6c must INVOKE the funding verb, not merely describe a computed count`,
+    )
+    assert.match(
+      step6cCore,
+      /STEP_6C_FUNDING_REASON=/,
+      `${dir}: Step 6c must bind the funding reason it carries into the sentinel payload`,
+    )
+    const quickTier = region(
+      reviewStack,
+      '### Quick tier (minimal)',
+      '### The reserved merge-gate token (every route, no exceptions)',
+    )
+    const quickLegs = shellTerm('QUICK_REVIEWER_LEGS', quickTier, 'the quick tier allowance block')
+    const quickAllowanceSeconds = caps.stepAllowanceSeconds({ legSeconds, legs: quickLegs })
+    assert.ok(
+      quickAllowanceSeconds < stepAllowanceSeconds,
+      `${dir}: the quick tier must price a SMALLER allowance (${quickAllowanceSeconds}s) than the full tier (${stepAllowanceSeconds}s) — it funds less scope`,
+    )
+    assert.equal(
+      caps.fundedFixRounds({
+        legSeconds,
+        initialLegs: quickLegs,
+        allowanceSeconds: quickAllowanceSeconds,
+      }),
+      0,
+      `${dir}: the quick tier is starved wherever the full tier is — a non-zero count here would mean the tiers were priced inconsistently`,
+    )
+    assert.match(
+      quickTier,
+      /bs-review-caps\.mjs"?\s+funding\s+\\?\n?\s*"\{/,
+      `${dir}: the quick tier must price its OWN allowance through the funding verb, not inherit the full tier's number`,
+    )
+    // It prices its OWN allowance but binds the SHARED interface name. A tier-local name is the
+    // cross-tier mismatch that shipped: the run-file sentinel convention reads one name, so a quick
+    // run bound `QUICK_FUNDING_REASON` and every write there read an unset `STEP_6C_FUNDING_REASON`
+    // and published the funded payload on a starved run, with every prose pin still green.
+    assert.match(
+      quickTier,
+      /STEP_6C_FUNDING_REASON=/,
+      `${dir}: the quick tier must bind the SHARED funding-reason interface name, the way it stamps STEP_6C_DEADLINE`,
+    )
+    assert.doesNotMatch(
+      quickTier,
+      /QUICK_FUNDING_REASON/,
+      `${dir}: a tier-local funding-reason name is unreadable by the shared sentinel convention — that is bug A4`,
+    )
+    // (c3b) BOS-1197 round 2: BOTH failure shapes, on BOTH tiers, gated in ONE shape.
+    // The full tier's detection was entirely ungated until now — a Tier-A probe replaced its
+    // whole `if STEP_6C_FUNDING=…; then/else` wrapper AND both `case` normalisations with the
+    // pre-fix unconditional assignment (-1008 B) and every assertion in this file stayed green.
+    // The two shapes are not the same failure:
+    //   1. NON-ZERO EXIT — the `if`/`else` status check, whose `else` arm names the reason.
+    //      Without it the assignment succeeds whatever `node` did and every `sed` yields empty.
+    //   2. ZERO EXIT, UNREADABLE STDOUT — the `case` normalisation. An empty reason IS the
+    //      funded case, so a helper that exits 0 while printing anything the `sed` cannot match
+    //      still publishes "funded". Only a parsed NUMBER can tell those apart, which is why
+    //      both tiers extract `fundedFixRounds` even where only one of them publishes it.
+    const assertFundingGuarded = (tier, body, holder) => {
+      // 1. NON-ZERO EXIT. Without the status check the assignment succeeds whatever `node`
+      //    did, `$FUNDING` is empty, every `sed` yields empty — and an empty reason IS the
+      //    funded case.
+      const statusChecked = new RegExp(
+        `if\\s+${holder}="\\$\\(node[\\s\\S]{0,1000}funding-unpriced`,
+      )
+      assert.match(
+        body,
+        statusChecked,
+        `${dir}: the ${tier} tier's funding call must check its exit status and name the unpriced case`,
+      )
+      assertFalsifiable({
+        source: body,
+        pattern: statusChecked,
+        mutation: {
+          find: new RegExp(`if\\s+${holder}="\\$\\(node`),
+          replacement: `${holder}="$(node`,
+        },
+        label: `${dir}: ${tier} tier funding status-check pin`,
+      })
+      // 2. ZERO EXIT, UNREADABLE STDOUT. The status check is only HALF the failure: a helper
+      //    that exits 0 while printing anything the `sed` cannot match leaves the extracted
+      //    number empty, and only a parsed NUMBER can tell that apart from a funded step.
+      //    Both tiers therefore extract `fundedFixRounds` even where only one publishes it.
+      //    BOS-1197 round 3: NAME the variable. The variable-agnostic form
+      //    (`"\$STEP_6C_[A-Z_0-9]+"`) is not load-bearing on the FULL tier, whose region holds a
+      //    SECOND qualifying block — `STEP_6C_FIX_ROUND_SECONDS`, which also lands on
+      //    `funding-unpriced` — so deleting the NUMBER's normalisation alone left it green.
+      //    Measured: -134 B, single block, sibling intact, pin still matched. Round 2's own
+      //    falsification passed only because its mutation carried `/g` and removed BOTH blocks;
+      //    the probe was fooled by its own mutation shape, not by the source. The pin names the
+      //    number's variable and the mutation removes exactly that one block, no `/g`.
+      const normalised = /case\s+"\$STEP_6C_FUNDED_FIX_ROUNDS"\s+in[\s\S]{0,400}?funding-unpriced/
+      assert.match(
+        body,
+        normalised,
+        `${dir}: the ${tier} tier must normalise an UNPARSED funding number to funding-unpriced — a zero-exit call with unreadable stdout reads as funded otherwise`,
+      )
+      assertFalsifiable({
+        source: body,
+        pattern: normalised,
+        mutation: {
+          find: /[ \t]*case[ \t]+"\$STEP_6C_FUNDED_FIX_ROUNDS"[ \t]+in\n[^\n]*\n[ \t]*esac\n/,
+          replacement: '',
+        },
+        label: `${dir}: ${tier} tier unparseable-stdout normalisation pin`,
+      })
+    }
+    assertFundingGuarded('full', step6cCore, 'STEP_6C_FUNDING')
+    assertFundingGuarded('quick', quickTier, 'QUICK_FUNDING')
+
+    // (c4) The reason has to reach the consumer, and it may only travel in the PAYLOAD. Every
+    // terminal sentinel write in the file builds the payload with the starved branch; the
+    // generated LINE stays byte-stable, because `matchSentinel` classifies that line and an
+    // interpolated reason inside it is unmatchable → `dispatch-failure`, the exact opposite of
+    // what this disclosure is for.
+    const sentinelWrites = [...reviewStack.matchAll(/```bash\n([\s\S]*?)```/g)]
+      .map((m) => m[1])
+      .filter((body) => /RUN_ID"?\s+review/.test(body))
+    assert.equal(
+      sentinelWrites.length,
+      3,
+      `${dir}: every terminal sentinel write must be a runnable fenced block (clean/capped contract, pre-dispatch decline, quick-tier non-reporting)`,
+    )
+    // The payload variable name is CAPTURED once and back-referenced, so a write that builds the
+    // payload from one tier's name while the tier that reaches it binds another cannot pass. The
+    // earlier shape alternated `(?:STEP_6C|QUICK)` independently on both sides, which is exactly
+    // the cross-tier mismatch that shipped: the quick tier bound `QUICK_FUNDING_REASON`, every
+    // shared write read `STEP_6C_FUNDING_REASON`, and the gate was satisfied by both halves
+    // matching different alternatives.
+    const payloadNames = new Set()
+    for (const block of sentinelWrites) {
+      const built = block.match(
+        // prose-pin: literal-space ok
+        /"\$\(node "\$[A-Z0-9_]+(?:\/bs-review-caps\.mjs)?" sentinel-payload "\$\{([A-Z0-9_]+):-\}"\)"/,
+      )
+      assert.ok(
+        built,
+        `${dir}: each terminal sentinel write must BUILD its payload through the sentinel-payload verb from a named caller variable — hand-escaped JSON is how the reason went missing`,
+      )
+      payloadNames.add(built[1])
+      assert.doesNotMatch(
+        block,
+        /PAYLOAD=/,
+        `${dir}: the hand-built PAYLOAD preamble is replaced by the verb — one call per write site`,
+      )
+      // The generated line carries NO interpolation: it is exactly the helper's stdout. The
+      // literal spaces below are the shell command's own spacing — the thing under test.
+      assert.match(
+        block,
+        // prose-pin: literal-space ok
+        /"\$\(node "\$[A-Z_]+(?:\/bs-review-caps\.mjs)?" sentinel (?:clean|capped 1)\)"/,
+        `${dir}: the sentinel LINE must be the helper's unmodified stdout — matchSentinel classifies it, so an interpolated reason is unmatchable`,
+      )
+      assert.doesNotMatch(
+        block,
+        /sentinel\s+(clean|capped\s+1)[^)\n]*funding/,
+        `${dir}: the funding reason must travel in the payload, never inside the generated sentinel line`,
+      )
+    }
+    // ONE name across every write site, and it must be the one both tiers actually bind.
+    assert.deepEqual(
+      [...payloadNames],
+      ['STEP_6C_FUNDING_REASON'],
+      `${dir}: every terminal sentinel write must read the SAME stated interface name — a second name is a tier whose reason reaches nothing`,
+    )
+    for (const [tier, body] of [
+      ['full', step6cCore],
+      ['quick', quickTier],
+    ]) {
+      assert.match(
+        body,
+        new RegExp(`\\b${[...payloadNames][0]}=`),
+        `${dir}: the ${tier} tier must BIND the name the sentinel writes read, or its funding reason reaches no payload`,
+      )
+    }
+
+    // (c5) BEHAVIOURAL, not a sentence. Everything above reads prose; none of it proves the reason
+    // ARRIVES. Run the vendored helper on this tier's own terms and assert the payload the write
+    // sites would persist — starved carries the key, funded omits it entirely, because the
+    // consumer reads absence as the assertion "this step was not starved".
+    const payloadFor = (allowanceSeconds, legs) => {
+      const priced = caps.fundingDisclosure({
+        allowanceSeconds,
+        legSeconds,
+        initialLegs: legs,
+      })
+      return execFileSync(
+        'node',
+        [
+          path.join(rootDir, dir, 'toolbox/bs-review-caps.mjs'),
+          'sentinel-payload',
+          priced.reason ?? '',
+        ],
+        { encoding: 'utf8' },
+      ).trim()
+    }
+    assert.equal(
+      payloadFor(stepAllowanceSeconds, initialLegs),
+      '{"provisional":false,"funding":{"reason":"funding-starved"}}',
+      `${dir}: the shipped full-tier terms are starved, so the payload its writes persist must CARRY the reason`,
+    )
+    assert.equal(
+      payloadFor(quickAllowanceSeconds, quickLegs),
+      '{"provisional":false,"funding":{"reason":"funding-starved"}}',
+      `${dir}: the quick tier is starved wherever the full tier is, so its payload carries the reason too`,
+    )
+    assert.equal(
+      payloadFor(initialLegsSeconds + caps.DEFAULT_FIX_ROUND_SECONDS, initialLegs),
+      '{"provisional":false}',
+      `${dir}: a FUNDED step must produce a payload with no funding key at all — absence is the assertion, so an empty-valued key would break it`,
+    )
+    // And a failed price is a third state, never silently the funded one.
+    assert.equal(
+      execFileSync(
+        'node',
+        [
+          path.join(rootDir, dir, 'toolbox/bs-review-caps.mjs'),
+          'sentinel-payload',
+          'funding-unpriced',
+        ],
+        { encoding: 'utf8' },
+      ).trim(),
+      '{"provisional":false,"funding":{"reason":"funding-unpriced"}}',
+      `${dir}: an unpriced funding call must be distinguishable from an adequately funded one`,
+    )
+
     // (d) The negative that matters: the guard this replaced was a judgement call ("no comfortable
     // margin"), which every positive assertion above can co-exist with. A run that re-adds it has
     // re-added an unbounded advisory pass.
@@ -1990,13 +2375,54 @@ test('the review pass is bounded by a hard deadline, not a 15-minute guess', () 
   }
 })
 
+// BOS-1197 round 2: SKILL.md RESTATES the same terminal write for the dispatched pass, and it
+// restated the pre-fix shape — a hardcoded `'{"provisional":false}'`. That block is the one a
+// dispatched subagent actually copies, so the hardcoded literal dropped the funding reason on
+// EVERY dispatched run while review-stack.md's corrected copy carried it. Two stores of one
+// command drift; this pins the restatement to the same verb, in the fence rather than in prose.
+test("BOS-1197: the dispatched pass's contract builds its payload through the verb, not a literal", () => {
+  {
+    const dir = CORE
+    const skill = readSkill(`${dir}/SKILL.md`)
+    const contract = region(
+      skill,
+      "**The dispatched pass's contract**",
+      '**What comes back (thin, non-routing).**',
+      `${dir}/SKILL.md`,
+    )
+    const fences = [...contract.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).join('\n')
+    assert.ok(fences.length > 0, `${dir}/SKILL.md: the contract must carry a runnable write`)
+    const built = /sentinel-payload\s+"\$\{STEP_6C_FUNDING_REASON:-\}"/
+    assert.match(
+      fences,
+      built,
+      `${dir}/SKILL.md: the dispatched pass's write must BUILD its payload through the sentinel-payload verb from the stated caller name`,
+    )
+    assert.doesNotMatch(
+      fences,
+      /'\{"provisional":false\}'/,
+      `${dir}/SKILL.md: a hardcoded payload literal here drops the funding reason on every dispatched run`,
+    )
+    assertFalsifiable({
+      source: fences,
+      pattern: built,
+      mutation: {
+        find: /"\$\(node "\$CAPS" sentinel-payload "\$\{STEP_6C_FUNDING_REASON:-\}"\)"/,
+        replacement: `'{"provisional":false}'`,
+      },
+      label: `${dir}/SKILL.md: dispatched-pass payload-build pin`,
+    })
+  }
+})
+
 test('a terminal state with an open must-fix never names the clock as its cause', () => {
   // The defect this closes: a fix round refused on the wall clock turned a located,
   // fixable, NEVER-ATTEMPTED must-fix into a required-deferred item, and the run
   // terminated BLOCKED citing the deadline. The clock is a real bound, but it is not
   // a cause on the finding's side, and a reader who accepts it as one will defer work
   // that a single bounded round would have closed.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = fs.readFileSync(
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
@@ -2049,7 +2475,7 @@ test('a terminal state with an open must-fix never names the clock as its cause'
   }
 })
 
-test('BOS-859: the degraded coverage token keeps its three repair dispositions distinct (both mirrors)', () => {
+test('BOS-859: the degraded coverage token keeps its three repair dispositions distinct', () => {
   // WHY THESE PINS EXIST AT ALL, given the section they were written for is gone. BOS-859 added
   // them over `#### Bounded repair pass (conditional)`; BOS-1097 deleted that pass, because
   // `boss-review`'s own capped fix loop is what repairs a finding now. The pins came out with the
@@ -2069,7 +2495,8 @@ test('BOS-859: the degraded coverage token keeps its three repair dispositions d
   // Collapsing the first two is the expensive direction: it publishes a verified repair on a
   // branch whose verification never cleared, which is the self-certification the degraded tier is
   // forbidden from doing.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = fs.readFileSync(
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
@@ -2169,14 +2596,15 @@ test('BOS-859: the degraded coverage token keeps its three repair dispositions d
   }
 })
 
-test('BOS-1097: the reviewer-dispatch bound counts only what this protocol starts (both mirrors)', () => {
+test('BOS-1097: the reviewer-dispatch bound counts only what this protocol starts', () => {
   // The bound's own enumeration used to sum to five or more — it counted `boss-review`'s
   // `second-voice` round and the confirming rounds of its capped fix loop, whose $MAX_ROUNDS
   // defaults to 3 — while claiming to cap dispatches INSIDE a pass this protocol cannot halt
   // mid-flight. A bound whose enumeration refutes it is not a bound, and the budget block below
   // funds the inner rounds as their own term, so a reader who sums the two re-prices a formula
   // that was never wrong. The bound must survive (it is the acceptance criterion) AND be true.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = fs.readFileSync(
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
@@ -2217,7 +2645,8 @@ test('Step 6c never leaks the reserved merge-gate token into a PR title or body'
   // Step 6c is explicitly non-blocking and advisory, so any boss-review-sourced text
   // it copies into the PR title/body that happens to contain that substring blocks a
   // merge nothing intended to block — a reserved-token leak, not a review finding.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = fs.readFileSync(
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
@@ -2257,7 +2686,8 @@ test('the reserved merge-gate token ban is stated route-independently, not only 
   // text (`## Cross-model review`, `## Review coverage`, the open-findings list) into the body via
   // `gh pr edit`. A ban a publishing route never reads is a ban that ships inert, so pin that the
   // rule lives OUTSIDE the advisory step and says so.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = fs.readFileSync(
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
@@ -2346,7 +2776,8 @@ test('boss-review deadline arithmetic is unit-correct: extracted, evaluated, and
   // inversion of the guarantee, invisible to any regex that does not do the arithmetic. So do the
   // arithmetic: lift the constants and the guard expressions out of the shipped markdown, plug in
   // concrete remaining-clock values, and assert the OUTCOME.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewSkill = fs.readFileSync(
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
       'utf8',
@@ -2504,7 +2935,8 @@ test('the deadline stamp and the leg gate are RUNNABLE: unset names do not silen
   // raises no error. `$(( ))` resolves an UNSET bare name to 0, so (a) a `STEP_6C_DEADLINE` stamped
   // from an unassigned `STEP_6C_MINUTES` lands on NOW, and (b) a leg gate reading an unsupplied
   // `deadline` computes `0 - now`, refusing every leg on a budget nobody spent. Run both.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const bashBlocks = (md) => [...md.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1])
 
     // (a) The Step 6c stamp, executed with STEP_6C_MINUTES deliberately absent from the env.
@@ -2643,7 +3075,8 @@ test('boss-review bounds its INITIAL passes by the caller deadline, not only the
   // awaited initial pass could spend the whole advertised cap (and start on the post-review
   // reserve) before the first fix-loop check ran. A cap that can be overrun before its only check
   // is not a cap.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewSkill = fs.readFileSync(
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
       'utf8',
@@ -2984,7 +3417,8 @@ test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)',
 })
 
 test('BOS-1021: Step 8 documents the portable test-gate cache contract', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const step8 = region(finalizeAndStop(dir), '## Step 8:', '## Step 9:')
     const cache = region(
       step8,
@@ -3039,7 +3473,8 @@ test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
 })
 
 test('BOS-771: Step 9 gates readying on mergeability and re-verifies after rebase', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const step9 = region(finalizeAndStop(dir), '## Step 9:', '## Step 10:')
     assert.match(step9, /mergeable/, `${dir}: Step 9 must read mergeable`)
     assert.match(step9, /mergeStateStatus/, `${dir}: Step 9 must read mergeStateStatus`)
@@ -3063,7 +3498,8 @@ test('BOS-771: Step 9 gates readying on mergeability and re-verifies after rebas
 })
 
 test('BOS-771: boss-build PR-tag ranges are not START_SHA-derived', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const text = [
       fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8'),
       fs.readFileSync(path.join(rootDir, dir, FINALIZE_REF), 'utf8'),
@@ -3112,7 +3548,7 @@ const readRef = (mirror, ref) =>
     'utf8',
   )
 
-test('BOS-240/BOS-1104: resident body pins the deferred-required-item finalize split (both mirrors)', () => {
+test('BOS-240/BOS-1104: resident body pins the deferred-required-item finalize split', () => {
   for (const [mirror, rel] of Object.entries(RESIDENT_BODIES)) {
     const body = readSkill(rel)
     // The distinction + invariant is stated in the always-resident body.
@@ -3297,8 +3733,9 @@ test('BOS-240/BOS-1104: resident body pins the deferred-required-item finalize s
   }
 })
 
-test('BOS-1117: Step 12 BLOCKED list has exactly four causes in both mirrors', async (t) => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1117: Step 12 BLOCKED list has exactly four causes', async (t) => {
+  {
+    const dir = CORE
     await t.test(dir, () => {
       const ref = finalizeAndStop(dir)
       const blockedList = region(
@@ -3330,8 +3767,9 @@ test('BOS-1117: Step 12 BLOCKED list has exactly four causes in both mirrors', a
 // matched because the moved phrase still appears in the file: a whole-file `doesNotMatch` on
 // `unresolved decisions` would be false by construction, and a whole-file `match` would pass
 // while the phrase sat in the wrong list.
-test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record', () => {
+  {
+    const dir = CORE
     const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const section = region(body, '## Decide vs ABORT', '## Mode detection', `${dir}/SKILL.md`)
 
@@ -3664,11 +4102,12 @@ test('BOS-841: the tier-1 return schema carries the decisions element', () => {
 // enumeration stated in two places, and a subagent returning a field the contract does not list
 // is returning something the orchestrator is told not to thread. Both enumerations must name the
 // decisions element, and the Step 7 template must still carry the section it lands in.
-test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirrors)', () => {
+test('BOS-841: a decision made inside a dispatch reaches the PR body', () => {
   // The body is hard-wrapped, and the two enumerations wrap this phrase at different points, so
   // match across the wrap rather than pinning one incidental line break.
   const decisionsElement = /decisions\s+recorded\s+\(decision\s+\+\s+rationale\)/
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
     // B.1a — the Step 5 overlay statement of the contract.
@@ -3723,7 +4162,7 @@ test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirro
   }
 })
 
-test('BOS-240: review-stack adds a conditional API-surface required check (both mirrors)', () => {
+test('BOS-240: review-stack adds a conditional API-surface required check', () => {
   for (const mirror of Object.keys(RESIDENT_BODIES)) {
     const reviewStack = readRef(mirror, 'review-stack.md')
     assert.match(
@@ -3781,7 +4220,8 @@ test('BOS-303: an empty/bootstrap draft PR placeholder is adopted and resumed, n
 })
 
 test('BOS-914: bootstrap artifacts do not decide claims, and closed PRs are probed for salvage', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step25 = region(skill, '## Step 2.5:', '## Step 3:', `${dir}: Step 2.5`)
     const step3 = region(skill, '## Step 3:', '## Step 4:', `${dir}: Step 3`)
@@ -3844,13 +4284,14 @@ test('BOS-914: bootstrap artifacts do not decide claims, and closed PRs are prob
   }
 })
 
-test('BOS-495: up-front callback reflex + callbacksAvailable gate in both mirrors', () => {
+test('BOS-495: up-front callback reflex + callbacksAvailable gate', () => {
   // The awareness fix: "prefer a callback over blind polling" is an up-front Hard-rules
   // reflex, gated on the single `callbacksAvailable(env)` signal, present byte-identically
-  // in BOTH Go mirrors, and the callback reference frames graceful degradation around the
+  // in the canonical payload, and the callback reference frames graceful degradation around the
   // gate (gate false ⇒ skip registerWatch → fallbackPoll, never a failed wait). Pin all
   // three so the discoverability fix can never silently regress to a buried wait-step hint.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const hardRules = region(skill, '## Hard rules', '## Trust rules')
     assert.match(
@@ -3878,23 +4319,6 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate in both mirror
       ref,
       /Graceful\s+degradation\s+gated\s+on `callbacksAvailable`/,
       `${dir}/references/callback-watches.md must frame degradation around the gate`,
-    )
-  }
-
-  // The "byte-identical in BOTH Go mirrors" claim above is only real if something
-  // diffs the two copies: the per-mirror phrase checks pass even if one mirror drifts
-  // in whitespace/wording or a `make copy-skills` is skipped. Enforce it directly.
-  const [canonicalDir, pluginDir] = BUILD_MIRRORS
-  for (const rel of [
-    'SKILL.md',
-    'references/callback-watches.md',
-    'references/proof-capture.md',
-    FINALIZE_REF,
-  ]) {
-    assert.equal(
-      fs.readFileSync(path.join(rootDir, pluginDir, rel), 'utf8'),
-      fs.readFileSync(path.join(rootDir, canonicalDir, rel), 'utf8'),
-      `${pluginDir}/${rel} must be byte-identical to the canonical mirror (run \`make copy-skills\`)`,
     )
   }
 })
@@ -3996,7 +4420,8 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
 })
 
 test('BOS-752: callback waits use per-trigger groups, guarded re-arm, and three-way reconcile', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const ref = fs.readFileSync(path.join(rootDir, dir, 'references/callback-watches.md'), 'utf8')
     const finalizer = fs.readFileSync(path.join(rootDir, dir, FINALIZE_REF), 'utf8')
@@ -4069,7 +4494,62 @@ test('BOS-752: callback waits use per-trigger groups, guarded re-arm, and three-
   }
 })
 
-test('BOS-240: troubleshooting adds the required-deferred rows without weakening optional proof (both mirrors)', () => {
+// BOS-1192: every agent-facing surface that decides "are this PR's checks green" used to carry its
+// own prose-only rule, and those rules disagreed with each other and with the daemon. The two
+// boss-build references that decide it now cite the one agent-callable verdict instead — the
+// merge-state read in finalize-and-stop.md, and the rollup reconcile in callback-watches.md.
+test('BOS-1192: the boss-build references route check state through pr-check-state.mjs', () => {
+  {
+    const dir = CORE
+    const ref = fs.readFileSync(path.join(rootDir, dir, 'references/callback-watches.md'), 'utf8')
+    const finalizer = fs.readFileSync(path.join(rootDir, dir, FINALIZE_REF), 'utf8')
+
+    // The `$BOSS_BUILD_TOOLBOX/<file>` spelling is the one the shipped-toolbox gate matches, so a
+    // citation in this form also proves the helper is in the payload.
+    assert.match(
+      ref,
+      /\$BOSS_BUILD_TOOLBOX\/pr-check-state\.mjs/,
+      `${dir}/references/callback-watches.md must cite the check-state helper by toolbox path`,
+    )
+    assert.match(
+      finalizer,
+      /\$BOSS_BUILD_TOOLBOX\/pr-check-state\.mjs/,
+      `${dir}/${FINALIZE_REF} must cite the check-state helper by toolbox path`,
+    )
+
+    // The null-shaped rollup node is RECONCILED against the named context rather than terminating
+    // the wait as `unknown`. Without this the bounded poll stalls a merge-ready PR.
+    assert.match(
+      ref,
+      /null-shaped[\s\S]{0,400}reconcil/i,
+      `${dir}/references/callback-watches.md must reconcile a null-shaped rollup node before terminating`,
+    )
+
+    // The post-ready degrade is named as pending, by its reason, not as red CI. Readying the PR is
+    // what starts the non-draft-only advisory bot, so the state degrades on an unchanged branch.
+    assert.match(
+      finalizer,
+      /advisory-unsettled/,
+      `${dir}/${FINALIZE_REF} must name the post-ready degrade reason`,
+    )
+    assert.match(
+      finalizer.replace(/\s+/g, ' '),
+      /UNSTABLE[^.]{0,200}pending/i,
+      `${dir}/${FINALIZE_REF} must classify UNSTABLE-with-nothing-failing as pending, not red CI`,
+    )
+
+    // Published-core invariant: the routing prose stays installable in unrelated repositories.
+    for (const routed of [ref, finalizer]) {
+      assert.doesNotMatch(
+        routed,
+        /bossanova-(linear|sentry)|\bBOS-\d+\b/,
+        `${dir} routing prose must stay project-agnostic`,
+      )
+    }
+  }
+})
+
+test('BOS-240: troubleshooting adds the required-deferred rows without weakening optional proof', () => {
   for (const mirror of Object.keys(RESIDENT_BODIES)) {
     const troubleshooting = readRef(mirror, 'troubleshooting.md')
     // New status-rollback row: required item deferred at cap → In Progress / draft / names the item.
@@ -4121,12 +4601,13 @@ function baseMergeDirectives(doc) {
   return hits
 }
 
-test('BOS-514: the finalize-adjacent base sync points at the linear-history invariant (both mirrors)', () => {
+test('BOS-514: the finalize-adjacent base sync points at the linear-history invariant', () => {
   // boss-build rebases the session branch onto the PR base before/inside finalize. It must
   // never contradict the invariant boss-repair owns: base sync is ALWAYS a rebase, because a
   // merge commit on the PR branch makes GitHub's rebase-merge structurally refuse the merge
   // and deadlocks the PR. Pin one pointer line plus the absence of any base-merge directive.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     // BOS-674: the base sync itself is Step 8, now in references/finalize-and-stop.md. The
     // pointer + preflight are pinned there; the base-merge classifier runs over BOTH, so
@@ -4186,14 +4667,15 @@ test('BOS-514: the base-merge classifier catches the spellings it must catch', (
   }
 })
 
-test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a sibling succeeds (both mirrors)', () => {
+test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a sibling succeeds', () => {
   // The pre-693 paragraph recorded `extension <name>: skipped (<reason>)` ONLY inside the
   // all-extensions-failed branch. The partial case — one sibling succeeds, another fails to load —
   // is exactly the case that suppresses tiers 2 and 3, and nothing told the orchestrator to record
   // the failures, so a partial failure silently violated the paragraph's own "the ledger must show
   // which path was taken" requirement. Recording is now per extension, independent of the outcome
   // of its siblings.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     assert.match(
       skill,
@@ -4462,13 +4944,6 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
       /Recovery\s+under\s+an `ext-<name>` label\s+is\s+extension-wide/i,
       `${dir}/SKILL.md Tier 1 must say what recovery under the extension-wide label re-assesses`,
     )
-    // The generic procedure above must not still call the unit a task, or the two read as a
-    // contradiction and a reader following the earlier text labels a multi-task dispatch `task-N`.
-    assert.match(
-      step5,
-      /snapshot-and-check\s+procedure\s+once\s+per \*\*dispatch\*\*/i,
-      `${dir}/SKILL.md Step 5 must state the snapshot's unit as the dispatch, which Tier 1 widens past a single task`,
-    )
   }
 })
 
@@ -4477,8 +4952,9 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
 // hard-failing, and a resume must dispatch only the remainder. Pin all three so the
 // per-task-commit contract can't regress to an end-of-run batch commit — which is what
 // makes a mid-run subagent death lose the whole run instead of one task.
-test('BOS-519: commit-before-return contract reaches all three dispatch paths (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-519: commit-before-return contract reaches all three dispatch paths', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step5 = region(skill, '## Step 5:', '## Step 6:')
 
@@ -4712,8 +5188,9 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
   }
 })
 
-test('BOS-905: Step 5 bounds dispatches and tightens the implementation contract (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-905: Step 5 bounds dispatches and tightens the implementation contract', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step5 = region(skill, '## Step 5:', '## Step 6:', `${dir}/SKILL.md`)
     const tier1 = region(
@@ -4878,371 +5355,278 @@ test('BOS-905: Step 5 bounds dispatches and tightens the implementation contract
   }
 })
 
-test('BOS-519: orchestrator verifies clean tree + advanced log and recovers residue (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+// BOS-519 established the orchestrator verification; BOS-1215 moved its MECHANICS out of the
+// resident body into references/resume-assessment.md, which already owned the reading half (the
+// restarted-orchestrator recovery). Nothing was deleted: the body now states the invariant and the
+// remedy per failure mode, and the one procedure is written once, in the reference. So this test
+// reads BOTH — the invariant and its remedies from Step 5, every spelling from the reference.
+// Splitting it that way is the point: an assertion that found a fence "somewhere in the payload"
+// could not tell the resident body from a reference, and the whole change is about which is which.
+test('BOS-519/BOS-1215: dispatch work is committed before the run advances, and residue that cannot be attributed stops it', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step5 = region(skill, '## Step 5:', '## Step 6:')
+    const ref = fs.readFileSync(path.join(rootDir, dir, 'references/resume-assessment.md'), 'utf8')
 
+    // --- The invariant, resident. This is what the run must know at turn zero. ----------------
     assert.match(
       step5,
       /\*\*Orchestrator\s+verification\.\*\*/,
       `${dir}/SKILL.md Step 5 must define the orchestrator verification step`,
     )
-    // The cadence is the property this ticket buys: verifying after EACH subagent bounds a
-    // mid-run death to one task. Degrading it to a single end-of-run check would leave every
-    // other assertion here green, so pin the word.
+    // The requirement itself, in one sentence. BOS-1215 replaced ~165 lines of protocol with it;
+    // if this clause goes, the body no longer says what the protocol was FOR.
     assert.match(
       step5,
-      /after\s+\*\*each\*\*\s+subagent\s+returns/,
-      `${dir}/SKILL.md Step 5 must verify after each subagent, not once at the end`,
+      /committed\s+before\s+the\s+run\s*\n?\s*advances[\s\S]{0,140}attribute\s+stops\s+the\s+run/i,
+      `${dir}/SKILL.md Step 5 must state the invariant the verification settles`,
     )
-    // Both halves: the recorded pre-dispatch HEAD and the log range against it. The HEAD is
-    // persisted to a file, not a shell variable — the two blocks straddle the dispatch and run
-    // in different shells, so a variable would be unset by the time the log range needs it.
-    assert.ok(
-      step5.includes('>"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"'),
-      `${dir}/SKILL.md Step 5 must persist the pre-dispatch HEAD across the dispatch boundary`,
-    )
-    assert.ok(
-      step5.includes(
-        `git log --oneline "$(cut -d' ' -f1 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")..HEAD"`,
-      ),
-      `${dir}/SKILL.md Step 5 must check the log advanced since the pre-dispatch HEAD (SHA field only)`,
-    )
-    // /tmp is shared: a sibling worktree's concurrent run would clobber the recorded HEAD and
-    // fake an advanced (or empty) log range. The git dir is per-worktree.
-    assert.doesNotMatch(
+    // Cadence: once per DISPATCH, and a dispatch is a task here or a whole extension on Tier 1.
+    // Degrading it to one end-of-run check would leave every other assertion here green.
+    assert.match(
       step5,
-      /\/tmp\/pre-dispatch-head/,
-      `${dir}/SKILL.md Step 5 must not keep the pre-dispatch HEAD in a shared /tmp path`,
+      /once\s+per\s*\n?\s*\*\*dispatch\*\*/,
+      `${dir}/SKILL.md Step 5 must verify once per dispatch, not once at the end`,
+    )
+    // Single-writer rule: layers below inherit the COMMIT contract, never this verification. A
+    // nested snapshot would overwrite and then delete the orchestrator's own baseline.
+    assert.match(
+      step5,
+      /inherit\s+is\s+the\s+commit-before-return\s+contract,\s+never\s*\n?\s*this\s+verification/i,
+      `${dir}/SKILL.md must keep the verification with the orchestrator, not hand it down`,
     )
     assert.match(
       step5,
-      /concurrent\s+runs\s+in\s+sibling\s+worktrees\s+cannot\s+overwrite/,
-      `${dir}/SKILL.md Step 5 must explain why the HEAD file is worktree-local`,
+      /nested\s+snapshot\s+would\s+overwrite\s+and\s+then\s+delete/i,
+      `${dir}/SKILL.md must name the nested-snapshot failure the single-writer rule prevents`,
     )
-    // Recording HEAD before the cleanup commit would make a task that landed nothing read as done.
+
+    // Both halves of the evidence, and what each one is worth.
     assert.match(
       step5,
-      /re-run\s+this\s+whole\s+block\s+afterwards\*\*[\s\S]{0,240}reads\s+as\s+done/,
-      `${dir}/SKILL.md Step 5 must re-record the pre-dispatch HEAD after resolving pre-existing dirt`,
+      /tree\s+is\s+clean,\s+and\s+you\s+have\s+recorded\s+the\s+HEAD/i,
+      `${dir}/SKILL.md Step 5 must require a clean tree and a recorded HEAD before dispatching`,
     )
+    // Why dispatching onto dirt destroys attribution: a modified path stays modified, so no
+    // before/after comparison can see the subagent's edit at all.
     assert.match(
       step5,
-      /cannot\s+be\s+attributed\s+to\s+one, do \*\*not\*\* dispatch\s+on\s+top\s+of\s+it[\s\S]{0,120}BLOCKED/,
-      `${dir}/SKILL.md Step 5 must block rather than dispatch onto un-attributable dirt`,
-    )
-    assert.match(
-      step5,
-      /nothing\s+set\s+in\s+the\s+first\s+block\s+survives\s+into\s+the\s+second/,
-      `${dir}/SKILL.md Step 5 must state that the pre- and post-dispatch blocks are separate shells`,
-    )
-    // The clean-tree check must be SCOPED. A bare `git status --porcelain` is non-empty on
-    // every run — Step 4 copies the plan deliverable and defers committing it to Step 6 — so
-    // an unscoped check would report a violation every time and stop discriminating. Pin the
-    // exclusions (plan deliverable + the daemon artifacts Step 6's gate also excludes).
-    assert.ok(
-      step5.includes('git status --porcelain --untracked-files=all -- .'),
-      `${dir}/SKILL.md Step 5 must check the tree is clean after each subagent`,
-    )
-    // Anchor the expectation to the SCOPED command: a bare "clean" comment would keep passing if
-    // the pathspec were dropped and the comment moved back onto an unscoped status.
-    assert.match(
-      step5,
-      /':\(exclude\)\.claude\/settings\.local\.json'\n# must[ ]be[ ]empty/,
-      `${dir}/SKILL.md Step 5 must state the expected empty result of the after-return status`,
-    )
-    for (const excluded of [
-      '":(exclude)${PLAN_DOC:?',
-      "':(exclude).claude/scheduled_tasks.lock'",
-      "':(exclude).claude/settings.local.json'",
-    ]) {
-      assert.ok(
-        step5.includes(excluded),
-        `${dir}/SKILL.md Step 5 clean-tree check must exclude expected non-residue ${excluded}`,
-      )
-    }
-    // Exclude the ONE plan file this run copied, never the directory: a directory-wide
-    // exclusion also hides a subagent's stray edit to another plan doc, which IS residue.
-    assert.ok(
-      !step5.includes("':(exclude)docs/plans'"),
-      `${dir}/SKILL.md Step 5 must not exclude the whole docs/plans directory`,
-    )
-    assert.match(
-      skill,
-      /PLAN_DOC="docs\/plans\//,
-      `${dir}/SKILL.md Step 4 must name the copied plan deliverable in PLAN_DOC`,
-    )
-    // Each snippet runs in a fresh shell, so PLAN_DOC must be re-set inside Step 5 itself — and
-    // guarded: an unset var makes the exclude a bare `:(exclude)`, which excludes EVERYTHING and
-    // turns the residue check into a silent pass.
-    assert.match(
-      step5,
-      /PLAN_DOC="docs\/plans\//,
-      `${dir}/SKILL.md Step 5 must re-set PLAN_DOC rather than assume Step 4's shell survived`,
-    )
-    assert.doesNotMatch(
-      step5,
-      /:\(exclude\)\$PLAN_DOC/,
-      `${dir}/SKILL.md Step 5 must not use an unguarded $PLAN_DOC in the exclude pathspec`,
-    )
-    assert.match(
-      step5,
-      /excludes\s+_everything_[\s\S]{0,80}silent\s*\n?\s*pass/i,
-      `${dir}/SKILL.md Step 5 must explain why an unset PLAN_DOC must abort`,
-    )
-    // Residue is what the subagent ADDED, not everything dirty: pre-existing dirt belongs to
-    // nobody's task and must not be swept into a recovery commit.
-    assert.match(
-      step5,
-      /pre-dispatch\s+status\s+must\s+already\s+be\s+empty/i,
-      `${dir}/SKILL.md Step 5 must require a clean tree before dispatching a task`,
-    )
-    assert.match(
-      step5,
-      /no\s+way\s+to\s+tell\s+pre-existing\s+dirt[\s\S]{0,200}subagent's\s+own\s+residue/i,
+      /already\s+modified\s+stays\s+modified[\s\S]{0,160}separate\s+pre-existing\s+dirt\s+from\s+the\s+subagent's\s+own\s+residue/i,
       `${dir}/SKILL.md Step 5 must explain why dispatching onto dirt destroys residue attribution`,
     )
     assert.match(
       step5,
-      /tree\s+was\s+clean\s+at\s+dispatch, everything\s+this\s+status\s+lists\s+is \*\*this\*\*\s*\n?\s*subagent's\s+residue/i,
-      `${dir}/SKILL.md Step 5 must attribute post-dispatch dirt to the returning subagent`,
-    )
-    // The recovery commit hits the same hooks the subagent's did — it needs the same escape.
-    assert.match(
-      step5,
-      /recovery\s+commit\s+goes\s+through\s+the\s+same\s+hooks[\s\S]{0,400}BLOCKED/,
-      `${dir}/SKILL.md Step 5 must handle a hook rejecting the residue-recovery commit`,
+      /cannot\s+attribute\s+it,\s+do\s+\*\*not\*\*\s+dispatch\s+on\s+top\s+of\s+it[\s\S]{0,120}BLOCKED\s+naming\s+the\s+paths/i,
+      `${dir}/SKILL.md Step 5 must block rather than dispatch onto un-attributable dirt`,
     )
     assert.match(
       step5,
-      /stays\s+untracked\s+until\s+Step\s+6\s+commits\s+it/,
-      `${dir}/SKILL.md Step 5 must explain why the plan deliverable is not residue`,
+      /tree\s+is\s+clean\s+again\s+\*\*and\*\*\s+the\s+log\s+has\s+advanced/i,
+      `${dir}/SKILL.md Step 5 must check both tree and log after the dispatch returns`,
     )
-    // `--untracked-files=all` is load-bearing, not decoration: at the default `-unormal` git
-    // collapses `.claude/` to one directory entry that no per-file exclusion matches.
+    // A non-empty range is necessary, not sufficient: it must hold commits the subagent REPORTED.
     assert.match(
       step5,
-      /Keep\s+`--untracked-files=all`[\s\S]{0,200}collapses\s+an\s+untracked\s+directory/,
-      `${dir}/SKILL.md Step 5 must explain why --untracked-files=all is load-bearing`,
-    )
-    assert.match(
-      step5,
-      /never\s+the\s+whole `docs\/plans`\s*\n?\s*directory/,
-      `${dir}/SKILL.md Step 5 must forbid a directory-wide docs/plans exclusion`,
-    )
-    // A no-commit task is recorded, not failed — via the commits-made field that exists for it.
-    assert.match(
-      step5,
-      /legitimately\s+produces\s+no\s+commit[\s\S]{0,120}commits\n?\s*made\*\* field/,
-      `${dir}/SKILL.md Step 5 must route a no-commit task through the commits-made field`,
-    )
-    // Violation ⇒ recovery, not hard failure.
-    assert.match(
-      step5,
-      /\*\*recover\s+rather\s+than[\s\S]{0,4}hard-fail\*\*/,
-      `${dir}/SKILL.md Step 5 must recover from a contract violation instead of hard-failing`,
-    )
-    // `--only` is load-bearing: a plain `git commit` commits the whole index, so a path the
-    // residue check deliberately excluded ($PLAN_DOC, a daemon artifact) that was staged earlier
-    // rides along invisibly. Verified empirically: `git add -- <paths>` + `git commit --only --
-    // <paths>` commits exactly those paths and leaves an unrelated pre-staged file staged.
-    assert.ok(
-      step5.includes('git commit --only -m "chore(task-N): recover uncommitted subagent work"'),
-      `${dir}/SKILL.md Step 5 must give the concrete residue-recovery commit command`,
-    )
-    assert.doesNotMatch(
-      step5,
-      /\n\s*git\s+commit -m "chore\(task-N\)/,
-      `${dir}/SKILL.md Step 5 must not use a whole-index git commit for residue recovery`,
+      /commits\s+the\s+subagent\s+itself\s+reported/i,
+      `${dir}/SKILL.md must cross-check the reported commits against the post-dispatch log range`,
     )
     assert.match(
       step5,
-      /whole[ ]index[\s\S]{0,200}swept[ ]in[ ]silently/i,
-      `${dir}/SKILL.md Step 5 must say why the recovery commit is path-scoped`,
-    )
-    // `task-N` is a template, not a literal: the substitution must be spelled out.
-    assert.match(
-      step5,
-      /substitute[ ]the[ ]task's[ ]number[ ]for `?N/,
-      `${dir}/SKILL.md Step 5 must tell the orchestrator to substitute the real task number`,
-    )
-    // Recovery must not contradict Step 6's "never a blanket git add -A" rule.
-    assert.match(
-      step5,
-      /\*\*not\*\*\s+a\s*\n?\s*licence\s+for\s+a[\s\S]{0,20}blanket `git\s+add -A`/,
-      `${dir}/SKILL.md Step 5 residue recovery must not license a blanket git add -A`,
-    )
-    // Recovery preserves the work but proves nothing about completeness: a subagent that died
-    // mid-task leaves a partial implementation that commits cleanly. Step 5 must re-assess, the
-    // way the resume reference already does, or a half-done task advances as if finished.
-    assert.match(
-      step5,
-      /does\s+not\s+prove\s+the\s+task\s+is \*\*done\*\*/i,
-      `${dir}/SKILL.md must not treat a recovery commit as proof the task is complete`,
+      /holding\s+none\s+of\s+them\s+is\s+the\s+empty-range\s*\n?\s*case\s+wearing\s+a\s+disguise/i,
+      `${dir}/SKILL.md must give the reported-SHA mismatch the empty-range remedy`,
     )
     assert.match(
       step5,
-      /re-assess\s+the\s+recovered\s+task\s+against\s+its\s+acceptance\s+criteria[\s\S]{0,200}re-dispatch\s+it/i,
-      `${dir}/SKILL.md must re-assess and re-dispatch a recovered task that falls short`,
-    )
-    // Guard every spelling of the blanket stage, not just `-A`: `git add .` and `git add --all`
-    // sweep daemon artifacts and unrelated scratch onto the branch exactly the same way.
-    assert.doesNotMatch(
-      step5,
-      /^\s*git\s+add\s+(-A\b|--all\b|\.\s*$)/m,
-      `${dir}/SKILL.md Step 5 must not issue a blanket stage-everything command`,
-    )
-    // The verification has two halves, so it needs two remedies. An empty log range with a
-    // clean tree is NOT residue — "commit the residue yourself" is a no-op there, and an
-    // orchestrator that follows it silently drops the task.
-    assert.match(
-      step5,
-      /empty\s+log\s+range[\s\S]{0,400}re-dispatch\s+that\s+task/i,
-      `${dir}/SKILL.md Step 5 must give the empty-log-range half its own re-dispatch remedy`,
-    )
-    // The snapshot path is fixed, so it is only safe with a single writer: a nested layer that ran
-    // the same procedure would clobber and then delete the outer orchestrator's baseline.
-    assert.match(
-      step5,
-      /nothing\s+you\s+dispatch\s+runs\s+it\s+again[\s\S]{0,320}never\s+this\s+verification/i,
-      `${dir}/SKILL.md must keep the snapshot procedure with the orchestrator, not hand it down`,
+      /returned\s+contract\s+is\s+advisory\s+input/i,
+      `${dir}/SKILL.md Step 5 must classify the returned contract as advisory`,
     )
     assert.match(
       step5,
-      /overwrite\s+and\s+then\s+delete\s+the\s+file\s+you\s+wrote[\s\S]{0,160}no\s*\n?\s*baseline\s+to\s+read/i,
-      `${dir}/SKILL.md must name the nested-snapshot failure the single-writer rule prevents`,
+      /later\s+completion\s+notification\s+for\s+the\s+same\s+task\s+id\s+supersedes\s+an\s+earlier\s+one/i,
+      `${dir}/SKILL.md Step 5 must state later same-task notifications supersede earlier ones`,
     )
-    // A clean pre-dispatch tree only excludes dirt that predates the dispatch. When the subagent
-    // returned, its **files touched** field is the second opinion that keeps a stray concurrent
-    // write from being committed under this task's `chore(task-N)`.
+
+    // --- One remedy per failure mode. The table is the routing. --------------------------------
+    // Attributed residue: recover it, then RE-ASSESS — a commit is not proof the task is done.
     assert.match(
       step5,
-      /clean\s+start\s+only\s+rules\s+out\s+dirt\s+that\s+predates\s+the\s+dispatch/i,
-      `${dir}/SKILL.md must bound what the clean-tree precondition actually proves`,
-    )
-    assert.match(
-      step5,
-      /\*\*files\s+touched\*\* field[\s\S]{0,240}does\s+_not_\s+name\s+as\s*\n?\s*unattributed/i,
+      /\*\*files\s+touched\*\*\s+field\s+names\s+it/i,
       `${dir}/SKILL.md must cross-check residue against the returned contract's files-touched field`,
     )
-    // …and the recovery command must stage that attributed subset, not every status path, or the
-    // cross-check above is prose the very next code block contradicts.
-    assert.ok(
-      step5.includes('git add -- <the attributed residue paths>'),
+    assert.match(
+      step5,
+      /staging\s+only\s+those\s+paths/i,
       `${dir}/SKILL.md recovery must stage the attributed subset, not every path git status listed`,
     )
     assert.match(
       step5,
-      /could \*\*not\*\* attribute\s+stays\s+out\s+of\s+that\s+commit[\s\S]{0,200}BLOCKED\s+naming\s+those\s*\n?\s*paths/i,
+      /capturing\s+residue\s+preserves\s+the\s+work,\s+it\s+never\s+proves\s+the\s+task\s+is\s+done/i,
+      `${dir}/SKILL.md must not treat a recovery commit as proof the task is complete`,
+    )
+    // Unattributable residue: never committed under the task, never swept in — the run stops.
+    assert.match(
+      step5,
+      /does\s+\*\*not\*\*\s+name[\s\S]{0,240}BLOCKED\s+naming\s+those\s+paths/i,
       `${dir}/SKILL.md must block on un-attributable residue rather than committing it under the task`,
     )
-    // A subagent that dies without returning never trips the after-return check at all, and on
-    // a fresh run Step 4.5 never executed — so Step 5 must carry the inventory rule itself.
+    // Empty range: confirm the scope is not ALREADY satisfied before re-dispatching, and the
+    // fallback tier outranks this remedy. Both edges withhold the deferred required item.
     assert.match(
       step5,
-      /never\s+returns[\s\S]{0,400}fresh[\s\S]{0,600}continue\s+from\s+committed\s+state; do\s+not\s+redo\s+committed\s+tasks/i,
-      `${dir}/SKILL.md Step 5 must cover a subagent that dies without returning, including on a fresh run`,
+      /empty\s+log\s+range/i,
+      `${dir}/SKILL.md Step 5 must give the empty-log-range half its own remedy`,
     )
-    // A non-empty log range alone proves nothing: any commit reaching HEAD lands in it, so the
-    // reported SHAs must be cross-checked or a concurrent commit makes a task that did nothing
-    // read as done.
+    assert.match(
+      step5.replace(/\s+/g, ' '),
+      /where \*\*you\*\* confirm\s+every\s+one\s+already\s+holds[\s\S]{0,240}neither\s+a\s+re-dispatch\s+nor\s+a\s+deferred\s+required\s+item/i,
+      `${dir}/SKILL.md Step 5 must withhold the empty-range remedy's deferred required item for a scope you confirmed already satisfied`,
+    )
     assert.match(
       step5,
-      /necessary\s+but\s+not\s+sufficient[\s\S]{0,200}commits\s+made\*\* field\s+actually\s+appear\s+in\s+it/i,
-      `${dir}/SKILL.md must cross-check the reported commits against the post-dispatch log range`,
+      /lower\s+tier\s+is\s+still\s+to\s+run,\s+which\s+outranks\s+this\s+remedy/i,
+      `${dir}/SKILL.md must let a remaining fallback tier outrank the re-dispatch remedy`,
     )
-    // Detecting the mismatch is useless without a remedy: a cross-check that only says "look" lets
-    // the orchestrator note the discrepancy and advance anyway.
+    // The blanket stage-everything command stays forbidden at the point of recovery.
     assert.match(
       step5,
-      /empty-log-range\s+case\s+wearing\s+a\s+disguise[\s\S]{0,160}re-dispatch\s+the\s+task/i,
-      `${dir}/SKILL.md must give the reported-SHA mismatch the empty-range re-dispatch remedy`,
+      // prose-pin: literal-space ok — `git add -A` is the shell spelling under test.
+      /blanket\s+`git add -A`\s+is\s+never\s+the\s+recovery/i,
+      `${dir}/SKILL.md Step 5 residue recovery must not license a blanket git add -A`,
     )
-    // The snapshot is consumed on success, so its presence means "a dispatch is in flight" rather
-    // than "some earlier task left this behind" — the premise the restart branch below relies on.
+    // The exclusions are a correctness rule, not a convenience: the SINGLE plan-doc path only.
+    assert.match(
+      step5,
+      /never\s+the\s+whole\s+`docs\/plans`\s+directory/i,
+      `${dir}/SKILL.md Step 5 must forbid a directory-wide docs/plans exclusion`,
+    )
+    // The body points at the one place the mechanics are written, and says it is one procedure.
+    assert.match(
+      step5,
+      /references\/resume-assessment\.md/,
+      `${dir}/SKILL.md Step 5 must point at the reference that carries the snapshot mechanics`,
+    )
+
+    // --- The mechanics, in the reference that also owns the restarted-orchestrator recovery. ---
+    // BOS-1215 moved these verbatim rather than deleting them; the spellings are the contract.
     assert.ok(
-      step5.includes('rm "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"'),
-      `${dir}/SKILL.md must delete the pre-dispatch snapshot once the range checks out`,
+      ref.includes('>"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"'),
+      `${dir}/references/resume-assessment.md must persist the pre-dispatch HEAD across the dispatch boundary`,
     )
-    assert.match(
-      step5,
-      /\*\*any\*\* resolved\s+outcome[\s\S]{0,220}not\s*\n?\s*only\s+on\s+the\s+clean\s+path/i,
-      `${dir}/SKILL.md must consume the snapshot on every resolved outcome, not just the clean one`,
-    )
-    // Consuming it *before* the recovery commit lands would discard the clean-tree guarantee that
-    // made the residue attributable, exactly when a crash needs it most.
-    assert.match(
-      step5,
-      /\*\*after\*\* the\s+recovery\s+commit\s+lands, never\s+before\s+you\s+start\s+it/i,
-      `${dir}/SKILL.md must order the snapshot deletion after the recovery commit`,
-    )
-    assert.match(
-      step5,
-      /left\s+behind\s+on\s+the\s+no-commit\s+or\s+recovery\s*\n?\s*paths\s+would\s+make\s+a\s+finished\s+task\s+look\s+interrupted/i,
-      `${dir}/SKILL.md must name the stale-snapshot failure the deletion prevents`,
-    )
-    assert.match(
-      step5,
-      /exists \*\*only\*\* while\s+a\s+dispatch\s+is\s+in\s*\n?\s*flight/i,
-      `${dir}/SKILL.md must state the consumed snapshot's invariant`,
-    )
-    // The blanket recovery command is only safe because the tree was verified clean at dispatch.
-    // A restarted orchestrator has no such snapshot, so the never-returns path must branch to
-    // per-path attribution instead of sweeping every dirty path into a recovery commit.
-    assert.match(
-      step5,
-      /the\s+snapshot, not\s+on\s+whether\s+your\s+process\s+restarted\*\*/i,
-      `${dir}/SKILL.md must branch residue recovery on the snapshot, not on a process restart`,
-    )
-    assert.match(
-      step5,
-      /is\s+present[\s\S]{0,260}recover\s+it\s+with\s+the\s+command\s*\n?\s*above/i,
-      `${dir}/SKILL.md must gate the blanket residue recovery on the surviving pre-dispatch snapshot`,
-    )
-    assert.match(
-      step5,
-      /file\s+is \*\*absent\*\*[\s\S]{0,240}attribute\s+each\s+dirty\s+path[\s\S]{0,160}cannot\s+attribute/i,
-      `${dir}/SKILL.md must require per-path attribution when the pre-dispatch snapshot is gone`,
-    )
-    // A SHA alone does not say which task was in flight, and the log only shows the tasks that
-    // finished — so a restarted orchestrator would have to guess the N in `chore(task-N)`.
     assert.ok(
-      step5.includes(
-        `printf '%s task-N\\n' "$(git rev-parse HEAD)" \\\n  >"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"`,
+      ref.includes(
+        `git log --oneline "$(cut -d' ' -f1 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")..HEAD"`,
       ),
-      `${dir}/SKILL.md must record the dispatched task id alongside the pre-dispatch HEAD`,
+      `${dir}/references/resume-assessment.md must check the log advanced since the pre-dispatch HEAD (SHA field only)`,
+    )
+    // /tmp is shared: a sibling worktree's concurrent run would clobber the recorded HEAD.
+    assert.doesNotMatch(
+      ref,
+      /\/tmp\/pre-dispatch-head/,
+      `${dir}/references/resume-assessment.md must not keep the pre-dispatch HEAD in a shared /tmp path`,
     )
     assert.match(
-      step5,
-      /second\s+field\s+names \*\*which\s+dispatch\*\*[\s\S]{0,600}Read\s+that\s+field\s+from\s+the\s+file\s+rather\s+than\s+guessing/i,
-      `${dir}/SKILL.md must make the restarted orchestrator read the interrupted dispatch id, not guess it`,
-    )
-    // BOS-693 review: Tier 1 labels the snapshot `ext-<name>` for a whole-extension dispatch, but
-    // this restart path — the primary consumer, and the only one a fresh process reaches — used to
-    // declare the second field was always `task-N` and told the reader to extract `N`. Following it
-    // after a Tier-1 interruption scopes the recovery commit and the re-assessment to a task the
-    // snapshot never named, leaving the extension's work only partially recovered. The consumer must
-    // branch on both label forms and give each its own commit scope and re-assessment unit.
-    assert.match(
-      step5,
-      /\*\*branch\s+on\s+which\s+of\s+its\s+two\s+forms\*\*/i,
-      `${dir}/SKILL.md's restart path must branch on the snapshot label form, not assume one`,
+      ref,
+      /concurrent\s+runs\s+in\s+sibling\s+worktrees\s+cannot\s+overwrite/,
+      `${dir}/references/resume-assessment.md must explain why the HEAD file is worktree-local`,
     )
     assert.match(
-      step5,
-      /`task-N` — a\s+per-task\s+dispatch\. Commit\s+the\s+residue\s+as `chore\(task-N\)` and\s+re-assess\s+task `N`\./,
-      `${dir}/SKILL.md's restart path must give the per-task label its commit scope and re-assessment unit`,
+      ref,
+      /re-run\s+this\s+whole\s+block/i,
+      `${dir}/references/resume-assessment.md must re-record the pre-dispatch HEAD after resolving pre-existing dirt`,
     )
     assert.match(
-      step5,
-      /`ext-<name>` — one\s+whole\s+Tier-1\s+methodology\s+extension[\s\S]{0,200}`chore\(ext-<name>\)`[\s\S]{0,120}entire\s+Step-5\s+scope/i,
-      `${dir}/SKILL.md's restart path must give the extension label its extension-wide commit scope and re-assessment unit`,
+      ref,
+      /fresh\s+process,\s+so\s+nothing\s+set\s+in\s+the\s+first\s+block\s+survives/i,
+      `${dir}/references/resume-assessment.md must state that the pre- and post-dispatch blocks are separate shells`,
+    )
+    // The `:?` guard: an unset PLAN_DOC would become a bare `:(exclude)` and pass silently.
+    assert.doesNotMatch(
+      ref,
+      /":\(exclude\)\$PLAN_DOC"/,
+      `${dir}/references/resume-assessment.md must not use an unguarded $PLAN_DOC in the exclude pathspec`,
     )
     assert.match(
-      step5,
-      /Never\s+assume\s+the\s+per-task\s+form/i,
-      `${dir}/SKILL.md's restart path must forbid defaulting to the per-task label`,
+      ref,
+      /excludes\s+_everything_\s+and\s+turns\s+the\s+check\s+into\s+a\s+silent\s*\n?\s*pass/i,
+      `${dir}/references/resume-assessment.md must explain why an unset PLAN_DOC must abort`,
+    )
+    assert.match(
+      ref,
+      /Keep\s+`--untracked-files=all`[\s\S]{0,240}no\s+per-file\s+exclusion\s+matches/i,
+      `${dir}/references/resume-assessment.md must explain why --untracked-files=all is load-bearing`,
+    )
+    // The recovery commit: path-scoped, and explicitly NOT a whole-index `git commit`.
+    assert.ok(
+      ref.includes('git commit --only -m "chore(task-N): recover uncommitted subagent work"'),
+      `${dir}/references/resume-assessment.md must give the concrete residue-recovery commit command`,
+    )
+    assert.doesNotMatch(
+      ref,
+      /\n\s*git\s+commit -m "chore\(task-N\)/,
+      `${dir}/references/resume-assessment.md must not use a whole-index git commit for residue recovery`,
+    )
+    assert.match(
+      ref,
+      // prose-pin: literal-space ok — `git commit` is the shell spelling under test.
+      /A\s+plain\s+`git commit`\s+would\s+commit\s+the\s+whole\s+index/i,
+      `${dir}/references/resume-assessment.md must say why the recovery commit is path-scoped`,
+    )
+    assert.match(
+      ref,
+      /substitute\s+the\s+dispatch's\s+label/i,
+      `${dir}/references/resume-assessment.md must tell the orchestrator to substitute the real dispatch label`,
+    )
+    assert.match(
+      ref,
+      /adapt\s+the\s+subject\s+to\s+exactly\s+what\s+the\s+hook's\s+own\s+error\s+names/i,
+      `${dir}/references/resume-assessment.md must handle a hook rejecting the residue-recovery commit`,
+    )
+    // Consuming the snapshot: on EVERY resolved outcome, and after the recovery commit lands.
+    assert.ok(
+      ref.includes('rm "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"'),
+      `${dir}/references/resume-assessment.md must delete the pre-dispatch snapshot once resolved`,
+    )
+    assert.match(
+      ref,
+      /at\s+\*\*any\*\*\s+resolved\s+outcome/i,
+      `${dir}/references/resume-assessment.md must consume the snapshot on every resolved outcome, not just the clean one`,
+    )
+    assert.match(
+      ref,
+      /\*\*after\*\*\s+the\s+recovery\s+commit\s+lands,\s+never\s+before/i,
+      `${dir}/references/resume-assessment.md must order the snapshot deletion after the recovery commit`,
+    )
+    assert.match(
+      ref,
+      /exists\s+\*\*only\*\*\s+while\s+a\s+dispatch\s+is\s+in\s+flight/i,
+      `${dir}/references/resume-assessment.md must state the consumed snapshot's invariant`,
+    )
+    // The two label forms, and the ban on defaulting to the per-task one.
+    assert.ok(
+      ref.includes(`printf '%s task-N\\n' "$(git rev-parse HEAD)"`),
+      `${dir}/references/resume-assessment.md must record the dispatched task id alongside the pre-dispatch HEAD`,
+    )
+    assert.match(
+      ref,
+      /branch\s+on\s+which\s+of\s+the\s+two\s+forms\s+you\s+read\s+rather\s*\n?\s*than\s+assuming\s+the\s+per-task\s+one/i,
+      `${dir}/references/resume-assessment.md must branch on the snapshot label form, not assume one`,
+    )
+    assert.match(
+      ref,
+      /`task-N`\s+—\s+a\s+per-task\s+dispatch\.\s+Commit\s+residue\s+as\s+`chore\(task-N\)`\s+and\s+re-assess\s+task\s+`N`/,
+      `${dir}/references/resume-assessment.md must give the per-task label its commit scope and re-assessment unit`,
+    )
+    assert.match(
+      ref,
+      /`ext-<name>`\s+—\s+one\s+whole\s+Tier-1\s+methodology\s+extension[\s\S]{0,220}`chore\(ext-<name>\)`[\s\S]{0,140}entire\s+Step-5\s+scope/i,
+      `${dir}/references/resume-assessment.md must give the extension label its extension-wide commit scope and re-assessment unit`,
+    )
+    // Recovery branches on the SNAPSHOT, never on whether this process restarted.
+    assert.match(
+      ref,
+      /turns\s+on\s+the\s+snapshot\s+above,\s+never\s+on\s+whether\s+your\s+process/i,
+      `${dir}/references/resume-assessment.md must branch residue recovery on the snapshot, not on a process restart`,
     )
   }
 })
@@ -5253,7 +5637,8 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
 // pinned here is the ENCLOSING SECTION, not the paragraph's own wording: an assertion that merely
 // found the sentence somewhere in the body would have passed before this fix and after it.
 test('BOS-1186: premise/AC re-verification is unconditional, outside resume-only Step 4.5', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const resumeOnly = region(
       skill,
@@ -5315,8 +5700,9 @@ test('BOS-1186: premise/AC re-verification is unconditional, outside resume-only
   }
 })
 
-test('BOS-519: resume dispatches only the remainder from committed state (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-519: resume dispatches only the remainder from committed state', () => {
+  {
+    const dir = CORE
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
     const step45 = region(skill, '## Step 4.5:', '## Step 5:')
 
@@ -5403,8 +5789,8 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
     )
     assert.match(
       ref,
-      /\*\*Present\*\*[\s\S]{0,160}recover\s+it\s+the\s+way\s+Step\s+5\s+does/,
-      `${dir}/references/resume-assessment.md must recover residue Step 5's way when the snapshot survives`,
+      /\*\*Present\*\*[\s\S]{0,200}recover\s+it\s+with\s+the\s+commands\s*\n?\s*above/,
+      `${dir}/references/resume-assessment.md must recover residue with the mechanics above when the snapshot survives`,
     )
     assert.match(
       ref,
@@ -5426,15 +5812,6 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
       `${dir}/references/resume-assessment.md must block on un-attributable dirt like Step 5 does`,
     )
   }
-
-  // Mirror parity for the reference this ticket edits (SKILL.md parity is pinned by BOS-495).
-  const [canonicalDir, pluginDir] = BUILD_MIRRORS
-  const rel = 'references/resume-assessment.md'
-  assert.equal(
-    fs.readFileSync(path.join(rootDir, pluginDir, rel), 'utf8'),
-    fs.readFileSync(path.join(rootDir, canonicalDir, rel), 'utf8'),
-    `${pluginDir}/${rel} must be byte-identical to the canonical mirror (run \`make copy-skills\`)`,
-  )
 })
 
 // BOS-742 (task 3): a review finding must EARN its must-fix status before a fix is authored — the
@@ -5466,8 +5843,9 @@ const readReviewStack = (dir) =>
 const reviewStackFor = (dir) =>
   fs.readFileSync(path.join(rootDir, dir, 'references/review-stack.md'), 'utf8')
 
-test('BOS-1103: review-stack picks the review tier from the diff at Step 6 entry (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1103: review-stack picks the review tier from the diff at Step 6 entry', () => {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
 
     // (a) A selection point at Step 6 ENTRY, driven by the DIFF — not an overrun-only fallback
@@ -6151,17 +6529,11 @@ test('BOS-1103: review-stack picks the review tier from the diff at Step 6 entry
       `${dir}/SKILL.md: neither dispatch-failure sub-case may publish "review stack did not run"`,
     )
   }
-
-  const [canonicalDir, pluginDir] = BUILD_MIRRORS
-  assert.equal(
-    reviewStackFor(pluginDir),
-    reviewStackFor(canonicalDir),
-    `${pluginDir}/references/review-stack.md must be byte-identical to the canonical mirror (run \`make copy-skills\`)`,
-  )
 })
 
 test('BOS-1000: converted section gates fail on deleted, relocated, and missing-section mutants', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const heading = '### Quick tier (minimal)'
     const clause = "plan/acceptance-criteria, as the full tier's pass does"
@@ -6199,8 +6571,9 @@ test('BOS-1000: converted section gates fail on deleted, relocated, and missing-
 const HARD_ABORT_SET =
   /auth,\s+secrets,\s+credentials,\s+migrations,\s+production\/deploy\s+configuration,\s+dependencies,\s+or\s+an\s+observable\s+public\s+API\s+change/i
 
-test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-758: Step 7 PR body requires a `## Review coverage` section', () => {
+  {
+    const dir = CORE
     const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
     // Step 6 must point a reader at where the tier is chosen, or the body reads as if the full
@@ -6266,8 +6639,9 @@ test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirr
 // because the floor was the reachable one: it fired on ordinary slow runs, whereas the off switch
 // fires only when an operator set it. Keep the exit procedure pinned to the survivor, or the one
 // route that still declines a review inherits an unpinned exit.
-test('BOS-1103: the pre-dispatch off-switch decline completes the reference push procedure before its capped sentinel (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1103: the pre-dispatch off-switch decline completes the reference push procedure before its capped sentinel', () => {
+  {
+    const dir = CORE
     const skill = readSkill(`${dir}/SKILL.md`)
     const declineStart = skill.indexOf('**The one pre-dispatch decline is the off switch.**')
     const declineEnd = skill.indexOf("**The dispatched pass's contract**", declineStart)
@@ -6346,14 +6720,15 @@ test('BOS-1103: the pre-dispatch off-switch decline completes the reference push
   }
 })
 
-test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mirrors)', () => {
+test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits', () => {
   // Step 7 is the ONLY step that runs `git push -u origin`, and Step 12 (Stop cleanly) deletes the
   // claim, drops the stop-hooks and releases the lock without pushing. Three routes stop at Step 12
   // WITHOUT passing Step 7 — the Step 6 pre-dispatch decline, `capped`, and `dispatch-failure` —
   // and all three are reachable only AFTER Step 6 committed. Exiting on any of them unpushed strands
   // finished commits in a worktree that is later destroyed, violating the repo's completion
   // invariant. Pin the push on the shared section AND on both readers that route into it.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
@@ -6559,7 +6934,8 @@ test('BOS-758 P2: untimed fallback dispatches carry an execution bound, not just
   // assertions below could only be tolerances. Frozen, they are exact equality.
   const frozenPath = frozenClockPath()
 
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewSkill = fs.readFileSync(
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
       'utf8',
@@ -6632,7 +7008,8 @@ test('BOS-1103: the quick reviewer is bounded by a per-dispatch allowance, not j
   // per-dispatch extension timeout, so the allowance is a property of the dispatch: identical on
   // the first minute of a run and on its fourth hour. Pin the derivation, not just the existence of
   // a number — an allowance re-keyed to a run clock passes a bare "is it bounded?" check.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const section = sectionRegion(
       reviewStack,
@@ -6683,10 +7060,10 @@ test('BOS-1103: the quick reviewer is bounded by a per-dispatch allowance, not j
     // `apiStart >= 0 && apiEnd > apiStart` guard around the same extraction. `regionUntilNext()`
     // IS that form — the end marker searched from after the start — and it fails closed with a
     // message naming the heading that moved, which the guard's message could not. Checked per
-    // site rather than assumed: against both mirrors' review-stack.md the extracted region is
+    // site rather than assumed: against review-stack.md the extracted region is
     // byte-identical to the raw `slice(apiStart)` it replaces (the section is now the file's last).
-    // Labelled, per `region()`'s `@param label`: all three copies run inside a mirror loop, so an
-    // unlabelled throw would name the heading that moved but not the mirror it moved in.
+    // Labelled, per `region()`'s `@param label`: three sites share this extraction, so an
+    // unlabelled throw would name the heading that moved but not the site it moved in.
     const apiGate = region(
       reviewStack,
       '### API-surface check (conditional, required',
@@ -6732,7 +7109,8 @@ test('BOS-758 P2b: the fallback bound is described as cooperative, not as a hard
   // LEG_TIMEOUT_SECONDS (and BOSS_SKILL_EXTENSION_TIMEOUT_MS) are cooperative budgets. Claiming
   // otherwise is the same unenforceable-cap defect one level up, and invites a future round to
   // "fix" it with a watchdog the harness cannot host.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewSkill = fs.readFileSync(
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
       'utf8',
@@ -6764,9 +7142,9 @@ test('BOS-758 P2b: the fallback bound is described as cooperative, not as a hard
 // merge, a partial revert, or a helpful reader "restoring" a total whose inputs they can still see
 // elsewhere in the file — and it comes back silently, because a reinstated minutes term does not
 // break the diff rule, it just adds a second opinion the rule never consults. Assert the whole
-// vocabulary is gone from the reference, both mirrors, not merely from the block that used to hold
+// vocabulary is gone from the reference entirely, not merely from the block that used to hold
 // it.
-test('BOS-1103: no tier arithmetic survives anywhere in the review stack (both mirrors)', () => {
+test('BOS-1103: no tier arithmetic survives anywhere in the review stack', () => {
   const RETIRED = [
     'FULL_TIER_MINUTES',
     'DEGRADED_TIER_MINUTES',
@@ -6780,7 +7158,8 @@ test('BOS-1103: no tier arithmetic survives anywhere in the review stack (both m
     'PREFLIGHT_STARTED_AT',
     'STEP_5_BUDGET_MINUTES',
   ]
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const skill = readSkill(`${dir}/SKILL.md`)
     for (const name of RETIRED) {
@@ -6819,7 +7198,8 @@ test('BOS-758 P2: the BLOCKED handoff reports the rescue branch, not a fixed "un
   // fail, name the unpushed commit SHAs". On the `PUSHED=rescue` path that is doubly false — eight
   // attempts, and the commits ARE on the remote — so the handoff omitted the one branch holding the
   // work while telling the next run to go looking for commits that had already left the worktree.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const section = sectionRegion(
       reviewStack,
@@ -6927,7 +7307,7 @@ const runBlock = (block, env, echo) =>
     env: { ...process.env, ...env },
   })
 
-test('BOS-1103: the dispatch hands over the per-step allowance and no clock reading (both mirrors)', () => {
+test('BOS-1103: the dispatch hands over the per-step allowance and no clock reading', () => {
   // BOS-758 P1 made the ABSOLUTE Preflight deadline reach the review worker, because the gates
   // downstream re-measured against it. BOS-1103 removed the run clock outright: no gate re-measures
   // any more, so there is nothing global left to hand over. What survives is the narrower contract,
@@ -6936,7 +7316,8 @@ test('BOS-1103: the dispatch hands over the per-step allowance and no clock read
   // `boss-review` binds it as `deadline="${STEP_6C_DEADLINE:-}"`. Hand it over under another name,
   // or hand nothing over at all, and every gate there reads an unassigned name, takes the
   // no-deadline branch, and the pass runs unbounded while both halves still read as satisfied.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const skill = readSkill(`${dir}/SKILL.md`)
 
@@ -7010,7 +7391,8 @@ test('BOS-758 P2: boss-review Phase 8 notes dispatches are gated on the caller d
   // has NOT opted into a notes extension: opting in dispatches awaited workers there, each allowed
   // a full BOSS_SKILL_EXTENSION_TIMEOUT_MS, and because the caller awaits the whole skill they run
   // straight out of its post-review reserve — after the Step 6c allowance is already spent.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewSkill = fs.readFileSync(
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
       'utf8',
@@ -7107,7 +7489,8 @@ test('BOS-758 P2: the Step 6c leg allowance normalizes its timeout in base 10, n
   // `$(( (leg_ms + 999) / 1000 ))`, where a leading zero is OCTAL. A `0600000` timeout derived
   // 196608 ms -> ~197 s -> floored to 300, while the dispatch it prices was still configured for
   // the full 600000 ms. A Step 6c gate would then admit that ten-minute leg with five minutes left.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewSkill = fs.readFileSync(
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
       'utf8',
@@ -7536,8 +7919,9 @@ const runPushBlock = (
   }
 }
 
-test('BOS-758 P2: the push block leaves no route with PUSHED unset (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-758 P2: the push block leaves no route with PUSHED unset', () => {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const block = pushBlockOf(reviewStack)
 
@@ -7997,7 +8381,8 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
   // added the tag. The fix injects BEFORE the push (the last moment the tag is free, since a tag
   // added after publication means rewriting published history), and the property that matters most
   // is the one a naive fix breaks: a tagging failure must never cost the run its commits.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const block = pushBlockOf(reviewStack)
     const runnable = block
@@ -8630,14 +9015,15 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
   }
 })
 
-test('BOS-860 ext1: the rescue ref stays unique when HEAD will not resolve (both mirrors)', () => {
+test('BOS-860 ext1: the rescue ref stays unique when HEAD will not resolve', () => {
   // The rescue ref is the last mechanism guaranteeing these commits leave the worktree, and its
   // SUFFIX is the whole of what makes it unique — a name origin already advertises is rejected as
   // non-fast-forward, and an empty suffix builds `refs/heads/<branch>-blocked-`, which git refuses
   // outright. The block therefore captures the suffix on its own and falls back to `$$`. Nothing
   // executable covered that fallback: deleting the fallback line changed no result anywhere in this
   // file, because no fixture ever made the `rev-parse` behind it fail.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const block = pushBlockOf(reviewStackFor(dir))
     // An unreachable remote is the shape that exhausts the retry loop, so it is the only one that
     // reaches the rescue path at all. The rescue push fails too — the remote is gone — but the ref
@@ -8671,8 +9057,9 @@ test('BOS-860 ext1: the rescue ref stays unique when HEAD will not resolve (both
   }
 })
 
-test('BOS-860 ext2: an emptied range is reported as vacuous, not as an observed tag (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-860 ext2: an emptied range is reported as vacuous, not as an observed tag', () => {
+  {
+    const dir = CORE
     const block = pushBlockOf(reviewStackFor(dir))
     // The reconcile drops every commit this run made, so the re-derivation scans an EMPTY range.
     // `grep -qv` finds no untagged subject there, which is how an emptied branch reaches the same
@@ -8730,7 +9117,8 @@ test('BOS-1103: the API clamp assigns its constant before the arithmetic, and yi
   // per-dispatch leg — which removes the original cause but not the failure mode, because the block
   // is still a snippet whose reader supplies its own shell. Assert on the RUN value, not the prose:
   // no byte or grep gate can tell a clamp that yields 300 from one that yields 0.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const apiGate = region(
       reviewStack,
@@ -8803,7 +9191,8 @@ test('BOS-1103: the API clamp binds BOTH tiers and is the same number in each', 
   // time, and the bound it gets is derived from the same leg in both. The live risk is now the
   // opposite of P2d's — a future "the quick tier should be cheaper" edit shrinking a REQUIRED gate
   // on the tier that already looked at less code.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const apiGate = region(
       reviewStack,
@@ -8853,7 +9242,8 @@ test('BOS-758 repair P1: Step 7 confirms the pushed tip is the tip that was revi
   // accepts a remote copy that merely CONTAINS HEAD, and its retry loop rebases onto FETCH_HEAD.
   // Step 7 then created/reused the PR immediately, so a tree that was never reviewed could ship
   // under a body reporting full coverage.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = readSkill(`${dir}/SKILL.md`)
     // BOS-737: no `length > 0` pin — `region()` already throws on an absent marker or an empty
     // region.
@@ -8928,7 +9318,8 @@ test('BOS-1103: the quick reviewer clamp is executable and derives from the same
   // dispatch here is bounded by. The failure mode that survives is the shipped-inert one — a snippet
   // whose reader supplies the shell, where an unset name is zero inside `$(( ))` and a clamp that
   // computes 0 buys a pass refused before its first leg, reporting nothing and raising no error.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const section = sectionRegion(
       reviewStack,
@@ -9026,14 +9417,15 @@ test('BOS-1103: the quick reviewer clamp is executable and derives from the same
 // the phrases this ticket must not disturb (`BLOCKED, never REVIEW_READY`,
 // `REVIEW_READY only with no deferred required item`); keeping that test literally untouched is
 // what proves the carve-out was attached, not substituted. BOS-240 also iterates `RESIDENT_BODIES`
-// (canonical only); everything below iterates `BUILD_MIRRORS` so a hand-edit of the plugin mirror,
-// or a skipped `make copy-skills`, trips.
+// (canonical only). BOS-1212: everything below asserts against the canonical tree once — a
+// hand-edit of the plugin mirror or a skipped `make copy-skills` trips the whole-tree
+// comparison in scripts/skill-mirror-generation.test.mjs instead.
 const EPIC_CORE = 'services/boss/internal/skillinstall/skills/boss-epic'
-const EPIC_MIRRORS = [EPIC_CORE, 'plugins/bossd-plugin-claude/skilldata/skills/boss-epic']
 const buildBody = (dir) => fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
-test('BOS-842: the resident state list declares four states and names PARTIAL’s three conjuncts (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-842: the resident state list declares four states and names PARTIAL’s three conjuncts', () => {
+  {
+    const dir = CORE
     const body = buildBody(dir)
     // Slice the state list rather than whole-file matching. `partial` appears a dozen times
     // elsewhere in this body (the transport preflight's `partial` capability report, "partial
@@ -9091,8 +9483,9 @@ test('BOS-842: the resident state list declares four states and names PARTIAL’
   }
 })
 
-test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria', () => {
+  {
+    const dir = CORE
     const body = buildBody(dir)
     // The whole risk of this ticket is that the carve-out is written as a general softening. Slice
     // the Hard-rules bullet and assert the SCOPING WORDING, not the presence of the token
@@ -9204,11 +9597,12 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
   }
 })
 
-test('BOS-842: Step 12’s printed output enumerates all four states (body + reference, both mirrors)', () => {
+test('BOS-842: Step 12’s printed output enumerates all four states (body + reference)', () => {
   // A run prints exactly one of these. An enumeration that still lists three is how a PARTIAL run
   // prints BLOCKED — the state would exist everywhere except on the one line a human reads.
   const allFour = /`REVIEW_READY`\s*\/\s*`PARTIAL`\s*\/\s*`BLOCKED`\s*\/\s*`NO_CHANGE`/
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const pointers = region(buildBody(dir), '## Steps 8-12:', '## Cron gate', `${dir}/SKILL.md`)
     assert.match(
       pointers,
@@ -9229,8 +9623,9 @@ test('BOS-842: Step 12’s printed output enumerates all four states (body + ref
   }
 })
 
-test('BOS-911: Step 12 restores the entry tracker state on NO_CHANGE (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-911: Step 12 restores the entry tracker state on NO_CHANGE', () => {
+  {
+    const dir = CORE
     const step12 = region(finalizeAndStop(dir), '## Step 12:', null, `${dir}/${FINALIZE_REF}`)
 
     assert.match(
@@ -9256,8 +9651,9 @@ test('BOS-911: Step 12 restores the entry tracker state on NO_CHANGE (both mirro
   }
 })
 
-test('BOS-911: Step 12 guards NO_CHANGE restore and treats restore failure as warning (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-911: Step 12 guards NO_CHANGE restore and treats restore failure as warning', () => {
+  {
+    const dir = CORE
     const step12 = region(finalizeAndStop(dir), '## Step 12:', null, `${dir}/${FINALIZE_REF}`)
 
     assert.match(
@@ -9283,8 +9679,9 @@ test('BOS-911: Step 12 guards NO_CHANGE restore and treats restore failure as wa
   }
 })
 
-test('BOS-911: Step 12 leaves one durable reason-bearing NO_CHANGE breadcrumb (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-911: Step 12 leaves one durable reason-bearing NO_CHANGE breadcrumb', () => {
+  {
+    const dir = CORE
     const step12 = region(finalizeAndStop(dir), '## Step 12:', null, `${dir}/${FINALIZE_REF}`)
 
     assert.match(
@@ -9305,8 +9702,9 @@ test('BOS-911: Step 12 leaves one durable reason-bearing NO_CHANGE breadcrumb (b
   }
 })
 
-test('BOS-911: Step 12 breadcrumb is idempotent and repeat-visible (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-911: Step 12 breadcrumb is idempotent and repeat-visible', () => {
+  {
+    const dir = CORE
     const step12 = region(finalizeAndStop(dir), '## Step 12:', null, `${dir}/${FINALIZE_REF}`)
 
     assert.match(
@@ -9322,8 +9720,9 @@ test('BOS-911: Step 12 breadcrumb is idempotent and repeat-visible (both mirrors
   }
 })
 
-test('BOS-911: Step 12 breadcrumb is secret-hygienic (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-911: Step 12 breadcrumb is secret-hygienic', () => {
+  {
+    const dir = CORE
     const step12 = region(finalizeAndStop(dir), '## Step 12:', null, `${dir}/${FINALIZE_REF}`)
 
     assert.match(
@@ -9339,8 +9738,9 @@ test('BOS-911: Step 12 breadcrumb is secret-hygienic (both mirrors)', () => {
   }
 })
 
-test('BOS-911: Step 12 breadcrumb and restore precede post-terminal extensions (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-911: Step 12 breadcrumb and restore precede post-terminal extensions', () => {
+  {
+    const dir = CORE
     const step12 = region(finalizeAndStop(dir), '## Step 12:', null, `${dir}/${FINALIZE_REF}`)
 
     assert.ok(
@@ -9351,8 +9751,9 @@ test('BOS-911: Step 12 breadcrumb and restore precede post-terminal extensions (
   }
 })
 
-test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label and proof (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label and proof', () => {
+  {
+    const dir = CORE
     const ref = finalizeAndStop(dir)
     // Section-sliced, because each of these sentences is only correct in its own step: a
     // "never .inReview" clause sitting in Step 12 would leave Step 9 free to ready-and-move the
@@ -9492,8 +9893,9 @@ test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label
   }
 })
 
-test('BOS-842: review-stack owns the PARTIAL publication route and writes the body itself (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-842: review-stack owns the PARTIAL publication route and writes the body itself', () => {
+  {
+    const dir = CORE
     const reviewStack = readReviewStack(dir)
     assert.ok(
       reviewStack.indexOf('### PARTIAL-route publication') >= 0,
@@ -9824,8 +10226,9 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
 // description; this pins the link from the review loop's `capped` verdict to the publication route.
 // Delete that link and PARTIAL is described everywhere and produced nowhere — inertness one level up
 // from where the section defends it — while every other assertion in this file stays green.
-test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publication section (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publication section', () => {
+  {
+    const dir = CORE
     const routes = region(
       buildBody(dir),
       '**Route on the file verdict.**',
@@ -9904,9 +10307,10 @@ test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publicatio
 // in isolation. The literal is EXTRACTED from boss-build and asserted into boss-epic rather than
 // hard-coded twice: a hard-coded copy in the test is a third place to drift, and it would let both
 // skills be edited together into agreement on a string the gate no longer matches.
-test('BOS-842: the do-not-merge marker is byte-identical across boss-build and boss-epic (all mirrors)', () => {
-  const pairs = BUILD_MIRRORS.map((buildDir, i) => [buildDir, EPIC_MIRRORS[i]])
-  for (const [buildDir, epicDir] of pairs) {
+test('BOS-842: the do-not-merge marker is byte-identical across boss-build and boss-epic', () => {
+  {
+    const buildDir = CORE
+    const epicDir = EPIC_CORE
     const section = region(
       readReviewStack(buildDir),
       '### PARTIAL-route publication',
@@ -9950,8 +10354,9 @@ test('BOS-842: the do-not-merge marker is byte-identical across boss-build and b
   }
 })
 
-test('BOS-842: core-spine §1 carries four AGENT-NEUTRAL terminal states (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-842: core-spine §1 carries four AGENT-NEUTRAL terminal states', () => {
+  {
+    const dir = CORE
     const spine = fs.readFileSync(path.join(rootDir, dir, 'references/core-spine.md'), 'utf8')
     const one = region(spine, '## 1. Four terminal states', '## 2. ', `${dir}/core-spine.md`)
     for (const state of ['review-ready', 'blocked', 'partial', 'no-change']) {
@@ -10079,8 +10484,9 @@ test('BOS-842: all three user-facing docs enumerate PARTIAL alongside the other 
 // The pins are whitespace-tolerant (`\s+`, never a literal space) because these sentences sit in
 // paragraphs that rewrap whenever a neighbouring one is edited, and a literal-space pin would red
 // on the rewrap while naming no real defect.
-test('BOS-798: core-spine §2 carries the three blast-radius rules for prose edits (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-798: core-spine §2 carries the three blast-radius rules for prose edits', () => {
+  {
+    const dir = CORE
     const spine = fs.readFileSync(path.join(rootDir, dir, 'references/core-spine.md'), 'utf8')
     const rules = region(
       spine,
@@ -10220,7 +10626,8 @@ test('BOS-964: the shipped Step 6 seed block really writes a provisional capped 
   // EXECUTABLE, not prose-pinning. This is the assertion that would have caught the observed
   // failure class: it runs the block the body actually ships against a real run dir and requires
   // the sentinel to come back out of the FILE classified, with the marker set.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = readSkill(`${dir}/SKILL.md`)
     const toolbox = path.join(rootDir, dir, 'toolbox')
     const runSentinel = path.join(toolbox, 'bs-run-sentinel.mjs')
@@ -10327,7 +10734,8 @@ test('BOS-964: the shipped Step 6 seed block really writes a provisional capped 
 })
 
 test('BOS-964: the classify block reads the marker and the route list carries the fourth arm', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const skill = readSkill(`${dir}/SKILL.md`)
     const step6 = region(
       skill,
@@ -10414,7 +10822,8 @@ test('BOS-964: the classify block reads the marker and the route list carries th
 })
 
 test('BOS-964: review-stack tells the subagent to write the verdict when it is determined', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
     const contract = region(
       reviewStack,
@@ -10436,10 +10845,28 @@ test('BOS-964: review-stack tells the subagent to write the verdict when it is d
       /As\s+your\s+\*\*last\s+action\*\*,\s+write/i,
       `${dir}: the bare "as your last action, write" instruction must not survive without the write-when-known rule`,
     )
-    // (b) THE MARKER IS ALWAYS EXPLICIT. "Not provisional" is stated, never inferred from absence.
+    // (b) THE MARKER IS ALWAYS EXPLICIT. "Not provisional" is stated, never inferred from absence
+    // — but it is BUILT, not transcribed. The literal survives in this region only as prose
+    // explaining what the verb prints, so an `includes` of that literal is satisfied by the
+    // sentence rather than by any write: it pinned the stale shape in place while the runnable
+    // command had already moved to the verb. Pin what the command does instead, and forbid the
+    // literal inside the runnable fences, where prose can never reach.
+    assert.match(
+      contract,
+      /sentinel-payload\s+"\$\{STEP_6C_FUNDING_REASON:-\}"/,
+      `${dir}: every subagent write must BUILD the non-provisional payload through the sentinel-payload verb`,
+    )
+    const contractFences = [...contract.matchAll(/```bash\n([\s\S]*?)```/g)]
+      .map((m) => m[1])
+      .join('\n')
     assert.ok(
-      contract.includes(`'{"${PROVISIONAL_KEY}":false}'`),
-      `${dir}: every subagent write must carry the explicit non-provisional payload literal`,
+      contractFences.includes('sentinel-payload'),
+      `${dir}: the contract's runnable fence must call the sentinel-payload verb`,
+    )
+    assert.doesNotMatch(
+      contractFences,
+      new RegExp(`'\\{"${PROVISIONAL_KEY}":false\\}'`),
+      `${dir}: no runnable write may hand-write the payload literal — that literal is what dropped the funding reason`,
     )
     // …including the two generated `capped 1` routes elsewhere in this file. The contract states
     // the marker is "always present and explicit rather than inferred from absence"; an absolute
@@ -10452,8 +10879,15 @@ test('BOS-964: review-stack tells the subagent to write the verdict when it is d
     // Interpolate the constant rather than re-typing the literal: the assertion above already
     // tracks `PROVISIONAL_KEY`, and a neighbour that silently kept pinning the old spelling is the
     // drift this join exists to stop. The key is asserted regex-safe so no escaping is needed.
+    // BOS-1197 widened the accepted tail by exactly one shape: a `sentinel-payload` command
+    // substitution. That verb ALWAYS emits the marker — a funding reason is added as a sibling key,
+    // never in place of it, and the helper's own suite pins those bytes — so the marker is still
+    // explicit and still not inferred from absence. It replaces the hand-escaped `PAYLOAD` variable
+    // the first cut of this disclosure used, which had to rebuild the literal at every site.
     assert.match(PROVISIONAL_KEY, /^[A-Za-z_][A-Za-z0-9_]*$/, 'PROVISIONAL_KEY must be regex-safe')
-    const markedTail = `'\\{"${PROVISIONAL_KEY}":false\\}'`
+    const markedLiteral = `'\\{"${PROVISIONAL_KEY}":false\\}'`
+    const generatedPayload = `\\\\\\n\\s*"\\$\\(node "\\$[A-Z0-9_]+(?:/bs-review-caps\\.mjs)?" sentinel-payload `
+    const markedTail = `(?:${markedLiteral}|${generatedPayload})`
     const bareCapped =
       reviewStack.match(new RegExp(`sentinel\\s+capped\\s+1\\)"(?!\\s+${markedTail})`, 'g')) ?? []
     assert.equal(
@@ -10466,6 +10900,15 @@ test('BOS-964: review-stack tells the subagent to write the verdict when it is d
     assert.ok(
       markedCapped.length >= 2,
       `${dir}: the below-floor route and the degraded did-not-report route must both still write a generated capped 1 (found ${markedCapped.length})`,
+    )
+    // The hand-built `PAYLOAD` preamble is gone: the verb emits the marker itself, and its own
+    // suite pins those bytes. Assert no shell variable rebuilds the payload here — a hand-escaped
+    // rebuild is what let a route pass an unbound (and therefore empty) reason while still reading
+    // as marked, and it is what had to be re-typed identically at three sites to stay correct.
+    assert.deepEqual(
+      reviewStack.match(/^\s*PAYLOAD=.*$/gm) ?? [],
+      [],
+      `${dir}: the sentinel payload is built by the sentinel-payload verb, never re-escaped into a PAYLOAD shell variable`,
     )
 
     // (c) EACH WRITE POINT, at the step that owns it. BOS-1097 collapsed the three stacked review
@@ -10528,7 +10971,8 @@ test('BOS-964: review-stack tells the subagent to write the verdict when it is d
 })
 
 test('BOS-964: a provisional verdict that survived is BLOCKED, never PARTIAL', () => {
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
 
     // §PARTIAL's T1 already refuses a self-generated `capped`; the seed is named explicitly so the
@@ -10611,9 +11055,15 @@ test('BOS-964: a provisional verdict that survived is BLOCKED, never PARTIAL', (
   }
 })
 
-test('BOS-964: an allowance that declines work must disclose both numbers', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-964: an allowance that declines work must disclose both numbers', async () => {
+  {
+    const dir = CORE
     const reviewStack = reviewStackFor(dir)
+    // Read the terms from the VENDORED helper under this mirror, so a price that moves in the
+    // module reds the quote rather than leaving a stale literal green.
+    const caps = await import(
+      pathToFileURL(path.join(rootDir, dir, 'toolbox/bs-review-caps.mjs')).href
+    )
     const tierSelection = region(
       reviewStack,
       '## Step 6 entry — review tier selection',
@@ -10661,8 +11111,59 @@ test('BOS-964: an allowance that declines work must disclose both numbers', () =
     )
     assert.match(
       step6c,
-      /`full\s+\(boss-review\s+capped\s+—\s+<N>\s+open\s+must-fix\s+reported;\s+its\s+<M>-minute\s+allowance\s+funds\s+0\s+fix\s+rounds,\s+each\s+costing\s+<C>\s+minutes\)`/,
-      `${dir}: a capped Step 6c must publish the disclosure suffix on its \`full\` token`,
+      /`full\s+\(boss-review\s+capped\s+—\s+<N>\s+open\s+must-fix\s+reported;\s+its\s+<M>-minute\s+allowance\s+funds\s+<F>\s+fix\s+rounds,\s+each\s+costing\s+<C>\s+minutes\)`/,
+      `${dir}: a capped Step 6c must publish the disclosure suffix on its \`full\` token, with the funded count as the placeholder <F>`,
+    )
+    // BOS-1197: and <F> must be SOURCED from the computed value, because a narrated count cannot be
+    // checked by anything. It must NOT be justified by the leg-timeout staleness story the first
+    // cut shipped: measured across BOSS_SKILL_EXTENSION_TIMEOUT_MS from 300s to 86400s, the stamped
+    // allowance IS the leg product rounded up to the minute, so the remainder is always under 60s
+    // and `fundedFixRounds` is always 0. The count cannot move that way, and the body said it could.
+    assert.match(
+      step6c,
+      /`<F>`\s+is\s+the\s+`fundedFixRounds`\s+the\s+funding\s+call\s+printed\s+rather\s+than\s+a\s*\n?\s*literal/i,
+      `${dir}: the suffix's <F> must be sourced from the computed disclosure`,
+    )
+    assert.doesNotMatch(
+      step6c,
+      /(?:goes|go)\s+stale\s+the\s+moment\s+a?\s*repository\s+raises/i,
+      `${dir}: the funded count does NOT move with the leg timeout — re-derive it before restating that mechanism`,
+    )
+    // Proven, not asserted from prose: the count is 0 at every leg timeout the normalisation admits.
+    for (const legMs of [250_000, 300_000, 600_000, 3_600_000, 86_400_000]) {
+      const leg = Math.max(300, Math.ceil(legMs / 1000))
+      const legs = 3
+      assert.equal(
+        caps.fundedFixRounds({
+          legSeconds: leg,
+          initialLegs: legs,
+          allowanceSeconds: Math.ceil((legs * leg) / 60) * 60,
+        }),
+        0,
+        `${dir}: at BOSS_SKILL_EXTENSION_TIMEOUT_MS=${legMs} the stamp still funds 0 fix rounds — the timeout is not what moves this count`,
+      )
+    }
+    // …and <C> is MINUTES. The helper echoes SECONDS (1200), so a body that sources <C> straight
+    // from `fixRoundSeconds` publishes "each costing 1200 minutes" in the PR body on every capped
+    // run. The conversion must be named.
+    assert.match(
+      step6c,
+      /`<C>`\s+is\s+`STEP_6C_FIX_ROUND_MINUTES`\s+—\s+the\s+\*\*minutes\*\*\s+the\s+block\s+above\s+converted/i,
+      `${dir}: <C> must be sourced from a converted MINUTES value, not the echoed fixRoundSeconds`,
+    )
+    assert.match(
+      step6c,
+      new RegExp(
+        `each\\s+costing\\s+${caps.DEFAULT_FIX_ROUND_SECONDS}\\s+minutes[\\s\\S]{0,80}` +
+          `${caps.DEFAULT_FIX_ROUND_SECONDS / 60}`,
+      ),
+      `${dir}: the unit trap must name the wrong string it produces (${caps.DEFAULT_FIX_ROUND_SECONDS} minutes for a ${caps.DEFAULT_FIX_ROUND_SECONDS / 60}-minute round)`,
+    )
+    // An unparsed count must publish NO numbers rather than a hole where <F> belongs.
+    assert.match(
+      step6c,
+      /funding-unpriced[\s\S]{0,120}publish\s*\n?\s*no\s+numbers\s+at\s+all/i,
+      `${dir}: an unpriced funding call must suppress the numeric suffix, not render a hole`,
     )
     assert.match(
       step6c,
@@ -10700,7 +11201,7 @@ test('BOS-964: an allowance that declines work must disclose both numbers', () =
 // and surfaced only as `mergeStateStatus: DIRTY` after the final push — after every finding,
 // disposition and clean verdict had already been computed against a base that no longer existed.
 // These gates hold the round-boundary re-check, its act-on-hit rebase, and the fail-closed reading
-// of `unevaluated` in place across both mirrors.
+// of `unevaluated` in place in the canonical payload.
 const baseDriftSection = (dir) =>
   region(
     readReviewStack(dir),
@@ -10709,7 +11210,7 @@ const baseDriftSection = (dir) =>
     `${dir}/references/review-stack.md base-drift section`,
   )
 
-test('BOS-1020: Step 6 dispatch carries the base identity by name (both mirrors)', () => {
+test('BOS-1020: Step 6 dispatch carries the base identity by name', () => {
   for (const mirror of Object.keys(RESIDENT_BODIES)) {
     const body = readSkill(RESIDENT_BODIES[mirror])
     const dispatch = region(
@@ -10736,8 +11237,9 @@ test('BOS-1020: Step 6 dispatch carries the base identity by name (both mirrors)
   }
 })
 
-test('BOS-1020: the review pass re-checks base drift at its check point (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1020: the review pass re-checks base drift at its check point', () => {
+  {
+    const dir = CORE
     // BOS-1097: the whole-branch round loop is gone, so the check no longer opens "round 0" — it
     // is a single check point immediately before the one review pass is dispatched. The gate that
     // matters survives the collapse unchanged: the check must be ordered ahead of the allowance
@@ -10822,8 +11324,9 @@ test('BOS-1020: the review pass re-checks base drift at its check point (both mi
   }
 })
 
-test('BOS-1020: an unevaluated drift reading is never read as clean (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1020: an unevaluated drift reading is never read as clean', () => {
+  {
+    const dir = CORE
     const section = baseDriftSection(dir)
     // The fail-closed guard contract: "could not evaluate" is its own outcome on BOTH fields.
     assert.match(
@@ -10905,11 +11408,12 @@ test('BOS-1020: an unevaluated drift reading is never read as clean (both mirror
   }
 })
 
-test('BOS-1020: the boundary rebase fires only on a proven-clean merge (both mirrors)', () => {
+test('BOS-1020: the boundary rebase fires only on a proven-clean merge', () => {
   // The ticket's acceptance criterion is explicit — refresh by rebase at the detecting boundary
   // "only when `mergeTree` is `'clean'`". The first shipped rule rebased on any non-empty
   // intersection, and explicitly on `unevaluated`: fail-safe, but a silent departure from an AC.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const section = baseDriftSection(dir)
     assert.match(
       section,
@@ -10945,11 +11449,12 @@ test('BOS-1020: the boundary rebase fires only on a proven-clean merge (both mir
   }
 })
 
-test('BOS-1020: a failed base fetch reaches the report, not only stderr (both mirrors)', () => {
+test('BOS-1020: a failed base fetch reaches the report, not only stderr', () => {
   // `git fetch … || echo …>&2` left the failure entirely outside DRIFT_JSON. The detector then read
   // a stale BASE_REF, plausibly reported `behind: 0`, and the note became the flat string
   // `Base drift: none.` — the one substitution the reviewer brief forbids for this note.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const section = baseDriftSection(dir)
     assert.match(
       section,
@@ -11011,12 +11516,13 @@ const retiredStage2Trigger = (r) =>
   (r.stage2 === true && r.mergeTree === 'unevaluated') ||
   r.mergeTree === 'conflicts'
 
-test('BOS-1020: the documented drift-check block runs against a real origin (both mirrors)', () => {
+test('BOS-1020: the documented drift-check block runs against a real origin', () => {
   // EXECUTABLE, not prose-pinning. `scripts/check-skill-shell.mjs` only runs `bash -n` over this
   // fence, and a syntax check cannot see that the block reads the wrong ref, drops the fetch
   // failure, or emits a report the documented trigger then misclassifies. The plan asked for a
   // hermetic bare-origin-plus-clone fixture for exactly that reason.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const section = baseDriftSection(dir)
     const fences = [...section.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1])
     assert.equal(
@@ -11232,11 +11738,12 @@ test('BOS-1020: the documented drift-check block runs against a real origin (bot
   }
 })
 
-test('BOS-1020: the drift note has a return channel to the orchestrator (both mirrors)', () => {
+test('BOS-1020: the drift note has a return channel to the orchestrator', () => {
   // The check runs INSIDE the dispatched review-stack subagent, but `## Autonomous decisions` is
   // the orchestrator's section. Without the note on the returned contract, the clean route simply
   // never carries it — only the BLOCKED route, which publishes its own, would ever show it.
-  for (const dir of BUILD_MIRRORS) {
+  {
+    const dir = CORE
     const returns = region(
       readReviewStack(dir),
       'The review subagent RETURNS',
@@ -11281,8 +11788,9 @@ test('BOS-1020: the drift note has a return channel to the orchestrator (both mi
   }
 })
 
-test('BOS-1020: a drift hit rebases, re-binds REVIEW_BASE, and is capped (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1020: a drift hit rebases, re-binds REVIEW_BASE, and is capped', () => {
+  {
+    const dir = CORE
     const section = baseDriftSection(dir)
     // Rebase, never merge — boss-finalize's gate forbids the merge commit outright.
     assert.match(
@@ -11353,8 +11861,9 @@ test('BOS-1020: a drift hit rebases, re-binds REVIEW_BASE, and is capped (both m
   }
 })
 
-test('BOS-1020: a rebase forces the pass to a full round with a file-level guard (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1020: a rebase forces the pass to a full round with a file-level guard', () => {
+  {
+    const dir = CORE
     const section = baseDriftSection(dir)
     // BOS-1097 moved the oscillation guard inside `boss-review`'s own fix loop, so this file no
     // longer owns a `6. **Oscillation guard.**` step to degrade. The knowledge that made the
@@ -11401,8 +11910,9 @@ test('BOS-1020: a rebase forces the pass to a full round with a file-level guard
   }
 })
 
-test('BOS-1020: the drift note reaches the reviewer and every route out (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1020: the drift note reaches the reviewer and every route out', () => {
+  {
+    const dir = CORE
     // The note reaches the pass through the invocation itself — the retired prompt template's
     // `[BASE_DRIFT_NOTE]` slot is gone, so the reviewer brief is the only channel left and it must
     // carry the note verbatim, plus the fail-closed reading of a check that did not run.
@@ -11511,8 +12021,9 @@ test('BOS-1116: review comment upserts require an anchored marker and matching a
 // dir, so the prose names the CLASS of check and never this project's tool. That
 // absence is asserted here as well as over review-stack.md, because the new
 // finalize-and-stop.md sentences are exactly where naming the tool would be tempting.
-test('BOS-1195: injector-failure and rejection guidance is corrected (both mirrors)', () => {
-  for (const dir of BUILD_MIRRORS) {
+test('BOS-1195: injector-failure and rejection guidance is corrected', () => {
+  {
+    const dir = CORE
     const finalize = finalizeAndStop(dir)
 
     // --- R5a: a failed injection is a disclosure item, not a merge blocker. ---
@@ -11615,5 +12126,112 @@ test('BOS-1195: injector-failure and rejection guidance is corrected (both mirro
       skipAt >= 0 && skipAt < honestyAt,
       `${dir}: the skip-note paragraph must sit outside the honesty window it would otherwise widen`,
     )
+  }
+})
+
+test('an allowance is a skip line — the four pinned sentences, and a curated evidence-routed list', () => {
+  // BOS-1197 row 4/R4. The ticket's recurring mechanism is "a time/budget threshold that decides an
+  // outcome or a terminal state". The subject sites are fixed elsewhere in this file; the four
+  // sites in `PINNED` already carry the correct statement, and the only way they regress is by
+  // someone DELETING the sentence while the behaviour silently follows. Pin the sentence so that
+  // deletion reds — that half reads the real artifacts off disk under both skill roots.
+  //
+  // SCOPE, stated exactly: this test does NOT scan the tree. `EVIDENCE_ROUTED_ALLOW_LIST` is a
+  // curated record of the sites the BOS-1197 enumeration adjudicated as lawful because they route
+  // on EVIDENCE rather than elapsed time; the equality check over it makes EDITING that record a
+  // deliberate act in this file, and nothing more. A fifth budget-routed site added anywhere in the
+  // repository is invisible here, and no assertion below should be read as claiming otherwise —
+  // detecting one needs a real scanner, which this is not.
+  const PINNED = [
+    {
+      site: 'boss-build/references/knowledge-extensions.md §Budget gate',
+      file: 'references/knowledge-extensions.md',
+      skill: 'boss-build',
+      patterns: [
+        /The\s+ceiling\s+is\s+a\s+skip\s+line,\s+never\s+a\s+terminal\s+state/,
+        /It\s+reads\s+no\s+run\s+clock/,
+        /can\s+never\s+produce\s+`BLOCKED`\*{0,2}\s+and\s+never\s+changes\s+the\s+run's\s+terminal\s+state/,
+      ],
+    },
+    {
+      site: 'boss-build/references/proof-capture.md §Step 11',
+      file: 'references/proof-capture.md',
+      skill: 'boss-build',
+      patterns: [
+        /Step\s+11\s+may\s+\*\*never\*\*\s+change\s+the\s+terminal\s+state/,
+        /never\s+route\s+to\s+BLOCKED/,
+      ],
+    },
+    {
+      site: 'boss-epic/SKILL.md §Wall clock exceeded',
+      file: 'SKILL.md',
+      skill: 'boss-epic',
+      patterns: [/Wall-clock\s+expiry\s+is\s+a\s+budget\s+fact,\s+not\s+death\s+evidence/],
+    },
+    {
+      site: 'boss-repair/SKILL.md watch loop',
+      file: 'SKILL.md',
+      skill: 'boss-repair',
+      patterns: [/Ending\s+short\s+of\s+green\s+is\s+a\s+residual,\s+not\s+a\s+true\s+stop/],
+    },
+  ]
+
+  // Sites whose threshold DOES reach a terminal state, each with the discriminator that makes it
+  // lawful. These are data, not assertions, and the list is CURATED rather than discovered: the
+  // equality check below only makes changing this record a deliberate edit. It cannot notice a new
+  // site in the tree, so it is not evidence that no new site exists.
+  const EVIDENCE_ROUTED_ALLOW_LIST = [
+    {
+      site: 'boss-build/references/callback-watches.md bounded fallback poll',
+      discriminator:
+        'routes on the check state, not elapsed time — an unsettled or unreadable rollup is genuinely not green, and `timeout` and `unknown` route identically; the cap is on READS, not wall time',
+    },
+    {
+      site: 'boss-build/references/finalize-and-stop.md green gate',
+      discriminator:
+        'consumes CI_WAIT_STATE — the same check-state routing as the poll that produced it',
+    },
+    {
+      site: 'services/bossd/internal/tccprobe/tccprobe.go',
+      discriminator:
+        'the timeout IS the observation ("we could not read this path"), reported as a probe status, never a run terminal state',
+    },
+    {
+      site: 'services/bossd/internal/server/server.go session-start / turn-start budgets',
+      discriminator:
+        'RPC/stream deadlines surfaced as CodeDeadlineExceeded to the caller; no review depth or ticket terminal state depends on them',
+    },
+  ]
+  assert.deepEqual(
+    EVIDENCE_ROUTED_ALLOW_LIST.map((entry) => entry.site).sort(),
+    [
+      'boss-build/references/callback-watches.md bounded fallback poll',
+      'boss-build/references/finalize-and-stop.md green gate',
+      'services/bossd/internal/server/server.go session-start / turn-start budgets',
+      'services/bossd/internal/tccprobe/tccprobe.go',
+    ],
+    'editing this curated record must be deliberate — it is a ledger of adjudicated sites, not a detector of new ones',
+  )
+  for (const entry of EVIDENCE_ROUTED_ALLOW_LIST) {
+    assert.ok(
+      entry.discriminator.length > 40,
+      `${entry.site}: an allow-list entry must carry the reason it is evidence-routed, not a bare path`,
+    )
+  }
+
+  // BOS-1212: the plugin mirror is an rsync of this tree, checked as a generated tree by
+  // scripts/skill-mirror-generation.test.mjs, so these clauses pin the canonical root only.
+  {
+    const root = 'services/boss/internal/skillinstall/skills'
+    for (const { site, file, skill, patterns } of PINNED) {
+      const source = fs.readFileSync(path.join(rootDir, root, skill, file), 'utf8')
+      for (const pattern of patterns) {
+        assert.match(
+          source,
+          pattern,
+          `${root}/${skill}/${file} (${site}): an allowance must state that it is a skip line and never selects a terminal state — deleting that sentence is how the invariant regresses`,
+        )
+      }
+    }
   }
 })

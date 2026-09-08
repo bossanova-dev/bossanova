@@ -32,6 +32,7 @@
 
 import { readFileSync } from 'node:fs'
 
+import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import { findDroppedImages, originalNotesBodies } from './plan-image-guard.mjs'
 import {
@@ -327,6 +328,7 @@ function main() {
       `plan-writeback-verify: cannot read intended description ${intended}: ${error.message}`,
     )
     process.exitCode = 1
+    gateRecorder.record('fire', 'unreadable-intended')
     return
   }
   let storedText
@@ -337,6 +339,7 @@ function main() {
       `plan-writeback-verify: cannot read stored description ${stored}: ${error.message}`,
     )
     process.exitCode = 1
+    gateRecorder.record('fire', 'unreadable-stored')
     return
   }
 
@@ -345,12 +348,26 @@ function main() {
   if (result.verdict === null) {
     console.error(`plan-writeback-verify: ${result.reason}`)
     process.exitCode = result.exitCode
+    gateRecorder.record('fire', 'unverifiable')
     return
   }
+
+  // The three verdicts are already a closed slug vocabulary, so the outcome line reuses them
+  // verbatim instead of inventing a second set of reason tokens that could drift from them.
+  gateRecorder.record(result.exitCode === 0 ? 'pass' : 'fire', result.verdict)
 
   console.log(`writeback-verdict: ${result.verdict}`)
   console.log(`plan-writeback-verify: ${result.reason}`)
   if (result.exitCode !== 0) {
+    // The verdict is the thing the caller defers to, so a FAILING run must not leave it on stdout
+    // alone. A caller that captured only stderr would otherwise have the diagnosis without the
+    // machine-readable word for it, and would have to infer `drift` from the exit status. No
+    // caller does that today — the one skill-body call site captures neither stream — so this is a
+    // guarantee for the next caller, not a fix for an observed one. Repeat it rather than move it: a
+    // caller already grepping stdout for `writeback-verdict:` keeps working unchanged, and a
+    // REFUSAL still emits no verdict line on either stream, which is what keeps an unverifiable
+    // run distinguishable from a measured one.
+    console.error(`writeback-verdict: ${result.verdict}`)
     console.error(`plan-writeback-verify: ${result.reason}`)
     console.error(
       'plan-writeback-verify: the description is ALREADY stored — do not attempt a corrective rewrite; ' +
@@ -360,13 +377,20 @@ function main() {
   }
 }
 
+// One gate-outcome line per invocation. The recorder LATCHES, so the branch that names
+// a verdict or a read failure records it precisely and this wrapper's exit-code-derived call is a
+// no-op for it — while an argument-parse throw, which never reaches main's body, still records.
+const gateRecorder = createGateRecorder('plan-writeback-verify')
+
 // isMainModule resolves both paths through symlinks so this fail-closed CLI gate cannot be skipped.
 const invokedDirectly = isMainModule(import.meta.url)
 if (invokedDirectly) {
   try {
     main()
+    gateRecorder.record(process.exitCode ? 'fire' : 'pass', process.exitCode ? 'violations' : 'ok')
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
+    gateRecorder.record('fire', 'guard-threw')
   }
 }

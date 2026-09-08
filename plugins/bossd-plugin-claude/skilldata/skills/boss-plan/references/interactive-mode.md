@@ -276,9 +276,9 @@ redrafts use explicit exemption reasons; consumers do not require this structure
 **Preserve `## Original notes` VERBATIM** (all interactive tiers). When composing
 `## Original notes`, copy the ticket's prior description byte-for-byte from
 `DESCRIPTION_SNAPSHOT_PATH`; do not retype, summarize, or reconstruct it. That snapshot holds the
-tracker's **stored** description bytes, not a rendering of them, and carries no byte the stored
-description does not — no trailing newline included; add none, because one extra terminal byte
-fails the verbatim gate late for a reason unrelated to content. Every image reference the
+tracker's **stored** description bytes, not a rendering of them, and carries what the tracker
+stored and nothing added. Copy from it and add nothing: what the verbatim gate decides late in
+Phase 4 is whether that block survived this run unchanged. Every image reference the
 ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
 `uploads.linear.app`/attachment URLs — must survive byte-for-byte, URLs intact except for required
 upload-signature stripping. **Never** replace an image with a `[screenshot: …]` text placeholder or

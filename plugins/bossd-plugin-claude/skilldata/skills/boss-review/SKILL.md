@@ -92,12 +92,10 @@ A caller may supply a **wall-clock deadline** with the invocation (`boss-build` 
 deadline first consulted in Phase 6 has already let Phases 1 and R spend it, which is the advertised
 cap being unenforceable rather than merely late.
 
-**Units — the easy thing to get wrong.** A supplied deadline is an **absolute Unix time in seconds**,
-the unit `date +%s` speaks, and so is every clock reading compared against it. Every allowance below
-is therefore named twice: a `_MINUTES` figure for pricing, and the `_SECONDS` figure the comparison
-actually uses. **Never compare a seconds-valued remainder against a `_MINUTES` constant** — a
-`deadline - now` difference tested against `FIX_ROUND_MINUTES` admits a 1200-second round whenever
-_20 seconds_ remain, a factor-of-60 inversion of the guarantee this cap exists to give.
+**Units.** A supplied deadline is an **absolute Unix time in seconds**, the unit `date +%s` speaks,
+and so is every clock reading compared against it. Each allowance below is named twice — a
+`_MINUTES` figure for pricing, and the `_SECONDS` figure every comparison uses. Compare a
+seconds-valued remainder against a `_SECONDS` constant, never against a `_MINUTES` one.
 
 ```
 DEADLINE_LEG_MINUTES =  5   # one awaited dispatch leg: a batch of parallel read-only subagents
@@ -116,15 +114,6 @@ MUSTFIX_OVERRUN_SECONDS = MUSTFIX_OVERRUN_ROUNDS * FIX_ROUND_SECONDS
 #                                                   # overrun field, NOT a gate input.
 ```
 
-`MUSTFIX_OVERRUN_SECONDS` is the figure the run **reports**, never one it tests: the override is
-bounded by round count, so a second seconds-valued budget would be a second thing to get wrong for
-no added guarantee. It is named here because the caller needs the number, and the caller needs it
-because the money is **borrowed, not spare**: `1200` comes out of the 25-minute (`1500` s)
-post-review reserve `boss-build` holds back after its review step, and that reserve is priced as the
-_shortest honest post-review path_ (Steps 7-12), never as slack. So the override spends up to 20 of
-those 25 minutes, **once per run**, and the bound that makes this safe is the round count — not a
-second absolute deadline threaded across the skill boundary, which is why none is defined here.
-
 `DEADLINE_LEG_MINUTES` is `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms) expressed in
 minutes, because that timeout is what bounds one Tier-1 dispatch batch. It prices the Tier-2 and
 Tier-3 fallbacks too, and **there this gate is the only bound at all**: those paths carry no
@@ -140,18 +129,9 @@ first gate:
 
 ```bash
 leg_ms=${BOSS_SKILL_EXTENSION_TIMEOUT_MS:-300000}
-# Normalize in the SAME three steps, in the SAME order, that a caller's review-pass deadline gate
-# uses (the review-stack reference of the boss-build core) — one idiom, two readers. Reject the SHAPE first (empty, signed,
-# exponent, lettered), because `10#` on a non-digit string is itself an arithmetic error. Then
-# convert with an EXPLICIT base-10 radix: a bare $(( )) reads a leading zero as OCTAL, so a
-# zero-padded `0600000` would derive 196608 ms — about 197 s, floored back to 300 — while the
-# dispatch it prices is still configured for the full 600000 ms, and a gate would admit that
-# ten-minute leg with five minutes left and overrun the caller's deadline. Only then reject a
-# non-positive RESULT: `0` and `00` are all digits, so the shape glob admits them, and a leg priced
-# at zero seconds is not a smaller allowance, it is no gate at all.
-case "$leg_ms" in '' | *[!0-9]*) leg_ms=300000 ;; esac            # → the priced default
-leg_ms=$(( 10#$leg_ms ))                                          # `0600000` → 600000, never octal
-[ "$leg_ms" -gt 0 ] || leg_ms=300000                              # `0`, `00`, `000` → the default
+case "$leg_ms" in '' | *[!0-9]*) leg_ms=300000 ;; esac            # not all digits → priced default
+leg_ms=${leg_ms#"${leg_ms%%[!0]*}"}                               # strip leading zeros, base 10 only
+[ -n "$leg_ms" ] || leg_ms=300000                                 # `0`, `00`, `000` → the default
 DEADLINE_LEG_SECONDS=$(( (leg_ms + 999) / 1000 ))                 # ceil to whole seconds
 [ "$DEADLINE_LEG_SECONDS" -ge 300 ] || DEADLINE_LEG_SECONDS=300   # never below the priced default
 ```
@@ -218,10 +198,12 @@ node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-fix-round \
     \"openMustFix\": $open_mustfix, \"unattemptedMustFix\": $unattempted_mustfix,
     \"roundsUsed\": $rounds_used, \"maxRounds\": $max_rounds,
     \"overrunRoundsUsed\": $overrun_rounds_used}"
-# {"admit":true,"reason":"within-budget"}     → ordinary admission, charge nothing to the overrun
-# {"admit":true,"reason":"mustfix-override"}  → run it, and increment $overrun_rounds_used
-# {"admit":false,"reason":"round-cap"}        → stop; the round cap is NEVER overridden
-# {"admit":false,"reason":"overrun-exhausted" | "all-attempted" | "no-open-mustfix"} → stop
+# {"admit":true,"reason":"within-budget"}      → run it; charge nothing to the overrun allowance
+# {"admit":true,"reason":"mustfix-override"}   → run it, and increment $overrun_rounds_used
+# {"admit":false,"reason":"round-cap"}         → stop the fix loop; the round cap is NEVER overridden
+# {"admit":false,"reason":"overrun-exhausted"} → stop the fix loop; the override is spent for this run
+# {"admit":false,"reason":"all-attempted"}     → stop the fix loop; every open must-fix has had a round
+# {"admit":false,"reason":"no-open-mustfix"}   → stop the fix loop; never dispatch a fixer on an empty list
 ```
 
 **What `→ stop` stops is the _fix_ loop, and nothing else.** This gate admits or refuses a **fix
@@ -342,9 +324,15 @@ go straight to Phase 7 and exit through the **capped report** — `status: "capp
 `bs-review capped:` sentinel. The caller deadline is the disposition for the skipped leg, not for an
 open must-fix: record still-open must-fixes under the terminal-state rules below, so the caller
 publishes a reduced pass rather than a clean one. A run that dispatched no reviewer at all still
-reports honestly through that path; it never reports `clean`. When the caller provided a sentinel
-payload reason such as `funding-starved`, carry that reason in the report metadata and rendered
-summary; do not alter the byte-stable sentinel line.
+reports honestly through that path; it never reports `clean`. A caller whose own funding call priced zero fix rounds
+**states** `STEP_6C_FUNDING_REASON` in this pass's invocation, exactly as it states
+`STEP_6C_DEADLINE`; §Caller sentinel contract turns that stated name into the sentinel payload's
+`funding.reason` on every terminal write, including the writes this pass makes itself. Read that key
+back and carry it in the report metadata and rendered summary. Its **absence** means the step was not
+starved — not that no caller implements the key — so do not synthesise a reason, do not re-derive one
+from a clock, and do not treat a report without one as incomplete; do not alter the byte-stable
+sentinel line. The reason set is closed: `funding-starved`, and `funding-unpriced` for a caller whose
+pricing call failed outright, which is a third state and not a quieter way of saying funded.
 
 **What a terminal state with an open must-fix is allowed to say.** Reaching a terminal state while a
 must-fix is still open is lawful, but only for a reason that is about the finding. Name the finding —
@@ -469,6 +457,8 @@ BOSS_REVIEW_TOOLBOX="$BOSS_SKILLS_HOME/boss-review/toolbox"
 export BOSS_SKILLS_HOME
 BOSS_REVIEW_FALSIFICATION_REFERENCE="$(cd "$BOSS_SKILLS_HOME/boss-review/references" && pwd)/falsification.md"
 test -f "$BOSS_REVIEW_FALSIFICATION_REFERENCE" || { echo "BLOCKED: installed boss-review falsification reference not found"; exit 1; }
+BOSS_REVIEW_PREMISE_REFERENCE="$(cd "$BOSS_SKILLS_HOME/boss-review/references" && pwd)/premise-adjudication.md"
+test -f "$BOSS_REVIEW_PREMISE_REFERENCE" || { echo "BLOCKED: installed boss-review premise-adjudication reference not found"; exit 1; }
 SECOND_VOICE=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-detect.mjs" --second-voice "$HOST_AGENT")
 LENSES_JSON=$(printf '%s\n' "$CHANGED" | node "$BOSS_REVIEW_TOOLBOX/bs-review-detect.mjs" --lenses)   # MatchedLens[]
 LENS_REGISTRY_JSON=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(loadSkillConfig().lensMap))')   # full effective lensMap; the path reaches node through the env, never the -e source, so quotes/spaces in BOSS_SKILLS_HOME cannot break it; file URL so a relative BOSS_SKILLS_HOME is not read as a bare specifier
@@ -525,6 +515,10 @@ Variable meanings:
   path.
 - `BOSS_REVIEW_FALSIFICATION_REFERENCE` — resolved absolute installed path handed explicitly to
   every fresh reviewer; a Phase 0 shell export does not carry into native subagents.
+- `BOSS_REVIEW_PREMISE_REFERENCE` — resolved absolute installed path to the per-premise adjudication
+  recipe, handed explicitly to any dispatch that adjudicates, declines, or publishes a finding; a
+  Phase 0 shell export does not carry into native subagents, so the resolved path travels in the
+  prompt.
 - `SECOND_VOICE` — the opposite agent that serves Phase D's **default second-voice round**. An
   independent voice is worth defaulting to rather than falling back to: it is the reviewer least
   likely to repeat the authoring agent's blind spots, so it is run whenever the environment supplies
@@ -1468,10 +1462,17 @@ Each round:
    rather than guess when the anchor has become stale or ambiguous. Record rejected patches in
    `invalid` and add their findings to the narrative remainder for this same round. Dispatch a fresh
    `general-purpose` fix subagent (awaited) **only** for the narrative remainder (file:line + the
-   requested change) and this fix discipline: **adjudicate before you fix** — no item may be fixed
-   until its premise has been confirmed or falsified against the code it cites. Open the cited file
-   rather than the diff hunk, and re-derive any claimed count or affected-site set from the code; a
-   fix authored to an unchecked premise is how one round manufactures the next round's finding.
+   requested change) and this fix discipline: **adjudicate before you fix** — the unit is the
+   premise, not the finding: no item may be fixed until **every** load-bearing premise it rests on
+   has been confirmed or falsified against the code it cites. Use references/premise-adjudication.md
+   for the decomposition and the verdict vocabulary (`held` / `refuted` / `unverified`, where an
+   absent or unreadable record is `unverified` and never `held`), and pass the fix subagent the
+   resolved absolute `BOSS_REVIEW_PREMISE_REFERENCE` path — a Phase 0 shell export does not carry
+   into a native subagent. Each separable part of a multi-part remedy is graded on its own
+   feasibility: affirm the parts that hold, decline the parts that cannot be applied as written, and
+   record a residual for each declined part. Open the cited file rather than the diff hunk, and
+   re-derive any claimed count or affected-site set from the code; a fix authored to an unchecked
+   premise is how one round manufactures the next round's finding.
    Then: one item at a time; no unrelated refactors; write behaviour-focused tests for coverage
    gaps. Each item that changes the worktree is committed with `git commit --no-verify` after it is
    fixed; a `verified` disposition that changes no files records only the ledger entry unless an
@@ -1581,13 +1582,10 @@ Each round:
      §Caller deadline — an unbound name here is an empty gate, not an unlimited budget. Re-read the
      clock (`date +%s`) immediately before each round: a value carried over from the previous round
      is exactly as stale as the work that round just did.
-   - **Round-entry gate:** start round N+1 only if `deadline - now >= FIX_ROUND_SECONDS`. Both sides
-     are **seconds**, and the suffix is the whole point: `FIX_ROUND_SECONDS` is
-     `FIX_ROUND_MINUTES * 60` = **1200**, so comparing the seconds-valued remainder against the
-     `FIX_ROUND_MINUTES` figure instead would start a twenty-**minute** round whenever twenty
-     **seconds** remained. Testing merely that the deadline has not yet arrived is **not** the gate
-     either — it admits a round that cannot finish inside the budget, which is the overrun this cap
-     exists to prevent, moved one round later rather than removed.
+   - **Round-entry gate:** start round N+1 only if `deadline - now >= FIX_ROUND_SECONDS`; both
+     sides are **seconds**. Testing merely that the deadline has not yet arrived is **not** the gate
+     — it admits a round that cannot finish inside the budget, which is the overrun this cap exists
+     to prevent, moved one round later rather than removed.
    - **Except for an open must-fix nobody has attempted.** Do not decide this by hand — the decision
      table is [§Caller deadline](#caller-deadline-wall-clock-cap)'s
      `bs-review-caps.mjs admit-fix-round`, and it is the same call whether or not a deadline was
@@ -1664,7 +1662,7 @@ printf 'dispatch batch self-audit: exit %s\n%s\n' \
   "rounds": <N>,                  // fix rounds run (1 when Phase 6 was skipped)
   "overrun": { "rounds": 0 | 1, "seconds": 0 | 1200, "reason": "mustfix-override" },  // optional — omit entirely when no override round was run; `rounds` is capped at MUSTFIX_OVERRUN_ROUNDS and `seconds` reports MUSTFIX_OVERRUN_SECONDS
   "status": "clean" | "capped",   // caller-supplied outcome; the derived verdict below is authoritative
-  "funding": { "reason": "funding-starved" }, // optional — mirrors the run-file sentinel payload; never changes the sentinel bytes
+  "funding": { "reason": "funding-starved" | "funding-unpriced" }, // present exactly when the caller's sentinel payload carried one — copied through, never synthesised; absent means not starved; `funding-unpriced` means the caller could not price at all, which is neither; never changes the sentinel bytes
   "summary": "1–3 sentences: what was reviewed (range + file count) and the headline outcome",
   "security": [],                 // [{severity,title,file,line,fix}] — usually empty
   "issuesHeadline": "<found> must-fix found and fixed this run across <M> files",
@@ -1689,12 +1687,23 @@ printf 'dispatch batch self-audit: exit %s\n%s\n' \
   "patchSummary": { "patchable": P, "narrative": N, "nullWithReason": R },  // must-fix split from bs-review-triage.mjs; renders the patchable/narrative/null-with-reason tally
   "mustfix": { "found": F, "fixed": X, "verified": V, "unresolved": U,
                "items": [ {"disposition": "fixed"|"verified"|"unresolved",
-                           "title": "…", "file": "…", "line": N, "anchor": "…", "detail": "…", "commit": "<sha>"} ] },
+                           "title": "…", "file": "…", "line": N, "anchor": "…", "detail": "…", "commit": "<sha>",
+                           "premises": [ {"claim": "…", "verdict": "held"|"refuted", "evidence": "<source substring read, or the command run and its result>"} ]} ] },  // `premises` is optional in the shape and MARKED when absent on an open claim — see the publication gate below
   "invalid": [ {"reason": "<malformed item or unread reviewer output>", "item": { /* original malformed payload when available */ }, "source": {"filename": "<reviewer output file>", "reviewer": "<reviewer id>"} } ],  // always present; [] means no invalid evidence, non-empty renders reason plus retained source and payload
   "leaveAsIs": [ {"title": "…", "file": "…", "line": N, "rationale": "…", "evidence": "<file:line read or command result that settled it>"} ],   // verified-finding rationales and evidence
-  "suggestions": [ {"title": "…", "file": "…", "line": N, "detail": "…", "priority": "Low"} ]  // open suggestion pool; priority optional (defaults Low)
+  "suggestions": [ {"title": "…", "file": "…", "line": N, "detail": "…", "priority": "Low",
+                    "premises": [ {"claim": "…", "verdict": "held"|"refuted", "evidence": "<source substring read, or the command run and its result>"} ]} ]  // open suggestion pool; priority optional (defaults Low); `premises` optional and marked when absent
 }
 ```
+
+**Publication is the third adjudicated verb.** An item published as an open claim — an unresolved
+must-fix and every suggestion — carries its per-premise record, and an entry without one is
+published carrying the unverified marker rather than presented as settled. The suggestion pool is
+included because its block renders a copy-able prompt that files real tracker issues, so an
+unchecked suggestion becomes a real ticket aimed at a claim nobody read the code for. An advisory
+review response is still a publication into the pull-request record, so this gate applies to it even
+though it opens no fix cycle. The renderer marks rather than fails: absence renders honestly instead
+of destroying the report, and a caller that predates the field degrades rather than crashing.
 
 Grade `confidence` through the derived owner in
 `bs-review-caps.mjs confidence --in "$REPORT_JSON"`, using the rubric in
@@ -1707,8 +1716,11 @@ explicit escalation line naming what a human should adjudicate.
 The `suggestions` pool renders as the collapsible **"Create N follow-up issues"** toggle — a
 fenced, copy-able agent prompt the human pastes into an agent to file each suggestion as a tracker
 issue (never auto-create). The prompt emits one `<ticket><title>…</title><body>…</body><priority>…
-</priority></ticket>` block per suggestion and, when the tracker is configured, a `Label all issues
-with: …` line whose label set comes **verbatim from `trackerConfig.<adapter>.followUpLabels`** — so
+</priority></ticket>` block per suggestion — carrying an extra `<unverified>…</unverified>` element
+between `<body>` and `<priority>` whenever the publication gate below could not read that
+suggestion's per-premise record, so the ticket text a filing agent copies stays the finding's own —
+and, when the tracker is configured, a `Label all issues with: …` line whose label set comes
+**verbatim from `trackerConfig.<adapter>.followUpLabels`** — so
 the choice of which labels a follow-up issue gets (including any label a later planning sweep keys
 on) lives in config, not in this published core, and an unconfigured repo simply omits the line.
 The prompt only creates the issues; it does not itself plan them. Set `prUrl` / `issueUrl` (from
@@ -1784,15 +1796,27 @@ literal is unmatchable:
 
 ```bash
 # $VERDICT_ARGS is `clean`, or `capped <N>` with N = the rounds Phase 6 actually ran
+CAPS="$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs"
 node "$BOSS_REVIEW_TOOLBOX/bs-run-sentinel.mjs" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" sentinel $VERDICT_ARGS)" '{"provisional":false}'
+  "$(node "$CAPS" sentinel $VERDICT_ARGS)" \
+  "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"
 ```
 
 - Phase 7's report is clean — zero open must-fix and zero unrepaired `invalid` entries → `sentinel clean`.
 - Phase 6's fix loop capped with open must-fix or unrepaired `invalid` evidence → `sentinel capped <N>`,
   N = the rounds actually run. Never `0`: the helper rejects a non-positive round count.
-- The `'{"provisional":false}'` payload marks the verdict as earned, so the caller can tell it apart
+- The payload's `provisional: false` marks the verdict as earned, so the caller can tell it apart
   from its own provisional seed.
+- **The payload is where the caller's funding reason reaches its consumer, and this route is the one
+  that carries it.** `STEP_6C_FUNDING_REASON` is a stated caller interface, bound the same way
+  `STEP_6C_DEADLINE` is: the caller states it when its own funding call priced zero fix rounds
+  (`funding-starved`) or could not price at all (`funding-unpriced`), and states nothing otherwise.
+  Build the payload from it through the `sentinel-payload` verb rather than writing
+  `'{"provisional":false}'` by hand — a hardcoded literal drops the disclosure on **every** run that
+  goes through this contract, which is every run the caller dispatches, leaving the caller's own
+  fallback blocks the only route that could ever carry it. The verb prints exactly
+  `{"provisional":false}` when the name is unset, so a funded step is byte-identical to what the
+  literal produced. Read the key back for the report metadata below.
 
 Writing the run file changes nothing else: the report, the exit code, and the single printed
 sentinel line are exactly as specified above, and the run file carries the same verdict as stdout.

@@ -241,7 +241,7 @@ vendor-toolbox-check:
 ## pnpm's self-referential node_modules symlink as a hard BUILD error.
 build-drift-check: copy-skills
 ifeq ($(BAZEL_USABLE),1)
-	./scripts/bazel/check-build-drift.sh
+	node scripts/run-gate.mjs --label "build-drift-check" -- ./scripts/bazel/check-build-drift.sh
 else
 	@echo "==> bazel unavailable (BOSS_NO_BAZEL set or bazel not on PATH) — skipping BUILD drift check (public-mirror fallback)"
 endif

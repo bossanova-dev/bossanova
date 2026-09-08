@@ -166,6 +166,7 @@ test('buildLinearOperationMap derives agent-driven MCP tools from the configured
   )
   assert.equal(operationMap.readPlanAttachment.tool, 'mcp__acme-tracker__get_attachment')
   assert.equal(operationMap.deletePlanAttachment.tool, 'mcp__acme-tracker__delete_attachment')
+  assert.equal(operationMap.writeDescription.tool, 'mcp__acme-tracker__save_issue')
   for (const key of REQUIRED_TRACKER_OPERATIONS) {
     assert.match(operationMap[key].tool, /^mcp__acme-tracker__/)
   }
@@ -175,6 +176,21 @@ test('buildLinearOperationMap updateComment summary mentions updating in place a
   const operationMap = buildLinearOperationMap('acme-tracker')
   assert.match(operationMap.updateComment.summary, /\bid\b/)
   assert.match(operationMap.updateComment.summary, /updates.*in place/i)
+})
+
+test('buildLinearOperationMap writeDescription names the description argument key (BOS-1198)', () => {
+  // TrackerOperation carries no argument-shape field, so the summary is the ONLY place
+  // the descriptor emitter's argument key is stated. writeDescription shares save_issue
+  // with four other ops, so the tool name alone distinguishes nothing: a summary that
+  // named some other key would emit a save the tracker accepts and that leaves the
+  // description untouched.
+  const operationMap = buildLinearOperationMap('acme-tracker')
+  assert.match(operationMap.writeDescription.summary, /^\{id, description\}/)
+  assert.match(
+    operationMap.writeDescription.summary,
+    /from a file/,
+    'the summary must state that the bytes come from a file — that is the capability, not a detail',
+  )
 })
 
 test('buildLinearOperationMap contains the single-comment progress protocol trio', () => {

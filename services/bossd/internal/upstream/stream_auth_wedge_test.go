@@ -193,10 +193,14 @@ func newWedgeHarness(t *testing.T, mutate func(*StreamClientConfig), opts ...wed
 	return h
 }
 
-// step waits for one reconnect attempt to complete (open + log + backoff
-// timer registered) and then advances virtual time past the backoff so the
-// loop takes the next iteration.
-func (h *wedgeHarness) step() {
+// awaitAttempt waits for one reconnect attempt to complete — open, log, and
+// the backoff timer registered — and leaves the Run loop PARKED in that
+// backoff.
+//
+// It is the half of step() that a state assertion has to be made against. A
+// parked loop cannot move the client's state underneath the read; a released
+// one can, and does. See release.
+func (h *wedgeHarness) awaitAttempt() {
 	h.t.Helper()
 	select {
 	case <-h.opener.openCh:
@@ -216,7 +220,31 @@ func (h *wedgeHarness) step() {
 	if !waitForTimerAtLeast(h.clock, streamInitialBackoff, 10*time.Second) {
 		h.t.Fatal("reconnect backoff timer never registered")
 	}
+}
+
+// release advances virtual time past the backoff so the parked loop takes its
+// next iteration.
+//
+// It returns as soon as the timer fires, NOT when the next attempt has reached
+// anywhere in particular, so from here until the next awaitAttempt the Run loop
+// is running free. Reading live client state in that window is a race, and a
+// quietly asymmetric one: openStream marks the client connected as soon as its
+// own Send(snapshot) returns, and bosso's header-only rejection only arrives
+// later from Receive, so a snapshot taken mid-attempt can report Connected on a
+// daemon that is thoroughly wedged. The window is short — a few hundred
+// microseconds — which is exactly what makes it an intermittent CI red instead
+// of an obvious one. Assertions belong after awaitAttempt, never after release.
+func (h *wedgeHarness) release() {
 	h.clock.Advance(wedgeCadence)
+}
+
+// step runs one whole iteration: wait for the attempt, then release the loop
+// into the next. Callers that need to observe state between those two use
+// awaitAttempt and release directly.
+func (h *wedgeHarness) step() {
+	h.t.Helper()
+	h.awaitAttempt()
+	h.release()
 }
 
 func (h *wedgeHarness) steps(n int) {
@@ -615,7 +643,12 @@ func TestSessionTokenHolderLastSetAt(t *testing.T) {
 func TestStreamAuthWedgeSurvivesPostHandshakeRejection(t *testing.T) {
 	h := newWedgeHarness(t, nil, withRejectOnReceive())
 
-	h.step()
+	// awaitAttempt rather than step, here and below: every assertion in this
+	// test describes the backoff GAP, and step() releases the loop into the
+	// next attempt before it returns. That attempt re-marks the client
+	// connected the instant its own Send(snapshot) succeeds, so a snapshot
+	// taken after step() can be read off a half-open stream instead of the gap.
+	h.awaitAttempt()
 	first := h.client.AuthSnapshot()
 	if first.AuthFailingSince.IsZero() {
 		t.Fatalf("AuthFailingSince is zero after a post-handshake auth rejection; logs=%s", h.logs.String())
@@ -630,7 +663,14 @@ func TestStreamAuthWedgeSurvivesPostHandshakeRejection(t *testing.T) {
 	// The discriminating property: the SAME instant, iteration after
 	// iteration. A re-stamped clock is what makes an hours-long wedge read as
 	// seconds old.
-	h.steps(5)
+	//
+	// Six attempts in all, each observed from inside its own backoff gap, so
+	// the escalation count below is over exactly six failures rather than over
+	// six or seven depending on how far a released loop happened to get.
+	for i := 0; i < 5; i++ {
+		h.release()
+		h.awaitAttempt()
+	}
 	later := h.client.AuthSnapshot()
 	if !later.AuthFailingSince.Equal(first.AuthFailingSince) {
 		t.Fatalf("AuthFailingSince moved from %v to %v across sustained failures; the wedge clock is being reset by the local Send", first.AuthFailingSince, later.AuthFailingSince)

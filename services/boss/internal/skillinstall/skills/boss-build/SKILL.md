@@ -621,170 +621,43 @@ whichever tier resolves — carries this verbatim in substance:
 - Commit messages need **no** PR tag — finalize injects `[#<PR>]` across the branch later — so
   subagents must not guess a tag.
 
-**Orchestrator verification.** Dispatch each task from a **clean** tree, and after **each** subagent
-returns verify both halves of the contract — a clean tree **and** a log that advanced since the
-pre-dispatch HEAD.
+**Orchestrator verification.** The invariant: **every dispatch's work is committed before the run
+advances, and residue nobody can attribute stops the run and says so.** You settle it once per
+**dispatch** — one task here, one whole extension on the Tier-1 path below — and nothing you
+dispatch settles it again. What the layers below inherit is the commit-before-return contract, never
+this verification: a nested snapshot would overwrite and then delete the one you wrote, leaving your
+own after-check no baseline to read.
 
-The returned contract is advisory input: the clean-tree plus advanced-log-range check is the
-authority, and a later completion notification for the same task id supersedes an earlier one.
+Both halves of the evidence are required:
 
-Each shell invocation is a fresh process, so nothing set in the first block survives into the second.
-Every variable is re-assigned in the block that uses it, and `:?` aborts rather than letting an unset
-`PLAN_DOC` become a bare `:(exclude)`, which excludes _everything_ and turns the check into a silent
-pass. Run this **before** dispatching the task, as one invocation:
+- **Before dispatching**, the tree is clean, and you have recorded the HEAD this dispatch starts from
+  and which dispatch it is. The clean start is what makes the after-check mean anything: once a task
+  is running, a path that was already modified stays modified, so no before/after comparison can
+  separate pre-existing dirt from the subagent's own residue. Resolve dirt first — commit it if it
+  belongs to an earlier task; if you cannot attribute it, do **not** dispatch on top of it, go to
+  **Stop cleanly** with BLOCKED naming the paths.
+- **After it returns**, the tree is clean again **and** the log has advanced past that recorded HEAD
+  by commits the subagent itself reported. A non-empty range holding none of them is the empty-range
+  case wearing a disguise; treat it as one. The returned contract is advisory input — the
+  clean-tree plus advanced-log-range check is the authority, and a later completion notification for the same task id supersedes an earlier one.
 
-```bash
-PLAN_DOC="docs/plans/<the file Step 4 saved>"   # also record this in the run notes
-git status --porcelain --untracked-files=all -- . \
-  ":(exclude)${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
-  ':(exclude).claude/scheduled_tasks.lock' ':(exclude).claude/settings.local.json'
-# …must print nothing. Only once it does, record the HEAD the task starts from *and* which task
-# is starting — substitute the task's number for N:
-printf '%s task-N\n' "$(git rev-parse HEAD)" \
-  >"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"
-```
+Each way it can fail has exactly one remedy:
 
-**That pre-dispatch status must already be empty.** If it is not, resolve the dirt _before_
-dispatching and **re-run this whole block afterwards** — the recorded HEAD has to be the commit the
-task actually starts from, or a cleanup commit alone makes the after-return log range non-empty and a
-task that landed nothing reads as done. Commit the dirt if it belongs to an earlier task; if it
-cannot be attributed to one, do **not** dispatch on top of it — go to **Stop cleanly** with BLOCKED
-naming the paths. Once a task is running there is no way to tell pre-existing dirt from the
-subagent's own residue: a path that was already modified stays modified, so a before/after
-comparison cannot see the subagent's edit at all, and recovering it would sweep someone else's
-in-flight work into the task's commit. A clean start is what makes the after check unambiguous.
+- **Attributed residue** — the returned contract's **files touched** field names it. Commit it yourself, staging only those paths, then re-assess the task against its acceptance criteria — capturing residue preserves the work, it never proves the task is done.
+- **Unattributable residue** — that field does **not** name it. Leave it in the tree, stop dispatching, and go to **Stop cleanly** with BLOCKED naming those paths.
+- **An empty log range**, with no _no commit — verification only_ claim. Establish first whether work is actually **missing**: check that dispatch's acceptance criteria against the branch, and where **you** confirm every one already holds, record it as landing nothing against an already-satisfied scope and move on, with neither a re-dispatch nor a deferred required item. Confirm it from the diff yourself, never on the dispatch's word. Otherwise re-dispatch the same brief **once**; if that second attempt also lands nothing, record a deferred required item — unless a lower tier is still to run, which outranks this remedy and takes that tier's own skip instead.
 
-The HEAD file lives under `$(git rev-parse --git-dir)`, not `/tmp`: it resolves to this worktree's
-own git directory, so concurrent runs in sibling worktrees cannot overwrite each other's value, and
-it is never committed.
+Scope the check to exclude the two classes that are **expected**, not residue: the single
+`$PLAN_DOC` path Step 4 copied — never the whole `docs/plans` directory, which would also hide a
+stray edit to some _other_ plan doc — and the same daemon artifacts Step 6's change-detection gate
+excludes. A blanket `git add -A` is never the recovery: Step 6 forbids it, and it sweeps those same
+artifacts into the branch.
 
-**You** run this snapshot-and-check procedure once per **dispatch** — which is one task here, and one
-whole extension on the Tier-1 methodology path below, where the label form changes with it — and
-nothing you dispatch runs it again.
-What layers below inherit is the commit-before-return contract, never this verification: a
-methodology extension that dispatched its own implementation subagents and snapshotted around each
-would overwrite and then delete the file you wrote, leaving your own after-return check with no
-baseline to read. One writer, one path, one dispatch in flight is what makes a fixed filename safe.
-
-Then, **after the subagent returns**, as a second self-contained invocation — same `PLAN_DOC`, same
-pathspec:
-
-```bash
-PLAN_DOC="docs/plans/<the file Step 4 saved>"   # re-set: this is a new shell
-git status --porcelain --untracked-files=all -- . \
-  ":(exclude)${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
-  ':(exclude).claude/scheduled_tasks.lock' ':(exclude).claude/settings.local.json'
-# must be empty
-git log --oneline "$(cut -d' ' -f1 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")..HEAD"
-# …must list this task's commit(s)
-```
-
-Because the tree was clean at dispatch, everything this status lists is **this** subagent's residue.
-That holds because you hold the workspace lock and await one subagent at a time, so nothing else is
-writing here — but a clean start only rules out dirt that predates the dispatch, not a stray writer
-during it. When the subagent **returned**, you have a second opinion: the **files touched** field of
-its fixed short contract. Recover the paths it names; treat a residue path it does _not_ name as
-unattributed — the resume rule applies, so leave it alone and note it rather than committing it under
-this task. (A subagent that never returned names nothing; that case is the snapshot branch below.)
-
-A non-empty range is necessary but not sufficient: confirm the commits the subagent reported in its
-**commits made** field actually appear in it. A range holding **no** commit the subagent reported is
-the empty-log-range case wearing a disguise, so treat it as one: take that remedy below —
-re-dispatch the task with the same brief — rather than accepting the range.
-
-Then delete the snapshot: `rm "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"`. Do this
-once the task reaches **any** resolved outcome — the range checked out, a verification-only task
-declared _no commit_, or you recovered the residue yourself — not only on the clean path. On the
-recovery path that means **after** the recovery commit lands, never before you start it: delete it
-first and a crash in between throws away the clean-tree guarantee that made the residue attributable,
-dropping the resume onto the attribute-each-path branch with nothing left to attribute against.
-Consuming
-it is what keeps its meaning honest: the file exists **only** while a dispatch is in flight, so a
-restarted orchestrator that finds one knows it belongs to the task that was interrupted rather than
-to some earlier task that already finished. A snapshot left behind on the no-commit or recovery
-paths would make a finished task look interrupted.
-
-The pathspec excludes the two classes that are **expected**, not residue: the Step 4 plan deliverable
-(`$PLAN_DOC` stays untracked until Step 6 commits it) and the same daemon artifacts Step 6's
-change-detection gate excludes. Without those exclusions the check reports a violation on every run
-and stops discriminating. Exclude the **single** `$PLAN_DOC` path, never the whole `docs/plans`
-directory — a directory-wide exclusion would also hide a subagent's stray edit to some _other_ plan
-doc, which is exactly the uncommitted residue this check exists to catch. Keep
-`--untracked-files=all`: at the default `-unormal` git collapses an untracked directory to a single
-`.claude/` entry that no per-file exclusion matches, silently restoring the every-run false positive.
-
-A task that legitimately produces no commit — a pure-verification task — says so in the **commits
-made** field of its fixed short contract; record that in the run notes instead of failing. On
-violation, **recover rather than hard-fail**: commit the residue yourself, then continue with the
-next task. Stage exactly the **attributed** residue paths — the ones the status listed _and_ the
-returned contract named (all of them when the subagent never returned to name any). This is **not** a
-licence for a blanket `git add -A`, which Step 6 forbids and which would sweep daemon artifacts and
-unrelated scratch into the branch (a published core cannot assume they are gitignored here):
-
-```bash
-git add -- <the attributed residue paths>
-# --only commits exactly these paths. A plain `git commit` would commit the whole index, which can
-# hold a path the status above deliberately excluded ($PLAN_DOC, a daemon artifact) staged earlier
-# and therefore invisible to the check — swept in silently.
-git commit --only -m "chore(task-N): recover uncommitted subagent work" \
-  -- <the same attributed paths>  # substitute the task's number for N
-```
-
-Anything the status listed that you could **not** attribute stays out of that commit, and out of the
-branch: leave it in the tree, stop dispatching, and go to **Stop cleanly** with BLOCKED naming those
-paths.
-
-The recovery commit goes through the same hooks the subagent's did, so it can be rejected the same
-way: adapt the subject to exactly what the hook's own error names and retry once. If it still will
-not commit, leave the residue in the tree, stop dispatching further tasks, and go to **Stop cleanly**
-with BLOCKED naming the uncommitted paths — never revert the work, and never continue on top of
-residue you could not capture.
-
-Capturing the residue preserves the work; it does not prove the task is **done**. So re-assess the
-recovered task against its acceptance criteria before advancing — trust the diff, not the fact that a
-commit now exists — and re-dispatch it with the same brief if it falls short, exactly as
-[`references/resume-assessment.md`](references/resume-assessment.md) does after a resume.
-
-An **empty log range** is the other half of the check and has its own remedy: a clean tree with
-nothing committed and no _no commit — verification only_ claim means the task never landed. There is
-no residue to recover, so recovery does not apply — **re-dispatch that task** with the same brief
-rather than moving on, and if the second attempt also lands nothing, record it as a deferred
-required item **unless a fallback tier is still to run** for that scope.
-
-That exception is the contract's own **fallback outranking this remedy**, and it is not optional.
-Where the dispatch that landed nothing still has a **lower tier left to run** — every Tier-1
-methodology extension does, because tiers 2 and 3 exist to finish exactly this remainder — record
-the exhausted attempt as that tier's own skip (`extension <name>: skipped (<reason>)`) and fall
-through, with **no** deferred required item. Defer the required item only once no fallback remains:
-the scope is still open after the last tier has run, or the dispatch had no lower tier behind it.
-
-Both halves of that remedy assume work is **missing**, so establish that before either one: check the
-acceptance criteria in that dispatch's scope against the branch, and where **you** confirm every one
-already holds, nothing was left to land — record the dispatch as landing nothing against an
-already-satisfied scope and move on, with neither a re-dispatch nor a deferred required item.
-Confirm it from the diff yourself, never on the dispatch's word.
-
-If a subagent **never returns** — a killed process, a host error — the same inventory applies even
-on a **fresh** run, where Step 4.5 never executed: list `git log --oneline "$BASE_REF..HEAD"`,
-map it onto the plan's task list, recover the residue, then dispatch **only** the remaining tasks,
-carrying _continue from committed state; do not redo committed tasks_. Which recovery applies turns
-on **the snapshot, not on whether your process restarted** — that is what consuming it on every
-resolved outcome buys. If `boss-build-pre-dispatch-head` is present, a dispatch was in flight and its
-tree was verified clean, so everything dirty is that subagent's residue: recover it with the command
-above, whether or not this is the same orchestrator that wrote it. Its second field names **which
-dispatch** was in flight, and the recovery commit and the re-assessment both scope to it. Read that
-field from the file rather than guessing, and **branch on which of its two forms** you actually
-read — the snapshot writes one per dispatch unit:
-
-- `task-N` — a per-task dispatch. Commit the residue as `chore(task-N)` and re-assess task `N`.
-- `ext-<name>` — one whole Tier-1 methodology extension. Recovery is extension-wide: commit the
-  residue as `chore(ext-<name>)` and re-assess that extension's entire Step-5 scope, never a single
-  task inside it.
-
-Never assume the per-task form. If the file is **absent**, there is no clean-tree guarantee to lean
-on: attribute each dirty path to a task before staging it, and leave anything you cannot attribute
-alone rather than sweeping it in. The full procedure is in
-[`references/resume-assessment.md`](references/resume-assessment.md).
+The mechanics that settle all of this — the snapshot file and where it lives, its two label forms,
+the pathspec and recovery-commit spellings, and the recovery a **restarted** orchestrator runs
+(which turns on the snapshot, never on whether your process restarted) — are one procedure, written
+once in [`references/resume-assessment.md`](references/resume-assessment.md#dispatch-snapshot-mechanics).
+Read it from here as well as from Step 4.5 — that section applies on **any** run, fresh included.
 
 Resolve the implementation methodology by strict precedence. One rule governs every dispatch this
 step makes, whichever tier makes it: **recompute the Step-5 scope
@@ -1006,8 +879,9 @@ nothing — then exit cleanly `REVIEW_READY` on a green pushed branch, never Ste
 the blocking verdict is determined**, re-affirmed as its last action —
 
 ```bash
+CAPS="${RUN_SENTINEL%/*}/bs-review-caps.mjs"
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "${RUN_SENTINEL%/*}/bs-review-caps.mjs" sentinel clean)" '{"provisional":false}'
+  "$(node "$CAPS" sentinel clean)" "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"
 ```
 
 — `bs-review clean:` when `boss-review`'s Phase 7 report carries zero open must-fix,

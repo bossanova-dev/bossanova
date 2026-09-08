@@ -82,21 +82,19 @@ export const workflowRouteExemptions = [
     pattern: 'Makefile',
     reason: 'Makefile is a graph-wide Bazel trigger; CI scripts coverage is a superset',
   },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'CLAUDE.md',
-    reason: 'agent instructions route to test-manifest locally; CI scripts coverage is a superset',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'AGENTS.md',
-    reason: 'agent instructions route to test-manifest locally; CI scripts coverage is a superset',
-  },
+  // BOS-1207 removed the CLAUDE.md and AGENTS.md exemptions here. They recorded exactly the gap
+  // that ticket closed: CI ran test-scripts on those paths while a local edit selected only
+  // test-manifest, so the CLAUDE.md size pins were unreachable in the affected loop and an author
+  // first met their own budget after pushing. Both names now route to test-scripts locally, and
+  // this gate is what flagged the exemptions as stale once they did.
   {
     workflow: 'test-scripts.yml',
     pattern: 'docs/skills/**',
     reason:
-      'docs skills route to boss skill parity locally; CI scripts also runs dispatch batching table gates',
+      'the two pages scripts/check-agent-test-guidance.test.mjs pins — authoring.md and README.md — ' +
+      'now route to test-scripts locally (BOS-1207); the rest of the tree still routes only to boss ' +
+      'skill parity locally, and this exemption covers that remainder, where CI scripts additionally ' +
+      'runs dispatch batching table gates',
   },
   {
     workflow: 'test-scripts.yml',

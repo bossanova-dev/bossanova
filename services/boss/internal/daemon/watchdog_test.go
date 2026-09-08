@@ -656,3 +656,114 @@ func TestClassifyEnsureRunningRouteIgnoresTheConfiguredMode(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyWatchdogOwnershipFailsClosed pins the whole outcome matrix of the
+// BOS-1204 ownership probe from EITHER platform's test run.
+//
+// The property under test is one-directional and is the reason the reporting
+// path may trust this observation at all: exactly one outcome may produce
+// WatchdogOwnershipLoaded, and exactly one may produce
+// WatchdogOwnershipNotLoaded. Everything else — including an outcome value a
+// future build adds and this switch has never seen — must be unknown WITH a
+// reason. An unreadable probe reported as owned would certify supervision
+// nobody observed; reported as not-loaded it would invent the very false fault
+// BOS-1204 exists to remove.
+func TestClassifyWatchdogOwnershipFailsClosed(t *testing.T) {
+	const target = "system/" + WatchdogLabel
+
+	cases := []struct {
+		name       string
+		outcome    watchdogProbeOutcome
+		detail     string
+		wantState  WatchdogOwnershipState
+		wantReason []string
+	}{
+		{
+			name:      "launchctl exited zero so the job is loaded",
+			outcome:   watchdogProbeLoaded,
+			wantState: WatchdogOwnershipLoaded,
+		},
+		{
+			name:       "launchctl positively reported no such service",
+			outcome:    watchdogProbeNoSuchService,
+			detail:     "exit 113",
+			wantState:  WatchdogOwnershipNotLoaded,
+			wantReason: []string{target, "exit 113"},
+		},
+		{
+			name:       "launchctl could not be executed at all",
+			outcome:    watchdogProbeUnexecutable,
+			detail:     "exec: \"launchctl\": executable file not found in $PATH",
+			wantState:  WatchdogOwnershipUnknown,
+			wantReason: []string{target, "executable file not found"},
+		},
+		{
+			name:       "launchctl exited non-zero for some other reason",
+			outcome:    watchdogProbeExitedNonZero,
+			detail:     "exit 5: \"Input/output error\"",
+			wantState:  WatchdogOwnershipUnknown,
+			wantReason: []string{target, "exit 5"},
+		},
+		{
+			name:       "probing disabled by the environment",
+			outcome:    watchdogProbeDisabled,
+			wantState:  WatchdogOwnershipUnknown,
+			wantReason: []string{"BOSS_DAEMON_SKIP_LAUNCHCTL"},
+		},
+		{
+			name:       "an outcome this build does not recognise",
+			outcome:    watchdogProbeOutcome(99),
+			wantState:  WatchdogOwnershipUnknown,
+			wantReason: []string{"unrecognised"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyWatchdogOwnership(tc.outcome, target, tc.detail)
+			if got.State != tc.wantState {
+				t.Fatalf("state = %v, want %v (reason %q)", got.State, tc.wantState, got.Reason)
+			}
+			if got.Target != target {
+				t.Fatalf("target = %q, want %q", got.Target, target)
+			}
+			for _, fragment := range tc.wantReason {
+				if !strings.Contains(got.Reason, fragment) {
+					t.Fatalf("reason = %q, want it to contain %q", got.Reason, fragment)
+				}
+			}
+			if tc.wantState == WatchdogOwnershipLoaded && got.Reason != "" {
+				t.Fatalf("a loaded verdict carried a reason %q; the reason field is for non-loaded states", got.Reason)
+			}
+			if tc.wantState != WatchdogOwnershipLoaded && got.Reason == "" {
+				t.Fatalf("state %v carried no reason; every non-loaded state must say why", got.State)
+			}
+		})
+	}
+}
+
+// TestWatchdogOwnershipZeroValueIsNotObserved pins the zero value.
+//
+// A reporting surface builds this struct for every host, and only the
+// unattended ones ever probe. If the zero value read as Loaded — or as
+// NotLoaded, which is a fault — every default-substrate host would carry a
+// claim about a substrate it does not use.
+func TestWatchdogOwnershipZeroValueIsNotObserved(t *testing.T) {
+	var zero WatchdogOwnership
+	if zero.State != WatchdogOwnershipNotObserved {
+		t.Fatalf("zero value state = %v, want WatchdogOwnershipNotObserved", zero.State)
+	}
+	if zero.Target != "" || zero.Reason != "" {
+		t.Fatalf("zero value carried target %q reason %q, want both empty", zero.Target, zero.Reason)
+	}
+}
+
+// TestWatchdogTargetNamesTheSystemDomain pins the domain the ownership probe
+// and the unattended spawn-history target both read. The `system` domain is the
+// whole point of the unattended substrate — a gui/<uid> target here would
+// reintroduce BOS-1204 exactly.
+func TestWatchdogTargetNamesTheSystemDomain(t *testing.T) {
+	if got, want := WatchdogTarget(), "system/"+WatchdogLabel; got != want {
+		t.Fatalf("WatchdogTarget() = %q, want %q", got, want)
+	}
+}

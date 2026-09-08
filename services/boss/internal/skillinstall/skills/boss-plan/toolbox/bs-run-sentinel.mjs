@@ -271,7 +271,38 @@ if (isMainModule(import.meta.url)) {
     const [dir, runId, name, kind, payloadJson] = rest
     if (!dir || !runId || !name || !kind)
       fail('write requires <dir> <runId> <name> <kind> [payloadJson]')
-    const payload = payloadJson ? JSON.parse(payloadJson) : {}
+    // The KIND is the verdict; the payload is an optional disclosure carried alongside it.
+    // A failed disclosure must never cost the verdict, because the caller seeds a
+    // pessimistic `capped`+`provisional:true` line BEFORE dispatch: a refused terminal
+    // write leaves that seed standing verbatim, so a clean run is demoted to
+    // `review coverage unknown` by the failure of its optional extra.
+    //
+    // An OMITTED payload is the no-payload case. A payload argument that is PRESENT but
+    // EMPTY is a collapsed command substitution — the degraded build (a stale installed
+    // toolbox missing the payload verb, an unset toolbox path), which this repo treats as
+    // the common case rather than the rare one. It degrades to the same no-payload write,
+    // loudly on stderr: the verdict line lands, only the disclosure is lost.
+    //
+    // A payload that is PRESENT and MALFORMED (non-JSON, array, null) is different: it is
+    // not an absent disclosure but an unreadable one, and storing or reinterpreting it is
+    // how garbage would read as funded. That is still refused.
+    let payload = {}
+    if (rest.length > 4) {
+      if (payloadJson === '') {
+        process.stderr.write(
+          'write: empty payload argument (collapsed substitution) — writing the verdict with no payload\n',
+        )
+      } else {
+        try {
+          payload = JSON.parse(payloadJson)
+        } catch (err) {
+          fail(`write payload is not JSON: ${err.message}`)
+        }
+        if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+          fail('write payload must be a JSON object')
+        }
+      }
+    }
     process.stdout.write(`${writeSentinel(ctxFor(dir, runId), name, kind, payload)}\n`)
   } else if (cmd === 'read') {
     const [dir, runId, name] = rest

@@ -1420,7 +1420,15 @@ func plistNextString(decoder *xml.Decoder) (string, bool) {
 // whether the job is registered at all is a fact Status.Installed already owns.
 // Both paths still return a populated, fail-closed SpawnHistory.
 func platformSpawnHistory() (SpawnHistory, error) {
-	target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + Label
+	// BOS-1204: resolved from the configured substrate, because under
+	// `unattended` the job launchd actually spawns is the root-owned watchdog
+	// in the `system` domain and gui/<uid> carries no history at all. The
+	// resolution happens ahead of the skip check below so the short-circuit
+	// still NAMES the target this host would have probed — a skip line that
+	// named the LaunchAgent on a machine that has none would be a report about
+	// the wrong job.
+	target := spawnHistoryTarget(LoadSupervisionModeStatus(),
+		"gui/"+strconv.Itoa(os.Getuid())+"/"+Label)
 
 	// Checked BEFORE shelling out, matching reportDaemonSupervision in
 	// services/boss/cmd/daemon_doctor.go: under this env var the service view

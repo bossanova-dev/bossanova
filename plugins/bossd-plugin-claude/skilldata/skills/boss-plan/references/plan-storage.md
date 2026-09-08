@@ -53,3 +53,51 @@ reason, and a non-zero exit, leaving the ticket in its pre-run state for the nex
 On success, save normal issue metadata without a plan link: the finalized **and read-back** attachment
 is the canonical artifact.
 On every terminal failure path, remove any retained attachment-header scratch file before returning.
+
+## Writing the description from a file
+
+The description is composed and gated as a file, so it is written to the tracker as a file too.
+Retyping those bytes into an inline argument is what defeats the gate: a block the guards proved
+byte-verbatim stops being provably the same object the moment a model re-emits it, and a measured
+incident recorded a two-character drift surviving every gate that way.
+
+The write reuses the descriptor-emission pattern the comment path already proves. `write-description`
+reads the body, validates it, and prints a `{tool, args}` record for you to execute through the
+tracker's own interface — no raw API call, and the bytes never enter your context:
+
+```bash
+BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; [ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
+node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id "<ISSUE-ID>" --body-file "$NEW"
+```
+
+`$NEW` is deliberately the same file every Phase 4 gate read, not a fresh copy of it: a second
+rendering is a second chance to differ, and the gates would have certified the file you did not send.
+
+On success the verb exits 0 and prints one JSON line:
+
+- `tool` — the adapter's `writeDescription` tool name. Execute `{tool, args}` as the description of
+  the single tracker save; the remaining metadata fields ride the same save.
+- `args.description` — the file's bytes, verbatim, including its trailing newline.
+- `bytes` — the body's size **measured on disk** with `stat(2)`, not counted from a decoded string, so
+  a multi-byte body reports its true size. Report this number; never substitute one you derived.
+- `outcome` — `descriptor-emitted`. Branch on this, not on the exit status alone: an explicit success
+  token is what stops a write that changed nothing from reading as a write that landed.
+
+Every failure exits 2, writes a one-line reason to **stderr** and **nothing to stdout**, so a caller
+that pipes stdout can never mistake an error for a descriptor. The failures split in two, and the
+split decides whether a fallback is legitimate:
+
+- **Capability absent** — the stderr line names a missing `writeDescription` operation. The op is
+  optional, so this is a normal outcome for an adapter that does not declare it: fall back to sending
+  the description inline on the existing save.
+- **Body unusable** — an empty, whitespace-only, unreadable or missing `--body-file`. This is never a
+  reason to fall back. The refusal is load-bearing: a blank description erases the reporter's original
+  notes, and the tracker exposes no description history to recover them from. Fix what the run
+  composed, or take the SAFE branch.
+
+Verification of what landed belongs to the write-back check after the final save, and it reads the
+tracker's **stored** description — asserting the section contract and the verbatim block against
+those bytes. Do not add a byte comparison against the buffer you sent: the tracker renormalizes
+markdown after every local gate has run (a `-` bullet stored as `*`), so such a check reds on every
+run for a purely cosmetic reason while proving nothing the stored-document check does not.

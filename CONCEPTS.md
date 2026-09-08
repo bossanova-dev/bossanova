@@ -1448,6 +1448,19 @@ does not establish: these gates recognise an unportable reference by enumerating
 know, so passing is evidence about the enumerated spellings rather than about portability at large,
 and a reference spelled a way nobody listed passes unremarked.
 
+### Authoring root
+
+A skill tree an author edits directly, as opposed to a generated mirror produced from it for another
+agent runtime. Gates and reviews report findings against authoring roots so that a fix lands
+somewhere it can actually be edited; a mirror is regenerated from its source rather than
+hand-corrected, and a hand-edit there is discarded by the next regeneration.
+
+A project has more than one authoring root, which is what makes a restated claim expensive to
+correct: a sentence retired in one root survives in the others, and in the explanatory comments of
+the gate scripts themselves. A claim is retired only once the _retired_ wording returns zero hits
+everywhere it could have been copied — searching for the corrected wording finds just the places
+already fixed and reports success.
+
 ### Toolbox
 
 The set of shared helper modules a skill carries alongside its instructions. A toolbox is distributed
@@ -1481,7 +1494,9 @@ are not equivalent. A ceiling catches growth and says nothing about shrinkage, s
 never banked and the prose beside the number drifts out of agreement with it unobserved. An exact pin
 fails in both directions: growth and shrinkage are each an event, each repinned to the measured value
 in the same commit as the edit that justified it. Two-sided is the house form; a one-sided ceiling is
-the exception that has to say why.
+the exception that has to say why. A third form, the **descending budget**, prices the two directions
+differently rather than equally, and is chosen where deletion is the outcome the mechanism should be
+buying.
 
 An exact pin's number is _measured_, never derived — not from a plan document, a ticket, or a previous
 commit message, and never as the measurement plus a margin, which ships slack rather than recording a
@@ -1501,6 +1516,28 @@ which.
 
 Size is not a **sync** check. Where a mirror is generated from a source, generation may add bytes
 unconditionally, so "larger than its source" is not evidence of drift; exact regeneration equality is.
+
+### Descending budget
+
+An asymmetric form of **byte ratchet**: the measurement may sit anywhere at or under the bound, so
+shrinking an artifact is free and costs not even an edit to the constant, while raising the bound
+costs a written reason recorded beside it in the same commit as the growth. The headroom a free
+shrink leaves behind is not the one-sided leak an exact pin exists to close, because the budget also
+carries a review date on which the assertion reds.
+
+What that date enforces is the _question_, not the answer. The assertion keeps no memory of the
+previous review date, so a budget genuinely lowered and one whose date was merely moved forward both
+clear the red; the named step-down is a target in the failure message, and the descent itself is
+carried by the recurring prompt plus review. A budget claiming more than that in its own prose is
+claiming enforcement the code does not perform. The date arm also fails on the calendar rather than
+on a code change, so it can red a branch that never touched the artifact, and its message says so.
+
+Because only one direction is priced, the whole mechanism rests on a single comparison between the
+proposed bound and the bound recorded before the change. Those two operands have to be independent:
+where the recorded previous value is read from the same constant the gate polices, raising the
+constant moves both sides together, the comparison can never be true, and the gate passes forever
+over a dead arm. A reason field pre-filled at migration time fails the same way, since a
+non-blank check is satisfied by a sentence nobody wrote for the growth in front of it.
 
 Two kinds of pin sit alongside a ratchet and are not interchangeable. A **rolling** bound tracks the
 ratchet at a documented margin, and moving it with the ratchet is its stated procedure. A **fixed
@@ -1870,6 +1907,17 @@ existed to forbid. A negative assertion inverts the trade, since there the wider
 superset and is the stronger one. A gate enforcing the rule therefore needs a marked, greppable
 exception for the deliberate exact gap, and the audit that reads those markers must match them the
 same way the gate does, or it reports a complete census that is not one.
+
+Where pins are held to a counted baseline, the unit counted is the assertion **call site**, not the
+claim: several patterns looped through one assertion are credited as a single pin, so a baseline
+systematically understates how many separate claims the body is pinned to, and retiring one site can
+retire several claims at once. Retirement is also not the only move available when the quoted
+sentence is deliberately deleted — a pin whose subject was a sentence of motivation can be
+**repointed** at a rule token that survives the deletion, keeping the guard while letting the
+motivation go.
+A refactor that changes only how often a site executes therefore moves the count by nothing. Under a
+two-sided pin, where a wrong adjustment reds exactly as hard as an omission, which way the number
+moved is something to measure rather than to infer from the shape of the edit.
 
 ### Self-inflicted finding
 

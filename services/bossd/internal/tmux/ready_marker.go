@@ -469,12 +469,27 @@ func (c *Client) waitForReadyMarkerWithAttempts(ctx context.Context, sessionName
 // point: the attempt's timeout carries a pane snapshot and the capture
 // accounting, while a context expiry mid-poll carries neither.
 //
-// It subtracts one poll interval, because the wait checks its deadline right
-// after each capture and then sleeps; landing inside that sleep is what loses
-// the diagnostic. When less than one interval remains, half of what is left is
-// used instead — still strictly ahead of the context, and still enough for the
-// first, immediate capture. A context already past its deadline is left alone:
-// there is nothing to clamp to, and attempt one still runs.
+// It reserves TWO poll intervals, not one. The wait checks its deadline right
+// after each capture and then sleeps, so consecutive checks are one capture
+// PLUS one sleep apart — and a reserve of one sleep is narrower than the gap it
+// has to catch a check in. When it misses, the loop is still asleep as the
+// context fires, and the attempt returns the caller's context error instead of
+// its own budget: no budget line, no clamp clause, and on the single-attempt
+// path no pane snapshot either. Reserving the capture as well makes the window
+// at least one whole gap wide, so a check lands inside it for any capture
+// shorter than the poll interval — which is the regime the poll interval is
+// chosen for.
+//
+// Sizing the reserve off the sleep alone is a coin flip weighted by capture
+// cost, not an outright bug, which is why it surfaced as an intermittent CI red
+// rather than a reproducible one: the clamp still won the race most of the time.
+//
+// When less than that remains, half of what is left is used instead. That half
+// is no longer wide enough to guarantee the catch — it is simply the most that
+// can be reserved while staying strictly ahead of the context, and still enough
+// for the first, immediate capture; readyMarkerContextErr covers what slips
+// through. A context already past its deadline is left alone: there is nothing
+// to clamp to, and attempt one still runs.
 func clampAttemptDeadline(ctx context.Context, deadline, pollInterval time.Duration) time.Duration {
 	d, ok := ctx.Deadline()
 	if !ok {
@@ -484,7 +499,9 @@ func clampAttemptDeadline(ctx context.Context, deadline, pollInterval time.Durat
 	if remaining <= 0 {
 		return deadline
 	}
-	clamped := remaining - pollInterval
+	// One interval for the sleep the next check sits behind, one for the
+	// capture that precedes it.
+	clamped := remaining - 2*pollInterval
 	if clamped <= 0 {
 		clamped = remaining / 2
 	}

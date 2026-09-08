@@ -264,13 +264,11 @@ for the Phase 4 secret gate.
    source. Do not let the worker re-read the tracker description; signed upload URLs can rotate and
    fail the parity gate.
 
-   These bytes are the tracker's **stored** description, not a rendering of it, and the file must
-   carry **no byte the stored description does not** — in particular no trailing newline, so copy
-   the bytes exactly (`printf '%s'`) rather than writing them through a heredoc. Both halves are
-   reasons, not ritual: a rendering can differ in size from the stored text, so a run that snapshots
-   the rendering gates the wrong bytes; and one added terminal byte makes `--require-verbatim` fail
-   late in Phase 4 for a reason that has nothing to do with content, aborting a run that did
-   everything else right.
+   The snapshot is the tracker's **stored** description, not a rendering of it, and it must carry
+   what the tracker stored and nothing added. Both halves are reasons, not ritual: a rendering is a
+   different document, so a run that snapshots one gates text the tracker never stored; and anything
+   this file adds is not in the stored description, so `--require-verbatim` rejects the write late in
+   Phase 4 for a reason that has nothing to do with content.
 
 3. **Dispatch ONE awaited `general-purpose` subagent** (`subagent_type: general-purpose`,
    <!-- tier: opus --> plan drafting is judgment, so **tier: opus**; **await** the dispatch —
@@ -1058,7 +1056,19 @@ subagent → validate its envelope → fold or skip), against
    - **priority** (`1-4`): honor a reporter-set priority. Otherwise rank against the current config-resolved planned (`stateName(config, 'planned')`) backlog, considering urgency, simplicity, positive/business impact, and security (security concerns bias toward Urgent/High). A planned ticket should not stay `0=None`.
 4. Single tracker save op (ops `moveState`/`setPriorityEstimate`; Linear uses `save_issue`) updating the issue by
    `id`:
-   - `description`: the summary block above.
+   - `description`: **written from the file the gates above just validated, never retyped into this
+     argument.** Re-derive the toolbox preamble (blocks inherit nothing), then run
+     `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md`
+     and branch on the emitted record's explicit `outcome`, never on exit status alone:
+     `descriptor-emitted` means execute the returned `{tool, args}` as this save, folding in the
+     fields below. On exit 2 the verb wrote **nothing** to stdout; fall back to an inline
+     `description` here **only** when its stderr names the missing `writeDescription` operation. An
+     empty, unreadable or missing body file is a defect in what this run composed, and sending it
+     inline instead would write the bytes the guard refused over the only surviving copy of the
+     reporter's notes — the tracker keeps no description history. Mechanics:
+     [`references/plan-storage.md`](references/plan-storage.md). Never diff the stored description
+     against the bytes you sent: step 6 owns that comparison, makes it against the tracker's
+     **stored** document, and is the only thing that decides whether the round trip held.
    - no plan link: the finalized attachment is the canonical plan.
    - `labels`: the merged-minus-stripped set (names).
    - `estimate`: the Fibonacci number.
@@ -1191,13 +1201,18 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    line is orchestrator-owned — keep it out of the drafting subagent's returned template. This keeps
    Step 4's other fields and (d)'s relations intact.
 
+   After this save the description and the plan attachment **legitimately diverge** at `## Planning`:
+   5(f) mutates the description only, so on every run that writes relations the attachment still
+   holds the pre-append bytes. That divergence is expected behaviour, not a gate failure — never
+   supersede a correct attachment for cosmetic parity, and name it in the Phase 6 report so a reader
+   meeting the difference does not read it as drift.
+
    If you send an incremental `patch` rather than the whole description, copy every anchor from the
    tracker's **stored, normalized** text — read the description back first and anchor on those bytes
    — never from the gated local draft. A tracker may renormalize markers on write (a `-` bullet
    stored as `*`), so an anchor transcribed from the local draft silently fails to match and the op
    reports nothing you can act on. Anchoring on the stored form is also what lets a one-line
-   addition land without retyping a multi-kilobyte description, leaving `## Original notes`
-   byte-identical.
+   addition land without retyping a whole description, leaving `## Original notes` untouched.
 
    A `patch` sends anchors and fragments, never a whole description, so it produces no "bytes I
    saved" for step 6 to compare against — and step 6's `--intended` input is mandatory. Materialize
@@ -1234,8 +1249,10 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    fi
    ```
 
-   The helper prints one machine-readable `writeback-verdict: <verdict>` line plus a human line, and
-   exits zero for `byte-exact` (the transport round-trips) and `normalized-equivalent` (the transport
+   The helper prints one machine-readable `writeback-verdict: <verdict>` line plus a human line —
+   and repeats the verdict line on stderr whenever it exits non-zero carrying a verdict, so a
+   caller that captured only stderr still has the verdict rather than an inference. It exits zero
+   for `byte-exact` (the transport round-trips) and `normalized-equivalent` (the transport
    normalizes, and the semantic contract, the verbatim block and every upload identity survived).
    Which of the two a run observes is **measured, never configured**: a repo may declare which
    normalization _transforms_ it tolerates, and never that its transport round-trips. Name the

@@ -32,6 +32,12 @@ When a finding depends on whether a gate or assertion is load-bearing, use a fal
 instead of reasoning from its literal. Use references/falsification.md for the probe. A read-only
 reviewer may use Tier A only; the orchestrator owns any in-place Tier B mutation.
 
+### Per-premise adjudication
+
+A finding is a bundle of separable claims, and the adjudicated unit is the premise rather than the
+finding. Use references/premise-adjudication.md for the decomposition, the three-valued verdict
+vocabulary, and the gate that applies equally to applying, declining, and publishing a remedy.
+
 ## Findings contract
 
 Every reviewer returns a JSON array of findings. Each item is:

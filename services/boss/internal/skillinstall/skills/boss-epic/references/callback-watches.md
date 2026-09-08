@@ -199,10 +199,14 @@ read are the authoritative filter, and both run again on every wake regardless o
        node --input-type=module -e '
          import{pathToFileURL as u}from"node:url"
          const {resolveCallbackAdapter}=await import(u(process.env.BOSS_EPIC_TOOLBOX+"/callback/adapter.mjs").href)
-         process.stdout.write(resolveCallbackAdapter(process.env).policy.draftAwareTriggers.join(" "))
+         process.stdout.write(resolveCallbackAdapter(process.env).policy.draftAwareTriggers.join("\n"))
        '
      )"
-     for T in $DRAFT_AWARE_TRIGGERS; do
+     # Newline-delimited, read one line at a time. A bare `for T in $DRAFT_AWARE_TRIGGERS` iterates
+     # ONCE under zsh — which does not word-split an unquoted parameter expansion — registering a
+     # single watch whose trigger name is the whole space-joined string, and no real trigger at all.
+     printf '%s\n' "$DRAFT_AWARE_TRIGGERS" | while IFS= read -r T; do
+       [ -n "$T" ] || continue
        boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
      done
    fi
@@ -229,6 +233,19 @@ read are the authoritative filter, and both run again on every wake regardless o
    - `could-not-evaluate` — the rollup could not be read, the rollup was empty, or
      `mergeStateStatus` is `UNKNOWN`/unreadable. Report this outcome by name; never fold it into
      `not-yet`, and never let it reach `ready`.
+
+   Decide the check half of those conjuncts with
+   `$BOSS_EPIC_TOOLBOX/pr-check-state.mjs classify` rather than by reading the rollup by eye — the
+   same verdict, and the same reconcile rule, the sibling core's copy of this reference uses, so the
+   two cannot drift into different meanings of the word green. It reconciles a null-shaped node —
+   one whose conclusion is absent while `gh pr checks` reports the same named context as successful
+   — against that named context before the node can contribute `unknown`, and its `green` /
+   `failing` / `pending` / `unknown` map onto `ready` / red / `not-yet` / `could-not-evaluate`
+   respectively. Pass the prior head's context names as `--prior` whenever the run has them: a
+   path-filtered follow-up push shrinks the check set, and the reason `absent-gate` is what
+   separates a gate that vanished from one that is merely queued. Decide the merge-state half with
+   the same helper's `merge-state` subcommand, whose `UNSTABLE`-with-nothing-failing verdict is
+   pending rather than red.
 
    A check count of zero is not a pass. An empty commit that skips CI can produce a head SHA with no
    merge workflow runs; a rollup containing only third-party checks can satisfy a bare non-empty

@@ -32,6 +32,7 @@
 import { readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 
+import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import {
   classifyCheckCommand,
@@ -1040,6 +1041,7 @@ function main() {
       `plan-contract-guard: cannot read description ${description}: ${error.message} [unreadable-input]`,
     )
     process.exitCode = 1
+    gateRecorder.record('fire', 'unreadable-input')
     return
   }
   let planText = null
@@ -1051,6 +1053,7 @@ function main() {
         `plan-contract-guard: cannot read plan ${plan}: ${error.message} [unreadable-input]`,
       )
       process.exitCode = 1
+      gateRecorder.record('fire', 'unreadable-input')
       return
     }
   }
@@ -1079,13 +1082,23 @@ function main() {
   process.exitCode = 1
 }
 
+// One gate-outcome line per invocation. Every real contract violation records the single bucket
+// reason `violations`, deliberately NOT one of the exported VIOLATION_CODES: a run can emit
+// several codes at once, and picking one would invent a ranking this guard does not have. The
+// `unreadable-input` branches DO record precisely, and the recorder LATCHES so the exit-code
+// derived call below is a no-op for them. The latch is also what makes recording-then-throwing
+// safe: the catch cannot double-count.
+const gateRecorder = createGateRecorder('plan-contract-guard')
+
 // isMainModule resolves both paths through symlinks so this fail-closed CLI gate cannot be skipped.
 const invokedDirectly = isMainModule(import.meta.url)
 if (invokedDirectly) {
   try {
     main()
+    gateRecorder.record(process.exitCode ? 'fire' : 'pass', process.exitCode ? 'violations' : 'ok')
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
+    gateRecorder.record('fire', 'guard-threw')
   }
 }

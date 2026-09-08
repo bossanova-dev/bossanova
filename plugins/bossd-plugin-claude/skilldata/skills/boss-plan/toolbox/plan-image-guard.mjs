@@ -16,6 +16,7 @@
 
 import { readFileSync } from 'node:fs'
 
+import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 
 // Inline markdown image start: the destination is parsed below so balanced parentheses in a URL
@@ -1262,13 +1263,21 @@ function main() {
   }
 }
 
+// One gate-outcome line per invocation. This guard has no per-violation code vocabulary
+// to reuse as a reason — every refusal is a plain stderr sentence — so the outcome is derived from
+// the exit code alone rather than inventing a reason token per branch. The recorder LATCHES, which
+// is what keeps the catch from double-counting a throw that happened after a record.
+const gateRecorder = createGateRecorder('plan-image-guard')
+
 // isMainModule resolves both paths through symlinks so this fail-closed CLI gate cannot be skipped.
 const invokedDirectly = isMainModule(import.meta.url)
 if (invokedDirectly) {
   try {
     main()
+    gateRecorder.record(process.exitCode ? 'fire' : 'pass', process.exitCode ? 'violations' : 'ok')
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
+    gateRecorder.record('fire', 'guard-threw')
   }
 }

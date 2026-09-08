@@ -108,6 +108,7 @@ test('optional operations — attachment AND adapter-discretion — validate onl
     'extractImages',
     'createLabel',
     'appendRelatedTo',
+    'writeDescription',
   ])
   assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
 
@@ -151,6 +152,44 @@ test('a DECLARED extractImages or createLabel is validated as strictly as a requ
         `expected a throw for ${key} summary = ${JSON.stringify(blank)}`,
       )
     }
+  }
+})
+
+test('an adapter that omits writeDescription still conforms (BOS-1198)', () => {
+  // The acceptance case for optional strength: no control flow depends on the
+  // file-based description write, so an adapter without it is fully usable — the
+  // caller falls back to sending the description inline on the existing save.
+  // Asserted BEFORE the conformance call so promoting the op to the required list
+  // fails here naming the missing operation rather than somewhere downstream.
+  const map = validOperationMap()
+  assert.ok(!('writeDescription' in map), 'fixture must genuinely omit writeDescription')
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  assert.ok(
+    !REQUIRED_TRACKER_OPERATIONS.includes('writeDescription'),
+    'writeDescription must stay optional — requiring it fails adapters that legitimately omit it',
+  )
+})
+
+test('a DECLARED writeDescription is validated as strictly as a required op (BOS-1198)', () => {
+  // Declared-but-broken is the dangerous shape here: the descriptor emitter reads
+  // `tool` to name the MCP tool and `summary` to state the argument shape, so an entry
+  // carrying neither would emit a save that names nothing and changes nothing.
+  for (const blank of ['', ' ', '\t  ']) {
+    const toolMap = validOperationMap()
+    toolMap.writeDescription = { tool: blank, summary: 'summary for writeDescription' }
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(toolMap)),
+      /tracker adapter operation writeDescription missing tool/,
+      `expected a throw for writeDescription tool = ${JSON.stringify(blank)}`,
+    )
+
+    const summaryMap = validOperationMap()
+    summaryMap.writeDescription = { tool: 'mcp__stub__writeDescription', summary: blank }
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(summaryMap)),
+      /tracker adapter operation writeDescription missing summary/,
+      `expected a throw for writeDescription summary = ${JSON.stringify(blank)}`,
+    )
   }
 })
 

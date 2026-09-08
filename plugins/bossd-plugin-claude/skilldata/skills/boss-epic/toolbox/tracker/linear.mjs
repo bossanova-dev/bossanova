@@ -79,6 +79,15 @@ export function buildLinearOperationMap(mcpServer) {
       tool: `mcp__${mcpServer}__save_issue`,
       summary: '{id, relatedTo: [ids]} -> add a non-blocking related edge',
     },
+    // The argument key `description` is load-bearing, not decoration: tracker/cli.mjs's
+    // write-description verb builds its descriptor `args` around it, so a summary that
+    // named some other key would emit a save the tracker accepts and that changes nothing.
+    writeDescription: {
+      tool: `mcp__${mcpServer}__save_issue`,
+      summary:
+        '{id, description} -> replace the issue description wholesale with bytes read from a ' +
+        'file, so an already-gated body is never retyped into a tool argument',
+    },
     preparePlanAttachment: {
       tool: `mcp__${mcpServer}__prepare_attachment_upload`,
       summary:

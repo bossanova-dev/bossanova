@@ -18,12 +18,11 @@ small metadata object.
 ## Inputs the orchestrator hands you
 
 - `ISSUE-ID`, `title`, and `DESCRIPTION_SNAPSHOT_PATH` —
-  `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`, the byte-exact Phase 1 description snapshot
+  `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`, the Phase 1 description snapshot
   written by the orchestrator before this dispatch. Build `## Original notes` from this file only.
-  Those bytes are the tracker's **stored** description, not a rendering of it, and the file carries
-  **no byte the stored description does not** — no trailing newline included. Copy from it
-  byte-for-byte and add nothing: one extra terminal byte fails `--require-verbatim` late in the
-  finalize phase for a reason that has nothing to do with content.
+  It holds the tracker's **stored** description, not a rendering of it, and it carries what the
+  tracker stored and nothing added. Copy from it and add nothing: what `--require-verbatim` decides
+  late in the finalize phase is whether that block survived this run unchanged.
   Do not re-read the tracker description; signed upload URLs can rotate and make the parity gate
   fail even when the prose is otherwise unchanged. The file may be empty.
 - `PLAN_PATH` — the exact file to write the plan to: `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md`
@@ -822,11 +821,10 @@ DESCRIPTION_SUMMARY_WITHOUT_ORIGINAL_NOTES
 cat "${DESCRIPTION_SNAPSHOT_PATH:?DESCRIPTION_SNAPSHOT_PATH unset}" >>"$BODY"
 ```
 
-Return the contents of `"$BODY"` as `descriptionSummary`; do not assign it through shell command
-substitution such as `DESCRIPTION_SUMMARY="$(cat "$BODY")"`, because command substitution strips
-trailing newline bytes and can make an otherwise copied `## Original notes` block non-verbatim.
+Return the contents of `"$BODY"` as `descriptionSummary` — read the file, never a shell capture of
+it, since a capture that reshapes the assembled block is a change to the very text that must survive.
 
-**Preserve the whole `## Original notes` block.** Its body must be copied byte-for-byte from
+**Preserve the whole `## Original notes` block.** Its body must be copied unchanged from
 `DESCRIPTION_SNAPSHOT_PATH`, except that an upload URL may, and a signed upload URL **must**, be
 written in its query-stripped unsigned form. The parity guard compares upload asset identity, so this
 preserves the asset while avoiding a credential-like signature. **Never** replace an image with a

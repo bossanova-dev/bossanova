@@ -341,6 +341,68 @@ export function validateReviewClaim(claim) {
   return { ok: true }
 }
 
+// The publishable half of the three-valued premise vocabulary. `unverified` is
+// deliberately absent: it is the DEFAULT a missing or unreadable record falls to,
+// and the state this gate exists to make visible. Accepting it here would make the
+// gate green on exactly the values it was added to reject.
+const PUBLISHABLE_PREMISE_VERDICTS = new Set(['held', 'refuted'])
+
+// The one marker string both publishing renderers emit, so a single grep over a
+// rendered report finds every unverified published claim.
+export const UNVERIFIED_PREMISE_MARKER = 'Unverified premise record'
+
+/**
+ * Decide whether a PUBLISHED OPEN claim carries a usable per-premise record.
+ *
+ * This answers only the mechanical question — is the record readable and complete?
+ * Whether a given decomposition is the RIGHT one is a reading task and stays in
+ * prose, in boss-review's premise-adjudication reference. That reference is named
+ * WITHOUT its core-relative path on purpose: this file is vendored into more than
+ * one core's toolbox, and a bare `references/<file>` token resolves against
+ * whichever core is doing the naming — which for boss-build is a file it does not
+ * ship. Evidence is checked the way `validateReviewClaim` checks a carried claim's
+ * anchor: it must be greppable, so a bare line number is rejected.
+ *
+ * It NEVER throws and never rejects the report. This helper is copy-distributed
+ * into two skill payloads plus every global install, so producer and consumer
+ * versions drift independently; an unrecognized shape returns a reason exactly as a
+ * missing one does, and an old copy degrades instead of crashing unrelated review
+ * machinery.
+ *
+ * @param {unknown} entry a `mustfix.items[]` entry or a `suggestions[]` entry.
+ * @returns {string|null} an enumerated reason, or null when the record is usable.
+ */
+export function premiseRecordGap(entry) {
+  try {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return 'no per-premise record'
+    const premises = entry.premises
+    if (premises === undefined || premises === null) return 'no per-premise record'
+    if (!Array.isArray(premises)) return 'per-premise record is not a list'
+    if (!premises.length) return 'per-premise record is empty'
+    for (let index = 0; index < premises.length; index += 1) {
+      const at = `premise ${index + 1}`
+      const premise = premises[index]
+      if (!premise || typeof premise !== 'object' || Array.isArray(premise)) {
+        return `${at} is not an object`
+      }
+      const claim = typeof premise.claim === 'string' ? premise.claim.trim() : ''
+      if (!claim) return `${at} has no claim`
+      const verdict = typeof premise.verdict === 'string' ? premise.verdict.trim() : ''
+      if (!PUBLISHABLE_PREMISE_VERDICTS.has(verdict)) {
+        return `${at} verdict ${JSON.stringify(premise.verdict ?? '')} is not held or refuted`
+      }
+      const evidence = typeof premise.evidence === 'string' ? premise.evidence.trim() : ''
+      if (!evidence) return `${at} has no evidence`
+      if (/^\d+$/.test(evidence)) return `${at} evidence must not be a line number`
+    }
+    return null
+  } catch {
+    // A getter that throws, a revoked proxy, a cross-realm object: unreadable is a
+    // reason like any other, never an exception that takes the report down with it.
+    return 'per-premise record is unreadable'
+  }
+}
+
 export function carriedReviewClaims(state = {}) {
   const rounds = Array.isArray(state) ? state : state?.rounds
   const carried = new Map()
@@ -564,7 +626,12 @@ function renderMustfix(mustfix = {}) {
     .map((it) => {
       const commit = it.commit ? ` (\`${it.commit}\`)` : ''
       const detail = it.detail ? ` — ${esc(it.detail)}` : ''
-      return `- ${badge(it.disposition)} — **${esc(it.title)}**${loc(it)}${detail}${commit}`
+      // Only an OPEN claim is gated. `fixed` and `verified` already carry their own
+      // evidence requirements (a greppable anchor, and for `verified` a rationale
+      // plus the read that settled it), so marking them would be noise, not truth.
+      const gap = it.disposition === 'unresolved' ? premiseRecordGap(it) : null
+      const unverified = gap ? ` — ⚠️ ${UNVERIFIED_PREMISE_MARKER}: ${esc(gap)}` : ''
+      return `- ${badge(it.disposition)} — **${esc(it.title)}**${loc(it)}${detail}${commit}${unverified}`
     })
     .join('\n')
 }
@@ -650,16 +717,29 @@ function renderSuggestions(suggestions = [], tracker = null, { prUrl = '', issue
   if (issueUrl) lines.push('Create each in the same project/team as the related issue below.')
   const labels = Array.isArray(tracker?.followUpLabels) ? tracker.followUpLabels : []
   if (labels.length) lines.push(`Label all issues with: ${labels.join(', ')}.`)
+  // A suggestion is published into a prompt that files a REAL ticket, so it is an
+  // open claim under the same gate as an unresolved must-fix. The marker rides in
+  // its own element rather than inside <body>, so the ticket description a filing
+  // agent copies stays exactly the finding's own text.
+  const gaps = suggestions.map((s) => premiseRecordGap(s))
+  if (gaps.some(Boolean)) {
+    lines.push(
+      `An issue carrying an <unverified> element rests on a claim nobody checked against the source: confirm it against the code before filing, and say in the issue body what settled it.`,
+    )
+  }
   if (prUrl || issueUrl) lines.push('')
   if (prUrl) lines.push(`Related PR: ${prUrl}`)
   if (issueUrl) lines.push(`Related issue: ${issueUrl}`)
-  for (const s of suggestions) {
+  for (const [index, s] of suggestions.entries()) {
     const originating = s.file ? ` (originating: ${s.file}${s.line ? `:${s.line}` : ''})` : ''
     const body = `${s.detail || s.title}${originating}`
     lines.push('')
     lines.push('<ticket>')
     lines.push(`<title>${s.title}</title>`)
     lines.push(`<body>${body}</body>`)
+    if (gaps[index]) {
+      lines.push(`<unverified>⚠️ ${UNVERIFIED_PREMISE_MARKER}: ${gaps[index]}</unverified>`)
+    }
     lines.push(`<priority>${s.priority ?? 'Low'}</priority>`)
     lines.push('</ticket>')
   }

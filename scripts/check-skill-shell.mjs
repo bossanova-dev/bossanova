@@ -107,8 +107,11 @@
 //
 // (g) INERT GUARDS ARE REJECTED. `test -f tool || echo missing` looks defensive but falls through
 //     and lets the rest of the block run. The rule only recognises `test`/`[` guards, a braced
-//     fallback, `|| exit`/`|| return`, and bare `command -v … ||`; it deliberately does not infer
-//     arbitrary shell control flow. A block whose first non-comment command is `set -e` (including
+//     fallback, `|| exit`/`|| return`/`|| continue`/`|| break`, and bare `command -v … ||`; it
+//     deliberately does not infer
+//     arbitrary shell control flow. `continue` and `break` count because neither lets the guarded
+//     commands run — see `BRANCH_TERMINATOR` for the reasoning and its one accepted cost.
+//     A block whose first non-comment command is `set -e` (including
 //     `set -euo pipefail`) is accepted; otherwise every recognised failure branch must reach
 //     `exit` or `return`. Accepted false negatives: aliases, functions, conditionals, pipelines,
 //     and shell expansion are outside this small lexical rule. A final bare `test`/`[` is also
@@ -287,9 +290,61 @@
 //     pipeline does not help, `set +o pipefail` clears it, and subshell-local changes do not leak.
 //     Three shapes are deliberately exempt: a pipeline in an `if`/`while`/`until` predicate, a
 //     pipeline nested in command substitution where the value is the consumed signal, and a same-line
-//     or next-line `${PIPESTATUS[0]}` / `$pipestatus[1]` guard that exits or returns on failure.
+//     or next-line `$pipestatus[1]` guard that exits or returns on failure.
+//
+//     THE EXEMPTING SPELLING IS `$pipestatus[1]`, NOT `${PIPESTATUS[0]}`, and the asymmetry is a
+//     measurement rather than a preference. The harness's Bash tool evaluates zsh (see (l)), and
+//     measured there `${PIPESTATUS[0]}` expands to NOTHING — it is unset — while `$pipestatus[1]`
+//     reads the head's status; under bash the reverse holds. A guard written only in the bash
+//     spelling is therefore INERT in the shell the block runs in, and exempting it would have this
+//     gate bless exactly the silent green it exists to catch. A guard that spells both still exempts,
+//     because the zsh read is present and compared — the narrowing is on the LONE bash spelling.
+//     Measured when this was narrowed: zero blocks in either authoring root read either name, so no
+//     existing finding moved.
+//
 //     Accepted false negatives, same direction as the other rules: unallowlisted command heads,
 //     status guards farther away, and pipelines in prose or non-shell fences.
+//
+// (l) A `for … in $VAR` LOOP RELIES ON WORD-SPLITTING THE SHELL MAY NOT DO. This is the one rule
+//     here whose subject is a DIFFERENT SHELL from the one (e) parses with. Measured on this
+//     harness: the Bash tool evaluates zsh 5.9 (`ZSH_VERSION=5.9`, `BASH_VERSION` unset,
+//     `ps -o comm= -p $$` reports `/bin/zsh`) even though the environment block advertises fish. zsh
+//     with default options does NOT word-split an unquoted PARAMETER expansion — `SH_WORD_SPLIT` is
+//     off by default — so `V="a b"; for X in $V` iterates ONCE with `X="a b"` where bash iterates
+//     twice. Nothing errors: the loop body runs with a wrong value and the block stays exit 0.
+//     Measured incident: `for SENT_SHA in $SENT_SHAS` handed both SHAs to
+//     `git merge-base --is-ancestor` as a single argument, the else arm fired, and a published core
+//     reported a fabricated `RESIDUAL: a concurrent writer replaced this run's commit`.
+//
+//     THE CARVE-OUT IS COMMAND SUBSTITUTION, and it is what makes the rule true rather than tidy.
+//     Measured: `for X in $(printf "a b")` iterates TWICE under zsh AND bash — zsh splits the result
+//     of an unquoted command substitution, it just does not split a parameter. So `for x in $(seq 1
+//     40)` is correct as written and must stay silent; a rule phrased as "unquoted expansion" would
+//     report it and be wrong. The shape matched is therefore exactly one unquoted `$VAR`/`${VAR}` as
+//     the WHOLE list, which by construction also excludes a quoted list, a quoted array expansion
+//     (`${a+"${a[@]}"}` — measured identical in both shells, elements and embedded spaces intact for
+//     a populated array, zero iterations for an unset one) and any multi-word list.
+//
+//     THE SANCTIONED FIX makes the delimiter explicit rather than swapping one dialect assumption
+//     for another: `printf '%s\n' "$VAR" | while IFS= read -r X; do [ -n "$X" ] || continue; …; done`,
+//     with the producer emitting one item per line. Both shells then iterate the same items, so the
+//     block is correct under either. `printf` is deliberately not in (k)'s build/verify allowlist, so
+//     the fix introduces no new finding. Note the two shells DISAGREE about where the loop body
+//     runs, so do not rely on either: measured, `unset V; printf "a\n" | while IFS= read -r X; do
+//     V=set; done` leaves V=set under zsh (which runs a pipeline's LAST stage in the current
+//     shell) and V unset under bash (which runs it in a subshell unless `lastpipe` is set).
+//     Carry a value out through stdout rather than a variable; this form is safest where the
+//     body only reads.
+//
+//     ACCEPTED FALSE NEGATIVE, same one direction as (f), (h) and (i): an unquoted parameter
+//     expansion in ORDINARY ARGUMENT POSITION (`cmd $FLAGS`) is not reported. Measured against this
+//     corpus before deciding: all four instances are provably at-most-one-word — `$PNPM_FLAGS` is
+//     only ever `""` or the literal `--ignore-workspace`, `$FETCH_FAILED` only ever `""` or
+//     `--fetch-failed`, `$CHAT` a single id token — and zsh passes a one-word value intact while
+//     ELIDING an empty one (measured: `E=""; set -- a $E b` yields argc=2, and `F="--one"; set --
+//     cmd $F` yields argc=2). Reporting them would be the false POSITIVE this file forbids four
+//     times over, on day one, with no waiver to reach for. Widening to argument position needs a
+//     per-line waiver like (j)'s first; it is not a patch here.
 //
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
@@ -1369,6 +1424,25 @@ function shellOptionStateAfter(body, initial) {
   return result
 }
 
+// The words that end a guarded branch instead of falling through. `continue` and `break` are here
+// for exactly the reason `exit` and `return` are: neither lets the commands the guard was protecting
+// run. `continue` skips the rest of the loop iteration, `break` leaves the loop — so the
+// `[ -n "$X" ] || continue` that (l)'s sanctioned fix uses inside a `while read` body is a CORRECT
+// guard, and reporting it would be the false positive this file forbids four times over, on the one
+// form this file's own finding message tells an author to write.
+// ACCEPTED COST, narrow and loud — and the two shells DIVERGE here, so state both rather than the
+// bash one as if it were universal. Measured:
+//   bash -c 'test -f /nonexistent || continue; echo "REACHED-NEXT-COMMAND"'
+//     -> warns `continue: only meaningful in a `for', `while', or `until' loop` AND prints
+//        REACHED-NEXT-COMMAND: under bash that branch really does fall through and is now unreported.
+//   zsh -c 'test -f /nonexistent || continue; echo "REACHED-NEXT-COMMAND"'
+//     -> `zsh:continue:1: not in while, until, select, or repeat loop` and does NOT print it: the
+//        block dies, so the guard still holds under the shell this file is premised on.
+// The accepted cost is therefore bash-only, and it is loud in both: nobody writes a loop-less
+// `continue` deliberately, and each shell says so on stderr when they do.
+const BRANCH_TERMINATOR = /^(?:exit|return|continue|break)\b/
+const BRANCH_TERMINATOR_WORD = /^(?:exit|return|continue|break)$/
+
 function branchReachesExit(branch) {
   let trimmed = branch.trimStart()
   while (trimmed.startsWith('#')) {
@@ -1378,7 +1452,7 @@ function branchReachesExit(branch) {
   }
   // A direct `exit` still needs the operator check below: `exit 1 | cat` and
   // `exit 1 & wait` terminate only a pipeline/background child, not this shell.
-  if (/^(?:exit|return)\b/.test(trimmed)) return branchContainsTerminator(trimmed)
+  if (BRANCH_TERMINATOR.test(trimmed)) return branchContainsTerminator(trimmed)
   if (!trimmed.startsWith('{')) return false
   const end = matchingBrace(trimmed, 0)
   if (end === -1) return false
@@ -1433,7 +1507,7 @@ function branchContainsTerminator(body) {
       const command = commandWordIndex(commandTokens)
       const directExit =
         command !== -1 &&
-        /^(?:exit|return)$/.test(removeQuotes(commandTokens[command].raw)) &&
+        BRANCH_TERMINATOR_WORD.test(removeQuotes(commandTokens[command].raw)) &&
         compoundClosers.length === 0 &&
         !['&&', '||', '|', '&'].includes(previousOperator) &&
         !['|', '&'].includes(followingOperator)
@@ -4115,20 +4189,78 @@ export function findUnquotedOptionGlobs(body) {
   return findings
 }
 
+// See (l). The whole list of a `for` must be exactly ONE unquoted parameter expansion for the rule
+// to fire, and the anchors here ARE the rule rather than a tidying detail: `$(`, a backtick, a quote
+// and `[@]` cannot match this shape, so (l)'s command-substitution and quoted-array carve-outs need
+// no separate test to hold. `${VAR:-default}`, `${#VAR}` and `${VAR[@]}` are excluded too — an
+// accepted false negative rather than a guess about what a defaulted or subscripted value holds.
+const LIST_IS_BARE_PARAMETER = /^\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})$/
+
+// `for NAME in` at a command position. Anchored on a separator (or the start of the logical line) so
+// a `for` inside a word — `--check-for x in $V` — is not read as a loop header.
+const FOR_IN_HEAD = /(?:^|[\s;&|(){}])for[ \t]+([A-Za-z_]\w*)[ \t]+in[ \t]+/g
+
+// Cut a logical line at its first real comment. Quote-aware only through `startsComment`'s separator
+// test, which is what keeps `sed 's#^origin/##'` and a `"# heading"` string from being read as one.
+function stripTrailingComment(text) {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '#' && startsComment(text, i)) return text.slice(0, i)
+  }
+  return text
+}
+
+/**
+ * `for` loops whose list is a single unquoted parameter expansion, as
+ * `[{ lineOffset, name, variable, list }]` — see header rule (l).
+ *
+ * `name` is the loop variable, `variable` the parameter whose splitting is relied upon. Heredoc
+ * payload is masked and continuations are joined, exactly as the sibling predicates do, so a loop
+ * header broken across a backslash still reads as one list.
+ */
+export function findWordSplitReliance(body) {
+  const findings = []
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const code = stripTrailingComment(text)
+    FOR_IN_HEAD.lastIndex = 0
+    let match
+    while ((match = FOR_IN_HEAD.exec(code)) !== null) {
+      // The list ends at the loop's `do`, or at whichever separator closes the command first.
+      let rest = code.slice(match.index + match[0].length)
+      const semicolon = rest.indexOf(';')
+      if (semicolon !== -1) rest = rest.slice(0, semicolon)
+      const list = rest.replace(/[ \t]+do\b[\s\S]*$/, '').trim()
+      if (!LIST_IS_BARE_PARAMETER.test(list)) continue
+      findings.push({
+        lineOffset,
+        name: match[1],
+        variable: list.replace(/^\$\{?|\}$/g, ''),
+        list,
+      })
+    }
+  }
+  return findings
+}
+
+// Only the zsh spelling counts as a live read of the pipeline head's status — see (k). Measured:
+// `${PIPESTATUS[0]}` is UNSET under zsh, which is the shell the Bash tool evaluates, so a guard
+// written only that way cannot fire where the block runs. A guard that also spells `$pipestatus[1]`
+// still exempts, since this pattern finds it.
+const PIPELINE_HEAD_STATUS = /\$pipestatus\[1\]/
+
 function readsPipelineHeadStatus(text) {
-  return /\$\{PIPESTATUS\[0\]\}|\$pipestatus\[1\]/.test(text)
+  return PIPELINE_HEAD_STATUS.test(text)
 }
 
 function guardsPipelineHeadStatus(text) {
   if (!readsPipelineHeadStatus(text)) return false
-  const firstStatusRead = text.search(/\$\{PIPESTATUS\[0\]\}|\$pipestatus\[1\]/)
+  const firstStatusRead = text.search(PIPELINE_HEAD_STATUS)
   if (
     scanGuardOperators(text).separators.some(
       ({ at, operator }) => at < firstStatusRead && operator !== '&&' && operator !== '||',
     )
   )
     return false
-  const status = String.raw`(?:\$\{PIPESTATUS\[0\]\}|\$pipestatus\[1\])`
+  const status = PIPELINE_HEAD_STATUS.source
   const failureCompare = String.raw`(?:-ne|!=)\s*0`
   const successCompare = String.raw`(?:-eq|==)\s*0`
   if (
@@ -5497,12 +5629,21 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
           })
         }
 
+        for (const split of findWordSplitReliance(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + split.lineOffset,
+            kind: 'word-split',
+            message: `\`for ${split.name} in ${split.list}\` relies on word-splitting an unquoted parameter expansion: bash splits it into words, zsh — which this harness's Bash tool evaluates — does not, so the loop runs ONCE with the whole value and the block still exits 0; emit ${split.variable} one item per line and iterate with \`printf '%s\\n' "${split.list}" | while IFS= read -r ${split.name}; do [ -n "$${split.name}" ] || continue; …; done\``,
+          })
+        }
+
         for (const pipeline of findMaskedPipelineStatus(block.body)) {
           findings.push({
             file: rel,
             line: block.startLine + 1 + pipeline.lineOffset,
             kind: 'pipeline-status',
-            message: `${pipeline.head} is the head of a pipeline without pipefail, so the shell reports the tail command's status instead; add \`set -o pipefail\` before it, or in fish read \`$pipestatus[1]\` explicitly`,
+            message: `${pipeline.head} is the head of a pipeline without pipefail, so the shell reports the tail command's status instead; add \`set -o pipefail\` before it (zsh and bash both accept it), or read the head's status explicitly as \`$pipestatus[1]\` — the zsh spelling, and zsh is what this harness's Bash tool evaluates, where the bash \`\${PIPESTATUS[0]}\` is unset and so guards nothing`,
           })
         }
 

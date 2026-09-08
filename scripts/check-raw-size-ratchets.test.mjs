@@ -83,6 +83,74 @@ test('both rules fire in one file, reported in source order', () => {
   )
 })
 
+// ─── raw-budget-compare: the shape BOS-1208 refuses ───────────────────────────────────────
+
+test('the budget rule fires when a comparison is written on the measurement call', () => {
+  const source = "  assert.ok(measureFile(abs(SKILL)) <= BUDGET, 'too big')"
+  const offenders = findRawSizeRatchets(source)
+  assert.equal(offenders.length, 1, 'an open-coded budget comparison must be reported')
+  assert.equal(offenders[0].rule, 'raw-budget-compare')
+  assert.match(offenders[0].remedy, /assertDescendingBudget/, 'the remedy must name the primitive')
+})
+
+test('the budget rule fires with the constant on the LEFT too', () => {
+  // The leak does not care which operand the pin is; a rule that only read one order would be
+  // cleared by swapping the comparison round.
+  const offenders = findRawSizeRatchets('assert.ok(BUDGET >= measureFile(abs(SKILL)))')
+  assert.equal(offenders.length, 1)
+  assert.equal(offenders[0].rule, 'raw-budget-compare')
+})
+
+test('the budget rule reads through the nested parentheses the real call sites use', () => {
+  // `measureFile(path.join(rootDir, skillPath))` is how every migrated site spells it, so a
+  // flat regex would stop at the inner `)` and compare against the wrong text.
+  const offenders = findRawSizeRatchets('if (measureFile(path.join(rootDir, skillPath)) > RATCHET)')
+  assert.equal(offenders.length, 1)
+  assert.equal(offenders[0].rule, 'raw-budget-compare')
+})
+
+test('the budget rule covers every comparison spelling, in both operand orders', () => {
+  for (const operator of ['<', '<=', '>', '>=', '===', '==']) {
+    assert.equal(
+      findRawSizeRatchets(`x = measureFile(p) ${operator} LIMIT`).length,
+      1,
+      `${operator} on the right of the measurement must fire`,
+    )
+    assert.equal(
+      findRawSizeRatchets(`x = LIMIT ${operator} measureFile(p)`).length,
+      1,
+      `${operator} on the left of the measurement must fire`,
+    )
+  }
+})
+
+test('the budget rule does NOT reopen the eight recorded false positives', () => {
+  // These are the exact shapes the general comparison detector tripped on, none of them size
+  // gates. Rule 3 anchors on the measurement helper itself, which appears in none of them, so
+  // it has no overlap with the population that got that detector dropped.
+  assert.deepEqual(findRawSizeRatchets('assert.ok(gateAt > PHASE_4_SECTION)'), [])
+  assert.deepEqual(findRawSizeRatchets('assert.ok(b.length <= GO_BATCH)'), [])
+  assert.deepEqual(findRawSizeRatchets("const fixture = '<TICKET-1> is not a comparison'"), [])
+})
+
+test('the routed and wrapped uses of the helper are not comparisons', () => {
+  // The passing shape: the measurement is an ARGUMENT, so the next character is a comma.
+  assert.deepEqual(findRawSizeRatchets('measured: measureFile(path.join(rootDir, skillPath)),'), [])
+  assert.deepEqual(findRawSizeRatchets('const bytes = measureFile(abs(SKILL))'), [])
+  // An arrow function ends in the same character a `>` comparison does; wrapping the helper in
+  // a callback is how its own suite exercises it, and must stay silent.
+  assert.deepEqual(findRawSizeRatchets('const message = messageOf(() => measureFile(missing))'), [])
+  assert.deepEqual(findRawSizeRatchets('assert.notEqual(n, measureFile(p))'), [])
+})
+
+test('a reasoned opt-out suppresses the budget rule as well', () => {
+  const source = [
+    '// size-ratchet-ok: asserting what the helper itself returns',
+    'assert.ok(measureFile(p) <= BUDGET)',
+  ].join('\n')
+  assert.deepEqual(findRawSizeRatchets(source), [])
+})
+
 // ─── Negative fixtures: the detector must NOT fire ────────────────────────────────────────
 
 test('occurrence counting is not a size measurement', () => {
@@ -197,7 +265,11 @@ test('the gate states what a green run does not establish', () => {
   // The likeliest way past this gate is not an opt-out, it is writing the measurement a
   // different way. The residual has to name that, or the success line reads as "nothing
   // measures by hand here" when it only means "neither of two spellings appears here".
-  assert.match(RESIDUAL, /TWO SPELLINGS/)
+  assert.match(RESIDUAL, /THREE SPELLINGS/)
+  // Rule 3 closes the direct comparison only. The residual has to name the shape one variable
+  // later, or a green run reads as "no gate compares by hand" when it means "none does so on
+  // the call itself".
+  assert.match(RESIDUAL, /intermediate variable/)
   assert.match(RESIDUAL, /statSync\(\)\.size/)
   assert.match(RESIDUAL, /readFileSync\(\)\.length/)
 })

@@ -417,7 +417,13 @@ func daemonMetadataForDoctor() (daemonstate.Metadata, error) {
 // recorded while no service is installed reads unknown here (the not-installed
 // check below owns that fact and its remedy; claiming it twice would print two
 // failures for one cause) and unsupervised on the status line.
-func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metadataErr error) (unhealthy bool, restartRemediation bool) {
+func reportDaemonSupervision(
+	out io.Writer,
+	metadata daemonstate.Metadata,
+	metadataErr error,
+	supervision daemon.SupervisionModeStatus,
+	ownership daemon.WatchdogOwnership,
+) (unhealthy bool, remediation daemonSupervisionRemediation) {
 	// Checked BEFORE the service view is read, not after. Under this env var
 	// platformGetStatus deliberately returns Installed=true, Running=false
 	// without ever asking launchd or systemd — which is byte-identical to the
@@ -426,44 +432,52 @@ func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metad
 	// diagnostic gets ignored on the host where it is telling the truth.
 	if os.Getenv("BOSS_DAEMON_SKIP_LAUNCHCTL") != "" {
 		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL)")
-		return false, false
+		return false, daemonSupervisionRemediationNone
 	}
 
 	st, statusErr := daemonGetStatus()
 	switch {
 	case statusErr != nil:
 		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (service status unavailable: %v)\n", statusErr)
-		return false, false
+		return false, daemonSupervisionRemediationNone
 	case metadataErr != nil:
 		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (no daemon state record: %v)\n", metadataErr)
-		return false, false
-	case !st.Installed:
+		return false, daemonSupervisionRemediationNone
+	case !st.Installed && !daemonUnattendedSubstrateOwnsVerdict(supervision):
 		// "not installed" has its own check and its own remedy below; claiming
 		// it here too would print two failures for one fact.
+		//
+		// BOS-1204: `st.Installed` is the per-user LaunchAgent, and an
+		// unattended install deliberately supersedes that agent — so on a
+		// correctly supervised unattended host this rung is TRUE and used to
+		// swallow the verdict entirely, leaving doctor saying "unknown" where
+		// status said "supervised". That is a divergence beyond the single one
+		// TestDaemonSupervisionVerdictsMatchDoctor declares, which is why the
+		// guard is here rather than left to the wording below.
 		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (no service is installed)")
-		return false, false
+		return false, daemonSupervisionRemediationNone
 	case metadata.PID <= 0:
 		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (no recorded daemon PID)")
-		return false, false
+		return false, daemonSupervisionRemediationNone
 	}
 
 	alive, aliveErr := daemonProcessAlive(metadata.PID)
 	switch {
 	case aliveErr != nil:
 		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d could not be checked: %v)\n", metadata.PID, aliveErr)
-		return false, false
+		return false, daemonSupervisionRemediationNone
 	case !alive:
 		// Nothing is running under the recorded PID. The running-process check
 		// below owns that story.
 		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d is not running)\n", metadata.PID)
-		return false, false
+		return false, daemonSupervisionRemediationNone
 	}
 
 	// The verdict is decided by daemonSupervisionOfLiveRecord — the one
 	// decision `boss daemon status` renders too and `boss daemon restart`
 	// branches on, via daemon.ClassifyServingMode. Only the wording and the
 	// remediation flags are chosen here.
-	verdict, reason := daemonSupervisionOfLiveRecord(st, metadata.PID)
+	verdict, reason := daemonSupervisionOfLiveRecord(st, metadata.PID, supervision, ownership)
 	switch reason {
 	case daemonSupervisionReasonDetached:
 		_, _ = fmt.Fprintf(out,
@@ -483,6 +497,30 @@ func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metad
 			st.PID, metadata.PID)
 	case daemonSupervisionReasonManagerOwned:
 		_, _ = fmt.Fprintf(out, "daemon supervision: ok (PID %d is owned by the service manager)\n", metadata.PID)
+	case daemonSupervisionReasonWatchdogOwned:
+		// Worded as the two-step chain rather than as plain "the service
+		// manager owns it", for the reason daemonSupervisionLine is: on this
+		// substrate bossd is a grandchild of launchd, and the gui/<uid> job an
+		// operator would go looking for is absent by design.
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: ok (launchd owns the root-owned %s LaunchDaemon and that watchdog spawns bossd, so PID %d is a grandchild of launchd rather than a launchd job of its own)\n",
+			daemon.WatchdogLabel, metadata.PID)
+	case daemonSupervisionReasonWatchdogNotLoaded:
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: FAIL the %s watchdog is installed at %s but launchd does not have %s loaded, so nothing will restart bossd (PID %d)\n",
+			supervision.Mode, supervision.Unattended.PlistPath, ownership.Target, metadata.PID)
+	case daemonSupervisionReasonWatchdogUnreadable:
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: unknown (the %s watchdog is installed, but whether launchd has %s loaded could not be established: %s)\n",
+			supervision.Mode, daemon.WatchdogTarget(), watchdogOwnershipReason(ownership))
+	case daemonSupervisionReasonWatchdogInsecure:
+		// Unknown, not FAIL. The insecure path IS a fault and IS reported —
+		// once, by the substrate line reportDaemonSupervisionMode renders,
+		// which names the offending path in full. A second FAIL here would be
+		// two failures for one fact.
+		_, _ = fmt.Fprintf(out,
+			"daemon supervision: unknown (the %s watchdog is installed but not safe for a root-owned job, so its ownership of PID %d cannot be relied on; see the daemon supervision substrate line)\n",
+			supervision.Mode, metadata.PID)
 	default:
 		_, _ = fmt.Fprintf(out,
 			"daemon supervision: unknown (the service manager's view of PID %d could not be attributed)\n",
@@ -495,7 +533,53 @@ func reportDaemonSupervision(out io.Writer, metadata daemonstate.Metadata, metad
 	// Only an unsupervised daemon is a fault: an unknown is a probe that could
 	// not tell, and restarting on it would act on nothing observed.
 	unhealthy = verdict == daemonSupervisionUnsupervised
-	return unhealthy, unhealthy
+	if !unhealthy {
+		return false, daemonSupervisionRemediationNone
+	}
+	// The REMEDY is chosen from the reason, not from the verdict, because the
+	// two unsupervised reasons have disjoint fixes and only one of them is a
+	// restart. A watchdog whose plist is on disk but whose `system`-domain job
+	// launchd never bootstrapped cannot be repaired by any per-user command:
+	// `boss daemon restart` re-bootstraps the LaunchAgent this substrate
+	// deliberately supersedes, so it would succeed while leaving the fault
+	// exactly where it was. Loading a root-owned LaunchDaemon needs root.
+	if reason == daemonSupervisionReasonWatchdogNotLoaded {
+		return true, daemonSupervisionRemediationInstallWatchdog
+	}
+	return true, daemonSupervisionRemediationRestart
+}
+
+// daemonSupervisionRemediation names WHICH remedy an unhealthy supervision
+// verdict needs, so the two remediation ladders below cannot print a per-user
+// restart for a fault only root can clear.
+//
+// It replaced a bool. The bool made "unhealthy" and "restart" the same fact,
+// which was true while every unsupervised shape was a detached bossd and became
+// false the moment BOS-1204 added a rung whose fault is a LaunchDaemon launchd
+// does not have loaded.
+type daemonSupervisionRemediation int
+
+const (
+	// daemonSupervisionRemediationNone is the zero value: nothing observed to
+	// remedy.
+	daemonSupervisionRemediationNone daemonSupervisionRemediation = iota
+	// daemonSupervisionRemediationRestart is the LaunchAgent-substrate remedy —
+	// a detached or foreign-PID bossd, which runDaemonRestart already handles.
+	daemonSupervisionRemediationRestart
+	// daemonSupervisionRemediationInstallWatchdog is the unattended-substrate
+	// remedy: bootstrap the root-owned watchdog, which needs root.
+	daemonSupervisionRemediationInstallWatchdog
+)
+
+// daemonWatchdogNotLoadedRemediation is the remedy for a watchdog that is
+// installed on disk and not loaded in launchd's `system` domain.
+//
+// It names the same command daemonSupervisionModeRemediation prints for an
+// ABSENT install, and deliberately says why a restart is not the answer: the
+// operator is looking at a FAIL whose plist they can see on disk, so "install"
+// reads like a step they have already taken.
+func daemonWatchdogNotLoadedRemediation() string {
+	return fmt.Sprintf("  run `%s` to bootstrap the unattended supervision watchdog into launchd's system domain (macOS will prompt for an administrator password) — 'boss daemon restart' cannot load a root-owned LaunchDaemon", daemon.WatchdogInstallCommand)
 }
 
 // reportDaemonAuthState prints the live-auth section and reports whether it
@@ -672,7 +756,17 @@ const (
 // reportDaemonSupervision above. This runs on developer machines and in CI, and
 // a false FAIL there is how an operator learns to skip the one line that is
 // telling the truth on a real host.
-func reportDaemonSpawnHistory(out io.Writer, stagedPath string) (unhealthy bool, remediation daemonSpawnRemediation) {
+func reportDaemonSpawnHistory(out io.Writer, stagedPath string, supervision daemon.SupervisionModeStatus) (unhealthy bool, remediation daemonSpawnRemediation) {
+	// BOS-1204 AC8: the FAILING verdict's whole value is that it points at the
+	// binary launchd actually ran, and on the unattended substrate that is the
+	// watchdog's ROOT-OWNED copy, never the per-user staged one. The staged
+	// path is deliberately kept for every other message here — the
+	// never-spawned remedy and the startup directive are about the LaunchAgent
+	// substrate or about the file this user can run by hand.
+	spawnedBinary := stagedPath
+	if daemonUnattendedSubstrateConfigured(supervision) && supervision.Unattended.BinaryPath != "" {
+		spawnedBinary = supervision.Unattended.BinaryPath
+	}
 	history, err := daemonGetSpawnHistory()
 	if err != nil {
 		// A non-nil error means launchctl could not be EXECUTED at all. The
@@ -696,9 +790,23 @@ func reportDaemonSpawnHistory(out io.Writer, stagedPath string) (unhealthy bool,
 	case daemon.SpawnStateFailing:
 		// Runs and LastExitCode are readable by construction here: the
 		// classifier reaches this state only after parsing both.
+		//
+		// WHOSE exit this is depends on the substrate, and saying "bossd itself
+		// started and failed" on the unattended one would be a diagnosis of the
+		// wrong process. There launchd spawns the WATCHDOG — bossd is its
+		// grandchild, reached through `launchctl asuser` — so the recorded exit
+		// is the watchdog's and can precede bossd being spawned at all. The
+		// target this history was read from moved to the watchdog job with
+		// BOS-1204; the sentence describing it had not.
+		if daemonUnattendedSubstrateConfigured(supervision) {
+			_, _ = fmt.Fprintf(out,
+				"launchd spawn history: FAIL launchd has spawned %s %d times and it last exited with code %d — that is the WATCHDOG's own exit, not bossd's, so it can precede bossd being spawned at all; the fault is in %s, not in the launchd domain\n",
+				history.Target, history.Runs, history.LastExitCode, spawnedBinary)
+			return true, daemonSpawnRemediationForeground
+		}
 		_, _ = fmt.Fprintf(out,
 			"launchd spawn history: FAIL launchd has spawned %s %d times and it last exited with code %d — bossd itself started and failed, so the fault is in the staged binary %s, not in the launchd domain\n",
-			history.Target, history.Runs, history.LastExitCode, stagedPath)
+			history.Target, history.Runs, history.LastExitCode, spawnedBinary)
 		return true, daemonSpawnRemediationForeground
 	case daemon.SpawnStateHealthy:
 		_, _ = fmt.Fprintf(out, "launchd spawn history: ok (launchd has spawned %s %d times)\n",
@@ -764,7 +872,20 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// platformGetStatus fills PID on launchd and on systemd alike, so the check
 	// is genuinely cross-platform.
 	supervisionMetadata, supervisionMetadataErr := daemonMetadataForDoctor()
-	supervisionUnhealthy, supervisionRemediation := reportDaemonSupervision(out, supervisionMetadata, supervisionMetadataErr)
+	// Gathered ONCE for the whole run and threaded down, which is what makes
+	// the claim true rather than merely written: BOS-1204 gave this status
+	// three consumers — the ownership check, the substrate line, the
+	// LaunchAgent gate and the spawn-history target — and separate reads of
+	// settings.json inside one command are separate chances to render one
+	// report about two different configurations.
+	//
+	// daemonSupervisionInputs is itself short-circuited by
+	// BOSS_DAEMON_SKIP_LAUNCHCTL (daemonServiceProbingDisabled), so hoisting it
+	// above reportDaemonSupervision's own env guard adds no launchctl probe on
+	// a host that asked for none (BOS-1204 AC9).
+	supervisionSubstrate, watchdogOwnership := daemonSupervisionInputs()
+	supervisionUnhealthy, supervisionRemediation := reportDaemonSupervision(
+		out, supervisionMetadata, supervisionMetadataErr, supervisionSubstrate, watchdogOwnership)
 	// BOS-1184 R4, and cross-platform for the same reason the ownership check
 	// above is: a settings key that the install path refuses to act on is not a
 	// macOS concept, and this line is the only place an operator learns their
@@ -772,7 +893,7 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// unhealthyNonAuth deliberately — that flag's remedy ladder ends in "run
 	// 'boss daemon restart'", which cannot fix a value in settings.json, and
 	// printing it would send an operator to restart a daemon over a typo.
-	modeUnhealthy, modeRemediation := reportDaemonSupervisionMode(out)
+	modeUnhealthy, modeRemediation := reportDaemonSupervisionMode(out, supervisionSubstrate)
 	if daemonDoctorGOOS != "darwin" {
 		_, _ = fmt.Fprintf(out, "macOS daemon install and protected-folder checks: not applicable on %s\n", daemonDoctorGOOS)
 		// The service-PATH and upstream-auth checks are NOT macOS-specific —
@@ -781,8 +902,11 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 		// would make both a no-op on exactly the platform they matter most on.
 		if servicePathStale || authUnhealthy || supervisionUnhealthy || modeUnhealthy {
 			_, _ = fmt.Fprintln(out, "\nRemediation:")
-			if servicePathStale || supervisionRemediation {
+			if servicePathStale || supervisionRemediation == daemonSupervisionRemediationRestart {
 				_, _ = fmt.Fprintln(out, "  run 'boss daemon restart'")
+			}
+			if supervisionRemediation == daemonSupervisionRemediationInstallWatchdog {
+				_, _ = fmt.Fprintln(out, daemonWatchdogNotLoadedRemediation())
 			}
 			if authRemediation {
 				_, _ = fmt.Fprintln(out, "  run 'boss login'")
@@ -838,36 +962,38 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 		_, _ = fmt.Fprintf(out, "staged bossd: %s — source unavailable\n", stagedPath)
 	}
 
-	home, homeErr := os.UserHomeDir()
-	if homeErr != nil {
-		unhealthyNonAuth = true
-		_, _ = fmt.Fprintf(out, "FAIL LaunchAgent plist: resolve home directory: %v\n", homeErr)
-	} else {
-		plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.bossanova.bossd.plist")
-		programArguments, plistErr := readLaunchAgentProgramArguments(plistPath)
-		switch {
-		case plistErr != nil:
-			unhealthyNonAuth = true
-			installRemediation = errors.Is(plistErr, os.ErrNotExist)
-			_, _ = fmt.Fprintf(out, "FAIL LaunchAgent plist %s: %v\n", plistPath, plistErr)
-		case len(programArguments) == 0:
-			unhealthyNonAuth = true
-			_, _ = fmt.Fprintf(out, "FAIL LaunchAgent ProgramArguments: no executable configured in %s\n", plistPath)
-		default:
-			programPath := programArguments[0]
-			_, _ = fmt.Fprintf(out, "LaunchAgent ProgramArguments: %s\n", strings.Join(programArguments, " "))
-			if strings.Contains(programPath, "/Cellar/") || filepath.Clean(programPath) != filepath.Clean(stagedPath) {
-				unhealthyNonAuth = true
-				_, _ = fmt.Fprintf(out, "FAIL LaunchAgent executable must be staged at %s, not %s\n", stagedPath, programPath)
-			}
-		}
+	// BOS-1204: under the unattended substrate there is deliberately NO
+	// per-user LaunchAgent — platformInstallUnattended removes it, and
+	// warnIfUnattendedWatchdogInstalled warns when a leftover one is found — so
+	// reading it here reported `FAIL LaunchAgent plist … no such file` plus an
+	// install remediation on a host whose supervision was working perfectly.
+	//
+	// Doctor defers to the substrate check it already has rather than probing
+	// the watchdog again: reportDaemonSupervisionMode renders
+	// describeUnattendedSupervisionMode, which already FAILs on absent and on
+	// insecure and already names the watchdog plist. A second FAIL for the same
+	// fact is the duplicate-failure shape reportDaemonSupervision's
+	// `!st.Installed` rung is already written to avoid.
+	//
+	// The gate is the CONFIGURED mode, not the observed install state, and
+	// deliberately so: on a host that selected this substrate and never ran the
+	// root install, the LaunchAgent is equally absent and equally not the thing
+	// to report — the substrate line says so, with the remedy that actually
+	// works (`sudo boss daemon install`, which this block would never print).
+	switch {
+	case daemonUnattendedSubstrateConfigured(supervisionSubstrate):
+		_, _ = fmt.Fprintf(out,
+			"LaunchAgent plist: not applicable — the %s supervision substrate supersedes the per-user LaunchAgent; see the daemon supervision substrate line above\n",
+			supervisionSubstrate.Mode)
+	default:
+		reportDaemonLaunchAgentPlist(out, stagedPath, &unhealthyNonAuth, &installRemediation)
 	}
 
 	// Placed inside the darwin-only section, unlike the auth and supervision
 	// checks above: launchd spawn history is not a cross-platform concept, and a
 	// Linux run must emit nothing new at all — not even a probe that prints
 	// nothing.
-	spawnUnhealthy, spawnRemediation := reportDaemonSpawnHistory(out, stagedPath)
+	spawnUnhealthy, spawnRemediation := reportDaemonSpawnHistory(out, stagedPath, supervisionSubstrate)
 	if spawnUnhealthy {
 		unhealthyNonAuth = true
 	}
@@ -1013,6 +1139,13 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 				// but crash-marked job falls through to the restart default,
 				// which is the coherent answer for a daemon that is up.
 				_, _ = fmt.Fprintf(out, "  run the staged bossd in the foreground to see why it exits: %s\n", stagedPath)
+			case supervisionRemediation == daemonSupervisionRemediationInstallWatchdog:
+				// Ahead of BOTH per-user branches below. The fault is a
+				// root-owned LaunchDaemon launchd does not have loaded, and
+				// neither `boss daemon start` nor `boss daemon restart` can
+				// load one — they would report success over an unchanged
+				// fault, which is the misdirection this ladder exists to stop.
+				_, _ = fmt.Fprintln(out, daemonWatchdogNotLoadedRemediation())
 			case startRemediation:
 				// Nothing is running, so there is nothing to restart. This is the
 				// recovery from a restart whose bootstrap failed after its bootout.
@@ -1087,8 +1220,7 @@ func daemonSupervisionModeRemediation(st daemon.SupervisionModeStatus) string {
 // which is this surface's own voice: status labels the fact, doctor grades it.
 // The status is loaded ONCE and fed to both the description and the remedy, so
 // a host cannot be described in one state and remediated for another.
-func reportDaemonSupervisionMode(out io.Writer) (unhealthy bool, remediation string) {
-	status := daemon.LoadSupervisionModeStatus()
+func reportDaemonSupervisionMode(out io.Writer, status daemon.SupervisionModeStatus) (unhealthy bool, remediation string) {
 	description, unhealthy := describeDaemonSupervisionMode(status)
 	if unhealthy {
 		_, _ = fmt.Fprintf(out, "daemon supervision substrate: FAIL %s\n", description)
@@ -1096,6 +1228,41 @@ func reportDaemonSupervisionMode(out io.Writer) (unhealthy bool, remediation str
 		_, _ = fmt.Fprintf(out, "daemon supervision substrate: %s\n", description)
 	}
 	return unhealthy, daemonSupervisionModeRemediation(status)
+}
+
+// reportDaemonLaunchAgentPlist is the per-user LaunchAgent block, lifted out of
+// runDaemonDoctor unchanged so BOS-1204's substrate gate could skip it as a
+// unit rather than by wrapping a hundred lines in an `if`.
+//
+// The two flags are pointers because both are accumulators runDaemonDoctor
+// keeps building after this returns; returning them would have made the call
+// site re-implement the OR at every rung, which is the shape that lets one rung
+// print FAIL while reporting healthy.
+func reportDaemonLaunchAgentPlist(out io.Writer, stagedPath string, unhealthyNonAuth, installRemediation *bool) {
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil {
+		*unhealthyNonAuth = true
+		_, _ = fmt.Fprintf(out, "FAIL LaunchAgent plist: resolve home directory: %v\n", homeErr)
+		return
+	}
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.bossanova.bossd.plist")
+	programArguments, plistErr := readLaunchAgentProgramArguments(plistPath)
+	switch {
+	case plistErr != nil:
+		*unhealthyNonAuth = true
+		*installRemediation = errors.Is(plistErr, os.ErrNotExist)
+		_, _ = fmt.Fprintf(out, "FAIL LaunchAgent plist %s: %v\n", plistPath, plistErr)
+	case len(programArguments) == 0:
+		*unhealthyNonAuth = true
+		_, _ = fmt.Fprintf(out, "FAIL LaunchAgent ProgramArguments: no executable configured in %s\n", plistPath)
+	default:
+		programPath := programArguments[0]
+		_, _ = fmt.Fprintf(out, "LaunchAgent ProgramArguments: %s\n", strings.Join(programArguments, " "))
+		if strings.Contains(programPath, "/Cellar/") || filepath.Clean(programPath) != filepath.Clean(stagedPath) {
+			*unhealthyNonAuth = true
+			_, _ = fmt.Fprintf(out, "FAIL LaunchAgent executable must be staged at %s, not %s\n", stagedPath, programPath)
+		}
+	}
 }
 
 func readLaunchAgentProgramArguments(plistPath string) ([]string, error) {

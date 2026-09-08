@@ -2594,3 +2594,95 @@ func TestPlatformEnsureRunningTreatsAFailedKickstartAsNonFatal(t *testing.T) {
 		t.Errorf("startDetachedBossd invocations = %d, want 0 even when the kickstart failed", spawns)
 	}
 }
+
+// TestPlatformSpawnHistoryFollowsTheSupervisionSubstrate is BOS-1204 AC3.
+//
+// Spawn history is the only probe that can tell a REGISTERED job from a
+// RUNNABLE one, and on an unattended host the job launchd actually spawns is
+// the root-owned watchdog in the `system` domain. Reading gui/<uid> there is
+// not merely uninformative: launchctl exits "could not find service in domain"
+// and the doctor line reads `launchd spawn history: unknown` on a machine whose
+// spawn history is perfectly readable one domain over.
+//
+// Both the ARGV and the reported Target are asserted, because AC3 has two
+// halves — read the right target, and say which target was read.
+func TestPlatformSpawnHistoryFollowsTheSupervisionSubstrate(t *testing.T) {
+	origRunLaunchctl := runLaunchctl
+	origSettings := loadServiceSettings
+	t.Cleanup(func() {
+		runLaunchctl = origRunLaunchctl
+		loadServiceSettings = origSettings
+	})
+
+	launchAgentTarget := "gui/" + strconv.Itoa(os.Getuid()) + "/" + Label
+
+	for _, tc := range []struct {
+		name       string
+		configured string
+		wantTarget string
+	}{
+		{name: "default", configured: "", wantTarget: launchAgentTarget},
+		{name: "launch-agent", configured: "launch-agent", wantTarget: launchAgentTarget},
+		{name: "unattended", configured: "unattended", wantTarget: "system/" + WatchdogLabel},
+		{name: "unrecognised value never routes to the watchdog", configured: "unattnded", wantTarget: launchAgentTarget},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+			loadServiceSettings = func() (config.Settings, error) {
+				return config.Settings{DaemonSupervisionMode: tc.configured}, nil
+			}
+			var gotArgs []string
+			runLaunchctl = func(args ...string) ([]byte, error) {
+				gotArgs = args
+				return readSpawnFixture(t, "healthy.txt"), nil
+			}
+
+			got, err := platformSpawnHistory()
+			if err != nil {
+				t.Fatalf("platformSpawnHistory: %v", err)
+			}
+			wantArgs := []string{"print", tc.wantTarget}
+			if len(gotArgs) != len(wantArgs) || gotArgs[0] != wantArgs[0] || gotArgs[1] != wantArgs[1] {
+				t.Fatalf("runLaunchctl args = %q, want %q", gotArgs, wantArgs)
+			}
+			if got.Target != tc.wantTarget {
+				t.Fatalf("Target = %q, want %q", got.Target, tc.wantTarget)
+			}
+		})
+	}
+}
+
+// TestPlatformSpawnHistorySkipShortCircuitNamesTheSubstrateTarget pins AC9
+// against the shape that would satisfy it vacuously: short-circuiting so early
+// that the reported target is the LaunchAgent's on a host that has none.
+//
+// The env var must suppress the launchctl READ, not the substrate resolution —
+// otherwise the skip line tells a CI operator the run asked about a target it
+// would never have asked about.
+func TestPlatformSpawnHistorySkipShortCircuitNamesTheSubstrateTarget(t *testing.T) {
+	origRunLaunchctl := runLaunchctl
+	origSettings := loadServiceSettings
+	t.Cleanup(func() {
+		runLaunchctl = origRunLaunchctl
+		loadServiceSettings = origSettings
+	})
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	loadServiceSettings = func() (config.Settings, error) {
+		return config.Settings{DaemonSupervisionMode: "unattended"}, nil
+	}
+	runLaunchctl = func(args ...string) ([]byte, error) {
+		t.Fatalf("launchctl was invoked with %v under BOSS_DAEMON_SKIP_LAUNCHCTL", args)
+		return nil, nil
+	}
+
+	got, err := platformSpawnHistory()
+	if err != nil {
+		t.Fatalf("platformSpawnHistory: %v", err)
+	}
+	if got.State != SpawnStateUnknown {
+		t.Fatalf("State = %q, want %q", got.State, SpawnStateUnknown)
+	}
+	if want := "system/" + WatchdogLabel; got.Target != want {
+		t.Fatalf("Target = %q, want %q", got.Target, want)
+	}
+}

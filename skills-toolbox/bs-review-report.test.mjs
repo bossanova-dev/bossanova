@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   renderReport,
   MARKER,
@@ -15,7 +15,14 @@ import {
   carriedReviewObservations,
   validateReviewClaim,
   reviewerInputByteTotals,
+  premiseRecordGap,
 } from './bs-review-report.mjs'
+
+// Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
+process.env.BOSS_GATE_OUTCOME_FILE = join(
+  mkdtempSync(join(tmpdir(), 'gate-outcome-suite-')),
+  'outcomes.tsv',
+)
 
 const scriptPath = fileURLToPath(new URL('./bs-review-report.mjs', import.meta.url))
 
@@ -1219,4 +1226,274 @@ test('BOS-1019: coverage replay assertion for full and delta byte accounting', (
     replay.rounds.map((r) => r.totalBytes),
     [100, 125, 155],
   )
+})
+
+// --- BOS-1188: per-premise publication gate ---------------------------------
+//
+// A published open claim — an unresolved must-fix, or any suggestion, which the
+// follow-up prompt turns into a real tracker issue — must carry a per-premise
+// record. The classifier decides only the mechanical question (is this record
+// usable?) and never throws: it ships vendored into two skill payloads plus every
+// global install, so producer and consumer versions drift independently and an
+// old copy must degrade rather than crash the whole report.
+
+const usablePremises = [
+  {
+    claim: 'billingPortalTarget never receives a cross-org id',
+    verdict: 'held',
+    evidence: 'rg billingPortalTarget services/bosso — one caller, same-org only',
+  },
+  {
+    claim: 'the failure branch emits no log',
+    verdict: 'refuted',
+    evidence: 'log.Warn("demotion failed"',
+  },
+]
+
+test('a complete per-premise record classifies as usable', () => {
+  assert.equal(premiseRecordGap({ title: 'A', premises: usablePremises }), null)
+})
+
+test('a missing per-premise record names its own reason', () => {
+  assert.equal(premiseRecordGap({ title: 'A' }), 'no per-premise record')
+})
+
+test('an empty per-premise record is distinct from a missing one', () => {
+  assert.equal(premiseRecordGap({ title: 'A', premises: [] }), 'per-premise record is empty')
+})
+
+test('a blank claim is its own reason', () => {
+  const reason = premiseRecordGap({
+    premises: [{ claim: '   ', verdict: 'held', evidence: 'someSymbol' }],
+  })
+  assert.equal(reason, 'premise 1 has no claim')
+})
+
+test('a verdict outside the vocabulary is its own reason and does not throw', () => {
+  const reason = premiseRecordGap({
+    premises: [{ claim: 'c', verdict: 'probably', evidence: 'someSymbol' }],
+  })
+  assert.equal(reason, 'premise 1 verdict "probably" is not held or refuted')
+})
+
+test('unverified is not a publishable verdict — it is what the gate exists to catch', () => {
+  const reason = premiseRecordGap({
+    premises: [{ claim: 'c', verdict: 'unverified', evidence: 'someSymbol' }],
+  })
+  assert.equal(reason, 'premise 1 verdict "unverified" is not held or refuted')
+})
+
+test('a premise with no evidence is its own reason', () => {
+  assert.equal(
+    premiseRecordGap({ premises: [{ claim: 'c', verdict: 'held' }] }),
+    'premise 1 has no evidence',
+  )
+})
+
+test('evidence that is a bare line number is rejected like a claim anchor', () => {
+  assert.equal(
+    premiseRecordGap({ premises: [{ claim: 'c', verdict: 'held', evidence: ' 412 ' }] }),
+    'premise 1 evidence must not be a line number',
+  )
+})
+
+test('a premise that is not an object returns a reason instead of throwing', () => {
+  assert.equal(premiseRecordGap({ premises: ['held'] }), 'premise 1 is not an object')
+  assert.equal(premiseRecordGap({ premises: [null] }), 'premise 1 is not an object')
+})
+
+test('a non-array premises value returns a reason and does not throw', () => {
+  for (const premises of ['held', 42, true, { claim: 'c' }]) {
+    assert.equal(premiseRecordGap({ premises }), 'per-premise record is not a list')
+  }
+})
+
+test('a null or absent premises value reads as missing, never as usable', () => {
+  assert.equal(premiseRecordGap({ premises: null }), 'no per-premise record')
+  assert.equal(premiseRecordGap({ premises: undefined }), 'no per-premise record')
+  assert.equal(premiseRecordGap(null), 'no per-premise record')
+  assert.equal(premiseRecordGap(undefined), 'no per-premise record')
+  assert.equal(premiseRecordGap('a string entry'), 'no per-premise record')
+})
+
+test('a hostile entry whose property access throws still returns a reason', () => {
+  const hostile = {
+    get premises() {
+      throw new Error('boom')
+    },
+  }
+  assert.equal(premiseRecordGap(hostile), 'per-premise record is unreadable')
+})
+
+test('each malformed shape returns a distinct reason', () => {
+  const reasons = [
+    premiseRecordGap({}),
+    premiseRecordGap({ premises: [] }),
+    premiseRecordGap({ premises: 'x' }),
+    premiseRecordGap({ premises: [1] }),
+    premiseRecordGap({ premises: [{ verdict: 'held', evidence: 'sym' }] }),
+    premiseRecordGap({ premises: [{ claim: 'c', verdict: 'maybe', evidence: 'sym' }] }),
+    premiseRecordGap({ premises: [{ claim: 'c', verdict: 'held' }] }),
+    premiseRecordGap({ premises: [{ claim: 'c', verdict: 'held', evidence: '12' }] }),
+  ]
+  assert.equal(new Set(reasons).size, reasons.length, `reasons collided: ${reasons.join(' | ')}`)
+})
+
+test('renderMustfix marks an unresolved entry that carries no per-premise record', () => {
+  const md = renderReport({
+    mustfix: {
+      found: 1,
+      unresolved: 1,
+      items: [{ disposition: 'unresolved', title: 'Retry the push unboundedly' }],
+    },
+    invalid: [],
+    ledger: cleanLedger,
+  })
+  assert.match(md, /⚠️ Unverified premise record: no per-premise record/)
+})
+
+test('renderMustfix leaves an unresolved entry with a usable record unmarked', () => {
+  const md = renderReport({
+    mustfix: {
+      found: 1,
+      unresolved: 1,
+      items: [{ disposition: 'unresolved', title: 'C', premises: usablePremises }],
+    },
+    invalid: [],
+    ledger: cleanLedger,
+  })
+  assert.doesNotMatch(md, /Unverified premise record/)
+})
+
+test('fixed and verified entries are never marked — they carry their own evidence rules', () => {
+  const md = renderReport({
+    mustfix: {
+      found: 2,
+      fixed: 1,
+      verified: 1,
+      items: [
+        { disposition: 'fixed', title: 'A', commit: 'abc1234' },
+        { disposition: 'verified', title: 'B' },
+      ],
+    },
+    invalid: [],
+    ledger: cleanLedger,
+  })
+  assert.doesNotMatch(md, /Unverified premise record/)
+})
+
+test('renderSuggestions marks a suggestion that carries no per-premise record', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    suggestions: [{ title: 'Cite the registry', detail: 'ANALYTICS_EVENT_PROPERTIES binds emits' }],
+  })
+  assert.match(md, /⚠️ Unverified premise record: no per-premise record/)
+})
+
+test('renderSuggestions leaves a suggestion with a usable record unmarked', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    suggestions: [{ title: 'Cite the registry', detail: 'why', premises: usablePremises }],
+  })
+  assert.doesNotMatch(md, /Unverified premise record/)
+})
+
+// --- BOS-1188: the marker branch is load-bearing (falsification) -------------
+//
+// The two marking tests above go green whenever the marker string appears
+// anywhere in the rendered report. That is the shape a vacuous gate takes: they
+// would pass just as happily if some unrelated line emitted the same text, and
+// they assert nothing at all about whether the branch that emits it is reachable.
+// These probes kill each marker branch and REQUIRE the marking assertion to go
+// red, which is the only evidence that those tests are testing the branch.
+//
+// The mutation is not Tier B. An in-place probe is unavailable here — the
+// falsification recipe rejects Darwin for want of an exact access-time restore —
+// and a committed test may not mutate its own checkout in any case. It lands in a
+// throwaway module OUTSIDE the checkout, built from the real source with the
+// module's relative imports rewritten to absolute file URLs so they still
+// resolve back here. The tracked file is only ever read, so "restored exactly
+// afterwards" holds by construction rather than through a cleanup path that can
+// itself fail and strand a deliberately broken file. It cannot be a `data:` URL:
+// the module's own `isMainModule(import.meta.url)` guard calls `fileURLToPath`,
+// which rejects every non-`file:` scheme.
+
+const markerFixtures = {
+  mustfix: {
+    mustfix: {
+      found: 1,
+      unresolved: 1,
+      items: [{ disposition: 'unresolved', title: 'Retry the push unboundedly' }],
+    },
+    invalid: [],
+    ledger: cleanLedger,
+  },
+  suggestions: () => ({
+    ...cleanFixture(),
+    suggestions: [{ title: 'Cite the registry', detail: 'ANALYTICS_EVENT_PROPERTIES binds emits' }],
+  }),
+}
+
+/**
+ * Import `bs-review-report.mjs` with `anchor` replaced by `replacement`, proving
+ * the mutation landed BEFORE the caller reads any result from it. Without that
+ * proof a mutant that silently failed to apply renders exactly like the pristine
+ * module, and the probe would report a kill it never made.
+ */
+async function importMutatedReport(anchor, replacement) {
+  const source = readFileSync(scriptPath, 'utf8')
+  assert.equal(
+    source.split(anchor).length - 1,
+    1,
+    `mutation anchor must occur exactly once in bs-review-report.mjs: ${anchor}`,
+  )
+  const here = new URL('./', import.meta.url).href
+  const mutated = source.replace(anchor, replacement).replaceAll(" from './", ` from '${here}`)
+  assert.notEqual(mutated, source, 'mutation produced no change')
+  assert.ok(!mutated.includes(anchor), 'mutation did not remove the killed branch')
+  assert.ok(!mutated.includes(" from './"), 'a relative import survived and would not resolve')
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-falsify-'))
+  const mutantPath = join(dir, 'bs-review-report.mutant.mjs')
+  try {
+    writeFileSync(mutantPath, mutated)
+    // Proof the mutation landed on the thing about to be imported, read back
+    // from disk BEFORE any result is taken from it. A mutant that silently
+    // failed to apply renders exactly like the pristine module, so without this
+    // the probe would report a kill it never made.
+    assert.ok(!readFileSync(mutantPath, 'utf8').includes(anchor), 'mutation did not reach disk')
+    return await import(pathToFileURL(mutantPath).href)
+  } finally {
+    // By exact path, never a glob: an unmatched glob aborts cleanup and strands
+    // a deliberately broken file.
+    rmSync(mutantPath, { force: true })
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('falsification: killing the renderMustfix marker branch makes the marking test fail', async () => {
+  const mutant = await importMutatedReport(
+    "const gap = it.disposition === 'unresolved' ? premiseRecordGap(it) : null",
+    'const gap = null',
+  )
+  assert.doesNotMatch(
+    mutant.renderReport(markerFixtures.mustfix),
+    /Unverified premise record/,
+    'the marker survived removal of the branch that emits it, so the marking test asserts nothing',
+  )
+  // Control, read after the kill: the real module still marks the same fixture,
+  // so the red above is the mutation's doing and not a broken fixture.
+  assert.match(renderReport(markerFixtures.mustfix), /⚠️ Unverified premise record/)
+})
+
+test('falsification: killing the renderSuggestions marker branch makes the marking test fail', async () => {
+  const mutant = await importMutatedReport(
+    'const gaps = suggestions.map((s) => premiseRecordGap(s))',
+    'const gaps = suggestions.map(() => null)',
+  )
+  assert.doesNotMatch(
+    mutant.renderReport(markerFixtures.suggestions()),
+    /Unverified premise record/,
+    'the marker survived removal of the branch that emits it, so the marking test asserts nothing',
+  )
+  assert.match(renderReport(markerFixtures.suggestions()), /⚠️ Unverified premise record/)
 })

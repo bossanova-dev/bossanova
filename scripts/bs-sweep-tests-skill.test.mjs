@@ -18,7 +18,11 @@ import { fileURLToPath } from 'node:url'
 import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
-import { assertExactSize, assertMirrorRegenerated, measureFile } from './size-ratchet-lib.mjs'
+import {
+  assertDescendingBudget,
+  assertMirrorRegenerated,
+  measureFile,
+} from './size-ratchet-lib.mjs'
 
 const here = (rel) => new URL(rel, import.meta.url)
 const abs = (rel) => fileURLToPath(here(rel))
@@ -497,18 +501,43 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // (`services/web/coverage/coverage-summary.json` total statements percentage) to the
   // resident Phase 6 worker prompt. The repo-root-relative artifact path is required because
   // the worker's declared working directory is the session worktree.
-  const SOURCE_BYTES = 26600 // exact measured .claude body, re-measured after BOS-919 web coverage artifact path
-  assertExactSize({
+  // BOS-1208 converts this from an exact pin to a DESCENDING BUDGET, seeded at the measured
+  // size so it binds on its first run. The exact pin fixed the old ceiling's silence on a trim
+  // but priced both directions the same: banking a deletion cost the identical one-line repin
+  // an addition did. Under the budget a shrink costs nothing at all, and only a raise costs a
+  // recorded `raise.justification` in the same commit. STEP_DOWN is ~1 KiB because this body is above 20 000 bytes;
+  // bodies under that get 512 B, so a bigger body is asked for a bigger step. The share is NOT
+  // equal across artifacts, and is deliberately not claimed to be: measured, the step runs from
+  // 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket
+  // (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would give
+  // without equalising it.
+  const SOURCE_BYTES = 26600 // measured .claude body at migration, 2026-09-08 (BOS-919 bytes)
+  const STEP_DOWN = 1024
+  const REVIEW_BY = '2026-12-08'
+  assertDescendingBudget({
     below: { name: 'PRE_EXTRACTION_BASELINE', value: 27050 },
+    budget: SOURCE_BYTES,
     constFile: 'scripts/bs-sweep-tests-skill.test.mjs',
     constName: 'SOURCE_BYTES',
-    expected: SOURCE_BYTES,
     label: 'bs-sweep-tests resident body',
     measured: measureFile(abs('../.claude/skills/bs-sweep-tests/SKILL.md')),
     path: '.claude/skills/bs-sweep-tests/SKILL.md',
+    raise: {
+      // A LITERAL, deliberately not `SOURCE_BYTES`. Aliasing the budget constant made this
+      // value move in lockstep with every raise, so `budget > from` could never be true
+      // and the one direction this primitive prices was free — the arm was structurally
+      // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+      // measurement, any later raise of SOURCE_BYTES above it reds until a reason is recorded.
+      // No `justification` is pre-supplied either: this commit raised nothing, and a
+      // stale sentence parked here would satisfy the next raise without anybody having
+      // to write a fresh reason for it, which is the same arm dead a second way.
+      from: 26600,
+    },
     residual:
       'the references/ files this body routes to, and the gate/ scripts it invokes — bytes ' +
-      'moved out of the body leave this pin entirely',
+      'moved out of the body leave this budget entirely',
+    reviewBy: REVIEW_BY,
+    stepDown: STEP_DOWN,
   })
 })
 

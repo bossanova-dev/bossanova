@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -523,7 +524,7 @@ func bootoutSupersededLaunchAgent(target unattendedTarget) {
 // unverifiable end state into a success. It is a package var so a test can
 // state the two answers without a launchd to ask.
 var watchdogJobStillLoaded = func() bool {
-	if _, err := runLaunchctl("print", "system/"+WatchdogLabel); err != nil {
+	if _, err := runLaunchctl("print", WatchdogTarget()); err != nil {
 		return !launchctlExitSaysAlreadyGone(err)
 	}
 	return true
@@ -537,7 +538,7 @@ func bootoutWatchdogJob() error {
 	// exit codes mean "already gone" is empirical, macOS-version-sensitive
 	// knowledge (BOS-627), and this function used to carry a second copy of it
 	// that had also dropped the nil-probe fail-closed guard.
-	return bootoutLaunchdTarget("system/"+WatchdogLabel, watchdogJobStillLoaded)
+	return bootoutLaunchdTarget(WatchdogTarget(), watchdogJobStillLoaded)
 }
 
 // platformUninstallUnattended removes everything platformInstallUnattended
@@ -750,4 +751,41 @@ func warnIfUnattendedWatchdogInstalled(st SupervisionModeStatus) {
 		return
 	}
 	warnUnattendedWatchdogResidue(layout.PlistPath)
+}
+
+// observeWatchdogOwnership probes launchd's `system` domain for the watchdog
+// job and reports what it found.
+//
+// It is the REPORTING counterpart of watchdogJobStillLoaded above, and the two
+// fail closed in opposite directions because they are asked opposite questions.
+// watchdogJobStillLoaded is asked "may I stop now?" during a bootout, so an
+// unreadable probe must answer "still loaded" — the answer that keeps
+// verifying. This one is asked "who owns bossd?" by a diagnostic, so an
+// unreadable probe must answer "unknown" — anything else would either certify
+// supervision nobody observed or invent a fault, and BOS-1204 exists because
+// this surface invented a fault.
+//
+// The BOSS_DAEMON_SKIP_LAUNCHCTL check is FIRST, ahead of the launchctl read,
+// matching platformSpawnHistory and reportDaemonSupervision: under that env var
+// the service view is meaningless, and a verdict derived from it on every CI
+// run would train operators to ignore the one line that matters on a real host.
+func observeWatchdogOwnership() WatchdogOwnership {
+	target := WatchdogTarget()
+	if skipLaunchctl() {
+		return classifyWatchdogOwnership(watchdogProbeDisabled, target, "")
+	}
+	out, err := runLaunchctl("print", target)
+	if err == nil {
+		return classifyWatchdogOwnership(watchdogProbeLoaded, target, "")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return classifyWatchdogOwnership(watchdogProbeUnexecutable, target, err.Error())
+	}
+	if launchctlExitSaysAlreadyGone(err) {
+		return classifyWatchdogOwnership(watchdogProbeNoSuchService, target,
+			fmt.Sprintf("exit %d", exitErr.ExitCode()))
+	}
+	return classifyWatchdogOwnership(watchdogProbeExitedNonZero, target,
+		fmt.Sprintf("exit %d: %q", exitErr.ExitCode(), strings.TrimSpace(string(out))))
 }

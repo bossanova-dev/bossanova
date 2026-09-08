@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -33,6 +34,12 @@ func TestDaemonSupervisionVerdictsMatchDoctor(t *testing.T) {
 	cases := []struct {
 		name string
 		st   daemon.Status
+		// supervision and ownership describe the substrate. The zero
+		// SupervisionModeStatus is not usable here — it names no mode at all —
+		// so every row states one, and the default-substrate rows state the
+		// launch-agent one explicitly.
+		supervision daemon.SupervisionModeStatus
+		ownership   daemon.WatchdogOwnership
 		// doctorDiverges is set only on the one row where the two surfaces are
 		// documented to differ: doctor answers "unknown (no service is
 		// installed)" because the not-installed check owns that fact and its
@@ -41,6 +48,14 @@ func TestDaemonSupervisionVerdictsMatchDoctor(t *testing.T) {
 		doctorDiverges bool
 		wantStatus     string
 		wantDoctor     string
+		// wantShared is the reason's distinguishing VOCABULARY, required on
+		// both surfaces. The verdict token alone was the whole pin, so the two
+		// hand-maintained reason->wording switches — one in handlers.go, one in
+		// daemon_doctor.go, grown from four arms to eight by BOS-1204 — could
+		// describe one host two different ways with every gate green. AC7's
+		// grandchild wording is the case that matters: it is the entire point
+		// of the new reason, and nothing asserted that doctor said it too.
+		wantShared []string
 	}{
 		{
 			name:       "service manager owns the recorded daemon",
@@ -73,21 +88,76 @@ func TestDaemonSupervisionVerdictsMatchDoctor(t *testing.T) {
 			wantStatus:     "unsupervised",
 			wantDoctor:     "unknown",
 		},
+		// BOS-1204 AC4: the new substrate reason is covered by this pin rather
+		// than exempted from it. Each of these rows has NO installed
+		// LaunchAgent, which is the ordinary shape of an unattended host -- the
+		// install supersedes the agent -- and is precisely the shape that made
+		// doctor's not-installed rung swallow the verdict before the fix.
+		{
+			name:        "unattended: the watchdog job is loaded",
+			st:          daemon.Status{Installed: false, Running: false},
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipLoaded),
+			wantStatus:  "supervised",
+			wantDoctor:  "supervised",
+			wantShared:  []string{daemon.WatchdogLabel, "grandchild of launchd"},
+		},
+		{
+			name:        "unattended: the watchdog is installed but its job is not loaded",
+			st:          daemon.Status{Installed: false, Running: false},
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipNotLoaded),
+			wantStatus:  "unsupervised",
+			wantDoctor:  "unsupervised",
+			wantShared:  []string{"watchdog is installed at", "launchd does not have", "loaded"},
+		},
+		{
+			name:        "unattended: the watchdog job could not be read",
+			st:          daemon.Status{Installed: false, Running: false},
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipUnknown),
+			wantStatus:  "unknown",
+			wantDoctor:  "unknown",
+			wantShared:  []string{"watchdog is installed", "could not be established"},
+		},
+		{
+			name:        "unattended: the watchdog is installed and insecure",
+			st:          daemon.Status{Installed: false, Running: false},
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallInsecure),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipLoaded),
+			wantStatus:  "unknown",
+			wantDoctor:  "unknown",
+			wantShared:  []string{"not safe for a root-owned job"},
+		},
+		{
+			name:           "unattended but never installed keeps the launch-agent divergence",
+			st:             daemon.Status{Installed: false, Running: false},
+			supervision:    unattendedSupervisionStatus(daemon.UnattendedInstallAbsent),
+			doctorDiverges: true,
+			wantStatus:     "unsupervised",
+			wantDoctor:     "unknown",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
 			stubDaemonDoctorProcess(t, nil)
+			supervision := tc.supervision
+			if supervision.Mode == "" && supervision.Err == nil {
+				supervision = launchAgentSupervisionStatus()
+			}
+			stubDaemonSupervisionInputs(t, supervision, tc.ownership)
 			st := tc.st
 
-			gotStatus := supervisionVerdictToken(t, daemonSupervisionLine(&st, recordedPID), "supervision: ")
+			statusLine := daemonSupervisionLine(&st, recordedPID, supervision, tc.ownership)
+			gotStatus := supervisionVerdictToken(t, statusLine, "supervision: ")
 
 			previous := daemonGetStatus
 			daemonGetStatus = func() (*daemon.Status, error) { return &st, nil }
 			t.Cleanup(func() { daemonGetStatus = previous })
 			var out bytes.Buffer
-			reportDaemonSupervision(&out, daemonstate.Metadata{PID: recordedPID}, nil)
+			reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: recordedPID}, nil)
 			gotDoctor := doctorSupervisionVerdictToken(t, out.String())
 
 			if gotStatus != tc.wantStatus {
@@ -104,6 +174,16 @@ func TestDaemonSupervisionVerdictsMatchDoctor(t *testing.T) {
 			}
 			if gotStatus != gotDoctor {
 				t.Fatalf("status said %q and doctor said %q for the same host; the two surfaces must not disagree", gotStatus, gotDoctor)
+			}
+			// The verdict token agreeing is not the two surfaces agreeing: the
+			// sentence is what an operator reads, and it is written twice.
+			for _, want := range tc.wantShared {
+				if !strings.Contains(statusLine, want) {
+					t.Fatalf("status wording is missing %q:\n%s", want, statusLine)
+				}
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("doctor wording is missing %q:\n%s", want, out.String())
+				}
 			}
 		})
 	}
@@ -173,7 +253,7 @@ func TestDaemonSupervisionOfLiveRecordDelegatesToClassifyServingMode(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := tc.st
-			got, _ := daemonSupervisionOfLiveRecord(&st, recordedPID)
+			got, _ := daemonSupervisionOfLiveRecord(&st, recordedPID, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
 			if got != tc.wantVerdict {
 				t.Fatalf("verdict = %v, want %v", got, tc.wantVerdict)
 			}
@@ -201,7 +281,7 @@ func TestDaemonSupervisionOfLiveRecordDelegatesToClassifyServingMode(t *testing.
 // print an unsupervised fault nobody observed.
 func TestDaemonSupervisionOfLiveRecordRefusesAnUnparseableServiceView(t *testing.T) {
 	st := daemon.Status{Installed: true, Running: true, PID: 0}
-	verdict, reason := daemonSupervisionOfLiveRecord(&st, 77)
+	verdict, reason := daemonSupervisionOfLiveRecord(&st, 77, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
 	if verdict != daemonSupervisionUnknown {
 		t.Fatalf("verdict = %v, want unknown for a service view with no PID", verdict)
 	}
@@ -272,7 +352,7 @@ func TestReportDaemonSupervisionFlagsFollowTheVerdict(t *testing.T) {
 			t.Cleanup(func() { daemonGetStatus = previous })
 
 			var out bytes.Buffer
-			unhealthy, restartRemediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: recordedPID}, nil)
+			unhealthy, remediation := reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: recordedPID}, nil)
 
 			if !strings.Contains(out.String(), tc.wantLine) {
 				t.Fatalf("output = %q, want %q", out.String(), tc.wantLine)
@@ -280,10 +360,17 @@ func TestReportDaemonSupervisionFlagsFollowTheVerdict(t *testing.T) {
 			if unhealthy != tc.wantUnhealthy {
 				t.Fatalf("unhealthy = %t, want %t (output %q)", unhealthy, tc.wantUnhealthy, out.String())
 			}
-			// The two travel together by construction: a supervision fault is
-			// exactly the state a restart under the service manager fixes.
-			if restartRemediation != unhealthy {
-				t.Fatalf("restartRemediation = %t but unhealthy = %t; the two must not drift apart", restartRemediation, unhealthy)
+			// On THIS substrate the two travel together by construction: every
+			// LaunchAgent-shaped supervision fault is exactly the state a
+			// restart under the service manager fixes. The unattended
+			// substrate's watchdog-not-loaded rung is the one that does not,
+			// and it is pinned separately.
+			wantRemediation := daemonSupervisionRemediationNone
+			if unhealthy {
+				wantRemediation = daemonSupervisionRemediationRestart
+			}
+			if remediation != wantRemediation {
+				t.Fatalf("remediation = %v, want %v (unhealthy = %t)", remediation, wantRemediation, unhealthy)
 			}
 		})
 	}
@@ -458,7 +545,7 @@ func TestDescribeDaemonSupervisionModeNamesAnUnreadableSettingsFile(t *testing.T
 // drift into naming a different mode.
 func TestDaemonSupervisionModeSurfacesCannotDisagree(t *testing.T) {
 	var out bytes.Buffer
-	doctorUnhealthy, doctorRemediation := reportDaemonSupervisionMode(&out)
+	doctorUnhealthy, doctorRemediation := reportDaemonSupervisionMode(&out, daemon.LoadSupervisionModeStatus())
 	doctorLine := strings.TrimSpace(out.String())
 
 	statusDescription, statusUnhealthy := describeDaemonSupervisionMode(daemon.LoadSupervisionModeStatus())
@@ -569,7 +656,7 @@ func TestReportDaemonSupervisionModeReadsRealSettings(t *testing.T) {
 	t.Run("absent key", func(t *testing.T) {
 		writeSupervisionModeSettings(t, "")
 		var out bytes.Buffer
-		unhealthy, _ := reportDaemonSupervisionMode(&out)
+		unhealthy, _ := reportDaemonSupervisionMode(&out, daemon.LoadSupervisionModeStatus())
 		if unhealthy {
 			t.Fatalf("the default mode must never be unhealthy: %s", out.String())
 		}
@@ -584,7 +671,7 @@ func TestReportDaemonSupervisionModeReadsRealSettings(t *testing.T) {
 		// machine running the test.
 		writeSupervisionModeSettings(t, "system-daemon")
 		var out bytes.Buffer
-		unhealthy, remediation := reportDaemonSupervisionMode(&out)
+		unhealthy, remediation := reportDaemonSupervisionMode(&out, daemon.LoadSupervisionModeStatus())
 		line := out.String()
 		if !strings.Contains(line, "system-daemon") {
 			t.Fatalf("output %q does not name the configured value", line)
@@ -613,7 +700,7 @@ func TestReportDaemonSupervisionModeReadsRealSettings(t *testing.T) {
 		}
 		writeSupervisionModeSettings(t, "unattended")
 		var out bytes.Buffer
-		reportDaemonSupervisionMode(&out)
+		reportDaemonSupervisionMode(&out, daemon.LoadSupervisionModeStatus())
 		line := out.String()
 		for _, want := range []string{"unattended", daemon.WatchdogLabel} {
 			if !strings.Contains(line, want) {
@@ -696,4 +783,460 @@ func TestRunDaemonDoctorFailsOnMisconfiguredSupervisionMode(t *testing.T) {
 	if strings.Contains(out, "run 'boss daemon restart'") {
 		t.Errorf("a settings-file mistake must not be remediated with a restart:\n%s", out)
 	}
+}
+
+// launchAgentSupervisionStatus is the default-substrate host: the per-user
+// LaunchAgent, nothing observed about any watchdog. It is what every
+// pre-BOS-1204 row of these tables describes, spelled once so a row that means
+// "unchanged" cannot drift into meaning something else.
+func launchAgentSupervisionStatus() daemon.SupervisionModeStatus {
+	return daemon.SupervisionModeStatus{
+		Mode:         daemon.SupervisionModeLaunchAgent,
+		Configurable: true,
+	}
+}
+
+// unattendedSupervisionStatus is a host configured for the unattended
+// substrate, with the watchdog observed in the given install state.
+func unattendedSupervisionStatus(state daemon.UnattendedInstallState) daemon.SupervisionModeStatus {
+	status := daemon.SupervisionModeStatus{
+		Configured:   string(daemon.SupervisionModeUnattended),
+		Mode:         daemon.SupervisionModeUnattended,
+		Configurable: true,
+		Unattended: daemon.UnattendedInstall{
+			State:      state,
+			PlistPath:  "/Library/LaunchDaemons/" + daemon.WatchdogLabel + ".plist",
+			BinaryPath: "/usr/local/libexec/bossanova/bossd",
+		},
+	}
+	if state == daemon.UnattendedInstallInsecure {
+		status.Unattended.Err = errors.New("/usr/local is writable by group")
+	}
+	return status
+}
+
+// watchdogOwnership is a probe result in the given state.
+func watchdogOwnership(state daemon.WatchdogOwnershipState) daemon.WatchdogOwnership {
+	observation := daemon.WatchdogOwnership{State: state, Target: daemon.WatchdogTarget()}
+	if state != daemon.WatchdogOwnershipLoaded {
+		observation.Reason = "stated by the test"
+	}
+	return observation
+}
+
+// TestDaemonSupervisionOfLiveRecordAcrossSubstrates is BOS-1204's decision
+// matrix: every UnattendedInstallState crossed with every ownership
+// observation, PLUS every pre-existing launch-agent row re-asserted unchanged.
+//
+// The launch-agent half is not padding. Requirement 5 — default reporting is
+// unchanged — is the requirement most easily satisfied in prose and broken in
+// code, and the only mechanical form of it is asserting the old rows through
+// the new signature.
+func TestDaemonSupervisionOfLiveRecordAcrossSubstrates(t *testing.T) {
+	const recordedPID = 4242
+
+	installed := daemon.Status{Installed: true, Running: true, PID: recordedPID}
+	detached := daemon.Status{Installed: false, Running: false}
+
+	for _, tc := range []struct {
+		name        string
+		st          daemon.Status
+		supervision daemon.SupervisionModeStatus
+		ownership   daemon.WatchdogOwnership
+		wantVerdict daemonSupervisionVerdict
+		wantReason  daemonSupervisionReason
+	}{
+		{
+			name:        "unattended, installed and loaded, is supervised by the watchdog",
+			st:          detached,
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipLoaded),
+			wantVerdict: daemonSupervisionSupervised,
+			wantReason:  daemonSupervisionReasonWatchdogOwned,
+		},
+		{
+			name:        "unattended, installed but the job is not loaded, is unsupervised",
+			st:          detached,
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipNotLoaded),
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonWatchdogNotLoaded,
+		},
+		{
+			name:        "unattended, installed but the probe could not be read, is unknown",
+			st:          detached,
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipUnknown),
+			wantVerdict: daemonSupervisionUnknown,
+			wantReason:  daemonSupervisionReasonWatchdogUnreadable,
+		},
+		{
+			name:        "unattended, installed but never probed, is unknown",
+			st:          detached,
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			ownership:   daemon.WatchdogOwnership{},
+			wantVerdict: daemonSupervisionUnknown,
+			wantReason:  daemonSupervisionReasonWatchdogUnreadable,
+		},
+		{
+			name:        "unattended and insecure defers to the substrate line",
+			st:          detached,
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallInsecure),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipLoaded),
+			wantVerdict: daemonSupervisionUnknown,
+			wantReason:  daemonSupervisionReasonWatchdogInsecure,
+		},
+		{
+			name:        "unattended and absent falls through to the LaunchAgent delegation",
+			st:          detached,
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallAbsent),
+			ownership:   daemon.WatchdogOwnership{},
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonDetached,
+		},
+		{
+			name: "a rejected supervision mode never routes to the substrate branch",
+			st:   detached,
+			supervision: daemon.SupervisionModeStatus{
+				Configured:   "unattnded",
+				Configurable: true,
+				Err:          errors.New("unrecognised daemon supervision mode"),
+			},
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipLoaded),
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonDetached,
+		},
+		{
+			name:        "launch-agent: the service manager owns the recorded daemon",
+			st:          installed,
+			supervision: launchAgentSupervisionStatus(),
+			wantVerdict: daemonSupervisionSupervised,
+			wantReason:  daemonSupervisionReasonManagerOwned,
+		},
+		{
+			name:        "launch-agent: the service manager does not know the job",
+			st:          daemon.Status{Installed: true, Running: false},
+			supervision: launchAgentSupervisionStatus(),
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonDetached,
+		},
+		{
+			name:        "launch-agent: the service manager owns a different PID",
+			st:          daemon.Status{Installed: true, Running: true, PID: recordedPID + 1},
+			supervision: launchAgentSupervisionStatus(),
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonForeignPID,
+		},
+		{
+			name:        "launch-agent: the service manager reports running with no PID",
+			st:          daemon.Status{Installed: true, Running: true, PID: 0},
+			supervision: launchAgentSupervisionStatus(),
+			wantVerdict: daemonSupervisionUnknown,
+			wantReason:  daemonSupervisionReasonNoServicePID,
+		},
+		{
+			name:        "launch-agent: no service installed",
+			st:          detached,
+			supervision: launchAgentSupervisionStatus(),
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonDetached,
+		},
+		{
+			name:        "a watchdog observation is ignored on the default substrate",
+			st:          installed,
+			supervision: launchAgentSupervisionStatus(),
+			ownership:   watchdogOwnership(daemon.WatchdogOwnershipNotLoaded),
+			wantVerdict: daemonSupervisionSupervised,
+			wantReason:  daemonSupervisionReasonManagerOwned,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.st
+			verdict, reason := daemonSupervisionOfLiveRecord(&st, recordedPID, tc.supervision, tc.ownership)
+			if verdict != tc.wantVerdict {
+				t.Fatalf("verdict = %v, want %v (reason %v)", verdict, tc.wantVerdict, reason)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %v, want %v", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// stubDaemonSupervisionInputs pins BOTH substrate seams for a test, so a run's
+// verdict cannot depend on the settings.json or the launchd domain of whatever
+// machine is running the suite.
+//
+// It stubs them together on purpose: they are the two halves of one host
+// description, and a test that pinned only the configuration would silently
+// shell out to the real launchctl on any row that reaches the ownership probe.
+func stubDaemonSupervisionInputs(t *testing.T, supervision daemon.SupervisionModeStatus, ownership daemon.WatchdogOwnership) {
+	t.Helper()
+	previousMode := daemonLoadSupervisionMode
+	previousOwnership := daemonObserveWatchdogOwnership
+	daemonLoadSupervisionMode = func() daemon.SupervisionModeStatus { return supervision }
+	daemonObserveWatchdogOwnership = func() daemon.WatchdogOwnership { return ownership }
+	t.Cleanup(func() {
+		daemonLoadSupervisionMode = previousMode
+		daemonObserveWatchdogOwnership = previousOwnership
+	})
+}
+
+// TestDaemonSupervisionInputsProbeOnlyWhereTheVerdictNeedsIt is BOS-1204
+// requirement 5 in its most mechanical form: on the default substrate nothing
+// new runs at all.
+//
+// The probe shells out to launchctl and LoadSupervisionModeStatus is reached
+// from newClient on every single boss command, so an eagerly-gathered
+// observation would be a launchctl invocation added to the steady-state path of
+// the whole CLI. The test fails the probe loudly rather than counting calls: a
+// count assertion passes at zero for a build that never wired the probe up.
+func TestDaemonSupervisionInputsProbeOnlyWhereTheVerdictNeedsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		supervision daemon.SupervisionModeStatus
+		wantProbe   bool
+	}{
+		{name: "launch-agent", supervision: launchAgentSupervisionStatus()},
+		{name: "unattended and absent", supervision: unattendedSupervisionStatus(daemon.UnattendedInstallAbsent)},
+		{name: "unattended and insecure", supervision: unattendedSupervisionStatus(daemon.UnattendedInstallInsecure)},
+		{name: "unattended and present", supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent), wantProbe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probed := false
+			previousMode := daemonLoadSupervisionMode
+			previousOwnership := daemonObserveWatchdogOwnership
+			daemonLoadSupervisionMode = func() daemon.SupervisionModeStatus { return tc.supervision }
+			daemonObserveWatchdogOwnership = func() daemon.WatchdogOwnership {
+				probed = true
+				return watchdogOwnership(daemon.WatchdogOwnershipLoaded)
+			}
+			t.Cleanup(func() {
+				daemonLoadSupervisionMode = previousMode
+				daemonObserveWatchdogOwnership = previousOwnership
+			})
+
+			_, ownership := daemonSupervisionInputs()
+			if probed != tc.wantProbe {
+				t.Fatalf("watchdog probe invoked = %t, want %t", probed, tc.wantProbe)
+			}
+			if !tc.wantProbe && ownership.State != daemon.WatchdogOwnershipNotObserved {
+				t.Fatalf("unprobed ownership state = %v, want WatchdogOwnershipNotObserved", ownership.State)
+			}
+		})
+	}
+}
+
+// TestRunDaemonStatusHeaderFollowsTheUnattendedSubstrate is BOS-1204 AC1 on the
+// surface an operator actually reads.
+//
+// The host it describes is the whole bug: the unattended install SUPERSEDES the
+// per-user LaunchAgent, so `daemon.Status.Installed` is false on a machine that
+// is working perfectly, and the pre-fix ladder printed "Daemon is not
+// installed." above a reachable socket and told the operator to run an install
+// they had already done.
+//
+// Both halves of the assertion are load-bearing. The absence of the
+// uninstalled/unsupervised claims is the defect; the presence of "Daemon is
+// running." is what stops a build that simply printed nothing from passing the
+// absence half trivially.
+func TestRunDaemonStatusHeaderFollowsTheUnattendedSubstrate(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	writeDaemonStatusProfile(t)
+	stubDaemonDoctorProcess(t, nil)
+	stubDaemonSupervisionInputs(t,
+		unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+		watchdogOwnership(daemon.WatchdogOwnershipLoaded))
+	// The LaunchAgent is absent, which is the ORDINARY state of an unattended
+	// host rather than a fault: platformInstallUnattended removes it.
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: false, Running: false}, nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+
+	for _, forbidden := range []string{
+		"Daemon is not installed.",
+		"supervision: unsupervised",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("status reported %q on a healthy unattended host:\n%s", forbidden, out)
+		}
+	}
+	if !strings.Contains(out, "Daemon is running.") {
+		t.Fatalf("status did not report the daemon running:\n%s", out)
+	}
+	if !strings.Contains(out, "supervision: supervised") {
+		t.Fatalf("status did not report the daemon supervised:\n%s", out)
+	}
+	// AC7: the wording must distinguish watchdog ownership from a LaunchAgent's
+	// direct ownership. An operator told only "supervised" would go looking for
+	// gui/<uid>/com.bossanova.bossd, which is absent here by design, and read
+	// its absence as the fault.
+	for _, want := range []string{daemon.WatchdogLabel, "grandchild of launchd"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status supervision wording does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestDoctorRemediatesAnUnloadedWatchdogWithTheInstallCommand pins WHICH remedy
+// the watchdog-not-loaded rung prints.
+//
+// The rung's fault is a root-owned LaunchDaemon that is present on disk and
+// that launchd has not bootstrapped. `boss daemon restart` operates the per-user
+// LaunchAgent this substrate deliberately supersedes, so it can run to
+// completion, report success, and leave nothing supervising bossd — a remedy
+// that certifies a repair it did not perform. The remedy that works needs root,
+// and the doctor already knows its sentence.
+func TestDoctorRemediatesAnUnloadedWatchdogWithTheInstallCommand(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	stubDaemonDoctorProcess(t, nil)
+	stubDaemonSupervisionInputs(t,
+		unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+		watchdogOwnership(daemon.WatchdogOwnershipNotLoaded))
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: false, Running: false}, nil
+	}
+
+	var out bytes.Buffer
+	unhealthy, remediation := reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: 4711}, nil)
+
+	if !unhealthy {
+		t.Fatalf("an unloaded watchdog was not reported as a fault:\n%s", out.String())
+	}
+	if remediation != daemonSupervisionRemediationInstallWatchdog {
+		t.Fatalf("remediation = %v, want the watchdog install remedy; a per-user restart cannot load a root-owned LaunchDaemon\n%s",
+			remediation, out.String())
+	}
+	if remediation == daemonSupervisionRemediationRestart {
+		t.Fatalf("doctor routed an unloaded root-owned watchdog to 'boss daemon restart'")
+	}
+	printed := daemonWatchdogNotLoadedRemediation()
+	if !strings.Contains(printed, daemon.WatchdogInstallCommand) {
+		t.Fatalf("the watchdog remedy does not name %q: %q", daemon.WatchdogInstallCommand, printed)
+	}
+	if strings.Contains(printed, "run 'boss daemon restart'") {
+		t.Fatalf("the watchdog remedy still instructs a per-user restart: %q", printed)
+	}
+}
+
+// TestRunDaemonStatusShortCircuitsAheadOfTheOwnershipProbe is the status-surface
+// half of BOS-1204 AC9, which reads "on both surfaces". Doctor had a test and
+// status did not, and the two behaved differently: `boss daemon doctor`
+// checked BOSS_DAEMON_SKIP_LAUNCHCTL before gathering, while `boss daemon
+// status` called daemonSupervisionInputs unconditionally and so drove the
+// launchctl seam on a host that had asked for no service-manager probing.
+//
+// The assertion is the seam itself rather than the rendered text, because the
+// text short-circuits in daemonSupervisionLine either way — which is exactly
+// how the probe stayed invisible while it ran.
+func TestRunDaemonStatusShortCircuitsAheadOfTheOwnershipProbe(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	writeDaemonStatusProfile(t)
+	stubDaemonDoctorProcess(t, nil)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	previousMode := daemonLoadSupervisionMode
+	previousOwnership := daemonObserveWatchdogOwnership
+	daemonLoadSupervisionMode = func() daemon.SupervisionModeStatus {
+		return unattendedSupervisionStatus(daemon.UnattendedInstallPresent)
+	}
+	daemonObserveWatchdogOwnership = func() daemon.WatchdogOwnership {
+		t.Errorf("the watchdog ownership probe ran under BOSS_DAEMON_SKIP_LAUNCHCTL")
+		return daemon.WatchdogOwnership{}
+	}
+	t.Cleanup(func() {
+		daemonLoadSupervisionMode = previousMode
+		daemonObserveWatchdogOwnership = previousOwnership
+	})
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: false, Running: false}, nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "supervision: unknown (service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL)") {
+		t.Fatalf("status did not short-circuit the supervision line:\n%s", out)
+	}
+}
+
+// TestDaemonSupervisionLineWordsWatchdogOwnershipDistinctly pins AC7 at the
+// renderer, so the distinction survives a change to the status header.
+//
+// The negative half matters as much as the positive: "the service manager owns
+// PID N" is the LaunchAgent sentence, and reusing it here would flatten two
+// genuinely different supervision shapes into one claim that is false about the
+// launchd job table.
+func TestDaemonSupervisionLineWordsWatchdogOwnershipDistinctly(t *testing.T) {
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	stubDaemonDoctorProcess(t, nil)
+	const recordedPID = 918
+	st := daemon.Status{Installed: false, Running: false}
+
+	line := daemonSupervisionLine(&st, recordedPID,
+		unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+		watchdogOwnership(daemon.WatchdogOwnershipLoaded))
+
+	if !strings.HasPrefix(line, "supervision: supervised") {
+		t.Fatalf("line = %q, want a supervised verdict", line)
+	}
+	for _, want := range []string{daemon.WatchdogLabel, "launchctl asuser", "grandchild of launchd"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line = %q, want it to mention %q", line, want)
+		}
+	}
+	if strings.Contains(line, "the service manager owns PID") {
+		t.Fatalf("line = %q reuses the LaunchAgent sentence, flattening the two ownership shapes", line)
+	}
+}
+
+// TestUnattendedSubstrateIsUnreachableOffMacOS is BOS-1204 AC10.
+//
+// supervisionModeAvailability refuses every non-default mode where no substrate
+// is selectable, so a Linux host that literally writes
+// `daemon_supervision_mode: unattended` into settings.json resolves to NO mode
+// and an Err. Both predicates must refuse it: routing on the raw configured
+// string would have made a macOS-only substrate decide a Linux verdict.
+func TestUnattendedSubstrateIsUnreachableOffMacOS(t *testing.T) {
+	linuxStatus := daemon.SupervisionModeStatus{
+		Configured:   string(daemon.SupervisionModeUnattended),
+		Configurable: false,
+		Err:          daemon.ErrSupervisionModeUnsupportedPlatform,
+	}
+	if daemonUnattendedSubstrateConfigured(linuxStatus) {
+		t.Fatal("a refused supervision mode was treated as the configured substrate")
+	}
+	if daemonUnattendedSubstrateOwnsVerdict(linuxStatus) {
+		t.Fatal("a refused supervision mode was allowed to decide the ownership verdict")
+	}
+
+	// And the verdict itself is the pre-BOS-1204 one: a live recorded daemon
+	// with no service installed reads unsupervised/detached, exactly as it did
+	// before this branch existed.
+	st := daemon.Status{Installed: false, Running: false}
+	verdict, reason := daemonSupervisionOfLiveRecord(&st, 4242, linuxStatus,
+		watchdogOwnership(daemon.WatchdogOwnershipLoaded))
+	if verdict != daemonSupervisionUnsupervised || reason != daemonSupervisionReasonDetached {
+		t.Fatalf("verdict/reason = %v/%v, want unsupervised/detached", verdict, reason)
+	}
+}
+
+// reportDaemonSupervisionGathered composes the substrate gather with the
+// renderer exactly as runDaemonDoctor does, so a test exercises the real
+// composition rather than a hand-supplied pair of inputs the command would
+// never produce together.
+func reportDaemonSupervisionGathered(out io.Writer, metadata daemonstate.Metadata, metadataErr error) (bool, daemonSupervisionRemediation) {
+	supervision, ownership := daemonSupervisionInputs()
+	return reportDaemonSupervision(out, metadata, metadataErr, supervision, ownership)
 }

@@ -29,7 +29,7 @@ import {
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 import {
   assertArtifactSet,
-  assertExactSize,
+  assertDescendingBudget,
   assertMirrorRegenerated,
   measureFile,
 } from './size-ratchet-lib.mjs'
@@ -590,7 +590,19 @@ test('the always-resident body is pinned at its exact post-split size', () => {
   //
   // BOS-918 adds a resident pre-ranking exclusion rule beside the Debt-Area rotation rule,
   // then trims surrounding wording so the body still stays below the pre-extraction bound.
-  const SOURCE_BYTES = 30663 // exact measured .claude body, re-measured 2026-08-22
+  // BOS-1208 converts this from an exact pin to a DESCENDING BUDGET, seeded at the measured
+  // size so it binds on its first run. The exact pin fixed the old ceiling's silence on a trim
+  // but priced both directions the same: banking a deletion cost the identical one-line repin
+  // an addition did. Under the budget a shrink costs nothing at all, and only a raise costs a
+  // recorded `raise.justification` in the same commit. STEP_DOWN is ~1 KiB because this body is above 20 000 bytes;
+  // bodies under that get 512 B, so a bigger body is asked for a bigger step. The share is NOT
+  // equal across artifacts, and is deliberately not claimed to be: measured, the step runs from
+  // 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket
+  // (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would give
+  // without equalising it.
+  const SOURCE_BYTES = 30663 // measured .claude body at migration, 2026-09-08
+  const STEP_DOWN = 1024
+  const REVIEW_BY = '2026-12-08'
 
   // Seven separate gates in this file index or iterate skillDirs, and this pin reads
   // skillDirs[0]. A list that silently shortened would leave every one of them asserting
@@ -598,17 +610,30 @@ test('the always-resident body is pinned at its exact post-split size', () => {
   // checked — the vacuity assertArtifactSet exists for.
   assertArtifactSet(skillDirs, 2, 'skillDirs')
 
-  assertExactSize({
+  assertDescendingBudget({
     below: { name: 'PRE_EXTRACTION_BODY', value: 30669 },
+    budget: SOURCE_BYTES,
     constFile: 'scripts/bs-sweep-debt-skill.test.mjs',
     constName: 'SOURCE_BYTES',
-    expected: SOURCE_BYTES,
     label: 'bs-sweep-debt always-resident body',
     measured: measureFile(path.join(rootDir, skillDirs[0], 'SKILL.md')),
     path: `${skillDirs[0]}/SKILL.md`,
+    raise: {
+      // A LITERAL, deliberately not `SOURCE_BYTES`. Aliasing the budget constant made this
+      // value move in lockstep with every raise, so `budget > from` could never be true
+      // and the one direction this primitive prices was free — the arm was structurally
+      // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+      // measurement, any later raise of SOURCE_BYTES above it reds until a reason is recorded.
+      // No `justification` is pre-supplied either: this commit raised nothing, and a
+      // stale sentence parked here would satisfy the next raise without anybody having
+      // to write a fresh reason for it, which is the same arm dead a second way.
+      from: 30663,
+    },
     residual:
       'the five references/ files this body routes to and the toolbox scripts it invokes — ' +
-      'content moved out of the body is invisible to this pin',
+      'content moved out of the body is invisible to this budget',
+    reviewBy: REVIEW_BY,
+    stepDown: STEP_DOWN,
   })
 })
 

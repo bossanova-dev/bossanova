@@ -27,7 +27,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
+import { assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 const abs = (rel) => fileURLToPath(new URL(rel, import.meta.url))
@@ -37,14 +37,12 @@ const CALLBACKS = read(
   '../services/boss/internal/skillinstall/skills/boss-epic/references/callback-watches.md',
 )
 
-// BOS-495: the up-front callback reflex + the single `callbacksAvailable` gate must
-// be present in BOTH Go mirrors (byte-identical), and boss-epic must carry its own
-// callback-watches reference. The canonical home is skillinstall; the plugin copy is
-// the copy-skills mirror — both are asserted so a partial edit trips this gate.
-const EPIC_MIRRORS = [
-  '../services/boss/internal/skillinstall/skills/boss-epic',
-  '../plugins/bossd-plugin-claude/skilldata/skills/boss-epic',
-]
+// BOS-495: the up-front callback reflex + the single `callbacksAvailable` gate must be
+// present, and boss-epic must carry its own callback-watches reference.
+// BOS-1212: the plugin copy is an rsync of this tree (`make copy-skills`), asserted once
+// for the whole payload by scripts/skill-mirror-generation.test.mjs, so these clauses are
+// pinned against the canonical home only.
+const EPIC_CANONICAL = '../services/boss/internal/skillinstall/skills/boss-epic'
 
 test('size ratchet', () => {
   // Exact pin, not a ceiling (BOS-768). This used to be the committed size rounded
@@ -236,23 +234,47 @@ test('size ratchet', () => {
   // be read after the line it governs has already been printed.
   // BOS-1129 re-baselines 66808 -> 66872 (+64 B) so the resident callback contract points at the
   // policy-owned CLI vocabulary and draft-aware set instead of shipping another literal list.
-  const RATCHET = 66872
+  // BOS-1208 converts this from an exact pin to a DESCENDING BUDGET, seeded at the measured size
+  // so it binds on the first run. Every re-baseline above cost a repin; so would every deletion,
+  // which is the symmetry that let trimmed ceremony come back. A shrink is now free and only a
+  // raise costs a written reason. STEP_DOWN is ~1 KiB because this body is above 20 000 bytes;
+  // smaller bodies get 512 B, so a bigger body is asked for a bigger step. The share is NOT equal
+  // across artifacts, and is deliberately not claimed to be: measured, the step runs from 0.83%
+  // of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket
+  // (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would give
+  // without equalising it.
+  const RATCHET = 66872 // measured resident body at migration, 2026-09-08
+  const STEP_DOWN = 1024
+  const REVIEW_BY = '2026-12-08'
 
-  // Eight separate gates in this file iterate EPIC_MIRRORS. A list that silently shortened
-  // would leave every one of them asserting against a single mirror with nothing going red
-  // to say the other stopped being checked — the vacuity assertArtifactSet exists for.
-  assertArtifactSet(EPIC_MIRRORS, 2, 'EPIC_MIRRORS')
+  // BOS-1212 removed the two-entry EPIC_MIRRORS list those eight gates iterated: each now
+  // asserts against the canonical tree once, and the plugin copy is checked as a generated
+  // tree by scripts/skill-mirror-generation.test.mjs. There is no list left to shorten, so
+  // the vacuity guard that stood here has no subject.
 
-  assertExactSize({
+  assertDescendingBudget({
+    budget: RATCHET,
     constFile: 'scripts/bs-epic-skill.test.mjs',
     constName: 'RATCHET',
-    expected: RATCHET,
     label: 'boss-epic resident SKILL.md',
     measured: measureFile(abs('../services/boss/internal/skillinstall/skills/boss-epic/SKILL.md')),
     path: 'services/boss/internal/skillinstall/skills/boss-epic/SKILL.md',
+    raise: {
+      // A LITERAL, deliberately not `RATCHET`. Aliasing the budget constant made this
+      // value move in lockstep with every raise, so `budget > from` could never be true
+      // and the one direction this primitive prices was free — the arm was structurally
+      // dead at every migrated call site (BOS-1208 review). Held at the migration-era
+      // measurement, any later raise of RATCHET above it reds until a reason is recorded.
+      // No `justification` is pre-supplied either: this commit raised nothing, and a
+      // stale sentence parked here would satisfy the next raise without anybody having
+      // to write a fresh reason for it, which is the same arm dead a second way.
+      from: 66872,
+    },
     residual:
-      'the references/ files the body routes to, and the plugin mirror — this pin measures the ' +
-      'canonical skillinstall copy only',
+      'the references/ files the body routes to, and the plugin mirror — this budget measures ' +
+      'the canonical skillinstall copy only',
+    reviewBy: REVIEW_BY,
+    stepDown: STEP_DOWN,
   })
 })
 
@@ -328,7 +350,8 @@ test('frontmatter identifies the skill', () => {
 })
 
 test('session titles lead with the tracker ID', () => {
-  for (const dir of EPIC_MIRRORS) {
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     assert.ok(
       skill.includes('`[<TICKET>] <ticket title>`'),
@@ -406,13 +429,14 @@ test('Phase 3 adopts one-shot callbacks with authoritative reconciliation (BOS-4
   )
 })
 
-test('BOS-495: up-front callback reflex + callbacksAvailable gate + own reference (both mirrors)', () => {
+test('BOS-495: up-front callback reflex + callbacksAvailable gate + own reference', () => {
   // The awareness fix: "prefer a callback over blind polling" is an up-front reflex
   // gated on the single `callbacksAvailable(env)` signal, present byte-identically in
-  // BOTH Go mirrors, and boss-epic carries its own callback-watches reference framing
+  // the canonical payload, and boss-epic carries its own callback-watches reference framing
   // graceful degradation around the gate (skip registerWatch → fallbackPoll, never a
   // failed wait). Pin all three so the discoverability fix can never silently regress.
-  for (const dir of EPIC_MIRRORS) {
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     // Up-front reflex: prefer a callback over blind polling, gated on callbacksAvailable.
     assert.match(
@@ -462,26 +486,15 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate + own referenc
       `${dir}/references/callback-watches.md must stay project-agnostic (no project MCP names)`,
     )
   }
-
-  // The "byte-identical in BOTH Go mirrors" claim above is only real if something
-  // diffs the two copies: the per-mirror phrase checks pass even if one mirror drifts
-  // in whitespace/wording or a `make copy-skills` is skipped. Enforce it directly.
-  const [canonicalDir, pluginDir] = EPIC_MIRRORS
-  for (const rel of ['SKILL.md', 'references/callback-watches.md']) {
-    assert.equal(
-      read(`${pluginDir}/${rel}`),
-      read(`${canonicalDir}/${rel}`),
-      `${pluginDir}/${rel} must be byte-identical to the canonical mirror (run \`make copy-skills\`)`,
-    )
-  }
 })
 
-test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mirrors)', () => {
+test('BOS-614: callbacks use a verified scoped target and safe cleanup', () => {
   // A managed but unrelated chat is never an eligible callback target. The
   // selector prefers a repository-matching orchestrator and only then a
   // repository-matching child. Without either, callbacks are entirely skipped
   // while the existing cron/poll reconciliation remains active.
-  for (const dir of EPIC_MIRRORS) {
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     const ref = readFileSync(
       new URL(`${dir}/references/callback-watches.md`, import.meta.url),
@@ -636,8 +649,9 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
   }
 })
 
-test('BOS-752: epic callback waits use per-trigger groups, guarded re-arm, and three-way reconcile (both mirrors)', () => {
-  for (const dir of EPIC_MIRRORS) {
+test('BOS-752: epic callback waits use per-trigger groups, guarded re-arm, and three-way reconcile', () => {
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     const ref = readFileSync(
       new URL(`${dir}/references/callback-watches.md`, import.meta.url),
@@ -712,14 +726,15 @@ test('BOS-752: epic callback waits use per-trigger groups, guarded re-arm, and t
   }
 })
 
-test('BOS-524: Phase 0 resolves states ADAPTER-FIRST with the config as fallback (both mirrors)', () => {
+test('BOS-524: Phase 0 resolves states ADAPTER-FIRST with the config as fallback', () => {
   // The bug this pins: Phase 0 read the planned state from `.boss-skills.json`
   // ALONE, so a repo fully functional through a vendored tracker adapter that
   // already knows its own states self-BLOCKed for a value the adapter was
   // holding. The order — adapter probe, THEN the config walk, THEN fail closed —
   // is the acceptance criterion, so pin it positionally (the probe must appear
   // BEFORE the `.boss-skills.json` read) rather than merely pinning both tokens.
-  for (const dir of EPIC_MIRRORS) {
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
 
     // 1. The adapter probe: the optional `states` capability read through the
@@ -845,8 +860,9 @@ test('passing greens require settled child chat before merge eligibility', () =>
   )
 })
 
-test('BOS-997: child liveness classifier routes ambiguous states conservatively (both mirrors)', () => {
-  for (const dir of EPIC_MIRRORS) {
+test('BOS-997: child liveness classifier routes ambiguous states conservatively', () => {
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     const recovery = readFileSync(
       new URL(`${dir}/references/merge-recovery.md`, import.meta.url),
@@ -1122,15 +1138,16 @@ test('BOS-458: the published core carries no hard-coded ${TRACKER:-…} shell de
   )
 })
 
-test('BOS-520: Phase 3c has a TERMINATING frozen-repair-lease escape (both mirrors)', () => {
+test('BOS-520: Phase 3c has a TERMINATING frozen-repair-lease escape', () => {
   // The bug this pins shut: Phase 3c's "a repairer holds the lease → count a
   // round and re-poll" rule had no terminating condition. Against a stuck lease
   // + dead repair chat (repair_active:true, last_repair_head_sha frozen, repair
   // chat silent) the driver re-polled forever — unable to help, unable to fail.
   // Phase 3c must now classify the lease and route 'stalled' to an exhausted
   // round → next round or fail-isolate, so the loop always terminates. Pinned in
-  // BOTH Go mirrors so a partial copy-skills edit trips this gate.
-  for (const dir of EPIC_MIRRORS) {
+  // the canonical payload; scripts/skill-mirror-generation.test.mjs gates the plugin mirror.
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     // Prose assertions run against a whitespace-collapsed copy: prettier re-wraps
     // these paragraphs on every edit, and a re-wrap must not trip a content gate.
@@ -1179,7 +1196,7 @@ test('BOS-520: Phase 3c has a TERMINATING frozen-repair-lease escape (both mirro
   }
 })
 
-test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both mirrors)', () => {
+test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death', () => {
   // Four contract gaps this pins shut, all reached through the same merge gate:
   //   (a) the published gate was chat-settled + Passing + real changes, so a
   //       partial-slice DRAFT merged on green + idle alone in production;
@@ -1189,8 +1206,9 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
   //       as a failure — re-merged or fail-isolated live, landed work;
   //   (d) a chat killed by a transient API 5xx fit neither BLOCKED nor green, and
   //       the standing nudge ban made a strict driver fail-isolate live work.
-  // Pinned in BOTH Go mirrors so a partial copy-skills edit trips this gate.
-  for (const dir of EPIC_MIRRORS) {
+  // Pinned in the canonical payload; scripts/skill-mirror-generation.test.mjs gates the plugin mirror.
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     // Prose assertions run against a whitespace-collapsed copy: prettier re-wraps
     // these paragraphs on every edit, and a re-wrap must not trip a content gate.
@@ -1345,18 +1363,9 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
       `${dir}/references/merge-recovery.md must stay project-agnostic (no project MCP names)`,
     )
   }
-
-  // Same rationale as the BOS-495 gate: per-mirror phrase checks pass even if one
-  // mirror drifts in wording, so diff the new reference between mirrors directly.
-  const [canonicalDir, pluginDir] = EPIC_MIRRORS
-  assert.equal(
-    read(`${pluginDir}/references/merge-recovery.md`),
-    read(`${canonicalDir}/references/merge-recovery.md`),
-    `${pluginDir}/references/merge-recovery.md must be byte-identical to the canonical mirror (run \`make copy-skills\`)`,
-  )
 })
 
-test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mirrors)', () => {
+test('BOS-523: draft-aware trigger policy + session-hosted wait recipe', () => {
   // Three operational gaps a production epic run had to improvise around:
   //   (a) no trigger policy — a driver armed bare `checks_passed` on a child PR
   //       that boss-build opens as a DRAFT, so the one-shot watch was consumed by
@@ -1370,8 +1379,9 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
   //       framing reads that as a child failure instead of a normal repair round.
   // Plus the reporting-contract pointer at the shipped progress helpers, so a
   // driver never hand-rolls the renderer or the create-vs-update decision.
-  // Pinned in BOTH Go mirrors so a partial copy-skills edit trips this gate.
-  for (const dir of EPIC_MIRRORS) {
+  // Pinned in the canonical payload; scripts/skill-mirror-generation.test.mjs gates the plugin mirror.
+  {
+    const dir = EPIC_CANONICAL
     const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
     // Prose assertions run against a whitespace-collapsed copy: prettier re-wraps
     // these paragraphs on every edit, and a re-wrap must not trip a content gate.
@@ -1506,7 +1516,7 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     // a second literal list would drift independently from the contract.
     assert.match(
       refProse,
-      /policy\.draftAwareTriggers\.join\(" "\)/,
+      /policy\.draftAwareTriggers\.join\("\\n"\)/,
       `${dir}/references/callback-watches.md arm snippet must read draftAwareTriggers`,
     )
     assert.doesNotMatch(

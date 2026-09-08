@@ -656,6 +656,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'linear-deps-lib.mjs',
     'linear-gate-lib.mjs',
     'main-module.mjs',
+    'pr-check-state.mjs',
     'progress-comment.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
@@ -673,6 +674,30 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
   // gate that fails, and a count assertion would stay green while the wrong helper was listed.
   assert.ok(VENDOR_MAP['boss-plan'].includes('plan-writeback-verify.mjs'))
   assert.ok(VENDOR_MAP['boss-build'].includes('worktree-lock.sh'))
+  // Asserted BY NAME for each consuming core: pr-check-state.mjs is the single agent-callable
+  // check-state verdict the routed skill bodies invoke by path, so an installed tree without it is
+  // a rule that cannot RUN rather than a rule that disagrees.
+  for (const core of ['boss-repair', 'boss-build', 'boss-epic', 'boss-finalize']) {
+    assert.ok(
+      VENDOR_MAP[core].includes('pr-check-state.mjs'),
+      `${core} must vendor pr-check-state.mjs`,
+    )
+  }
+  // Asserted BY NAME and exclusively: the escalation ladder is the repair core's residual
+  // decision, invoked by path from its body. An installed tree without it is a ladder that
+  // cannot RUN rather than one that decides wrongly, and leaking it into another core would
+  // ship repair machinery that core never runs.
+  assert.ok(
+    VENDOR_MAP['boss-repair'].includes('bs-repair-escalation.mjs'),
+    'boss-repair must vendor bs-repair-escalation.mjs',
+  )
+  for (const [skill, files] of Object.entries(VENDOR_MAP)) {
+    if (skill === 'boss-repair') continue
+    assert.ok(
+      !files.includes('bs-repair-escalation.mjs'),
+      `bs-repair-escalation.mjs must not leak into ${skill}`,
+    )
+  }
   for (const files of Object.values(VENDOR_MAP)) {
     assert.ok(files.includes('main-module.mjs'), 'every toolbox payload vendors main-module.mjs')
   }

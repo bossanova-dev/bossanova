@@ -1708,3 +1708,98 @@ func TestPlatformUninstallUnattendedAnnouncesTheHostHasNoSupervisor(t *testing.T
 		}
 	})
 }
+
+// TestObserveWatchdogOwnershipDrivesTheSystemDomainProbe drives the real darwin
+// probe through the runLaunchctl seam across every outcome it can meet.
+//
+// It asserts the ARGV as well as the verdict. The target is the fact BOS-1204
+// turns on: a probe that read gui/<uid>/com.bossanova.bossd would answer
+// "not loaded" on a perfectly healthy unattended host, which is the bug, and
+// the verdict alone cannot tell the two probes apart.
+func TestObserveWatchdogOwnershipDrivesTheSystemDomainProbe(t *testing.T) {
+	cases := []struct {
+		name      string
+		reply     func(t *testing.T) ([]byte, error)
+		wantState WatchdogOwnershipState
+		wantIn    []string
+	}{
+		{
+			name:      "loaded",
+			reply:     func(*testing.T) ([]byte, error) { return []byte("state = running\n"), nil },
+			wantState: WatchdogOwnershipLoaded,
+		},
+		{
+			name: "not loaded",
+			reply: func(t *testing.T) ([]byte, error) {
+				return []byte("Could not find service \"" + WatchdogLabel + "\" in domain for system"), fakeExitError(t, 113)
+			},
+			wantState: WatchdogOwnershipNotLoaded,
+			wantIn:    []string{"system/" + WatchdogLabel, "113"},
+		},
+		{
+			name: "launchctl exited non-zero for another reason",
+			reply: func(t *testing.T) ([]byte, error) {
+				return []byte("Input/output error"), fakeExitError(t, 5)
+			},
+			wantState: WatchdogOwnershipUnknown,
+			wantIn:    []string{"system/" + WatchdogLabel, "5"},
+		},
+		{
+			name: "launchctl could not be executed",
+			reply: func(*testing.T) ([]byte, error) {
+				return nil, errors.New("exec: \"launchctl\": executable file not found in $PATH")
+			},
+			wantState: WatchdogOwnershipUnknown,
+			wantIn:    []string{"could not run launchctl print", "executable file not found"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+			var gotArgs []string
+			previous := runLaunchctl
+			runLaunchctl = func(args ...string) ([]byte, error) {
+				gotArgs = args
+				return tc.reply(t)
+			}
+			t.Cleanup(func() { runLaunchctl = previous })
+
+			got := observeWatchdogOwnership()
+			if got.State != tc.wantState {
+				t.Fatalf("state = %v, want %v (reason %q)", got.State, tc.wantState, got.Reason)
+			}
+			want := []string{"print", "system/" + WatchdogLabel}
+			if len(gotArgs) != len(want) || gotArgs[0] != want[0] || gotArgs[1] != want[1] {
+				t.Fatalf("launchctl args = %v, want %v", gotArgs, want)
+			}
+			for _, fragment := range tc.wantIn {
+				if !strings.Contains(got.Reason, fragment) {
+					t.Fatalf("reason = %q, want it to contain %q", got.Reason, fragment)
+				}
+			}
+		})
+	}
+}
+
+// TestObserveWatchdogOwnershipShortCircuitsWhenProbingIsDisabled pins BOS-1204
+// AC9 at the substrate read itself: under BOSS_DAEMON_SKIP_LAUNCHCTL the probe
+// must not invoke launchctl at all, and must report unknown rather than
+// inheriting whatever the last real answer was.
+func TestObserveWatchdogOwnershipShortCircuitsWhenProbingIsDisabled(t *testing.T) {
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	previous := runLaunchctl
+	runLaunchctl = func(args ...string) ([]byte, error) {
+		t.Fatalf("launchctl was invoked with %v under BOSS_DAEMON_SKIP_LAUNCHCTL", args)
+		return nil, nil
+	}
+	t.Cleanup(func() { runLaunchctl = previous })
+
+	got := observeWatchdogOwnership()
+	if got.State != WatchdogOwnershipUnknown {
+		t.Fatalf("state = %v, want WatchdogOwnershipUnknown", got.State)
+	}
+	if !strings.Contains(got.Reason, "BOSS_DAEMON_SKIP_LAUNCHCTL") {
+		t.Fatalf("reason = %q, want it to name BOSS_DAEMON_SKIP_LAUNCHCTL", got.Reason)
+	}
+}

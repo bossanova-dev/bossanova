@@ -183,6 +183,15 @@ fi
 # Ready the PR — the finalize adapter's readyPr capability (isDraft==true guard; command: gh pr ready).
 if [ "$(printf '%s' "$PR_STATE" | jq -r .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
 test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false" || exit 1
+# Readying is what STARTS the non-draft-only advisory bot, so the merge state degrades on a branch
+# that has not changed. Decide that degraded value through the shared classifier, never by reading
+# the raw token: --readied-this-run names the post-ready degrade, and its verdict is pending
+# (reason advisory-unsettled), non-blocking. Only `blocking: true` routes back to Step 8.
+POST_READY_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus -q .mergeStateStatus)"
+POST_READY_VERDICT="$(node "$BOSS_BUILD_TOOLBOX/pr-check-state.mjs" merge-state \
+  --merge-state "$POST_READY_STATE" --check-state green --check-reason ok \
+  --unresolved-threads 0 --readied-this-run)"
+test "$(printf '%s' "$POST_READY_VERDICT" | jq -r .blocking)" = "false" || exit 1
 ```
 
 > If the re-inject branch's bounded CI wait goes red, route back to **Step 8
@@ -196,6 +205,12 @@ test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false" || exit 1
 > unstable merge state while review automation starts, and that post-ready state is not a conflict
 > signal. `UNKNOWN` is unsettled, never a pass; after the bounded poll it takes the same
 > rebase-then-re-verify path as a dirty state.
+> **Every merge-state decision here goes through `$BOSS_BUILD_TOOLBOX/pr-check-state.mjs merge-state`,
+> which states the rule this reference does not restate:** `blocking: true` is the only route back to
+> Step 8, and it is reserved for a failing check verdict, an unresolved review thread, or a genuinely
+> dirty merge state. `UNSTABLE` with zero failing checks and zero unresolved threads is **pending**,
+> not red CI — and the `UNSTABLE` this run induces by calling `gh pr ready` itself is pending with
+> reason `advisory-unsettled`. Neither opens a repair cycle.
 
 Before readying, confirm **no required item was deferred** (Hard rules) — this now includes **every
 in-scope acceptance criterion being satisfied**: each `- [ ]` this ticket was scoped to close must be
@@ -361,9 +376,9 @@ source before acting** — the source decides whether a settle cycle is spent at
   grouped comment each), and at most three advisory rounds per run. Past either bound, stop treating
   further bot feedback as actionable in this run and go to **Stop cleanly**.
 - **Human changes-requested reviews, and red CI.** These are unchanged: they still go back to Step 8
-  (boss-repair), still re-verify finalize, and still consume a settle cycle. Read CI from
-  `gh pr checks` — a PR that flips to `UNSTABLE` after being readied is not red CI. Readying the PR
-  never opens a cycle by itself.
+  (boss-repair), still re-verify finalize, and still consume a settle cycle. Read CI through the
+  `pr-check-state.mjs` verdict — a PR that flips to `UNSTABLE` after being readied classifies as
+  pending (`advisory-unsettled`), not red CI. Readying the PR never opens a cycle by itself.
 - **Every other verdict.** The shortcut is verdict-gated: only a verdict positively recorded as
   `clean` unlocks it; `capped`, `none`, or an absent record means bot feedback is triaged exactly as
   today. It routes to Step 8 and spends a settle cycle like any other late review.

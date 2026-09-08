@@ -87,10 +87,14 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
      node --input-type=module -e '
        import{pathToFileURL as u}from"node:url"
        const {resolveCallbackAdapter}=await import(u(process.env.BOSS_BUILD_TOOLBOX+"/callback/adapter.mjs").href)
-       process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join(" "))
+       process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join("\n"))
      '
    )"
-   for T in $WATCH_TRIGGERS; do
+   # Newline-delimited, read one line at a time. A bare `for T in $WATCH_TRIGGERS` iterates ONCE
+   # under zsh — which does not word-split an unquoted parameter expansion — registering a single
+   # watch whose trigger name is the whole space-joined string, and no real trigger at all.
+   printf '%s\n' "$WATCH_TRIGGERS" | while IFS= read -r T; do
+     [ -n "$T" ] || continue
      boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --message "$MSG" --expires-in 24h --json
    done
    ```
@@ -118,6 +122,16 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
    - `could-not-evaluate` — the rollup could not be read, the rollup was empty, or
      `mergeStateStatus` is `UNKNOWN`/unreadable. Report this outcome by name; never fold it into
      `not-yet`, and never let it reach `ready`.
+
+   Decide the check half of those conjuncts with
+   `$BOSS_BUILD_TOOLBOX/pr-check-state.mjs classify` rather than by reading the rollup by eye: it is
+   the same verdict the bounded poll below uses, it reconciles a null-shaped node against the named
+   context before that node can contribute `unknown`, and its `green` / `failing` / `pending` /
+   `unknown` map onto `ready` / red / `not-yet` / `could-not-evaluate` respectively. Pass the prior
+   head's context names as `--prior` whenever the run has them: a path-filtered follow-up push
+   shrinks the check set, and the reason `absent-gate` is what separates a gate that vanished from
+   one that is merely queued. Decide the merge-state half with the same helper's `merge-state`
+   subcommand.
 
    A check count of zero is not a pass. An empty commit that skips CI can produce a head SHA with no
    merge workflow runs; a rollup containing only third-party checks can satisfy a bare non-empty
@@ -153,18 +167,38 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
    CI_WAIT_ATTEMPTS=${CI_WAIT_ATTEMPTS:-60}     # outer cap on READS, not on wall time — see below
    CI_WAIT_INTERVAL=${CI_WAIT_INTERVAL:-30}     # seconds between reads
    CI_WAIT_STATE=timeout
+   CI_WAIT_DIR="$(mktemp -d)"
    i=0
    while [ "$i" -lt "$CI_WAIT_ATTEMPTS" ]; do
+     # Keep the raw payload: the `*UNKNOWN*` arm reconciles it through the shared classifier, which
+     # needs the nodes, not the joined token string.
+     gh pr view "$PR" --json statusCheckRollup > "$CI_WAIT_DIR/rollup.json" 2>/dev/null \
+       || : > "$CI_WAIT_DIR/rollup.json"
      # Emit BOTH the node's `status` and its conclusion/state: `.status` is what makes an
      # in-progress node visible, and `"UNKNOWN"` keeps an unreadable node out of an empty token.
-     ROLLUP=$(gh pr view "$PR" --json statusCheckRollup -q \
+     ROLLUP=$(jq -r \
        '[.statusCheckRollup[]|(.status//empty),(.conclusion//.state//"UNKNOWN")]|join(" ")' \
-       2>/dev/null) || ROLLUP=""
+       < "$CI_WAIT_DIR/rollup.json" 2>/dev/null) || ROLLUP=""
      case "$ROLLUP" in
        "")                                   : ;;                       # unreadable: keep waiting
        *PENDING*|*IN_PROGRESS*|*QUEUED*|*EXPECTED*|*REQUESTED*|*WAITING*) : ;;
        *FAILURE*|*ERROR*|*CANCELLED*|*TIMED_OUT*|*ACTION_REQUIRED*) CI_WAIT_STATE=failed; break ;;
-       *UNKNOWN*)                            CI_WAIT_STATE=unknown; break ;;
+       *UNKNOWN*)
+         # A null-shaped node — one whose conclusion is absent — lands here. RECONCILE it against
+         # the named contexts before it may terminate the wait: the rollup can carry such a node
+         # while `gh pr checks` reports the same named context as successful. The classifier owns
+         # that rule; this loop does not restate it.
+         gh pr checks "$PR" --json name,state,bucket > "$CI_WAIT_DIR/checks.json" 2>/dev/null \
+           || : > "$CI_WAIT_DIR/checks.json"
+         RECONCILED=$(node "$BOSS_BUILD_TOOLBOX/pr-check-state.mjs" classify \
+           --rollup "$CI_WAIT_DIR/rollup.json" --checks "$CI_WAIT_DIR/checks.json" \
+           2>/dev/null | jq -r .state) || RECONCILED=""
+         case "$RECONCILED" in
+           green)   CI_WAIT_STATE=settled; break ;;
+           failing) CI_WAIT_STATE=failed;  break ;;
+           pending) : ;;                    # still in flight: nothing terminated, keep waiting
+           *)       CI_WAIT_STATE=unknown; break ;;
+         esac ;;
        *SUCCESS*)                            CI_WAIT_STATE=settled; break ;;
        *)                                    CI_WAIT_STATE=unknown; break ;;
      esac
@@ -187,6 +221,15 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
    list does not classify, a node whose state was unreadable — every one of which lands on
    `unknown`. Route `timeout` and `unknown` **exactly as each other**: neither is green, neither may
    satisfy a green-branch check, and both take the same unknown route a missing reading takes.
+
+   **The one arm that does not terminate on sight is `*UNKNOWN*`.** A rollup node whose conclusion is
+   absent is null-shaped, not unreadable, and treating the rollup as authoritative on its own
+   misclassifies a merge-ready PR and stalls terminal settlement. That arm therefore hands the raw
+   rollup and the named-context payload to `$BOSS_BUILD_TOOLBOX/pr-check-state.mjs classify`, which
+   reconciles the two and owns the verdict; this loop restates none of its rules. Its `green`,
+   `failing` and `pending` answers map onto `settled`, `failed` and _keep waiting_; anything else is
+   still `unknown`, so the fail-closed default survives the reconcile rather than being widened by
+   it.
 
    **What the outer cap bounds, stated honestly.** `CI_WAIT_ATTEMPTS` x `CI_WAIT_INTERVAL` bounds the
    **sleeping**, not the whole wait: each `gh` read is itself unbounded, so the true worst case is

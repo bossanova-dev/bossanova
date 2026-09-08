@@ -1110,6 +1110,7 @@ func TestBossReviewEmbeddedSkillCopiesStayIdentical(t *testing.T) {
 	for _, rel := range []string{
 		"SKILL.md",
 		filepath.Join("references", "core-methodology.md"),
+		filepath.Join("references", "premise-adjudication.md"),
 	} {
 		t.Run(rel, func(t *testing.T) {
 			embedded, err := SkillsFS.ReadFile("skills/boss-review/" + filepath.ToSlash(rel))
@@ -1185,11 +1186,15 @@ var bossReviewMustFixOverrunPins = regProsePins([]falsificationProsePin{
 	},
 	{
 		// A second seconds-valued BUDGET is the failure mode: two quantities to keep in sync, one
-		// of which the gate never reads. The pin holds the seconds figure in reporting position.
+		// of which the gate never reads. BOS-1213 deleted the paragraph that argued this and left
+		// the rule itself on the constant, so the pin moved with it -- a rule token in the
+		// allowance block, not a sentence of motivation. The BEHAVIOUR is proved executably in
+		// scripts/boss-review-skill.test.mjs, where two admit-fix-round calls differing only in
+		// the round COUNT flip the verdict while the seconds remainder is held fixed.
 		name:         "overrun-seconds-reported-never-tested",
-		pattern:      `MUSTFIX_OVERRUN_SECONDS.\s+is\s+the\s+figure\s+the\s+run\s+\*\*reports\*\*,\s+never\s+one\s+it\s+tests`,
-		live:         "`MUSTFIX_OVERRUN_SECONDS` is the figure the run **reports**, never one it tests",
-		tokenRemoved: "`MUSTFIX_OVERRUN_SECONDS` is the figure the run **reports** and the one it tests",
+		pattern:      `overrun\s+field,\s+NOT\s+a\s+gate\s+input`,
+		live:         "overrun field, NOT a gate input.",
+		tokenRemoved: "overrun field, and a gate input.",
 	},
 	{
 		// "dispatched against" is the whole trigger. "cleared" inverts it: it would fire the
@@ -1385,6 +1390,145 @@ func TestBossReviewMustFixOverrunAdmission(t *testing.T) {
 			// The Phase 6 leg allowance must stay subject to the override in the legs list; a legs
 			// entry that still reads as an unconditional price is the pre-change gate restated.
 			assertContains(t, skill, "subject to the single bounded")
+		})
+	}
+}
+
+// bossReviewPremiseResolvePins pin the Phase 0 half of the premise-adjudication wiring. The resolve
+// must be `cd`-and-`pwd` rather than string concatenation (a symlinked skills home resolves only
+// through the former), and the missing-file branch must be a hard `BLOCKED:` exit rather than a
+// warning — a run that continues past an absent recipe adjudicates nothing and reports a clean pass.
+var bossReviewPremiseResolvePins = regProsePins([]falsificationProsePin{
+	{
+		name:         "premise-reference-cd-and-pwd-resolve",
+		pattern:      `BOSS_REVIEW_PREMISE_REFERENCE="\$\(cd\s+"\$BOSS_SKILLS_HOME/boss-review/references"\s+&&\s+pwd\)/premise-adjudication\.md"`,
+		live:         `BOSS_REVIEW_PREMISE_REFERENCE="$(cd "$BOSS_SKILLS_HOME/boss-review/references" && pwd)/premise-adjudication.md"`,
+		tokenRemoved: `BOSS_REVIEW_PREMISE_REFERENCE="$BOSS_SKILLS_HOME/boss-review/references/premise-adjudication.md"`,
+		alsoRemoved: []string{
+			`BOSS_REVIEW_PREMISE_REFERENCE="$(cd "$BOSS_SKILLS_HOME/boss-review/references" && pwd)/falsification.md"`,
+		},
+	},
+	{
+		name:         "premise-reference-blocked-guard",
+		pattern:      `test\s+-f\s+"\$BOSS_REVIEW_PREMISE_REFERENCE"\s+\|\|\s+\{\s+echo\s+"BLOCKED:\s+installed\s+boss-review\s+premise-adjudication\s+reference\s+not\s+found";\s+exit\s+1;\s+\}`,
+		live:         `test -f "$BOSS_REVIEW_PREMISE_REFERENCE" || { echo "BLOCKED: installed boss-review premise-adjudication reference not found"; exit 1; }`,
+		tokenRemoved: `test -f "$BOSS_REVIEW_PREMISE_REFERENCE" || echo "WARNING: installed boss-review premise-adjudication reference not found"`,
+		alsoRemoved: []string{
+			`test -f "$BOSS_REVIEW_PREMISE_REFERENCE" || { echo "BLOCKED: installed boss-review premise-adjudication reference not found"; }`,
+		},
+	},
+})
+
+// bossReviewPremiseCitationPin is the BARE core-relative spelling the shipped-references classifier
+// matches (referenceRefPattern). It is deliberately separate from the resolved-path variable above:
+// the variable is what a subagent can open, and this token is what proves the core names the file it
+// ships. Without it TestPublishedCoresShipTheReferencesTheyName can go green on prose that names no
+// reference at all.
+var bossReviewPremiseCitationPin = regProsePin(falsificationProsePin{
+	name:         "premise-adjudication-bare-reference",
+	pattern:      `Use\s+references/premise-adjudication\.md\s+for\s+the\s+decomposition`,
+	live:         "Use references/premise-adjudication.md for the decomposition and the verdict vocabulary",
+	tokenRemoved: "Use references/falsification.md for the decomposition and the verdict vocabulary",
+})
+
+// bossReviewPerPremiseFixPins pin the fix verb. Both anchors are load-bearing and fail differently:
+// dropping "the unit is the premise" leaves a rule that still reads as adjudication while licensing
+// one whole-finding verdict, and dropping "every load-bearing premise" leaves the singular premise
+// the recorded defects were graded under.
+var bossReviewPerPremiseFixPins = regProsePins([]falsificationProsePin{
+	{
+		name:    "adjudicate-per-premise-unit",
+		pattern: `adjudicate\s+before\s+you\s+fix\*+\s+—\s+the\s+unit\s+is\s+the\s+premise,\s+not\s+the\s+finding.*every\*+\s+load-bearing\s+premise\s+it\s+rests\s+on\s+has\s+been\s+confirmed\s+or\s+falsified`,
+		live:    "**adjudicate before you fix** — the unit is the premise, not the finding: no item may be fixed until **every** load-bearing premise it rests on has been confirmed or falsified against the code it cites",
+		// The singular premise: the exact wording every wholesale-graded finding in the record was
+		// adjudicated under.
+		tokenRemoved: "**adjudicate before you fix** — the unit is the premise, not the finding: no item may be fixed until its premise has been confirmed or falsified against the code it cites",
+		alsoRemoved: []string{
+			"**adjudicate before you fix** — no item may be fixed until **every** load-bearing premise it rests on has been confirmed or falsified against the code it cites",
+		},
+	},
+})
+
+// bossReviewPublicationGatePins pin the third verb. Publication had no premise requirement at all,
+// so both anchors here are new obligations rather than restatements: the record must be carried, and
+// its absence must render as unverified rather than as a settled claim. The advisory pin closes the
+// boundary an advisory response would otherwise slip through — it opens no fix cycle, but it still
+// writes into the pull-request record.
+var bossReviewPublicationGatePins = regProsePins([]falsificationProsePin{
+	{
+		name:         "publication-gate-unverified-marker",
+		pattern:      `published\s+as\s+an\s+open\s+claim.*per-premise\s+record.*published\s+carrying\s+the\s+unverified\s+marker\s+rather\s+than\s+presented\s+as\s+settled`,
+		live:         "An item published as an open claim — an unresolved must-fix and every suggestion — carries its per-premise record, and an entry without one is published carrying the unverified marker rather than presented as settled",
+		tokenRemoved: "An item published as an open claim — an unresolved must-fix and every suggestion — carries its per-premise record, and an entry without one is published like any other entry",
+		alsoRemoved: []string{
+			"An item published as an open claim — an unresolved must-fix and every suggestion — is published carrying the unverified marker rather than presented as settled",
+		},
+	},
+	{
+		name:         "publication-gate-covers-advisory",
+		pattern:      `advisory\s+review\s+response\s+is\s+still\s+a\s+publication\s+into\s+the\s+pull-request\s+record,\s+so\s+this\s+gate\s+applies\s+to\s+it`,
+		live:         "An advisory review response is still a publication into the pull-request record, so this gate applies to it even though it opens no fix cycle",
+		tokenRemoved: "An advisory review response opens no fix cycle, so this gate does not reach it",
+	},
+})
+
+// TestBossReviewPremiseAdjudicationWiring asserts the whole per-premise contract against the real
+// shipped payloads: the recipe exists, Phase 0 resolves and guards it, the fix step adjudicates per
+// premise, and Phase 7 gates publication. Each window is section-scoped, so a rule relocated out of
+// the phase that must honour it fails here rather than passing as a move.
+func TestBossReviewPremiseAdjudicationWiring(t *testing.T) {
+	const skillPath = "skills/boss-review/SKILL.md"
+	const referencePath = "skills/boss-review/references/premise-adjudication.md"
+	const methodologyPath = "skills/boss-review/references/core-methodology.md"
+
+	for payloadName, payload := range shippedPayloads(t) {
+		payloadName, payload := payloadName, payload
+		t.Run(payloadName, func(t *testing.T) {
+			reference := readPayloadFile(t, payload, referencePath)
+			if strings.TrimSpace(reference) == "" {
+				t.Fatalf("%s is empty", referencePath)
+			}
+			// The six mandatory checklist items. Asserted on the reference itself because the
+			// SKILL.md pins only prove the core POINTS at a recipe, never that the recipe says
+			// anything.
+			for _, want := range []string{
+				"Decompose before any verdict",
+				"One verdict per premise, each carrying its evidence",
+				"Absence is `unverified`, never `held`",
+				"Check a cited contract's consumers",
+				"applied**, **declined**, or **published**",
+				"Verdicts are not sticky",
+			} {
+				assertContains(t, reference, want)
+			}
+			assertContains(t, reference, "`held`, `refuted`, `unverified`")
+			assertContains(t, reference, "A bare line number is not evidence")
+
+			skill := readPayloadFile(t, payload, skillPath)
+			phase0 := sectionBetween(t, skill, "## Phase 0 — Setup", "## Phase 1 — Specialist lens passes")
+			assertFalsificationPins(t, phase0, bossReviewPremiseResolvePins)
+			assertContains(t, phase0, "`BOSS_REVIEW_PREMISE_REFERENCE` — resolved absolute installed path")
+
+			phase6 := sectionBetween(t, skill, "## Phase 6 — Fix must-fix", "## Phase 7 — Report")
+			assertFalsificationPins(t, phase6, bossReviewPerPremiseFixPins)
+			assertFalsificationPins(t, phase6, []falsificationProsePin{bossReviewPremiseCitationPin})
+
+			phase7 := sectionBetween(t, skill, "## Phase 7 — Report", "## Phase 8 — Cleanup")
+			assertFalsificationPins(t, phase7, bossReviewPublicationGatePins)
+			// The optional per-premise record on BOTH published shapes. A bare assertContains is
+			// satisfied by either one alone, so it stays green on a change that adds the field to
+			// `mustfix.items[]` and forgets `suggestions[]` — the shape whose entries the
+			// follow-up prompt turns into real tracker issues. Count instead: one occurrence is
+			// half the contract, and half the contract is what the marker exists to expose.
+			if got := strings.Count(phase7, `"premises"`); got != 2 {
+				t.Errorf(
+					"Phase 7 declares %q %d time(s), want 2 — one in the mustfix.items[] shape and one in the suggestions[] shape",
+					`"premises"`, got,
+				)
+			}
+
+			methodology := readPayloadFile(t, payload, methodologyPath)
+			assertContains(t, methodology, "references/premise-adjudication.md")
 		})
 	}
 }

@@ -47,6 +47,32 @@
 // nothing here polices the resident-vs-references split — content moved into a reference stops
 // being measured at all. Per-call-site residuals are the `residual` parameter's job.
 //
+// WHY A SECOND PRIMITIVE, AND WHY IT IS ASYMMETRIC (BOS-1208). `assertExactSize` prices a
+// deletion and an addition identically: both red, and both clear by the same one-line repin.
+// That is not a ratchet against ceremony, it is a toll on movement in either direction — which
+// is why a deliberate de-ceremony trim regrew within four days of landing. Nothing in an
+// equality pin makes ceremony cheaper to remove than to add. `assertDescendingBudget` prices
+// the two directions differently on purpose. Shrinking is FREE: the measurement simply sits
+// further under the budget, no constant is touched, and nobody has to decide to bank a saving
+// for the saving to hold. Growing costs a written reason: raising the budget without a
+// `raise.justification` reds, and that reason has to land in the same commit as the growth.
+//
+// The headroom a free shrink leaves behind is NOT the one-sided leak BOS-768 removed, because
+// each budget carries a `reviewBy` date and a `stepDown`: the assertion reds once that date
+// passes, so the question is FORCED on a schedule instead of waiting for somebody to think of
+// it. Read that as forcing the question, not the answer — and the difference is load bearing.
+// The assertion holds no memory of the previous `reviewBy`, so it cannot tell a budget that
+// was lowered by `stepDown` from one whose date was simply moved forward: both clear the red.
+// `stepDown` names the target in the message and nothing verifies it was hit. The descent is
+// therefore enforced by a recurring prompt plus review, not by this code. The cost of that arm
+// is real and is stated in
+// its own message — it makes a gate fail on the calendar rather than on a code change, so it
+// can red a branch that never touched the artifact, and the message says exactly that.
+//
+// Both primitives stay. The Go twin and the two documentation-figure call sites want an exact
+// pin, and it is the right price there; the budget is for artifacts sitting in a skill run's
+// context path, where a deletion is the outcome the mechanism should be paying for.
+//
 // `scripts/check-raw-size-ratchets.mjs` is the gate that stops the open-coded shape coming
 // back. Its scan is parser-free, so the prose in this file deliberately never spells the
 // forbidden comparison verbatim; that is what lets both files pass the gate with no opt-out.
@@ -212,6 +238,196 @@ export function assertExactSize(options) {
       'it.' +
       tail,
   )
+}
+
+const REVIEW_BY_SHAPE = /^\d{4}-\d{2}-\d{2}$/
+
+/** Parse a `YYYY-MM-DD` review date, rejecting a malformed one as a wiring error. */
+function requireReviewBy(reviewBy, fn) {
+  requireText('reviewBy', reviewBy, fn)
+  if (!REVIEW_BY_SHAPE.test(reviewBy)) {
+    throw new Error(
+      `size-ratchet: ${fn} requires \`reviewBy\` in YYYY-MM-DD form, got ${String(reviewBy)}. ` +
+        'A budget whose review date cannot be read never descends. Wiring error.',
+    )
+  }
+  const parsed = new Date(`${reviewBy}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== reviewBy) {
+    throw new Error(
+      `size-ratchet: ${fn} \`reviewBy\` ${reviewBy} is not a real calendar date. Wiring error.`,
+    )
+  }
+  return parsed
+}
+
+/**
+ * Assert a committed artifact fits under a budget that must descend on a recorded schedule.
+ *
+ * THE ASYMMETRY IS THE POINT. Shrinking costs nothing — no constant moves, no commit to any
+ * bookkeeping line — while growing costs a recorded `raise.justification` in the same commit.
+ * See the file header for why the equality pin could not buy that. The free headroom a shrink
+ * leaves is put back on the agenda by `reviewBy` / `stepDown` rather than left to whenever
+ * somebody thinks of it — but only put back on the agenda: this assertion reds on the date and
+ * names the target, and nothing here checks the budget actually fell, because it keeps no
+ * record of the previous `reviewBy` to compare against.
+ *
+ * @param {object} options
+ * @param {string} options.label Human name for what is being gated, used to open the message.
+ * @param {string} options.path Repo-relative path of the measured artifact.
+ * @param {number} options.measured Freshly measured size (see `measureFile`).
+ * @param {number} options.budget The ceiling constant's value. Passing means `measured <=` it.
+ * @param {string} options.constName Identifier of the budget constant, so the fix names itself.
+ * @param {string} options.constFile Repo-relative file the constant lives in.
+ * @param {'bytes'|'lines'} [options.unit] What is being counted. Default `bytes`.
+ * @param {{name: string, value: number}} [options.below] Second, opposing threshold the budget
+ *   must sit under (a pre-extraction/pre-split baseline). Its failure names BOTH readings.
+ * @param {{from: number, justification?: string}} options.raise REQUIRED. The value the
+ *   constant held before this commit. A raise above `from` demands a non-empty
+ *   `justification`; a fall below it demands nothing. Mandatory exactly the way `residual` is,
+ *   so the priced direction cannot be un-priced by dropping the field.
+ * @param {string} options.reviewBy REQUIRED `YYYY-MM-DD`. Once this date has passed and the
+ *   budget was not lowered, the assertion reds.
+ * @param {number} options.stepDown REQUIRED positive integer. How far the budget must fall
+ *   when its review date arrives.
+ * @param {Date} [options.now] Clock, injectable so the review-date arm is testable. Default
+ *   `new Date()`.
+ * @param {string} [options.remedy] Over-budget remedy sentence. Default
+ *   `MOVE_TO_REFERENCE_REMEDY`.
+ * @param {string} options.residual REQUIRED. What this check does not cover.
+ * @returns {void}
+ */
+export function assertDescendingBudget(options) {
+  const {
+    label,
+    path: artifactPath,
+    measured,
+    budget,
+    constName,
+    constFile,
+    unit = 'bytes',
+    below,
+    raise,
+    reviewBy,
+    stepDown,
+    now = new Date(),
+    remedy = MOVE_TO_REFERENCE_REMEDY,
+    residual,
+  } = options ?? {}
+
+  // ORDER MATTERS, AND THIS IS THE ORDER.
+  //
+  // `residual` is validated FIRST, before anything is measured, so a call site that forgot it
+  // fails on every run rather than only on the run where the artifact happens to move — the
+  // same reason `assertExactSize` puts it first.
+  //
+  // Then all remaining wiring, then `below`, then the un-justified raise, then over-budget,
+  // then the review date. The raise check precedes the over-budget check because an
+  // unjustified constant makes every other verdict untrustworthy: there is no point telling a
+  // reader they are 12 bytes over a ceiling nobody recorded a reason for. Over-budget
+  // precedes the review date because a branch that broke the ceiling should hear about its
+  // own change before it hears about scheduled maintenance it did not cause.
+  requireResidual(residual, 'assertDescendingBudget')
+  requireText('label', label, 'assertDescendingBudget')
+  requireText('path', artifactPath, 'assertDescendingBudget')
+  requireText('constName', constName, 'assertDescendingBudget')
+  requireText('constFile', constFile, 'assertDescendingBudget')
+  requireCount('measured', measured, 'assertDescendingBudget')
+  requireCount('budget', budget, 'assertDescendingBudget')
+  if (!UNITS.has(unit)) {
+    throw new Error(
+      `size-ratchet: assertDescendingBudget \`unit\` must be one of ${[...UNITS].join(', ')}, ` +
+        `got ${String(unit)}. Wiring error.`,
+    )
+  }
+  requireCount('stepDown', stepDown, 'assertDescendingBudget')
+  if (stepDown === 0) {
+    throw new Error(
+      'size-ratchet: assertDescendingBudget `stepDown` must be a POSITIVE integer — a budget ' +
+        'that steps down by 0 never descends, which is the flat ceiling this primitive exists ' +
+        'to refuse. Wiring error.',
+    )
+  }
+  const reviewDate = requireReviewBy(reviewBy, 'assertDescendingBudget')
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error(
+      'size-ratchet: assertDescendingBudget `now` must be a valid Date when supplied. Wiring error.',
+    )
+  }
+  // `raise` is mandatory for the same reason `residual` is: the field records the direction
+  // this gate prices, so a call site allowed to omit it could raise a budget for free.
+  if (raise === undefined || raise === null) {
+    throw new Error(
+      'size-ratchet: assertDescendingBudget requires a `raise` recording the value the budget ' +
+        'held before this commit (`{ from: <previous>, justification?: <why> }`). Without it a ' +
+        'raise is indistinguishable from a fall and the one priced direction becomes free. ' +
+        'This is a wiring error in the gate, not a finding about the artifact.',
+    )
+  }
+  requireCount('raise.from', raise?.from, 'assertDescendingBudget')
+
+  const tail = residualSuffix(residual)
+
+  if (below !== undefined) {
+    requireText('below.name', below?.name, 'assertDescendingBudget')
+    requireCount('below.value', below?.value, 'assertDescendingBudget')
+    if (budget >= below.value) {
+      // Same dual reading as assertExactSize: two thresholds, one artifact, opposing
+      // directions. Prescribing a single cause is wrong half the time.
+      throw new Error(
+        `${label}: the budget ${constName} = ${budget} ${unit} no longer sits below the ` +
+          `baseline ${below.name} = ${below.value} ${unit}. Read this BOTH ways before ` +
+          'touching either number: either the budget was raised toward the baseline, in which ' +
+          'case the growth is what wants undoing — or the baseline needs re-deriving, ' +
+          'because it records a measurement that no longer describes anything real. What is ' +
+          'never right is sliding both up together, which is how a bound stops being a bound.' +
+          tail,
+      )
+    }
+  }
+
+  const justification = raise.justification
+  const justified = typeof justification === 'string' && justification.trim() !== ''
+  if (budget > raise.from && !justified) {
+    throw new Error(
+      `${label}: the budget ${constName} in ${constFile} was raised from ${raise.from} to ` +
+        `${budget} ${unit} — up by ${budget - raise.from} — with no recorded reason. This ` +
+        'budget is asymmetric on purpose: shrinking the artifact costs nothing at all, not ' +
+        'even an edit to the constant, so the one direction that costs anything is growth, ' +
+        `and what it costs is a written reason. Record it as \`raise.justification\` beside ` +
+        `${constName} in ${constFile}, in the SAME commit that raised the budget. If the ` +
+        'growth is not worth a sentence, it is not worth the bytes.' +
+        tail,
+    )
+  }
+
+  if (measured > budget) {
+    throw new Error(
+      `${label}: ${artifactPath} measured ${measured} ${unit}, budget ${budget} ${unit} ` +
+        `(${constName} in ${constFile}) — over by ${measured - budget}. ${remedy} Note the ` +
+        `asymmetry before reaching for the constant: a SHRINK needs no edit to ${constName} ` +
+        'at all — the measurement simply sits further under the budget — so only a RAISE ' +
+        'costs anything, and it costs a recorded justification. If the growth is genuinely ' +
+        `necessary, raise ${constName} in ${constFile} and record why in its ` +
+        `\`raise.justification\`, in the SAME commit that changed ${artifactPath}.` +
+        tail,
+    )
+  }
+
+  const today = now.toISOString().slice(0, 10)
+  if (today > reviewBy) {
+    const lowered = Math.max(0, budget - stepDown)
+    throw new Error(
+      `${label}: the budget ${constName} = ${budget} ${unit} in ${constFile} passed its ` +
+        `review date ${reviewBy} — today is ${today}. THE CAUSE IS THE CALENDAR, NOT A CODE ` +
+        `CHANGE: nothing in ${artifactPath} did this, and a branch that never touched the ` +
+        'artifact can hit it, so do not go looking for what you broke. A budget that only a ' +
+        'human decides to lower is a ceiling nobody ever lowers, which is why this one falls ' +
+        `on a schedule. Lower ${constName} to at most ${lowered} ${unit} in ${constFile} and ` +
+        `move \`reviewBy\` forward past ${reviewBy}. If the artifact will not fit under ` +
+        `${lowered} ${unit}, that is the trim this date exists to ask for: ${remedy}` +
+        tail,
+    )
+  }
 }
 
 /**

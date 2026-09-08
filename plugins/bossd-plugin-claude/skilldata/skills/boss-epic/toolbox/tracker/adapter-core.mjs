@@ -101,6 +101,9 @@
  * @property {string} summary  One line describing the argument/response shape.
  *           updateComment's summary describes {commentId, body} updating an
  *           existing comment in place (never creating a new one).
+ *           writeDescription's summary describes {id, description} replacing an
+ *           issue's whole description, and names the argument key the descriptor
+ *           emitter puts the file's bytes under.
  */
 
 export const TRACKER_CAPABILITIES = [
@@ -134,6 +137,14 @@ export const OPTIONAL_TRACKER_CAPABILITIES = ['states']
 //      that wants a related edge and finds this op absent degrades to a note instead of
 //      failing the run, so requiring it would reject adapters over a capability whose
 //      absence is already handled at CALL time.
+//   4. writeDescription, the file-based description write. It replaces an issue's whole
+//      description with bytes read from disk, so a caller never retypes an already-gated
+//      body into a tool argument. It is optional because no control flow depends on it
+//      yet: a caller that finds it absent falls back to sending the description inline on
+//      the existing moveState/setPriorityEstimate save, exactly as every caller does today.
+//      Its summary is where the argument shape lives, since TrackerOperation has no
+//      argument-shape field — the record must name the description argument key, because
+//      the descriptor emitter builds `args` from it and a wrong key writes nothing.
 //
 // The invariant for every entry here: an ABSENT optional op conforms, while a DECLARED
 // one is validated exactly as strictly as a required op (non-empty tool and summary) —
@@ -148,6 +159,7 @@ export const OPTIONAL_TRACKER_OPERATIONS = [
   'extractImages',
   'createLabel',
   'appendRelatedTo',
+  'writeDescription',
 ]
 
 // The stable, tracker-agnostic state roles the skills consume by name: the state a

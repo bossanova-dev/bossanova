@@ -2718,7 +2718,34 @@ func runDaemonStatus(_ *cobra.Command) error {
 		socketReachable = daemonSocketReachable(profile.SocketPath)
 	}
 
+	// Gathered ONCE and threaded through the header, the substrate line and the
+	// supervision line below. The ownership half shells out to launchctl on an
+	// unattended host, so gathering it per-consumer would probe the same job
+	// three times for one command.
+	supervision, ownership := daemonSupervisionInputs()
+
 	switch {
+	case daemonUnattendedSubstrateOwnsVerdict(supervision):
+		// BOS-1204 AC1. `st.Installed` is the per-user LaunchAgent, which an
+		// unattended install deliberately supersedes, so on this substrate it
+		// is false on a perfectly healthy host and the ladder below would print
+		// "Daemon is not installed." with an install remedy the operator has
+		// already carried out.
+		//
+		// The header therefore states LIVENESS and defers the detail: the
+		// `configured supervision substrate` line two lines down already names
+		// the watchdog plist and already FAILs on an insecure one, so there is
+		// nothing for a second copy here to add.
+		switch {
+		case socketKnown && socketReachable:
+			fmt.Println("Daemon is running.")
+		case socketKnown:
+			fmt.Println("Daemon is not serving: the unattended supervision watchdog is installed, but the daemon's socket is unreachable.")
+			fmt.Println("  Run 'boss daemon doctor' to diagnose.")
+		default:
+			fmt.Println("The unattended supervision watchdog is installed, but the daemon's socket could not be probed, so whether it is serving is unknown.")
+			fmt.Println("  Run 'boss daemon doctor' to diagnose.")
+		}
 	case !st.Installed:
 		fmt.Println("Daemon is not installed.")
 		fmt.Println("  Run 'boss daemon install' to set up the daemon.")
@@ -2748,7 +2775,7 @@ func runDaemonStatus(_ *cobra.Command) error {
 	// ownership observation, not a configuration. The wording comes from
 	// describeDaemonSupervisionMode, the single decision `boss daemon doctor`
 	// renders too, so the two surfaces cannot name different modes.
-	modeDescription, _ := describeDaemonSupervisionMode(daemon.LoadSupervisionModeStatus())
+	modeDescription, _ := describeDaemonSupervisionMode(supervision)
 	fmt.Printf("  configured supervision substrate: %s\n", modeDescription)
 	if profileErr == nil {
 		fmt.Printf("  settings: %s\n", profile.SettingsPath)
@@ -2765,7 +2792,7 @@ func runDaemonStatus(_ *cobra.Command) error {
 			// two lines above look identical for a supervised daemon and for
 			// one spawned detached. BOS-1183: the classification below is the
 			// only thing that tells them apart on this surface.
-			fmt.Printf("  %s\n", daemonSupervisionLine(st, metadata.PID))
+			fmt.Printf("  %s\n", daemonSupervisionLine(st, metadata.PID, supervision, ownership))
 			// The staged file being current does not mean the live process is
 			// running those bytes (BOS-864). Keep the two facts distinct here
 			// too, so status and doctor can never disagree.
@@ -2804,7 +2831,12 @@ func printDaemonStatusPID(st *daemon.Status) {
 // unknown by doctor, because doctor has a separate not-installed check with its
 // own remedy and would otherwise print two failures for one fact, whereas here
 // the "Daemon is not installed." header three lines up already says why.
-func daemonSupervisionLine(st *daemon.Status, recordedPID int) string {
+func daemonSupervisionLine(
+	st *daemon.Status,
+	recordedPID int,
+	supervision daemon.SupervisionModeStatus,
+	ownership daemon.WatchdogOwnership,
+) string {
 	// Checked BEFORE the service view is read, exactly as doctor does. Under
 	// this env var platformGetStatus returns Installed=true, Running=false
 	// without asking launchd or systemd at all — byte-identical to the
@@ -2830,7 +2862,7 @@ func daemonSupervisionLine(st *daemon.Status, recordedPID int) string {
 		return fmt.Sprintf("supervision: unknown (recorded PID %d is not running)", recordedPID)
 	}
 
-	_, reason := daemonSupervisionOfLiveRecord(st, recordedPID)
+	_, reason := daemonSupervisionOfLiveRecord(st, recordedPID, supervision, ownership)
 	switch reason {
 	case daemonSupervisionReasonDetached:
 		return fmt.Sprintf(
@@ -2846,6 +2878,27 @@ func daemonSupervisionLine(st *daemon.Status, recordedPID int) string {
 			recordedPID)
 	case daemonSupervisionReasonManagerOwned:
 		return fmt.Sprintf("supervision: supervised (the service manager owns PID %d)", recordedPID)
+	case daemonSupervisionReasonWatchdogOwned:
+		// BOS-1204 R7: this is NOT the line above with a different noun. It
+		// names the two-step chain because the chain is what an operator has to
+		// know to debug it — `launchctl print gui/<uid>/com.bossanova.bossd`
+		// finds nothing on this host, deliberately, and someone told only
+		// "supervised" would read that as the fault.
+		return fmt.Sprintf(
+			"supervision: supervised (launchd owns the root-owned %s LaunchDaemon and that watchdog spawns bossd through 'launchctl asuser', so PID %d is a grandchild of launchd rather than a launchd job of its own)",
+			daemon.WatchdogLabel, recordedPID)
+	case daemonSupervisionReasonWatchdogNotLoaded:
+		return fmt.Sprintf(
+			"supervision: unsupervised (the %s watchdog is installed at %s but launchd does not have %s loaded, so nothing will restart the recorded daemon PID %d)",
+			supervision.Mode, supervision.Unattended.PlistPath, ownership.Target, recordedPID)
+	case daemonSupervisionReasonWatchdogUnreadable:
+		return fmt.Sprintf(
+			"supervision: unknown (the %s watchdog is installed, but whether launchd has %s loaded could not be established: %s)",
+			supervision.Mode, daemon.WatchdogTarget(), watchdogOwnershipReason(ownership))
+	case daemonSupervisionReasonWatchdogInsecure:
+		return fmt.Sprintf(
+			"supervision: unknown (the %s watchdog is installed but not safe for a root-owned job, so its ownership of PID %d cannot be relied on — the 'configured supervision substrate' line above names the offending path)",
+			supervision.Mode, recordedPID)
 	default:
 		return fmt.Sprintf("supervision: unknown (the service manager's view of PID %d could not be attributed)", recordedPID)
 	}

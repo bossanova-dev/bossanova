@@ -26,6 +26,11 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
     'bs-review-caps.mjs',
+    // gate-outcome.mjs (BOS-1209) is imported directly by bs-review-caps.mjs, whose three
+    // admission verbs record one outcome line per review round. An installed toolbox has no
+    // repo-root skills-toolbox/ to reach back into, so without this the vendored copy fails to
+    // resolve its `./gate-outcome.mjs` import and the caps helper stops loading entirely.
+    'gate-outcome.mjs',
     'bs-review-ledger.mjs',
     'bs-review-triage.mjs',
     'bs-review-report.mjs',
@@ -45,6 +50,9 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'worktree-lock.sh',
     'bs-review-caps.mjs',
+    // See boss-review: bs-review-caps.mjs imports gate-outcome.mjs (BOS-1209) for its per-round
+    // admission outcomes, and an installed core cannot reach into another core's toolbox copy.
+    'gate-outcome.mjs',
     'bs-review-ledger.mjs',
     'bs-review-report.mjs',
     // BOS-1020: the Step 6 review loop re-checks base drift at every round boundary, so the
@@ -93,6 +101,10 @@ export const VENDOR_MAP = {
     'finalize/route-contract.mjs',
     'skill-extensions.mjs',
     'pr-ownership.mjs',
+    // pr-check-state.mjs is the single agent-callable check-state verdict the finalize and
+    // callback-watch references cite by path. Those steps run in user repos with no repo-root
+    // skills-toolbox/ and cannot reach into another core's copy, so it must be co-located here.
+    'pr-check-state.mjs',
     'remove-bossd-stop-hooks.mjs',
     'cron-gates/boss-build.mjs',
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
@@ -149,6 +161,10 @@ export const VENDOR_MAP = {
     'callback/adapter.mjs',
     'callback/boss.mjs',
     'callback/epic-target.mjs',
+    // See boss-build: the reconcile step in this core's own callback-watches reference cites the
+    // check-state verdict by path, so the helper ships in this core's toolbox too — an installed
+    // core cannot reach into boss-build's copy, which may not be installed at all.
+    'pr-check-state.mjs',
     'bossd-present.mjs',
     // See boss-build above: adapter.mjs's boss-binary dependency ships with every
     // copy of the adapter or the vendored copy fails to resolve its import.
@@ -198,7 +214,29 @@ export const VENDOR_MAP = {
     // plan-image-guard.mjs, main-module.mjs) are already vendored for this skill.
     'plan-writeback-verify.mjs',
     'plan-run-guards.mjs',
+    // gate-outcome.mjs (BOS-1209) is imported directly by all four plan guards vendored above, each
+    // of which records one outcome line per planning-run invocation. It must be co-located or those
+    // four helpers cannot resolve `./gate-outcome.mjs` in an installed tree — a gate that cannot
+    // LOAD rather than a gate that fails.
+    'gate-outcome.mjs',
     'plan-deps-lib.mjs',
+    // BOS-1198: Phase 4's description save runs through the tracker seam's
+    // `write-description` verb, so boss-plan becomes a CONSUMING core of the tracker
+    // modules rather than only naming their operations in prose. An installed boss-plan
+    // cannot reach into boss-build's or boss-epic's copy — either may not be installed at
+    // all — so the whole import closure ships here: tracker/cli.mjs imports
+    // tracker/adapter.mjs, which imports tracker/linear.mjs and tracker/adapter-core.mjs,
+    // and linear.mjs pulls linear-gate-lib (which linear-deps-lib also imports),
+    // linear-deps-lib, linear-claim and bs-epic-lib. main-module.mjs, skill-config.mjs and
+    // dag-scheduler.mjs are already vendored above for other callers.
+    'tracker/adapter-core.mjs',
+    'tracker/adapter.mjs',
+    'tracker/linear.mjs',
+    'tracker/cli.mjs',
+    'linear-gate-lib.mjs',
+    'linear-deps-lib.mjs',
+    'linear-claim.mjs',
+    'bs-epic-lib.mjs',
     // plan-scratch-paths.mjs (BOS-1193) is the canonical scratch contract the payload's
     // path citations and its Phase 5 cleanup both read: the scratch root, this run's
     // `run-<RUN-ID>/` directory, and the declared name of every artifact a run writes.
@@ -227,6 +265,14 @@ export const VENDOR_MAP = {
     // the repair-dispatch prose cites; it imports the sentinel and scheduler.
     'bs-dispatch-await.mjs',
     'bs-run-sentinel.mjs',
+    // BOS-1194: bs-repair-escalation.mjs is the escalation ladder for a residual that re-fires
+    // across rounds. The residual routing sites in the body invoke it by path, so it must resolve
+    // inside an INSTALLED boss-repair toolbox — a consuming repo has no repo-root skills-toolbox/
+    // to reach back into, and the existing review-side triage module is vendored to boss-review
+    // alone, so hosting the ladder there would leave it unreachable from repair. It imports
+    // bs-run-sentinel.mjs (for the shipped terminal vocabulary its terminal rung reuses) and
+    // main-module.mjs, both already vendored here.
+    'bs-repair-escalation.mjs',
     'dag-scheduler.mjs',
     'skill-extensions.mjs',
     // skill-config.mjs exposes notesSampleRate, which the post-terminal notes phase reads to
@@ -238,6 +284,10 @@ export const VENDOR_MAP = {
     // Preflight drift probe used only when no boss CLI is available for the
     // fail-closed `boss skills check --gate` path.
     'toolbox-drift.mjs',
+    // pr-check-state.mjs decides both of this core's check reads — the post-push poll and the
+    // Watch Mode interpretation step — which previously restated their own bucket-only rule in
+    // prose. Both run in a user repo with no repo-root skills-toolbox/, so the verdict ships here.
+    'pr-check-state.mjs',
     // BOS-1106: the Phase-3 monitoring loop waits on pending checks. That wait is
     // callback-first — arm the one-shot watches when callbacksAvailable(env) is true and
     // fall back to a bounded poll when it is not — so the callback seam and its transitive
@@ -265,6 +315,10 @@ export const VENDOR_MAP = {
     // has no repo-root skills-toolbox/ to reach back into. It imports main-module.mjs,
     // already vendored here.
     'commit-work-predicate.mjs',
+    // pr-check-state.mjs backs the readiness requirement and the failure-triage step, which used to
+    // decide green from the bucket payload alone. Same co-location reason as the other cores: an
+    // installed boss-finalize has no repo-root skills-toolbox/ to reach back into.
+    'pr-check-state.mjs',
   ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],

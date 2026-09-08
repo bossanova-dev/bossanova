@@ -356,6 +356,18 @@ Read that blanket instruction against its own condition before routing on it. A 
 
 A dispatch stays on the orchestrator's model (Opus): conflict resolution, failing-check code fixes, and review-feedback reasoning are all judgment, so no cheaper `model:` override is applied. The subagent keeps the bulk material (diffs, CI logs, `gh run view` output, review threads) inside its own context; only the summary returns to the orchestrator, which stays thin. This is orchestration framing only: Strategy A/B/C below are unchanged and are exactly what runs, dispatched or inline. A dispatch is awaited (**never** `run_in_background`) through this core's vendored `toolbox/bs-dispatch-await.mjs` completion oracle, and its failure is a tool error, not a repair failure — it routes to the inline branch above and must never turn a would-be clean exit into a nonzero one.
 
+**What the dispatch brief must carry.** A dispatched worker does not inherit this body — it inherits
+the brief, and a rule the orchestrator has read is not a rule the child has read. So state the
+scope-limiting rules **in the brief itself**, in the brief's own words rather than as a pointer back
+here. The one that costs the most when it is omitted is the **residual-versus-repair rule**: a cause
+confirmed to be present on the PR's base is an inherited failure and therefore a **residual** — it is
+out of scope for this PR, and the worker reports it rather than fixing it. Omitting that rule does
+not produce a worker who fails; it produces one who diagnoses correctly, verifies a real fix, and has
+the whole change reverted afterwards because the fix was never in scope, with every hour of
+fix-and-verify effort wasted and a less careful run shipping the out-of-scope change. Asserting that
+the caller knows a rule proves nothing about the child, so bind the obligation into the dispatched
+invocation.
+
 **Gate summaries are quoted, not restated.** When a strategy claims it ran a gate, its short summary
 must include the gate runner's **authoritative completion evidence** plus the **verbatim final
 summary line** as printed — the test runner's own summary line, the linter's own summary line, or
@@ -501,12 +513,14 @@ arm, and report a clean survival for a round whose commit had in fact been repla
 BRANCH=$(git branch --show-current) || exit 1
 [ -n "$BRANCH" ] || exit 1
 git fetch origin "$BRANCH" || exit 1
-# Re-hydrated from your notes: every SHA this round sent, one per pass that pushed, oldest first.
-SENT_SHAS="<paste the SHAs your notes recorded, space-separated; empty if this round sent none>"
+# Re-hydrated from your notes: every SHA this round sent, ONE PER LINE, oldest first.
+# Spaces and tabs are tolerated too — the `tr` below normalises them to newlines.
+SENT_SHAS="<paste the SHAs your notes recorded, one per line; empty if this round sent none>"
 if [ -z "$SENT_SHAS" ]; then
   echo "this round sent nothing — nothing of this run's to verify (a commit withheld by the stale-SHA cancellation is reported as built but unpushed, not as a survival failure)"
 else
-  for SENT_SHA in $SENT_SHAS; do
+  printf '%s\n' "$SENT_SHAS" | tr ' \t' '\n\n' | while IFS= read -r SENT_SHA; do
+    [ -n "$SENT_SHA" ] || continue
     if git merge-base --is-ancestor "$SENT_SHA" "origin/$BRANCH"; then
       echo "this run's commit is still on the branch ($SENT_SHA)"
     else
@@ -516,10 +530,28 @@ else
 fi
 ```
 
+**Paste the SHAs one per line, and iterate them with `read`, not with `for … in $SENT_SHAS`.** The
+delimiter is the whole correctness of this check. Shells disagree about splitting an unquoted
+parameter expansion — bash splits it into words, zsh with default options does not — so a
+space-separated list read by a bare `for` arrives at `git merge-base --is-ancestor` as **one
+argument** under zsh. Measured: that fails with `fatal: Not a valid object name`, the `else` arm
+fires, and the block reports a **fabricated** `RESIDUAL` for commits that are in fact fine. Reading
+one line at a time iterates the same items under either shell.
+
+The paste is the one input in this block with **no machine producer**, so the reader does not trust
+it to arrive newline-delimited. The `tr ' \t' '\n\n'` stage normalises spaces and tabs to newlines
+before `read` ever sees them. Measured with `SENT_SHAS="deadbeef cafebabe"`: without that stage the
+loop runs **once** with `deadbeef cafebabe` as a single value under **both** bash and zsh — the
+expansion is quoted, so this one is not a zsh-only divergence — and `git merge-base --is-ancestor`
+is handed the whole string, reproducing exactly the fabricated `RESIDUAL` this form exists to
+prevent. With the stage it runs twice, `deadbeef` then `cafebabe`, under both shells. One per line
+is still the form to paste; whitespace-separated is simply no longer a wrong answer.
+
 Every substitution is checked, and both empty operands are handled rather than left to fall through:
 `git branch --show-current` exits **zero with empty output** on a detached HEAD, so `|| exit 1` alone
-does not catch it, and an empty `SENT_SHAS` would run the `for` **zero times** — printing nothing at
-all, which reads downstream as "no residual found" rather than as "nothing was checked". The explicit
+does not catch it, and an empty `SENT_SHAS` would run the loop body **zero times** — the `[ -n ]`
+guard discards the single blank line `printf` emits for an empty value — printing nothing at all,
+which reads downstream as "no residual found" rather than as "nothing was checked". The explicit
 `[ -z ]` arm is what makes a round that pushed nothing say so out loud.
 
 **Every** entry is checked and reported, not just the newest. Stopping at the first survivor would
@@ -605,16 +637,44 @@ newer commit.** Report it as a **residual** naming both SHAs, and do not claim t
    guard finds no merge-commit amendments. `--rebase-merges` would preserve that
    shape, but it recreates the merge commits the invariant forbids — so when the
    guard trips, lift those amendments out of the merge and re-run the plain
-   rebase; never resolve it with a new merge:
+   rebase; never resolve it with a new merge.
+
+   This block is a **separate tool call from the guard above, so it inherits none of its
+   variables** — `MERGE_AMENDMENTS` and `BASE_BRANCH` are both empty here unless re-hydrated. Paste
+   the SHAs the guard printed, the same way [Phase 2](#phase-2-execute-repair-strategy) re-hydrates
+   `SENT_SHAS`, and re-read the base branch — and when that read comes back empty, take the
+   [REST substitutions](#graphql-exhaustion-rest-substitutions-and-degraded-reads) row for the base
+   ref before concluding there is no base. The `[ -n "$AMEND_LIST" ]` guard is what stops the
+   block: capturing nothing and then rebasing anyway would flatten the very merge whose
+   conflict-resolution edits this capture exists to save, and it would do it silently.
 
    ```bash
-   for merge_commit in $MERGE_AMENDMENTS; do
+   # Re-hydrated from the guard's output: the merge SHAs it printed, ONE PER LINE (spaces and tabs
+   # are tolerated — the `tr` below normalises them). This block inherits nothing from the guard.
+   MERGE_AMENDMENTS="<paste the merge SHAs the guard printed, one per line>"
+   BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
+   test -n "$BASE_BRANCH" || { echo "No base branch; re-run the base-branch resolution above"; exit 1; }
+   # One commit per line, read one line at a time: a bare `for … in $MERGE_AMENDMENTS` would iterate
+   # ONCE under zsh, which does not word-split an unquoted parameter expansion, and write every
+   # amendment into a single patch file named after the whole list.
+   AMEND_LIST=$(printf '%s\n' "$MERGE_AMENDMENTS" | tr ' \t' '\n\n' | grep -E '^[0-9a-fA-F]{7,40}$')
+   # Fail CLOSED: an unpasted placeholder, an empty value, or a value that survived from nowhere all
+   # arrive here as an empty list, and the rebase below would then flatten the merge having saved
+   # nothing at all.
+   test -n "$AMEND_LIST" || { echo "No amendment SHAs re-hydrated; do NOT rebase"; exit 1; }
+   printf '%s\n' "$AMEND_LIST" | while IFS= read -r merge_commit; do
+     [ -n "$merge_commit" ] || continue
      git show --remerge-diff --format= "$merge_commit" > "/tmp/amend-$merge_commit.patch"
    done
    git rebase "origin/$BASE_BRANCH"          # flattens; the amendments are now saved off-branch
    git apply "/tmp/amend-<sha>.patch"        # re-apply each captured amendment, oldest first
    git add -A && git commit -m "fix: re-apply conflict resolution from flattened merge"
    ```
+
+   Confirm each `/tmp/amend-<sha>.patch` exists before trusting the rebase: the capture loop runs in
+   a pipeline, and the two shells disagree about whether that body's assignments survive it, so a
+   counter incremented inside it is not evidence either way. The list guard above is, because it is
+   checked before the pipeline starts.
 
    If an amendment does not re-apply cleanly, stop and escalate per
    [Complex Conflicts](#complex-conflicts) rather than merging the base in.
@@ -846,11 +906,12 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    passed. Advisory is not ignored: a bot finding that names a real defect is still fixed — advisory
    means it does not mechanically open a fix cycle, not that the finding is dropped. Human
    changes-requested threads and red CI are unchanged: they triage and repair exactly as below. Read
-   CI from `gh pr checks` — a PR that flips to `UNSTABLE` after being readied is not red CI. The
+   CI through the `pr-check-state.mjs` verdict — a PR that flips to `UNSTABLE` after being readied
+   classifies as pending (`advisory-unsettled`), not red CI. The
    shortcut is verdict-gated: only a verdict positively recorded as `clean` unlocks it; `capped`,
    `none`, or an absent record means bot feedback is triaged exactly as today.
 
-   For each thread, triage into one of four categories. The triage turns on two axes, in this order: the **premise** — is the finding factually true against the tree? — and then the **remedy** — must the suggested change be applied as written? A true premise does **not** by itself license implementing the suggestion, and grading only the premise is what leaves a correct finding with an unbuildable remedy homeless.
+   For each thread, triage into one of four categories. The triage turns on two axes, in this order: the **premise** — is each factual claim the finding makes true against the tree, graded one premise at a time — and then the **remedy** — must each separable part of the suggested change be applied as written? A true premise does **not** by itself license implementing the suggestion, and grading only the premise is what leaves a correct finding with an unbuildable remedy homeless. Both axes decompose because a whole-finding verdict is either a wrong accept or a wrong reject the moment the parts disagree: a finding's premises are its distinct factual claims, each link of any causal chain it asserts, and each separable part of the remedy it proposes.
 
    **a) Actionable — fix it:**
    - Read the relevant code/files
@@ -910,6 +971,8 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    **b) Premise does not hold — decline and resolve:**
    The finding is by design, stale (references old code), a low-priority style suggestion, or already satisfied in the tree. For these:
    - An **already fixed** decline must cite the **file and line** in the current tree that satisfies the finding. A commit hash, a commit subject line, or "fixed in a later commit" is **not** sufficient: a subject states intent and names its scope loosely, so a commit reference alone cannot close a thread, and settling the decline against one can resolve a thread over a live bug.
+   - Decline per premise, not per finding: a finding whose premises split — some refuted, some holding — is not a category (b) thread at all, and declining it wholesale discards the claims that held.
+   - **Repair the prose that asserted the refuted premise.** When a premise is refuted because in-tree prose asserted it, the decline is not complete until that prose is corrected in the same pass. The sentence that made the reviewer's reading reasonable is what re-seeds the identical finding next pass, so declining the thread while leaving it standing ships a contradiction and guarantees a repeat. This is scoped to the sentence that asserted the premise — a comment, a doc line, a rationale paragraph — not to a general sweep.
    - Add a reply comment explaining why it won't be fixed:
      First create and print a temporary path, then write the reply to that exact printed path with
      the agent's file-editing tool:
@@ -958,6 +1021,8 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    2. the suggested change sits in the **wrong layer** and would not achieve what it claims;
    3. the remedy is **feature-sized** — several steps across several modules — and is not actionable within a repair pass.
 
+   Grade each separable part of the remedy on its own feasibility: affirm the parts that hold, decline the parts that cannot be applied as written, and record a residual for each declined part separately. A remedy offering two branches is graded on which branch closes the defect class, never on which is the smaller diff — the cheaper branch is regularly the non-convergent one, and taking it converts a missing fix into a false guarantee the next round raises as a must-fix.
+
    The reply must do three things: **affirm the defect is real**, state precisely why the suggested change is not being applied, and **record a residual or follow-up instead of implementing it**. Post it through the same reply path as (b) — the same temporary-path block, the same submission block — then resolve the thread the same way. A reply that declines without affirming the defect is category (b) wrongly applied, and one that affirms without recording the residual loses the finding entirely.
 
    **d) Unclear — ask for clarification:**
@@ -992,9 +1057,10 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 
    **Required verifications before you reply.** Each costs a grep or two, and each is a required step, not a guideline. Run the ones that apply before the triage above is final, and state the result in the reply:
 
+   - **Decompose the finding into its premises before any verdict, record a verdict and its evidence for each, and never act while one is unverified.** A premise is a distinct factual claim about the tree, a link of a causal chain, or a separable part of the remedy. The verdict vocabulary is `held`, `refuted`, `unverified`; evidence is the source substring read or the command run and its result, never a bare line number. An absent, unreadable, or out-of-vocabulary record is `unverified`, and a status, a severity, a `Done` upstream ticket, a bot's confidence, a `capped` review verdict, or a prior round's justification prose is never evidence that a premise holds — neither is the assertion of an in-tree contract nobody consumes, so grep for a cited registry's readers before accepting that it binds anything. The gate is the same for all three verbs: no premise may be `unverified` when the remedy is applied, declined, or published. The bullet below is the chain-shaped special case of this rule.
    - **Verify each link of a multi-step causal claim separately.** When a finding asserts a chain — this call does X, so Y follows, therefore Z is broken — check each link independently against the code instead of grading the comment as a whole. The reply must state which links held and which were restated or corrected. Answering wholesale goes wrong in both directions: a blanket accept commits the run to a false statement in the PR record, and a blanket reject discards the real defect the chain was built around.
    - **Settle a flagged documentation claim against the adjacent code comment and the nearest test.** When a finding says a documented claim is wrong, read the code comment beside the implementation — and the package doc comment — and the **name** of the nearest test before re-deriving the behaviour from the implementation or treating it as a code defect. When those two agree with each other and contradict the doc, the fix is prose-only and **no code change is in scope** — this is what stops a round "fixing" behaviour that was already correct.
-   - **Run a sibling-class sweep before writing the fix.** Once you understand the finding's mechanism, search the repository for that mechanism before editing the cited site. Enumerate every site the search returns and record a verdict for each one: `fixed in this pass`, or `not a defect` with the reason; a one-row result is a complete discharge when the search finds only the cited site. The class is never fixed wholesale on the strength of the search alone: a predicate guarded by an error check can have many correct matches that render an error banner while the affected view remains interactive, and one defective match whose error branch replaces the view and swallows input; the discriminator is where the branch lives, not whether the pattern matched. The same sweep covers same-site siblings too: when one message drives both an observer and view state, relocating only the observer can leave the view half of the defect behind. Put the verdict table in the PR body or Repair Summary so the enumeration is reviewable.
+   - **Run a sibling-class sweep before writing the fix.** Once you understand the finding's mechanism, search the repository for that mechanism before editing the cited site. Enumerate every site the search returns and record a verdict for each one: `fixed in this pass`, or `not a defect` with the reason; a one-row result is a complete discharge when the search finds only the cited site. The class is never fixed wholesale on the strength of the search alone: a predicate guarded by an error check can have many correct matches that render an error banner while the affected view remains interactive, and one defective match whose error branch replaces the view and swallows input; the discriminator is where the branch lives, not whether the pattern matched. The same sweep covers same-site siblings too: when one message drives both an observer and view state, relocating only the observer can leave the view half of the defect behind. **Each verdict answers the question the fix in hand raises, not the question that prompted the finding, and names the symbol it reasoned about rather than the file it lives in.** A sweep can examine exactly the right site and still clear it, because it re-answered the prompting thread's question: the site was right, the recorded reason was about something else, and the defect stayed standing. Naming only the file is the same failure one level up — clearing a file because a whitelist inside one function is correct says nothing about the different function in that same file the finding actually implicates, so a verdict that cannot name its symbol has not been reached. **Report each sibling's failure kind, not only the count.** A sweep can change a finding's kind rather than its count, because siblings can fail more quietly than the reported site: a reviewer cites one call site whose failure is visible, the sweep finds many, and the most serious of them surface no error at all — they continue past the failing call and leave the affected surface permanently blank. Record the kind beside every verdict and say so explicitly when a sibling's kind differs from the reported site's, because a silently-degrading sibling is the one nobody goes back for. Put the verdict table in the PR body or Repair Summary so the enumeration is reviewable.
    - **Find the sibling constant before designing a tunable-constant fix.** Before implementing a timeout, deadline, retry count, limit, or any other tunable constant in response to an open-ended suggestion, grep the containing package for sibling constants and follow the naming and test-seam shape already established there. An open-ended suggestion invites an invented mechanism; a sibling turns the fix into a mechanical, reviewable change with a ready-made test shape.
    - **Grep upstream before treating a skill-prose finding as single-site.** Before accepting that a finding quoting one line of skill prose is fixable at that line, grep the quoted remedy across the whole skills tree **and** the contract docs those skills are copied from. Treat the cited line as the symptom and fix the upstream contract passage in the same commit — it costs one grep, and a quoted-line-only fix leaves the contract re-seeding the identical prose into the next skill copied from it.
    - **Sweep the rationale, not only the restatements.** When the fix edits a prose contract rule, re-read the passages around it before you reply and correct any that cite the **old** rule as their **reason**, not only the ones that restate it. A restatement is greppable and a rationale is not, so the half that rots is the half no grep hands you — a fix scoped to the flagged sentence ships a contradiction one paragraph away.
@@ -1024,6 +1090,16 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      4. **Require red for the right reason** and require the failure to name the property. A compile
         or harness error is not evidence that the gate detected the mutation.
      5. **Restore exactly, then prove the restore** and re-run the gate green.
+   - **A fix that tightens a guard states what the guard now rejects, and covers that.** The
+     checklist above proves a guard still catches what it should; a tightening carries the opposite
+     risk, and it is the side nobody tests. When a fix narrows a guard, gate, or predicate, write
+     down the inputs the narrowed form newly **rejects**, confirm each one deserves rejection, and
+     add coverage for the boundary that moved — not only for the case that still passes. A round
+     that tests a tightening solely on what it still admits ships the over-rejection undetected: an
+     arm added to reject a non-positive value also rejected the zero-padded positive values the
+     surrounding helper accepts, the round that wrote it saw green, and the next review round paid
+     for the regression. Loosening and tightening are not the same review, so do not reuse one
+     argument for both.
    - **When the diff touches markdown, read the rendered hunk before you commit** — including a
      hunk a dispatched worker handed back, because delegating the edit does not delegate this.
      Prettier's default `proseWrap: preserve` does not reflow prose, so a hand-split or inserted
@@ -1120,15 +1196,38 @@ After applying the repair:
    origin is **expected** there and is reported as that cancellation, not pushed — this check must
    read it the same way the clean-tree check does.
 
-3. Poll the remote PR state, then report the final PR state (default mode performs one post-push poll; in Watch Mode you loop per the [Watch Mode](#watch-mode) section):
+3. Poll the remote PR state, then report the final PR state (default mode performs one post-push poll; in Watch Mode you loop per the [Watch Mode](#watch-mode) section). Decide the check state through the shared classifier — this body states no green-or-red rule of its own:
 
    ```bash
-   gh pr checks --json bucket
+   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   CHECK_DIR="$(mktemp -d)"
+   HEAD_SHA="$(gh pr view --json headRefOid -q .headRefOid)"
+   gh pr checks --json name,state,bucket > "$CHECK_DIR/checks.json"
+   gh api "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate --slurp > "$CHECK_DIR/runs.json"
+   node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify \
+     --head-sha "$HEAD_SHA" --observed-sha "$HEAD_SHA" \
+     --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json" \
+     --prior "$CHECK_DIR/prior-contexts.json"
    BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
    if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
    node "$BOSS_REPAIR_PROBE"
    gh pr view --json mergeable -q .mergeable
    ```
+
+   **Read the classifier's `state` and `reason`, never the buckets directly.** The bucket payload
+   cannot separate a gate that ran and passed from one that never attached, which is why the
+   SHA-keyed check-runs read is passed alongside it. `green` is the only pass, and only
+   `provesGreen: true` is evidence the head actually cleared its gates. `failing` opens a repair
+   cycle. `pending` never does — including reason `absent-gate`, which says a named gate the prior
+   head carried is missing from this one, so waiting on it never resolves and the missing gate is
+   reported rather than waited on. `unknown` (`unreadable`, `unclassified`, `stale-sha`,
+   `no-gate-ran`) is neither green nor red: report it as unobserved.
+
+   Write the pre-push head's context names to `$CHECK_DIR/prior-contexts.json` — a bare JSON array
+   of names is enough — before pushing. Without that file the verdict reports `priorKnown: false`
+   and `provesGreen: false`, which is the honest reading: a path-filtered push shrinks the check
+   set, so the head set alone may simply be too small to prove anything.
 
    `gh pr checks` and `gh pr view --json mergeable` are both GraphQL-backed. A blocked read here is
    **not** "no failing checks" and **not** "not `CONFLICTING`" — take the
@@ -1178,8 +1277,11 @@ Provide a concise summary:
 **Root causes**:
 - [Cause count and `cause -> checks it explains` table for failing-check triage | none]
 
+**Repeating strategy**:
+- [The strategy and primary file this pass repeated from the previous pass, with the consecutive-pass count | none]
+
 **Residuals**:
-- [What this pass could not resolve and why the round stopped short | none]
+- [What this pass could not resolve and why the round stopped short, each carrying its identity key, its ladder rung, and how many earlier rounds reported that key | none]
 ```
 
 ---
@@ -1268,6 +1370,93 @@ document already names: a
 manual `/boss-repair watch` run owns its own bounded loop and is not driven by the daemon loop's
 retry schedule, per [Watch Mode](#watch-mode). The residual-versus-true-stop rule still decides how
 that loop exits.
+
+### Escalating a residual that re-fires
+
+A residual nobody acts on comes back byte-identically on the next round. Re-reporting it unchanged
+consumes a repair attempt and changes nothing, while the condition keeps blocking. So before you
+write a residual into the Repair Summary, ask the ladder what rung it is on. **Do not re-decide an
+escalation in prose:** the rung is the module's answer, and a round that reasons its way to a
+different one has replaced a tested decision with an untested one.
+
+The identity is the `[file, line, title]` tuple the review-side oscillation guard already keys on, so
+"the same thing again" means the same thing in review and in repair — the helper mirrors that guard's
+encoding down to the string `"null"` it gives a line-less finding. It additionally trims the file and
+title, which the guard does **not**: that is a repair-side normalisation for a hand-typed tuple, not
+part of the shared encoding, so for a file or title carrying stray whitespace the two keys still
+differ — and where the guard would key a whitespace-only file, the helper refuses it. Type the tuple
+exactly as the finding names it; the two agree only where the finding's own file and title carry no
+leading or trailing whitespace. `<prior>` is how many **earlier**
+rounds reported that identity — zero on a first sighting. `<actionable>` is `true` only when a
+**different** strategy from the one already applied to this identity is available and you can name
+it; when the only move left is the strategy that already ran, it is `false`.
+
+**`<prior>` comes from the record, never from memory.** No pass inherits the previous pass's
+material, so a round that does not read the record has exactly one defensible answer — `0` — and a
+ladder every round enters at rung 0 is the pre-ladder behaviour with extra steps. Read the residual
+entries the record carries and count the entries whose identity **key string** equals this one. That
+count is `<prior>`. When no prior record is readable at all, `<prior>` is `0` and rung 0 is the
+honest answer — say so in the residual line rather than inventing a count.
+
+**The record is the watch-mode note record, and there is no other one.** Its entries are the
+pass-number-keyed ones [Watch Mode](#watch-mode) step 1 writes, and they carry across passes because
+that whole loop is a single session. **Outside watch mode nothing carries.** Default mode is one pass
+per invocation, each a fresh session inheriting none of the previous pass's material, and this body
+instructs no pass to persist its Repair Summary anywhere a later round could read it — printing a
+summary into a transcript is not writing a record. So in default mode `<prior>` is `0` and the round
+enters at rung 0, every time. That is a stated limit on where the ladder accumulates, not a gap to
+paper over: do **not** answer from a remembered count, and do **not** invent a prior sighting from a
+PR comment — the comments this body does instruct are prose notices for a human, carrying no
+identity key and no count to read. A residual that keeps re-firing across default-mode
+invocations is reported at rung 0 each time — say so plainly in the residual line, because an honest
+`0` is what makes the missing carrier visible to whoever can build one.
+
+**Reuse the recorded key string; do not re-derive a tuple from the moved file.** The count survives
+only while the key does, and the line number does not survive an ordinary repair round: a fix that
+inserts lines above the residual re-derives a different `line`, the lookup misses, and a fourth
+sighting reads as a first one. Once you recognise a residual the record already names, copy that
+entry's key verbatim instead of re-typing a tuple from the current file.
+
+**Write the identity to a file and pass the path.** A finding title is arbitrary English prose: an
+apostrophe in it ends a single-quoted shell argument early, and a double quote makes the JSON
+unparseable — so a title spliced into a literal breaks the command roughly whenever the title
+contains ordinary punctuation. Write the tuple with your file tool and pass `--in`, exactly as the
+check-state helper takes its input by path:
+
+```bash
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+# Write ["<file>", <line-or-null>, "<title>"] with your file tool first, then substitute that
+# file's path for <residual-json-path> below. It is a placeholder you fill in, exactly like
+# <prior> and <actionable> — NOT a variable this block sets. A shell variable would be the one
+# shape that fails silently: no shell state survives between the tool calls a pass is made of,
+# so it would expand to the empty string and every classify would exit non-zero on an
+# unreadable path, printing no rung at all.
+node "$BOSS_REPAIR_TOOLBOX/bs-repair-escalation.mjs" classify \
+  --in "<residual-json-path>" <prior> <actionable>
+```
+
+Route on the printed `rung` and `action`, never on the prose you would have written instead:
+
+| `rung` | `action`            | what this round does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------ | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`    | `report`            | Report the residual the ordinary way. Nothing has re-fired.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `1`    | `report-repeating`  | Report it **and mark it repeating**, so the next round reads a repeat rather than re-deriving one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `2`    | `escalate-strategy` | Do not re-run the strategy that already failed twice; change strategy for this residual, and say which one you moved to.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `3`    | `blocked`           | Nothing this pass can do. Report it for a human, using the established `blocked` token. This is a **residual-level** label written into the Repair Summary. Its spelling is deliberately the shipped terminal token, imported rather than retyped so a caller that classifies a repair outcome already understands it — what is residual-level is the label's **scope**, not a second spelling. So do not write it into the Watch Mode reason line or the run sentinel on account of this rung: the pass still exits zero and still writes its own terminal token unless it was a true stop for its own reasons. |
+
+Rung 3 is reached two ways, and the printed `reason` says which: this pass declaring it has no action
+left, and the ladder's own **ceiling** overriding a pass that keeps claiming it has one. `<actionable>`
+is your claim and the module cannot check it, so the ceiling is what stops a residual re-firing
+forever on an optimistic answer. Both spellings of rung 3 are the same residual-level label.
+
+A malformed identity makes the helper exit non-zero rather than answer. That is deliberate: a silent
+default would classify every repeat as a first sighting, which is the exact failure this ladder
+exists to end. **Fix the escaping or the file, never the wording:** a reworded title is a _different_
+identity, so a round that edits the title until the command parses has silently reset the count it
+was about to read. A non-zero exit naming a missing module or an unreadable path is a different thing
+again — the verdict was never observed, so report it as unobserved rather than routing on a rung
+nobody printed.
 
 ---
 
@@ -1457,18 +1646,36 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    BEFORE=$(git rev-parse HEAD) || exit 1
    ```
 
-   **Key every sent-SHA note entry to its pass number.** The record in your notes is the single
-   carrier: one entry per pass that pushed, `pass <n>: <sha>`, never overwritten and never erased. It
-   must keep **every SHA this round sent**, one entry per pass that pushed, because Phase 2's
+   **Key every note entry to its pass number.** The record in your notes is the single
+   carrier: **one entry per pass, written whether or not that pass pushed** — `pass <n>: <sha>` when
+   it pushed, `pass <n>: (no push)` when it did not — never overwritten and never erased. It
+   must keep **every SHA this round sent**, because Phase 2's
    survival assertion runs over all of them — pass 2 polling while a peer force-pushes away what pass
    1 landed is exactly the clobber that assertion exists to catch, and a round that kept only the
    current pass's value would report "sent nothing" and never look.
+
+   **The per-pass entry carries more than the SHA.** Two later readers need state only this pass can
+   supply, and neither is reconstructible afterwards, so write both into the same pass-number-keyed
+   entry alongside the SHA: the **strategy and primary file** this pass ran, and the **identity key
+   of every residual** this pass reported. Nothing else carries them — the orchestrator tracks the
+   pass counter, the `$BEFORE` baseline and poll state and nothing more, and a dispatched pass
+   inherits none of the previous pass's material — so an entry that omits them leaves the next pass
+   deriving a first sighting for a residual on its fourth round, and a repeating-strategy comparison
+   with nothing to compare against. An absent previous entry is a **first** pass, not a match.
+
+   **Which is why the entry cannot be conditional on pushing.** A residual is by definition what a
+   pass could **not** resolve, so the passes most likely to report one are the passes least likely to
+   push — and a record kept only for passes that pushed drops exactly those sightings while the
+   reading rule above turns the gap into a silent "first pass". One non-pushing pass in a 5-pass run
+   caps the count at 3, below the ladder's ceiling, in precisely the run the ceiling was added for.
+   So write the entry every pass. "This pass pushed nothing" is a **missing SHA field**, never a
+   missing entry.
 
    **Do not carry a sent-SHA in a shell variable across the pass.** A shell variable does not survive
    between the tool calls a pass is made of, so a later step reading a bare `$PUSHED_HEAD` finds it
    empty however the pass went, and both readers below would be answering from an empty value rather
    than from the record. Both derive from the notes instead: step 9 reads **this pass's own entry**
-   (absent ⇒ this pass pushed nothing), and Phase 2's assertion reads **all** entries. Keying by pass
+   (no SHA recorded ⇒ this pass pushed nothing), and Phase 2's assertion reads **all** entries. Keying by pass
    number is what keeps those two readings apart without erasing anything — clearing a shell variable
    answered step 9 only by destroying the record Phase 2 needs.
 
@@ -1514,10 +1721,15 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    `repair_status=clean` paragraph in step 8 already establishes for review probes, applied to the
    rest of the pass's premises.
 
-2. Poll all repair signals before every wait:
+2. Poll all repair signals before every wait, reading check state through the same classifier Phase 3 step 3 uses:
 
    ```bash
-   gh pr checks --json bucket
+   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify \
+     --head-sha "$HEAD_SHA" --observed-sha "$HEAD_SHA" \
+     --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json" \
+     --prior "$CHECK_DIR/prior-contexts.json"
    BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
    if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
    node "$BOSS_REPAIR_PROBE"
@@ -1530,7 +1742,7 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 
 3. Interpret the full PR state:
 
-   - **Checks:** `gh pr checks --json bucket` — all checks pass only when every bucket is passing/successful and none are pending, skipped-required, cancelled, timed out, or failed.
+   - **Checks:** the `$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs classify` verdict from step 2 — trust its `state`/`reason` and restate no rule here. `green` is the only pass (and only `provesGreen: true` proves the head cleared its gates); `failing` is the only red; `pending` is a wait, except reason `absent-gate`, which names a gate that vanished from this head and will never report; `unknown` is unobserved, never either.
    - **Review threads:** `${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js` — trust `repair_status` (`clean`, `parked`, `needs_repair`, `unknown`, `not_evaluated`) using the same interpretation rules as Strategy C above.
    - **Conflicts:** `gh pr view --json mergeable -q .mergeable` — `CONFLICTING` means a merge conflict appeared.
 
@@ -1592,14 +1804,35 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    A raw `HEAD` comparison is not by itself the progress test, because HEAD moves for reasons this
    pass did not author: a peer push moves it without this pass pushing, which reads as progress and
    defeats the stop, and a peer force-push back to `$BEFORE` reads as no progress even though the
-   pass did push. So a pass made progress only when **this pass's own note entry exists** and the SHA
-   it records is an ancestor of the current `origin/$BRANCH`. Read that entry by **this pass's
-   number** from the record step 1 describes; an absent entry means this pass pushed nothing, which
-   is the no-progress arm. Do **not** read a shell `PUSHED_HEAD` here: no shell state survives from
+   pass did push. So a pass made progress only when **this pass's own note entry records a SHA** and
+   that SHA is an ancestor of the current `origin/$BRANCH`. Read that entry by **this pass's
+   number** from the record step 1 describes; an entry with no SHA field — step 1 writes one every
+   pass, pushing or not — means this pass pushed nothing, which is the no-progress arm, and so does
+   an entry that is missing altogether. Do **not** read a shell `PUSHED_HEAD` here: no shell state survives from
    the push to this point, so it is empty in every pass — including the ones that did push, where the
    stop would then fire on a pass that had just landed a commit. Re-derive `$BRANCH` here as step 1's
    fence does. A difference this pass did not author is neither progress nor no-progress —
    it is a re-derivation trigger, per the pass-freshness rule in step 1.
+
+   **A repeating strategy is not a no-progress stop, and that stop cannot see it.** The progress test
+   just described is satisfied by **this pass's own note entry existing with an ancestor SHA** — so a
+   pass that pushed a real commit registers as progress however many times the same strategy has
+   already been applied to the same file. Two consecutive passes running the identical strategy
+   against the identical file therefore read as ordinary churn: each one pushed, each one did clear
+   the signal it was aimed at, no guard fires, and the recurring structural cost is absorbed
+   silently. Report it rather than stopping on it: when this pass's strategy **and** its primary file
+   both match the previous pass's, add a `**Repeating strategy**` line to the Repair Summary naming
+   the strategy, the file, and how many consecutive passes have now run that pair. This is a report
+   and never a terminator — the pass continues, the bound in step 10 is unchanged, and the exit
+   status is unaffected. Its value is that a structurally re-conflicting branch becomes visible to
+   the next reader instead of costing a fresh diagnosis every round.
+
+   **The comparison reads the record, not memory.** The pair it needs is the strategy and primary
+   file step 1 writes into each pass's own entry; nothing supplies it implicitly, because a
+   dispatched pass inherits none of the previous pass's material and no shell state survives between
+   passes. Read the previous pass's entry for the baseline, and take the consecutive count as the
+   length of the trailing run of entries carrying that same pair. An absent previous entry is a
+   **first** pass, not a match.
 
 10. **Bound:** never exceed 5 repair passes. After the 5th, report the remaining failures and exit.
 

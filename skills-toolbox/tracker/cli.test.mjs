@@ -318,6 +318,232 @@ test('update-comment against an adapter whose operationMap has no updateComment 
   }
 })
 
+// --- the `write-description` subcommand (BOS-1198) ---------------------------
+
+test('write-description emits the descriptor with the tool name, {id, description} args and the on-disk byte count', () => {
+  const body = '## Summary\n\nplan body\n'
+  const bodyFile = writeTempBody(body)
+  try {
+    let out = ''
+    const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', bodyFile], {
+      write: (s) => (out += s),
+      env: { LINEAR_API_KEY: 'k' },
+    })
+    assert.equal(code, 0)
+    assert.equal(out.endsWith('\n'), true)
+    const descriptor = JSON.parse(out)
+    assert.equal(descriptor.tool, 'mcp__bossanova-linear__save_issue')
+    assert.deepEqual(descriptor.args, { id: 'ISSUE-1', description: body })
+    assert.equal(descriptor.bytes, fs.statSync(bodyFile).size)
+    // The explicit outcome the caller branches on. Without it a caller has only exit 0,
+    // which a write that changed nothing shares with a write that landed.
+    assert.equal(descriptor.outcome, 'descriptor-emitted')
+  } finally {
+    fs.rmSync(path.dirname(bodyFile), { recursive: true, force: true })
+  }
+})
+
+test('write-description reports the BYTE count on disk, not the character count, for a multi-byte body', () => {
+  // A character count silently disagrees with the file the caller gated: these
+  // bodies are deliberately shorter in code points than in bytes, so a length-based
+  // measurement would pass every other assertion in this file and still be wrong.
+  for (const body of ['— em dash ✅ 🎉\n', 'Ünïcödé ハロー\n']) {
+    const bodyFile = writeTempBody(body)
+    try {
+      let out = ''
+      const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', bodyFile], {
+        write: (s) => (out += s),
+        env: { LINEAR_API_KEY: 'k' },
+      })
+      assert.equal(code, 0)
+      const descriptor = JSON.parse(out)
+      assert.equal(descriptor.bytes, Buffer.byteLength(body, 'utf8'))
+      assert.notEqual(
+        descriptor.bytes,
+        body.length,
+        `fixture must have byteLength != length, got ${JSON.stringify(body)}`,
+      )
+    } finally {
+      fs.rmSync(path.dirname(bodyFile), { recursive: true, force: true })
+    }
+  }
+})
+
+test('write-description passes the body verbatim, byte for byte, including its trailing newline', () => {
+  // The whole point of the verb: the bytes the local gates validated are the bytes
+  // that reach the tracker. A body carrying the verbatim block's own markers must
+  // survive untouched — no trimming, no re-wrapping, no added terminal byte.
+  const body = '## Original notes\n\n- a bullet\n\n<!-- marker -->'
+  const bodyFile = writeTempBody(body)
+  try {
+    let out = ''
+    const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', bodyFile], {
+      write: (s) => (out += s),
+      env: { LINEAR_API_KEY: 'k' },
+    })
+    assert.equal(code, 0)
+    assert.equal(JSON.parse(out).args.description, body)
+  } finally {
+    fs.rmSync(path.dirname(bodyFile), { recursive: true, force: true })
+  }
+})
+
+test('write-description without --id exits 2 with a message and writes nothing to stdout', () => {
+  const bodyFile = writeTempBody('x')
+  try {
+    let err = ''
+    let out = ''
+    const code = runCli(['write-description', '--body-file', bodyFile], {
+      write: (s) => (out += s),
+      errWrite: (s) => (err += s),
+      env: { LINEAR_API_KEY: 'k' },
+    })
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.match(err, /--id/)
+  } finally {
+    fs.rmSync(path.dirname(bodyFile), { recursive: true, force: true })
+  }
+})
+
+test('write-description without --body-file exits 2 with a message and writes nothing to stdout', () => {
+  let err = ''
+  let out = ''
+  const code = runCli(['write-description', '--id', 'ISSUE-1'], {
+    write: (s) => (out += s),
+    errWrite: (s) => (err += s),
+    env: { LINEAR_API_KEY: 'k' },
+  })
+  assert.equal(code, 2)
+  assert.equal(out, '')
+  assert.match(err, /--body-file/)
+})
+
+test('write-description with an empty or whitespace-only body file refuses to blank the description', () => {
+  // The most destructive input this verb can receive, and the reason the guard is
+  // load-bearing rather than defensive: the tracker keeps no description history, so a
+  // blanked description destroys the only surviving copy of the reporter's original
+  // notes. Nothing may reach stdout, or a caller piping the descriptor would execute it.
+  for (const blank of ['', '   \n  ', '\t\n']) {
+    const bodyFile = writeTempBody(blank)
+    try {
+      let err = ''
+      let out = ''
+      const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', bodyFile], {
+        write: (s) => (out += s),
+        errWrite: (s) => (err += s),
+        env: { LINEAR_API_KEY: 'k' },
+      })
+      assert.equal(code, 2, `expected exit 2 for body ${JSON.stringify(blank)}`)
+      assert.equal(out, '', 'must not emit a descriptor for a blank body')
+      assert.match(err, /empty; refusing to blank the description/)
+    } finally {
+      fs.rmSync(path.dirname(bodyFile), { recursive: true, force: true })
+    }
+  }
+})
+
+test('write-description with a missing or unreadable body file exits 2, naming the path, stdout empty', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-cli-test-'))
+  const missingPath = path.join(dir, 'does-not-exist', 'body.md')
+  // A DIRECTORY is readable-as-a-path but not as a body: readFileSync throws EISDIR,
+  // which is the unreadable-but-present case a missing-file test alone would not reach.
+  const unreadable = [missingPath, dir]
+  try {
+    for (const candidate of unreadable) {
+      let err = ''
+      let out = ''
+      const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', candidate], {
+        write: (s) => (out += s),
+        errWrite: (s) => (err += s),
+        env: { LINEAR_API_KEY: 'k' },
+      })
+      assert.equal(code, 2, `expected exit 2 for ${candidate}`)
+      assert.equal(out, '', 'must not emit a descriptor for an unreadable body file')
+      assert.match(err, new RegExp(candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('write-description with a body file that is not valid UTF-8 exits 2 rather than emitting a corrupted description', () => {
+  // The silent sibling of the blank-body case. readFileSync(..., 'utf8') does NOT throw on
+  // malformed input — it substitutes U+FFFD — so without the guard the descriptor would
+  // carry corrupted text while `bytes` (from stat) still attested to the intact on-disk
+  // size and `outcome` still read `descriptor-emitted`. The write replaces the whole
+  // description and the tracker keeps no history, so that corruption is unrecoverable.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-cli-test-'))
+  const bodyFile = path.join(dir, 'body.md')
+  // 0xC3 begins a 2-byte sequence that 0x28 cannot continue, so this is genuinely
+  // malformed rather than merely non-ASCII.
+  const raw = Buffer.from([0x41, 0xc3, 0x28, 0x0a])
+  fs.writeFileSync(bodyFile, raw)
+  try {
+    // Prove the fixture actually round-trips lossily, or the guard below is vacuous.
+    assert.notEqual(
+      Buffer.byteLength(fs.readFileSync(bodyFile, 'utf8'), 'utf8'),
+      raw.length,
+      'fixture must decode lossily, otherwise this test asserts nothing',
+    )
+    let err = ''
+    let out = ''
+    const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', bodyFile], {
+      write: (s) => (out += s),
+      errWrite: (s) => (err += s),
+      env: { LINEAR_API_KEY: 'k' },
+    })
+    assert.equal(code, 2)
+    assert.equal(out, '', 'must not emit a descriptor for a body that did not decode cleanly')
+    assert.match(err, /is not valid UTF-8/)
+    assert.match(err, /refusing to write a corrupted description/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('write-description against an adapter that does not declare writeDescription exits 2, naming the gap', () => {
+  // The optional-capability path: the caller must be told the capability is absent so it
+  // can fall back to an inline save, never handed a descriptor for a tool that does not exist.
+  const bodyFile = writeTempBody('plan body')
+  try {
+    let err = ''
+    let out = ''
+    const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', bodyFile], {
+      write: (s) => (out += s),
+      errWrite: (s) => (err += s),
+      env: {},
+      resolveAdapter: () => ({ operationMap: {} }),
+    })
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.match(err, /has no writeDescription operation/)
+  } finally {
+    fs.rmSync(path.dirname(bodyFile), { recursive: true, force: true })
+  }
+})
+
+test('write-description against a writeDescription entry with no usable tool exits 2 instead of emitting a toolless descriptor', () => {
+  for (const op of [{}, { tool: '' }, { tool: '   ' }, { tool: 42 }]) {
+    const bodyFile = writeTempBody('plan body')
+    try {
+      let err = ''
+      let out = ''
+      const code = runCli(['write-description', '--id', 'ISSUE-1', '--body-file', bodyFile], {
+        write: (s) => (out += s),
+        errWrite: (s) => (err += s),
+        env: {},
+        resolveAdapter: () => ({ operationMap: { writeDescription: op } }),
+      })
+      assert.equal(code, 2, `expected exit 2 for op ${JSON.stringify(op)}`)
+      assert.equal(out, '', 'must not emit a descriptor without a usable tool')
+      assert.match(err, /has no tool/)
+    } finally {
+      fs.rmSync(path.dirname(bodyFile), { recursive: true, force: true })
+    }
+  }
+})
+
 // --- the `states` subcommand (BOS-524) --------------------------------------
 
 test('states prints the adapter JSON map plus a newline and exits 0', () => {

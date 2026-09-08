@@ -498,7 +498,8 @@ func TestDaemonUnsupervisedConsequencesAreOneSentenceEverywhere(t *testing.T) {
 	const recordedPID = 5150
 	st := daemon.Status{Installed: true, Running: false}
 
-	statusLine := daemonSupervisionLine(&st, recordedPID)
+	stubDaemonSupervisionInputs(t, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
+	statusLine := daemonSupervisionLine(&st, recordedPID, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
 	if !strings.Contains(statusLine, daemonUnsupervisedConsequences) {
 		t.Fatalf("status line = %q, want the shared consequence sentence", statusLine)
 	}
@@ -507,7 +508,7 @@ func TestDaemonUnsupervisedConsequencesAreOneSentenceEverywhere(t *testing.T) {
 	daemonGetStatus = func() (*daemon.Status, error) { return &st, nil }
 	t.Cleanup(func() { daemonGetStatus = previous })
 	var doctorOut bytes.Buffer
-	reportDaemonSupervision(&doctorOut, daemonstate.Metadata{PID: recordedPID}, nil)
+	reportDaemonSupervisionGathered(&doctorOut, daemonstate.Metadata{PID: recordedPID}, nil)
 	if !strings.Contains(doctorOut.String(), daemonUnsupervisedConsequences) {
 		t.Fatalf("doctor output = %q, want the shared consequence sentence", doctorOut.String())
 	}

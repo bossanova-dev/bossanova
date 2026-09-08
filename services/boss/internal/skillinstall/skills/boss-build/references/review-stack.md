@@ -17,22 +17,19 @@ failure and is untouched by the tier rule: it stays a `dispatch-failure`, publis
 second whole-branch loop stacked in front of it and no separate outside-voice chain behind it:
 `boss-review` already carries the specialist lens passes, the repo-local review rounds, a cross-model
 `second-voice` round, its own capped fix loop with an oscillation guard, and a round cap. Reviewing
-the same diff again from this file would re-review work already reviewed and price a second budget
-for it. **The per-run reviewer-dispatch bound is at most four reviewer dispatches (≤ 4) per run**,
+the same diff again from this file would price a second budget for work already reviewed.
+
+**The per-run reviewer-dispatch bound is at most four reviewer dispatches (≤ 4) per run**,
 counted over the awaited legs **this protocol itself starts**: the review subagent, the one
 `boss-review` pass it runs, the conditional API-surface classification, and — only where that first
 dispatch failed — the inline fallback pass that replaces it. It bounds this file's own fan-out and
 deliberately **not** what happens inside `boss-review`: that pass's detection tiers, its
 `second-voice` round, its round extensions and its fix→confirm rounds are its own, capped by its
 `$MAX_ROUNDS` (default **3**) and its oscillation guard, and nothing here can halt that pass
-mid-flight. **Read the two caps as nested, never summed.** Counting the pass's internal rounds
-against this number is how a reader arrives at "the enumeration already exceeds four" and re-prices
-a bound that was never wrong — those rounds are funded by `boss-review`'s own `$MAX_ROUNDS`, which is
-why they are not counted here. The quick tier spends fewer still — one pass, its optional rounds
-skipped. A protocol that wants a fifth dispatch of its own
-does not get one: it caps and routes, which is the whole point of a bound. Anything that would
-re-introduce a second complete review system here — a second loop, a second cross-model chain, a
-second reviewer prompt of this file's own — is a regression, not an addition.
+mid-flight. **Read the two caps as nested, never summed.** The quick tier spends fewer still — one
+pass, its optional rounds skipped. Anything that would re-introduce a second complete review system
+here — a second loop, a second cross-model chain, a second reviewer prompt of this file's own — is a
+regression, not an addition.
 
 **Mark every reviewer dispatch.** Each of the awaited legs counted by that bound — the review
 subagent, the `boss-review` pass, the conditional API-surface classification, and the inline
@@ -42,25 +39,21 @@ subagents by matching it at the head of a dispatched prompt, so an unmarked disp
 `boss cost` rather than merely unreported. Read that count as fan-out made **observable**, never as
 an audit of the bound above: `reviewer_dispatch_count` rolls every marked dispatch in the run's
 descendants into one whole-tree total — `boss-review`'s own lens and round dispatches included —
-so a compliant run routinely reports well above four. That is the same nested-never-summed reading
-as above, seen from the telemetry side. The ≤ 4 bound is a protocol invariant this file asserts;
-no `boss cost` arithmetic checks it.
+so a compliant run routinely reports well above four. The ≤ 4 bound is a protocol invariant this
+file asserts; no `boss cost` arithmetic checks it.
 
 The review subagent RETURNS a short structured result: the **rendered `boss-review` report** (the
 markdown captured in the review pass, leading with the `<!-- bs-review -->` marker), the
 `## Cross-model review` outcome token (the outcome of `boss-review`'s Phase D `second-voice` round),
-the `## Review coverage` outcome token (below), the
-**base-drift note** from **every** round boundary that read a hit — a refreshable or an
-unrefreshable one (§Base-drift check below) — and, when no boundary did, the last boundary's note.
-Return every hit rather than the latest note: the check keeps reading after it rebases, so a run
-that hits at the check point and then reads `Base drift: none.` afterwards would otherwise return
-the `none.` and lose the one boundary that mattered, which is the exact loss this check exists to
-prevent. Last, the
-finding ledger. The note is returned because the orchestrator — not this subagent — owns the PR
-body's `## Autonomous decisions` section, so a note that stays in here reaches no reader on the
-clean route at all. Bulk material — round-by-round review
-transcripts, diffs, second-voice output, `boss-review` lens output — stays in the subagent's context
-and is **NOT** pasted back.
+the `## Review coverage` outcome token (below), the **base-drift note** from **every** round
+boundary that read a hit — a refreshable or an unrefreshable one (§Base-drift check below) — and,
+when no boundary did, the last boundary's note. Return every hit rather than the latest note: the
+check keeps reading after it rebases, so a later `Base drift: none.` would otherwise displace the
+one boundary that mattered. Last, the finding ledger. The note is returned because the orchestrator
+— not this subagent — owns the PR body's `## Autonomous decisions` section, so a note that stays in
+here reaches no reader on the clean route at all. Bulk material — round-by-round review transcripts,
+diffs, second-voice output, `boss-review` lens output — stays in the subagent's context and is
+**NOT** pasted back.
 
 **Write your terminal verdict to the run file (the run-file sentinel convention) — this, not your returned prose, is
 what the orchestrator routes on.** The orchestrator provisioned a per-run sentinel context, passed
@@ -72,35 +65,64 @@ re-affirm the same line as your **last action**:
 SENTINEL="$RUN_SENTINEL"
 CAPS="$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs"
 node "$SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$CAPS" sentinel clean)" '{"provisional":false}'   # clean; or: sentinel capped <N>
+  "$(node "$CAPS" sentinel clean)" \
+  "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"   # clean; or: sentinel capped <N>
 ```
 
-**Write it when it is known — a last-action-only write is the defect, not the contract.** Deferring
-the write to the end makes it one unguarded step at the close of a long, expensive dispatch, so
-anything that ends you between _verdict determined_ and _verdict written_ destroys a verdict for
-work that was really done, and the run is forced to publish `coverage unknown` over a review that
-really settled something. Write at
-each point below, then re-affirm at the end. Rewriting is always safe: the writer replaces the run
-file wholesale rather than appending to it or refusing a second write, so re-stating a value costs
-nothing and replacing one with a different value is equally well defined.
+Two generated arguments, neither hand-written.
+
+- **`bs-review-caps.mjs sentinel clean` / `sentinel capped <N>` generates the verdict line.**
+  Never hand-write a sentinel literal: `matchSentinel` classifies that line, so its bytes are never
+  interpolated. A capped line is matchable only with the helper's full `after <N> rounds.` tail; an
+  improvised one is **present but unmatchable** -> `dispatch-failure`. `<N>` is a **positive**
+  integer — the helper exits non-zero on `0`.
+- **`bs-review-caps.mjs sentinel-payload "${STEP_6C_FUNDING_REASON:-}"` generates the payload.**
+  It prints `'{"provisional":false}'` for a step that was priced and funded, and
+  `'{"provisional":false,"funding":{"reason":"funding-starved"}}'` for one whose funding call priced
+  zero fix rounds, so no site escapes JSON inside a double-quoted string. The reason set is closed:
+  a value outside it is disclosed as `funding-unpriced` and named on stderr, never as a reason no
+  consumer knows. The verb **never exits non-zero**, because the substitution above is unchecked.
+  An **empty** payload argument degrades the writer to its no-payload write, loudly on stderr — the
+  verdict line still lands, because the kind is the verdict and the payload only an optional extra.
+  A payload that is present but **malformed** is refused whole — no write lands, the pessimistic
+  seed stands, and a clean run publishes `coverage unknown` — so garbage never reads as funded.
+  The reason travels in the **payload only**; the sentinel line's bytes are untouched. `boss-review`
+  reads the key back in its Phase 7 report, where an **absent** key means the step was not starved.
+- **`bs-run-sentinel.mjs write` persists it.** `bs-review-caps.mjs` only prints to stdout, so
+  generating a line without piping it into the writer leaves the run file **absent** ->
+  `dispatch-failure` by the other sub-case. Run the whole command, never either half.
+
+**`STEP_6C_FUNDING_REASON` is a stated interface, not ambient shell state** — the same kind of name
+as `STEP_6C_DEADLINE`, and for the same reason. Shell state does not survive between Bash calls, so
+a reason left in a variable and never stated reaches nothing. **State it in the `boss-review`
+invocation** alongside `STEP_6C_DEADLINE`, under exactly that name, whenever §Step 6's funding call
+(or the quick tier's) named a reason. `boss-review` binds it and writes the payload itself on the
+primary route — see its §Caller sentinel contract. The blocks below are the routes where **this**
+protocol holds the pen instead: a pre-dispatch decline, and a pass that did not report. Each
+re-reads the name and so runs correctly on its own.
+
+**Write it when it is known — a last-action-only write is the defect, not the contract.** Anything
+that ends you between _verdict determined_ and _verdict written_ destroys a verdict for work that
+was really done, and forces the run to publish `coverage unknown` over a review that really settled
+something. Write at each point below, then re-affirm at the end. Rewriting is always safe: the
+writer replaces the run file wholesale rather than appending or refusing a second write.
 
 - **The review pass reported clean** — `boss-review`'s Phase 7 report carries zero open must-fix,
   and the conditional API-surface check has also run → write `sentinel clean` **there**, the moment
   that report is in hand, not after composing the return.
 - **The review pass capped** — `boss-review`'s Phase 6 fix loop ended with open must-fix, its
   oscillation guard tripped, its round cap was reached, or a leg budget went non-positive → write
-  `sentinel capped <N>` **there**, `<N>` = the rounds reached (a positive integer; the helper
-  rejects `0`).
+  `sentinel capped <N>` **there**, `<N>` = the rounds reached.
 - **The pass did not report at all** — it errored, timed out, or returned nothing structured → write
   `sentinel capped 1`. An empty result is **not** a reviewer that found nothing.
 
-Every one of those writes carries `'{"provisional":false}'`. The marker is always present and
+Every one of those writes carries `$PAYLOAD` as built above. The marker is always present and
 explicit rather than inferred from absence, so the orchestrator can tell a cap a reviewer earned
 from the seed nobody upgraded — see §REVIEW_READY-with-findings publication's per-arm token table
-for what the latter publishes. Read `false` for exactly what it says: something **after** the dispatch authored this
-line. It is not on its own evidence that a reviewer earned it — the pre-dispatch decline route and
-the quick tier's did-not-report path write `false` too, and no lens ran on either. Whether a lens
-ran is §PARTIAL-route publication's T1 question, not the marker's.
+for what the latter publishes. Read `false` for exactly what it says: something **after** the
+dispatch authored this line. It is not on its own evidence that a reviewer earned it — the
+pre-dispatch decline route and the quick tier's did-not-report path write `false` too, and no lens
+ran on either. Whether a lens ran is §PARTIAL-route publication's T1 question, not the marker's.
 
 **`boss-review`'s own sentinel line IS this verdict now — do not demote it to advisory.** The pass
 prints a `bs-review clean:` or `bs-review capped:` line of its own, generated by the same
@@ -108,11 +130,7 @@ prints a `bs-review clean:` or `bs-review capped:` line of its own, generated by
 writes that line into the run file itself (see `boss-review`'s Phase 7 caller sentinel contract), and
 this protocol's job is to **confirm** the line landed rather than to re-derive a competing one. When
 it was not — an inline fallback, or a pass that died before its own write — write the line here from
-the report you hold, using the same helper. Never hand-write a sentinel literal:
-`matchSentinel` classifies a capped line only when it carries the helper's full `after <N> rounds.`
-tail, so an improvised line is **present but unmatchable** → `dispatch-failure`. And
-`bs-review-caps.mjs` only prints to stdout, so generating the line without piping it into
-`bs-run-sentinel.mjs write` leaves the run file **absent** → `dispatch-failure` again.
+the report you hold, using the same helper.
 
 The orchestrator classifies this file with `matchSentinel` and never reads your reply — so if
 you write nothing (a crash or watchdog kill), the orchestrator's provisional seed is what it reads,
@@ -148,11 +166,7 @@ cannot be re-chosen.
 
 The tier is decided **from the diff** — what this branch changed — and never from a clock. Two runs
 over the same branch diff pick the same tier whatever hour they start at, whatever host they run on,
-and whatever the run has already spent. That determinism is the point. A tier that can be argued
-either way is a tier that will always be argued cheap, and a tier keyed to a wall clock makes the
-depth of a review a fact about the scheduler rather than about the code: the same diff earns a full
-pass on a fast morning and a minimal one on a slow afternoon, and neither reading is checkable
-afterwards.
+and whatever the run has already spent.
 
 **Do not re-introduce a wall-clock term into this rule** — not as an extra branch, not as a
 tiebreaker, not as a "only if the clock allows" clause hung off the full tier. The per-step
@@ -219,41 +233,32 @@ fi
 Preflight, re-checked by §Base-drift check. Use the three-dot form so the count is this branch's own
 changes, not everything the base has landed since.
 
-**Two shell values are the exception to "no plumbing", and the block guards both.** The rule's three
-inputs are repo-local, but the diff it reads is not free: `REVIEW_BASE` arrives in the dispatch brief
-and `BOSS_BUILD_TOOLBOX` was exported in the orchestrator's shell, and neither survives into this
-dispatched subagent. That is why the block re-derives the toolbox and fails an unset `REVIEW_BASE`
-closed to branch 2 instead of reading either as evidence about the diff. The two guards fail in
-opposite directions, so neither is redundant. Drop the toolbox guard and the dispatched path takes
-branch 2 on every run while the inline fallback still reaches branch 3 — the two paths then disagree
-on exactly the diffs the quick tier exists for. Drop the `REVIEW_BASE` guard and it fails the other
-way, toward the cheap tier: `git diff --name-only ...HEAD` with an empty left side is a valid,
-exit-0 request for the **empty** diff, so `CHANGED_OK` stays `yes` and a run that never read its
-change set lands in branch 3 and buys the quick tier.
+**Two shell values are the exception to "no plumbing", and the block guards both.** `REVIEW_BASE`
+arrives in the dispatch brief and `BOSS_BUILD_TOOLBOX` was exported in the orchestrator's shell, and
+neither survives into this dispatched subagent. The two guards fail in **opposite** directions, so
+neither is redundant: without the toolbox guard the dispatched path takes branch 2 on every run
+while the inline fallback still reaches branch 3, and without the `REVIEW_BASE` guard an empty left
+side makes `git diff --name-only ...HEAD` a valid exit-0 request for the **empty** diff, so
+`CHANGED_OK` stays `yes` and a run that never read its change set buys the quick tier.
 
 Evaluate the branches below **in order** and take the **first** one that matches. The order is load
 bearing: the override must be resolved before the diff is read, and an unreadable diff before either
-matcher, or a run that could not read its own change set would be classified by a matcher fed an
-empty list — which is exactly the shape that selects the cheap tier.
+matcher — a matcher fed an empty list is exactly the shape that selects the cheap tier.
 
 1. `reviewDefaults.forceFull` is **true** → **full tier**. The operator override wins over
    everything below it; no lens result and no file count can demote it.
 2. The diff is **unreadable** — the `git diff` failed, the helper exited non-zero, or
    `REVIEW_TIER_JSON` is empty or does not parse → **full tier**. Ambiguity resolves toward **more**
-   coverage, never less: an unreadable diff is not evidence of a small one, and treating it as one
-   would make the cheap tier the default on every run whose base ref went missing. Record the reason
-   in the `## Review coverage` line, but do not stop: an unreadable diff selects a tier, it is not
-   itself a BLOCKED condition.
+   coverage, never less. Record the reason in the `## Review coverage` line, but do not stop: an
+   unreadable diff selects a tier, it is not itself a BLOCKED condition.
 3. **No** changed path matches **any** configured lens glob **and** the changed-file count is
    **strictly below** `deltaFileThreshold` → **quick tier (minimal)**, defined below.
 4. Otherwise → **full tier**. Run the rest of this reference unchanged.
 
-The comparison in branch 3 is **strict**, and deliberately so: exactly `deltaFileThreshold` changed
-files is the **full** tier, because the threshold names the count at which a diff stops being small
-rather than the last count that still is. An **empty** diff — zero changed files, no lens hit — lands
-in branch 3 and selects the quick tier; that is correct and not a special case, because there is
-nothing for a full pass to find, and the quick tier still runs a real reviewer and still gates on
-what it reports.
+The comparison in branch 3 is **strict**: exactly `deltaFileThreshold` changed files is the **full**
+tier, because the threshold names the count at which a diff stops being small rather than the last
+count that still is. An **empty** diff — zero changed files, no lens hit — lands in branch 3 and
+selects the quick tier, which still runs a real reviewer and still gates on what it reports.
 
 **A single lens hit is enough.** Branch 3 needs _every_ changed path to miss _every_ glob. One
 changed file under one configured lens selects the full tier however small the diff is, because a
@@ -266,10 +271,7 @@ that entry as matching every path, so the tier lands on **full**. Same fail-safe
 
 **Where each path evaluates it.** Because every input is repo-local, whoever runs this protocol
 evaluates the rule themselves: the review subagent at the top of the dispatched protocol, the
-orchestrator on the inline fallback. Neither needs the other to have measured anything first, and
-there is no snapshot to go stale between them. That is a direct consequence of keying on the diff —
-a clock-keyed rule needed the value carried in the brief and re-derived against an absolute deadline;
-this one needs neither.
+orchestrator on the inline fallback. There is no snapshot to go stale between them.
 
 **Pre-dispatch decline route.** There is exactly one condition under which **no** reviewer is
 dispatched at all, and it is not a tier: the `BOSS_BS_REVIEW=0` off switch below. A tier never
@@ -285,24 +287,22 @@ half:
 
 ```bash
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" '{"provisional":false}'
+  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" \
+  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"
 ```
 
-Both halves are load bearing, and dropping either lands on the **same** wrong outcome from opposite
-directions. `matchSentinel` classifies a capped line only when it carries the helper's full
-`after <N> rounds.` tail, so an improvised `capped: <N>` line — with or without a round count — is
-unmatchable: **present but unmatchable** → `dispatch-failure`. And `bs-review-caps.mjs` only prints
-to stdout, so generating the line without piping it into `bs-run-sentinel.mjs write` leaves the run
-file **absent**: missing sentinel → `dispatch-failure` again, by the other sub-case. Either way the
-published token claims the coverage was _unreadable_ or _unknown_ when you know no reviewer ran at
-all. Pass `1`, not `0`: the helper requires a **positive** round count and exits non-zero on `0`.
+Both halves are load bearing, and §the run-file sentinel convention states why: a hand-written line
+is **present but unmatchable** → `dispatch-failure`, and a generated line that never reaches the
+writer leaves the run file **absent** → `dispatch-failure` by the other sub-case. Either way the
+published token would claim the coverage was _unreadable_ or _unknown_ when you know no reviewer ran
+at all. Pass `1`, not `0`: the helper requires a **positive** round count and exits non-zero on `0`.
+The payload is the same one that section builds, from the same verb and the same stated name.
 
 **Push before you write it.** The two steps above are stated in reading order, not execution order:
 §BLOCKED-route publication's own pre-dispatch decline route governs the sequence, and it requires the
 push **first** — only `PUSHED=yes` may then write this generated `sentinel capped 1` and publish its
 tokens, while `PUSHED=rescue` or `PUSHED=no` takes that section's BLOCKED reporting instead. Where
-this paragraph and that one appear to disagree on ordering, **that one governs**; a decline verdict
-written over commits no reviewer can fetch records a decision about work nobody else can see.
+this paragraph and that one appear to disagree on ordering, **that one governs**.
 
 So take **§REVIEW_READY-with-findings publication** below and run it to the end: **push the session
 branch first**, through §BLOCKED-route publication's retry/rebase/rescue procedure until
@@ -313,24 +313,20 @@ instead — the push is the gate, not the review. This route stops **before** St
 pushes them itself.
 
 The choice is **recorded either way** — see the `## Review coverage` token below. A tier is never
-chosen for any other reason: it is not an operator preference beyond `forceFull`, not something the
-run's elapsed time can influence, and not something a reviewer's own findings can trigger. Anchoring
-it to a rule a reader can re-evaluate from the diff, and publishing the result, is what stops the
-cheap path from being the invisible default.
+chosen for any other reason: not an operator preference beyond `forceFull`, not the run's elapsed
+time, and not a reviewer's own findings.
 
 **Allowance-disclosure rule — a per-step allowance that declines work must name two numbers.**
 Several gates in this reference are bounded by a **per-step allowance**: a deadline stamped for one
 dispatch and spendable only by that dispatch — `STEP_6C_DEADLINE`, the API-surface clamp, and the
 quick tier's reviewer clamp. Whenever one of those **declines work** — refuses a fix round, skips a
 pass, stops a loop early — whatever it publishes must state, as **two separate numbers**, the
-**allowance** that actually declined it and the **cost of the work it declined**. And it must never
-phrase an inner box as the _run_ being out of time: this skill holds no run clock to be out of, so
-"there was not enough time left" names a budget that does not exist and sends the next reader hunting
-for it. Write "a 15-minute pass allowance had 412s left and a fix round costs 1200s" — allowance and
-cost, both named — so a reader files a designed bound as a designed bound instead of as a budget bug,
-and does not re-price a formula that was never wrong. This is the enclosing-ceiling failure — **the
-clamp costs the diagnostic, not just the budget** — and the remedy is disclosure, not re-pricing:
-locate every enclosing ceiling before tuning an inner deadline.
+**allowance** that actually declined it and the **cost of the work it declined**: "a 15-minute pass
+allowance had 412s left and a fix round costs 1200s". It must never phrase an inner box as the _run_
+being out of time — this skill holds no run clock to be out of — so a reader files a designed bound
+as a designed bound instead of re-pricing a formula that was never wrong. This is the
+enclosing-ceiling failure — **the clamp costs the diagnostic, not just the budget** — and the remedy
+is disclosure, not re-pricing: locate every enclosing ceiling before tuning an inner deadline.
 
 ### Quick tier (minimal)
 
@@ -379,6 +375,44 @@ a diff that touched no configured lens and stayed small. It runs:
   That route is already the documented outcome for a pass that produced nothing, and a pass stopped
   by its own allowance is one of those.
 
+  **Price this tier's own allowance where you stamp it**, with the same call §Step 6 makes — at
+  `QUICK_REVIEWER_LEGS`, so the tier keeps its own number rather than inheriting the full tier's:
+
+  ```bash
+  if QUICK_FUNDING="$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" funding \
+      "{\"allowanceSeconds\": $QUICK_REVIEWER_SECONDS, \"legSeconds\": $DEADLINE_LEG_SECONDS, \"initialLegs\": $QUICK_REVIEWER_LEGS}")"; then
+    STEP_6C_FUNDED_FIX_ROUNDS="$(printf '%s' "$QUICK_FUNDING" | sed -n 's/.*"fundedFixRounds":\([0-9]*\).*/\1/p')"
+    STEP_6C_FUNDING_REASON="$(printf '%s' "$QUICK_FUNDING" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')"
+  else
+    QUICK_FUNDING="pricing call failed (exit $?)"
+    STEP_6C_FUNDED_FIX_ROUNDS=''
+    STEP_6C_FUNDING_REASON='funding-unpriced'
+  fi
+  # An unparsed number is unpriced too — the same normalisation §Step 6 applies, in the same
+  # shape, because the exit status is only HALF the failure: a helper that exits 0 while
+  # printing anything the `sed` cannot read leaves both variables empty, and an empty reason
+  # is the FUNDED case. This tier publishes no count, so the parsed number is read by this
+  # guard alone; the reason is what travels.
+  case "$STEP_6C_FUNDED_FIX_ROUNDS" in
+    '' | *[!0-9]*) STEP_6C_FUNDED_FIX_ROUNDS=''; STEP_6C_FUNDING_REASON='funding-unpriced' ;;
+  esac
+  printf 'quick tier funding: %s\n' "$QUICK_FUNDING" >&2
+  ```
+
+  Two legs price a **smaller** allowance than three, so this tier is starved wherever the full tier
+  is — never the other way round — and the reason it prints is the one this route's terminal
+  sentinel payload carries. Compute it here rather than copying §Step 6's printed number: that
+  number was priced at `STEP_6C_INITIAL_LEGS`, and reusing it is the same silent restoration of the
+  full tier's allowance the warning above forbids.
+
+  **The value is this tier's own; the name is the shared one.** Bind it to
+  `STEP_6C_FUNDING_REASON` — exactly as this tier stamps its own seconds into `STEP_6C_DEADLINE`
+  above — because that name is the stated interface every sentinel write and `boss-review` itself
+  read. A tier-local name would leave §the run-file sentinel convention reading a name nothing here
+  assigns, take the funded branch on a starved run, and publish the wrong payload with every
+  assertion in this file still satisfied. And check the call's **exit status**: a failed price is
+  `funding-unpriced`, never silence, so it cannot be read as "adequately funded".
+
 - **The pass's optional rounds are skipped by policy**, named here so a reader can tell a policy
   skip from an improvised one. Skipping the `second-voice` round costs the outside voice, and
   skipping the round extensions costs their lenses; both are real reductions in review depth, and
@@ -414,15 +448,19 @@ generate-and-persist command the pre-dispatch decline route uses, with `sentinel
 
 ```bash
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" '{"provisional":false}'
+  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" \
+  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"
 ```
+
+The reason under that name is **this tier's own** — priced at `QUICK_REVIEWER_LEGS` above, not
+copied from §Step 6 — so the payload is
+`'{"provisional":false,"funding":{"reason":"funding-starved"}}'` when that call returned a reason and
+`'{"provisional":false}'` when it did not.
 
 That routes to **§REVIEW_READY-with-findings publication** carrying a reduced coverage token; name
 the failure in the `## Review coverage` reason. Both halves matter here too: a hand-written capped
 line is unmatchable, and a generated line that never reaches the run file leaves it absent — each
-downgrades this to a `dispatch-failure` instead of the earned capped verdict this tier owes. This is the run-file sentinel's
-own "wrote clean" vs "wrote nothing" distinction applied one level down; collapsing them would let a
-branch nobody reviewed reach REVIEW_READY through the cheapest path in the protocol.
+downgrades this to a `dispatch-failure` instead of the earned capped verdict this tier owes.
 
 **This tier may repair, but it may never self-certify.** Do not fix a must-fix here yourself and then
 emit `clean` **on your own assertion**: on a repaired branch `clean` requires the pass's own
@@ -446,8 +484,9 @@ Step 7, so a reader never mistakes silence for full coverage:
   tiers, its fix loop, its `second-voice` round, its round extensions). If a round it owns did not
   run — skipped by its own budget gate, or never reached because the run capped early — name it here
   rather than emitting a bare token: `full (skipped: <round list>)`. The fix loop is the one
-  exception, and it is not a skip: at the shipped defaults the pass's stamped allowance funds **0**
-  ordinary fix rounds by design (§Step 6, hard-deadline bullet), so a run that ran none for that
+  exception, and it is not a skip: the pass's stamped allowance funds exactly the `fundedFixRounds`
+  §Step 6's funding call priced — **0** ordinary fix rounds at the shipped defaults — by design
+  (§Step 6, hard-deadline bullet), so a run that ran none for that
   reason emits a bare `full` — never `full (skipped: fix loop)` on every full-tier run.
 - `quick: <reason> (skipped: <round list>)` — e.g.
   `quick: no lens glob matched and 4 changed files is below the 20-file threshold (skipped: second-voice cross-model round, boss-review round extensions)`.
@@ -1300,16 +1339,10 @@ number can never drift from the number of attempts actually made.
 
 **Locally-recorded SHAs are a poor terminal outcome.** The invariant this rule serves is that the
 work **leaves the worktree** as early as possible, while this run still knows what it built.
-
-Be accurate about the stakes, though: **Stop cleanly does not delete the worktree** — it deletes the
-claim comment, removes the stop-hooks and releases the lock — and the daemon that finalizes the
-session independently protects committed work. A clean worktree whose branch is ahead of base is
-pushed and given a PR rather than hard-deleted; if that push fails the worktree is **preserved**
-rather than archived; and even on the hard-delete path an unmerged branch reads as not-safe and is
-kept. A run that ends here unpushed is therefore not automatically lost. Do not lean on that: it is
-another component's guarantee, it fires only on the shapes finalize recognises, and until it does the
-work is invisible to the PR, to CI, and to the next repair round. Push here anyway. So the loop above
-has two escapes and one bad-but-recoverable end:
+**Stop cleanly does not delete the worktree**, and finalize independently protects committed work —
+but that is another component's guarantee, it fires only on the shapes finalize recognises, and until
+it does the work is invisible to the PR, to CI, and to the next repair round. Push here anyway. So
+the loop above has two escapes and one bad-but-recoverable end:
 
 - **Transient remote trouble** — an outage, a rate limit, a flaky fetch. The retry backs off (5 s,
   doubling to a 60 s ceiling, up to 8 attempts, so the window is minutes rather than a handful of
@@ -1326,11 +1359,9 @@ has two escapes and one bad-but-recoverable end:
   and never release this run — and finalize, which is the component that can retry the push later and
   preserves the worktree when it cannot, only gets its turn once this run ends.
 
-That is why the loop is bounded rather than literally "until it succeeds". An unbounded retry here
-would not save the diverged case — the rescue ref is what saves it — while on a dead remote it would
-hang this run forever: the worktree lock is never released, the terminal state never published, and
-the caller's repair loop never gets the signal it is waiting for. An unreported hang that also
-blocks later work is strictly worse than a reported, and now very unlikely, loss. Silently reporting
+The loop is bounded rather than literally "until it succeeds": an unbounded retry cannot save the
+diverged case — the rescue ref is what saves it — and on a dead remote it would hang this run
+forever, holding the worktree lock and never publishing a terminal state. Silently reporting
 success remains the one outcome that must never happen.
 
 Plain `git push` — never `--force`/`--force-with-lease`, and reconcile with a rebase,
@@ -1393,25 +1424,19 @@ left untagged:` list where it printed one: it names each commit and the reason i
 `$TAG_INJECT_NOTE` is a **second, separate field**: report it beside `$TAG_NOTE` whenever it is
 non-empty, and never merge the two into one string. They answer different questions — `$TAG_NOTE`
 says what the branch was **observed** to carry, `$TAG_INJECT_NOTE` says **why** the injection stopped
-or which recovery step did not complete — and a merged note is one string in which neither clause is
-attributable: the reader cannot tell the observation from the cause, and the injector's text is free
-form, so no separator a join might pick is reserved against it. Being about the injection and never
-about a commit, it licenses no assertion about the branch at all: state it as the **cause** alongside
-the observation, never in place of one. It is **unset or empty on every ordinary outcome** — the
-confirmed arm never injects, and an injection with nothing to report leaves it as it was — and an
-empty field is **omitted from the report** rather than printed blank: a named field nobody filled in
-is not a diagnostic that went missing. Only the non-empty case is owed a line.
+or which recovery step did not complete — and joined, neither clause is attributable any more. Being
+about the injection and never about a commit, it licenses no assertion about the branch at all: state
+it as the **cause** alongside the observation, never in place of one. It is **unset or empty on every
+ordinary outcome**, and an empty field is **omitted from the report** rather than printed blank. Only
+the non-empty case is owed a line.
 
 **Where the line goes when `$TAG_NOTE` is empty.** "Beside `$TAG_NOTE`" has nothing to sit beside on
 the `all` arm: the re-derivation clears `TAG_NOTE` there on every arm but the vacuous empty-range
-one, and clears it nowhere else. So on `TAGGED=all` report
-`$TAG_INJECT_NOTE` under the `TAGGED=all` statement itself, as the **cause** it always is. That
-pairing is not a contradiction to be resolved away — a rollback that did not complete, or a benign
-non-zero injector exit, can end with every _surviving_ commit tagged, because the reconcile drops the
-rewritten copies as patch-identical. `all` and a non-empty injector diagnostic are therefore the one
-combination most worth printing, and dropping the diagnostic because its companion field is empty
-loses the only record that the recovery did not finish — exactly the loss the two-field split exists
-to prevent.
+one. So on `TAGGED=all` report `$TAG_INJECT_NOTE` under the `TAGGED=all` statement itself, as the
+**cause** it always is. That pairing is not a contradiction to
+be resolved away: a rollback that did not complete, or a benign non-zero injector exit, can end with
+every _surviving_ commit tagged, because the reconcile drops the rewritten copies as patch-identical.
+Never drop the diagnostic because its companion field is empty.
 
 **When no PR maps to the branch yet, the skip is the finding.** On a fresh workspace this route
 reaches the push before any PR exists, so the injection has no number to work with, records
@@ -1425,9 +1450,7 @@ pushes gives the injection a number while the commits are still unpublished and 
 Say what an untagged commit actually costs, and no more. The tag is a traceability link from commit
 to PR, so when the project runs no commit-message check in CI, an untagged commit is a gap in that
 link — not a red check. Where the project does run such a check, it is that too. Never assert a red
-build this run has not observed: an invented consequence sends the next reader hunting a failure that
-does not exist, which is the same class of error as an invented success, and it discredits the rest
-of the report.
+build this run has not observed.
 
 **Not a goal: retro-tagging commits origin already holds.** Those stay untagged, and the containment
 check above exists to keep them that way. Tagging them means rewriting published history, whose only
@@ -1676,6 +1699,67 @@ if [ "$STEP_6C_ALLOWANCE_SECONDS" -lt "$DEADLINE_LEG_SECONDS" ]; then
 fi
 ```
 
+**Price what the allowance actually funds — compute it, never narrate it.** The funded ordinary
+fix-round count is arithmetic over four terms that live in three different files, and a hand-written
+number is a claim no gate here can check. Ask the helper that owns the arithmetic instead, print what
+it priced, and **check that the call succeeded**:
+
+```bash
+# Re-derive `BOSS_BUILD_TOOLBOX` first, the way §Base-drift check does and for the same reason:
+# SKILL.md exported it in the ORCHESTRATOR's shell, and shell state survives neither between Bash
+# calls nor into a dispatched subagent. Left unguarded, `node undefined/bs-review-caps.mjs` exits 1.
+if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
+  done
+fi
+export BOSS_BUILD_TOOLBOX
+if STEP_6C_FUNDING="$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" funding \
+    "{\"allowanceSeconds\": $STEP_6C_ALLOWANCE_SECONDS, \"legSeconds\": $DEADLINE_LEG_SECONDS, \"initialLegs\": $STEP_6C_INITIAL_LEGS}")"; then
+  # {"fundedFixRounds":0,"reason":"funding-starved","allowanceSeconds":900,"fixRoundSeconds":1200}
+  STEP_6C_FUNDED_FIX_ROUNDS="$(printf '%s' "$STEP_6C_FUNDING" | sed -n 's/.*"fundedFixRounds":\([0-9]*\).*/\1/p')"
+  STEP_6C_FIX_ROUND_SECONDS="$(printf '%s' "$STEP_6C_FUNDING" | sed -n 's/.*"fixRoundSeconds":\([0-9]*\).*/\1/p')"
+  STEP_6C_FUNDING_REASON="$(printf '%s' "$STEP_6C_FUNDING" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')"
+else
+  STEP_6C_FUNDING="pricing call failed (exit $?)"
+  STEP_6C_FUNDED_FIX_ROUNDS=''
+  STEP_6C_FIX_ROUND_SECONDS=''
+  STEP_6C_FUNDING_REASON='funding-unpriced'
+fi
+# An unparsed number is unpriced too: publishing it renders a HOLE where the number goes.
+STEP_6C_FIX_ROUND_MINUTES=''
+case "$STEP_6C_FUNDED_FIX_ROUNDS" in
+  '' | *[!0-9]*) STEP_6C_FUNDED_FIX_ROUNDS=''; STEP_6C_FUNDING_REASON='funding-unpriced' ;;
+esac
+case "$STEP_6C_FIX_ROUND_SECONDS" in
+  '' | *[!0-9]*) STEP_6C_FIX_ROUND_SECONDS=''; STEP_6C_FUNDING_REASON='funding-unpriced' ;;
+  # The suffix below reports MINUTES; the helper echoes SECONDS. Convert here, once.
+  *) STEP_6C_FIX_ROUND_MINUTES=$(( (STEP_6C_FIX_ROUND_SECONDS + 59) / 60 )) ;;
+esac
+printf 'step 6c funding: %s\n' "$STEP_6C_FUNDING" >&2
+```
+
+**A failed pricing call must never be byte-identical to an adequately funded one.** Without the
+status check the assignment succeeds whatever `node` did: `$STEP_6C_FUNDING` is empty, both `sed`s
+yield empty, and `STEP_6C_FUNDING_REASON` reads as the funded case — the exact silence this
+disclosure exists to end, and the common case rather than the rare one, because a published core runs
+from the **installed** tree and an installed helper predating this verb exits non-zero on every run
+until the tree is refreshed. `funding-unpriced` is the third value in the payload's closed reason set
+for precisely this: unpriced, starved, and funded are three states, not two.
+
+`fixRoundSeconds` is deliberately not passed: omitted, the helper prices with its own
+`DEFAULT_FIX_ROUND_SECONDS` and **echoes back the value it used**, so the disclosure below states
+what was priced rather than a constant from another file. `reason` is `funding-starved` exactly when
+`fundedFixRounds` is `0`, and JSON `null` otherwise — which the `sed` above leaves as the empty
+string, so on the success branch **empty means not starved**, and unknown has a name of its own. The
+call reads no clock and no env, so an allowance can never select an outcome by timing.
+
+These variables die with this Bash call — shell state does not survive between them — so **you**, not
+the shell, carry the values forward: the reason **stated in the `boss-review` invocation** under the
+interface name `STEP_6C_FUNDING_REASON` (and into any terminal sentinel payload this protocol writes
+itself), the count and the converted minutes into the `## Review coverage` disclosure suffix. A value
+nobody reads back is an inert line every gate still reads as satisfied.
+
 - **Entry gate.** Enter only when the stamped allowance can fund at least one initial dispatch leg
   — `STEP_6C_ALLOWANCE_SECONDS` at or above `DEADLINE_LEG_SECONDS`, compared in **seconds**. If it
   cannot, there is no other review pass to fall back on, so this never reaches a clean exit: write
@@ -1684,6 +1768,12 @@ fi
   `## Review coverage` reason, and take §REVIEW_READY-with-findings publication rather than awaiting
   a pass whose first gate is guaranteed to refuse. Both numbers, per §Allowance-disclosure rule: the
   allowance and the cost of the leg it could not fund.
+- **State the funding reason next to the deadline.** Where the block above named one — starved, or
+  unpriced — state `STEP_6C_FUNDING_REASON` in the same invocation, under exactly that name, for
+  exactly the reason the deadline is stated under exactly its own: `boss-review` writes the run-file
+  sentinel itself on this route, so a reason you keep in your own shell reaches no payload and no
+  report. Where the call priced a funded step, state nothing — absence is the assertion "not
+  starved", and it is only true if the starved case is actually stated.
 - **Hand the deadline to `boss-review` itself, and require it to bound the _whole_ pass.** State
   `STEP_6C_DEADLINE` in the invocation and require the pass to check it before **every** expensive
   awaited leg it runs — its initial specialist and whole-branch passes, and the post-terminal notes
@@ -1693,9 +1783,7 @@ fi
   `deadline="${STEP_6C_DEADLINE:-}"`, so a value handed over under any other name leaves every gate
   there reading a name nothing assigned, taking the no-deadline branch, and the cap inert with both
   halves still reading as satisfied. You **await** this Skill call and cannot preempt it, so a
-  deadline you keep to yourself bounds nothing — the holder of the budget is not the component that
-  spends it, and an unhanded-off deadline is inert while every other instruction here still reads as
-  satisfied. A deadline handed over but consulted
+  deadline you keep to yourself bounds nothing. A deadline handed over but consulted
   **only in the fix loop** is inert the same way for everything before it: the initial
   passes run first, are awaited, and on `boss-review`'s Tier-2/Tier-3 fallback paths carry no
   extension timeout of their own, so they can spend this step's whole allowance — and overrun it —
@@ -1706,10 +1794,18 @@ fi
   preempted either, so `now < deadline` would admit one that overruns by the rest of its cost.
 - **What that arithmetic means at the default, computed rather than narrated.**
   At the shipped default, `DEADLINE_LEG_SECONDS=300`, `STEP_6C_INITIAL_LEGS=3`, and
-  `STEP_6C_MINUTES=15`. That allowance funds those initial legs and **0 ordinary fix rounds** because
+  `STEP_6C_MINUTES=15`. That allowance funds those initial legs and the `fundedFixRounds` the block
+  above printed, which at that default is **0 ordinary fix rounds**, because
   `FIX_ROUND_SECONDS=1200` does not fit after them — the fix loop is bounded instead by
   `boss-review`'s own `$MAX_ROUNDS` round cap rather than by this stamp, which is why the two are
-  bounded apart. There is one further exception, and it is bounded:
+  bounded apart.
+  **Raising the leg timeout does not change that count, and expecting it to is a mis-read.** The
+  stamped allowance _is_ the leg product rounded up to the next whole minute, so whatever
+  `BOSS_SKILL_EXTENSION_TIMEOUT_MS` a repository sets, the remainder after the initial legs is under
+  sixty seconds and `fundedFixRounds` stays `0`. The count is computed rather than narrated because a
+  narrated one cannot be checked at all — not because this particular knob moves it. Funding a fix
+  round from this stamp takes a change to the **stamp's own formula**, not to the timeout.
+  There is one further exception, and it is bounded:
   where the pass found a must-fix **it has not yet attempted**, `boss-review` funds a single overrun
   round from its own `MUSTFIX_OVERRUN_ROUNDS` allowance rather than deferring a finding nobody tried
   to fix. That round is drawn from that allowance, once per run, and cannot repeat.
@@ -1735,10 +1831,20 @@ fi
   A capped pass does still owe the **allowance-disclosure rule** above, so append a **suffix** to
   that `full` token — a suffix, never a new head form, so the resident enumeration Step 7 copies
   stays untouched:
-  `full (boss-review capped — <N> open must-fix reported; its <M>-minute allowance funds 0 fix rounds, each costing <C> minutes)`.
-  `<M>` is `STEP_6C_MINUTES` and `<C>` is `FIX_ROUND_MINUTES` — the allowance and the cost of the
+  `full (boss-review capped — <N> open must-fix reported; its <M>-minute allowance funds <F> fix rounds, each costing <C> minutes)`.
+  `<M>` is `STEP_6C_MINUTES`, `<F>` is the `fundedFixRounds` the funding call printed rather than a
+  literal, and `<C>` is `STEP_6C_FIX_ROUND_MINUTES` — the **minutes** the block above converted from
+  that same call's echoed `fixRoundSeconds`. Publish `<C>` from the converted minutes, never from the
+  echoed seconds: the seconds are `1200` and the template says _minutes_, so pasting them publishes
+  "each costing 1200 minutes" for a round that costs 20, in the PR body, on every capped run.
+  Together they are the allowance and the cost of the
   work it declined, the two separate numbers that rule requires, so a reader sees an inner box
-  decline work it could not afford rather than reading it as the run running out of time. Publish the suffix on the `## Review coverage` token the
+  decline work it could not afford rather than reading it as the run running out of time.
+  **Where the funding call did not price** — `STEP_6C_FUNDING_REASON` is `funding-unpriced` — publish
+  no numbers at all: append
+  `full (boss-review capped — <N> open must-fix reported; its allowance could not be priced)`
+  instead. A suffix with a hole where `<F>` belongs reads as a rendering bug, and one that guesses a
+  number is worse. Publish the suffix on the `## Review coverage` token the
   orchestrator writes in Step 7. That step's `|`-separated list enumerates **head** forms, not the
   whole string space, so a `full` carrying this suffix **is** the `full` head it already admits:
   copy the suffix through verbatim rather than normalising it back to a bare `full`, which would
@@ -1881,14 +1987,10 @@ was **not needed**, because nothing overlapped for it to answer: the base has no
 moved on paths this branch never touched. Only `unevaluated` is a hit; `skipped` is the ordinary
 healthy round and matches neither reading, exactly as the closing line above says.
 A trigger that cannot tell those two apart fires on a branch with
-**no drift at all** — on the unmoved base, and on every run where the base merely moved somewhere
-else, which is most of them — and a drift note published on most runs is how a real hit stops being
-visible. An earlier revision tried to recover the distinction from a second field (`stage2` is `true`
-**and** `mergeTree` is `unevaluated`); that inference is what shipped the misfire on the
-moved-but-disjoint case, where `stage2` is `true` and the probe was simply unnecessary. The
-detector now draws the distinction on the field itself, so read it there: a rule a model executes
-unattended must be a lookup, not a derivation. `intersection` is an array
-and can never hold the string `unevaluated`, so never test it for one.
+**no drift at all**, and a drift note published on most runs is how a real hit stops being visible.
+Never recover the distinction by inferring it from a second field: the detector draws it on the field
+itself, so read it there — a rule a model executes unattended must be a lookup, not a derivation.
+`intersection` is an array and can never hold the string `unevaluated`, so never test it for one.
 
 **A clean `mergeTree` is the rebase's precondition, not a nicety.** It is the only reading in which
 this branch and the moved base are known to reconcile. On `conflicts` or on `unevaluated` an
@@ -1949,8 +2051,7 @@ rebase` refuses outright on unstaged changes and `git rebase --abort` then exits
 
 **Publish the note on every route out — the clean one first, then the reduced-coverage, `BLOCKED`
 and `PARTIAL` ones.** The clean
-route is the one this check exists for: the incident behind it was a run that went green and found
-the overlap only after the final push, so a rule that named only the failure routes would leave the
+route is the one this check exists for — a rule that named only the failure routes would leave the
 primary one silent. On the **clean** route the orchestrator writes each returned drift note verbatim
 under `## Autonomous decisions` in the Step 7 PR body — it is not a decision the run made, but it is
 the section a reader looks in for what the run did about its own environment, and Step 7 is the only

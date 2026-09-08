@@ -89,6 +89,31 @@ func GetSpawnHistory() (SpawnHistory, error) {
 	return platformSpawnHistory()
 }
 
+// spawnHistoryTarget resolves which service-manager target carries the spawn
+// history for bossd on this host.
+//
+// BOS-1204: the answer is not a constant, because it is not the same JOB under
+// the two supervision substrates. Under the default the per-user LaunchAgent IS
+// bossd, so gui/<uid>/<label> is the job launchd spawns. Under `unattended`
+// launchd spawns the root-owned WATCHDOG, which then spawns bossd through
+// `launchctl asuser` — so bossd has no launchd job of its own and gui/<uid>
+// carries no history at all.
+//
+// It takes the LaunchAgent target as an argument rather than building it,
+// because Label and os.Getuid() belong to the darwin build while this rule does
+// not, and keeping the rule here is what makes the whole matrix — including the
+// rejected-configuration row — provable from either platform's test run.
+//
+// A rejected configuration resolves to the LaunchAgent target. That is the same
+// fail-closed direction ResolveSupervisionMode itself takes: a typo must never
+// be read as a request to probe a root-owned job.
+func spawnHistoryTarget(supervision SupervisionModeStatus, launchAgentTarget string) string {
+	if supervision.Err == nil && supervision.Mode == SupervisionModeUnattended {
+		return WatchdogTarget()
+	}
+	return launchAgentTarget
+}
+
 // launchdField is one `key = value` line captured from a `launchctl print`
 // dump, together with the brace depth it was found at.
 type launchdField struct {

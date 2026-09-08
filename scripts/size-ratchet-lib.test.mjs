@@ -18,6 +18,7 @@ import {
   MOVE_TO_REFERENCE_REMEDY,
   NO_REFERENCE_REMEDY,
   assertArtifactSet,
+  assertDescendingBudget,
   assertExactSize,
   assertMirrorRegenerated,
   measureFile,
@@ -194,6 +195,284 @@ test('assertExactSize reports the unit it was given', () => {
   assert.match(message, /181 lines/)
   assert.match(message, /176 lines/)
   assert.ok(!message.includes('bytes'), 'a line gate must not talk about bytes')
+})
+
+// ── assertDescendingBudget: the asymmetric price (BOS-1208) ────────────────────────────────
+//
+// The arm that matters most here is the one that does NOT throw. `assertExactSize` charged the
+// same one-line repin for a deletion as for an addition, which is why a de-ceremony trim
+// regrew; the budget's whole claim is that a shrink now costs nothing. A suite that only
+// asserted the throwing arms would stay green if that claim quietly stopped being true, so the
+// shrink case is proved against a real file on disk rather than against a hand-written number.
+
+const budgetBase = (overrides = {}) => ({
+  budget: 100,
+  constFile: 'scripts/demo-skill.test.mjs',
+  constName: 'RATCHET',
+  label: 'resident body budget',
+  measured: 100,
+  now: new Date('2026-01-01T00:00:00Z'),
+  path: 'skills/demo/SKILL.md',
+  raise: { from: 100 },
+  residual: RESIDUAL,
+  reviewBy: '2026-06-01',
+  stepDown: 8,
+  ...overrides,
+})
+
+test('assertDescendingBudget passes under the budget', () => {
+  assert.doesNotThrow(() => assertDescendingBudget(budgetBase({ measured: 42 })))
+})
+
+test('assertDescendingBudget passes exactly at the budget', () => {
+  assert.doesNotThrow(() => assertDescendingBudget(budgetBase({ measured: 100 })))
+})
+
+test('assertDescendingBudget over budget names measurement, budget, constant and file', () => {
+  const message = messageOf(() => assertDescendingBudget(budgetBase({ measured: 137 })))
+  assert.ok(message, 'a measurement over the budget must throw')
+  assert.match(message, /137/, 'the measured value must be in the message')
+  assert.match(message, /100/, 'the budget must be in the message')
+  assert.match(message, /RATCHET/, 'constName must be in the message')
+  assert.match(message, /scripts\/demo-skill\.test\.mjs/, 'constFile must be in the message')
+  assert.match(message, /skills\/demo\/SKILL\.md/, 'the artifact path must be in the message')
+  assert.match(message, /over by 37/, 'the message must state how far over it is')
+})
+
+test('the over-budget message states that a shrink is free and only a raise is priced', () => {
+  const message = messageOf(() => assertDescendingBudget(budgetBase({ measured: 101 })))
+  assert.match(message, /SHRINK needs no edit to RATCHET/)
+  assert.match(message, /only a RAISE costs anything/)
+  assert.match(message, /recorded justification/)
+  assert.ok(
+    message.includes(MOVE_TO_REFERENCE_REMEDY),
+    'the default remedy points at extraction into a reference',
+  )
+  assert.ok(
+    !message.includes('only moves DOWN'),
+    'the equality pin’s two-sided wording must not leak into an asymmetric budget',
+  )
+})
+
+test('assertDescendingBudget accepts a remedy override', () => {
+  const message = messageOf(() =>
+    assertDescendingBudget(budgetBase({ measured: 101, remedy: NO_REFERENCE_REMEDY })),
+  )
+  assert.ok(message.includes(NO_REFERENCE_REMEDY), 'the override must reach the message')
+  assert.ok(!message.includes(MOVE_TO_REFERENCE_REMEDY))
+})
+
+test('a budget raised with no recorded justification reds, naming the delta and the constant', () => {
+  const message = messageOf(() =>
+    assertDescendingBudget(budgetBase({ budget: 160, measured: 120, raise: { from: 100 } })),
+  )
+  assert.ok(message, 'an un-justified raise must throw')
+  assert.match(message, /raised from 100 to 160/)
+  assert.match(message, /up by 60/)
+  assert.match(message, /RATCHET in scripts\/demo-skill\.test\.mjs/)
+  assert.match(message, /raise\.justification/)
+  assert.match(message, /SAME commit that raised the budget/)
+  assert.match(message, /shrinking the artifact costs nothing/)
+})
+
+test('a blank justification does not buy a raise', () => {
+  const message = messageOf(() =>
+    assertDescendingBudget(
+      budgetBase({ budget: 160, measured: 120, raise: { from: 100, justification: '   ' } }),
+    ),
+  )
+  assert.match(message, /no recorded reason/)
+})
+
+test('a recorded justification buys the raise', () => {
+  assert.doesNotThrow(() =>
+    assertDescendingBudget(
+      budgetBase({
+        budget: 160,
+        measured: 120,
+        raise: { from: 100, justification: 'the preflight fence is executed, not explained' },
+      }),
+    ),
+  )
+})
+
+test('LOWERING the budget below its recorded previous value costs no justification at all', () => {
+  assert.doesNotThrow(() =>
+    assertDescendingBudget(budgetBase({ budget: 60, measured: 50, raise: { from: 100 } })),
+  )
+})
+
+test('the un-justified raise is reported BEFORE the over-budget verdict', () => {
+  // An unjustified constant makes every other verdict untrustworthy: there is no point telling
+  // a reader they are over a ceiling nobody recorded a reason for.
+  const message = messageOf(() =>
+    assertDescendingBudget(budgetBase({ budget: 160, measured: 999, raise: { from: 100 } })),
+  )
+  assert.match(message, /no recorded reason/)
+  assert.ok(!message.includes('over by'), 'the raise verdict wins the tie')
+})
+
+test('a passed review date with an unlowered budget reds on the CALENDAR, not on the artifact', () => {
+  const message = messageOf(() =>
+    assertDescendingBudget(
+      budgetBase({ measured: 90, now: new Date('2026-07-04T00:00:00Z'), stepDown: 8 }),
+    ),
+  )
+  assert.ok(message, 'a stale review date must throw even though the artifact fits')
+  assert.match(message, /passed its review date 2026-06-01/)
+  assert.match(message, /today is 2026-07-04/)
+  assert.match(message, /THE CAUSE IS THE CALENDAR, NOT A CODE CHANGE/)
+  assert.match(
+    message,
+    /nothing in skills\/demo\/SKILL\.md did this/,
+    'the message must exonerate the artifact by name — an unrelated branch can hit this',
+  )
+  assert.match(message, /Lower RATCHET to at most 92/, 'it must name the value to lower to')
+  assert.match(message, /move `reviewBy` forward/)
+})
+
+test('a review date still in the future does not red', () => {
+  assert.doesNotThrow(() =>
+    assertDescendingBudget(budgetBase({ now: new Date('2026-05-31T23:59:59Z') })),
+  )
+})
+
+test('the over-budget verdict is reported BEFORE the stale review date', () => {
+  // A branch that broke the ceiling should hear about its own change before it hears about
+  // scheduled maintenance it did not cause.
+  const message = messageOf(() =>
+    assertDescendingBudget(budgetBase({ measured: 120, now: new Date('2026-07-04T00:00:00Z') })),
+  )
+  assert.match(message, /over by 20/)
+  assert.ok(!message.includes('THE CAUSE IS THE CALENDAR'))
+})
+
+test('every assertDescendingBudget failure ends with the stated residual', () => {
+  const cases = [
+    budgetBase({ measured: 101 }),
+    budgetBase({ budget: 160, measured: 120, raise: { from: 100 } }),
+    budgetBase({ now: new Date('2026-07-04T00:00:00Z') }),
+    budgetBase({ below: { name: 'PRE_EXTRACTION_BASELINE', value: 90 } }),
+  ]
+  for (const options of cases) {
+    const message = messageOf(() => assertDescendingBudget(options))
+    assert.ok(
+      message.endsWith(`Not covered by this check: ${RESIDUAL}.`),
+      `every failure must end with the residual, got: ${message}`,
+    )
+  }
+})
+
+test('assertDescendingBudget omitting residual throws a blind-spot error on a PASSING measurement', () => {
+  const { residual, ...withoutResidual } = budgetBase({ measured: 10 })
+  assert.equal(typeof residual, 'string')
+  const message = messageOf(() => assertDescendingBudget(withoutResidual))
+  assert.match(message, /must state its blind spot/)
+  assert.match(message, /wiring error in the gate, not a finding about the artifact/)
+})
+
+test('assertDescendingBudget rejects an empty residual the same way as a missing one', () => {
+  const message = messageOf(() => assertDescendingBudget(budgetBase({ residual: '   ' })))
+  assert.match(message, /must state its blind spot/)
+})
+
+test('omitting `raise` is refused, so the priced direction cannot be dropped to dodge the check', () => {
+  const { raise, ...withoutRaise } = budgetBase({ measured: 10 })
+  assert.equal(typeof raise, 'object')
+  const message = messageOf(() => assertDescendingBudget(withoutRaise))
+  assert.match(message, /requires a `raise`/)
+  assert.match(message, /the one priced direction becomes free/)
+})
+
+test('a malformed or unreal reviewBy is a wiring error, not a size finding', () => {
+  for (const reviewBy of ['2026/06/01', 'soon', '2026-13-01']) {
+    const message = messageOf(() => assertDescendingBudget(budgetBase({ reviewBy })))
+    assert.ok(message, `${reviewBy} must be refused`)
+    assert.match(message, /Wiring error\.$/)
+  }
+})
+
+test('a stepDown of 0 is refused: a budget that never descends is the flat ceiling', () => {
+  const message = messageOf(() => assertDescendingBudget(budgetBase({ stepDown: 0 })))
+  assert.match(message, /must be a POSITIVE integer/)
+  assert.match(message, /never descends/)
+})
+
+test('a violated below bound names both readings for the budget too', () => {
+  const message = messageOf(() =>
+    assertDescendingBudget(budgetBase({ below: { name: 'PRE_EXTRACTION_BASELINE', value: 90 } })),
+  )
+  assert.match(message, /RATCHET = 100/)
+  assert.match(message, /PRE_EXTRACTION_BASELINE = 90/)
+  assert.match(message, /the budget was raised toward the baseline/)
+  assert.match(message, /the baseline needs re-deriving/)
+})
+
+test('a satisfied below bound does not throw for the budget', () => {
+  assert.doesNotThrow(() =>
+    assertDescendingBudget(budgetBase({ below: { name: 'PRE_EXTRACTION_BASELINE', value: 120 } })),
+  )
+})
+
+test('assertDescendingBudget reports the unit it was given', () => {
+  const message = messageOf(() =>
+    assertDescendingBudget(
+      budgetBase({ budget: 176, measured: 181, raise: { from: 176 }, unit: 'lines' }),
+    ),
+  )
+  assert.match(message, /181 lines/)
+  assert.match(message, /176 lines/)
+  assert.ok(!message.includes('bytes'), 'a line gate must not talk about bytes')
+})
+
+// ── assertDescendingBudget: the acceptance criteria, proved against a real file ─────────────
+
+test('BOS-1208 AC: deleting bytes leaves the gate green with the budget constant UNCHANGED', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'size-budget-'))
+  const file = path.join(dir, 'SKILL.md')
+  fs.writeFileSync(file, 'x'.repeat(400))
+
+  // Written once. Nothing below is allowed to touch it — that is the claim under test.
+  const BUDGET = 400
+  const gate = () =>
+    assertDescendingBudget(
+      budgetBase({ budget: BUDGET, measured: measureFile(file), raise: { from: BUDGET } }),
+    )
+
+  assert.equal(measureFile(file), 400, 'seeded at the measured size, so the budget binds at once')
+  assert.doesNotThrow(gate, 'an artifact at its seeded budget passes')
+
+  fs.writeFileSync(file, 'x'.repeat(150))
+  assert.equal(measureFile(file), 150, 'the fixture must actually have shrunk')
+  assert.doesNotThrow(
+    gate,
+    'a shrink must cost NO edit to the budget constant — this is the incentive change the ' +
+      'equality pin could not make, and the arm a throw/no-throw suite would lose silently',
+  )
+
+  fs.rmSync(dir, { force: true, recursive: true })
+})
+
+test('BOS-1208 AC: the budget is shown ABLE TO FIRE — the same fixture grown past it reds', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'size-budget-'))
+  const file = path.join(dir, 'SKILL.md')
+  const BUDGET = 400
+  const gate = () =>
+    assertDescendingBudget(
+      budgetBase({ budget: BUDGET, measured: measureFile(file), raise: { from: BUDGET } }),
+    )
+
+  fs.writeFileSync(file, 'x'.repeat(400))
+  assert.doesNotThrow(gate, 'the green reading has to be real before the red one means anything')
+
+  fs.writeFileSync(file, 'x'.repeat(441))
+  const message = messageOf(gate)
+  assert.ok(message, 'growth past the budget must red — a gate assumed to fire is not a gate')
+  assert.match(message, /measured 441/)
+  assert.match(message, /budget 400/)
+  assert.match(message, /over by 41/)
+
+  fs.rmSync(dir, { force: true, recursive: true })
 })
 
 // ── measureFile ────────────────────────────────────────────────────────────────────────────

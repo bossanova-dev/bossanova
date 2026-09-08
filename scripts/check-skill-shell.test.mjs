@@ -24,6 +24,7 @@ import {
   findSkillMarkdownFiles,
   findUnsafeNodeEval,
   findUnterminatedHeredoc,
+  findWordSplitReliance,
   normalizePlaceholders,
   startsComment,
 } from './check-skill-shell.mjs'
@@ -4446,7 +4447,7 @@ test('findMaskedPipelineStatus exempts substitution value plumbing and explicit 
   assert.deepEqual(findMaskedPipelineStatus('V=`make test | tee log.txt`'), [])
   assert.deepEqual(
     findMaskedPipelineStatus(
-      'make test | tee log.txt\nif [ "${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi',
+      'make test | tee log.txt\nif [ $pipestatus[1] -ne 0 ]; then exit 1; fi',
     ),
     [],
   )
@@ -4457,7 +4458,7 @@ test('findMaskedPipelineStatus exempts substitution value plumbing and explicit 
     [],
   )
   assert.deepEqual(
-    findMaskedPipelineStatus('make test | tee log.txt\n[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1'),
+    findMaskedPipelineStatus('make test | tee log.txt\n[ $pipestatus[1] -eq 0 ] || exit 1'),
     [],
   )
   assert.deepEqual(
@@ -4465,35 +4466,258 @@ test('findMaskedPipelineStatus exempts substitution value plumbing and explicit 
     [],
   )
   assert.deepEqual(
-    findMaskedPipelineStatus('make test | tee log.txt; [ "${PIPESTATUS[0]}" -eq 0 ] || exit 1'),
+    findMaskedPipelineStatus('make test | tee log.txt; [ $pipestatus[1] -eq 0 ] || exit 1'),
     [],
-    'a same-list PIPESTATUS guard protects the immediately preceding pipeline',
+    'a same-list status guard protects the immediately preceding pipeline',
   )
   assert.equal(
     findMaskedPipelineStatus(
-      'make first | tee first.log; go test ./... | tee second.log\n[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1',
+      'make first | tee first.log; go test ./... | tee second.log\n[ $pipestatus[1] -eq 0 ] || exit 1',
     ).length,
     1,
-    'a next-line PIPESTATUS guard only protects the immediately preceding pipeline',
+    'a next-line status guard only protects the immediately preceding pipeline',
   )
   assert.equal(
-    findMaskedPipelineStatus('make test | tee log.txt\necho "${PIPESTATUS[0]}"').length,
+    findMaskedPipelineStatus('make test | tee log.txt\necho $pipestatus[1]').length,
     1,
     'a status read that does not guard control flow does not protect the pipeline head',
   )
   assert.equal(
-    findMaskedPipelineStatus(
-      'make test | tee log.txt\necho x; [ "${PIPESTATUS[0]}" -eq 0 ] || exit 1',
-    ).length,
+    findMaskedPipelineStatus('make test | tee log.txt\necho x; [ $pipestatus[1] -eq 0 ] || exit 1')
+      .length,
     1,
     'a status guard after another command no longer observes the pipeline head',
   )
   assert.equal(
     findMaskedPipelineStatus(
-      'make test | tee log.txt\nif [ "${PIPESTATUS[0]}" -ne 0 ]; then echo fail; fi; exit 0',
+      'make test | tee log.txt\nif [ $pipestatus[1] -ne 0 ]; then echo fail; fi; exit 0',
     ).length,
     1,
     'a later exit outside the failing branch does not guard the pipeline head',
+  )
+})
+
+// See header rule (k). `${PIPESTATUS[0]}` is UNSET under zsh — the shell this harness's Bash tool
+// evaluates — so a guard spelled only that way cannot fire where the block runs, and exempting it
+// would have the gate bless a silent green. The zsh spelling alongside it still exempts.
+test('findMaskedPipelineStatus does not accept a lone ${PIPESTATUS[0]} as a guard', () => {
+  assert.equal(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif [ "${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi',
+    ).length,
+    1,
+    'a bash-only PIPESTATUS guard is inert under zsh, so the pipeline is still masked',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('make test | tee log.txt\n[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1')
+      .length,
+    1,
+    'the same-list bash-only spelling is equally inert',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\n[ "${PIPESTATUS[0]}" -ne 0 ] || [ $pipestatus[1] -ne 0 ] && exit 1',
+    ),
+    [],
+    'a guard that also spells the zsh read is live in the shell the block runs in',
+  )
+})
+
+// Header rule (l). Measured: zsh does not word-split an unquoted PARAMETER expansion, so
+// `V="a b"; for X in $V` iterates once where bash iterates twice — and nothing errors.
+test('findWordSplitReliance reports a for loop whose whole list is one unquoted parameter', () => {
+  assert.deepEqual(findWordSplitReliance('for SENT_SHA in $SENT_SHAS; do echo "$SENT_SHA"; done'), [
+    { lineOffset: 0, name: 'SENT_SHA', variable: 'SENT_SHAS', list: '$SENT_SHAS' },
+  ])
+  assert.deepEqual(findWordSplitReliance('for T in ${WATCH_TRIGGERS}; do boss add "$T"; done'), [
+    { lineOffset: 0, name: 'T', variable: 'WATCH_TRIGGERS', list: '${WATCH_TRIGGERS}' },
+  ])
+  assert.deepEqual(
+    findWordSplitReliance('echo start\nfor merge_commit in $MERGE_AMENDMENTS\ndo\n  :\ndone'),
+    [
+      {
+        lineOffset: 1,
+        name: 'merge_commit',
+        variable: 'MERGE_AMENDMENTS',
+        list: '$MERGE_AMENDMENTS',
+      },
+    ],
+    'reported against the loop header line, with `do` on its own line',
+  )
+  assert.deepEqual(
+    findWordSplitReliance('for X in \\\n  $VAR; do echo "$X"; done'),
+    [{ lineOffset: 0, name: 'X', variable: 'VAR', list: '$VAR' }],
+    'a backslash-continued header is joined before the list is read',
+  )
+  assert.equal(
+    findWordSplitReliance('for A in $ONE; do :; done; for B in $TWO; do :; done').length,
+    2,
+    'two loops on one logical line are two findings',
+  )
+})
+
+// The carve-outs ARE the rule (see (l)): a command substitution splits identically in both shells,
+// and a quoted list or quoted array expansion splits in neither. Reporting any of these would be the
+// false positive this file forbids.
+test('findWordSplitReliance stays silent on shapes both shells agree about', () => {
+  for (const body of [
+    'for attempt in $(seq 1 40); do echo "$attempt"; done',
+    'for f in `ls`; do echo "$f"; done',
+    'for X in "$VAR"; do echo "$X"; done',
+    'for X in \'$VAR\'; do echo "$X"; done',
+    'for e in ${before_entries+"${before_entries[@]}"}; do echo "$e"; done',
+    'for e in "${entries[@]}"; do echo "$e"; done',
+    'for X in $ONE $TWO; do echo "$X"; done',
+    'for f in a b c; do echo "$f"; done',
+    'for X in ${VAR:-fallback}; do echo "$X"; done',
+    '# for X in $VAR; do echo "$X"; done',
+    'cat <<\'EOF\'\nfor X in $VAR; do echo "$X"; done\nEOF',
+  ]) {
+    assert.deepEqual(findWordSplitReliance(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The ACCEPTED FALSE NEGATIVE in (l), pinned so a later widening is a deliberate act. Every
+// unquoted expansion in ordinary argument position in this corpus is provably at-most-one-word.
+test('findWordSplitReliance does not report an unquoted expansion in argument position', () => {
+  for (const body of [
+    'pnpm update --recursive --lockfile-only $PNPM_FLAGS',
+    'pnpm install --lockfile-only $PNPM_FLAGS',
+    'node r.mjs --head "$(git rev-parse HEAD)" $FETCH_FAILED',
+    'boss chat wait $CHAT',
+    'gh pr view --json x -q \'select($me == "")\'',
+    '# rm $TMPDIR scratch when done',
+  ]) {
+    assert.deepEqual(findWordSplitReliance(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The four Class A sites this ticket fixed, reproduced in their PRE-FIX shape, so the rule is pinned
+// against the real corpus rather than only against synthetic lines.
+test('checkSkillShellInRepo reports one word-split finding per real Class A loop shape', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('repair-like')]: md(
+      'push survival',
+      '```bash',
+      'SENT_SHAS="deadbeef cafebabe"',
+      'for SENT_SHA in $SENT_SHAS; do',
+      '  git merge-base --is-ancestor "$SENT_SHA" "origin/$BRANCH" || echo residual',
+      'done',
+      '```',
+      '',
+      'amendment replay',
+      '```bash',
+      'for merge_commit in $MERGE_AMENDMENTS; do',
+      '  git show --format= "$merge_commit" > "/tmp/amend-$merge_commit.patch"',
+      'done',
+      '```',
+    ),
+    [claudeSkill('build-like')]: md(
+      '```bash',
+      'for T in $WATCH_TRIGGERS; do',
+      '  boss callback add "$PR" "$T" --json',
+      'done',
+      '```',
+    ),
+    [claudeSkill('epic-like')]: md(
+      '```bash',
+      'for T in $DRAFT_AWARE_TRIGGERS; do',
+      '  boss callback add "$PR" "$T" --json',
+      'done',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const split = findings.filter((f) => f.kind === 'word-split')
+    assert.equal(split.length, 4, `expected four, got ${JSON.stringify(findings)}`)
+    assert.deepEqual(
+      split.map((f) => f.line),
+      [2, 2, 4, 11],
+      'each finding points at its own `for` line, not at the fence',
+    )
+    // The message quotes the offending loop verbatim, so its spacing is the thing under test.
+    assert.match(split[0].message, /for[ ]T[ ]in[ ]\$WATCH_TRIGGERS/)
+    assert.match(split[0].message, /zsh/)
+    assert.match(split[0].message, /printf '%s\\n'/, 'names the sanctioned replacement form')
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// The twelve shapes the class enumeration adjudicated `not a defect` must stay silent through the
+// whole gate, not just through the predicate — a collateral finding from a sibling rule would be
+// just as wrong an answer.
+test('checkSkillShellInRepo reports nothing for the shapes adjudicated not a defect', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('not-a-defect')]: md(
+      '```bash',
+      'for attempt in $(seq 1 40); do echo "$attempt"; done',
+      'for e in ${before_entries+"${before_entries[@]}"}; do echo "$e"; done',
+      'for e in ${before_deleted+"${before_deleted[@]}"}; do echo "$e"; done',
+      'pnpm update --recursive --lockfile-only $PNPM_FLAGS',
+      'pnpm install --lockfile-only $PNPM_FLAGS',
+      'node review.mjs --head "$(git rev-parse HEAD)" $FETCH_FAILED',
+      'boss chat wait $CHAT',
+      'gh pr view 1 --json reviews -q \'.[] | select($me == "x")\'',
+      '# rm $TMPDIR scratch when done',
+      '```',
+    ),
+  })
+  try {
+    assert.deepEqual(await checkSkillShellInRepo(repoRoot), [])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// (k), narrowed. `${PIPESTATUS[0]}` is unset under zsh, so a block guarded only that way is guarded
+// by nothing where it runs — the gate must say so rather than exempt it.
+test('checkSkillShellInRepo reports a pipeline guarded only by ${PIPESTATUS[0]}', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('bash-only-guard')]: md(
+      '```bash',
+      'make test | tee log.txt',
+      'if [ "${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi',
+      '```',
+    ),
+    [claudeSkill('zsh-guard')]: md(
+      '```bash',
+      'make test | tee log.txt',
+      'if [ $pipestatus[1] -ne 0 ]; then exit 1; fi',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'pipeline-status')
+    assert.match(findings[0].file, /bash-only-guard[/\\]SKILL\.md$/)
+    assert.equal(findings[0].line, 2)
+    assert.doesNotMatch(findings[0].message, /fish/, 'the remedy must not be attributed to fish')
+    assert.match(findings[0].message, /pipestatus\[1\]/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// (l)'s sanctioned fix uses `|| continue`, so rule (g) must not call it an inert guard — a gate whose
+// own remedy trips a sibling rule is the hazard rule (f) names.
+test('findInertGuards accepts continue and break as branch terminators', () => {
+  assert.deepEqual(
+    findInertGuards(
+      'printf %s "$V" | while IFS= read -r X; do\n  [ -n "$X" ] || continue\n  echo "$X"\ndone',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards('for X in a b; do\n  [ -n "$X" ] || break\n  echo "$X"\ndone'),
+    [],
+  )
+  assert.equal(
+    findInertGuards('test -f tool || echo missing\nrun-it').length,
+    1,
+    'a fallback that neither terminates nor skips is still inert',
   )
 })
 

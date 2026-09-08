@@ -19,15 +19,16 @@ import { insideStringLiteral } from './check-vacuous-regions.mjs'
 // compares for equality, so a shrink reds too and the only way to clear it is to bank the
 // saving in the constant.
 //
-// TWO RULES, BOTH STRUCTURAL. This gate flags the MEASUREMENT, not the comparison. That is a
-// deliberate narrowing: a detector for the comparison itself — an assertion whose operand is
-// compared against a SCREAMING_SNAKE constant — was prototyped over this exact scope and
+// THREE RULES, ALL STRUCTURAL. The first two flag the MEASUREMENT, not the comparison. That
+// is a deliberate narrowing: a detector for the comparison itself — an assertion whose operand
+// is compared against a SCREAMING_SNAKE constant — was prototyped over this exact scope and
 // produced eight false positives, none of them size gates. They were string fixtures
 // containing `<TICKET`, byte-OFFSET ordering assertions (`gateAt > PHASE_4_SECTION`), and a
 // batch-size bound (`b.length <= GO_BATCH`). A detector that guesses is a detector that
-// quietly stops detecting, so the comparison rule was dropped rather than shipped with a
-// standing false-positive tax and the opt-outs that would follow. What that costs is stated
-// in RESIDUAL below — this gate is not the whole invariant, and does not claim to be.
+// quietly stops detecting, so the general comparison rule was dropped rather than shipped with
+// a standing false-positive tax and the opt-outs that would follow. That decision stands, and
+// rule 3 below does NOT reopen it. What it still costs is stated in RESIDUAL — this gate is
+// not the whole invariant, and does not claim to be.
 //
 // Rule 1, `raw-byte-measure`: `Buffer.byteLength(` inside a scanned file. `measureFile` from
 // size-ratchet-lib exists precisely so a size gate never measures for itself, and it throws
@@ -38,6 +39,23 @@ import { insideStringLiteral } from './check-vacuous-regions.mjs'
 // Rule 2, `raw-line-measure`: the `.split(<newline>).length` line-count idiom inside a
 // scanned file, which is how the CLAUDE.md ceiling counted lines before the conversion. Same
 // argument: `measureFile(p, { unit: 'lines' })` counts and fails closed in one call.
+//
+// Rule 3, `raw-budget-compare` (BOS-1208): a comparison operator applied DIRECTLY to the
+// result of the size-lib measurement helper, in either operand position. Routing the
+// measurement through the helper and then hand-writing the comparison is the same leak one
+// step later — the helper's fail-closed measurement is preserved and its asymmetric price is
+// thrown away, so a shrink stops being free and a raise stops costing a recorded reason.
+// `assertDescendingBudget` (or `assertExactSize`, where an equality pin is the right price) is
+// what the operand belongs in.
+//
+// This rule does NOT reintroduce the general comparison detector and shares no shape with the
+// eight false positives recorded above: the operand here must literally be a call to the
+// measurement helper, which exists nowhere but a size gate. `gateAt > PHASE_4_SECTION`,
+// `b.length <= GO_BATCH` and the `<TICKET` string fixtures are all invisible to it, because
+// none of them measures anything. The helper's arguments nest parentheses
+// (`measure…(path.join(rootDir, skillPath))`), so a flat regex would stop at the wrong `)`;
+// the scan balances parens instead. Its blind spot is the mirror of that narrowness, and is
+// recorded in RESIDUAL.
 //
 // Parser-free, so prose is scanned too. Neither pattern is spelled verbatim anywhere in this
 // file's own comments, and the scope below excludes this file and its test regardless — see
@@ -52,6 +70,72 @@ const RAW_LINE_MEASURE = new RegExp(
   'g',
 )
 
+// Assembled rather than written literally, for the same reason RAW_LINE_MEASURE is: a scanned
+// copy of this file must not match its own rule.
+const MEASURE_CALL = ['measure', 'File'].join('')
+
+// Comparison operators the budget shape can be spelled with, longest alternative first so
+// `===` is never read as `==` and `>=` is never read as `>`. `=>`, `!=` and `!==` are listed
+// only so the trailing-operand scan can RECOGNISE and reject them: an arrow function is how
+// the measurement helper is legitimately wrapped in a callback, and it ends in the same
+// character a `>` comparison does.
+const COMPARE_AFTER = /^\s*(===|==|<=|>=|<|>)/
+const COMPARE_BEFORE = /(===|!==|==|!=|<=|>=|=>|<|>)$/
+const NOT_A_COMPARISON = new Set(['=>', '!=', '!=='])
+
+/** Index of the `)` closing the `(` at `openIndex`, or -1 if the source is unbalanced. */
+function closingParen(contents, openIndex) {
+  let depth = 0
+  for (let i = openIndex; i < contents.length; i += 1) {
+    if (contents[i] === '(') depth += 1
+    else if (contents[i] === ')') {
+      depth -= 1
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/**
+ * Find every comparison written directly against a measurement-helper call.
+ *
+ * Paren-balancing rather than regex, because the helper's argument is routinely a nested call.
+ * The balance is naive about parentheses inside string literals in those arguments; a path
+ * containing one would end the scan early and lose the hit, which is a miss rather than a
+ * false positive and is recorded in RESIDUAL.
+ *
+ * @param {string} contents Whole file text.
+ * @returns {{index: number, text: string}[]} Hits, in source order.
+ */
+function findBudgetCompares(contents) {
+  const needle = `${MEASURE_CALL}(`
+  const hits = []
+  let from = 0
+  for (;;) {
+    const start = contents.indexOf(needle, from)
+    if (start === -1) break
+    from = start + needle.length
+    // `someOtherMeasureFile(` is a different identifier, not this helper.
+    if (start > 0 && /[\w$]/.test(contents[start - 1])) continue
+    const end = closingParen(contents, start + needle.length - 1)
+    if (end === -1) continue
+
+    const after = COMPARE_AFTER.exec(contents.slice(end + 1, end + 65))
+    if (after) {
+      hits.push({ index: start, text: `${MEASURE_CALL}(…) ${after[1]}` })
+      continue
+    }
+    const before = COMPARE_BEFORE.exec(contents.slice(0, start).replace(/\s+$/, ''))
+    if (before && !NOT_A_COMPARISON.has(before[1])) {
+      hits.push({ index: start, text: `${before[1]} ${MEASURE_CALL}(…)` })
+    }
+  }
+  return hits
+}
+
+// A rule carries EITHER a `pattern` (a global regex) or a `scan` (a function returning the
+// same hit shape). The budget rule cannot be a regex — its operand nests parentheses — and
+// `findRawSizeRatchets` normalises both into the one `{line, rule, remedy, text}` offender.
 const RULES = [
   {
     name: 'raw-byte-measure',
@@ -63,7 +147,20 @@ const RULES = [
     pattern: RAW_LINE_MEASURE,
     remedy: "use measureFile(path, { unit: 'lines' }) from scripts/size-ratchet-lib.mjs",
   },
+  {
+    name: 'raw-budget-compare',
+    remedy:
+      'pass the measurement to assertDescendingBudget() (or assertExactSize()) from ' +
+      'scripts/size-ratchet-lib.mjs rather than comparing it by hand',
+    scan: findBudgetCompares,
+  },
 ]
+
+/** Normalise a global-regex rule into the same hit shape a `scan` rule returns. */
+function regexHits(pattern, contents) {
+  pattern.lastIndex = 0
+  return [...contents.matchAll(pattern)].map((match) => ({ index: match.index, text: match[0] }))
+}
 
 // The escape hatch, on the offending line or the line immediately before it. The reason is
 // REQUIRED and must be non-empty — an unexplained opt-out is the next unbanked ratchet.
@@ -97,22 +194,30 @@ export const SCAN_EXCLUSIONS = [
 //   1. It does not prove any pin is CORRECT, only that no gate in scope measures by hand. A
 //      call site can pass `measured` and `expected` through assertExactSize with a wrong
 //      number and this gate is silent; the test suite is what catches that.
-//   2. It does not catch a one-sided comparison written over a `measureFile` result, for the
-//      false-positive reason recorded above. Review catches that shape, not this gate.
-//   3. It looks at one directory and one filename pattern. A size ratchet written in a file
+//   2. Rule 3 catches a comparison written DIRECTLY on the helper call. It does not catch the
+//      same comparison one variable later — bind the measurement to a name first and compare
+//      that name, and nothing here fires. Closing that would need the general comparison
+//      detector whose eight false positives are recorded above, which is a worse trade.
+//   3. It does not prove a budget DESCENDS — and neither does anything else. This scan cannot
+//      see it, and `assertDescendingBudget` reds on the review date without checking that the
+//      budget then fell by `stepDown`, because it keeps no record of the previous `reviewBy`.
+//      Moving the date forward alone clears the red. Review is what closes that, not a gate.
+//   4. It looks at one directory and one filename pattern. A size ratchet written in a file
 //      that does not match SCANNED_NAME is not scanned at all.
-//   4. The two rules match TWO SPELLINGS, not the concept of measuring. Hand-rolled
+//   5. The three rules match THREE SPELLINGS, not the concept of measuring. Hand-rolled
 //      measurement written any other way — `fs.statSync(p).size`, `readFileSync(p).length`,
 //      `[...text].length`, `split(/\r?\n/).length`, or a helper that wraps any of them — is
 //      invisible here, with no opt-out marker to make the omission visible either. This is the
 //      same failure mode the ticket exists to remove, one level up: a structural detector's
 //      verdict is bounded by the shapes it enumerates, so read the rule list, not the headline.
 export const RESIDUAL =
-  'a green run means no gate in scope measures bytes or lines by hand IN THE TWO SPELLINGS ' +
-  'these rules match — not that any pin is correct, not that a comparison over a ' +
-  'measureFile() result is two-sided, not that a size ratchet outside SCANNED_NAME exists at ' +
-  'all, and not that another measurement spelling (statSync().size, readFileSync().length, ' +
-  'split(/\\r?\\n/).length, or a wrapper around them) is absent'
+  'a green run means no gate in scope measures bytes or lines by hand, and none compares a ' +
+  'measurement directly against a budget, IN THE THREE SPELLINGS these rules match — not ' +
+  'that any pin is correct, not that a budget actually descends, not that a comparison over ' +
+  'an intermediate variable holding a measureFile() result is routed through the library, ' +
+  'not that a size ratchet outside SCANNED_NAME exists at all, and not that another ' +
+  'measurement spelling (statSync().size, readFileSync().length, split(/\\r?\\n/).length, or ' +
+  'a wrapper around them) is absent'
 
 function hasOptOut(lines, lineNumber) {
   for (const offset of [1, 2]) {
@@ -138,11 +243,11 @@ export function findRawSizeRatchets(contents) {
   const lines = contents.split(String.fromCharCode(10))
   const offenders = []
   for (const rule of RULES) {
-    rule.pattern.lastIndex = 0
-    for (const match of contents.matchAll(rule.pattern)) {
-      const line = contents.slice(0, match.index).split(String.fromCharCode(10)).length
+    const hits = rule.scan ? rule.scan(contents) : regexHits(rule.pattern, contents)
+    for (const hit of hits) {
+      const line = contents.slice(0, hit.index).split(String.fromCharCode(10)).length
       if (hasOptOut(lines, line)) continue
-      offenders.push({ line, remedy: rule.remedy, rule: rule.name, text: match[0] })
+      offenders.push({ line, remedy: rule.remedy, rule: rule.name, text: hit.text })
     }
   }
   return offenders.sort((a, b) => a.line - b.line)

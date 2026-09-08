@@ -9,15 +9,16 @@ import { fileURLToPath } from 'node:url'
 import { region } from './gate-region-lib.mjs'
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
-const REPAIR_MIRRORS = [
-  'services/boss/internal/skillinstall/skills/boss-repair',
-  'plugins/bossd-plugin-claude/skilldata/skills/boss-repair',
-]
+// BOS-1212: the plugin mirror is an rsync of this tree (`make copy-skills`), and
+// scripts/skill-mirror-generation.test.mjs asserts that generation once for the whole
+// payload. Re-asserting each clause against the copy proved only that a copy copied.
+const REPAIR_CANONICAL = 'services/boss/internal/skillinstall/skills/boss-repair'
 
 const skillText = (dir) => fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
 test('BOS-771: Strategy A handles generated artifacts and additive registries', () => {
-  for (const dir of REPAIR_MIRRORS) {
+  {
+    const dir = REPAIR_CANONICAL
     const strategy = region(skillText(dir), '#### Strategy A: Merge Conflicts', '#### Strategy B:')
     assert.match(strategy, /generated\s+artifact[\s\S]*regenerate[\s\S]*never\s+hand-edit/i)
     assert.match(
@@ -28,7 +29,8 @@ test('BOS-771: Strategy A handles generated artifacts and additive registries', 
 })
 
 test('BOS-771: Strategy A runs post-rebase checks after the whole rebase', () => {
-  for (const dir of REPAIR_MIRRORS) {
+  {
+    const dir = REPAIR_CANONICAL
     const strategy = region(skillText(dir), '#### Strategy A: Merge Conflicts', '#### Strategy B:')
     assert.match(strategy, /commands\.postRebase/)
     assert.match(
@@ -44,7 +46,8 @@ test('BOS-771: Strategy A runs post-rebase checks after the whole rebase', () =>
 })
 
 test('BOS-1002: installed-skill gate derives the current tree and degrades for an old boss CLI', () => {
-  for (const dir of REPAIR_MIRRORS) {
+  {
+    const dir = REPAIR_CANONICAL
     const skill = skillText(dir)
     assert.match(skill, /BOSS_SKILLS_HOME/, dir)
     assert.match(skill, /boss-repair\/toolbox/, dir)

@@ -1790,10 +1790,10 @@ func TestReportDaemonSupervisionFlagsADetachedDaemon(t *testing.T) {
 	stubDaemonDoctorProcess(t, nil) // the recorded PID IS alive
 
 	var out strings.Builder
-	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
+	unhealthy, remediation := reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: 14350}, nil)
 
-	if !unhealthy || !remediation {
-		t.Fatalf("unhealthy=%v remediation=%v, want both true\n%s", unhealthy, remediation, out.String())
+	if !unhealthy || remediation != daemonSupervisionRemediationRestart {
+		t.Fatalf("unhealthy=%v remediation=%v, want unhealthy with a restart remedy\n%s", unhealthy, remediation, out.String())
 	}
 	got := out.String()
 	if !strings.Contains(got, "FAIL") {
@@ -1819,9 +1819,9 @@ func TestReportDaemonSupervisionFlagsAPIDMismatch(t *testing.T) {
 	stubDaemonDoctorProcess(t, nil)
 
 	var out strings.Builder
-	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
-	if !unhealthy || !remediation {
-		t.Fatalf("unhealthy=%v remediation=%v, want both true\n%s", unhealthy, remediation, out.String())
+	unhealthy, remediation := reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if !unhealthy || remediation != daemonSupervisionRemediationRestart {
+		t.Fatalf("unhealthy=%v remediation=%v, want unhealthy with a restart remedy\n%s", unhealthy, remediation, out.String())
 	}
 	if !strings.Contains(out.String(), "999") || !strings.Contains(out.String(), "14350") {
 		t.Fatalf("output does not name both PIDs:\n%s", out.String())
@@ -1839,9 +1839,9 @@ func TestReportDaemonSupervisionPassesWhenSupervised(t *testing.T) {
 	stubDaemonDoctorProcess(t, nil)
 
 	var out strings.Builder
-	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
-	if unhealthy || remediation {
-		t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+	unhealthy, remediation := reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if unhealthy || remediation != daemonSupervisionRemediationNone {
+		t.Fatalf("unhealthy=%v remediation=%v, want neither\n%s", unhealthy, remediation, out.String())
 	}
 	if !strings.Contains(out.String(), "ok") {
 		t.Fatalf("output does not report ok:\n%s", out.String())
@@ -1879,9 +1879,9 @@ func TestReportDaemonSupervisionIsUnknownNotUnhealthyOnInconclusiveInput(t *test
 			stubDaemonDoctorProcess(t, tt.signalErr)
 
 			var out strings.Builder
-			unhealthy, remediation := reportDaemonSupervision(&out, tt.metadata, tt.metadataErr)
-			if unhealthy || remediation {
-				t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+			unhealthy, remediation := reportDaemonSupervisionGathered(&out, tt.metadata, tt.metadataErr)
+			if unhealthy || remediation != daemonSupervisionRemediationNone {
+				t.Fatalf("unhealthy=%v remediation=%v, want neither\n%s", unhealthy, remediation, out.String())
 			}
 			if !strings.Contains(out.String(), "unknown") {
 				t.Fatalf("output does not say unknown:\n%s", out.String())
@@ -1908,9 +1908,9 @@ func TestReportDaemonSupervisionIsUnknownWhenProbingIsDisabled(t *testing.T) {
 	stubDaemonDoctorProcess(t, nil)
 
 	var out strings.Builder
-	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
-	if unhealthy || remediation {
-		t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+	unhealthy, remediation := reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if unhealthy || remediation != daemonSupervisionRemediationNone {
+		t.Fatalf("unhealthy=%v remediation=%v, want neither\n%s", unhealthy, remediation, out.String())
 	}
 	if !strings.Contains(out.String(), "unknown") {
 		t.Fatalf("output does not say unknown:\n%s", out.String())
@@ -1931,9 +1931,9 @@ func TestReportDaemonSupervisionRefusesToCertifyWithoutAServicePID(t *testing.T)
 	stubDaemonDoctorProcess(t, nil)
 
 	var out strings.Builder
-	unhealthy, remediation := reportDaemonSupervision(&out, daemonstate.Metadata{PID: 14350}, nil)
-	if unhealthy || remediation {
-		t.Fatalf("unhealthy=%v remediation=%v, want both false\n%s", unhealthy, remediation, out.String())
+	unhealthy, remediation := reportDaemonSupervisionGathered(&out, daemonstate.Metadata{PID: 14350}, nil)
+	if unhealthy || remediation != daemonSupervisionRemediationNone {
+		t.Fatalf("unhealthy=%v remediation=%v, want neither\n%s", unhealthy, remediation, out.String())
 	}
 	got := out.String()
 	if !strings.Contains(got, "unknown") {
@@ -2416,4 +2416,196 @@ func TestRunDaemonDoctorReportsSpawnProbeExecutionFailureAsUnknown(t *testing.T)
 	if !strings.Contains(spawnLine, "unknown") || !strings.Contains(spawnLine, "executable file not found") {
 		t.Errorf("spawn-history line did not report the execution failure as unknown:\n%s", spawnLine)
 	}
+}
+
+// TestReportDaemonSpawnHistoryNamesTheSpawnedBinary is BOS-1204 AC8.
+//
+// The `failing` verdict's whole value is that it is DISJOINT from the
+// never-spawned one: launchd did spawn the job and the job died, so the fault
+// is in the binary launchd ran. Naming the wrong binary destroys exactly that
+// value — on an unattended host the user-staged bossd under ~/Library is not
+// the file launchd executed, and an operator sent to foreground it would
+// reproduce nothing and conclude the diagnostic was wrong.
+func TestReportDaemonSpawnHistoryNamesTheSpawnedBinary(t *testing.T) {
+	const stagedPath = "/Users/someone/Library/Application Support/bossanova/bossd"
+	const watchdogBinary = "/usr/local/libexec/bossanova/bossd"
+
+	for _, tc := range []struct {
+		name        string
+		supervision daemon.SupervisionModeStatus
+		wantBinary  string
+		notBinary   string
+		// wantText / notText pin WHOSE exit the sentence attributes. The target
+		// this history is read from follows the substrate, so on the unattended
+		// one launchd spawned the WATCHDOG and the recorded exit is the
+		// watchdog's — it can precede bossd being spawned at all. Naming the
+		// right binary while still saying "bossd itself started and failed"
+		// would send an operator to debug a process that never ran.
+		wantText string
+		notText  string
+	}{
+		{
+			name:        "launch-agent names the staged binary",
+			supervision: launchAgentSupervisionStatus(),
+			wantBinary:  stagedPath,
+			notBinary:   watchdogBinary,
+			wantText:    "bossd itself started and failed",
+			notText:     "WATCHDOG's own exit",
+		},
+		{
+			name:        "unattended names the watchdog's root-owned binary",
+			supervision: unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			wantBinary:  watchdogBinary,
+			notBinary:   stagedPath,
+			wantText:    "WATCHDOG's own exit",
+			notText:     "bossd itself started and failed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := daemonGetSpawnHistory
+			daemonGetSpawnHistory = func() (daemon.SpawnHistory, error) {
+				return daemon.SpawnHistory{
+					State:             daemon.SpawnStateFailing,
+					Target:            "some/target",
+					Runs:              7,
+					RunsKnown:         true,
+					LastExitCode:      1,
+					LastExitCodeKnown: true,
+				}, nil
+			}
+			t.Cleanup(func() { daemonGetSpawnHistory = previous })
+
+			var out bytes.Buffer
+			unhealthy, remediation := reportDaemonSpawnHistory(&out, stagedPath, tc.supervision)
+			if !unhealthy || remediation != daemonSpawnRemediationForeground {
+				t.Fatalf("unhealthy = %t remediation = %v, want true / foreground", unhealthy, remediation)
+			}
+			if !strings.Contains(out.String(), tc.wantBinary) {
+				t.Fatalf("output does not name %q:\n%s", tc.wantBinary, out.String())
+			}
+			if strings.Contains(out.String(), tc.notBinary) {
+				t.Fatalf("output names the wrong binary %q:\n%s", tc.notBinary, out.String())
+			}
+			if !strings.Contains(out.String(), tc.wantText) {
+				t.Fatalf("output does not attribute the exit with %q:\n%s", tc.wantText, out.String())
+			}
+			if strings.Contains(out.String(), tc.notText) {
+				t.Fatalf("output misattributes the exit with %q:\n%s", tc.notText, out.String())
+			}
+		})
+	}
+}
+
+// TestRunDaemonDoctorAcrossSupervisionSubstrates is BOS-1204 AC2 and AC5 in one
+// place, because they are the same assertion pointed two ways: a healthy
+// unattended host must emit NO FAIL, and a healthy launch-agent host must emit
+// the rows it always did.
+//
+// The launch-agent subtest is what stops the unattended one passing vacuously.
+// "No FAIL line" is trivially true of a build that skipped the whole darwin
+// block for an unrelated reason, so the same fixture is run through the default
+// substrate and required to produce the LaunchAgent rows — if those vanish, the
+// absence assertion below has stopped proving anything.
+func TestRunDaemonDoctorAcrossSupervisionSubstrates(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the LaunchAgent block is macOS-only")
+	}
+
+	t.Run("launch-agent reporting is unchanged", func(t *testing.T) {
+		home, _, stagedPath := prepareDaemonDoctorInstall(t)
+		writeDaemonDoctorPlist(t, home, stagedPath)
+		writeDaemonDoctorState(t, stagedPath, true, nil)
+		stubDaemonSupervisionInputs(t, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
+
+		out := runDaemonDoctorOutput(t)
+		if strings.Contains(out, "FAIL") {
+			t.Fatalf("a healthy launch-agent host emitted a FAIL:\n%s", out)
+		}
+		// The rows the unattended run deliberately skips. Losing these would
+		// make the absence assertion in the next subtest vacuous.
+		for _, want := range []string{
+			"LaunchAgent ProgramArguments: " + stagedPath,
+			"daemon supervision: ok",
+			"launchd spawn history: ok",
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("launch-agent doctor output lost %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("a healthy unattended host emits no FAIL", func(t *testing.T) {
+		_, _, stagedPath := prepareDaemonDoctorInstall(t)
+		// Deliberately NO LaunchAgent plist: platformInstallUnattended removes
+		// it, so its absence is this substrate's healthy state rather than the
+		// fault the pre-BOS-1204 block reported it as.
+		writeDaemonDoctorState(t, stagedPath, true, nil)
+		stubDaemonSupervisionInputs(t,
+			unattendedSupervisionStatus(daemon.UnattendedInstallPresent),
+			watchdogOwnership(daemon.WatchdogOwnershipLoaded))
+		// The install supersedes the per-user agent, so the LaunchAgent status
+		// this host reports is "not installed" on a perfectly healthy machine.
+		previous := daemonGetStatus
+		daemonGetStatus = func() (*daemon.Status, error) {
+			return &daemon.Status{Installed: false, Running: false}, nil
+		}
+		t.Cleanup(func() { daemonGetStatus = previous })
+
+		out := runDaemonDoctorOutput(t)
+		if strings.Contains(out, "FAIL") {
+			t.Fatalf("a healthy unattended host emitted a FAIL:\n%s", out)
+		}
+		// Not silence: the substrate is REPORTED, so an operator can see which
+		// job doctor decided about rather than inferring it from a missing row.
+		for _, want := range []string{
+			"daemon supervision: ok",
+			daemon.WatchdogLabel,
+			"grandchild of launchd",
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("unattended doctor output does not carry %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "LaunchAgent ProgramArguments") {
+			t.Fatalf("doctor read the per-user LaunchAgent on an unattended host:\n%s", out)
+		}
+	})
+
+	t.Run("BOSS_DAEMON_SKIP_LAUNCHCTL short-circuits ahead of every substrate read", func(t *testing.T) {
+		home, _, stagedPath := prepareDaemonDoctorInstall(t)
+		writeDaemonDoctorPlist(t, home, stagedPath)
+		writeDaemonDoctorState(t, stagedPath, true, nil)
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		previousMode := daemonLoadSupervisionMode
+		previousOwnership := daemonObserveWatchdogOwnership
+		daemonLoadSupervisionMode = func() daemon.SupervisionModeStatus {
+			return unattendedSupervisionStatus(daemon.UnattendedInstallPresent)
+		}
+		daemonObserveWatchdogOwnership = func() daemon.WatchdogOwnership {
+			t.Fatalf("the watchdog ownership probe ran under BOSS_DAEMON_SKIP_LAUNCHCTL")
+			return daemon.WatchdogOwnership{}
+		}
+		t.Cleanup(func() {
+			daemonLoadSupervisionMode = previousMode
+			daemonObserveWatchdogOwnership = previousOwnership
+		})
+
+		out := runDaemonDoctorOutput(t)
+		if !strings.Contains(out, "daemon supervision: unknown (service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL)") {
+			t.Fatalf("doctor did not short-circuit the supervision check:\n%s", out)
+		}
+	})
+}
+
+// runDaemonDoctorOutput runs doctor and returns its output, tolerating the
+// unhealthy sentinel so a caller can assert on the text either way.
+func runDaemonDoctorOutput(t *testing.T) string {
+	t.Helper()
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil && !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("runDaemonDoctor: %v; output:\n%s", err, output.String())
+	}
+	return output.String()
 }

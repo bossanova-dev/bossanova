@@ -31,6 +31,11 @@ import {
 } from './plan-contract-guard.mjs'
 import { DEFAULT_CONFIG, planSections, requiredPlanSections } from './skill-config.mjs'
 
+// Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(
+  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
+  'outcomes.tsv',
+)
 const GUARD = fileURLToPath(new URL('./plan-contract-guard.mjs', import.meta.url))
 
 const codes = (result) => result.violations.map((v) => v.code)
@@ -1085,6 +1090,63 @@ describe('CLI', () => {
     )
     assert.notEqual(missing.status, 0)
     assert.match(missing.stderr, /--mode <value> is required/)
+  })
+
+  // BOS-1209: the gate records one outcome line per invocation. Recording is telemetry — it must
+  // not move the exit code or the stderr a caller greps — so each case asserts the verdict too.
+  test('records exactly one gate-outcome line per invocation without changing the verdict', () => {
+    const outcomes = path.join(
+      mkdtempSync(path.join(tmpdir(), 'plan-contract-guard-outcomes-')),
+      'outcomes.tsv',
+    )
+    const withRecording = { env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes } }
+    const read = () =>
+      readFileSync(outcomes, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+
+    const pass = runCli(conformant(), documentingPlan, null, withRecording)
+    assert.equal(pass.status, 0, `expected a clean exit, got ${pass.status}: ${pass.stderr}`)
+    assert.equal(pass.stderr.trim(), '', 'recording must not add stderr output')
+    assert.deepEqual(
+      read().map((line) => line.split('\t').slice(1, 3)),
+      [['plan-contract-guard', 'pass']],
+    )
+
+    const fire = runCli(
+      'the full markdown plan description as specified in Step 7 of the brief',
+      null,
+      null,
+      withRecording,
+    )
+    assert.notEqual(fire.status, 0, 'a violating description must still exit non-zero')
+    assert.match(fire.stderr, /contract violation\(s\) — do not write/)
+    assert.deepEqual(
+      read().map((line) => line.split('\t').slice(1, 3)),
+      [
+        ['plan-contract-guard', 'pass'],
+        ['plan-contract-guard', 'fire'],
+      ],
+    )
+  })
+
+  test('an unreadable input records one fire line reusing its own [unreadable-input] code', () => {
+    const outcomes = path.join(
+      mkdtempSync(path.join(tmpdir(), 'plan-contract-guard-outcomes-')),
+      'outcomes.tsv',
+    )
+    const res = runCli(conformant(), null, path.join(tmpdir(), 'plan-contract-guard-absent.md'), {
+      env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes },
+    })
+    assert.notEqual(res.status, 0)
+    assert.match(res.stderr, /\[unreadable-input\]/)
+    const recorded = readFileSync(outcomes, 'utf8').split('\n').filter(Boolean)
+    assert.equal(recorded.length, 1, 'the latch must permit exactly one line')
+    assert.deepEqual(recorded[0].split('\t').slice(1), [
+      'plan-contract-guard',
+      'fire',
+      'unreadable-input',
+    ])
   })
 })
 

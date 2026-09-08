@@ -532,6 +532,24 @@ export const MUSTFIX_OVERRUN_SECONDS = MUSTFIX_OVERRUN_ROUNDS * DEFAULT_FIX_ROUN
 export const FUNDING_STARVED = 'funding-starved'
 
 /**
+ * The pricing call itself failed or its output did not parse. Distinct from
+ * `FUNDING_STARVED` on purpose: a caller that could not price its allowance must
+ * not be byte-identical to one that priced it and found it adequate, and it must
+ * not be byte-identical to one that priced it and found it starved either.
+ */
+export const FUNDING_UNPRICED = 'funding-unpriced'
+
+/** The closed reason set a sentinel payload's `funding.reason` ranges over. */
+export const FUNDING_REASONS = Object.freeze([FUNDING_STARVED, FUNDING_UNPRICED])
+
+/** A positive finite seconds value rounded UP; anything else is `fallback`. */
+function ceiledSeconds(value, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.ceil(value)
+    : fallback
+}
+
+/**
  * Price an allowance from same-sized dispatch legs.
  * @param {object} input
  * @param {number} input.legSeconds
@@ -539,41 +557,151 @@ export const FUNDING_STARVED = 'funding-starved'
  * @returns {number}
  */
 export function stepAllowanceSeconds({ legSeconds, legs } = {}) {
-  const leg =
-    typeof legSeconds === 'number' && Number.isFinite(legSeconds) && legSeconds > 0
-      ? Math.ceil(legSeconds)
-      : 0
+  const leg = ceiledSeconds(legSeconds)
   const count = typeof legs === 'number' && Number.isInteger(legs) && legs > 0 ? legs : 0
   return leg * count
 }
 
 /**
  * Count how many full fix rounds an allowance can fund after initial legs.
+ *
+ * This is a projection of `priceAllowance`, not a second normalisation of the same
+ * arithmetic. It used to be its own lenient one, with the OPPOSITE contract: `{}`
+ * priced a starved step from nothing, a `legSeconds` of `0` funded a round the caller
+ * could not afford, and a negative allowance floored to `0` and reported as starved —
+ * the exact shapes `priceAllowance` exists to refuse. Two normalisations agree until
+ * they do not, and gates that priced through the lenient one were asserting something
+ * production never computes.
+ *
+ * @param {object} input same shape as `priceAllowance`
+ * @returns {number}
+ * @throws {TypeError} on any missing, non-finite, or non-positive term
+ */
+export function fundedFixRounds(input = {}) {
+  return priceAllowance(input).fundedFixRounds
+}
+
+/** A positive finite number, for the reject-rather-than-fabricate gate below. */
+function isPositiveFinite(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+/**
+ * Price one per-step allowance ONCE, and refuse to price a malformed one.
+ *
+ * This is the single normalisation `fundingDisclosure` and the `funding` verb both
+ * read. Deriving the echoed numbers separately from the count is the very defect the
+ * disclosure exists to end — two independent normalisations agree until they do not,
+ * and the narrated number then drifts from the arithmetic it claims to report.
+ *
+ * It **throws** rather than pricing a guess. Every rejected shape below used to
+ * return a confident verdict: `{}` priced a starved step from nothing, a `legSeconds`
+ * of `0` funded a round the caller could not afford, and a negative allowance was
+ * silently floored to `0` and reported as starved. A caller cannot tell any of those
+ * from a real price, so they must not be expressible.
+ *
+ * `fixRoundSeconds` alone is optional — omitted, the step is priced at
+ * `DEFAULT_FIX_ROUND_SECONDS` and the value used is echoed back. Present but
+ * malformed is still a rejection.
+ *
+ * Pure: no clock and no env, so the same input always prices the same way and an
+ * allowance can never select an outcome by timing.
+ *
  * @param {object} input
  * @param {number} input.allowanceSeconds
  * @param {number} input.legSeconds
- * @param {number} input.initialLegs
- * @param {number} input.fixRoundSeconds
- * @returns {number}
+ * @param {number} input.initialLegs positive integer
+ * @param {number} [input.fixRoundSeconds]
+ * @returns {{fundedFixRounds:number,allowanceSeconds:number,fixRoundSeconds:number}}
+ * @throws {TypeError} on any missing, non-finite, or non-positive term
  */
-export function fundedFixRounds({
-  allowanceSeconds,
-  legSeconds,
-  initialLegs,
-  fixRoundSeconds = DEFAULT_FIX_ROUND_SECONDS,
-} = {}) {
-  const allowance =
-    typeof allowanceSeconds === 'number' &&
-    Number.isFinite(allowanceSeconds) &&
-    allowanceSeconds > 0
-      ? Math.floor(allowanceSeconds)
-      : 0
-  const initial = stepAllowanceSeconds({ legSeconds, legs: initialLegs })
-  const price =
-    typeof fixRoundSeconds === 'number' && Number.isFinite(fixRoundSeconds) && fixRoundSeconds > 0
-      ? Math.ceil(fixRoundSeconds)
-      : DEFAULT_FIX_ROUND_SECONDS
-  return Math.max(0, Math.floor((allowance - initial) / price))
+export function priceAllowance(input = {}) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError('funding input must be a JSON object')
+  }
+  const { allowanceSeconds, legSeconds, initialLegs, fixRoundSeconds } = input
+  if (!isPositiveFinite(allowanceSeconds)) {
+    throw new TypeError('allowanceSeconds must be a positive finite number of seconds')
+  }
+  if (!isPositiveFinite(legSeconds)) {
+    throw new TypeError('legSeconds must be a positive finite number of seconds')
+  }
+  if (!isPositiveFinite(initialLegs) || !Number.isInteger(initialLegs)) {
+    throw new TypeError('initialLegs must be a positive integer')
+  }
+  if (fixRoundSeconds !== undefined && !isPositiveFinite(fixRoundSeconds)) {
+    throw new TypeError(
+      'fixRoundSeconds, when supplied, must be a positive finite number of seconds',
+    )
+  }
+  const allowance = Math.floor(allowanceSeconds)
+  const initial = Math.ceil(legSeconds) * initialLegs
+  const price = Math.ceil(fixRoundSeconds ?? DEFAULT_FIX_ROUND_SECONDS)
+  return {
+    fundedFixRounds: Math.max(0, Math.floor((allowance - initial) / price)),
+    allowanceSeconds: allowance,
+    fixRoundSeconds: price,
+  }
+}
+
+/**
+ * The funding disclosure for one per-step allowance: the funded fix-round count plus
+ * the two numbers a decline must name — the allowance that declined the work and the
+ * price of the work it declined — as EFFECTIVE values, so a caller reports what was
+ * actually priced rather than what it passed. All three come from ONE `priceAllowance`
+ * call, so the echoed numbers cannot disagree with the count they explain.
+ *
+ * `reason` is `FUNDING_STARVED` exactly when no ordinary fix round is funded, and
+ * `null` otherwise, so a funded step names no reason at all rather than an empty-string
+ * one. A malformed input is not priced at all — `priceAllowance` throws.
+ *
+ * @param {object} input same shape as `priceAllowance`
+ * @returns {{fundedFixRounds:number,reason:(string|null),allowanceSeconds:number,fixRoundSeconds:number}}
+ * @throws {TypeError} on any missing, non-finite, or non-positive term
+ */
+export function fundingDisclosure(input = {}) {
+  const priced = priceAllowance(input)
+  return {
+    fundedFixRounds: priced.fundedFixRounds,
+    reason: priced.fundedFixRounds === 0 ? FUNDING_STARVED : null,
+    allowanceSeconds: priced.allowanceSeconds,
+    fixRoundSeconds: priced.fixRoundSeconds,
+  }
+}
+
+/**
+ * Build the run-file sentinel payload every terminal write carries, so no site
+ * hand-builds escaped JSON inside double quotes and no site can interpolate a reason
+ * into the byte-stable sentinel LINE by accident.
+ *
+ * **Total by design — it never throws.** Every call site is an UNCHECKED shell command
+ * substitution inside a `bs-run-sentinel.mjs write` argument list, so a rejection does
+ * not stop the write: the substitution collapses to the empty string, the writer stores
+ * `{}`, and the verdict loses `provisional:false` as well as the reason — reading back
+ * as the caller's own pessimistic seed. A rejected reason must therefore still yield a
+ * VALID payload. The reason SET stays closed for consumers: an unrecognised value is
+ * disclosed as `FUNDING_UNPRICED`, which is what it means — this run's funding state
+ * could not be established — and never silently as the funded case. Callers that want
+ * the rejection can compare `reason` against `FUNDING_REASONS` themselves; the CLI
+ * warns on stderr.
+ *
+ * `reason` is empty (or absent) for a step that was priced and funded, or one of
+ * `FUNDING_REASONS`.
+ *
+ * @param {string} [reason]
+ * @returns {{provisional:false,funding?:{reason:string}}}
+ */
+export function sentinelPayload(reason = '') {
+  if (reason === undefined || reason === null || reason === '') return { provisional: false }
+  if (typeof reason !== 'string' || !FUNDING_REASONS.includes(reason)) {
+    return { provisional: false, funding: { reason: FUNDING_UNPRICED } }
+  }
+  return { provisional: false, funding: { reason } }
+}
+
+/** True when `reason` is a value `sentinelPayload` carries through unchanged. */
+export function isFundingReason(reason) {
+  return reason === '' || (typeof reason === 'string' && FUNDING_REASONS.includes(reason))
 }
 
 /** The closed reason set `admitFixRound` returns over. */
@@ -758,9 +886,18 @@ export function admitFixRound({
 //   node bs-review-caps.mjs admit-fix-round '<json>'  → JSON {admit,reason} for one fix round
 //   node bs-review-caps.mjs admit-dispatched-round '<json>' → JSON {admit,reason}
 //   node bs-review-caps.mjs admit-confirming-round '<json>' → JSON {admit,reason}
+//   node bs-review-caps.mjs funding '<json>' → JSON {fundedFixRounds,reason,allowanceSeconds,fixRoundSeconds}
+//   node bs-review-caps.mjs sentinel-payload [<reason>] → the run-file sentinel payload JSON
 import { readFileSync } from 'node:fs'
+import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 
+// Gate-outcome recording covers the three `admit-*` verbs and nothing else. Those three
+// ARE the gate — one is invoked per review round and each one either admits the round or refuses
+// it, which is exactly a pass/fire outcome. Every other verb here (rounds, sentinel, match, verdict,
+// confidence, classify, oscillation, funding, sentinel-payload) is pure computation or a renderer:
+// it has no verdict to record, so recording one would fabricate a firing rate. This mirrors the
+// plan's own adjudication of bs-run-sentinel as "a verdict router, not a gate".
 if (isMainModule(import.meta.url)) {
   const [cmd, ...rest] = process.argv.slice(2)
   const readInputFile = () => {
@@ -845,6 +982,10 @@ if (isMainModule(import.meta.url)) {
     // One JSON object argument, printed back as the same `{admit,reason}` the
     // function returns — so the invocation the skill prose cites cannot drift
     // from the surface the decision table tests.
+    // The admission decision's own `reason` is already a closed slug vocabulary
+    // (ADMIT_FIX_ROUND_REASONS), so the outcome line reuses it verbatim rather than inventing a
+    // parallel set that could drift from the decision table.
+    const recorder = createGateRecorder('bs-review-caps.admit-fix-round')
     const raw = rest[0] ?? ''
     let input
     try {
@@ -853,11 +994,15 @@ if (isMainModule(import.meta.url)) {
       input = undefined
     }
     if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      recorder.record('fire', 'malformed-input')
       process.stderr.write('admit-fix-round requires one JSON object argument\n')
       process.exit(2)
     }
-    process.stdout.write(`${JSON.stringify(admitFixRound(input))}\n`)
+    const decision = admitFixRound(input)
+    recorder.record(decision.admit ? 'pass' : 'fire', decision.reason)
+    process.stdout.write(`${JSON.stringify(decision)}\n`)
   } else if (cmd === 'admit-dispatched-round') {
+    const recorder = createGateRecorder('bs-review-caps.admit-dispatched-round')
     const raw = rest[0] ?? ''
     let input
     try {
@@ -866,11 +1011,15 @@ if (isMainModule(import.meta.url)) {
       input = undefined
     }
     if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      recorder.record('fire', 'malformed-input')
       process.stderr.write('admit-dispatched-round requires one JSON object argument\n')
       process.exit(2)
     }
-    process.stdout.write(`${JSON.stringify(admitDispatchedRound(input))}\n`)
+    const decision = admitDispatchedRound(input)
+    recorder.record(decision.admit ? 'pass' : 'fire', decision.reason)
+    process.stdout.write(`${JSON.stringify(decision)}\n`)
   } else if (cmd === 'admit-confirming-round') {
+    const recorder = createGateRecorder('bs-review-caps.admit-confirming-round')
     const raw = rest[0] ?? ''
     let input
     try {
@@ -879,13 +1028,59 @@ if (isMainModule(import.meta.url)) {
       input = undefined
     }
     if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      recorder.record('fire', 'malformed-input')
       process.stderr.write('admit-confirming-round requires one JSON object argument\n')
       process.exit(2)
     }
-    process.stdout.write(`${JSON.stringify(admitConfirmingRound(input))}\n`)
+    const decision = admitConfirmingRound(input)
+    recorder.record(decision.admit ? 'pass' : 'fire', decision.reason)
+    process.stdout.write(`${JSON.stringify(decision)}\n`)
+  } else if (cmd === 'funding') {
+    // One JSON object argument, printed back as the disclosure the function returns —
+    // so a skill body COMPUTES the funded-round count it used to narrate, and the
+    // number in the prose cannot drift from the arithmetic the tests pin.
+    const raw = rest[0] ?? ''
+    let input
+    try {
+      input = JSON.parse(raw)
+    } catch {
+      input = undefined
+    }
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      process.stderr.write('funding requires one JSON object argument\n')
+      process.exit(2)
+    }
+    // Reject rather than fabricate: a malformed term prices nothing and exits
+    // non-zero, so a caller's `if` cannot read a failed pricing call as a funded step.
+    let disclosure
+    try {
+      disclosure = fundingDisclosure(input)
+    } catch (err) {
+      process.stderr.write(`funding cannot price this allowance: ${err.message}\n`)
+      process.exit(2)
+    }
+    process.stdout.write(`${JSON.stringify(disclosure)}\n`)
+  } else if (cmd === 'sentinel-payload') {
+    // The whole payload, built here rather than hand-escaped at each write site, so a
+    // caller states a reason instead of quoting JSON inside a double-quoted shell string.
+    //
+    // This verb NEVER exits non-zero. Every call site spells it as an unchecked command
+    // substitution in a `bs-run-sentinel.mjs write` argument list, so a non-zero exit
+    // does not stop the write — it empties the argument and persists `{}`, dropping
+    // `provisional:false` along with the reason. An unrecognised reason is disclosed as
+    // `funding-unpriced` and named on stderr, so the operator sees the mistake while the
+    // run file still carries a verdict a consumer can read.
+    const requested = rest[0] ?? ''
+    if (!isFundingReason(requested)) {
+      process.stderr.write(
+        `sentinel-payload: unrecognised funding reason ${JSON.stringify(requested)}; ` +
+          `disclosing ${FUNDING_UNPRICED} instead (expected empty or one of: ${FUNDING_REASONS.join(', ')})\n`,
+      )
+    }
+    process.stdout.write(`${JSON.stringify(sentinelPayload(requested))}\n`)
   } else {
     process.stderr.write(
-      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>'>\n",
+      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>' | funding '<json>' | sentinel-payload [<reason>]>\n",
     )
     process.exit(2)
   }

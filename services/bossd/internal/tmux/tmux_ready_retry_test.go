@@ -1111,3 +1111,40 @@ func TestReadyRetry_RemainingBudgetGuardBothDirections(t *testing.T) {
 		})
 	}
 }
+
+// TestClampAttemptDeadlineReservesACaptureAsWellAsASleep pins the SIZE of the
+// clamp's reserve, which is what decides whether the clamp achieves anything.
+//
+// The wait checks its deadline after each capture and then sleeps, so its
+// checks are one capture plus one sleep apart. A reserve of one sleep leaves a
+// catch window narrower than that gap, and the check that should have fired the
+// attempt's own timeout instead lands after the caller's context has already
+// expired — which is how a clamped attempt ends up reporting bare
+// "context deadline exceeded" with no budget and no clamp clause.
+//
+// That miss is a coin flip weighted by capture cost rather than an outright
+// bug, so end-to-end it reproduces as an intermittent red on a loaded machine
+// and passes on an idle one. This is the deterministic form of the same
+// property: a future simplification back to one interval fails here, on every
+// run, instead of once every few CI builds.
+func TestClampAttemptDeadlineReservesACaptureAsWellAsASleep(t *testing.T) {
+	const poll = 10 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	d, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("context reports no deadline; there is nothing to clamp against")
+	}
+
+	got := clampAttemptDeadline(ctx, 10*time.Second, poll)
+
+	// Measured against the context's own remaining budget rather than a
+	// literal, so the assertion does not encode the microseconds spent getting
+	// here. This read happens after the call, so it under-reports the reserve
+	// the function actually took by that same drift — hence the tolerance,
+	// which is an order of magnitude below the interval being asserted.
+	const drift = time.Millisecond
+	if reserve := time.Until(d) - got; reserve < 2*poll-drift {
+		t.Errorf("clamp reserved %v of the caller's remaining budget, want at least two poll intervals (%v): one sleep is narrower than the gap between the wait's deadline checks, so the attempt's own timeout can land after the context has expired", reserve, 2*poll)
+	}
+}

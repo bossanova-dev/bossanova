@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/recurser/boss/internal/daemon"
 )
@@ -68,7 +69,131 @@ const (
 	daemonSupervisionReasonForeignPID
 	// daemonSupervisionReasonManagerOwned is the healthy case.
 	daemonSupervisionReasonManagerOwned
+	// daemonSupervisionReasonWatchdogOwned is the healthy case on the
+	// `unattended` substrate, and it is a DIFFERENT shape of ownership rather
+	// than a synonym for the one above.
+	//
+	// There, launchd owns the root-owned watchdog LaunchDaemon and the watchdog
+	// spawns bossd through `launchctl asuser`, so bossd is a GRANDCHILD of
+	// launchd and not a launchd job at all. Flattening the two would tell an
+	// operator that launchd owns a PID launchd has never heard of, and would
+	// send anyone debugging it to `launchctl print gui/<uid>/…` for a job that
+	// deliberately does not exist there (BOS-1204 R7).
+	daemonSupervisionReasonWatchdogOwned
+	// daemonSupervisionReasonWatchdogNotLoaded is a watchdog installed on disk
+	// whose `system`-domain job launchd does not have loaded. Nothing will
+	// restart the recorded daemon, so this is a genuine fault and not an
+	// unknown: reporting it as unknown would be BOS-1183's concealment failure
+	// reproduced on the new substrate.
+	daemonSupervisionReasonWatchdogNotLoaded
+	// daemonSupervisionReasonWatchdogUnreadable is the fail-closed rung: the
+	// watchdog is installed and its job could not be read. Ownership is
+	// unproven, not refuted (BOS-1204 R6).
+	daemonSupervisionReasonWatchdogUnreadable
+	// daemonSupervisionReasonWatchdogInsecure is an installed watchdog one of
+	// whose paths is not safe for a root-owned job.
+	//
+	// It resolves to UNKNOWN rather than to a fault, and that is deliberate:
+	// the fault is real and is already reported, in full, by the
+	// `configured supervision substrate` line that
+	// describeUnattendedSupervisionMode renders on both surfaces. Reporting it
+	// again here would print two failures for one fact — the same
+	// duplicate-failure shape reportDaemonSupervision's `!st.Installed` rung
+	// already exists to avoid.
+	daemonSupervisionReasonWatchdogInsecure
 )
+
+// daemonLoadSupervisionMode is the seam BOTH reporting surfaces read the
+// configured substrate through.
+//
+// It is a shared package var rather than a parameter on each renderer for the
+// reason daemonSupervisionOfLiveRecord itself is shared: what previously let
+// `boss daemon status` and `boss daemon doctor` disagree about one host was
+// each surface deriving its own inputs. Reading one seam makes a future caller
+// unable to hand the two renderers different answers, and lets a test state one
+// host once.
+var daemonLoadSupervisionMode = daemon.LoadSupervisionModeStatus
+
+// daemonObserveWatchdogOwnership is the seam for the `system`-domain ownership
+// probe. Separate from the seam above because it must stay LAZY: it shells out
+// to launchctl, and LoadSupervisionModeStatus is called from newClient on every
+// single boss command.
+var daemonObserveWatchdogOwnership = daemon.ObserveWatchdogOwnership
+
+// daemonUnattendedSubstrateConfigured reports whether this host's supervision
+// substrate is the unattended watchdog rather than the per-user LaunchAgent.
+//
+// Err is checked as well as Mode because a rejected configuration resolves to
+// NO mode (daemon.LoadSupervisionModeStatus), and a reporting surface must
+// never route by a value the resolver refused.
+func daemonUnattendedSubstrateConfigured(supervision daemon.SupervisionModeStatus) bool {
+	return supervision.Err == nil && supervision.Mode == daemon.SupervisionModeUnattended
+}
+
+// daemonUnattendedSubstrateOwnsVerdict reports whether the substrate branch of
+// daemonSupervisionOfLiveRecord will answer the ownership question for this
+// host, rather than the LaunchAgent delegation below it.
+//
+// Absent deliberately does NOT qualify. A host that selected the unattended
+// mode and never completed the root install has no supervision at all, and the
+// existing delegation already reports exactly that from the LaunchAgent status
+// — with today's wording, which requirement 5 wants left alone wherever it is
+// still true.
+func daemonUnattendedSubstrateOwnsVerdict(supervision daemon.SupervisionModeStatus) bool {
+	if !daemonUnattendedSubstrateConfigured(supervision) {
+		return false
+	}
+	switch supervision.Unattended.State {
+	case daemon.UnattendedInstallPresent, daemon.UnattendedInstallInsecure:
+		return true
+	default:
+		return false
+	}
+}
+
+// daemonSupervisionInputs gathers the two substrate facts both renderers decide
+// from, probing launchctl only on the host whose verdict depends on it.
+//
+// The laziness is requirement 5 made mechanical rather than aspirational: on
+// the default substrate — and on an unattended host with nothing installed —
+// this performs no launchctl invocation at all, so default reporting cannot
+// change because there is nothing new in its path to change it.
+func daemonSupervisionInputs() (daemon.SupervisionModeStatus, daemon.WatchdogOwnership) {
+	supervision := daemonLoadSupervisionMode()
+	if daemonServiceProbingDisabled() ||
+		!daemonUnattendedSubstrateConfigured(supervision) ||
+		supervision.Unattended.State != daemon.UnattendedInstallPresent {
+		return supervision, daemon.WatchdogOwnership{}
+	}
+	return supervision, daemonObserveWatchdogOwnership()
+}
+
+// daemonServiceProbingDisabled reports whether the operator (or a test harness,
+// or CI) has switched service-manager probing off.
+//
+// It lives beside the gather rather than only in the two renderers because
+// BOS-1204 AC9 is "short-circuit ahead of every substrate read, on BOTH
+// surfaces", and a guard written once per renderer is a guard one new caller
+// can forget. `boss daemon doctor` checked it before gathering and
+// `boss daemon status` did not, so the two surfaces already disagreed about
+// whether the launchctl probe runs. Guarding the shared gather makes them
+// unable to.
+func daemonServiceProbingDisabled() bool {
+	return os.Getenv("BOSS_DAEMON_SKIP_LAUNCHCTL") != ""
+}
+
+// watchdogOwnershipReason renders why an ownership probe could not answer,
+// falling back to a neutral sentence when the observation carries none.
+//
+// The fallback is the unprobed zero value: a caller that reached a reporting
+// rung without ever probing has observed nothing, and an empty parenthesis
+// would read as a truncated message rather than as the absence of a probe.
+func watchdogOwnershipReason(ownership daemon.WatchdogOwnership) string {
+	if ownership.Reason != "" {
+		return ownership.Reason
+	}
+	return "the service manager was not probed"
+}
 
 // daemonSupervisionOfLiveRecord decides whether the platform service manager
 // owns the daemon recorded for this profile. The caller must already have
@@ -93,10 +218,69 @@ const (
 //     the wrong one for a REPORT: unparseable launchctl output is a tooling
 //     failure, and turning it into an unsupervised verdict would print a fault
 //     nobody observed.
-func daemonSupervisionOfLiveRecord(st *daemon.Status, recordedPID int) (daemonSupervisionVerdict, daemonSupervisionReason) {
+//
+// BOS-1204 adds `supervision` and `ownership`: which substrate this host is
+// configured for, and — on a host whose substrate is the root-owned watchdog —
+// whether launchd has that job loaded. They open a branch ABOVE the delegation
+// rather than a second ladder beside it, so every other mode falls through to
+// today's decision untouched and requirement 5 is mechanical rather than
+// asserted. `st` keeps meaning exactly what it always meant, the per-user
+// LaunchAgent substrate; see the branch body for why repointing it instead
+// would have manufactured a louder false fault.
+func daemonSupervisionOfLiveRecord(
+	st *daemon.Status,
+	recordedPID int,
+	supervision daemon.SupervisionModeStatus,
+	ownership daemon.WatchdogOwnership,
+) (daemonSupervisionVerdict, daemonSupervisionReason) {
 	if st == nil || recordedPID <= 0 {
 		return daemonSupervisionUnknown, daemonSupervisionReasonIndeterminate
 	}
+	// The substrate branch sits ABOVE both the no-service-PID guard and the
+	// delegation, because on this substrate `st` describes the wrong thing
+	// entirely: it is the per-user LaunchAgent's status, and the unattended
+	// install deliberately supersedes that LaunchAgent. Reading a stale agent's
+	// PID mismatch on such a host would answer a question nobody asked.
+	//
+	// It deliberately does NOT repoint st.PID at the watchdog and fall through.
+	// Under this substrate launchd owns the WATCHDOG and the watchdog owns
+	// bossd — two different processes by design — so ClassifyServingMode would
+	// compare a watchdog PID against a bossd PID, find them different, and
+	// print `FAIL … two daemons, or a stale state record`. That is a new and
+	// louder false fault than the one BOS-1204 is removing.
+	if daemonUnattendedSubstrateOwnsVerdict(supervision) {
+		if supervision.Unattended.State == daemon.UnattendedInstallInsecure {
+			return daemonSupervisionUnknown, daemonSupervisionReasonWatchdogInsecure
+		}
+		switch ownership.State {
+		case daemon.WatchdogOwnershipLoaded:
+			// KNOWN BOUND, recorded rather than papered over: a loaded watchdog
+			// proves launchd owns THE WATCHDOG. It does not prove the recorded
+			// PID is the watchdog's child. A bossd started detached by the
+			// `boss daemon start` fallback, or a leftover LaunchAgent's, can
+			// hold the recorded PID on a host whose watchdog is also loaded,
+			// and this rung reports it supervised.
+			//
+			// Closing it needs a parentage observation, and there is no cheap
+			// honest one here: bossd is reached through `launchctl asuser` and
+			// `sudo -u`, so its PPID is an intermediate that has usually
+			// already exited, leaving the process reparented. A PPID compare
+			// would therefore report "not the watchdog's child" for the
+			// ordinary healthy host — a false fault, which is the exact class
+			// BOS-1204 exists to remove. The plan's `Risks / unknowns` note
+			// scopes out LIVENESS ("the watchdog being loaded is not proof
+			// bossd is healthy"); this is the narrower ownership question and
+			// is NOT covered by it.
+			return daemonSupervisionSupervised, daemonSupervisionReasonWatchdogOwned
+		case daemon.WatchdogOwnershipNotLoaded:
+			return daemonSupervisionUnsupervised, daemonSupervisionReasonWatchdogNotLoaded
+		default:
+			// Unknown AND the unprobed zero value. A caller that reached here
+			// without probing has observed nothing, and nothing is not health.
+			return daemonSupervisionUnknown, daemonSupervisionReasonWatchdogUnreadable
+		}
+	}
+
 	if st.Running && st.PID == 0 {
 		return daemonSupervisionUnknown, daemonSupervisionReasonNoServicePID
 	}

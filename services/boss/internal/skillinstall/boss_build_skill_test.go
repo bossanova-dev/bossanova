@@ -137,15 +137,22 @@ var falsificationSettleLoopPins = regProsePins([]falsificationProsePin{
 // loop and boss-repair's Strategy C. Referencing it by name beats slicing another file's list by
 // position, where inserting a pin silently changes what the second call site asserts.
 var falsificationCiSignalPin = regProsePin(falsificationProsePin{
+	// BOS-1192: the CI signal is no longer a raw bucket read — both bodies route it through the one
+	// agent-callable verdict, and the post-ready degrade is named by its reason rather than merely
+	// denied. The sentence is deliberately toolbox-variable-free so the two files can state it
+	// verbatim; each cites its own `$BOSS_<CORE>_TOOLBOX/pr-check-state.mjs` path elsewhere.
 	name:         "settle-loop-ci-signal-is-gh-pr-checks",
-	pattern:      "Read\\s+CI\\s+from\\s+`gh\\s+pr\\s+checks`\\s+—\\s+a\\s+PR\\s+that\\s+flips\\s+to\\s+`UNSTABLE`\\s+after\\s+being\\s+readied\\s+is\\s+not\\s+red\\s+CI\\.",
-	live:         "Read CI from `gh pr checks` — a PR that flips to `UNSTABLE` after being readied is not red CI.",
-	tokenRemoved: "Read CI from the merge state — a PR that flips to `UNSTABLE` after being readied is not red CI.",
+	pattern:      "Read\\s+CI\\s+through\\s+the\\s+`pr-check-state\\.mjs`\\s+verdict\\s+—\\s+a\\s+PR\\s+that\\s+flips\\s+to\\s+`UNSTABLE`\\s+after\\s+being\\s+readied\\s+classifies\\s+as\\s+pending\\s+\\(`advisory-unsettled`\\),\\s+not\\s+red\\s+CI\\.",
+	live:         "Read CI through the `pr-check-state.mjs` verdict — a PR that flips to `UNSTABLE` after being readied classifies as pending (`advisory-unsettled`), not red CI.",
+	tokenRemoved: "Read CI through the merge state — a PR that flips to `UNSTABLE` after being readied classifies as pending (`advisory-unsettled`), not red CI.",
 	alsoRemoved: []string{
 		// The UNSTABLE carve-out inverted — readying a PR would look like red CI.
-		"Read CI from `gh pr checks` — a PR that flips to `UNSTABLE` after being readied is red CI.",
+		"Read CI through the `pr-check-state.mjs` verdict — a PR that flips to `UNSTABLE` after being readied classifies as red CI.",
 		// The UNSTABLE carve-out dropped entirely.
-		"Read CI from `gh pr checks`.",
+		"Read CI through the `pr-check-state.mjs` verdict.",
+		// The reason dropped — the post-ready degrade would be pending with no name, which is the
+		// shape that reads identically to an ordinary in-flight run.
+		"Read CI through the `pr-check-state.mjs` verdict — a PR that flips to `UNSTABLE` after being readied classifies as pending, not red CI.",
 	},
 })
 

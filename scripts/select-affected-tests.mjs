@@ -477,7 +477,24 @@ export function selectTargets(files) {
       file.startsWith('services/boss/cmd/') ||
       file === 'services/boss/internal/tuidriver/keybytes.go' ||
       file === 'services/boss/internal/tuidriver/testdata/key-vocab.json' ||
-      file === 'docs/testing/test-command-manifest.md'
+      file === 'docs/testing/test-command-manifest.md' ||
+      // The resident agent-instruction file (AGENTS.md symlinks to CLAUDE.md) is pinned by
+      // scripts/check-agent-test-guidance.test.mjs in lines and in bytes, and that same test also
+      // pins docs/skills/authoring.md (its per-rule `**Enforcement.**` leads and its worked-negative
+      // count) and docs/skills/README.md (the Contents and Reference index links to it). Without
+      // this rule a CLAUDE.md-only edit selects test-manifest alone and a docs/skills edit selects
+      // test-boss alone, so the assertions guarding these files never run in the local affected loop
+      // and an author first meets them after pushing (.github/workflows/test-scripts.yml lists all
+      // four paths). A budget an author cannot run locally binds a machine, not an author. No
+      // `continue`: isManifestPath() claims the two agent-instruction names below and must still add
+      // test-manifest, which is what they have always selected. Scoped to these exact filenames
+      // rather than to isManifestPath() or docs/skills/** as a whole — docs/guidance/**,
+      // docs/testing/** and the rest of docs/skills/ hold no pinned artifact, so routing them here
+      // would buy nothing and slow the loop for every docs edit.
+      file === 'CLAUDE.md' ||
+      file === 'AGENTS.md' ||
+      file === 'docs/skills/authoring.md' ||
+      file === 'docs/skills/README.md'
     ) {
       selectWholeTarget(selections, 'test-scripts')
       selectedPrimaryTarget = true

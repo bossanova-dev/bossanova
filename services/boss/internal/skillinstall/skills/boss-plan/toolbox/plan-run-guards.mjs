@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 
 import { checkPlanContract } from './plan-contract-guard.mjs'
 import { selectImplementationPlanAttachment } from './plan-attachment.mjs'
+import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import {
   DEFAULT_CONFIG,
@@ -203,20 +204,40 @@ function printViolations(result) {
   }
 }
 
-export function runCli(argv) {
+/** Run one verb and report the exit code alongside the gate id and reason to record for it. */
+function runGuardVerb(argv) {
   const [command, first, second] = argv
+  // The verbs are gates in their own right: each is invoked at a different point in a planning run
+  // and refuses for different reasons, so the retirement decision this record feeds needs their
+  // firing rates apart rather than summed — which is why the recorded gate id carries the verb
+  // (`plan-run-guards.premises`). Every dispatch branch below claims its verb as its FIRST
+  // statement, so the verb is already correct if that branch later throws; `usage` is the standing
+  // answer for an argv that matched no branch at all. Deriving it from the branch rather than from
+  // a second list of verb names is what stops a verb added to only one of the two from recording
+  // its outcomes under the wrong gate id.
+  let verb = 'usage'
   try {
     if (command === 'metadata' && first) {
+      verb = 'metadata'
       const result = validateDraftMetadata(readJSON(first), { config: loadSkillConfig() })
       printViolations(result)
-      return result.ok ? 0 : 1
+      return {
+        verb,
+        code: result.ok ? 0 : 1,
+        reason: result.ok ? 'ok' : 'invalid-metadata',
+      }
     }
     if (command === 'idempotence' && first) {
+      verb = 'idempotence'
       const result = planIdempotencePrecheck({ issue: readJSON(first), config: loadSkillConfig() })
       process.stdout.write(`${JSON.stringify(result)}\n`)
-      return 0
+      // This verb never refuses — it reports whether planning is still needed. Both answers are a
+      // `pass`; the reason carries which one, so the record stays informative without inventing a
+      // fire that the caller never saw.
+      return { verb, code: 0, reason: result.action === 'noop' ? 'noop' : 'plan' }
     }
     if (command === 'premises' && first && second) {
+      verb = 'premises'
       const premises = readJSON(first)
       const liveStates = readJSON(second)
       const result = premiseDrift(premises, liveStates)
@@ -234,16 +255,33 @@ export function runCli(argv) {
       for (const id of result.unresolved) {
         process.stderr.write(`premise-unresolved: plan-run-guards: ${id} could not be read\n`)
       }
-      return overLimit || result.unresolved.length > 0 ? 1 : 0
+      // Reasons reuse the stderr code vocabulary above rather than inventing a second set.
+      let reason = 'ok'
+      if (overLimit) reason = 'premise-limit'
+      else if (result.unresolved.length > 0) reason = 'premise-unresolved'
+      else if (result.drifted.length > 0) reason = 'premise-drift'
+      return {
+        verb,
+        code: overLimit || result.unresolved.length > 0 ? 1 : 0,
+        reason,
+      }
     }
   } catch (error) {
     process.stderr.write(`unreadable-input: plan-run-guards: ${error?.message ?? error}\n`)
-    return 1
+    return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
     'usage: plan-run-guards.mjs metadata <metadata.json> | idempotence <issue.json> | premises <premises.json> <live-states.json>\n',
   )
-  return 2
+  return { verb, code: 2, reason: 'unknown-verb' }
+}
+
+export function runCli(argv) {
+  const { verb, code, reason } = runGuardVerb(argv)
+  // One line per invocation, recorded from the single place every verb returns through,
+  // so a new verb cannot be added without an outcome.
+  createGateRecorder(`plan-run-guards.${verb}`).record(code === 0 ? 'pass' : 'fire', reason)
+  return code
 }
 
 if (isMainModule(import.meta.url)) {

@@ -6,7 +6,6 @@ package main
 import (
 	"os"
 
-	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -26,17 +25,9 @@ func main() {
 		logger.Warn().Err(err).Msg("failed to update boss skills")
 	}
 
-	goplugin.Serve(&goplugin.ServeConfig{
-		HandshakeConfig: sharedplugin.NewHandshakeForPlugin(),
-		VersionedPlugins: map[int]goplugin.PluginSet{
-			sharedplugin.ProtocolVersion: {
-				sharedplugin.PluginTypeAgentRunner: &agentRunnerPlugin{
-					logger:     logger,
-					runnerOpts: runnerOptsFromEnv(),
-				},
-			},
-		},
-		GRPCServer: goplugin.DefaultGRPCServer,
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, &agentRunnerPlugin{
+		logger:     logger,
+		runnerOpts: runnerOptsFromEnv(),
 	})
 }
 

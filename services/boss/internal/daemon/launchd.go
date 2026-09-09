@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -504,18 +505,12 @@ func platformMcpGetStatus() (*Status, error) {
 	if err != nil {
 		return st, nil
 	}
-	st.Running = true
-
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "\"PID\"") || strings.HasPrefix(line, "\"pid\"") {
-			parts := strings.Split(line, "=")
-			if len(parts) == 2 {
-				pidStr := strings.TrimSpace(strings.Trim(parts[1], "\";"))
-				_, _ = fmt.Sscanf(pidStr, "%d", &st.PID)
-			}
-		}
-	}
+	// BOS-1218: the same discriminator as platformGetStatus, because this is
+	// the same command against the same launchd behaviour — and its consumer
+	// mcpStillRunningProbe fills the same bootout-verify role. Fixing only the
+	// bossd probe would have left one of two identical causes in place.
+	st.PID, st.PIDKnown = parseLaunchctlListPID(out, McpLabel)
+	st.Running = st.PIDKnown && st.PID > 0
 	return st, nil
 }
 
@@ -1007,34 +1002,97 @@ func platformGetStatus() (*Status, error) {
 
 	out, err := runLaunchctl("list", Label)
 	if err != nil {
-		// Not loaded / not running.
+		// Not loaded, or the probe could not be run — launchctl exits non-zero
+		// for both. Not running either way, and PIDKnown stays false because
+		// nothing about the job's PID was settled (BOS-1218 R2a); telling those
+		// two apart is the sibling doctor ticket's job, not this one's.
 		return st, nil
 	}
 
-	st.Running = true
+	st.PID, st.PIDKnown = parseLaunchctlListPID(out, Label)
+	// BOS-1218: the verdict is the PARSED PID, not the exit code above.
+	// `launchctl list <label>` exits 0 for a job launchd has merely
+	// REGISTERED — measured on the host `delta` on 2026-09-08, where the
+	// answer carried no "PID" key at all while `launchctl print` reported
+	// `state = not running, runs = 0` — so the old exit-code-only assignment
+	// reported Running for a daemon that owned no process. `boss daemon stop`
+	// then booted out an empty registration, signalled nothing, and polled a
+	// socket held by someone else until LifecycleShutdownTimeout expired.
+	//
+	// Deriving it here costs no extra process spawn: the PID is parsed out of
+	// the same `out` this function already holds. `launchctl print`, which
+	// platformSpawnHistory uses, answers a different question and stays there.
+	st.Running = st.PIDKnown && st.PID > 0
 
-	// Parse PID from launchctl list output.
-	// Format: "PID" \t "Status" \t "Label" or similar key-value pairs.
+	return st, nil
+}
+
+// parseLaunchctlListPID reads the job's PID out of a `launchctl list <label>`
+// answer, reporting whether the answer settled the PID at all.
+//
+// known is true when the output was recognisable as an answer about this job:
+// a plist-style `"key" = value;` dictionary, or the tab-separated
+// `<pid> <status> <label>` row of the unfiltered list. Such an answer with no
+// PID in it is a job launchd knows and has not spawned — an OBSERVATION, and
+// the case BOS-1218 exists for. known is false for output with neither shape.
+//
+// A `"PID"` key whose value is not a positive integer settles NOTHING and
+// forces known false for the whole answer, however many other keys parsed.
+// Reading it as "known absent" would rebuild the very bug this function was
+// split out to fix one notch over: an unparseable value is not an
+// observation, and `readSystemdMainPID` rejects `v <= 0` on the other
+// substrate for the same reason. Note what known false then means to the only
+// consumers that exist — platformGetStatus and platformMcpGetStatus derive
+// Running from it, so both an unreadable answer and a genuinely not-loaded
+// label report Running false. Status collapses them BY DESIGN (see
+// cmd/daemon_supervision.go, where the same collapse is recorded and scoped to
+// the sibling doctor ticket); a probe that wants "could not tell" to fail
+// closed cannot get it from this bool alone.
+//
+// Both shapes feed one PID because both have always been accepted here; the
+// dictionary's own `"Label" = "<label>";` line matches the tab-separated
+// branch too, and is harmless there because its leading field is not a number.
+func parseLaunchctlListPID(out []byte, label string) (pid int, known bool) {
+	// Tracked separately from `known` so a malformed PID line can veto an
+	// answer whose OTHER lines were perfectly readable.
+	sawPIDKey, pidSettled := false, false
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		if strings.HasPrefix(line, "\"PID\"") || strings.HasPrefix(line, "\"pid\"") {
-			// launchctl list <label> outputs key-value pairs.
+			known = true
+			sawPIDKey = true
 			parts := strings.Split(line, "=")
 			if len(parts) == 2 {
-				pidStr := strings.TrimSpace(strings.Trim(parts[1], "\";"))
-				_, _ = fmt.Sscanf(pidStr, "%d", &st.PID)
+				if v, ok := parseLeadingInt(strings.Trim(strings.TrimSpace(parts[1]), "\";")); ok && v > 0 {
+					pid = v
+					pidSettled = true
+				}
 			}
+			continue
 		}
-		// Also try tab-separated format from `launchctl list | grep`.
-		if strings.Contains(line, Label) {
-			parts := strings.Fields(line)
-			if len(parts) >= 1 {
-				_, _ = fmt.Sscanf(parts[0], "%d", &st.PID)
+		if strings.HasPrefix(line, "\"") && strings.Contains(line, "=") {
+			// A dictionary key that is not the PID: the answer is readable and
+			// simply does not name a PID.
+			known = true
+		}
+		// Also try the tab-separated format from `launchctl list | grep`.
+		if strings.Contains(line, label) {
+			known = true
+			if parts := strings.Fields(line); len(parts) >= 1 {
+				if v, ok := parseLeadingInt(parts[0]); ok && v > 0 {
+					pid = v
+					pidSettled = true
+				}
 			}
 		}
 	}
-
-	return st, nil
+	if sawPIDKey && !pidSettled {
+		return 0, false
+	}
+	return pid, known
 }
 
 // platformEnsureRunning attempts to start the daemon via LaunchAgent or fallback.
@@ -1406,13 +1464,16 @@ func plistNextString(decoder *xml.Decoder) (string, bool) {
 // platformSpawnHistory reads launchd's spawn history for the installed bossd
 // job.
 //
-// BOS-1183: this is the only probe here that can tell a REGISTERED job from a
-// RUNNABLE one. `launchctl list <label>` — which platformGetStatus uses, and
-// which this function deliberately does not touch — exits 0 for a job launchd
-// has loaded into a domain it will never spawn anything in, so Status.Running
-// reports true for a daemon that is never going to start. `launchctl print`
-// carries `runs` and `last exit code`, which separate "launchd never tried"
-// from "bossd started and died".
+// BOS-1183: this is the only probe here that can tell a job launchd has never
+// TRIED to spawn from one that started and died. `launchctl list <label>` —
+// which platformGetStatus uses, and which this function deliberately does not
+// touch — exits 0 for a job launchd has loaded into a domain it will never
+// spawn anything in. BOS-1218 narrowed Status.Running to require a PID out of
+// that same answer, so such a job no longer reports Running; what `list` still
+// cannot say is WHY there is no PID, because a job launchd never attempted and
+// one whose process exited answer alike. `launchctl print` carries `runs` and
+// `last exit code`, which separate "launchd never tried" from "bossd started
+// and died".
 //
 // Error discipline (see GetSpawnHistory): a non-nil error means launchctl could
 // not be EXECUTED. A launchctl that ran and exited non-zero — the "could not
@@ -1463,4 +1524,110 @@ func platformSpawnHistory() (SpawnHistory, error) {
 	history := parseLaunchdSpawnHistory(out)
 	history.Target = target
 	return history, nil
+}
+
+// launchctlProbeTimeout bounds the ADVISORY launchctl reads on the diagnostic
+// path. Three seconds because `launchctl print-disabled` is a local IPC read
+// against launchd — it either answers immediately or it is wedged, and no
+// useful answer arrives after that.
+//
+// BOS-1222 R7 forbids an unbounded advisory subprocess on the diagnostic path,
+// and BOS-864 recorded why: an unbounded one caused a multi-minute silent
+// stall in this codebase. A diagnostic an operator runs when things are
+// already wrong must degrade to "not checked", never hang.
+//
+// A var and not a const, following the seam idiom the rest of this file uses:
+// with it pinned as a const no test could drive a REAL deadline expiry through
+// runLaunchctlBoundedProbe, so the %w wrap and the ctx.Err() check below were
+// exercised only by a stub that hand-fabricated the wrapped error — a test
+// that would pass byte-identically against a %v wrap, or against the check
+// deleted outright. Production never assigns it.
+var launchctlProbeTimeout = 3 * time.Second
+
+// runLaunchctlBoundedProbe invokes launchctl under a hard deadline and returns
+// its combined output.
+//
+// A SEPARATE seam from runLaunchctl, deliberately. runLaunchctl carries the
+// lifecycle verbs — bootstrap, bootout, load — whose latency is the operator's
+// own action and whose timeout semantics are not this ticket's to change.
+// This one carries only bounded read-only probes, so the deadline can be short
+// without any risk of cutting a lifecycle operation short.
+//
+// A deadline expiry is surfaced as a context.DeadlineExceeded-wrapping error
+// rather than left as the "signal: killed" ExitError exec.CommandContext
+// produces, because a caller that cannot tell a timeout from a refusal cannot
+// name the timeout in its Reason.
+var runLaunchctlBoundedProbe = func(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), launchctlProbeTimeout)
+	defer cancel()
+	// #nosec G204 -- launchctl; const argv verbs plus derived int uid domains; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	out, err := exec.CommandContext(ctx, "launchctl", args...).CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return out, fmt.Errorf("launchctl %s did not answer within %s: %w",
+			strings.Join(args, " "), launchctlProbeTimeout, context.DeadlineExceeded)
+	}
+	return out, err
+}
+
+// platformJobDisabled reads whether launchd holds a disable override for the
+// job it would spawn.
+//
+// BOS-1222: this is one of the candidate causes of a never-spawned job that
+// doctor can settle cheaply, instead of asserting a different one it never
+// measured. A disabled job is decisive — launchd will not spawn it whatever
+// else is true of the domain.
+//
+// Error discipline (see GetJobDisabled): a non-nil error means launchctl could
+// not be EXECUTED. A launchctl that ran and exited non-zero, and a launchctl
+// that ran past the deadline, are both nil errors with an unknown verdict:
+// "we asked and could not tell". Every path returns a populated, fail-closed
+// JobDisabled that is never JobDisabledStateEnabled.
+func platformJobDisabled() (JobDisabled, error) {
+	// Resolved BEFORE the skip check for the same reason platformSpawnHistory
+	// resolves its target first: the short-circuit must still NAME the domain
+	// this host would have probed, or the report describes the wrong job.
+	domain, label := jobDisabledDomain(LoadSupervisionModeStatus(),
+		"gui/"+strconv.Itoa(os.Getuid()), Label)
+
+	if skipLaunchctl() {
+		return JobDisabled{
+			State:  JobDisabledStateUnknown,
+			Domain: domain,
+			Label:  label,
+			Reason: "service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL",
+		}, nil
+	}
+
+	out, err := runLaunchctlBoundedProbe("print-disabled", domain)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			// Degrade to "not checked" and name the bound. A slow launchd must
+			// never hold doctor open (R7).
+			return JobDisabled{
+				State:  JobDisabledStateUnknown,
+				Domain: domain,
+				Label:  label,
+				Reason: fmt.Sprintf("launchctl print-disabled %s did not answer within %s", domain, launchctlProbeTimeout),
+			}, nil
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return JobDisabled{
+				State:  JobDisabledStateUnknown,
+				Domain: domain,
+				Label:  label,
+				Reason: fmt.Sprintf("could not run launchctl print-disabled %s: %v", domain, err),
+			}, fmt.Errorf("launchctl print-disabled %s: %w", domain, err)
+		}
+		return JobDisabled{
+			State:  JobDisabledStateUnknown,
+			Domain: domain,
+			Label:  label,
+			Reason: fmt.Sprintf("launchctl print-disabled %s exited %d: %q", domain, exitErr.ExitCode(), strings.TrimSpace(string(out))),
+		}, nil
+	}
+
+	state, reason := parseLaunchdDisabledServices(out, label)
+	return JobDisabled{State: state, Domain: domain, Label: label, Reason: reason}, nil
 }

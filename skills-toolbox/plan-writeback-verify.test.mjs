@@ -654,3 +654,353 @@ test('BOS-1214 CLI: a PASSING run leaves stderr clean — the echo is failure-on
   assert.match(res.stdout, /^writeback-verdict: normalized-equivalent$/m)
   assert.equal(res.stderr.trim(), '', 'a passing run says nothing on stderr')
 })
+
+// ---------------------------------------------------------------------------
+// BOS-1223 U1 — the table-delimiter-row canonicalizer must recognise a delimiter
+// ROW, not a line of dashes.
+//
+// Per the GFM tables extension a delimiter cell is hyphens with an optional leading or trailing
+// colon: the colons carry alignment and the dash count carries nothing. A transport that rewrites
+// `| --- |` as `| -- |` therefore changes no meaning, and canonicalizing the run length is safe.
+// Safe for a delimiter ROW and for the dashes only, though — which is what the near-misses below
+// separate from "rewrite every dash run in sight". A LOST alignment colon and a LOST cell are real
+// semantic changes and must still read as drift; a horizontal rule and a fenced line are not
+// delimiter rows at all.
+// ---------------------------------------------------------------------------
+
+const TABLE_TRANSFORM = 'table-delimiter-row-normalization'
+const tableOnly = new Set([TABLE_TRANSFORM])
+const canonRow = (text) => normalizeDescription(text, tableOnly)
+
+const tableDoc = (delimiterRow) => `| id | role |\n${delimiterRow}\n| 1 | two |\n`
+
+test('table-delimiter-row: rows differing only in dash-run length canonicalize equal', () => {
+  // The measured pair: a raw upload carries three dashes, the stored copy two.
+  const intended = tableDoc('| --- | --- |')
+  const stored = tableDoc('| -- | -- |')
+  assert.notEqual(intended, stored, 'the fixture must actually differ')
+  assert.equal(canonRow(intended), canonRow(stored))
+})
+
+test('table-delimiter-row: one dash and many dashes canonicalize equal — the count carries nothing', () => {
+  assert.equal(canonRow(tableDoc('| - | - |')), canonRow(tableDoc('| ---------- | - |')))
+})
+
+test('table-delimiter-row: a row with no leading or trailing pipe is still a delimiter row', () => {
+  assert.equal(canonRow(tableDoc('--- | ---')), canonRow(tableDoc('-- | --')))
+})
+
+test('table-delimiter-row: alignment colons are PRESERVED while the dash run is canonicalized', () => {
+  // Colons survive verbatim, so a colon-bearing row differing only in dash count still agrees.
+  assert.equal(canonRow(tableDoc('| :--: | ---: |')), canonRow(tableDoc('| :-: | -: |')))
+  assert.match(canonRow(tableDoc('| :--: | ---: |')), /\| :-+: \| -+: \|/)
+})
+
+test('table-delimiter-row near-miss: a DROPPED alignment colon is NOT canonicalized away', () => {
+  // Dash count carries nothing; a colon carries alignment. Losing one is semantic loss and must
+  // survive canonicalization as a difference, in both the leading and the trailing position.
+  for (const [withColon, without] of [
+    ['| :--- | --- |', '| --- | --- |'],
+    ['| ---: | --- |', '| --- | --- |'],
+    ['| :---: | --- |', '| :--- | --- |'],
+  ]) {
+    assert.notEqual(
+      canonRow(tableDoc(withColon)),
+      canonRow(tableDoc(without)),
+      `losing the alignment colon in \`${withColon}\` must remain a difference`,
+    )
+  }
+})
+
+test('table-delimiter-row near-miss: a DROPPED cell is NOT canonicalized away', () => {
+  assert.notEqual(canonRow(tableDoc('| --- | --- | --- |')), canonRow(tableDoc('| --- | --- |')))
+})
+
+test('table-delimiter-row near-miss: a horizontal rule and a prose dash line are returned unchanged', () => {
+  // No pipe, so no delimiter row — a single-column delimiter row without pipes is
+  // indistinguishable from a thematic break, and the safe reading is "not a table".
+  for (const text of [
+    '---\n',
+    '-----\n',
+    'Heading\n---\n',
+    'a clause -- and another -- in prose\n',
+    '- a list item\n',
+    'run `a | b` -- fast\n',
+  ]) {
+    assert.equal(canonRow(text), text, `\`${text.trim()}\` is not a delimiter row`)
+  }
+})
+
+test('table-delimiter-row: a delimiter row inside a fenced code block is not rewritten', () => {
+  // Fenced content is literal text; rewriting it would change what the block SHOWS. The fence must
+  // also close, so a real row after it is still canonicalized.
+  const fenced = [
+    '```',
+    '| a | b |',
+    '| -- | -- |',
+    '```',
+    '',
+    '| a | b |',
+    '| -- | -- |',
+    '',
+  ].join('\n')
+  const out = canonRow(fenced)
+  assert.ok(out.includes('```\n| a | b |\n| -- | -- |\n```'), 'the fenced row survives verbatim')
+  assert.ok(out.endsWith('| a | b |\n| --- | --- |\n'), 'the row after the fence is canonicalized')
+})
+
+test('table-delimiter-row is idempotent', () => {
+  const once = canonRow(tableDoc('| -- | :- |'))
+  assert.equal(canonRow(once), once)
+})
+
+test('tier 2: a declared table-delimiter-row reshaping reaches normalized-equivalent', () => {
+  const intended = emphasis(`A table:\n\n${tableDoc('| --- | --- |')}`)
+  const stored = emphasis(`A table:\n\n${tableDoc('| -- | -- |')}`)
+  assert.notEqual(intended, stored, 'the fixture must actually differ')
+  const result = verify(intended, stored, [TABLE_TRANSFORM])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  assert.equal(result.exitCode, 0)
+})
+
+test('tier 3: the same table-delimiter difference is drift when the id is NOT declared', () => {
+  // Proves the new id is load-bearing rather than decorative: the same bytes, one declaration apart.
+  const intended = emphasis(`A table:\n\n${tableDoc('| --- | --- |')}`)
+  const stored = emphasis(`A table:\n\n${tableDoc('| -- | -- |')}`)
+  const result = verify(intended, stored, ['terminal-newline-trimming'])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.notEqual(result.exitCode, 0)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1223 U2 — the emphasis canonicaliser must recognise the SPACED split form,
+// at any inline-code-span count.
+//
+// The transform was anchored on the CONTIGUOUS shape, `D A D` + code + `D B D` with nothing at the
+// split point. The shape the transport actually emits puts whitespace there and repeats it once per
+// code span, so neither measured pair was recognised and both reported drift. Re-pointing a narrow
+// recogniser at the measured shape is not the same as relaxing it: the merge stays merge-only and
+// presence-preserving, and the two ways the signal degrades — emphasis DELETED and emphasis
+// DEMOTED — are pinned here in the spaced context as well as the contiguous one. They are the tests
+// that make the tolerance safe rather than merely permissive; the prior incident in this exact
+// function was a widening that passed without them.
+// ---------------------------------------------------------------------------
+
+const emphasisOnly = new Set(['emphasis-span-restructuring'])
+const canonEm = (text) => normalizeDescription(text, emphasisOnly)
+const agree = (intended, stored, why) => {
+  assert.notEqual(intended, stored, 'the fixture must actually differ')
+  assert.equal(canonEm(intended), canonEm(stored), why)
+}
+
+test('emphasis-span-restructuring: the measured ONE-code-span spaced pair agrees', () => {
+  agree(
+    'depends on the **exit code of `launchctl list` alone**, never on the plist.',
+    'depends on the **exit code of** `launchctl list` **alone**, never on the plist.',
+    'the spaced split is the shape the transport emits',
+  )
+})
+
+test('emphasis-span-restructuring: the measured TWO-code-span spaced pair agrees', () => {
+  agree(
+    '**Cancel a CHILD context scoped to `p.srv.Shutdown`, never the one `Shutdown` was handed.**',
+    '**Cancel a CHILD context scoped to** `p.srv.Shutdown`**, never the one** `Shutdown` **was handed.**',
+    'the rule repeats across code spans, and tolerates a space on one side only',
+  )
+})
+
+test('emphasis-span-restructuring: a THREE-code-span span agrees — the rule is not bounded to two', () => {
+  agree(
+    '**one `a` two `b` three `c` four**',
+    '**one** `a` **two** `b` **three** `c` **four**',
+    'nothing in the rule may cap the number of code spans',
+  )
+})
+
+test('emphasis-span-restructuring: the CONTIGUOUS split form still agrees after the repair', () => {
+  // The regression check on the repair itself: re-pointing at the spaced shape must not trade away
+  // the shape the pattern already recognised.
+  agree(
+    'The **helper `plan-writeback-verify.mjs` runs once** per run.',
+    'The **helper **`plan-writeback-verify.mjs`** runs once** per run.',
+    'the no-whitespace split is still recognised',
+  )
+})
+
+test('emphasis-span-restructuring: underscore delimiters behave as asterisk delimiters do', () => {
+  agree('_the `foo` helper_', '_the_ `foo` _helper_', 'the delimiter character is not privileged')
+  agree('__the `foo` helper__', '__the__ `foo` __helper__', 'nor is the run length')
+})
+
+test('emphasis-span-restructuring near-miss: DELETED emphasis in the SPACED form is NOT merged away', () => {
+  // The failure the prior incident actually shipped, re-pinned against the newly recognised shape:
+  // a stored copy that lost the emphasis entirely must not reduce to the intended string.
+  for (const [intended, stored] of [
+    ['**exit code of** `launchctl list` **alone**', 'exit code of `launchctl list` alone'],
+    ['**exit code of `launchctl list` alone**', 'exit code of `launchctl list` alone'],
+    ['**one** `a` **two** `b` **three**', 'one `a` two `b` three'],
+  ]) {
+    assert.notEqual(
+      canonEm(intended),
+      canonEm(stored),
+      `losing the emphasis in \`${intended}\` must survive canonicalization as a difference`,
+    )
+  }
+})
+
+test('emphasis-span-restructuring near-miss: DEMOTED emphasis in the SPACED form is NOT merged away', () => {
+  // The lookaround fences, re-pinned on the widened pattern: without them the engine backtracks a
+  // `**` run down to `*` and certifies bold as equal to italic.
+  assert.notEqual(
+    canonEm('**exit code of** `launchctl list` **alone**'),
+    canonEm('*exit code of* `launchctl list` *alone*'),
+  )
+  assert.notEqual(
+    canonEm('**exit code of `launchctl list` alone**'),
+    canonEm('*exit code of `launchctl list` alone*'),
+  )
+})
+
+test('emphasis-span-restructuring: a MISMATCHED delimiter pair is not merged — the backreference holds', () => {
+  const mixed = '**a** `c` *b*'
+  assert.equal(canonEm(mixed), mixed, 'the outer pair must be the SAME delimiter run')
+})
+
+test('emphasis-span-restructuring: a split spanning a line break is NOT merged', () => {
+  const across = '**a**\n`c`\n**b**'
+  assert.equal(canonEm(across), across, 'the rule stays bounded to one line')
+})
+
+test('emphasis-span-restructuring: an authored two-bold-span shape agrees on both sides (R5a)', () => {
+  // Real stored text carries numbered-item shapes structurally identical to a split. The merge
+  // fuses both and no pattern can separate them — but it runs on the intended and the stored side
+  // alike, so it cannot manufacture a difference. Position is lost; presence and run length are not.
+  const authored = '**1.** `boss daemon status` **reports what is serving.**'
+  assert.equal(canonEm(authored), canonEm(authored))
+  const result = verify(emphasis(authored), emphasis(authored), ['emphasis-span-restructuring'])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.BYTE_EXACT)
+})
+
+test('emphasis-span-restructuring: the bounded loop CONVERGES rather than exhausting its passes', () => {
+  // Six code spans in one span: if the merge needed one pass per span it would run out of passes
+  // and return a half-merged string, which is neither idempotent nor order-independent.
+  const stored = '**a** `1` **b** `2` **c** `3` **d** `4` **e** `5` **f** `6` **g**'
+  const intended = '**a `1` b `2` c `3` d `4` e `5` f `6` g**'
+  assert.equal(canonEm(stored), canonEm(intended))
+  assert.equal(canonEm(canonEm(stored)), canonEm(stored), 'and the result is a fixpoint')
+})
+
+test('tier 2: a declared SPACED emphasis restructuring reaches normalized-equivalent', () => {
+  const intended = emphasis('It depends on the **exit code of `launchctl list` alone**.')
+  const stored = emphasis('It depends on the **exit code of** `launchctl list` **alone**.')
+  assert.notEqual(intended, stored, 'the fixture must actually differ')
+  const result = verify(intended, stored, ['emphasis-span-restructuring'])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  assert.equal(result.exitCode, 0)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1223 review round — the two false-pass paths the widened recognisers opened.
+//
+// Both are the same defect class as the incident this file was built around: a canonicalizer that
+// DELETES bytes rather than recognising a reshaping makes two genuinely different documents compare
+// equal, and the gate then certifies real content loss as `normalized-equivalent` and exits zero.
+// The emphasis segments could run ACROSS independently emphasised spans, so the merge deleted
+// emphasis that was never a split joint; the table rule matched a delimiter row by SHAPE alone, so
+// it canonicalized ordinary body-row content. These are the near-misses that make the two
+// tolerances safe rather than merely permissive.
+// ---------------------------------------------------------------------------
+
+test('emphasis-span-restructuring near-miss: emphasis on a LATER code span is NOT merged away', () => {
+  // Measured: the segments did not exclude the delimiter, so one match ran from the first `**`
+  // across the split span and into `**`z`**`, and the merge deleted that span's bold. The stored
+  // copy which genuinely LOST that bold then reduced to the same string — a false pass.
+  const intended = '**a** `c` **b** then **`z`** and **`w`** done'
+  const storedLost = '**a** `c` **b** then `z` and **`w`** done'
+  assert.notEqual(
+    canonEm(intended),
+    canonEm(storedLost),
+    'losing the bold around a later code span must survive canonicalization as a difference',
+  )
+})
+
+test('emphasis-span-restructuring: a split span leaves a LATER emphasised code span intact', () => {
+  // The positive half of the same bound: the merge fuses the split and stops there.
+  assert.equal(
+    canonEm('**a** `c` **b** then **`z`** and **`w`** done'),
+    '**a `c` b** then **`z`** and **`w`** done',
+  )
+})
+
+test('emphasis-span-restructuring: one match covers ONE emphasis span, not the line', () => {
+  // The bound the comment claims. Two independently authored split spans on one line merge into
+  // two spans — not into one span swallowing the text between them.
+  assert.equal(canonEm('**a** `c` **b** and **d** `e` **f**'), '**a `c` b** and **d `e` f**')
+})
+
+test('emphasis-span-restructuring: a closing run is not read as the next span opening run', () => {
+  // The flanking requirement, pinned directly: an already-merged span must be a fixpoint even when
+  // an emphasised code span follows it on the same line.
+  const merged = '**a `c` b** then **`z`** and **`w`** done'
+  assert.equal(canonEm(merged), merged)
+})
+
+test('table-delimiter-row: a fence is closed only by its OWN character', () => {
+  // Measured: the tracker toggled a bare boolean on any fence line, so `~~~` closed a ``` block and
+  // the row after it was rewritten as though it were document text.
+  const doc = '```\n~~~\n| -- |\n```\n'
+  assert.equal(canonRow(doc), doc, 'a tilde line does not close a backtick fence')
+})
+
+test('table-delimiter-row: a shorter inner fence does not close a longer outer one', () => {
+  // The four-backtick wrapper this repo's docs use to quote a markdown block containing a fence.
+  const doc = '````\n| a | b |\n| -- | -- |\n```\n| a | b |\n| -- | -- |\n```\n| -- |\n````\n'
+  assert.equal(canonRow(doc), doc, 'everything inside the ```` wrapper is literal')
+})
+
+test('table-delimiter-row: the fence still closes on its own character at its own length', () => {
+  // The complement — the stricter tracking must not leave a block open forever.
+  const doc = '````\n| a | b |\n| -- | -- |\n````\n\n| a | b |\n| -- | -- |\n'
+  assert.ok(canonRow(doc).includes('````\n| a | b |\n| -- | -- |\n````'), 'the fenced row survives')
+  assert.ok(canonRow(doc).endsWith('| a | b |\n| --- | --- |\n'), 'the row after it is rewritten')
+})
+
+test('table-delimiter-row near-miss: a dash-only BODY row is NOT canonicalized', () => {
+  // In GFM a delimiter row is POSITIONAL — the row after the header row. `| - | - |` as a body cell
+  // meaning "none" is ordinary content, and rewriting it made two different tables compare equal.
+  const intended = '| a | b |\n| --- | --- |\n| - | - |\n'
+  const stored = '| a | b |\n| --- | --- |\n| --- | --- |\n'
+  assert.equal(canonRow(intended), intended, 'the body row is left exactly as authored')
+  assert.notEqual(canonRow(intended), canonRow(stored), 'and the two tables still differ')
+})
+
+test('tier 3: a body row rewritten to a delimiter row is drift, not tier 2', () => {
+  // End-to-end, with the transform DECLARED: content loss must reach the non-zero exit.
+  const intended = emphasis('A table:\n\n| a | b |\n| --- | --- |\n| - | - |\n')
+  const stored = emphasis('A table:\n\n| a | b |\n| --- | --- |\n| --- | --- |\n')
+  const result = verify(intended, stored, [TABLE_TRANSFORM])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.notEqual(result.exitCode, 0)
+})
+
+test('table-delimiter-row: a delimiter-shaped line with NO header row before it is left alone', () => {
+  for (const text of ['| --- | --- |\n', '\n| -- | -- |\n', '| --- | --- |\n| a | b |\n']) {
+    assert.equal(canonRow(text), text, `\`${text.trim()}\` heads no table`)
+  }
+})
+
+test('table-delimiter-row: the row right after a header row IS still normalized', () => {
+  // The positive half — making the rule positional must not disable it.
+  assert.equal(canonRow('| a | b |\n| -- | -- |\n'), '| a | b |\n| --- | --- |\n')
+})
+
+test('both repaired normalizers stay idempotent', () => {
+  for (const [canon, text] of [
+    [canonEm, '**a** `c` **b** then **`z`** and **`w`** done'],
+    [canonEm, '**one** `a` **two** `b` **three**'],
+    [canonRow, '````\n| a | b |\n| -- | -- |\n```\n````\n\n| a | b |\n| -- | -- |\n| - | - |\n'],
+  ]) {
+    const once = canon(text)
+    assert.equal(canon(once), once, `\`${text}\` must reach a fixpoint in one application`)
+  }
+})

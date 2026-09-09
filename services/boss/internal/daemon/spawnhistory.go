@@ -10,13 +10,15 @@ import (
 // about the installed bossd job.
 //
 // BOS-1183: `launchctl list com.bossanova.bossd` exits 0 for a job launchd has
-// REGISTERED but never spawned, so Status.Running reports true for a daemon
-// that will never start. That is not a hypothetical: on 2026-09-06 a machine
-// whose Aqua session had been backgrounded by fast user switching had the job
-// loaded in a domain launchd would not run anything in, and every
-// configuration-reading check reported healthy. The decisive extra evidence is
-// `launchctl print gui/<uid>/<label>`, which reports how many times launchd has
-// actually spawned the job and how it last exited.
+// REGISTERED but never spawned. That is not a hypothetical: on 2026-09-06 a
+// machine whose Aqua session had been backgrounded by fast user switching had
+// the job loaded in a domain launchd would not run anything in, and every
+// configuration-reading check reported healthy. BOS-1218 has since narrowed
+// Status.Running to require a PID from that answer, so such a job reports
+// Running = false rather than true — but "no PID" is still not a diagnosis.
+// The decisive extra evidence is `launchctl print gui/<uid>/<label>`, which
+// reports how many times launchd has actually spawned the job and how it last
+// exited.
 type SpawnState string
 
 const (
@@ -68,9 +70,10 @@ type SpawnHistory struct {
 	// daemon.
 	NeverExited bool
 	// ServiceState is the raw `state = ...` value when the output carried one,
-	// e.g. "running" or "not running". Informational only — it is the same
-	// registration-level fact Status.Running already reports, which is why it
-	// takes no part in the classification.
+	// e.g. "running" or "not running". Informational only — it is launchd's
+	// own word for the liveness Status.Running already reports (BOS-1218), and
+	// a free-form one with no format contract across macOS releases, which is
+	// why it takes no part in the classification.
 	ServiceState string
 	// Reason explains an unknown or unsupported verdict in human-readable
 	// terms. Empty for determinate verdicts.
@@ -269,4 +272,220 @@ func classifyLaunchdSpawnHistory(h SpawnHistory, runsField, exitField launchdFie
 	// comment above for why "(never exited)" is healthy HERE and an incident at
 	// runs = 0.
 	return SpawnStateHealthy, ""
+}
+
+// JobDisabledState classifies whether the platform service manager holds a
+// DISABLE override for the installed bossd job.
+//
+// BOS-1222: a never-spawned job (runs = 0) has several possible causes, and
+// doctor used to assert one it had never measured. A disable override is one
+// of the causes it CAN settle cheaply, so it is read rather than guessed.
+//
+// Fail-closed exactly like SpawnState above: `launchctl print-disabled` is a
+// human-readable dump with no format contract across macOS releases, so
+// anything unreadable maps to JobDisabledStateUnknown with a Reason and NEVER
+// to JobDisabledStateEnabled. Reporting "enabled" is what would let a real
+// disable override be reported as ruled out.
+type JobDisabledState string
+
+const (
+	// JobDisabledStateUnknown means the disable state could not be
+	// determined. It is the fail-closed verdict and always carries a Reason.
+	// It asserts nothing: a caller must report "not checked", never a side.
+	JobDisabledStateUnknown JobDisabledState = "unknown"
+	// JobDisabledStateUnsupported means the platform has no launchd-style
+	// per-domain disable override to read.
+	JobDisabledStateUnsupported JobDisabledState = "unsupported"
+	// JobDisabledStateEnabled means the service manager holds no disable
+	// override for the label, so being disabled is RULED OUT as a cause.
+	JobDisabledStateEnabled JobDisabledState = "enabled"
+	// JobDisabledStateDisabled means the service manager holds a disable
+	// override for the label, which ESTABLISHES it as the cause: launchd will
+	// not spawn a job it has been told is disabled, no matter what else is
+	// true of the domain.
+	JobDisabledStateDisabled JobDisabledState = "disabled"
+)
+
+// JobDisabled is one reading of the disable override for the installed bossd
+// job. Domain and Label are kept alongside State so a report can name what was
+// asked about — including on the failure paths, where naming the question is
+// the whole remaining value.
+type JobDisabled struct {
+	// State is the classification. Anything other than
+	// JobDisabledStateEnabled must be treated as "not proven enabled".
+	State JobDisabledState
+	// Domain is the service-manager domain that was probed, e.g. "gui/501".
+	// Always set on platforms that have one, including on failures.
+	Domain string
+	// Label is the job label the domain's dump was searched for.
+	Label string
+	// Reason explains an unknown or unsupported verdict in human-readable
+	// terms. Empty for determinate verdicts.
+	Reason string
+}
+
+// GetJobDisabled reports whether the installed bossd job is disabled in its
+// service-manager domain.
+//
+// Error discipline (identical to GetSpawnHistory): a non-nil error means the
+// probe could not be ATTEMPTED — the service manager binary could not be
+// executed at all. "We asked and could not tell" is NOT an error; it is a
+// populated JobDisabled with State JobDisabledStateUnknown and a Reason. The
+// returned JobDisabled is always fail-closed and safe to report even when the
+// error is non-nil: it is never JobDisabledStateEnabled on any failure path.
+func GetJobDisabled() (JobDisabled, error) {
+	return platformJobDisabled()
+}
+
+// jobDisabledDomain resolves which service-manager domain and label carry the
+// disable override for the job launchd actually spawns.
+//
+// It applies the same substrate rule spawnHistoryTarget directly above does,
+// for the same BOS-1204 reason: under `unattended` launchd spawns the
+// root-owned WATCHDOG in the watchdog domain and gui/<uid> carries nothing
+// about it, so asking the wrong domain would answer a question nobody asked.
+// The two agree by CONSTRUCTION and not by inspection — spawnHistoryTarget
+// returns WatchdogTarget(), which is WatchdogDomain plus WatchdogLabel, and
+// this returns the same two halves unjoined — so a future domain move carries
+// both rather than leaving this one confidently probing a domain that no
+// longer holds the job.
+//
+// It takes the LaunchAgent domain AND label as arguments rather than building
+// them, for the reason spawnHistoryTarget gives: Label and os.Getuid() belong
+// to the darwin build while this rule does not, and keeping the rule here is
+// what makes the whole matrix — including the rejected-configuration row —
+// provable from either platform's test run. The label is passed for the same
+// reason the domain is; `Label` does not exist outside the darwin build, so
+// naming it here would put the rule back inside the platform it must not
+// depend on. WatchdogLabel needs no such treatment: watchdog.go is already
+// platform-independent.
+//
+// A rejected configuration resolves to the LaunchAgent domain: the same
+// fail-closed direction spawnHistoryTarget and ResolveSupervisionMode take, so
+// a typo can never be read as a request to probe a root-owned domain.
+func jobDisabledDomain(supervision SupervisionModeStatus, launchAgentDomain, launchAgentLabel string) (domain, label string) {
+	if supervision.Err == nil && supervision.Mode == SupervisionModeUnattended {
+		return WatchdogDomain, WatchdogLabel
+	}
+	return launchAgentDomain, launchAgentLabel
+}
+
+// launchdDisabledMarker opens the line `launchctl print-disabled` starts its
+// dump with. It is a PREFIX and not the whole line, so it is never evidence of
+// well-formedness on its own; see parseLaunchdDisabledServices, which requires
+// the block's opening brace and its matching close.
+const launchdDisabledMarker = "disabled services"
+
+// launchdDisabledBlockOpen is the token that closes the dump's opening line,
+// and launchdDisabledBlockClose the line that closes the block.
+//
+// BOS-1222: matching the marker as a bare prefix accepted a near-miss or error
+// format such as `disabled services unavailable` as a complete dump, and the
+// absence inference below then RULED THE DISABLED CAUSE OUT from output that
+// carried no overrides at all. That is the fail-open guess this ticket exists
+// to remove, reproduced inside the parser that was written to prevent it.
+const (
+	launchdDisabledBlockOpen  = "{"
+	launchdDisabledBlockClose = "}"
+)
+
+// splitLaunchdDisabledEntry splits one `"label" => value` entry out of a
+// print-disabled dump.
+//
+// A dedicated matcher rather than splitLaunchdKeyValue, which deliberately
+// REJECTS the `=>` form (it exists to parse the `key = value` lines of
+// `launchctl print`, where a `=>` line means an environment sub-dictionary).
+// Reusing it here would reject every entry and make the parser see an empty
+// dump.
+func splitLaunchdDisabledEntry(line string) (label, value string, ok bool) {
+	idx := strings.Index(line, "=>")
+	if idx < 0 {
+		return "", "", false
+	}
+	label = strings.Trim(strings.TrimSpace(line[:idx]), `"`)
+	value = strings.TrimSpace(line[idx+len("=>"):])
+	if label == "" {
+		return "", "", false
+	}
+	return label, value, true
+}
+
+// parseLaunchdDisabledServices classifies the output of
+// `launchctl print-disabled <domain>`, which looks like:
+//
+//	disabled services = {
+//		"com.example.foo" => true
+//		"com.example.bar" => false
+//	}
+//
+// Well-formedness is decided by the DUMP SHAPE — a `disabled services` line
+// that opens a brace block, and the matching close — and nothing else. Without
+// both the dump is Unknown with a Reason: there is no format contract for this
+// output across macOS releases, and the same discipline parseLaunchdSpawnHistory
+// applies is what stops a renamed key being read as a clean verdict.
+//
+// The close matters as much as the open. A dump cut short mid-block carries
+// only SOME of the domain's overrides, so a label missing from it is missing
+// for an unknown reason; and a near-miss line such as `disabled services
+// unavailable` shares the marker's prefix while carrying no overrides at all.
+// Both used to satisfy a bare prefix match and both then ruled the disabled
+// cause out.
+//
+// ABSENCE MEANS ENABLED, and that is the one place this parser reasons from
+// something not being there, so the inference is stated rather than assumed:
+// `print-disabled` lists only the labels that carry a disable OVERRIDE, so a
+// label the dump does not mention has no override and is enabled. This is not
+// a fail-open guess — it is sound only because the opening and closing lines
+// already proved we are looking at a COMPLETE dump of the overrides in that
+// domain. Weaken that shape check and this inference becomes exactly the
+// fail-open guess BOS-1222 exists to remove.
+func parseLaunchdDisabledServices(out []byte, label string) (JobDisabledState, string) {
+	lines := strings.Split(string(out), "\n")
+
+	// Well-formedness is settled FIRST and for the whole dump, so no entry can
+	// be classified out of output this build has not recognised as a
+	// print-disabled dump at all.
+	openIdx := -1
+	for i, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, launchdDisabledMarker) && strings.HasSuffix(trimmed, launchdDisabledBlockOpen) {
+			openIdx = i
+			break
+		}
+	}
+	if openIdx < 0 {
+		return JobDisabledStateUnknown, fmt.Sprintf("launchctl print-disabled output carried no %q line opening a %q block (empty output, or a format this build does not recognise)", launchdDisabledMarker, launchdDisabledBlockOpen)
+	}
+
+	closeIdx := -1
+	for i := openIdx + 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == launchdDisabledBlockClose {
+			closeIdx = i
+			break
+		}
+	}
+	if closeIdx < 0 {
+		return JobDisabledStateUnknown, fmt.Sprintf("launchctl print-disabled output opened a %q block that never closed with %q, so the dump is truncated and a label missing from it proves nothing", launchdDisabledMarker, launchdDisabledBlockClose)
+	}
+
+	// Only the entries INSIDE the block are the domain's overrides.
+	for _, raw := range lines[openIdx+1 : closeIdx] {
+		entry, value, ok := splitLaunchdDisabledEntry(strings.TrimSpace(raw))
+		if !ok || entry != label {
+			continue
+		}
+		switch value {
+		case "true":
+			return JobDisabledStateDisabled, ""
+		case "false":
+			return JobDisabledStateEnabled, ""
+		default:
+			return JobDisabledStateUnknown, fmt.Sprintf("launchctl print-disabled reported an unreadable value %q for %q", value, label)
+		}
+	}
+
+	// See the doc comment: only reachable once the opening and closing lines
+	// proved this is a COMPLETE override dump, where an unlisted label carries
+	// no override.
+	return JobDisabledStateEnabled, ""
 }

@@ -74,6 +74,7 @@ go_test(
         "//lib/bossalib/agenterr",
         "//lib/bossalib/agentruntime",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/plugin",
         "//lib/bossalib/skillinstall",
         "//plugins/bossd-plugin-claude/skilldata",
         "@com_github_rs_zerolog//:zerolog",

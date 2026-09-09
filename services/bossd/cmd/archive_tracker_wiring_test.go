@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -157,4 +159,107 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 	// registration would leak one on this never-closed handle.
 	lateArchive := make(chan struct{})
 	track("sess-too-late", lateArchive)
+}
+
+// TestArchiveDrainTimeout_NamesOutstandingSessions drives a real daemon onto
+// the archive join's forced-exit branch and asserts the line it writes names
+// the session it walked away from.
+//
+// The unit test over waitForTrackedArchives proves the helper prints what it is
+// given; this proves the daemon gives it the right thing — that the sessionID
+// trackArchiveDone receives from an untracked caller survives all the way to
+// the operator-facing log line. Those are different claims, and only the second
+// one would have caught the original defect, which was a discarded argument
+// rather than a wrong format string.
+//
+// The budget is injected, so this costs a few hundred milliseconds rather than
+// the ten real seconds production waits.
+func TestArchiveDrainTimeout_NamesOutstandingSessions(t *testing.T) {
+	// Registered first so it runs LAST: cleanups are LIFO, and the release
+	// below must happen before goleak looks, or the deliberately stuck archive
+	// watcher is reported as a leak of ours.
+	t.Cleanup(func() {
+		goleak.VerifyNone(t,
+			goleak.IgnoreCurrent(),
+			goleak.IgnoreAnyFunction("gopkg.in/natefinch/lumberjack%2ev2.(*Logger).millRun"),
+		)
+	})
+
+	baseDir, err := os.MkdirTemp("/tmp", "bossdtest-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+
+	stateHome := filepath.Join(baseDir, ".state")
+	t.Setenv("HOME", baseDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	// Isolated so readDaemonLog reads THIS daemon's log and not the developer's.
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(baseDir, "settings.json"))
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	trackerCh := make(chan func(string, <-chan struct{}), 1)
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+
+	go func() {
+		done <- run(runOpts{
+			stopSig:            stopSig,
+			dbPath:             filepath.Join(baseDir, "bossd.db"),
+			socketPath:         filepath.Join(baseDir, "bossd.sock"),
+			plugins:            []config.PluginConfig{},
+			archiveDrainBudget: 300 * time.Millisecond,
+			onReady:            func() { close(ready) },
+			onArchiveTrackerSeamsWired: func(_ bool, track func(string, <-chan struct{})) {
+				select {
+				case trackerCh <- track:
+				default:
+				}
+			},
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state within 15s")
+	}
+
+	var track func(string, <-chan struct{})
+	select {
+	case track = <-trackerCh:
+	default:
+		t.Fatal("archive worker tracker was not captured")
+	}
+
+	// An archive that never completes, registered the way MergeSession's
+	// post-merge refresh does: from a goroutine the daemon does not own.
+	stuck := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(stuck) }) }
+	t.Cleanup(release)
+	track("sess-never-finishes", stuck)
+
+	stopSig <- syscall.SIGTERM
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return within 30s of SIGTERM")
+	}
+
+	logged := readDaemonLog(t, stateHome)
+	if !strings.Contains(logged, forcedArchiveExitMsg) {
+		t.Fatalf("expected the archive forced-exit line, got:\n%s", logged)
+	}
+	if !strings.Contains(logged, "sess-never-finishes") {
+		t.Fatalf("archive forced-exit line did not name the outstanding session:\n%s", logged)
+	}
 }

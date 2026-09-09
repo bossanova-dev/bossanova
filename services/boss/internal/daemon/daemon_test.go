@@ -167,9 +167,16 @@ func TestLifecycleWaitTimeoutsCoverDaemonStartupAndShutdown(t *testing.T) {
 	// before srv.Shutdown returns (services/bossd/cmd/main.go), in order:
 	//
 	//	cron scheduler drain           10s
-	//	failover proxy drain           config's own budget (BOS-888)
+	//	failover proxy drain           config's own budget (BOS-888), or sooner
 	//	plugin host stop               pluginCount × plugin.killTimeout (3s each)
 	//	gRPC + hook server shutdown    5s (shared ctx)
+	//
+	// "or sooner": the proxy drain now bails out once its in-flight stream count
+	// has stopped falling for a bounded window (BOS-1219), so it can resolve
+	// before its budget expires. That only ever SHORTENS the leg, so the ceiling
+	// arithmetic below is unchanged and the budget remains the worst case — but
+	// the leg is no longer "the budget", and reading it as such would misdescribe
+	// what bossd does.
 	//
 	// The draft-PR join (5s) and the goroutine wait (10s) run AFTER that, so
 	// they are deliberately excluded: the CLI's wait has already resolved.

@@ -483,6 +483,111 @@ func (p *ProxyServer) drainProgressCadence(ctx context.Context) time.Duration {
 	return interval
 }
 
+// The stall detector samples on its OWN interval, deliberately not the drain
+// log's cadence.
+//
+// drainProgressCadence divides the budget by drainProgressTicksPerDrain (3) and
+// clamps at defaultDrainProgressInterval, so the shipped 15s budget
+// (config.defaultProxyDrainTimeout) yields a 5s cadence and at most two samples
+// land before the deadline. A window counted in THOSE samples could only be one
+// (bail at ~5s, at the very budget BOS-888 rejected as too short) or two (bail
+// at ~10s, two thirds of the budget paid for an outcome already known); three
+// never fires at all. The window below sits between those two and is not on that
+// grid at all. The log cadence is sized to make a falling count legible to a
+// human reader, which is a different job.
+const (
+	// drainStallSampleInterval is how often the drain samples InFlightStreams
+	// looking for progress. Fine enough that a completing stream resets the
+	// window with sub-second precision rather than at the log cadence's 5s
+	// granularity, coarse enough that a whole window costs a few dozen atomic
+	// loads on a goroutine that already exists.
+	drainStallSampleInterval = 250 * time.Millisecond
+	// drainStallSamples is how many consecutive samples must show the in-flight
+	// count not falling before the drain stops waiting for it.
+	drainStallSamples = 32
+)
+
+// drainStallWindow is how long the in-flight count must hold steady (or rise)
+// before the drain gives up on it — drainStallSampleInterval ×
+// drainStallSamples, i.e. 8s.
+//
+// WHY 8s, stated rather than left to emerge from the log cadence. The window is
+// bounded from BELOW by the shared 5s shutdown context that BOS-888 rejected: it
+// found that 5s "would cut exactly the streams this drain exists to protect", so
+// a stall window at or under 5s would quietly reinstate the cut BOS-888 was
+// filed to remove — a single in-flight turn would be severed SOONER than before
+// that fix. 8s clears it with margin. It is bounded from ABOVE by the shipped
+// 15s budget, which is the whole complaint: the measured shutdown burned
+// 15.002s with the count pinned at 1 from start to end.
+//
+// THE BAIL POINT THIS BUYS: against the shipped 15s budget a drain whose count
+// never falls resolves ~8s in instead of at 15s, and a drain whose count is
+// still falling keeps its full 15s, because the window is measured from the last
+// observed fall rather than from the drain's start. On any budget at or below
+// the window the detector cannot complete a run of samples at all, so the
+// deadline wins and the drain behaves exactly as it did before this existed.
+//
+// WHAT THE PREDICATE ACTUALLY CLAIMS: a flat count is SUFFICIENT evidence to
+// stop waiting. It is NOT equivalent to "no stream will finish" — do not restate
+// it as the stronger claim. A flat count has several causes: a long single SSE
+// agent turn (the measured one, minutes long), a stream stalled on a slow
+// upstream, and a stream that would have completed one sample after the window
+// closed. The third is cut early, deliberately. Having already observed no
+// progress for a full window — longer than the entire budget BOS-888 replaced —
+// cutting that stream is a better trade than what this replaces, which cut EVERY
+// stream a full budget later.
+const drainStallWindow = drainStallSampleInterval * drainStallSamples
+
+// drainStopReason discriminates within the non-drained case (BOS-1219).
+//
+// The expired budget wins when both fired: a deadline that expired cut the
+// streams whatever the detector had concluded a sample earlier, and reporting
+// the softer reason would misdescribe the cut. Nothing here reads the error to
+// decide "stalled" — an early bail-out surfaces as context.Canceled, which is
+// indistinguishable from a caller cancelling, so the detector's own signal is
+// the only honest source for it.
+func drainStopReason(drained bool, srvErr error, stalled bool) DrainStopReason {
+	switch {
+	case drained:
+		return DrainStopNone
+	case errors.Is(srvErr, context.DeadlineExceeded):
+		return DrainStopBudgetExpired
+	case stalled:
+		return DrainStopStalled
+	default:
+		return DrainStopCanceled
+	}
+}
+
+// DrainStopReason names WHY a drain resolved without draining. It discriminates
+// within the DrainOutcome.Drained == false case only; Drained keeps its meaning
+// and its computation, so every assertion about it stays true (BOS-1219).
+//
+// The set is total over the non-drained case on purpose. Leaving a false Drained
+// paired with a zero-value "no reason" would put the caller back to re-deriving
+// the reason from the error value — which is exactly the mistake this field
+// exists to remove, since an early bail-out surfaces as context.Canceled and the
+// caller's error switch would claim it as a listener-close error.
+type DrainStopReason string
+
+const (
+	// DrainStopNone is the zero value: the drain completed, so there is no
+	// non-drained reason to report. Paired with Drained == true.
+	DrainStopNone DrainStopReason = ""
+	// DrainStopBudgetExpired is the drain that spent its whole budget and cut
+	// whatever was still in flight.
+	DrainStopBudgetExpired DrainStopReason = "budget_expired"
+	// DrainStopStalled is the early bail-out: the in-flight count did not fall
+	// for drainStallWindow, so the drain stopped waiting rather than paying out
+	// the rest of its budget for the same outcome.
+	DrainStopStalled DrainStopReason = "stalled"
+	// DrainStopCanceled is a caller that cancelled the drain context itself,
+	// with neither the budget nor the stall detector firing. Unreachable from
+	// drainFailoverProxy, which always hands Shutdown a fresh WithTimeout ctx;
+	// it exists so the reason is total rather than silently empty.
+	DrainStopCanceled DrainStopReason = "canceled"
+)
+
 // DrainOutcome reports how a ProxyServer.Shutdown resolved (BOS-888). The
 // caller logs it so a slow `boss daemon restart` is legible: whether in-flight
 // agent turns finished or were cut, how many there were, and how long it took.
@@ -499,6 +604,13 @@ type DrainOutcome struct {
 	InFlightAtEnd int
 	// Elapsed is how long the drain took.
 	Elapsed time.Duration
+	// StopReason names why a non-drained resolution happened. It is
+	// DrainStopNone exactly when Drained is true.
+	StopReason DrainStopReason
+	// StallWindow is how long the in-flight count was observed not falling
+	// before the drain gave up on it. Set only when StopReason is
+	// DrainStopStalled; zero otherwise.
+	StallWindow time.Duration
 }
 
 // Shutdown drains in-flight proxied streams, then releases the listening socket.
@@ -538,10 +650,27 @@ func (p *ProxyServer) Shutdown(ctx context.Context) (DrainOutcome, error) {
 	p.repairMu.Unlock()
 
 	var srvErr error
+	stalled := false
 	if p.srv != nil {
-		stopProgress := p.startDrainProgressLog(ctx, outcome.InFlightAtStart)
-		srvErr = p.srv.Shutdown(ctx)
-		stopProgress()
+		// The stall detector cancels drainCtx — a CHILD scoped to this one call —
+		// and never the ctx Shutdown was handed. waitRepairJobs(ctx) below selects
+		// on the caller's ctx, so ending the drain early by cancelling THAT would
+		// silently abandon the BOS-982 in-flight pane-repair join, on exactly the
+		// busy hosts where a repair is most likely to be running, while every
+		// other test in this package still passed. A child keeps the budget
+		// context live for the join that follows.
+		//
+		// The deadline still reaches srv.Shutdown: a child of a ctx with a
+		// deadline carries it, and its Err() is the parent's DeadlineExceeded
+		// when the budget is what expired. That is what keeps an expired budget
+		// distinguishable from a stall bail-out downstream.
+		drainCtx, cancelDrain := context.WithCancel(ctx)
+		stopProgress := p.startDrainProgressLog(ctx, outcome.InFlightAtStart, cancelDrain)
+		srvErr = p.srv.Shutdown(drainCtx)
+		// stopProgress joins the sampler goroutine before reporting, so reading
+		// its verdict here cannot race the write inside it.
+		stalled = stopProgress()
+		cancelDrain()
 	}
 
 	// Join any in-flight unknown-token pane repair (BOS-982). These run off the
@@ -559,6 +688,10 @@ func (p *ProxyServer) Shutdown(ctx context.Context) (DrainOutcome, error) {
 	// drained=false whenever the listener close was noisy. Only an expired or
 	// cancelled ctx means connections were actually cut.
 	outcome.Drained = !errors.Is(srvErr, context.DeadlineExceeded) && !errors.Is(srvErr, context.Canceled)
+	outcome.StopReason = drainStopReason(outcome.Drained, srvErr, stalled)
+	if outcome.StopReason == DrainStopStalled {
+		outcome.StallWindow = drainStallWindow
+	}
 
 	// A budget that expired has to actually cut what it reports as cut.
 	// http.Server.Shutdown does NOT close active connections when its ctx
@@ -608,21 +741,38 @@ func (p *ProxyServer) InFlightStreams() int {
 }
 
 // startDrainProgressLog begins periodically logging the falling in-flight count
-// and returns a stop function the caller must invoke once the drain resolves.
-// When nothing is in flight it starts no goroutine and no ticker at all: the
-// idle restart path must stay exactly as cheap as it was before BOS-888.
-func (p *ProxyServer) startDrainProgressLog(ctx context.Context, inFlightAtStart int) func() {
+// AND watching it for a stall, and returns a stop function the caller must
+// invoke once the drain resolves. The stop function joins the goroutine and
+// reports whether the stall detector fired.
+//
+// When nothing is in flight it starts no goroutine and no ticker at all — not
+// for the log, not for the detector — and reports no stall: the idle restart
+// path must stay exactly as cheap as it was before BOS-888, which is also why
+// the detector rides this sampler rather than adding a second goroutine.
+//
+// cancelDrain is what the detector calls when the count has stopped falling for
+// drainStallWindow. It must cancel a context scoped to the srv.Shutdown call
+// alone; see Shutdown.
+func (p *ProxyServer) startDrainProgressLog(ctx context.Context, inFlightAtStart int, cancelDrain context.CancelFunc) func() bool {
 	if inFlightAtStart == 0 {
-		return func() {}
+		return func() bool { return false }
 	}
 	p.logger.Info().Int("in_flight_streams", inFlightAtStart).
 		Msg("failover proxy: draining in-flight agent streams before shutdown")
 
 	interval := p.drainProgressCadence(ctx)
 	stop := make(chan struct{})
+	// Written by the goroutine below, read only after the <-done join.
+	stalled := false
 	done := safego.Go(p.logger, func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		stallTicker := time.NewTicker(drainStallSampleInterval)
+		defer stallTicker.Stop()
+		// prev seeds from the count at the drain's start, so the very first
+		// sample already measures a direction rather than only establishing one.
+		prev := inFlightAtStart
+		flat := 0
 		for {
 			select {
 			case <-stop:
@@ -630,12 +780,34 @@ func (p *ProxyServer) startDrainProgressLog(ctx context.Context, inFlightAtStart
 			case <-ticker.C:
 				p.logger.Info().Int("in_flight_streams", p.InFlightStreams()).
 					Msg("failover proxy: still draining in-flight agent streams")
+			case <-stallTicker.C:
+				n := p.InFlightStreams()
+				if n < prev {
+					// Progress. The window is measured from the last observed
+					// fall, not from the drain's start, so a drain that is still
+					// finishing streams keeps its full budget.
+					flat = 0
+				} else {
+					flat++
+				}
+				prev = n
+				if flat < drainStallSamples {
+					continue
+				}
+				stalled = true
+				p.logger.Warn().
+					Int("in_flight_streams", n).
+					Dur("stall_window", drainStallWindow).
+					Msg("failover proxy: in-flight stream count stopped falling; ending the drain early")
+				cancelDrain()
+				return
 			}
 		}
 	})
-	return func() {
+	return func() bool {
 		close(stop)
 		<-done
+		return stalled
 	}
 }
 

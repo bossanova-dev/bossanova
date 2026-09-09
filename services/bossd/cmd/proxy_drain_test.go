@@ -121,6 +121,7 @@ func TestDrainFailoverProxy_LogLines(t *testing.T) {
 		err     error
 		want    string
 		absent  string
+		absent2 string
 	}{
 		{
 			name:    "idle shutdown stays quiet",
@@ -145,6 +146,24 @@ func TestDrainFailoverProxy_LogLines(t *testing.T) {
 			want:    "shutting the listener down errored",
 			absent:  "drain deadline expired",
 		},
+		{
+			// BOS-1219. The error here is context.Canceled, so a branch selected
+			// on the error value rather than on the outcome's reason would fall
+			// through to the generic case and file a deliberate cut as a noisy
+			// listener teardown. Both absent strings are the point of the row.
+			name: "an early bail-out is neither an expired deadline nor a listener error",
+			outcome: server.DrainOutcome{
+				InFlightAtStart: 2,
+				InFlightAtEnd:   2,
+				Elapsed:         8 * time.Second,
+				StopReason:      server.DrainStopStalled,
+				StallWindow:     8 * time.Second,
+			},
+			err:     context.Canceled,
+			want:    "in-flight stream count stopped falling",
+			absent:  "shutting the listener down errored",
+			absent2: "drain deadline expired",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -159,8 +178,10 @@ func TestDrainFailoverProxy_LogLines(t *testing.T) {
 			if tc.want != "" && !strings.Contains(got, tc.want) {
 				t.Errorf("log = %q, want it to contain %q", got, tc.want)
 			}
-			if tc.absent != "" && strings.Contains(got, tc.absent) {
-				t.Errorf("log = %q, want it NOT to contain %q", got, tc.absent)
+			for _, absent := range []string{tc.absent, tc.absent2} {
+				if absent != "" && strings.Contains(got, absent) {
+					t.Errorf("log = %q, want it NOT to contain %q", got, absent)
+				}
 			}
 		})
 	}
@@ -181,6 +202,45 @@ func TestDrainProxyThenStopPlugins_StopsPluginsWhenTheDrainFails(t *testing.T) {
 
 	if plugins.calls != 1 {
 		t.Fatalf("plugins.Stop calls = %d, want 1 even though the drain timed out", plugins.calls)
+	}
+}
+
+// TestDrainProxyThenStopPlugins_StalledDrainKeepsTheOrderingAndStopsPlugins pins
+// that an early bail-out is just an earlier resolution, not a different
+// shutdown: the BOS-888 order still holds, the plugin host is still stopped
+// afterwards, and the drain context still carries the configured budget — the
+// stall detector pre-empts that deadline, it does not replace it (BOS-1219).
+func TestDrainProxyThenStopPlugins_StalledDrainKeepsTheOrderingAndStopsPlugins(t *testing.T) {
+	const configuredBudget = 47 * time.Second
+	rec := &shutdownRecorder{}
+	proxy := &fakeProxyDrainer{
+		rec: rec,
+		outcome: server.DrainOutcome{
+			InFlightAtStart: 3,
+			InFlightAtEnd:   3,
+			StopReason:      server.DrainStopStalled,
+			StallWindow:     8 * time.Second,
+		},
+		err: context.Canceled,
+	}
+	plugins := &fakePluginStopper{rec: rec}
+
+	before := time.Now()
+	drainProxyThenStopPlugins(zerolog.Nop(), proxy, plugins, configuredBudget)
+
+	got := rec.order()
+	want := []string{"proxy.Shutdown", "plugins.Stop"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("shutdown steps = %v, want %v", got, want)
+	}
+	if plugins.calls != 1 {
+		t.Fatalf("plugins.Stop calls = %d, want 1: an early resolution must not short-circuit the rest of shutdown", plugins.calls)
+	}
+	if !proxy.hadDDL {
+		t.Fatal("proxy drain ran on a context with no deadline; the stall detector must pre-empt the budget, not replace it")
+	}
+	if budget := proxy.deadline.Sub(before); budget > configuredBudget+time.Second || budget < configuredBudget-time.Second {
+		t.Fatalf("proxy drain budget = %v, want ~%v", budget, configuredBudget)
 	}
 }
 

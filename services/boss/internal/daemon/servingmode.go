@@ -4,11 +4,14 @@ package daemon
 // ServingMode names what is actually serving a profile's daemon socket.
 //
 // BOS-1181: restart used to pick its strategy from Status.Installed, which is
-// set by a plist existing on disk, and Status.Running, which a launchd job that
-// is registered but was never spawned satisfies. Neither says anything about
-// what is serving, so a standalone daemon sitting behind an unusable
-// LaunchAgent was routed onto a launchd path that could not produce a socket —
-// after that path had already stopped the process that was serving one.
+// set by a plist existing on disk, and Status.Running, which at the time a
+// launchd job that was registered but never spawned also satisfied. Neither
+// says anything about what is serving, so a standalone daemon sitting behind an
+// unusable LaunchAgent was routed onto a launchd path that could not produce a
+// socket — after that path had already stopped the process that was serving
+// one. BOS-1218 has since narrowed Running to require a PID, which closes the
+// registered-but-never-spawned half; Installed remains a statement about a file
+// on disk, so the classification below is still the thing to decide from.
 type ServingMode string
 
 const (
@@ -35,9 +38,13 @@ type ServingFacts struct {
 	// verdict. Reading it as a statement about the running system is the
 	// defect BOS-1181 fixes.
 	Installed bool
-	// Running reports that the service manager knows the job. On macOS this is
-	// `launchctl list <label>` exiting 0, which a registered-but-never-spawned
-	// job also satisfies, so it is only meaningful alongside ServiceManagerPID.
+	// Running reports that the service manager owns a live process for the job.
+	// Since BOS-1218 that is what Status.Running means on macOS: `launchctl
+	// list <label>` exiting 0 is no longer enough, because a
+	// registered-but-never-spawned job satisfies it too, so the PID in that
+	// answer decides. On Linux it stays `systemctl --user is-active`, which
+	// settles no PID of its own. It is still only READ alongside
+	// ServiceManagerPID below; see the guard there for why that is deliberate.
 	Running bool
 	// ServiceManagerPID is the PID the service manager reports for the job, or
 	// 0 when it never spawned one.
@@ -69,8 +76,17 @@ func ClassifyServingMode(f ServingFacts) ServingMode {
 		f.StandalonePID != f.ServiceManagerPID {
 		return ServingModeStandalone
 	}
-	// Running alone is not enough: a registered job that launchd never spawned
-	// reports Running with no PID, and it is serving nothing.
+	// The PID term is defence in depth, and stays. On LAUNCHD, Status.Running
+	// has required a PID since BOS-1218 — a registered job launchd never
+	// spawned reports Running = false now, not true-with-no-PID — so on a
+	// Status gathered by that probe this term cannot change the verdict. On
+	// SYSTEMD it still can: Running there is `systemctl --user is-active`, and
+	// the separate MainPID read can fail, leaving Running = true with
+	// ServiceManagerPID = 0 — so on that substrate this term is load-bearing,
+	// not defence in depth. ServingFacts is a plain struct any caller can fill
+	// besides, and a supervised verdict is what routes stop and restart onto
+	// the service-manager path: a caller that sets Running without a PID must
+	// not get one.
 	if f.Running && f.ServiceManagerPID > 0 {
 		return ServingModeSupervised
 	}

@@ -3073,15 +3073,49 @@ test('U3: an absent normalization block yields the empty set (default strict)', 
   assert.deepEqual(toleratedDescriptionTransforms(config), new Set())
 })
 
-test('U3: an id outside the closed vocabulary fails validation, naming the offending id', () => {
-  assert.throws(
-    () =>
-      validateConfig(
-        withNormalization(['unordered-list-marker-substitution', 'tabs-to-spaces']),
-        'test',
-      ),
-    /skill-config:.*descriptionNormalization\.tolerated contains unknown transform id "tabs-to-spaces"/,
+/** Capture whatever validation warns about, without letting it reach the suite's output. */
+function warningsFrom(run) {
+  const originalWarn = console.warn
+  const warnings = []
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    run()
+  } finally {
+    console.warn = originalWarn
+  }
+  return warnings.join('\n')
+}
+
+test('U3: an unfamiliar but well-formed id validates, is DROPPED from the resolved set, and warns', () => {
+  // Retargeted from a throw (BOS-1223 U3). This file is copy-distributed and then extracted into
+  // every user's global skill directory, and the whole config is validated before any of it is
+  // returned — so a hard failure on an id a stale copy has not learned yet turns an additive
+  // widening of the vocabulary into a crash for review, build and repair, not just planning.
+  // Dropping is the safe direction: a smaller tolerated set makes the comparison STRICTER.
+  const config = withNormalization(['unordered-list-marker-substitution', 'tabs-to-spaces'])
+  const warned = warningsFrom(() => validateConfig(config, 'test'))
+  assert.match(warned, /descriptionNormalization\.tolerated names "tabs-to-spaces"/)
+  assert.match(warned, /STRICTER/)
+  // A tolerated list mixing a known and an unfamiliar id keeps the known one and drops the other —
+  // and this is exactly why the authoring guard below had to move off the resolved set: a mistyped
+  // id can no longer appear in it, so a membership loop over it could never fail.
+  assert.deepEqual(
+    toleratedDescriptionTransforms(config),
+    new Set(['unordered-list-marker-substitution']),
   )
+})
+
+test('U3: a structurally bad tolerated ENTRY still throws — only unfamiliar ids degrade', () => {
+  // The strictness split is by role, not a blanket loosening. A non-string or empty-string entry is
+  // a repo that meant to configure something and did not; there is nothing forward-compatible about
+  // it, so it stays a hard failure.
+  for (const bad of [42, null, { id: 'x' }, '']) {
+    assert.throws(
+      () => validateConfig(withNormalization(['terminal-newline-trimming', bad]), 'test'),
+      /skill-config:.*descriptionNormalization\.tolerated entries must be non-empty strings/,
+      `${JSON.stringify(bad)} is structurally wrong, not merely unfamiliar`,
+    )
+  }
 })
 
 test('U3: a non-array tolerated fails validation, naming the expected type', () => {
@@ -3115,15 +3149,57 @@ test('U3: an explicitly empty array is equivalent to an absent block — never "
   assert.equal(toleratedDescriptionTransforms(explicit).size, 0)
 })
 
+/** Every tolerated id as WRITTEN in a raw config object, across every tracker adapter it configures. */
+const rawToleratedIds = (raw) =>
+  Object.values(raw.trackerConfig ?? {}).flatMap(
+    (tc) => tc?.descriptionNormalization?.tolerated ?? [],
+  )
+
+const unrecognisedIn = (ids) =>
+  ids.filter((id) => !DESCRIPTION_NORMALIZATION_TRANSFORMS.includes(id))
+
 test("U3: the repo's own .boss-skills.json parses and validates under the new rules", () => {
+  // Read the ids as COMMITTED, before validation filters them. The guard used to assert membership
+  // over the RESOLVED set, and once validation drops an unfamiliar id that loop is unfalsifiable —
+  // a typo would vanish with a warning instead of reddening, which would satisfy the
+  // forward-compatible consuming path while silently voiding the closed authoring vocabulary.
+  // Strict on the authoring path, forgiving on the consuming one, is the whole shape of U3.
   const config = loadSkillConfig({ cwd: REPO_ROOT })
   validateConfig(config, 'repo')
-  const declared = toleratedDescriptionTransforms(config)
-  assert.ok(declared.size > 0, 'this repo declares the transforms its tracker was observed to make')
-  for (const id of declared) {
-    assert.ok(
-      DESCRIPTION_NORMALIZATION_TRANSFORMS.includes(id),
-      `declared transform ${id} must be in the closed vocabulary`,
-    )
-  }
+  const committed = rawToleratedIds(
+    JSON.parse(readFileSync(join(REPO_ROOT, CONFIG_FILENAME), 'utf8')),
+  )
+  assert.ok(
+    committed.length > 0,
+    'this repo declares the transforms its tracker was observed to make',
+  )
+  assert.deepEqual(
+    unrecognisedIn(committed),
+    [],
+    'every id this repo COMMITS must be in the closed vocabulary',
+  )
+  // R10: the reshaping this repo's tracker was MEASURED performing on every table it stores. Without
+  // the declaration the write-back gate reports drift on any plan containing a table, and a verdict
+  // that fires on most runs trains its reader to discount it.
+  assert.ok(
+    committed.includes('table-delimiter-row-normalization'),
+    "the measured table-delimiter reshaping is declared, so this repo's own gate can reach tier 2",
+  )
+})
+
+test('U3: that authoring guard REDS on a mistyped id — proven, not merely passing today', () => {
+  // A guard that has only ever passed proves nothing. Splice an id outside the vocabulary into a
+  // copy of the committed config and assert the guard's own predicate rejects it — and assert the
+  // splice LANDED first, so a reshaped config file turns this into a red rather than a silent no-op.
+  const raw = JSON.parse(readFileSync(join(REPO_ROOT, CONFIG_FILENAME), 'utf8'))
+  const target = Object.values(raw.trackerConfig ?? {}).find((tc) =>
+    Array.isArray(tc?.descriptionNormalization?.tolerated),
+  )
+  assert.ok(target, 'the probe needs a committed tolerated list to mistype')
+  target.descriptionNormalization.tolerated.push('terminal-newline-trimmingg')
+  assert.ok(
+    rawToleratedIds(raw).includes('terminal-newline-trimmingg'),
+    'the probe mutation must actually land, or a green below would be vacuous',
+  )
+  assert.deepEqual(unrecognisedIn(rawToleratedIds(raw)), ['terminal-newline-trimmingg'])
 })

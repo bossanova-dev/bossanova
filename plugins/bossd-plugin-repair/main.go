@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -43,15 +42,12 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM)
 	go handleSigterm(sigCh, logger, plugin.Shutdown, os.Exit)
 
-	goplugin.Serve(&goplugin.ServeConfig{
-		HandshakeConfig: sharedplugin.NewHandshakeForPlugin(),
-		VersionedPlugins: map[int]goplugin.PluginSet{
-			sharedplugin.ProtocolVersion: {
-				sharedplugin.PluginTypeWorkflow: plugin,
-			},
-		},
-		GRPCServer: goplugin.DefaultGRPCServer,
-	})
+	// No drain on the parent-death path, unlike handleSigterm above: by the
+	// time the watchdog fires the host bossd is already gone, so there is
+	// nothing left to report a drained workflow to and the host rebuilds
+	// desired state from its own store on restart. Draining anyway would only
+	// hold an already-orphaned process open for shutdownTimeout.
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeWorkflow, plugin)
 }
 
 // handleSigterm blocks for one SIGTERM, drains in-flight repair goroutines

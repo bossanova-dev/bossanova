@@ -940,6 +940,15 @@ Because of that asymmetry the recognised shape is kept narrow: an unrecognised s
 difference and is reported as drift, which costs a human one triage look, where the opposite error
 silently blesses the destruction of the only surviving copy.
 
+Recognising the shape is not by itself enough, because a shape can be ambiguous with ordinary
+content. The canonicalizer must also be bounded by the position that gives the shape its meaning,
+and that bound is taken from the markup format's own structural definition of the element rather
+than from a heuristic that fits the one example that was measured. Where a canonicalizer is applied
+repeatedly until its output stops changing, the bound must survive re-application as well: a
+transform that rewrites text and then re-scans its own output can assemble a fresh match out of what
+an earlier pass just produced, so the bound belongs in what the pattern is allowed to match, not in
+the number of times it is applied.
+
 ## Agent runtime gating
 
 ### Agent runner
@@ -1118,7 +1127,9 @@ The shutdown phase in which a component stops taking new work but keeps serving 
 
 The ordering turns on which sense of _producer_ is in play, and the two senses point opposite ways. Where a producer's own in-flight work **is** the set — a relay waiting out streams its upstream is still writing — the drain must run _before_ that producer is torn down, or it reports an empty set it emptied itself. Where a producer instead **launches** work into the set — a poller or dispatcher spawning detached workers that outlive it — the drain must run _after_ it has stopped, or the set is still growing and the wait has no reason to terminate. One rule covers both: never drain a set that is still being added to, and never tear down what the set is made of before draining it.
 
-A drain reports which of its two endings occurred, finished or expired, because only that distinction tells an operator whether the budget needs changing. The report has to be earned rather than assumed: a graceful-shutdown primitive that abandons its wait on expiry typically leaves the in-flight work still running, so a drain that reports work as cut must perform the cut itself, and one that reports a clean finish must not be reading an unrelated teardown error as failure.
+A drain reports which of its endings occurred, because only that distinction tells an operator what to do next — and there are three, not two: the work finished, the budget expired, or the drain gave up early because the set it was waiting on stopped shrinking. The last two point opposite ways. An expired budget is the case where a longer budget might have helped; a set that held steady for a whole window says the wait was already futile, so lengthening it buys nothing but a later cut. The report has to be earned rather than assumed. An early ending is indistinguishable, at the error value, from a caller cancelling the drain, so it is honest only when it comes from the signal that decided it rather than from the error; a graceful-shutdown primitive that abandons its wait on expiry typically leaves the in-flight work still running, so a drain that reports work as cut must perform the cut itself; and one that reports a clean finish must not be reading an unrelated teardown error as failure.
+
+Ending early is itself a cancellation, and its scope belongs to the drain's contract: the drain may cancel only the wait it is cutting short. A shutdown context is ordinarily shared with the cleanup that follows the drain, so cancelling the context the drain was handed reaches those later waits too and abandons them — silently, because the drain still reports exactly the ending it intended while the abandoned work reports nothing at all. A window that decides when to end early is bounded from below as well as above: below by any shorter budget the same code path has already rejected as cutting the work the drain exists to protect, since a window inside that rejected span reinstates the very cut the drain's own budget was introduced to remove.
 
 ### Shutdown ceiling
 

@@ -716,7 +716,11 @@ func restartReachableDaemonForSettingsReloadWith(
 	// evaluated first so a not-running service short-circuits the probe. It widens
 	// which statuses take the standalone path; it never narrows them, so it
 	// cannot reintroduce the defect.
-	if !st.Running || takesStandalonePath(st) {
+	// `st == nil` leads, because both named predicates are nil-safe and the
+	// inline `!st.Running` term is not: without it this helper is the one
+	// spelling of the condition that panics on a status a caller was allowed
+	// to hand every other spelling.
+	if st == nil || !st.Running || takesStandalonePath(st) {
 		n, err := terminateStandalone()
 		if err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
@@ -923,6 +927,30 @@ var daemonStandaloneServed = func(st *daemon.Status) bool {
 // restarts through the service manager.
 func restartTakesStandalonePath(st *daemon.Status) bool {
 	return st == nil || !st.Installed || daemonStandaloneServed(st)
+}
+
+// stopTakesStandalonePath is `boss daemon stop`'s counterpart to
+// restartTakesStandalonePath, and it consults the same daemonStandaloneServed
+// classifier so the two commands cannot drift into disagreeing about who is
+// serving (BOS-1218 R3).
+//
+// It differs from the restart predicate by one term, `!st.Running`, exactly as
+// restartReachableDaemonForSettingsReloadWith does and for the same reason: a
+// service the manager has not started has nothing to bootout, so the standalone
+// route is the only one that can signal anything. That term is also what keeps
+// the "Daemon is already stopped." outcome reachable — without it, an installed
+// service with nothing serving at all would be classified unserved and sent to
+// bootout, which is neither what it used to do nor useful.
+//
+// The `daemonStandaloneServed` term is the part that is new. `!st.Running` on
+// its own already fixes the reported host, because after BOS-1218 a registered
+// job launchd never spawned reports Running = false on the FIRST invocation
+// rather than the second. But "is the service manager's job running" is a
+// weaker question than "who is serving": on a host where launchd genuinely owns
+// a PID *and* a detached bossd holds this profile's socket, stop would still
+// bootout the one that is not serving.
+func stopTakesStandalonePath(st *daemon.Status) bool {
+	return st == nil || !st.Installed || !st.Running || daemonStandaloneServed(st)
 }
 
 // observedServingFacts gathers what the serving-mode probe adjudicates: the
@@ -2749,17 +2777,34 @@ func runDaemonStatus(_ *cobra.Command) error {
 	case !st.Installed:
 		fmt.Println("Daemon is not installed.")
 		fmt.Println("  Run 'boss daemon install' to set up the daemon.")
+	// BOS-1218: st.Running is a live process the service manager owns, not a
+	// registration, so these three lines no longer say "registered" — a job
+	// launchd registered and never spawned reaches the default arm below and
+	// reads "installed but not running", which is what it is.
 	case st.Running && socketKnown && socketReachable:
 		fmt.Println("Daemon is running.")
 		printDaemonStatusPID(st)
 	case st.Running && socketKnown:
-		fmt.Println("Daemon is registered but not serving: the service manager reports the job loaded, but its socket is unreachable.")
+		fmt.Println("Daemon is not serving: the service manager reports a running process for the job, but its socket is unreachable.")
 		fmt.Println("  Run 'boss daemon doctor' to diagnose.")
 		printDaemonStatusPID(st)
 	case st.Running:
-		fmt.Println("Daemon is registered with the service manager, but its socket could not be probed, so whether it is serving is unknown.")
+		fmt.Println("The service manager reports a running process for the daemon, but its socket could not be probed, so whether it is serving is unknown.")
 		fmt.Println("  Run 'boss daemon doctor' to diagnose.")
 		printDaemonStatusPID(st)
+	case socketKnown && socketReachable:
+		// BOS-1218 narrowed st.Running, and this arm is what keeps the
+		// narrowing from producing a header that contradicts the host. On the
+		// reported shape — a registered LaunchAgent launchd never spawned,
+		// with a detached bossd holding the socket — st.Running is false now,
+		// so without this case the ladder falls through to "Daemon is
+		// installed but not running." while a daemon is answering on the very
+		// socket this command just probed. Reporting the two facts separately
+		// is the whole point: `Running` is a statement about the SERVICE
+		// MANAGER's job and socket reachability is a statement about what is
+		// serving, and the ticket's key decision is not to conflate them.
+		fmt.Println("Daemon is serving, but the service manager has not started its job — something other than the service manager is holding the socket.")
+		fmt.Println("  Run 'boss daemon doctor' to diagnose.")
 	default:
 		fmt.Println("Daemon is installed but not running.")
 	}
@@ -2978,9 +3023,7 @@ func runDaemonStop(cmd *cobra.Command) error {
 	}
 
 	if !st.Installed {
-		n, err := terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
-			return os.FindProcess(pid)
-		})
+		n, err := terminateStandaloneCurrentProfile(profile)
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
@@ -2994,10 +3037,15 @@ func runDaemonStop(cmd *cobra.Command) error {
 		fmt.Println("Stopped standalone bossd for current profile.")
 		return nil
 	}
-	if !st.Running {
-		n, err := terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
-			return os.FindProcess(pid)
-		})
+	// BOS-1218: this was `!st.Running`, which asked whether the service manager
+	// had started its job rather than what is holding the socket. On the
+	// reported host `launchctl list` exited 0 for a job launchd had merely
+	// registered, so stop booted out a registration that owned no process,
+	// signalled nothing, and then polled a socket held by a detached bossd for
+	// the full LifecycleShutdownTimeout before failing. A second invocation
+	// took this branch and succeeded.
+	if stopTakesStandalonePath(st) {
+		n, err := terminateStandaloneCurrentProfile(profile)
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
@@ -3008,8 +3056,17 @@ func runDaemonStop(cmd *cobra.Command) error {
 			fmt.Println("Stopped standalone bossd for current profile.")
 			return nil
 		}
-		fmt.Println("Daemon is already stopped.")
-		return nil
+		// Nothing standalone answered. If the service manager owns a live
+		// process this is the narrow race where the recorded daemon exited
+		// between the classification and the signal, and "already stopped"
+		// would be a false claim about a host with a running daemon — so fall
+		// through to the launchd path, which is what the classifier would pick
+		// on a re-read. Everywhere else st.Running is false and nothing is
+		// serving, which is what that message has always meant.
+		if !st.Running {
+			fmt.Println("Daemon is already stopped.")
+			return nil
+		}
 	}
 	if err := daemonStop(); err != nil {
 		return fmt.Errorf("stop daemon failed: %w", err)

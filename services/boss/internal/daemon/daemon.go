@@ -49,10 +49,41 @@ const RestartRecoveryHint = "the daemon is now stopped — run 'boss daemon star
 
 // Status represents the daemon's current state.
 type Status struct {
-	Installed   bool   // Whether daemon is registered with the system
-	Running     bool   // Whether daemon process is currently running
-	PID         int    // Process ID (if running)
-	ServicePath string // plist path on macOS, unit path on Linux
+	// Installed reports that the service manager is configured for the daemon:
+	// a plist on macOS, a unit file on Linux. It says nothing about processes.
+	Installed bool
+	// Running reports that the service manager owns a live process for the
+	// job. BOS-1218: on macOS this requires a PID in the `launchctl list`
+	// answer, because that command exits 0 for a job launchd has merely
+	// REGISTERED — so the exit code alone could not tell a registration from a
+	// running process, and Running was true for a daemon that owned nothing.
+	//
+	// "Running implies a non-zero PID" is a LAUNCHD invariant, not a universal
+	// one, and reading it as universal is how a caller writes a guard that is
+	// vacuous on the other substrate. On systemd Running is
+	// `systemctl --user is-active` compared against "active", and the MainPID
+	// read that follows it is a SEPARATE systemctl call that can fail or
+	// return an unparseable value — so Running = true with PID = 0 and
+	// PIDKnown = false is a shape only Linux can produce, and it is exactly
+	// the shape cmd/daemon_supervision.go keys its no-service-PID rung on.
+	Running bool
+	// PID is the process ID the service manager reports for the job, or 0.
+	PID int
+	// PIDKnown reports whether the service manager's answer SETTLED the PID,
+	// as distinct from PID simply being 0.
+	//
+	// BOS-1218 R2a: without it a zero PID stood for two opposite observations
+	// — "the service manager answered, and the job owns no process" and "the
+	// service manager could not be asked, or its answer could not be read".
+	// A sentinel rendered for two opposite causes is not a diagnostic
+	// (docs/solutions/design-patterns/a-sentinel-rendered-for-two-opposite-causes-is-not-a-diagnostic.md),
+	// and keying the new Running verdict on PID > 0 alone would have rebuilt
+	// the original bug one notch over. False therefore always means "could not
+	// tell"; what a settled answer looks like is substrate-specific and is
+	// documented at each assignment site (launchd.go, systemd.go).
+	PIDKnown bool
+	// ServicePath is the plist path on macOS, the unit path on Linux.
+	ServicePath string
 }
 
 // Install registers the daemon with the system service manager.
@@ -75,6 +106,22 @@ func skipLaunchctl() bool {
 }
 
 var executablePath = os.Executable
+
+// parseLeadingInt reads an integer off the front of s, reporting whether one
+// was there at all.
+//
+// It exists so a failed parse cannot be mistaken for a parse of zero: the
+// service-manager probes derive Status.PIDKnown from the second return, and
+// fmt.Sscanf's own convention — leave the destination untouched and return an
+// error — is easy to write past when the destination is a struct field
+// (BOS-1218).
+func parseLeadingInt(s string) (int, bool) {
+	var v int
+	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
 
 // validatePath checks that a path is safe to use in service templates.
 // Prevents template injection via newlines or other control characters.

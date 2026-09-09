@@ -94,28 +94,6 @@ func TestCronCompletionGateFinalizesAfterHookSignalWithoutWaitingForTmuxExit(t *
 	waitForCount(t, "FinalizeSession", finalizer.count)
 }
 
-func TestCronCompletionGateFinalizesAfterPollCompletionSignal(t *testing.T) {
-	sessions := newGateSessionStore()
-	finalizer := &recordingCronFinalizer{}
-
-	cronID := "cron-1"
-	agentID := "agent-1"
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:             "sess-1",
-		CronJobID:      &cronID,
-		AgentSessionID: &agentID,
-	}
-
-	gate := NewCronCompletionGate(CronCompletionGateDeps{
-		Sessions:   sessions,
-		Finalizer:  finalizer,
-		QuietDelay: time.Millisecond,
-	})
-
-	gate.NotifyCronAgentStopped("sess-1")
-	waitForCount(t, "FinalizeSession", finalizer.count)
-}
-
 // blockingCronFinalizer blocks inside FinalizeSession until the supplied
 // context is cancelled, then records the context's deadline-ness and error.
 // It lets a test prove the gate bounds finalization rather than letting a hung

@@ -72,6 +72,119 @@ func daemonProcessAlive(pid int) (bool, error) {
 // loaded. BOS-1183.
 var daemonGetSpawnHistory = daemon.GetSpawnHistory
 
+// daemonGetJobDisabled is the launchd disable-override probe, behind the same
+// package-var seam idiom as daemonGetSpawnHistory and for the identical
+// reason: without the seam every doctor test would read the REAL launchd
+// domain of whatever machine runs it, so the assertions would depend on
+// whether the engineer running them happens to have bossd loaded and enabled.
+// BOS-1222.
+var daemonGetJobDisabled = daemon.GetJobDisabled
+
+// daemonConsoleDevicePath is the device node whose owner launchd treats as
+// holding the foreground console. It is a constant so the stat this command
+// performs and the command it prints for the operator cannot drift apart: the
+// BOS-1222 incident was a remediation that named a fact nothing had read, and
+// two spellings of the same path would let that gap reopen quietly.
+const daemonConsoleDevicePath = "/dev/console"
+
+// daemonConsoleOwnerCommand is the operator-facing way to reproduce, by hand,
+// the same fact daemonConsoleOwnerUID reads in-process. It is kept next to the
+// path it reads for the reason above, and exists so a report can name how to
+// check an indeterminate verdict rather than leaving the operator nowhere to
+// go. BOS-1222.
+const daemonConsoleOwnerCommand = "stat -f %Su " + daemonConsoleDevicePath
+
+// daemonConsoleOwnership is what doctor ESTABLISHED about who owns
+// /dev/console, not what it assumes.
+//
+// Three outcomes and not two, deliberately. A bool would have to fold "the
+// console could not be read" into one of its values, and either fold is a lie:
+// folding it into "owned by someone else" invents a cause, and folding it into
+// "owned by us" reports ownership as fine on evidence that does not exist —
+// the fail-open guess this whole ticket removes. An unreadable console is
+// "cannot tell", and asserts nothing either way. BOS-1222.
+type daemonConsoleOwnership int
+
+const (
+	// daemonConsoleOwnershipUnknown means the owner could not be determined.
+	// It asserts nothing: the candidate cause is neither established nor ruled
+	// out, and a report must say "not checked" rather than pick a side.
+	daemonConsoleOwnershipUnknown daemonConsoleOwnership = iota
+	// daemonConsoleOwnershipCurrentUser means the console is owned by the user
+	// this command is running as, which RULES OUT foreground-console ownership
+	// as the cause of a never-spawned job.
+	daemonConsoleOwnershipCurrentUser
+	// daemonConsoleOwnershipOtherUser means the console is owned by a
+	// different user, which ESTABLISHES foreground-console ownership as a
+	// cause: this session's launchd will not spawn new RunAtLoad jobs.
+	daemonConsoleOwnershipOtherUser
+)
+
+// daemonConsoleOwnerUID reports the owning UID of /dev/console.
+//
+// A package var over a plain stat, behind the same seam idiom as
+// findDaemonProcess and daemonGetSpawnHistory, because without it every test
+// of this verdict would read the REAL console of whatever machine runs it —
+// so the assertions would depend on whether the engineer is signed in at the
+// foreground, which is precisely the condition under test.
+//
+// It is a stat and NOT a subprocess, even though the operator-facing command
+// is `stat -f %Su`. BOS-864 rejected an advisory subprocess inside a
+// diagnostic after an unbounded one caused a multi-minute silent stall in this
+// codebase; a file-info read has no such failure mode.
+var daemonConsoleOwnerUID = func() (int, error) {
+	info, err := os.Stat(daemonConsoleDevicePath)
+	if err != nil {
+		return 0, err
+	}
+	// Comma-ok, never a bare assertion: a platform whose FileInfo carries no
+	// Stat_t must return an error so the verdict fails closed to unknown. A
+	// guessed UID here would be reported as an established fact.
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("%s: file info carries no owner UID on this platform", daemonConsoleDevicePath)
+	}
+	return int(stat.Uid), nil
+}
+
+// daemonCurrentUID is the UID this command runs as, behind a seam for the same
+// reason as daemonConsoleOwnerUID: the comparison must be drivable from a test
+// without the host's own identity deciding the outcome.
+var daemonCurrentUID = os.Getuid
+
+// classifyDaemonConsoleOwnership maps a console-owner reading onto a verdict.
+//
+// Pure, and split out from the seams for the reason classifyLaunchdSpawnHistory
+// is: the truth table is the thing worth proving, and proving it through a
+// rendered report proves the rendering instead.
+//
+// The ladder is fail-closed top to bottom — every branch that is not a positive
+// comparison of two trustworthy UIDs ends in unknown. Negative UIDs are guarded
+// rather than compared: no OS produces one, so a negative here means the seam
+// returned a zero value alongside an error a caller dropped, or an
+// os.Getuid that reported "unsupported" (-1). Comparing those would let two
+// untrustworthy values agree and read as "ownership is fine".
+func classifyDaemonConsoleOwnership(ownerUID int, ownerErr error, currentUID int) daemonConsoleOwnership {
+	switch {
+	case ownerErr != nil:
+		return daemonConsoleOwnershipUnknown
+	case ownerUID < 0, currentUID < 0:
+		return daemonConsoleOwnershipUnknown
+	case ownerUID == currentUID:
+		return daemonConsoleOwnershipCurrentUser
+	default:
+		return daemonConsoleOwnershipOtherUser
+	}
+}
+
+// daemonDoctorConsoleOwnership wires the two seams into the classifier. It is
+// the only entry point a reporter should call; the classifier stays pure so
+// its table can be tested without them.
+func daemonDoctorConsoleOwnership() daemonConsoleOwnership {
+	ownerUID, err := daemonConsoleOwnerUID()
+	return classifyDaemonConsoleOwnership(ownerUID, err, daemonCurrentUID())
+}
+
 // daemonStalenessGOOS mirrors daemonDoctorGOOS so the non-darwin no-op is
 // testable on a darwin CI machine. Staging is darwin-only and stays that way.
 var daemonStalenessGOOS = runtime.GOOS
@@ -485,8 +598,10 @@ func reportDaemonSupervision(
 			metadata.PID, daemonUnsupervisedConsequences)
 	case daemonSupervisionReasonNoServicePID:
 		// Reachable on systemd when `systemctl is-active` succeeds but the
-		// MainPID read does not, and on launchd when its output cannot be
-		// parsed. Certifying ownership here would emit a false healthy verdict
+		// MainPID read does not. BOS-1218 made it unreachable on launchd:
+		// unparseable `launchctl list` output leaves PIDKnown false, which now
+		// forces Running false too, so such a host reaches the detached arm
+		// instead. Certifying ownership here would emit a false healthy verdict
 		// from the one check added to detect an ownership mismatch.
 		_, _ = fmt.Fprintf(out,
 			"daemon supervision: unknown (the service manager reports running but did not report a PID; recorded daemon is PID %d)\n",
@@ -733,7 +848,168 @@ const (
 	// spawn bossd and bossd died, so the only step that makes the failure
 	// visible is running the staged binary in the foreground.
 	daemonSpawnRemediationForeground
+
+	// daemonSpawnRemediationSpawnCauses is the never-spawned remedy for the
+	// case daemonSpawnRemediationConsole above cannot honestly cover: launchd
+	// never tried, and console ownership was NOT established as the reason.
+	//
+	// A fourth enum value and not a bool alongside Console, for the same
+	// reason recorded above this block: the remedies are mutually exclusive by
+	// construction. "Console ownership is the established cause" and "no
+	// candidate cause is established" cannot both be true, so a bool pair
+	// would admit a state the Remediation ladder would have to pick between
+	// arbitrarily — and picking arbitrarily between a cause and the absence of
+	// one is precisely the defect BOS-1222 removes.
+	daemonSpawnRemediationSpawnCauses
 )
+
+// daemonSpawnCauseVerdict is what doctor ESTABLISHED about one candidate cause
+// of a never-spawned job — never what it assumes.
+//
+// Three values and not a bool, for the reason daemonConsoleOwnership carries
+// three: "not checked" is a real answer, and folding it into either side is
+// the fail-open guess this ticket exists to remove.
+type daemonSpawnCauseVerdict int
+
+const (
+	// daemonSpawnCauseNotChecked means doctor could not settle this candidate.
+	// It asserts nothing, and a report must hand over the command that would.
+	daemonSpawnCauseNotChecked daemonSpawnCauseVerdict = iota
+	// daemonSpawnCauseRuledOut means doctor measured this candidate and it is
+	// not what is holding the job.
+	daemonSpawnCauseRuledOut
+	// daemonSpawnCauseEstablished means doctor measured this candidate and it
+	// holds.
+	daemonSpawnCauseEstablished
+)
+
+// String renders a verdict as the word a report prints. It is a method rather
+// than a rendering-site switch so every candidate line in every branch is
+// spelled the same way.
+func (v daemonSpawnCauseVerdict) String() string {
+	switch v {
+	case daemonSpawnCauseRuledOut:
+		return "ruled out"
+	case daemonSpawnCauseEstablished:
+		return "established"
+	case daemonSpawnCauseNotChecked:
+		return "not checked"
+	default:
+		// A verdict this build does not recognise asserts nothing, which is
+		// the same fail-closed direction every other classifier here takes.
+		return "not checked"
+	}
+}
+
+// daemonSpawnCauseFacts is what doctor OBSERVED, gathered on its own side of
+// the boundary: console ownership and the disable override are facts about the
+// user's login session, which is where this command runs.
+//
+// The two command strings travel with the facts rather than being rebuilt at
+// the rendering site, because the domain they name is resolved by the probe
+// and a remediation that names a domain nobody probed is the same class of
+// defect as one that names a cause nobody measured.
+type daemonSpawnCauseFacts struct {
+	// Console is the /dev/console ownership verdict.
+	Console daemonConsoleOwnership
+	// Disabled is the service manager's disable-override verdict.
+	Disabled daemon.JobDisabledState
+	// SocketKnown is false when the profile could not be resolved, so whether
+	// the socket answers is genuinely unknown rather than "no".
+	SocketKnown bool
+	// SocketReachable reports whether the daemon socket answered. Meaningful
+	// only when SocketKnown is true.
+	SocketReachable bool
+	// Label is the job's launchd label — what the disable-override probe
+	// asked about. It is carried so the report can NAME the string an
+	// operator is told to look for; daemon.Label is darwin-only, so the cmd
+	// package can only learn it by being handed it.
+	Label string
+	// DisabledCommand is the operator-facing `launchctl print-disabled
+	// <domain>` that settles the disable candidate by hand.
+	DisabledCommand string
+	// EnableCommand is the literal `launchctl enable <domain>/<label>` that
+	// CLEARS an established override. Empty when the probe resolved no label,
+	// because a command naming a label doctor did not read would be the same
+	// defect class this ticket removes.
+	EnableCommand string
+	// DomainCommand is the operator-facing `launchctl print <domain>` that
+	// settles the one candidate doctor cannot check: a GUI domain that is
+	// on-demand-only, or otherwise will not honour RunAtLoad.
+	DomainCommand string
+}
+
+// daemonSpawnCauses is the per-candidate verdict set the never-spawned
+// remediation reports.
+type daemonSpawnCauses struct {
+	Console  daemonSpawnCauseVerdict
+	Disabled daemonSpawnCauseVerdict
+	Served   daemonSpawnCauseVerdict
+}
+
+// classifyDaemonSpawnCauses maps observed facts onto per-candidate verdicts.
+//
+// Pure, and split out from every reporter for the reason classifyProbeResult
+// and classifyLaunchdSpawnHistory are: the truth table is the thing worth
+// proving, and proving it through a rendered report proves the rendering
+// instead.
+//
+// Every unreadable input lands on daemonSpawnCauseNotChecked. There is no
+// branch here that turns an absent measurement into a verdict.
+func classifyDaemonSpawnCauses(facts daemonSpawnCauseFacts) daemonSpawnCauses {
+	causes := daemonSpawnCauses{}
+
+	switch facts.Console {
+	case daemonConsoleOwnershipOtherUser:
+		causes.Console = daemonSpawnCauseEstablished
+	case daemonConsoleOwnershipCurrentUser:
+		causes.Console = daemonSpawnCauseRuledOut
+	case daemonConsoleOwnershipUnknown:
+		causes.Console = daemonSpawnCauseNotChecked
+	default:
+		causes.Console = daemonSpawnCauseNotChecked
+	}
+
+	switch facts.Disabled {
+	case daemon.JobDisabledStateDisabled:
+		causes.Disabled = daemonSpawnCauseEstablished
+	case daemon.JobDisabledStateEnabled:
+		causes.Disabled = daemonSpawnCauseRuledOut
+	case daemon.JobDisabledStateUnknown, daemon.JobDisabledStateUnsupported:
+		causes.Disabled = daemonSpawnCauseNotChecked
+	default:
+		causes.Disabled = daemonSpawnCauseNotChecked
+	}
+
+	switch {
+	case !facts.SocketKnown:
+		// No profile means we cannot know whether the socket answers, and a
+		// verdict printed on a guess sends an operator to foreground a bossd
+		// that is already up.
+		causes.Served = daemonSpawnCauseNotChecked
+	case facts.SocketReachable:
+		causes.Served = daemonSpawnCauseEstablished
+	default:
+		causes.Served = daemonSpawnCauseRuledOut
+	}
+
+	return causes
+}
+
+// anyCauseEstablished reports whether a candidate FAULT was established.
+//
+// Served is deliberately excluded, and that exclusion is the whole reason this
+// is a method rather than a loop over the three fields. A served socket is not
+// a fault: it is the ordinary shape after the detached-fallback recovery —
+// `boss daemon start` spawned bossd directly, the socket answers, and
+// launchd's own spawn count stays 0 forever. Folding it in as an "established
+// cause" is what sent an operator to foreground a SECOND bossd over a socket
+// that already answered, the duplicate the three isSocketReachable guards in
+// platformEnsureRunning exist to prevent. It is reassurance, and a report must
+// read it that way.
+func (c daemonSpawnCauses) anyCauseEstablished() bool {
+	return c.Console == daemonSpawnCauseEstablished || c.Disabled == daemonSpawnCauseEstablished
+}
 
 // reportDaemonSpawnHistory asks the question every other macOS check in this
 // command is structurally unable to ask: did launchd ever actually TRY to start
@@ -756,7 +1032,7 @@ const (
 // reportDaemonSupervision above. This runs on developer machines and in CI, and
 // a false FAIL there is how an operator learns to skip the one line that is
 // telling the truth on a real host.
-func reportDaemonSpawnHistory(out io.Writer, stagedPath string, supervision daemon.SupervisionModeStatus) (unhealthy bool, remediation daemonSpawnRemediation) {
+func reportDaemonSpawnHistory(out io.Writer, stagedPath string, supervision daemon.SupervisionModeStatus) (unhealthy bool, remediation daemonSpawnRemediation, facts daemonSpawnCauseFacts) {
 	// BOS-1204 AC8: the FAILING verdict's whole value is that it points at the
 	// binary launchd actually ran, and on the unattended substrate that is the
 	// watchdog's ROOT-OWNED copy, never the per-user staged one. The staged
@@ -774,19 +1050,43 @@ func reportDaemonSpawnHistory(out io.Writer, stagedPath string, supervision daem
 		// here cannot certify anything. The message is a foreign process's
 		// error text, so it is bounded like every other one.
 		_, _ = fmt.Fprintf(out, "launchd spawn history: unknown (%s)\n", sanitizeDaemonDoctorField(err.Error()))
-		return false, daemonSpawnRemediationNone
+		return false, daemonSpawnRemediationNone, facts
 	}
 
 	switch history.State {
 	case daemon.SpawnStateUnsupported:
 		// The caller only reaches this inside the darwin-only section, so there
 		// is nothing to report and nothing to warn about.
-		return false, daemonSpawnRemediationNone
+		return false, daemonSpawnRemediationNone, facts
 	case daemon.SpawnStateNeverSpawned:
 		_, _ = fmt.Fprintf(out,
 			"launchd spawn history: FAIL launchd has never attempted to spawn %s (runs = 0) — the job is registered in a domain launchd will not start it in, which is a launchd domain problem and never a bossd crash\n",
 			history.Target)
-		return true, daemonSpawnRemediationConsole
+		// R5: everything above this point — the detection, the FAIL wording
+		// and the unhealthy verdict — is unchanged. The ONLY thing that
+		// changed is which remediation value this arm returns, and it now
+		// depends on what doctor established rather than on nothing at all.
+		//
+		// Facts are gathered on this arm and nowhere else: they are the inputs
+		// to the never-spawned candidate report, and reading /dev/console or
+		// shelling launchctl on a healthy run would be cost for no answer.
+		facts = gatherDaemonSpawnCauseFacts()
+		// R4: an established console verdict still gets its three unchanged
+		// lines — but ONLY when the decisive cause is not also established.
+		//
+		// A job that is BOTH disabled and owned by another console user used
+		// to short-circuit here and print the console remediation alone, so
+		// the disable override never reached the operator at all; and that
+		// remediation's closing line promises launchd "spawns the job once
+		// that user owns /dev/console again", which is FALSE while the job
+		// carries a disable override. That is this ticket's own defect class
+		// recurring one layer up: a confident sentence naming a cause that is
+		// not the one holding the job. reportDaemonSpawnCauses already ranks
+		// the disable override first; this routing was bypassing that rank.
+		if facts.Console == daemonConsoleOwnershipOtherUser && facts.Disabled != daemon.JobDisabledStateDisabled {
+			return true, daemonSpawnRemediationConsole, facts
+		}
+		return true, daemonSpawnRemediationSpawnCauses, facts
 	case daemon.SpawnStateFailing:
 		// Runs and LastExitCode are readable by construction here: the
 		// classifier reaches this state only after parsing both.
@@ -802,16 +1102,16 @@ func reportDaemonSpawnHistory(out io.Writer, stagedPath string, supervision daem
 			_, _ = fmt.Fprintf(out,
 				"launchd spawn history: FAIL launchd has spawned %s %d times and it last exited with code %d — that is the WATCHDOG's own exit, not bossd's, so it can precede bossd being spawned at all; the fault is in %s, not in the launchd domain\n",
 				history.Target, history.Runs, history.LastExitCode, spawnedBinary)
-			return true, daemonSpawnRemediationForeground
+			return true, daemonSpawnRemediationForeground, facts
 		}
 		_, _ = fmt.Fprintf(out,
 			"launchd spawn history: FAIL launchd has spawned %s %d times and it last exited with code %d — bossd itself started and failed, so the fault is in the staged binary %s, not in the launchd domain\n",
 			history.Target, history.Runs, history.LastExitCode, spawnedBinary)
-		return true, daemonSpawnRemediationForeground
+		return true, daemonSpawnRemediationForeground, facts
 	case daemon.SpawnStateHealthy:
 		_, _ = fmt.Fprintf(out, "launchd spawn history: ok (launchd has spawned %s %d times)\n",
 			history.Target, history.Runs)
-		return false, daemonSpawnRemediationNone
+		return false, daemonSpawnRemediationNone, facts
 	default:
 		// SpawnStateUnknown, plus anything a future build of the probe adds.
 		// The Reason is printed verbatim rather than through
@@ -824,8 +1124,178 @@ func reportDaemonSpawnHistory(out io.Writer, stagedPath string, supervision daem
 			reason = fmt.Sprintf("unrecognised spawn state %q", string(history.State))
 		}
 		_, _ = fmt.Fprintf(out, "launchd spawn history: unknown (%s)\n", reason)
-		return false, daemonSpawnRemediationNone
+		return false, daemonSpawnRemediationNone, facts
 	}
+}
+
+// daemonSpawnConsoleRequirementLine is the one sentence BOS-1222 removed from
+// the unconditional path. It is a named constant so a test can assert its
+// ABSENCE precisely — the assertion this ticket most needs is the negative one,
+// and matching a hand-copied prefix would let the sentence drift back in under
+// a different spelling.
+//
+// It is NOT deleted. It is correct advice, and it still prints verbatim on the
+// branch where doctor has ESTABLISHED that another user owns the console
+// (R4). What was wrong was printing it unconditionally: on the measured host
+// the console was owned by the daemon's own user and runs = 0 persisted, so
+// the sentence named a cause the command had refused.
+const daemonSpawnConsoleRequirementLine = "  bossd's user must own the FOREGROUND console — check with: " +
+	daemonConsoleOwnerCommand + ", which must print that user."
+
+// daemonSpawnDisabledDomainFallback names the domain shape in a printed
+// command when the probe could not resolve a real one — on a platform with no
+// launchd domain, or a probe that never ran. Naming a domain we did not
+// resolve would be the same class of defect this ticket removes, so the
+// substitution is one the operator's own shell expands.
+const daemonSpawnDisabledDomainFallback = "gui/$(id -u)"
+
+// daemonSpawnDisabledLabelPhrase names the label the operator has to look for
+// in the dump, and falls back to the generic phrase when the probe resolved
+// none.
+//
+// BOS-1222: the follow-up handed over a dump command and then told the
+// operator to check it for a string doctor never spelled — a softer instance
+// of the defect class this ticket removes.
+func daemonSpawnDisabledLabelPhrase(label string) string {
+	if label == "" {
+		return "the job's label"
+	}
+	return "the job's label `" + label + "`"
+}
+
+// gatherDaemonSpawnCauseFacts reads the two candidate causes doctor can settle
+// on its own side of the boundary, and records the commands that settle the
+// rest.
+//
+// Socket reachability is deliberately NOT read here: runDaemonDoctor probes
+// the socket once, later in the run, and calling daemonSocketReachable a
+// second time would let one report contain two answers to the same question.
+// The caller fills SocketKnown/SocketReachable in from that single probe.
+func gatherDaemonSpawnCauseFacts() daemonSpawnCauseFacts {
+	facts := daemonSpawnCauseFacts{Console: daemonDoctorConsoleOwnership()}
+
+	// The returned value is fail-closed on BOTH paths, so the error is folded
+	// in rather than branched on: a probe that could not be attempted is the
+	// same "not checked" as one that ran and could not tell.
+	disabled, _ := daemonGetJobDisabled()
+	facts.Disabled = disabled.State
+
+	domain := disabled.Domain
+	if domain == "" {
+		domain = daemonSpawnDisabledDomainFallback
+	}
+	facts.DisabledCommand = "launchctl print-disabled " + domain
+	facts.DomainCommand = "launchctl print " + domain
+
+	// The label gets the same discipline as the domain, in the opposite
+	// direction: a domain has a shape the operator's own shell can expand, so
+	// it falls back; a label does not, so an unresolved one leaves the enable
+	// command EMPTY and the report falls back to prose. Naming a label doctor
+	// never read would be exactly the unmeasured assertion BOS-1222 removes.
+	facts.Label = disabled.Label
+	if facts.Label != "" {
+		facts.EnableCommand = "launchctl enable " + domain + "/" + facts.Label
+	}
+	return facts
+}
+
+// reportDaemonSpawnCauses prints the never-spawned candidate causes: what
+// doctor established, what it ruled out, what it could not check, and the
+// command that settles each unsettled one.
+//
+// This is the replacement for a remediation that asserted ONE cause it had
+// never measured. The shape is the one
+// docs/solutions/design-patterns/a-bounded-probe-must-classify-from-the-deadline-and-the-command-error-together.md
+// prescribes for exactly this failure: decline to answer what was not
+// established, name the suspects, and hand over the measurement. A message
+// that is specific, confident and pointing away from the cause is worse than
+// no message.
+func reportDaemonSpawnCauses(out io.Writer, facts daemonSpawnCauseFacts) {
+	causes := classifyDaemonSpawnCauses(facts)
+
+	// Reassurance FIRST when the socket answers. runs = 0 is the ordinary
+	// shape after a detached-fallback recovery, and this branch must never
+	// read as a new fault on a host where the daemon is working.
+	if causes.Served == daemonSpawnCauseEstablished {
+		_, _ = fmt.Fprintln(out, "  Nothing is broken operationally: the daemon socket answers, so a bossd IS serving this profile. runs = 0 is the ordinary shape after a detached-fallback recovery — `boss daemon start` spawned bossd directly and launchd's own spawn count stays 0 forever. Do not start a second one.")
+	}
+
+	switch {
+	case !causes.anyCauseEstablished():
+		// R3: say it, rather than falling silent or falling back to asserting
+		// a cause.
+		//
+		// Routed through the METHOD rather than re-derived inline. The
+		// predicate "no candidate fault was established" is the branch's whole
+		// content, and stating it twice — once in anyCauseEstablished, once as
+		// a switch whose default arm happened to mean the same thing — left
+		// the deliberate exclusion of Served re-encoded here by nothing more
+		// than this switch not mentioning it. Fold Served into the method and
+		// this renderer now visibly headlines a fault on a host where the
+		// socket answers and nothing is wrong, which is what the method's own
+		// doc comment argues must never happen.
+		_, _ = fmt.Fprintln(out, "  NO CANDIDATE CAUSE WAS ESTABLISHED. Doctor reports each candidate below with what it could and could not settle, rather than naming one it did not measure.")
+	case causes.Disabled == daemonSpawnCauseEstablished:
+		// Ranked above the console arm: a disable override is decisive —
+		// launchd will not spawn the job whatever else is true of the domain —
+		// and reportDaemonSpawnHistory routes the both-established shape here
+		// for exactly that reason.
+		//
+		// The one rung where doctor is CERTAIN of the cause was also the only
+		// one in the whole ladder handing over prose rather than a literal
+		// command. It now names the command, whenever the probe resolved the
+		// label the command has to spell.
+		remedy := "Re-enable it in that domain"
+		if facts.EnableCommand != "" {
+			remedy = "Re-enable it with: " + facts.EnableCommand
+		}
+		_, _ = fmt.Fprintf(out, "  ESTABLISHED CAUSE: the job carries a disable override in its launchd domain, so launchd will not spawn it whatever else is true of the domain. %s; confirm with: %s\n", remedy, facts.DisabledCommand)
+	case causes.Console == daemonSpawnCauseEstablished:
+		// Not reached from reportDaemonSpawnHistory: a console verdict
+		// established with no disable override routes to
+		// daemonSpawnRemediationConsole and its three lines, and one
+		// established alongside a disable override is taken by the arm above.
+		// Stated anyway so this renderer is total over its input and a future
+		// caller cannot reach a silent branch.
+		_, _ = fmt.Fprintf(out, "  ESTABLISHED CAUSE: %s is owned by another user, so this login session's launchd refuses new RunAtLoad spawns. Confirm with: %s\n", daemonConsoleDevicePath, daemonConsoleOwnerCommand)
+	default:
+		// Unreachable while anyCauseEstablished names exactly the two faults
+		// the arms above headline. Stated so that a THIRD candidate added to
+		// the method without a headline here cannot reach a silent branch: an
+		// established fault the report says nothing about is the failure this
+		// whole report replaces.
+		_, _ = fmt.Fprintln(out, "  A CANDIDATE CAUSE WAS ESTABLISHED, and this build has no headline for it. Read the per-candidate verdicts below.")
+	}
+
+	_, _ = fmt.Fprintf(out, "  - console ownership (a GUI session backgrounded by fast user switching keeps its existing services running but refuses new RunAtLoad spawns): %s\n", causes.Console)
+	switch causes.Console {
+	case daemonSpawnCauseRuledOut:
+		_, _ = fmt.Fprintf(out, "    %s is owned by the user this command runs as, so fast user switching is not what is holding the job.\n", daemonConsoleDevicePath)
+	default:
+		// Not-checked and established both hand the operator the command; so
+		// does any verdict a future build adds. A bare default already
+		// satisfies the exhaustive linter here (.golangci.yml sets
+		// default-signifies-exhaustive), so naming the two arms bought
+		// nothing but a second copy of this line to drift.
+		_, _ = fmt.Fprintf(out, "    settle it with: %s — it must print the user bossd runs as.\n", daemonConsoleOwnerCommand)
+	}
+
+	_, _ = fmt.Fprintf(out, "  - a disable override on the job in its launchd domain: %s\n", causes.Disabled)
+	switch causes.Disabled {
+	case daemonSpawnCauseRuledOut:
+		_, _ = fmt.Fprintln(out, "    launchd holds no disable override for this label in that domain.")
+	default:
+		// Same shape as the console candidate above, and for the same reason.
+		_, _ = fmt.Fprintf(out, "    settle it with: %s — %s must not be listed with `=> true`.\n", facts.DisabledCommand, daemonSpawnDisabledLabelPhrase(facts.Label))
+	}
+
+	// The one candidate doctor cannot settle. It is environmental and
+	// explicitly out of scope, which is exactly why it is NAMED with its
+	// command rather than left out: an operator whose other candidates are all
+	// ruled out otherwise has nowhere to go, which is the state the old
+	// remediation left them in.
+	_, _ = fmt.Fprintf(out, "  - the launchd domain is on-demand-only, or otherwise will not honour RunAtLoad: %s\n", daemonSpawnCauseNotChecked)
+	_, _ = fmt.Fprintf(out, "    settle it with: %s — inspect the domain's own state and the job's RunAtLoad handling.\n", facts.DomainCommand)
 }
 
 // reportDaemonStartupFailureDirective names the only way to see a bossd startup
@@ -993,7 +1463,7 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// checks above: launchd spawn history is not a cross-platform concept, and a
 	// Linux run must emit nothing new at all — not even a probe that prints
 	// nothing.
-	spawnUnhealthy, spawnRemediation := reportDaemonSpawnHistory(out, stagedPath, supervisionSubstrate)
+	spawnUnhealthy, spawnRemediation, spawnFacts := reportDaemonSpawnHistory(out, stagedPath, supervisionSubstrate)
 	if spawnUnhealthy {
 		unhealthyNonAuth = true
 	}
@@ -1081,13 +1551,24 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// stays 0 forever. Folding spawnUnhealthy in here sent exactly that
 	// operator to foreground a second bossd — the duplicate the three
 	// isSocketReachable guards in platformEnsureRunning exist to prevent.
+	//
+	// notServing keeps its exact existing meaning — false for BOTH "reachable"
+	// and "unknown" — because the foreground remedy is gated on it (R8).
+	// socketKnown/socketReachable are the SEPARATE pair the candidate-cause
+	// report needs, which must distinguish those two: "the socket answers" is
+	// reassurance, and "we could not resolve a profile to ask" is not.
 	notServing := false
+	socketKnown := false
+	socketReachable := false
 	switch {
 	case profileErr != nil:
 		_, _ = fmt.Fprintf(out, "daemon socket: unknown (%v)\n", profileErr)
 	case daemonSocketReachable(profile.SocketPath):
+		socketKnown = true
+		socketReachable = true
 		_, _ = fmt.Fprintf(out, "daemon socket: %s — reachable\n", profile.SocketPath)
 	default:
+		socketKnown = true
 		// Serving is what the daemon is FOR, so a socket known not to answer is
 		// a failure verdict rather than a note. Without it the directive below
 		// printed "run the staged bossd in the foreground" on a run that
@@ -1099,6 +1580,9 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 		notServing = true
 		_, _ = fmt.Fprintf(out, "FAIL daemon socket: %s — not reachable, so bossd is not serving\n", profile.SocketPath)
 	}
+	spawnFacts.SocketKnown = socketKnown
+	spawnFacts.SocketReachable = socketReachable
+
 	reportDaemonStartupFailureDirective(out, stagedPath, notServing)
 
 	if unhealthyNonAuth || authUnhealthy || modeUnhealthy {
@@ -1116,9 +1600,24 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 				// that command can do is succeed by producing an UNSUPERVISED
 				// bossd outside the login session — BOS-1183's third reported
 				// failure, reached by following the remedy for its first.
-				_, _ = fmt.Fprintln(out, "  bossd's user must own the FOREGROUND console — check with: stat -f %Su /dev/console, which must print that user.")
+				//
+				// R4: these three lines are UNCHANGED. They were never wrong,
+				// they were unconditional — and this branch is now reached
+				// only once doctor has ESTABLISHED that another user owns the
+				// console.
+				_, _ = fmt.Fprintln(out, daemonSpawnConsoleRequirementLine)
 				_, _ = fmt.Fprintln(out, "  A GUI session backgrounded by fast user switching keeps its existing services running but refuses new RunAtLoad spawns, so the job sits pending forever.")
 				_, _ = fmt.Fprintln(out, "  Return that user's login session to the foreground console; launchd spawns the job once that user owns /dev/console again.")
+			case spawnRemediation == daemonSpawnRemediationSpawnCauses:
+				// Immediately after the console branch and ahead of everything
+				// below, which keeps R8's precedence exactly: install still
+				// wins over both never-spawned branches, and both still
+				// precede the foreground and start remedies. launchd is not
+				// going to spawn anything in this domain, so `boss daemon
+				// start` could only succeed by producing an UNSUPERVISED bossd
+				// outside the login session — BOS-1183's third reported
+				// failure, reached by following the remedy for its first.
+				reportDaemonSpawnCauses(out, spawnFacts)
 			case spawnRemediation == daemonSpawnRemediationForeground && notServing:
 				// Ahead of startRemediation, which an unreachable socket has
 				// already set by this point, and ahead of the restart default.

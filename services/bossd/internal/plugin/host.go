@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -209,6 +210,30 @@ func pluginEnvFromConfig(cfg config.PluginConfig) []string {
 		env = append(env, pluginEnvVarPrefix+k+"="+v)
 	}
 	return env
+}
+
+// pluginSubprocessEnv builds the full environment for a plugin subprocess:
+// the host's own environment, the per-plugin BOSS_PLUGIN_* projection, and the
+// parent-identity stamp the plugin's parent-death watchdog needs (BOS-1221).
+//
+// It is set unconditionally — the previous code only assigned cmd.Env when
+// pluginEnvFromConfig returned entries, so a plugin carrying no config (most
+// of them) would never have been stamped.
+//
+// The Unsetenv is load-bearing, not hygiene. go-plugin appends os.Environ() to
+// cmd.Env *after* we build it (SkipHostEnv is false, client.go:655) and
+// os/exec keeps the LAST occurrence of a duplicate key, so a same-named
+// variable already in bossd's own environment would land after our stamp and
+// win. The host owns this variable name outright, so clearing it from our own
+// environment first is what makes the stamp survive that second append. The
+// plugin-side arm-time guard is the second line of defence, not the first:
+// a shadowed stamp there means the watchdog refuses to arm and the orphan
+// leak silently returns.
+func pluginSubprocessEnv(cfg config.PluginConfig, hostPID int) []string {
+	_ = os.Unsetenv(sharedplugin.ParentPIDEnvVar)
+
+	env := append(os.Environ(), pluginEnvFromConfig(cfg)...)
+	return append(env, sharedplugin.ParentPIDEnvVar+"="+strconv.Itoa(hostPID))
 }
 
 // injectLoginShell adds the user's login shell to an agent plugin's config so
@@ -498,12 +523,7 @@ func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (manag
 	// #nosec G204 -- runs an operator-configured plugin binary path (cfg.Path); local-trust, not attacker-controlled
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(cfg.Path)
-	// Project per-plugin Config entries into the subprocess environment
-	// (BOSS_PLUGIN_<key>=<value>). Plugins are separate binaries that
-	// can't import bossalib/config, so this is how settings reach them.
-	if extra := pluginEnvFromConfig(cfg); len(extra) > 0 {
-		cmd.Env = append(os.Environ(), extra...)
-	}
+	cmd.Env = pluginSubprocessEnv(cfg, os.Getpid())
 
 	client := goplugin.NewClient(&goplugin.ClientConfig{
 		HandshakeConfig:  NewHandshake(h.cookieValue),

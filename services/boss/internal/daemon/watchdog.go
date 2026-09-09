@@ -682,14 +682,25 @@ type WatchdogOwnership struct {
 	Reason string
 }
 
+// WatchdogDomain is the launchd domain the root-owned watchdog job lives in.
+//
+// BOS-1222: it is a named constant so every derivation of the watchdog's
+// domain has a COMPILE-TIME link to one another. jobDisabledDomain used to
+// return the literal "system" while WatchdogTarget derived its own, and this
+// codebase has already relocated supervision between launchd domains once
+// (BOS-1204) — a second move would have carried WatchdogTarget with it and
+// left the disable-override probe confidently answering about a domain that
+// no longer held the job.
+const WatchdogDomain = "system"
+
 // WatchdogTarget is the launchd service target of the root-owned watchdog job.
 //
 // It is exported and lives here rather than being spelled out at each call
 // site: the ownership probe, the spawn-history target resolver and the
 // bootout path all name the same target, and three string concatenations of
-// "system/" + WatchdogLabel are three places for a future domain change to be
-// missed in two of.
-func WatchdogTarget() string { return "system/" + WatchdogLabel }
+// WatchdogDomain + "/" + WatchdogLabel are three places for a future domain
+// change to be missed in two of.
+func WatchdogTarget() string { return WatchdogDomain + "/" + WatchdogLabel }
 
 // watchdogProbeOutcome is what one `launchctl print <watchdog target>` did,
 // reduced to the facts the verdict turns on.

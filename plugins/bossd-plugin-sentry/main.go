@@ -7,7 +7,6 @@ package main
 import (
 	"os"
 
-	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -21,13 +20,5 @@ func main() {
 
 	logger.Info().Msg("starting Sentry task source plugin")
 
-	goplugin.Serve(&goplugin.ServeConfig{
-		HandshakeConfig: sharedplugin.NewHandshakeForPlugin(),
-		VersionedPlugins: map[int]goplugin.PluginSet{
-			sharedplugin.ProtocolVersion: {
-				sharedplugin.PluginTypeTaskSource: &taskSourcePlugin{logger: logger},
-			},
-		},
-		GRPCServer: goplugin.DefaultGRPCServer,
-	})
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeTaskSource, &taskSourcePlugin{logger: logger})
 }

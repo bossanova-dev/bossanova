@@ -7,7 +7,6 @@ package main
 import (
 	"os"
 
-	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -21,15 +20,7 @@ func main() {
 
 	logger.Info().Msg("starting stub agent-runner plugin")
 
-	goplugin.Serve(&goplugin.ServeConfig{
-		HandshakeConfig: sharedplugin.NewHandshakeForPlugin(),
-		VersionedPlugins: map[int]goplugin.PluginSet{
-			sharedplugin.ProtocolVersion: {
-				sharedplugin.PluginTypeAgentRunner: &agentRunnerPlugin{
-					logger: logger,
-				},
-			},
-		},
-		GRPCServer: goplugin.DefaultGRPCServer,
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, &agentRunnerPlugin{
+		logger: logger,
 	})
 }

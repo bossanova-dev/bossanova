@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -895,6 +896,21 @@ func prepareDaemonDoctorPaths(t *testing.T) (home, sourcePath, stagedPath string
 	previousReachable := daemonSocketReachable
 	daemonSocketReachable = func(string) bool { return true }
 	t.Cleanup(func() { daemonSocketReachable = previousReachable })
+
+	// BOS-1222: doctor now establishes the never-spawned candidate causes on
+	// its own side of the boundary. Left unstubbed those read the DEVELOPER's
+	// real /dev/console and real launchd domain, so the never-spawned
+	// assertions would be decided by whether the engineer running the suite
+	// happens to be signed in at the foreground console. Both are pinned to
+	// the ordinary healthy shape — this user owns the console, no disable
+	// override — and a test that wants a different one re-stubs after calling
+	// the fixture, which wins.
+	stubDaemonConsoleOwnershipSeams(t, 501, nil, 501)
+	stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateEnabled,
+		Domain: daemonDoctorJobDisabledDomain,
+		Label:  "com.bossanova.bossd",
+	}, nil)
 
 	appDataDir, err := config.DefaultAppDataDir()
 	if err != nil {
@@ -1964,9 +1980,33 @@ func stubDaemonDoctorSpawnHistory(t *testing.T, history daemon.SpawnHistory, err
 	return &calls
 }
 
+// stubDaemonDoctorJobDisabled pins launchd's disable-override probe, the same
+// way and for the same reason stubDaemonDoctorSpawnHistory pins spawn history:
+// left unstubbed the probe shells out to the DEVELOPER's real launchd domain.
+// BOS-1222.
+//
+// It returns a call counter, because "the check silently stopped asking" and
+// "the check asked and the job is enabled" print the same nothing.
+func stubDaemonDoctorJobDisabled(t *testing.T, disabled daemon.JobDisabled, err error) *int {
+	t.Helper()
+	calls := 0
+	previous := daemonGetJobDisabled
+	daemonGetJobDisabled = func() (daemon.JobDisabled, error) {
+		calls++
+		return disabled, err
+	}
+	t.Cleanup(func() { daemonGetJobDisabled = previous })
+	return &calls
+}
+
 // daemonDoctorSpawnHistoryTarget is the shape launchd prints for a per-user
 // GUI job: the domain is the part of it that was wrong during the incident.
 const daemonDoctorSpawnHistoryTarget = "gui/501/com.bossanova.bossd"
+
+// daemonDoctorJobDisabledDomain is the domain half of that target, which is
+// what the disable-override probe asks about and what its printed command
+// names.
+const daemonDoctorJobDisabledDomain = "gui/501"
 
 // daemonDoctorLine returns the single output line beginning with prefix, so an
 // assertion about ONE check's verdict cannot be satisfied by a string that
@@ -1998,6 +2038,15 @@ func daemonDoctorLine(t *testing.T, got, prefix string) string {
 // records a DEAD PID so startRemediation is genuinely set — without that, the
 // assertion would pass for the trivial reason that nothing had asked for the
 // start remedy in the first place.
+//
+// BOS-1222 made this branch CONDITIONAL. These three lines were never wrong;
+// they were unconditional, and on the measured host the console was owned by
+// the daemon's own user while runs = 0 persisted, so they named a cause the
+// command had refused. The console seams are therefore stubbed to the
+// other-user case, which is the state this branch was written for and the only
+// one it may now fire in — see
+// TestRunDaemonDoctorOmitsStartupDirectiveForANeverSpawnedJobThatIsServing for
+// the inverse.
 func TestRunDaemonDoctorReportsNeverSpawnedJobWithConsoleRemediation(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchd spawn history is macOS-specific")
@@ -2014,6 +2063,10 @@ func TestRunDaemonDoctorReportsNeverSpawnedJobWithConsoleRemediation(t *testing.
 		NeverExited:  true,
 		ServiceState: "not running",
 	}, nil)
+	// The console is owned by ANOTHER user: the one state that establishes
+	// foreground-console ownership as the cause, and so the only one in which
+	// the three lines below may print.
+	stubDaemonConsoleOwnershipSeams(t, 502, nil, 501)
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -2039,7 +2092,19 @@ func TestRunDaemonDoctorReportsNeverSpawnedJobWithConsoleRemediation(t *testing.
 			t.Errorf("spawn-history line missing %q:\n%s", want, spawnLine)
 		}
 	}
-	for _, want := range []string{"foreground console", "stat -f %Su /dev/console", "fast user switching"} {
+	// R4 is that all THREE lines print UNCHANGED, so the pin is the named
+	// constant and the two literal lines rather than hand-copied fragments.
+	// The fragments were not vacuous — "foreground console" appears in no
+	// other branch, so routing this one away does fail the test (measured) —
+	// but they pin the wrong property: two of the three ("stat -f %Su
+	// /dev/console" and "fast user switching") also appear verbatim in
+	// reportDaemonSpawnCauses' own output, and none of the three would notice
+	// the WORDING of these lines drifting, which is exactly what R4 forbids.
+	for _, want := range []string{
+		daemonSpawnConsoleRequirementLine,
+		"  A GUI session backgrounded by fast user switching keeps its existing services running but refuses new RunAtLoad spawns, so the job sits pending forever.",
+		"  Return that user's login session to the foreground console; launchd spawns the job once that user owns /dev/console again.",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("remediation missing %q:\n%s", want, got)
 		}
@@ -2248,8 +2313,17 @@ func TestRunDaemonDoctorOmitsStartupDirectiveWhenServing(t *testing.T) {
 // Deriving "not serving" from the spawn history sent exactly that operator to
 // foreground a SECOND bossd over a socket that is already served: the duplicate
 // the three isSocketReachable guards in platformEnsureRunning exist to prevent.
-// The domain FAIL and its console remedy still stand; only the directive is
-// wrong here.
+//
+// BOS-1222 INVERTED half of this test's expectation, and the reason is worth
+// recording rather than quietly editing. It used to assert that the console
+// remedy "still stands" here. It does not: this fixture is the exact shape
+// measured on `delta` on 2026-09-08 — never spawned, console owned by the
+// daemon's own user, job not disabled, socket reachable — and on that host
+// `stat -f %Su /dev/console` printed the daemon's own user while runs = 0
+// persisted. The remedy asserted a cause the command it named had already
+// refused. So the assertion below is now the NEGATIVE one: the requirement
+// sentence must not print, and what prints instead is the candidate-cause
+// report, led by the reassurance that the socket answers.
 func TestRunDaemonDoctorOmitsStartupDirectiveForANeverSpawnedJobThatIsServing(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchd spawn history is macOS-specific")
@@ -2266,6 +2340,15 @@ func TestRunDaemonDoctorOmitsStartupDirectiveForANeverSpawnedJobThatIsServing(t 
 		ServiceState: "not running",
 	}, nil)
 	daemonSocketReachable = func(string) bool { return true }
+	// The measured `delta` shape, stated explicitly rather than inherited from
+	// the fixture: the console is owned by the user this command runs as, and
+	// the job carries no disable override.
+	stubDaemonConsoleOwnershipSeams(t, 501, nil, 501)
+	disabledCalls := stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateEnabled,
+		Domain: daemonDoctorJobDisabledDomain,
+		Label:  "com.bossanova.bossd",
+	}, nil)
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -2276,11 +2359,36 @@ func TestRunDaemonDoctorOmitsStartupDirectiveForANeverSpawnedJobThatIsServing(t 
 	if !errors.Is(err, errDaemonDoctorUnhealthy) {
 		t.Fatalf("a job launchd never spawned is still unhealthy when something else serves the socket, got err=%v:\n%s", err, got)
 	}
+	if *disabledCalls != 1 {
+		t.Errorf("disable-override probe called %d times, want 1 — a candidate reported without being measured is the defect this ticket removes", *disabledCalls)
+	}
 	if strings.Contains(got, "startup diagnosis:") {
 		t.Errorf("doctor told an operator to foreground a second bossd over a socket that is already served:\n%s", got)
 	}
-	if !strings.Contains(got, "foreground console") {
-		t.Errorf("the never-spawned domain remedy was dropped along with the directive:\n%s", got)
+	// THE assertion this ticket exists for.
+	if strings.Contains(got, daemonSpawnConsoleRequirementLine) {
+		t.Errorf("doctor asserted foreground-console ownership as the cause on a host whose console this user owns:\n%s", got)
+	}
+	for _, want := range []string{
+		"Nothing is broken operationally",
+		"detached-fallback recovery",
+		"console ownership",
+		"ruled out",
+		"a disable override on the job in its launchd domain",
+		"on-demand-only",
+		"launchctl print " + daemonDoctorJobDisabledDomain,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("candidate-cause report missing %q:\n%s", want, got)
+		}
+	}
+	// A ruled-out candidate must not be handed a command: that would read as
+	// an open question the operator still has to settle.
+	if strings.Contains(got, "launchctl print-disabled") {
+		t.Errorf("a ruled-out disable candidate was still handed its command:\n%s", got)
+	}
+	if strings.Contains(got, "run 'boss daemon start'") {
+		t.Errorf("doctor offered 'boss daemon start' for a domain that will never spawn the job:\n%s", got)
 	}
 }
 
@@ -2476,7 +2584,7 @@ func TestReportDaemonSpawnHistoryNamesTheSpawnedBinary(t *testing.T) {
 			t.Cleanup(func() { daemonGetSpawnHistory = previous })
 
 			var out bytes.Buffer
-			unhealthy, remediation := reportDaemonSpawnHistory(&out, stagedPath, tc.supervision)
+			unhealthy, remediation, _ := reportDaemonSpawnHistory(&out, stagedPath, tc.supervision)
 			if !unhealthy || remediation != daemonSpawnRemediationForeground {
 				t.Fatalf("unhealthy = %t remediation = %v, want true / foreground", unhealthy, remediation)
 			}
@@ -2608,4 +2716,1151 @@ func runDaemonDoctorOutput(t *testing.T) string {
 		t.Fatalf("runDaemonDoctor: %v; output:\n%s", err, output.String())
 	}
 	return output.String()
+}
+
+// daemonConsoleOwnershipName renders a console-ownership verdict for failure
+// messages. Test-local on purpose: the production type needs no String method
+// until a reporter prints one, and a %d in a truth-table failure is unreadable.
+func daemonConsoleOwnershipName(verdict daemonConsoleOwnership) string {
+	switch verdict {
+	case daemonConsoleOwnershipUnknown:
+		return "unknown"
+	case daemonConsoleOwnershipCurrentUser:
+		return "current-user"
+	case daemonConsoleOwnershipOtherUser:
+		return "other-user"
+	default:
+		return "unrecognised daemonConsoleOwnership"
+	}
+}
+
+// stubDaemonConsoleOwnershipSeams drives both console seams from a test,
+// following the save/restore idiom stubDaemonDoctorProcess uses. Left
+// unstubbed these read the REAL /dev/console and the REAL uid of whoever runs
+// the suite, so the verdict under test would be decided by whether that
+// engineer happens to be signed in at the foreground console.
+func stubDaemonConsoleOwnershipSeams(t *testing.T, ownerUID int, ownerErr error, currentUID int) {
+	t.Helper()
+	previousOwner := daemonConsoleOwnerUID
+	previousCurrent := daemonCurrentUID
+	daemonConsoleOwnerUID = func() (int, error) { return ownerUID, ownerErr }
+	daemonCurrentUID = func() int { return currentUID }
+	t.Cleanup(func() {
+		daemonConsoleOwnerUID = previousOwner
+		daemonCurrentUID = previousCurrent
+	})
+}
+
+// TestClassifyDaemonConsoleOwnership is BOS-1222's primary proof: the truth
+// table asserted directly, not through a rendered report.
+//
+// The rows that matter most are the ones that must NOT collapse into
+// "ownership is fine". A read that failed, and a UID no OS produces, are both
+// "cannot tell" — the old remediation's defect was asserting a cause it had
+// not measured, and a classifier that guessed here would reinstate it one
+// layer down.
+func TestClassifyDaemonConsoleOwnership(t *testing.T) {
+	statErr := errors.New("stat /dev/console: operation not permitted")
+
+	for _, tc := range []struct {
+		name       string
+		ownerUID   int
+		ownerErr   error
+		currentUID int
+		want       daemonConsoleOwnership
+	}{
+		{
+			name:       "console owned by this user rules the cause out",
+			ownerUID:   501,
+			currentUID: 501,
+			want:       daemonConsoleOwnershipCurrentUser,
+		},
+		{
+			name:       "console owned by another user establishes the cause",
+			ownerUID:   502,
+			currentUID: 501,
+			want:       daemonConsoleOwnershipOtherUser,
+		},
+		{
+			name:       "an unreadable console is never 'ownership is fine'",
+			ownerUID:   501,
+			ownerErr:   statErr,
+			currentUID: 501,
+			want:       daemonConsoleOwnershipUnknown,
+		},
+		{
+			name:       "a failed read wins over a mismatch too",
+			ownerUID:   502,
+			ownerErr:   statErr,
+			currentUID: 501,
+			want:       daemonConsoleOwnershipUnknown,
+		},
+		{
+			name:       "an untrustworthy current uid fails closed",
+			ownerUID:   501,
+			currentUID: -1,
+			want:       daemonConsoleOwnershipUnknown,
+		},
+		{
+			name:       "an untrustworthy owner uid fails closed",
+			ownerUID:   -1,
+			currentUID: 501,
+			want:       daemonConsoleOwnershipUnknown,
+		},
+		{
+			name:       "two untrustworthy uids must not agree their way to a verdict",
+			ownerUID:   -1,
+			currentUID: -1,
+			want:       daemonConsoleOwnershipUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyDaemonConsoleOwnership(tc.ownerUID, tc.ownerErr, tc.currentUID)
+			if got != tc.want {
+				t.Errorf("classifyDaemonConsoleOwnership(%d, %v, %d) = %s, want %s",
+					tc.ownerUID, tc.ownerErr, tc.currentUID,
+					daemonConsoleOwnershipName(got), daemonConsoleOwnershipName(tc.want))
+			}
+		})
+	}
+}
+
+// TestDaemonConsoleOwnerUIDReadsThisHost exercises the REAL seam, unstubbed.
+//
+// Deliberately weak on purpose: a CI or headless host may have no readable
+// /dev/console, and demanding success there would make the suite fail for a
+// reason that is not a defect. What it does prove is the discipline — the seam
+// either returns a UID an OS could actually have produced, or a non-nil error.
+// It never returns a guessed UID alongside a nil error, which is the only way
+// the classifier above could be fed a lie.
+func TestDaemonConsoleOwnerUIDReadsThisHost(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("/dev/console ownership is the macOS foreground-session fact this probe exists for")
+	}
+
+	uid, err := daemonConsoleOwnerUID()
+	if err != nil {
+		t.Logf("this host's %s could not be read (%v) — 'cannot tell' is a legitimate outcome", daemonConsoleDevicePath, err)
+		return
+	}
+	if uid < 0 {
+		t.Errorf("daemonConsoleOwnerUID() = %d with a nil error, want a UID an OS could produce", uid)
+	}
+}
+
+// TestDaemonConsoleOwnerCommandNamesTheDevicePath keeps the printed command and
+// the path actually stat'd from drifting apart — the two must read the same
+// fact, or the report is asserting something it did not measure again.
+func TestDaemonConsoleOwnerCommandNamesTheDevicePath(t *testing.T) {
+	if !strings.Contains(daemonConsoleOwnerCommand, daemonConsoleDevicePath) {
+		t.Errorf("daemonConsoleOwnerCommand = %q, want it to name %q",
+			daemonConsoleOwnerCommand, daemonConsoleDevicePath)
+	}
+}
+
+// TestDaemonDoctorConsoleOwnershipComposesTheSeams proves the composer reads
+// BOTH seams rather than one of them plus the host's own identity.
+//
+// The UIDs are deliberately implausible as a real login uid: a composer that
+// ignored daemonCurrentUID and called os.Getuid directly would read the
+// suite-runner's real uid and classify the first row as other-user, so the row
+// fails rather than passing by coincidence.
+func TestDaemonDoctorConsoleOwnershipComposesTheSeams(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ownerUID   int
+		ownerErr   error
+		currentUID int
+		want       daemonConsoleOwnership
+	}{
+		{
+			name:       "both seams report the same user",
+			ownerUID:   9001,
+			currentUID: 9001,
+			want:       daemonConsoleOwnershipCurrentUser,
+		},
+		{
+			name:       "the seams disagree",
+			ownerUID:   9001,
+			currentUID: 9002,
+			want:       daemonConsoleOwnershipOtherUser,
+		},
+		{
+			name:       "the owner seam could not read the console",
+			ownerUID:   9001,
+			ownerErr:   errors.New("stat /dev/console: no such file or directory"),
+			currentUID: 9001,
+			want:       daemonConsoleOwnershipUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubDaemonConsoleOwnershipSeams(t, tc.ownerUID, tc.ownerErr, tc.currentUID)
+
+			got := daemonDoctorConsoleOwnership()
+			if got != tc.want {
+				t.Errorf("daemonDoctorConsoleOwnership() = %s, want %s",
+					daemonConsoleOwnershipName(got), daemonConsoleOwnershipName(tc.want))
+			}
+		})
+	}
+}
+
+// daemonSpawnCauseVerdictName renders a verdict for failure messages. The
+// production String() is what the report prints, so a test that used it to
+// describe an unexpected value would report the same word for two different
+// values; this one is total over the int.
+func daemonSpawnCauseVerdictName(v daemonSpawnCauseVerdict) string {
+	switch v {
+	case daemonSpawnCauseNotChecked:
+		return "not-checked"
+	case daemonSpawnCauseRuledOut:
+		return "ruled-out"
+	case daemonSpawnCauseEstablished:
+		return "established"
+	default:
+		return fmt.Sprintf("unrecognised daemonSpawnCauseVerdict(%d)", int(v))
+	}
+}
+
+// TestClassifyDaemonSpawnCauses is BOS-1222's primary proof: the candidate-cause
+// truth table asserted directly, not through a rendered report.
+//
+// The rows that carry the ticket are the ones that must NOT read as a cause.
+// Both sources of "not checked" appear — a console that could not be read and
+// a disable probe that could not tell — because the whole defect was a
+// remediation that turned an unmeasured candidate into an asserted one.
+//
+// Served's three states are all here for the opposite reason: a served socket
+// is REASSURANCE, not a fault, and anyCauseEstablished must exclude it. Folding
+// it in wrongly is what sent an operator to foreground a second bossd.
+func TestClassifyDaemonSpawnCauses(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		facts        daemonSpawnCauseFacts
+		wantConsole  daemonSpawnCauseVerdict
+		wantDisabled daemonSpawnCauseVerdict
+		wantServed   daemonSpawnCauseVerdict
+		wantAny      bool
+	}{
+		{
+			name: "the measured delta shape: console ours, not disabled, socket served",
+			facts: daemonSpawnCauseFacts{
+				Console:         daemonConsoleOwnershipCurrentUser,
+				Disabled:        daemon.JobDisabledStateEnabled,
+				SocketKnown:     true,
+				SocketReachable: true,
+			},
+			wantConsole:  daemonSpawnCauseRuledOut,
+			wantDisabled: daemonSpawnCauseRuledOut,
+			wantServed:   daemonSpawnCauseEstablished,
+			// The heart of it: a served socket is not a fault, so nothing is
+			// established even though Served is.
+			wantAny: false,
+		},
+		{
+			name: "another user owns the console",
+			facts: daemonSpawnCauseFacts{
+				Console:     daemonConsoleOwnershipOtherUser,
+				Disabled:    daemon.JobDisabledStateEnabled,
+				SocketKnown: true,
+			},
+			wantConsole:  daemonSpawnCauseEstablished,
+			wantDisabled: daemonSpawnCauseRuledOut,
+			wantServed:   daemonSpawnCauseRuledOut,
+			wantAny:      true,
+		},
+		{
+			name: "a disabled job is a cause even with the console ruled out",
+			facts: daemonSpawnCauseFacts{
+				Console:     daemonConsoleOwnershipCurrentUser,
+				Disabled:    daemon.JobDisabledStateDisabled,
+				SocketKnown: true,
+			},
+			wantConsole:  daemonSpawnCauseRuledOut,
+			wantDisabled: daemonSpawnCauseEstablished,
+			wantServed:   daemonSpawnCauseRuledOut,
+			wantAny:      true,
+		},
+		{
+			name: "an unreadable console is not checked, never a cause",
+			facts: daemonSpawnCauseFacts{
+				Console:     daemonConsoleOwnershipUnknown,
+				Disabled:    daemon.JobDisabledStateEnabled,
+				SocketKnown: true,
+			},
+			wantConsole:  daemonSpawnCauseNotChecked,
+			wantDisabled: daemonSpawnCauseRuledOut,
+			wantServed:   daemonSpawnCauseRuledOut,
+			wantAny:      false,
+		},
+		{
+			name: "an unreadable disable probe is not checked, never ruled out",
+			facts: daemonSpawnCauseFacts{
+				Console:     daemonConsoleOwnershipCurrentUser,
+				Disabled:    daemon.JobDisabledStateUnknown,
+				SocketKnown: true,
+			},
+			wantConsole:  daemonSpawnCauseRuledOut,
+			wantDisabled: daemonSpawnCauseNotChecked,
+			wantServed:   daemonSpawnCauseRuledOut,
+			wantAny:      false,
+		},
+		{
+			name: "the second source of not-checked: a platform with no such override",
+			facts: daemonSpawnCauseFacts{
+				Console:     daemonConsoleOwnershipCurrentUser,
+				Disabled:    daemon.JobDisabledStateUnsupported,
+				SocketKnown: true,
+			},
+			wantConsole:  daemonSpawnCauseRuledOut,
+			wantDisabled: daemonSpawnCauseNotChecked,
+			wantServed:   daemonSpawnCauseRuledOut,
+			wantAny:      false,
+		},
+		{
+			name: "nothing readable at all asserts nothing at all",
+			facts: daemonSpawnCauseFacts{
+				Console:  daemonConsoleOwnershipUnknown,
+				Disabled: daemon.JobDisabledStateUnknown,
+			},
+			wantConsole:  daemonSpawnCauseNotChecked,
+			wantDisabled: daemonSpawnCauseNotChecked,
+			// No profile: whether the socket answers is genuinely unknown, and
+			// must NOT collapse into "not serving".
+			wantServed: daemonSpawnCauseNotChecked,
+			wantAny:    false,
+		},
+		{
+			name: "an unresolvable profile is not the same as an unreachable socket",
+			facts: daemonSpawnCauseFacts{
+				Console:  daemonConsoleOwnershipCurrentUser,
+				Disabled: daemon.JobDisabledStateEnabled,
+				// SocketKnown false while SocketReachable is true is the
+				// contradictory input a caller could hand us; the profile
+				// verdict wins, because reachability read from an unresolved
+				// profile is not a reading at all.
+				SocketReachable: true,
+			},
+			wantConsole:  daemonSpawnCauseRuledOut,
+			wantDisabled: daemonSpawnCauseRuledOut,
+			wantServed:   daemonSpawnCauseNotChecked,
+			wantAny:      false,
+		},
+		{
+			name: "both faults at once still exclude the served reassurance",
+			facts: daemonSpawnCauseFacts{
+				Console:         daemonConsoleOwnershipOtherUser,
+				Disabled:        daemon.JobDisabledStateDisabled,
+				SocketKnown:     true,
+				SocketReachable: true,
+			},
+			wantConsole:  daemonSpawnCauseEstablished,
+			wantDisabled: daemonSpawnCauseEstablished,
+			wantServed:   daemonSpawnCauseEstablished,
+			wantAny:      true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyDaemonSpawnCauses(tc.facts)
+			if got.Console != tc.wantConsole {
+				t.Errorf("Console = %s, want %s", daemonSpawnCauseVerdictName(got.Console), daemonSpawnCauseVerdictName(tc.wantConsole))
+			}
+			if got.Disabled != tc.wantDisabled {
+				t.Errorf("Disabled = %s, want %s", daemonSpawnCauseVerdictName(got.Disabled), daemonSpawnCauseVerdictName(tc.wantDisabled))
+			}
+			if got.Served != tc.wantServed {
+				t.Errorf("Served = %s, want %s", daemonSpawnCauseVerdictName(got.Served), daemonSpawnCauseVerdictName(tc.wantServed))
+			}
+			if got.anyCauseEstablished() != tc.wantAny {
+				t.Errorf("anyCauseEstablished() = %t, want %t — a served socket is reassurance, never a fault", got.anyCauseEstablished(), tc.wantAny)
+			}
+		})
+	}
+}
+
+// TestDaemonSpawnCauseVerdictWords pins the three words a report prints, and
+// pins that an unrecognised value fails closed to "not checked" rather than to
+// either side. The rendered scenarios below assert on these words, so a silent
+// rewording here would weaken every one of them.
+func TestDaemonSpawnCauseVerdictWords(t *testing.T) {
+	for verdict, want := range map[daemonSpawnCauseVerdict]string{
+		daemonSpawnCauseNotChecked:   "not checked",
+		daemonSpawnCauseRuledOut:     "ruled out",
+		daemonSpawnCauseEstablished:  "established",
+		daemonSpawnCauseVerdict(127): "not checked",
+	} {
+		if got := verdict.String(); got != want {
+			t.Errorf("daemonSpawnCauseVerdict(%d).String() = %q, want %q", int(verdict), got, want)
+		}
+	}
+}
+
+// TestReportDaemonSpawnCausesScenarios drives the renderer directly, following
+// TestReportDaemonSpawnHistoryNamesTheSpawnedBinary's four-field table shape.
+//
+// Every row carries a notText half, which is the assertion this ticket most
+// needs: a new remediation branch can be as confidently wrong as the old one,
+// and only the absent-string assertion proves a cause is no longer asserted.
+func TestReportDaemonSpawnCausesScenarios(t *testing.T) {
+	const disabledCommand = "launchctl print-disabled gui/501"
+	const domainCommand = "launchctl print gui/501"
+
+	base := func() daemonSpawnCauseFacts {
+		return daemonSpawnCauseFacts{
+			DisabledCommand: disabledCommand,
+			DomainCommand:   domainCommand,
+		}
+	}
+
+	for _, tc := range []struct {
+		name     string
+		facts    daemonSpawnCauseFacts
+		wantText []string
+		notText  []string
+	}{
+		{
+			name: "the measured delta shape leads with the reassurance and asserts nothing",
+			facts: func() daemonSpawnCauseFacts {
+				f := base()
+				f.Console = daemonConsoleOwnershipCurrentUser
+				f.Disabled = daemon.JobDisabledStateEnabled
+				f.SocketKnown, f.SocketReachable = true, true
+				return f
+			}(),
+			wantText: []string{
+				"Nothing is broken operationally",
+				"a bossd IS serving this profile",
+				"Do not start a second one",
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+				"console ownership",
+				"ruled out",
+				"on-demand-only",
+				domainCommand,
+			},
+			notText: []string{
+				daemonSpawnConsoleRequirementLine,
+				"ESTABLISHED CAUSE",
+				// A ruled-out candidate is settled; handing over its command
+				// would read as an open question.
+				disabledCommand,
+				daemonConsoleOwnerCommand,
+			},
+		},
+		{
+			name: "a disabled job is the established cause and the headline",
+			facts: func() daemonSpawnCauseFacts {
+				f := base()
+				f.Console = daemonConsoleOwnershipCurrentUser
+				f.Disabled = daemon.JobDisabledStateDisabled
+				f.SocketKnown = true
+				return f
+			}(),
+			wantText: []string{
+				"ESTABLISHED CAUSE: the job carries a disable override",
+				disabledCommand,
+				"a disable override on the job in its launchd domain: established",
+				"console ownership",
+				"ruled out",
+			},
+			notText: []string{
+				daemonSpawnConsoleRequirementLine,
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+				"Nothing is broken operationally",
+			},
+		},
+		{
+			name: "an indeterminate console is reported not checked with its command",
+			facts: func() daemonSpawnCauseFacts {
+				f := base()
+				f.Console = daemonConsoleOwnershipUnknown
+				f.Disabled = daemon.JobDisabledStateEnabled
+				f.SocketKnown = true
+				return f
+			}(),
+			wantText: []string{
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+				"console ownership",
+				"not checked",
+				daemonConsoleOwnerCommand,
+			},
+			notText: []string{
+				daemonSpawnConsoleRequirementLine,
+				"ESTABLISHED CAUSE",
+				// The candidate is unsettled, so it must not read as settled
+				// in either direction.
+				"is owned by the user this command runs as",
+			},
+		},
+		{
+			name: "nothing established and the socket unreachable still hands over every command",
+			facts: func() daemonSpawnCauseFacts {
+				f := base()
+				f.Console = daemonConsoleOwnershipUnknown
+				f.Disabled = daemon.JobDisabledStateUnknown
+				f.SocketKnown = true
+				return f
+			}(),
+			wantText: []string{
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+				daemonConsoleOwnerCommand,
+				disabledCommand,
+				domainCommand,
+			},
+			notText: []string{
+				daemonSpawnConsoleRequirementLine,
+				"ESTABLISHED CAUSE",
+				"Nothing is broken operationally",
+				"ruled out",
+			},
+		},
+		{
+			name: "an unsupported platform reports the disable candidate as not checked",
+			facts: func() daemonSpawnCauseFacts {
+				f := base()
+				f.Console = daemonConsoleOwnershipCurrentUser
+				f.Disabled = daemon.JobDisabledStateUnsupported
+				f.SocketKnown = true
+				return f
+			}(),
+			wantText: []string{
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+				"a disable override on the job in its launchd domain: not checked",
+				disabledCommand,
+			},
+			notText: []string{
+				daemonSpawnConsoleRequirementLine,
+				"launchd holds no disable override",
+			},
+		},
+		{
+			name: "an established console verdict names the cause without asserting the requirement",
+			facts: func() daemonSpawnCauseFacts {
+				f := base()
+				f.Console = daemonConsoleOwnershipOtherUser
+				f.Disabled = daemon.JobDisabledStateEnabled
+				f.SocketKnown = true
+				return f
+			}(),
+			wantText: []string{
+				"ESTABLISHED CAUSE",
+				"is owned by another user",
+				daemonConsoleOwnerCommand,
+			},
+			notText: []string{
+				// Even here the renderer does not print the ladder's sentence;
+				// that branch belongs to daemonSpawnRemediationConsole.
+				daemonSpawnConsoleRequirementLine,
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+			},
+		},
+		{
+			name: "an unresolvable profile omits the reassurance rather than guessing",
+			facts: func() daemonSpawnCauseFacts {
+				f := base()
+				f.Console = daemonConsoleOwnershipCurrentUser
+				f.Disabled = daemon.JobDisabledStateEnabled
+				return f
+			}(),
+			wantText: []string{
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+				"ruled out",
+			},
+			notText: []string{
+				daemonSpawnConsoleRequirementLine,
+				"Nothing is broken operationally",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			reportDaemonSpawnCauses(&out, tc.facts)
+			got := out.String()
+			for _, want := range tc.wantText {
+				if !strings.Contains(got, want) {
+					t.Errorf("report missing %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range tc.notText {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("report contains %q, which it must not:\n%s", unwanted, got)
+				}
+			}
+			if strings.Contains(got, "must own the FOREGROUND console") {
+				t.Errorf("the candidate report asserted the foreground-console requirement:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestRunDaemonDoctorReportsADisabledJobAsTheEstablishedCause is the plan's
+// third U2 scenario, driven end to end through the ladder rather than the
+// renderer: a disable override is decisive, and it must reach the operator as
+// the headline rather than as one bullet among three.
+func TestRunDaemonDoctorReportsADisabledJobAsTheEstablishedCause(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:       daemon.SpawnStateNeverSpawned,
+		Target:      daemonDoctorSpawnHistoryTarget,
+		RunsKnown:   true,
+		NeverExited: true,
+	}, nil)
+	stubDaemonConsoleOwnershipSeams(t, 501, nil, 501)
+	stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateDisabled,
+		Domain: daemonDoctorJobDisabledDomain,
+		Label:  "com.bossanova.bossd",
+	}, nil)
+
+	got := runDaemonDoctorOutput(t)
+	for _, want := range []string{
+		"ESTABLISHED CAUSE: the job carries a disable override",
+		"launchctl print-disabled " + daemonDoctorJobDisabledDomain,
+		// The rung doctor is CERTAIN of must hand over a literal command like
+		// every other rung in the ladder, not prose. It also has to NAME the
+		// label: an operator told to check a dump for "the job's label" was
+		// being sent to look for a string doctor never spelled.
+		"Re-enable it with: launchctl enable " + daemonDoctorJobDisabledDomain + "/com.bossanova.bossd",
+		"the job's label `com.bossanova.bossd` must not be listed with `=> true`",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		daemonSpawnConsoleRequirementLine,
+		"NO CANDIDATE CAUSE WAS ESTABLISHED",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("output contains %q with a disable override established:\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestReportDaemonSpawnCausesRoutesOnAnyCauseEstablished carries the Served
+// exclusion into the SHIPPED renderer, which is what makes the exclusion
+// anyCauseEstablished' doc comment argues for load-bearing rather than a
+// property of a helper nothing called. Before this the renderer re-derived the
+// predicate inline — `case Disabled == Established` / `case Console ==
+// Established` / `default` — so the invariant was stated twice and the table
+// test proved the copy that shipped in neither branch.
+//
+// The row that carries it is the reassurance one: a served socket with every
+// fault ruled out must still print the DECLINE line, because runs = 0 after a
+// detached-fallback recovery is the ordinary shape and a headline there is
+// what sent an operator to foreground a second bossd.
+func TestReportDaemonSpawnCausesRoutesOnAnyCauseEstablished(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		facts    daemonSpawnCauseFacts
+		wantLine string
+		notLine  string
+	}{
+		{
+			name: "a served socket is reassurance, never a headline",
+			facts: daemonSpawnCauseFacts{
+				Console:         daemonConsoleOwnershipCurrentUser,
+				Disabled:        daemon.JobDisabledStateEnabled,
+				SocketKnown:     true,
+				SocketReachable: true,
+			},
+			wantLine: "NO CANDIDATE CAUSE WAS ESTABLISHED",
+			notLine:  "ESTABLISHED CAUSE:",
+		},
+		{
+			name: "every candidate unreadable still establishes nothing",
+			facts: daemonSpawnCauseFacts{
+				Console:  daemonConsoleOwnershipUnknown,
+				Disabled: daemon.JobDisabledStateUnknown,
+			},
+			wantLine: "NO CANDIDATE CAUSE WAS ESTABLISHED",
+			notLine:  "ESTABLISHED CAUSE:",
+		},
+		{
+			name: "an established fault is headlined, not declined",
+			facts: daemonSpawnCauseFacts{
+				Console:  daemonConsoleOwnershipOtherUser,
+				Disabled: daemon.JobDisabledStateEnabled,
+			},
+			wantLine: "ESTABLISHED CAUSE:",
+			notLine:  "NO CANDIDATE CAUSE WAS ESTABLISHED",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			reportDaemonSpawnCauses(&out, tc.facts)
+			got := out.String()
+			if !strings.Contains(got, tc.wantLine) {
+				t.Errorf("output missing %q:\n%s", tc.wantLine, got)
+			}
+			if strings.Contains(got, tc.notLine) {
+				t.Errorf("output contains %q:\n%s", tc.notLine, got)
+			}
+		})
+	}
+}
+
+// TestRunDaemonDoctorRanksTheDisableOverrideAboveAnEstablishedConsole is
+// BOS-1222's own defect class recurring one layer up, pinned so it cannot come
+// back. A job that is BOTH disabled and owned by another console user used to
+// short-circuit to the console remediation and print it ALONE: the disable
+// override never reached the operator, and the console remedy's closing line
+// promises launchd "spawns the job once that user owns /dev/console again",
+// which is false while the job carries a disable override.
+//
+// The renderer already ranks the disable override first. This pins that the
+// routing into it no longer bypasses that rank — and that the console fact is
+// still REPORTED, as an established candidate, rather than traded away for it.
+func TestRunDaemonDoctorRanksTheDisableOverrideAboveAnEstablishedConsole(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:       daemon.SpawnStateNeverSpawned,
+		Target:      daemonDoctorSpawnHistoryTarget,
+		RunsKnown:   true,
+		NeverExited: true,
+	}, nil)
+	// BOTH established: another user owns the console AND the job is disabled.
+	stubDaemonConsoleOwnershipSeams(t, 502, nil, 501)
+	stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateDisabled,
+		Domain: daemonDoctorJobDisabledDomain,
+		Label:  "com.bossanova.bossd",
+	}, nil)
+
+	got := runDaemonDoctorOutput(t)
+	for _, want := range []string{
+		"ESTABLISHED CAUSE: the job carries a disable override",
+		"Re-enable it with: launchctl enable " + daemonDoctorJobDisabledDomain + "/com.bossanova.bossd",
+		// The console fact is not traded away for the ranking: it is still
+		// reported, with the verdict doctor measured for it.
+		"console ownership",
+		"established",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		daemonSpawnConsoleRequirementLine,
+		// The sentence that is FALSE for a disabled job.
+		"launchd spawns the job once that user owns /dev/console again",
+		"NO CANDIDATE CAUSE WAS ESTABLISHED",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a disabled job was given the console remediation %q — returning the session to the foreground will not spawn a disabled job:\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestRunDaemonDoctorKeepsTheConsoleRemediationWhenOnlyTheConsoleIsEstablished
+// is the other side of that ranking, and R4's guard: with the disable override
+// RULED OUT, an established console verdict still gets its three unchanged
+// lines. Without this row the fix above would be indistinguishable from
+// deleting the console branch outright.
+func TestRunDaemonDoctorKeepsTheConsoleRemediationWhenOnlyTheConsoleIsEstablished(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:       daemon.SpawnStateNeverSpawned,
+		Target:      daemonDoctorSpawnHistoryTarget,
+		RunsKnown:   true,
+		NeverExited: true,
+	}, nil)
+	stubDaemonConsoleOwnershipSeams(t, 502, nil, 501)
+	stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateEnabled,
+		Domain: daemonDoctorJobDisabledDomain,
+		Label:  "com.bossanova.bossd",
+	}, nil)
+
+	got := runDaemonDoctorOutput(t)
+	if !strings.Contains(got, daemonSpawnConsoleRequirementLine) {
+		t.Errorf("an established console verdict with no disable override lost its remediation:\n%s", got)
+	}
+	if strings.Contains(got, "ESTABLISHED CAUSE") {
+		t.Errorf("the candidate report fired for a console-established job:\n%s", got)
+	}
+}
+
+// TestReportDaemonSpawnCausesWithoutAResolvedLabelNamesNoCommand is the
+// fallback half of the same rule, and the reason the label gets DIFFERENT
+// discipline from the domain: a domain has a shape the operator's own shell
+// expands (gui/$(id -u)), so it falls back to one; a label does not, so an
+// unresolved label must leave the enable command unprinted rather than let
+// doctor spell a label it never read.
+func TestReportDaemonSpawnCausesWithoutAResolvedLabelNamesNoCommand(t *testing.T) {
+	var out bytes.Buffer
+	reportDaemonSpawnCauses(&out, daemonSpawnCauseFacts{
+		Console:         daemonConsoleOwnershipCurrentUser,
+		Disabled:        daemon.JobDisabledStateDisabled,
+		DisabledCommand: "launchctl print-disabled " + daemonSpawnDisabledDomainFallback,
+		DomainCommand:   "launchctl print " + daemonSpawnDisabledDomainFallback,
+	})
+
+	got := out.String()
+	if !strings.Contains(got, "Re-enable it in that domain") {
+		t.Errorf("an unresolved label must fall back to the prose remedy:\n%s", got)
+	}
+	if strings.Contains(got, "launchctl enable") {
+		t.Errorf("doctor printed an enable command for a label it never resolved:\n%s", got)
+	}
+	if !strings.Contains(got, "the job's label must not be listed with `=> true`") {
+		t.Errorf("the follow-up must fall back to the generic phrase:\n%s", got)
+	}
+	if strings.Contains(got, "the job's label `") {
+		t.Errorf("doctor quoted a label it never resolved:\n%s", got)
+	}
+}
+
+// TestGatherDaemonSpawnCauseFactsCarriesTheLabel proves the label reaches the
+// renderer from the PROBE rather than from a literal in this package:
+// daemon.Label is darwin-only, so cmd can only learn it by being handed it,
+// and a hardcoded copy here would drift the moment the label moved.
+func TestGatherDaemonSpawnCauseFactsCarriesTheLabel(t *testing.T) {
+	stubDaemonConsoleOwnershipSeams(t, 501, nil, 501)
+	stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateDisabled,
+		Domain: "system",
+		Label:  "com.bossanova.bossd-watchdog",
+	}, nil)
+
+	facts := gatherDaemonSpawnCauseFacts()
+	if facts.Label != "com.bossanova.bossd-watchdog" {
+		t.Errorf("Label = %q, want the probe's own label", facts.Label)
+	}
+	if want := "launchctl enable system/com.bossanova.bossd-watchdog"; facts.EnableCommand != want {
+		t.Errorf("EnableCommand = %q, want %q", facts.EnableCommand, want)
+	}
+}
+
+// TestRunDaemonDoctorReportsAnIndeterminateConsoleAsNotChecked is the plan's
+// fourth U2 scenario and this suite's standing inconclusive-input row for the
+// new ladder rung: a console doctor could not read asserts nothing, in either
+// direction, and hands over the command.
+func TestRunDaemonDoctorReportsAnIndeterminateConsoleAsNotChecked(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:       daemon.SpawnStateNeverSpawned,
+		Target:      daemonDoctorSpawnHistoryTarget,
+		RunsKnown:   true,
+		NeverExited: true,
+	}, nil)
+	stubDaemonConsoleOwnershipSeams(t, 0, errors.New("stat /dev/console: operation not permitted"), 501)
+
+	got := runDaemonDoctorOutput(t)
+	for _, want := range []string{
+		"NO CANDIDATE CAUSE WAS ESTABLISHED",
+		"console ownership",
+		"not checked",
+		daemonConsoleOwnerCommand,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		daemonSpawnConsoleRequirementLine,
+		"ESTABLISHED CAUSE",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("an unreadable console produced an asserted cause (%q):\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestRunDaemonDoctorDeclinesWithNoCauseAndNoSocket is the plan's fifth U2
+// scenario, and R3 stated as an executable assertion: with nothing established
+// and the socket down, doctor must say so, name the suspects, and hand over
+// their commands. It must not fall silent, and it must not fall back to
+// asserting one.
+func TestRunDaemonDoctorDeclinesWithNoCauseAndNoSocket(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+		State:       daemon.SpawnStateNeverSpawned,
+		Target:      daemonDoctorSpawnHistoryTarget,
+		RunsKnown:   true,
+		NeverExited: true,
+	}, nil)
+	stubDaemonConsoleOwnershipSeams(t, 0, errors.New("stat /dev/console: no such file or directory"), 501)
+	stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateUnknown,
+		Domain: daemonDoctorJobDisabledDomain,
+		Label:  "com.bossanova.bossd",
+		Reason: "launchctl print-disabled output carried no \"disabled services\" line",
+	}, nil)
+	daemonSocketReachable = func(string) bool { return false }
+
+	got := runDaemonDoctorOutput(t)
+	for _, want := range []string{
+		"NO CANDIDATE CAUSE WAS ESTABLISHED",
+		daemonConsoleOwnerCommand,
+		"launchctl print-disabled " + daemonDoctorJobDisabledDomain,
+		"launchctl print " + daemonDoctorJobDisabledDomain,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q — doctor fell silent instead of declining:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		daemonSpawnConsoleRequirementLine,
+		"ESTABLISHED CAUSE",
+		// The socket is down, so the reassurance would be a lie.
+		"Nothing is broken operationally",
+		// R8: the never-spawned rung still precedes startRemediation, which an
+		// unreachable socket has already set by this point.
+		"run 'boss daemon start'",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("output contains %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestRunDaemonDoctorSpawnCausesLadderPrecedence pins R8: install still wins
+// over EVERY never-spawned output, in both the console-established and
+// no-cause-established shapes. A job with no plist has to be installed before
+// which domain it would land in can matter.
+func TestRunDaemonDoctorSpawnCausesLadderPrecedence(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	for _, tc := range []struct {
+		name       string
+		ownerUID   int
+		currentUID int
+	}{
+		{name: "no cause established", ownerUID: 501, currentUID: 501},
+		{name: "console ownership established", ownerUID: 502, currentUID: 501},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, stagedPath := prepareDaemonDoctorInstall(t)
+			// Deliberately NO plist: installRemediation is what must win.
+			writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+			stubDaemonDoctorSpawnHistory(t, daemon.SpawnHistory{
+				State:       daemon.SpawnStateNeverSpawned,
+				Target:      daemonDoctorSpawnHistoryTarget,
+				RunsKnown:   true,
+				NeverExited: true,
+			}, nil)
+			stubDaemonConsoleOwnershipSeams(t, tc.ownerUID, nil, tc.currentUID)
+
+			got := runDaemonDoctorOutput(t)
+			_, remediation, found := strings.Cut(got, "Remediation:")
+			if !found {
+				t.Fatalf("output has no Remediation section:\n%s", got)
+			}
+			if !strings.Contains(remediation, "run 'boss daemon install'") {
+				t.Errorf("install remedy did not win over the never-spawned output:\n%s", remediation)
+			}
+			for _, unwanted := range []string{
+				daemonSpawnConsoleRequirementLine,
+				"NO CANDIDATE CAUSE WAS ESTABLISHED",
+				"ESTABLISHED CAUSE",
+			} {
+				if strings.Contains(remediation, unwanted) {
+					t.Errorf("a host with no plist was given %q ahead of the install remedy:\n%s", unwanted, remediation)
+				}
+			}
+		})
+	}
+}
+
+// TestRunDaemonDoctorHealthyHostPrintsNoSpawnCauseReport is the anti-vacuity
+// guard the plan requires. Every absent-string assertion above would be
+// trivially satisfied by a branch that never fires; this proves the branch
+// fires only for a never-spawned job, and that a healthy host sees none of it.
+func TestRunDaemonDoctorHealthyHostPrintsNoSpawnCauseReport(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd spawn history is macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("a healthy host must not be unhealthy: %v\n%s", err, output.String())
+	}
+	got := output.String()
+	for _, unwanted := range []string{
+		"NO CANDIDATE CAUSE WAS ESTABLISHED",
+		"ESTABLISHED CAUSE",
+		"console ownership",
+		daemonSpawnConsoleRequirementLine,
+		daemonConsoleOwnerCommand,
+		"launchctl print-disabled",
+		"Nothing is broken operationally",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a healthy host printed the never-spawned candidate report (%q):\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestReportDaemonSpawnHistoryFactsAreGatheredOnlyForNeverSpawned pins R5 at
+// the reporter's own boundary: the FAIL wording, the unhealthy verdict and
+// every non-never-spawned arm are unchanged, and the only arm that reads
+// /dev/console or shells launchctl is the one whose report needs the answer.
+// Probing on a healthy run would be cost for no answer, and probing on the
+// crash-loop arm would put console text on a path a sibling test requires to
+// have none.
+func TestReportDaemonSpawnHistoryFactsAreGatheredOnlyForNeverSpawned(t *testing.T) {
+	const stagedPath = "/tmp/bossd"
+
+	for _, tc := range []struct {
+		name            string
+		history         daemon.SpawnHistory
+		historyErr      error
+		wantUnhealthy   bool
+		wantRemediation daemonSpawnRemediation
+		wantProbed      bool
+		wantText        string
+		notText         string
+	}{
+		{
+			name: "never spawned gathers the facts",
+			history: daemon.SpawnHistory{
+				State: daemon.SpawnStateNeverSpawned, Target: "gui/501/x",
+				RunsKnown: true, NeverExited: true,
+			},
+			wantUnhealthy:   true,
+			wantRemediation: daemonSpawnRemediationSpawnCauses,
+			wantProbed:      true,
+			wantText:        "FAIL launchd has never attempted to spawn",
+			notText:         "ESTABLISHED CAUSE",
+		},
+		{
+			name: "failing does not",
+			history: daemon.SpawnHistory{
+				State: daemon.SpawnStateFailing, Target: "gui/501/x",
+				Runs: 3, RunsKnown: true, LastExitCode: 1, LastExitCodeKnown: true,
+			},
+			wantUnhealthy:   true,
+			wantRemediation: daemonSpawnRemediationForeground,
+			wantText:        "bossd itself started and failed",
+			notText:         "/dev/console",
+		},
+		{
+			name: "healthy does not",
+			history: daemon.SpawnHistory{
+				State: daemon.SpawnStateHealthy, Target: "gui/501/x", Runs: 1, RunsKnown: true,
+			},
+			wantRemediation: daemonSpawnRemediationNone,
+			wantText:        "launchd spawn history: ok",
+			notText:         "/dev/console",
+		},
+		{
+			name: "unknown does not",
+			history: daemon.SpawnHistory{
+				State: daemon.SpawnStateUnknown, Reason: "a format this build does not recognise",
+			},
+			wantRemediation: daemonSpawnRemediationNone,
+			wantText:        "launchd spawn history: unknown",
+			notText:         "/dev/console",
+		},
+		{
+			name:            "an unrunnable probe does not",
+			history:         daemon.SpawnHistory{State: daemon.SpawnStateUnknown},
+			historyErr:      errors.New("executable file not found in $PATH"),
+			wantRemediation: daemonSpawnRemediationNone,
+			wantText:        "launchd spawn history: unknown",
+			notText:         "/dev/console",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubDaemonDoctorSpawnHistory(t, tc.history, tc.historyErr)
+			stubDaemonConsoleOwnershipSeams(t, 501, nil, 501)
+			disabledCalls := stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+				State: daemon.JobDisabledStateEnabled, Domain: "gui/501",
+			}, nil)
+
+			var out bytes.Buffer
+			unhealthy, remediation, facts := reportDaemonSpawnHistory(&out, stagedPath, launchAgentSupervisionStatus())
+			if unhealthy != tc.wantUnhealthy {
+				t.Errorf("unhealthy = %t, want %t", unhealthy, tc.wantUnhealthy)
+			}
+			if remediation != tc.wantRemediation {
+				t.Errorf("remediation = %d, want %d", remediation, tc.wantRemediation)
+			}
+			wantCalls := 0
+			if tc.wantProbed {
+				wantCalls = 1
+			}
+			if *disabledCalls != wantCalls {
+				t.Errorf("disable-override probe called %d times, want %d", *disabledCalls, wantCalls)
+			}
+			if tc.wantProbed && facts.DisabledCommand == "" {
+				t.Error("the never-spawned arm returned no DisabledCommand")
+			}
+			if !tc.wantProbed && facts != (daemonSpawnCauseFacts{}) {
+				t.Errorf("a non-never-spawned arm returned populated facts: %+v", facts)
+			}
+			if !strings.Contains(out.String(), tc.wantText) {
+				t.Errorf("output missing %q:\n%s", tc.wantText, out.String())
+			}
+			if strings.Contains(out.String(), tc.notText) {
+				t.Errorf("output contains %q:\n%s", tc.notText, out.String())
+			}
+		})
+	}
+}
+
+// TestGatherDaemonSpawnCauseFactsFoldsInAnUnattemptedProbe covers the disable
+// probe's error path, which is the one place a caller could turn "could not
+// ask" into a verdict.
+//
+// GetJobDisabled's contract is that a non-nil error means the probe could not
+// be ATTEMPTED, and that the value it returns alongside is still fail-closed.
+// The gatherer folds the error in rather than branching on it, so this pins
+// that a probe that never ran reads as "not checked" and never as "enabled" —
+// and that the printed commands still name a domain rather than an empty
+// string, because a remediation naming a domain nobody probed is the same
+// class of defect as one naming a cause nobody measured.
+func TestGatherDaemonSpawnCauseFactsFoldsInAnUnattemptedProbe(t *testing.T) {
+	stubDaemonConsoleOwnershipSeams(t, 501, nil, 501)
+	stubDaemonDoctorJobDisabled(t, daemon.JobDisabled{
+		State:  daemon.JobDisabledStateUnknown,
+		Reason: "could not run launchctl print-disabled",
+	}, errors.New(`exec: "launchctl": executable file not found in $PATH`))
+
+	facts := gatherDaemonSpawnCauseFacts()
+	if facts.Disabled != daemon.JobDisabledStateUnknown {
+		t.Errorf("Disabled = %q after an unattempted probe, want %q", facts.Disabled, daemon.JobDisabledStateUnknown)
+	}
+	if got := classifyDaemonSpawnCauses(facts); got.Disabled != daemonSpawnCauseNotChecked {
+		t.Errorf("Disabled verdict = %s, want not-checked", daemonSpawnCauseVerdictName(got.Disabled))
+	}
+	// The probe resolved no domain, so the printed commands fall back to a
+	// shape the operator's own shell expands rather than naming nothing.
+	if facts.DisabledCommand != "launchctl print-disabled "+daemonSpawnDisabledDomainFallback {
+		t.Errorf("DisabledCommand = %q, want the domain fallback", facts.DisabledCommand)
+	}
+	if facts.DomainCommand != "launchctl print "+daemonSpawnDisabledDomainFallback {
+		t.Errorf("DomainCommand = %q, want the domain fallback", facts.DomainCommand)
+	}
 }

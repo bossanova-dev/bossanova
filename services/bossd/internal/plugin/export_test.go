@@ -1,6 +1,10 @@
 package plugin
 
-import "time"
+import (
+	"time"
+
+	"github.com/recurser/bossalib/config"
+)
 
 // This file exposes unexported host internals to the external plugin_test
 // package (host_restart_integration_test.go) so integration tests can drive the
@@ -27,4 +31,14 @@ func (h *Host) PluginPIDs() map[string]int {
 		out[h.plugins[i].cfg.Name] = pluginPID(h.plugins[i].client)
 	}
 	return out
+}
+
+// PluginSubprocessEnv exposes the host's real plugin-subprocess environment
+// construction to package plugin_test. The orphan integration test's re-exec
+// spawner uses it so its intermediate parent stamps its identity exactly the
+// way launchPlugin does — including clearing the variable from its own
+// environment, without which go-plugin's second os.Environ() append would
+// shadow the stamp and the watchdog would refuse to arm.
+func PluginSubprocessEnv(cfg config.PluginConfig, hostPID int) []string {
+	return pluginSubprocessEnv(cfg, hostPID)
 }

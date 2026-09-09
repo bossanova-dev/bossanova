@@ -203,6 +203,11 @@ func TestRun_GracefulShutdown_NoGoroutineLeak(t *testing.T) {
 	// lookups don't touch the developer's real bossd state.
 	t.Setenv("HOME", baseDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	// Isolated so the log assertions below read THIS daemon's log rather than
+	// the developer's real one, where a stale forced-exit line from a previous
+	// shutdown would make them pass for the wrong reason.
+	stateHome := filepath.Join(baseDir, ".state")
+	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(baseDir, "settings.json"))
 	// Opt out of the cloud orchestrator: avoids real network I/O during
 	// the test (which would otherwise leak an http2 readLoop goroutine
@@ -261,6 +266,118 @@ func TestRun_GracefulShutdown_NoGoroutineLeak(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("run did not return within 15s of SIGTERM")
+	}
+
+	// The negative control for TestRun_GracefulShutdown_ForcedExitNamesStuckGoroutine
+	// below. Without it that test could pass against a daemon that named
+	// goroutines on every shutdown, which would be a worse diagnostic than the
+	// silence it replaced: a clean shutdown that reports abandoned work sends
+	// operators chasing goroutines that stopped exactly as they should. This
+	// asserts the clean line still carries no names field at all (R3).
+	logged := readDaemonLog(t, stateHome)
+	if !strings.Contains(logged, cleanGoroutineExitMsg) {
+		t.Fatalf("expected the clean-exit line in a clean shutdown, got:\n%s", logged)
+	}
+	if strings.Contains(logged, forcedGoroutineExitMsg) {
+		t.Fatalf("clean shutdown took the forced-exit branch:\n%s", logged)
+	}
+	if strings.Contains(logged, `"`+outstandingGoroutinesField+`":`) {
+		t.Fatalf("clean shutdown logged an outstanding-goroutines field:\n%s", logged)
+	}
+}
+
+// TestRun_GracefulShutdown_ForcedExitNamesStuckGoroutine is the end-to-end
+// claim of BOS-1220: a real daemon, one tracked registration that never
+// completes, and a forced-exit line that says which one.
+//
+// The helper's unit tests prove the branch formats what it is handed; this
+// proves the running daemon hands it a real registration's identity — the delta
+// incident's ten unattributable seconds would have been one grep with this in
+// place. It needs a wider seam than the existing onX probes because those
+// notify: observing a moment cannot inject a goroutine that refuses to stop,
+// nor shorten the ten-second budget, so runOpts hands out trackDone and takes a
+// budget override.
+func TestRun_GracefulShutdown_ForcedExitNamesStuckGoroutine(t *testing.T) {
+	// Registered first so it runs LAST: cleanups are LIFO, and the deliberately
+	// stuck goroutine must be released before goleak looks at it, or the thing
+	// this test exists to create is reported as a leak.
+	t.Cleanup(func() {
+		goleak.VerifyNone(t,
+			goleak.IgnoreCurrent(),
+			goleak.IgnoreAnyFunction("gopkg.in/natefinch/lumberjack%2ev2.(*Logger).millRun"),
+		)
+	})
+
+	baseDir, err := os.MkdirTemp("/tmp", "bossdtest-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+
+	stateHome := filepath.Join(baseDir, ".state")
+	t.Setenv("HOME", baseDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(baseDir, "settings.json"))
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	const stuckName = "test-goroutine-that-ignores-cancellation"
+
+	stuck := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(stuck) }) }
+	t.Cleanup(release)
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+
+	go func() {
+		done <- run(runOpts{
+			stopSig:                 stopSig,
+			dbPath:                  filepath.Join(baseDir, "bossd.db"),
+			socketPath:              filepath.Join(baseDir, "bossd.sock"),
+			plugins:                 []config.PluginConfig{},
+			shutdownGoroutineBudget: 300 * time.Millisecond,
+			onReady:                 func() { close(ready) },
+			// Registered on the startup path, from inside run()'s own call,
+			// which is the invariant the tracker depends on: every Add lands
+			// before any wait, so none of them can lift the counter off zero
+			// concurrently with it.
+			onShutdownTrackerReady: func(trackDone func(string, <-chan struct{})) {
+				trackDone(stuckName, stuck)
+			},
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state within 15s")
+	}
+
+	stopSig <- syscall.SIGTERM
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return within 30s of SIGTERM")
+	}
+
+	logged := readDaemonLog(t, stateHome)
+	if !strings.Contains(logged, forcedGoroutineExitMsg) {
+		t.Fatalf("expected the forced-exit line, got:\n%s", logged)
+	}
+	if !strings.Contains(logged, stuckName) {
+		t.Fatalf("forced-exit line did not name the stuck goroutine:\n%s", logged)
+	}
+	if strings.Contains(logged, cleanGoroutineExitMsg) {
+		t.Fatalf("a forced exit also logged the clean line:\n%s", logged)
 	}
 }
 

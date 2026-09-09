@@ -62,9 +62,10 @@ func drainProxyThenStopPlugins(logger zerolog.Logger, proxy proxyDrainer, plugin
 	}
 }
 
-// drainFailoverProxy shuts the proxy down on its OWN budget and logs which of
-// the two outcomes happened — a completed drain or an expired deadline — with
-// the in-flight stream count on both sides of the wait.
+// drainFailoverProxy shuts the proxy down on its OWN budget and logs which
+// outcome happened — a completed drain, an expired deadline, or a drain that
+// gave up early because the in-flight count had stopped falling — with the
+// in-flight stream count on both sides of the wait.
 //
 // The budget is deliberately separate from the 5s context the gRPC and hook
 // servers share: an ordinary Claude turn runs for minutes, so 5s would cut
@@ -91,6 +92,14 @@ func drainFailoverProxy(logger zerolog.Logger, proxy proxyDrainer, drainTimeout 
 	event := logger.Info()
 	msg := "failover proxy: drained in-flight agent streams before stopping plugins"
 	switch {
+	case outcome.StopReason == server.DrainStopStalled:
+		// Selected on the OUTCOME's reason, never on the error value. An early
+		// bail-out surfaces as context.Canceled, which the generic branch below
+		// would claim as a listener-close error — reporting a deliberately cut
+		// stream as a noisy socket teardown, a report contradicted by the
+		// process it describes (BOS-1219).
+		event = logger.Warn().Err(err).Dur("stall_window", outcome.StallWindow)
+		msg = "failover proxy: in-flight stream count stopped falling; drain ended early and the remaining agent streams were cut"
 	case errors.Is(err, context.DeadlineExceeded):
 		event = logger.Warn().Err(err)
 		msg = "failover proxy: drain deadline expired; in-flight agent streams were cut"

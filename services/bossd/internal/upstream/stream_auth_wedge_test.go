@@ -353,13 +353,20 @@ func TestStreamAuthWedgeEscalatesOnBudgetAndResetsStreak(t *testing.T) {
 
 	// Iteration 1 warns as a first failure; iterations 2..30 are suppressed;
 	// iteration 31 crosses the budget.
-	h.steps(authWedgeWarnBudget)
+	//
+	// The two "not yet escalated" reads in this test are taken from inside the
+	// backoff gap (awaitAttempt, no trailing release) because each sits exactly
+	// one attempt short of an escalation: step() would leave the loop running
+	// free inside the very iteration that writes the line being asserted absent.
+	h.steps(authWedgeWarnBudget - 1)
+	h.awaitAttempt()
 	beforeEscalation := h.logs.String()
 	if strings.Contains(beforeEscalation, wedgeWarnMsg) {
 		t.Fatalf("escalated before the budget was crossed: %s", beforeEscalation)
 	}
 
-	h.step()
+	h.release()
+	h.awaitAttempt()
 	escalated := h.logs.String()
 	if got := strings.Count(escalated, wedgeWarnMsg); got != 1 {
 		t.Fatalf("wedge warn count = %d, want exactly 1; logs=%s", got, escalated)
@@ -380,11 +387,14 @@ func TestStreamAuthWedgeEscalatesOnBudgetAndResetsStreak(t *testing.T) {
 	}
 
 	// The streak reset: the next budget-1 iterations must stay quiet.
-	h.steps(authWedgeWarnBudget - 1)
+	h.release()
+	h.steps(authWedgeWarnBudget - 2)
+	h.awaitAttempt()
 	if got := strings.Count(h.logs.String(), wedgeWarnMsg); got != 1 {
 		t.Fatalf("wedge warn count = %d after a partial budget, want still 1; the streak did not reset", got)
 	}
-	h.step()
+	h.release()
+	h.awaitAttempt()
 	if got := strings.Count(h.logs.String(), wedgeWarnMsg); got != 2 {
 		t.Fatalf("wedge warn count = %d after a full second budget, want 2", got)
 	}
@@ -443,18 +453,29 @@ func TestStreamAuthWedgeHandshakeResetsStateMachine(t *testing.T) {
 	// Open #4 completes the handshake; everything else is rejected.
 	h := newWedgeHarness(t, nil, withHandshakeOn(4))
 
-	h.steps(3)
+	// awaitAttempt/release rather than step, throughout: every assertion below
+	// describes one attempt, and step() returns with the loop already released
+	// into the NEXT one. Each read here neighbours an attempt that moves the
+	// very field it asserts on, in the direction that defeats it — so this is
+	// the shape that reds, not the shape that is merely untidy. The recovery
+	// assertion measured it: it failed reporting a wedge at the fake clock's
+	// fourth cadence tick, which is not a wedge the handshake left uncleared
+	// but open #5's fresh rejection, recorded while the read was in flight.
+	h.steps(2)
+	h.awaitAttempt() // attempt #3, parked: the wedge is established
 	if snap := h.client.AuthSnapshot(); snap.AuthFailingSince.IsZero() {
 		t.Fatal("AuthSnapshot reports no wedge while auth is failing")
 	}
 
-	h.step() // the successful handshake
+	h.release()
+	h.awaitAttempt() // attempt #4, parked: the successful handshake
 	if snap := h.client.AuthSnapshot(); !snap.AuthFailingSince.IsZero() {
 		t.Fatalf("AuthSnapshot still reports a wedge after a successful handshake: %v", snap.AuthFailingSince)
 	}
 
 	warnsBefore := countWarns(h.logs.String())
-	h.step() // the next auth failure must warn as a first failure again
+	h.release()
+	h.awaitAttempt() // attempt #5, parked: must warn as a first failure again
 	if got := countWarns(h.logs.String()); got != warnsBefore+1 {
 		t.Fatalf("warn count = %d, want %d; the post-recovery failure did not warn as a first", got, warnsBefore+1)
 	}

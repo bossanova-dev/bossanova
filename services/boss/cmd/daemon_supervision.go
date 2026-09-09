@@ -57,8 +57,18 @@ const (
 	// recorded PID, and any state the classifier cannot attribute.
 	daemonSupervisionReasonIndeterminate daemonSupervisionReason = iota
 	// daemonSupervisionReasonNoServicePID is the service manager reporting the
-	// job running while naming no PID: launchctl output that will not parse, or
-	// a systemd MainPID read that failed. Ownership is unproven, not refuted.
+	// job running while its PID could not be established: a systemd MainPID
+	// read that failed or would not parse. Ownership is unproven, not refuted.
+	//
+	// BOS-1218 changed WHICH substrate reaches this. It used to also stand for
+	// a launchd job that was merely registered — the shape that produced the
+	// `supervision: unknown (the service manager reports running but did not
+	// report a PID; …)` line this very rung is remembered for — and that shape
+	// now has its own honest verdict, because Status.Running requires a PID on
+	// launchd. Since Running there implies a PID, and a PID implies
+	// Status.PIDKnown, the rung is UNREACHABLE on launchd by construction. It
+	// stays live for systemd, where `systemctl --user is-active` can report
+	// active while the separate MainPID read fails.
 	daemonSupervisionReasonNoServicePID
 	// daemonSupervisionReasonDetached is a live recorded daemon the service
 	// manager does not know about at all.
@@ -212,12 +222,14 @@ func watchdogOwnershipReason(ownership daemon.WatchdogOwnership) string {
 //     fallback", because platformEnsureRunning in systemd.go does spawn bossd
 //     directly. Reporting is cross-platform on this branch, so suppressing the
 //     verdict on Linux would hide a true fact rather than scope a behaviour.
-//   - "service manager reports running, names no PID" is answered above the
-//     delegation. ClassifyServingMode calls that standalone, which is the right
-//     answer for RESTART (a live recorded daemon is what it must preserve) and
-//     the wrong one for a REPORT: unparseable launchctl output is a tooling
-//     failure, and turning it into an unsupervised verdict would print a fault
-//     nobody observed.
+//   - "service manager reports running, its PID could not be established" is
+//     answered above the delegation. ClassifyServingMode calls that standalone,
+//     which is the right answer for RESTART (a live recorded daemon is what it
+//     must preserve) and the wrong one for a REPORT: a service manager that
+//     could not name the PID of a job it says is running is a tooling failure,
+//     and turning it into an unsupervised verdict would print a fault nobody
+//     observed. BOS-1218 re-keyed that guard on Status.PIDKnown rather than on
+//     PID == 0; see the guard for what changed under it.
 //
 // BOS-1204 adds `supervision` and `ownership`: which substrate this host is
 // configured for, and — on a host whose substrate is the root-owned watchdog —
@@ -281,7 +293,30 @@ func daemonSupervisionOfLiveRecord(
 		}
 	}
 
-	if st.Running && st.PID == 0 {
+	// BOS-1218 R5a: `PID == 0` is now QUALIFIED by whether the observation
+	// settled, in the daemonbin.Inspect shape this ticket mirrors — a value is
+	// read as authoritative only when its known flag says it was established.
+	// A zero PID with PIDKnown set is the service manager answering "this job
+	// owns no process", which is an observation with its own honest verdict
+	// and not this rung's business; a zero PID without it is "could not tell",
+	// which is exactly what this rung reports.
+	//
+	// The unqualified condition used to be reached by a launchd job that was
+	// merely registered — the shape this rung is remembered for — and Running
+	// now requires a PID there, so it is unreachable on launchd. Leaving the
+	// key unqualified would have left a rung that still READS as the launchd
+	// diagnostic while being unreachable on launchd, which is the worst
+	// outcome available: this is the line an operator uses to recognise a
+	// recurrence. See the constant for which substrate still reaches it.
+	//
+	// A launchd probe that could not be READ reports Running = false and lands
+	// in the delegation below instead, where a live recorded daemon renders
+	// `detached`. That is today's behaviour for a not-loaded job and is
+	// deliberately unchanged here: an unreadable answer and a genuinely
+	// not-loaded job are indistinguishable in Status by design (both are
+	// PIDKnown = false), and separating them is the doctor ticket this one
+	// unblocks, not this one.
+	if st.Running && st.PID == 0 && !st.PIDKnown {
 		return daemonSupervisionUnknown, daemonSupervisionReasonNoServicePID
 	}
 

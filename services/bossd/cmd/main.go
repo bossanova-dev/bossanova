@@ -899,6 +899,30 @@ type runOpts struct {
 	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessionsAtStartup.
 	startupStrandedCronRecovery func(context.Context) (int, error)
 
+	// shutdownGoroutineBudget overrides the tracked-goroutine join's 10s upper
+	// bound when positive, so a test can reach its forced-exit branch in
+	// milliseconds instead of wedging a real daemon for ten seconds.
+	shutdownGoroutineBudget time.Duration
+
+	// onShutdownTrackerReady, if non-nil, fires synchronously on the startup
+	// path with run()'s own trackDone closure, letting a test register a handle
+	// it controls and then assert what the forced-exit branch says about it.
+	//
+	// This is the one seam that hands registration out, and it is deliberately
+	// narrow: the existing onX probes NOTIFY, and observing a moment is not
+	// enough to reach a branch that only fires when a registration refuses to
+	// complete. It widens nothing in production — nothing sets it there — and
+	// the invariant it must not break is the caller's to keep: register on the
+	// startup path, before the signal, exactly as run() itself does. See
+	// shutdownTracker's doc comment for why an Add off the startup path panics.
+	onShutdownTrackerReady func(trackDone func(name string, done <-chan struct{}))
+
+	// archiveDrainBudget overrides the auto-archive join's 10s upper bound when
+	// positive. Its only purpose is to let a test reach the forced-exit branch
+	// of that join in milliseconds; nothing in production sets it, so the
+	// budget the log line names is the budget production waits.
+	archiveDrainBudget time.Duration
+
 	// startupStrandedBootstrapReap overrides the startup stranded-bootstrap reap.
 	// Nil uses Lifecycle.ReapStrandedBootstrapSessionsAtStartup. Its counterpart
 	// above exists for shutdown-lifecycle tests; this one also lets a test pin the
@@ -2535,8 +2559,16 @@ func run(opts runOpts) error {
 	// shutdownWG tracks daemon goroutines so we can wait for them to exit cleanly.
 	// Subsystems that manage their own goroutines (poller, dispatcher, orchestrator,
 	// display poller, tmux poller) expose a Done() channel; goroutines spawned
-	// directly below use wg.Add/wg.Done via trackedGo below.
-	var shutdownWG sync.WaitGroup
+	// directly below use add/done via trackedGo below.
+	//
+	// It is a shutdownTracker rather than a bare sync.WaitGroup because a
+	// WaitGroup has no notion of who incremented it, so a join that timed out
+	// could only report that it gave up and never on what — ten unattributable
+	// seconds on every forced exit. Each registration carries a static name, and
+	// the forced-exit branch prints the ones still outstanding. run() holds the
+	// only value of the type; see its doc comment for why that is the mechanism
+	// keeping registration on the startup path.
+	var shutdownWG shutdownTracker
 
 	// archiveWG joins the auto-archive workers (BOS-923). They are deliberately
 	// NOT on shutdownWG: shutdownWG's Wait is what proves the poller,
@@ -2555,10 +2587,17 @@ func run(opts runOpts) error {
 	// which is not tracked anywhere. "The producing goroutine is itself already
 	// tracked" is NOT true of every archive launch point and must not be
 	// relied on.
+	//
+	// archiveOutstanding names the sessions currently registered, so the drain's
+	// timeout branch can say which rows may be left unarchived instead of only
+	// that some might be. It is a separate structure from the sentinel/mutex
+	// pair above and changes none of that mechanism: the identity is already in
+	// trackArchiveDone's hand, and this only stops it being thrown away.
 	var (
 		archiveWG          sync.WaitGroup
 		archiveTrackMu     sync.Mutex
 		archiveTrackClosed bool
+		archiveOutstanding outstandingSet
 	)
 	archiveWG.Add(1)
 	// closeArchiveTracking releases the sentinel and refuses any further
@@ -2586,42 +2625,48 @@ func run(opts runOpts) error {
 	// database.Close is registered far above this, so this always runs first.
 	// Reaching it before the daemon is up is harmless: the counter holds only
 	// the sentinel, so releasing it makes the Wait return at once.
+	archiveBudget := archiveDrainBudget
+	if opts.archiveDrainBudget > 0 {
+		archiveBudget = opts.archiveDrainBudget
+	}
+	goroutineBudget := shutdownGoroutineBudget
+	if opts.shutdownGoroutineBudget > 0 {
+		goroutineBudget = opts.shutdownGoroutineBudget
+	}
 	var archiveDrainOnce sync.Once
 	drainArchiveWorkers := func() {
 		archiveDrainOnce.Do(func() {
 			closeArchiveTracking()
-			archiveCh := make(chan struct{})
-			go func() {
-				archiveWG.Wait()
-				close(archiveCh)
-			}()
-			select {
-			case <-archiveCh:
-			case <-time.After(10 * time.Second):
-				log.Warn().Msg("forced exit: auto-archive workers did not finish within 10s; a session may be left unarchived")
-			}
+			waitForTrackedArchives(log.Logger, archiveWG.Wait, archiveOutstanding.snapshot, archiveBudget)
 		})
 	}
 	defer drainArchiveWorkers()
 
-	// trackedGo spawns fn via safego.Go and registers it with shutdownWG.
-	trackedGo := func(fn func()) {
-		shutdownWG.Add(1)
+	// trackedGo spawns fn via safego.Go and registers it with shutdownWG under
+	// name. The name is what the forced-exit branch prints when this goroutine
+	// is one of the ones that did not stop, so it should be the vocabulary the
+	// surrounding log lines already use for the subsystem. An empty name panics.
+	trackedGo := func(name string, fn func()) {
+		shutdownWG.add(name)
 		safego.Go(log.Logger, func() {
-			defer shutdownWG.Done()
+			defer shutdownWG.done(name)
 			fn()
 		})
 	}
 
-	// trackDone registers a subsystem's Done() channel with shutdownWG. Every
-	// call is on this startup path, before any Wait, which is what keeps its
-	// Add off zero.
-	trackDone := func(done <-chan struct{}) {
-		shutdownWG.Add(1)
+	// trackDone registers a subsystem's Done() channel with shutdownWG under
+	// name. Every call is on this startup path, before any wait, which is what
+	// keeps its Add off zero.
+	trackDone := func(name string, done <-chan struct{}) {
+		shutdownWG.add(name)
 		go func() {
-			defer shutdownWG.Done()
+			defer shutdownWG.done(name)
 			<-done
 		}()
+	}
+
+	if opts.onShutdownTrackerReady != nil {
+		opts.onShutdownTrackerReady(trackDone)
 	}
 
 	// trackArchiveDone is the archive-worker tracker handed to the four archive
@@ -2644,9 +2689,11 @@ func run(opts runOpts) error {
 			return
 		}
 		archiveWG.Add(1)
+		archiveOutstanding.add(sessionID)
 		archiveTrackMu.Unlock()
 		go func() {
 			defer archiveWG.Done()
+			defer archiveOutstanding.clear(sessionID)
 			<-done
 		}()
 	}
@@ -2654,8 +2701,8 @@ func run(opts runOpts) error {
 	// blocked on a TCC prompt after its diagnostic deadline. Include every
 	// worker handle in daemon shutdown coordination instead of losing those
 	// lifecycle signals when startup continues.
-	for _, done := range startupDiagnosticWorkerDone {
-		trackDone(done)
+	for i, done := range startupDiagnosticWorkerDone {
+		trackDone(fmt.Sprintf("symlink-resolution-worker-%d", i), done)
 	}
 
 	// Auto-start the repair plugin synchronously. If the plugin is loaded
@@ -3666,14 +3713,14 @@ func run(opts runOpts) error {
 	// uploads past the retention TTL and abandoned in-flight ones, so a
 	// client that disconnects mid-transfer cannot accumulate disk usage.
 	if chatUploadMgr != nil {
-		trackedGo(func() { chatUploadMgr.RunJanitor(pollerCtx, chatupload.DefaultJanitorInterval) })
+		trackedGo("chat-upload-janitor", func() { chatUploadMgr.RunJanitor(pollerCtx, chatupload.DefaultJanitorInterval) })
 	}
 
 	pollerEvents := poller.Run(pollerCtx)
 	merged := mergeSessionEvents(pollerCtx, pollerEvents, webhookEventCh)
-	trackDone(poller.Done())
+	trackDone("poller", poller.Done())
 	dispatcherDone := safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, merged) })
-	trackDone(dispatcherDone)
+	trackDone("dispatcher", dispatcherDone)
 
 	// The two startup recovery passes, run in ONE goroutine so they are
 	// sequential. Both are tracked in the daemon lifecycle: either can enter the
@@ -3711,7 +3758,7 @@ func run(opts runOpts) error {
 	if startupBootstrapReap == nil {
 		startupBootstrapReap = lifecycle.ReapStrandedBootstrapSessionsAtStartup
 	}
-	trackedGo(func() {
+	trackedGo("startup-stranded-session-recovery", func() {
 		if n, err := startupBootstrapReap(pollerCtx); err != nil {
 			log.Warn().Err(err).Msg("failed to reap stranded bootstrap sessions")
 		} else if n > 0 {
@@ -3727,11 +3774,11 @@ func run(opts runOpts) error {
 
 	// Start task orchestrator (polls plugin task sources).
 	orchestrator.Start(pollerCtx)
-	trackDone(orchestrator.Done())
+	trackDone("task-orchestrator", orchestrator.Done())
 
 	// Start display status poller.
 	displayPoller.Run(pollerCtx)
-	trackDone(displayPoller.Done())
+	trackDone("display-poller", displayPoller.Done())
 
 	// --- GitHub callback delivery worker (BOS-468) ---
 	//
@@ -3827,7 +3874,7 @@ func run(opts runOpts) error {
 		Telemetry:  telemetryClient,
 	})
 	callbackWorkerDone := safego.Go(log.Logger, func() { callbackWorker.Run(pollerCtx) })
-	trackDone(callbackWorkerDone)
+	trackDone("callback-delivery-worker", callbackWorkerDone)
 
 	// --- Broadcast delivery worker (BOS-556) ---
 	//
@@ -3855,7 +3902,7 @@ func run(opts runOpts) error {
 		Telemetry:  telemetryClient,
 	})
 	broadcastWorkerDone := safego.Go(log.Logger, func() { broadcastWorker.Run(pollerCtx) })
-	trackDone(broadcastWorkerDone)
+	trackDone("broadcast-delivery-worker", broadcastWorkerDone)
 
 	// Advertises the daemon's live GitHub callback-interest set to bosso as a
 	// steady-state delta on the reverse-stream bus whenever it changes (snapshot
@@ -3870,12 +3917,12 @@ func run(opts runOpts) error {
 		Logger: log.Logger,
 	})
 	interestAdvertiserDone := safego.Go(log.Logger, func() { interestAdvertiser.Run(pollerCtx) })
-	trackDone(interestAdvertiserDone)
+	trackDone("callback-interest-advertiser", interestAdvertiserDone)
 
 	// Startup reconciliation: fire callbacks whose enduring PR state
 	// (merged/closed/checks) was reached while the daemon was disconnected, so
 	// the triggering webhook was never delivered. Best-effort; non-fatal.
-	trackedGo(func() {
+	trackedGo("startup-callback-reconcile", func() {
 		if err := callbackEvaluator.ReconcileAll(pollerCtx); err != nil && pollerCtx.Err() == nil {
 			log.Warn().Err(err).Msg("startup github callback reconciliation failed")
 		}
@@ -3892,7 +3939,7 @@ func run(opts runOpts) error {
 	// down, and retire the overdue. Waiting for the worker's first periodic sweep
 	// would leave a coordinator waiting reconcileEveryTicks polls for news that
 	// already happened. Best-effort; non-fatal.
-	trackedGo(func() {
+	trackedGo("startup-broadcast-subscription-reconcile", func() {
 		if err := broadcastSubscriptionEvaluator.ReconcileAll(pollerCtx); err != nil && pollerCtx.Err() == nil {
 			log.Warn().Err(err).Msg("startup broadcast subscription reconciliation failed")
 		}
@@ -4153,7 +4200,7 @@ func run(opts runOpts) error {
 
 	// Start tmux status poller (captures pane content to detect question/idle/working).
 	tmuxStatusPoller.Run(pollerCtx)
-	trackDone(tmuxStatusPoller.Done())
+	trackDone("tmux-status-poller", tmuxStatusPoller.Done())
 
 	// Start the tmux reaper. It carries two independently-knobbed paths:
 	//
@@ -4179,10 +4226,10 @@ func run(opts runOpts) error {
 			KillChat: lifecycle.ReapIdleChatTmuxSession,
 		}, log.Logger)
 	tmuxReaper.Run(pollerCtx)
-	trackDone(tmuxReaper.Done())
+	trackDone("tmux-reaper", tmuxReaper.Done())
 
 	// Start chat status cleanup goroutine (GC stale entries every 30s).
-	trackedGo(func() {
+	trackedGo("chat-status-cleanup", func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -4205,7 +4252,7 @@ func run(opts runOpts) error {
 	// compromise — fast enough that the gap is barely visible, slow
 	// enough that the GitHub list-PRs cost stays small (the inner branch
 	// only fires when there ARE orphaned sessions).
-	trackedGo(func() {
+	trackedGo("pr-association-reconcile", func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -4238,7 +4285,7 @@ func run(opts runOpts) error {
 	// that stayed up. 2 min matches the orchestrator's reconcile cadence — the
 	// session is already minutes-late, so sub-minute latency buys nothing, and
 	// the inner agent-log idle checks only run when sessions are stuck.
-	trackedGo(func() {
+	trackedGo("periodic-stranded-session-recovery", func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -4269,7 +4316,7 @@ func run(opts runOpts) error {
 	// (no in-memory timer). The kill switch (ManagedAccountsEnabled) short-circuits the
 	// sweep, and until BOS-170 wires the binding/materializer every candidate
 	// stays parked. Cadence comes from the rotation config (defaulted when unset).
-	trackedGo(func() {
+	trackedGo("parked-rotation-sweep", func() {
 		ticker := time.NewTicker(settings.ManagedAccounts.ParkSweepInterval())
 		defer ticker.Stop()
 		for {
@@ -4290,7 +4337,7 @@ func run(opts runOpts) error {
 	// any resume that could not happen at Bootstrap (agent plugin not yet ready,
 	// transient StartByAgent error). Default OFF — ResumeOrphanedHeadlessRuns is a
 	// no-op unless AutoResumeOrphans is opted in. Reuses the park-sweep cadence.
-	trackedGo(func() {
+	trackedGo("orphaned-run-resume-sweep", func() {
 		ticker := time.NewTicker(settings.ManagedAccounts.ParkSweepInterval())
 		defer ticker.Stop()
 		for {
@@ -4308,7 +4355,7 @@ func run(opts runOpts) error {
 	// Proactive pre-cap rotation sweep (BOS-318). Periodically pre-empts a cap:
 	// rotates IDLE chats off soon-to-cap accounts onto materially-idler ones.
 	// Default OFF — SweepProactive is a no-op unless ProactiveRotation is set.
-	trackedGo(func() {
+	trackedGo("proactive-rotation-sweep", func() {
 		ticker := time.NewTicker(settings.ManagedAccounts.ProactiveSweepInterval())
 		defer ticker.Stop()
 		for {
@@ -4333,7 +4380,7 @@ func run(opts runOpts) error {
 	// pass at boot (snapshots are otherwise stale until the first rotation event,
 	// e.g. after a daemon restart).
 	if settings.ManagedAccounts.ManagedAccountsEnabled() {
-		trackedGo(func() {
+		trackedGo("account-usage-refresh", func() {
 			// Owned by this goroutine alone, so the boot pass and every ticker
 			// pass share one view of which accounts are backing off with no
 			// mutex: single writer, single reader, never escaping this closure.
@@ -4390,20 +4437,20 @@ func run(opts runOpts) error {
 
 	// Start serving in a goroutine.
 	errCh := make(chan error, 1)
-	trackedGo(func() {
+	trackedGo("grpc-server", func() {
 		log.Info().Str("socket", socketPath).Msg("starting server")
 		if opts.onServeStart != nil {
 			opts.onServeStart()
 		}
 		errCh <- srv.Serve()
 	})
-	trackedGo(func() {
+	trackedGo("hook-server", func() {
 		if err := hookSrv.Serve(); err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Msg("hook server exited unexpectedly")
 		}
 	})
 	if proxySrv != nil {
-		trackedGo(func() {
+		trackedGo("failover-proxy-server", func() {
 			if err := proxySrv.Serve(); err != nil && err != http.ErrServerClosed {
 				log.Error().Err(err).Msg("failover proxy exited unexpectedly")
 			}
@@ -4417,12 +4464,12 @@ func run(opts runOpts) error {
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
 	if streamClient != nil {
-		trackedGo(func() {
+		trackedGo("reverse-stream-client", func() {
 			streamClient.Run(streamCtx)
 		})
 	}
 	if snapshotPublisher != nil {
-		trackedGo(func() {
+		trackedGo("snapshot-publisher", func() {
 			snapshotPublisher(streamCtx)
 		})
 	}
@@ -4434,7 +4481,7 @@ func run(opts runOpts) error {
 	// fatal opener misconfiguration (e.g. nil opener) and is logged
 	// rather than restarted.
 	if terminalStreamClient != nil {
-		trackedGo(func() {
+		trackedGo("terminal-stream-client", func() {
 			if err := terminalStreamClient.Run(streamCtx); err != nil && streamCtx.Err() == nil {
 				log.Error().Err(err).Msg("terminal stream client exited unexpectedly")
 			}
@@ -4492,7 +4539,10 @@ func run(opts runOpts) error {
 	//
 	// Known cost: srv.Shutdown is now up to the drain budget later, so the gRPC
 	// socket keeps accepting for that window in a daemon whose poller,
-	// dispatcher and orchestrator are already cancelled above. A `boss` command
+	// dispatcher and orchestrator are already cancelled above. The drain bails
+	// out early once the in-flight count has stopped falling (BOS-1219), which
+	// only ever SHORTENS this leg — the budget below is still the ceiling the
+	// accounting has to cover. A `boss` command
 	// that connects mid-drain reaches a half-shut-down daemon rather than
 	// failing fast. The window was already a few seconds before BOS-888 and the
 	// drain budget is deliberately sized (config.defaultProxyDrainTimeout) to
@@ -4553,17 +4603,7 @@ func run(opts runOpts) error {
 	// Wait for all tracked daemon goroutines to exit, with a hard 10-second
 	// upper bound. Logs a warning on timeout — we still exit cleanly but
 	// some goroutines may have been abandoned (e.g. a plugin RPC hang).
-	waitCh := make(chan struct{})
-	go func() {
-		shutdownWG.Wait()
-		close(waitCh)
-	}()
-	select {
-	case <-waitCh:
-		log.Info().Msg("all daemon goroutines exited cleanly")
-	case <-time.After(10 * time.Second):
-		log.Warn().Msg("forced exit: daemon goroutines did not stop within 10s")
-	}
+	waitForTrackedGoroutines(log.Logger, shutdownWG.wait, shutdownWG.stillRunning, goroutineBudget)
 
 	// Only now join the auto-archive workers (BOS-923). The wait above is what
 	// proves their producers — poller, dispatcher, reconcile sweep, task

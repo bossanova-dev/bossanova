@@ -279,7 +279,7 @@ func TestRunDaemonStatusDoesNotClaimRunningWhenSocketUnreachable(t *testing.T) {
 		t.Fatalf("output = %q, must not claim the daemon is running while its socket is unreachable", out)
 	}
 	for _, want := range []string{
-		"registered but not serving",
+		"not serving",
 		"socket reachable: false",
 		"boss daemon doctor",
 	} {
@@ -2433,5 +2433,322 @@ func TestRunDaemonRestartRefusesARejectedSupervisionModeWithoutStoppingTheDaemon
 	}
 	if len(events) != 0 {
 		t.Fatalf("nothing may be stopped or started when the mode is refused; got %v", events)
+	}
+}
+
+// TestRunDaemonStopRoutesToWhatIsServing is the BOS-1217 finding-1 regression
+// and BOS-1218 R3/R4.
+//
+// The reported host had a LaunchAgent launchd had registered and never spawned,
+// and a detached bossd holding the profile socket. `boss daemon stop` read
+// st.Running — true, because `launchctl list` exits 0 for a registration — took
+// the launchd branch, booted out a job that owned no process, signalled
+// nothing, and then polled the detached daemon's socket for the full
+// LifecycleShutdownTimeout before failing. The second invocation succeeded.
+//
+// The verdicts here are the real daemon.ClassifyServingMode probe driven
+// through the daemon-state record and the status the service manager reports,
+// not a stubbed classifier, so what is under test is the routing rather than a
+// restatement of it. The whole event slice is compared rather than asserting
+// absences one at a time: that pins ordering AND that no other branch ran,
+// which is what "bootout was not called" has to mean here.
+//
+// There is no wall-clock assertion. The 60s symptom is a consequence of
+// entering waitForDaemonSocketGone after signalling nothing, so the events
+// pin the branch and the absence of that wait directly.
+func TestRunDaemonStopRoutesToWhatIsServing(t *testing.T) {
+	if !daemon.StandaloneServingSupported() {
+		t.Skip("standalone serving is a macOS mode; runDaemonStop's launchd branch is unchanged without it")
+	}
+	const standalonePID = 27923
+	const launchdPID = 4242
+
+	for _, tc := range []struct {
+		name string
+		// status is what the service manager reports. PIDKnown is stated on
+		// every row: after BOS-1218 a Status that omits it claims its PID was
+		// never established, which is a different host.
+		status     daemon.Status
+		record     func(t *testing.T, appDataDir, socketPath string)
+		terminated int
+		wantEvents []string
+		wantOutput string
+	}{
+		{
+			// The incident. Running is false on the FIRST invocation now,
+			// because launchd reported no PID for the job it registered.
+			name:   "a registered job that owns no process signals the standalone daemon",
+			status: daemon.Status{Installed: true, Running: false, PID: 0, PIDKnown: true},
+			record: func(t *testing.T, appDataDir, socketPath string) {
+				recordLiveStandaloneDaemon(t, appDataDir, socketPath, standalonePID)
+			},
+			terminated: 1,
+			wantEvents: []string{"terminate-standalone", "socket-gone"},
+			wantOutput: "Stopped standalone bossd for current profile.",
+		},
+		{
+			// The mirror of the BOS-1181 restart case, and why `!st.Running`
+			// alone was not enough: launchd owns a live PID, so the old
+			// question answers "the service manager is running" while the
+			// socket is held by someone else entirely.
+			name:   "a live standalone daemon beside a spawned job is the one signalled",
+			status: daemon.Status{Installed: true, Running: true, PID: launchdPID, PIDKnown: true},
+			record: func(t *testing.T, appDataDir, socketPath string) {
+				recordLiveStandaloneDaemon(t, appDataDir, socketPath, standalonePID)
+			},
+			terminated: 1,
+			wantEvents: []string{"terminate-standalone", "socket-gone"},
+			wantOutput: "Stopped standalone bossd for current profile.",
+		},
+		{
+			name:       "launchd owning the serving process still takes the bootout path",
+			status:     daemon.Status{Installed: true, Running: true, PID: launchdPID, PIDKnown: true},
+			record:     func(*testing.T, string, string) {},
+			wantEvents: []string{"launchd-stop", "socket-gone"},
+			wantOutput: "Daemon stopped.",
+		},
+		{
+			// The daemon-state record bossd writes on EVERY startup, so a
+			// launchd-spawned daemon records its own PID. Reading the record
+			// alone would boot the supervised daemon out through the wrong
+			// door; the PID identity is what separates them.
+			name:   "a record naming the launchd PID is not a standalone daemon",
+			status: daemon.Status{Installed: true, Running: true, PID: launchdPID, PIDKnown: true},
+			record: func(t *testing.T, appDataDir, socketPath string) {
+				recordLiveStandaloneDaemon(t, appDataDir, socketPath, launchdPID)
+			},
+			wantEvents: []string{"launchd-stop", "socket-gone"},
+			wantOutput: "Daemon stopped.",
+		},
+		{
+			// observedServingFacts fails closed on a record that names no
+			// executable: its liveness cannot be verified, and declaring
+			// standalone on it would boot a correctly supervised daemon out of
+			// the service manager.
+			name:   "a record naming no executable fails closed onto the launchd path",
+			status: daemon.Status{Installed: true, Running: true, PID: launchdPID, PIDKnown: true},
+			record: func(t *testing.T, appDataDir, socketPath string) {
+				if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+					PID:        standalonePID,
+					SocketPath: socketPath,
+				}); err != nil {
+					t.Fatalf("write daemon state: %v", err)
+				}
+			},
+			wantEvents: []string{"launchd-stop", "socket-gone"},
+			wantOutput: "Daemon stopped.",
+		},
+		{
+			name:       "an installed service with nothing serving is already stopped",
+			status:     daemon.Status{Installed: true, Running: false, PID: 0, PIDKnown: true},
+			record:     func(*testing.T, string, string) {},
+			wantEvents: []string{"terminate-standalone"},
+			wantOutput: "Daemon is already stopped.",
+		},
+		{
+			name:       "no service file and nothing standalone signals nothing",
+			status:     daemon.Status{Installed: false},
+			record:     func(*testing.T, string, string) {},
+			wantEvents: []string{"terminate-standalone"},
+			wantOutput: "Daemon is not installed and no standalone bossd is running.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreDaemonCommandStubs(t)
+			appDataDir, socketPath := daemonRestartProfileFixture(t)
+			tc.record(t, appDataDir, socketPath)
+
+			var events []string
+			status := tc.status
+			daemonGetStatus = func() (*daemon.Status, error) { return &status, nil }
+			defaultSocketPath = func() (string, error) { return socketPath, nil }
+			daemonStop = func() error {
+				events = append(events, "launchd-stop")
+				return nil
+			}
+			terminateStandaloneCurrentProfile = func(profile daemonProfile) (int, error) {
+				if profile.AppDataDir != appDataDir {
+					t.Fatalf("profile app data dir = %q, want %q", profile.AppDataDir, appDataDir)
+				}
+				events = append(events, "terminate-standalone")
+				return tc.terminated, nil
+			}
+			waitForDaemonSocketGone = func(path string) bool {
+				if path != socketPath {
+					t.Fatalf("socket wait path = %q, want %q", path, socketPath)
+				}
+				events = append(events, "socket-gone")
+				return true
+			}
+
+			out := captureStdout(t, func() {
+				if err := runDaemonStop(&cobra.Command{}); err != nil {
+					t.Fatalf("runDaemonStop: %v", err)
+				}
+			})
+			if !reflect.DeepEqual(events, tc.wantEvents) {
+				t.Fatalf("events = %v, want %v", events, tc.wantEvents)
+			}
+			if !strings.Contains(out, tc.wantOutput) {
+				t.Fatalf("output = %q, want %q", out, tc.wantOutput)
+			}
+		})
+	}
+}
+
+// TestStopAndRestartAgreeOnTheServingMode is BOS-1218 U3: stop, restart and the
+// reporting surfaces decide from one classifier, so they cannot drift into
+// disagreeing about one host.
+//
+// The table is ServingFacts rather than Status because that is the shape
+// daemon.ClassifyServingMode adjudicates and the shape
+// daemon_supervision_test.go already pins status and doctor against. The
+// claim asserted is the one that matters operationally: for a host with a
+// service file, stop goes to the service manager exactly when the service
+// manager is what is serving.
+//
+// Installed is excluded from that claim rather than asserted over, and
+// deliberately: it is not a discriminator for ClassifyServingMode, while both
+// stop and restart short-circuit on it because a profile with no service file
+// has never had a service-manager strategy available.
+//
+// The `Running = true, ServiceManagerPID = 0` rows are the ones this table
+// used to be silent about, and silence there was the wrong kind: it is a shape
+// SYSTEMD produces today (`systemctl --user is-active` says active while the
+// separate MainPID read fails), and it is the single shape on which the stop
+// predicate and the classifier deliberately part company. Omitting it made the
+// agreement claim look total when it is not. Each such row therefore states
+// its divergence in `stopDivergesBecause` rather than being left out, so the
+// exception is pinned and a future change to it fails here.
+func TestStopAndRestartAgreeOnTheServingMode(t *testing.T) {
+	const servicePID = 4242
+	const standalonePID = 27923
+
+	for _, tc := range []struct {
+		name  string
+		facts daemon.ServingFacts
+		// stopDivergesBecause, when non-empty, records that stop routes this
+		// row to the SERVICE MANAGER even though ClassifyServingMode does not
+		// call it supervised. Empty means the two must agree.
+		stopDivergesBecause string
+		// needsStandaloneSupport marks a row whose expected verdict only holds
+		// where a standalone serving mode exists at all. Off macOS
+		// ClassifyServingMode cannot return Standalone, so such a row would be
+		// asserting a different host than the one it names.
+		needsStandaloneSupport bool
+	}{
+		{
+			// Named for the finding so a future regression names itself.
+			name: "BOS-1217 finding 1: registered job, no service PID, live standalone daemon",
+			facts: daemon.ServingFacts{
+				Installed: true, Running: false, ServiceManagerPID: 0,
+				StandalonePID: standalonePID, StandaloneAlive: true,
+			},
+		},
+		{
+			name:  "installed, nothing running, nothing recorded",
+			facts: daemon.ServingFacts{Installed: true},
+		},
+		{
+			name:  "installed, nothing running, a dead standalone record",
+			facts: daemon.ServingFacts{Installed: true, StandalonePID: standalonePID},
+		},
+		{
+			name: "the service manager owns the serving process",
+			facts: daemon.ServingFacts{
+				Installed: true, Running: true, ServiceManagerPID: servicePID,
+			},
+		},
+		{
+			name: "the service manager owns the process that wrote the record",
+			facts: daemon.ServingFacts{
+				Installed: true, Running: true, ServiceManagerPID: servicePID,
+				StandalonePID: servicePID, StandaloneAlive: true,
+			},
+		},
+		{
+			name: "the service manager owns a PID while a different live daemon is recorded",
+			facts: daemon.ServingFacts{
+				Installed: true, Running: true, ServiceManagerPID: servicePID,
+				StandalonePID: standalonePID, StandaloneAlive: true,
+			},
+		},
+		{
+			name: "the service manager owns a PID and the record is stale",
+			facts: daemon.ServingFacts{
+				Installed: true, Running: true, ServiceManagerPID: servicePID,
+				StandalonePID: standalonePID,
+			},
+		},
+		{
+			// systemd: `is-active` said active, the MainPID read failed. The
+			// classifier's PID term makes this Unserved, but there IS a live
+			// unit here and `systemctl --user stop` is the only thing that can
+			// stop it — routing this to the standalone path would signal a
+			// process nobody recorded and leave the active unit running. The
+			// divergence is the classifier being conservative for RESTART's
+			// question ("who is serving, and must be preserved") where stop
+			// asks a different one ("what is there to stop").
+			name: "systemd: the unit is active but its MainPID could not be read",
+			facts: daemon.ServingFacts{
+				Installed: true, Running: true, ServiceManagerPID: 0,
+			},
+			stopDivergesBecause: "there is a live service-manager job to stop even though no PID was reported",
+		},
+		{
+			// Same systemd shape, but something standalone is recorded and
+			// alive. Here the two agree again, because the standalone verdict
+			// does not depend on the unreadable MainPID at all.
+			name: "systemd: the unit is active with an unreadable MainPID while a live standalone daemon is recorded",
+			facts: daemon.ServingFacts{
+				Installed: true, Running: true, ServiceManagerPID: 0,
+				StandalonePID: standalonePID, StandaloneAlive: true,
+			},
+			needsStandaloneSupport: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.needsStandaloneSupport && !daemon.StandaloneServingSupported() {
+				t.Skipf("no standalone serving mode on this platform, so %q describes a host that cannot exist here", tc.name)
+			}
+			restoreDaemonCommandStubs(t)
+			facts := tc.facts
+			facts.StandaloneSupported = daemon.StandaloneServingSupported()
+			mode := daemon.ClassifyServingMode(facts)
+			daemonStandaloneServed = func(*daemon.Status) bool {
+				return mode == daemon.ServingModeStandalone
+			}
+
+			st := &daemon.Status{
+				Installed: facts.Installed,
+				Running:   facts.Running,
+				PID:       facts.ServiceManagerPID,
+				// Derived rather than hardcoded so each row is a Status some
+				// substrate can actually produce: launchd never reports
+				// Running without a settled PID, and the systemd rows below
+				// are Running with the PID read UNsettled.
+				PIDKnown: !facts.Running || facts.ServiceManagerPID > 0,
+			}
+			gotStandalone := stopTakesStandalonePath(st)
+			wantStandalone := mode != daemon.ServingModeSupervised
+			if tc.stopDivergesBecause != "" {
+				if wantStandalone == false {
+					t.Fatalf("row declares a divergence from %q but the classifier already routes it to the service manager; delete stopDivergesBecause", mode)
+				}
+				wantStandalone = false
+			}
+			if gotStandalone != wantStandalone {
+				t.Fatalf("stopTakesStandalonePath = %v for %q, want %v; stop and the serving probe disagree about this host (declared divergence: %q)",
+					gotStandalone, mode, wantStandalone, tc.stopDivergesBecause)
+			}
+			// Restart lacks the `!st.Running` term on purpose: an installed
+			// service the manager has not started still has to be STARTED, so
+			// restart routes it through the service manager where stop has
+			// nothing to bootout. Everywhere else the two must agree.
+			if st.Running && restartTakesStandalonePath(st) != gotStandalone {
+				t.Fatalf("stop takes standalone = %v but restart takes standalone = %v for %q",
+					gotStandalone, restartTakesStandalonePath(st), mode)
+			}
+		})
 	}
 }

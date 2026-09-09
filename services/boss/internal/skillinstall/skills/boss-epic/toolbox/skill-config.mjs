@@ -289,6 +289,10 @@ export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
  *   emphasis + code + emphasis. Renders identically; adds bytes.
  * - `trailing-whitespace-trimming` — trailing spaces/tabs removed from a line.
  * - `terminal-newline-trimming` — trailing newlines removed from the end of the document.
+ * - `table-delimiter-row-normalization` — the dash run inside each cell of a table delimiter row
+ *   rewritten to a different length, e.g. `| --- | --- |` stored as `| -- | -- |`. Alignment
+ *   colons are NOT part of this transform: a cell's colons carry alignment where its dash count
+ *   carries nothing, so a row that lost one is a semantic change and stays drift.
  */
 export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'unordered-list-marker-substitution',
@@ -296,6 +300,7 @@ export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'emphasis-span-restructuring',
   'trailing-whitespace-trimming',
   'terminal-newline-trimming',
+  'table-delimiter-row-normalization',
 ])
 
 const DESCRIPTION_NORMALIZATION_TRANSFORM_SET = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
@@ -589,7 +594,22 @@ export function validateConfig(config, source) {
     // its tracker perform on write, so the post-save read-back can class a reshaped description as
     // normalized-equivalent instead of drift. Absent means the EMPTY set — the strictest check —
     // never "tolerate everything"; a repo that declares nothing must not be silently granted
-    // tolerance. An id outside the closed vocabulary fails here rather than widening the gate.
+    // tolerance.
+    //
+    // Strictness is split by ROLE, because this file is copy-distributed and then extracted into
+    // every user's global skill directory, where each copy reads whatever repo config it is invoked
+    // in. Since the whole config is validated before any of it is returned, a hard failure on an
+    // unrecognised id turns an additive widening of the vocabulary into a crash for every consumer
+    // of the config — review, build and repair, not just planning. So:
+    //
+    //   - a STRUCTURAL fault still throws. A non-object block, a non-array `tolerated`, or an entry
+    //     that is not a non-empty string is a repo that meant to configure something and did not.
+    //   - an unfamiliar but well-formed id WARNS and is dropped. That direction is safe: a smaller
+    //     tolerated set makes the comparison stricter, so the worst case is a spurious drift — one
+    //     triage look — and never a false pass.
+    //
+    // The closed vocabulary is still enforced where authoring happens: a repo that commits an id
+    // outside it reds in the tree that ships the vocabulary, against the RAW committed config.
     if ('descriptionNormalization' in tc) {
       const dn = tc.descriptionNormalization
       if (!dn || typeof dn !== 'object' || Array.isArray(dn)) {
@@ -602,13 +622,27 @@ export function validateConfig(config, source) {
           )
         }
         for (const id of dn.tolerated) {
-          if (typeof id !== 'string' || !DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id)) {
+          if (typeof id !== 'string' || id.length === 0) {
             fail(
-              `trackerConfig.${adapter}.descriptionNormalization.tolerated contains unknown transform id ${JSON.stringify(
+              `trackerConfig.${adapter}.descriptionNormalization.tolerated entries must be non-empty strings; got ${JSON.stringify(
                 id,
-              )}; expected one of ${DESCRIPTION_NORMALIZATION_TRANSFORMS.join(', ')}`,
+              )}`,
             )
           }
+        }
+        const unrecognised = dn.tolerated.filter(
+          (id) => !DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id),
+        )
+        if (unrecognised.length > 0) {
+          console.warn(
+            `skill-config: ${source}: trackerConfig.${adapter}.descriptionNormalization.tolerated ` +
+              `names ${unrecognised.map((id) => JSON.stringify(id)).join(', ')}, which this copy of the ` +
+              `transform vocabulary does not recognise; dropping it, which makes the comparison STRICTER. ` +
+              `Known ids: ${DESCRIPTION_NORMALIZATION_TRANSFORMS.join(', ')}`,
+          )
+          dn.tolerated = dn.tolerated.filter((id) =>
+            DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id),
+          )
         }
       }
     }
@@ -1147,14 +1181,19 @@ export function trackerConfigFor(config, adapter = adapterFor(config, 'tracker')
  *
  * Returns a `Set`. An ABSENT `descriptionNormalization` block and an explicitly EMPTY `tolerated`
  * array are deliberately equivalent — both yield the empty set, i.e. the strictest check — so
- * absence can never be read as "tolerate all". Validation has already rejected any id outside
- * `DESCRIPTION_NORMALIZATION_TRANSFORMS`, so every member here is in the closed vocabulary.
+ * absence can never be read as "tolerate all".
+ *
+ * Every member is in the closed vocabulary BY CONSTRUCTION: validation warns and drops an
+ * unrecognised id, and the filter is repeated here so the guarantee holds even for a config that
+ * never went through `validateConfig`. Dropping narrows the tolerated set, so an id this copy does
+ * not know can only make the comparison stricter — never wave a difference through.
  *
  * @returns {Set<string>}
  */
 export function toleratedDescriptionTransforms(config, adapter = adapterFor(config, 'tracker')) {
   const tolerated = trackerConfigFor(config, adapter)?.descriptionNormalization?.tolerated
-  return new Set(Array.isArray(tolerated) ? tolerated : [])
+  const declared = Array.isArray(tolerated) ? tolerated : []
+  return new Set(declared.filter((id) => DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id)))
 }
 
 function trackerRoleName(config, field, role, required = true) {

@@ -71,26 +71,72 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   // loss as normalized-equivalent and exited zero. A canonicalizer for a RESTRUCTURING must
   // preserve the presence or absence of the emphasis and normalize only its position.
   //
-  // The merge is anchored on the OUTER delimiter pair: the pattern is D…D `code` D…D, four runs of
-  // the SAME delimiter, and only the two interior ones are dropped. A run that IS the emphasis
+  // The merge is anchored on the OUTER delimiter pair: the recognised shape is an opening run, then
+  // one or more JOINTS — a closing run, an inline code span, an opening run — then a closing run,
+  // every run the SAME delimiter. Only the interior runs are dropped. A run that IS the emphasis
   // (`**`x`**`, two runs) has no outer pair to anchor on and survives untouched, so it still
   // differs from the un-emphasised `` `x` ``. Deliberately conservative: a shape this pattern does
   // not recognise stays a byte difference and is reported as drift, which is the safe direction.
+  //
+  // The joint tolerates whitespace at the split point and repeats, because that is the shape the
+  // transport was MEASURED emitting: `**a `c` b**` is stored as `**a** `c` **b**`, and a span with
+  // two code spans is stored with a joint at each. Anchoring on the contiguous one-span form alone
+  // left both measured pairs reading as drift. Widening WHICH shape is recognised does not widen
+  // what survives it: the whitespace stays in the output as the text it is, and presence and
+  // delimiter-run length are untouched, so emphasis DELETED and emphasis DEMOTED still differ.
   'emphasis-span-restructuring': (text) => {
-    // A and B may not contain a backtick or a newline, which bounds the match to one emphasis span
-    // on one line — the shape the transform was measured on. Every one of the four delimiter runs
-    // is fenced by `(?<![*_])` / `(?![*_])` so it can only match a MAXIMAL run: without that fence
-    // the engine backtracks `**` down to `*` and rewrites `**`x`**` as `*`x`*`, which loses a
-    // delimiter and collides bold with italic — the same class of loss this rewrite exists to end.
-    const RUN = String.raw`(?<![*_])\1(?![*_])`
-    const split = new RegExp(
-      String.raw`(?<![*_])(\*{1,3}|_{1,3})(?![*_])([^\`\n]*?)${RUN}(\`[^\`\n]*\`)${RUN}([^\`\n]*?)${RUN}`,
-      'g',
-    )
+    // The pattern is built and run ONCE PER DELIMITER CHARACTER — `*`, then `_` — because the bound
+    // it needs cannot be written with the delimiter known only as a backreference. In each pass the
+    // segments exclude THAT pass's delimiter as well as backticks and newlines, so the only runs of
+    // that delimiter inside a match are the match's own joints. Two consequences, and they are the
+    // whole point: an outer match can never reach across an independently emphasised span of the
+    // same delimiter, and the global inner replace below therefore only ever deletes runs that
+    // genuinely are joints. Excluding BOTH delimiters from BOTH passes would bound the match too,
+    // but it would stop `snake_case` text inside `**bold**` from merging — the very drift this
+    // transform exists to remove — so each pass excludes only its own. A run of the OTHER delimiter
+    // may still sit inside a segment; it is carried through the merge as the text it is.
+    //
+    // The outer pair is additionally required to FLANK, the way CommonMark requires of a real
+    // emphasis pair: an opening run is followed by non-whitespace, a closing run is preceded by it.
+    // Without that the closing run of an already-merged span reads as an opening run for the span
+    // AFTER it, and `**a `c` b** then **`z`** and ...` merges a second time and deletes the bold
+    // around `` `z` `` — a false pass, and one the bounded fixpoint loop below would reach on its
+    // own even from an input that needed no merge at all.
+    //
+    // What a match is bounded to, exactly: one line (no segment or code span may contain a newline)
+    // and one emphasis span of the delimiter being matched.
+    //
+    // Every delimiter run is additionally fenced by `(?<![*_])` / `(?![*_])` so it can only match a
+    // MAXIMAL run: without that fence the engine backtracks `**` down to `*` and rewrites
+    // `**`x`**` as `*`x`*`, which loses a delimiter and collides bold with italic — the same class
+    // of loss this rewrite exists to end.
+    const CODE = String.raw`\`[^\`\n]*\``
+    const splitFor = (delim) => {
+      const q = delim === '*' ? String.raw`\*` : delim
+      const OPEN = String.raw`(?<![*_])(${q}{1,3})(?![*_])(?=\S)`
+      const RUN = String.raw`(?<![*_])\1(?![*_])`
+      const SEG = String.raw`[^\`\n${q}]*?`
+      const JOINT = String.raw`${RUN}[ \t]*${CODE}[ \t]*${RUN}`
+      return new RegExp(`${OPEN}(?:${SEG}${JOINT})+${SEG}(?<=\\S)${RUN}`, 'g')
+    }
+    // Rebuild the matched span by dropping ONLY its interior joint runs. The delimiter is known by
+    // then, so the inner pattern is unambiguous — and rebuilding this way, rather than with numbered
+    // groups, is what lets the joint repeat an unbounded number of times.
+    const merge = (match, delim) => {
+      const quoted = delim.replace(/\*/g, String.raw`\*`)
+      const joint = new RegExp(
+        String.raw`(?<![*_])${quoted}(?![*_])([ \t]*)(${CODE})([ \t]*)(?<![*_])${quoted}(?![*_])`,
+        'g',
+      )
+      const inner = match.slice(delim.length, match.length - delim.length)
+      return delim + inner.replace(joint, '$1$2$3') + delim
+    }
+    const splits = ['*', '_'].map(splitFor)
     let out = String(text)
     // Run to a fixpoint (bounded) so the result is idempotent and order-independent.
     for (let pass = 0; pass < 10; pass += 1) {
-      const next = out.replace(split, '$1$2$3$4$1')
+      let next = out
+      for (const split of splits) next = next.replace(split, merge)
       if (next === out) break
       out = next
     }
@@ -98,6 +144,67 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   },
   'trailing-whitespace-trimming': (text) => text.replace(/[ \t]+$/gm, ''),
   'terminal-newline-trimming': (text) => text.replace(/\n+$/, ''),
+  // `| --- | --- |` stored as `| -- | -- |`: the dash run inside each cell of a table delimiter row
+  // rewritten to a different length. Per the GFM tables extension a delimiter cell is hyphens with
+  // an optional leading or trailing colon — the colons carry alignment, the dash count carries
+  // nothing — so canonicalizing the run length is meaning-preserving where dropping a colon is not.
+  // Only the dash runs are rewritten, and only on a line that is a delimiter row in full: colons,
+  // pipes and surrounding whitespace are left exactly as they are, so a row that LOST a colon or a
+  // cell still differs from the one it came from.
+  //
+  // It does NOT rewrite a dash line that is not a delimiter row. In GFM a delimiter row is defined
+  // POSITIONALLY — it is the row immediately after a table's header row — so the shape alone is not
+  // enough: `| - | - |` is an ordinary BODY row meaning "none" in the tables this gate verifies, and
+  // rewriting it would canonicalize CONTENT and make two genuinely different tables compare equal.
+  // The rewrite therefore fires only where the PRECEDING line is a plausible header row: it carries
+  // a pipe and is not itself delimiter-shaped. A pipe is REQUIRED on the delimiter row too — a
+  // thematic break, a setext underline and a prose dash run carry none, and a single-column row
+  // written without pipes is indistinguishable from a thematic break, so the safe reading of an
+  // ambiguous line is "not a table".
+  //
+  // FENCED content is skipped: it is literal text, and rewriting it would change what the block
+  // shows rather than how the document renders. Only fenced blocks are recognised as literal — a
+  // four-space-INDENTED code block is literal by the same argument but is not skipped, because
+  // widening the skip to indented lines would also skip the tables this transform legitimately has
+  // to canonicalize inside list items. A delimiter-shaped row inside an indented code block is a
+  // known and accepted limitation of the rule, not a claim it handles.
+  'table-delimiter-row-normalization': (text) => {
+    // Optional leading pipe, then cells of optional-colon + dashes + optional-colon separated by
+    // pipes, then an optional trailing pipe. Every repetition must consume a `|`, so the quantifier
+    // cannot backtrack quadratically on a long line.
+    const DELIMITER_ROW = /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?[ \t]*$/
+    const FENCE_OPEN = /^[ \t]{0,3}(`{3,}|~{3,})/
+    // CommonMark closes a fence only with the SAME character at >= the opening length, and a closing
+    // fence carries no info string. A bare boolean toggle got both wrong: a `~~~` line closed a
+    // ``` block, and the four-backtick wrapper this repo's docs use to quote a markdown block that
+    // itself contains a fence was closed by the inner ``` — exposing the quoted content to rewrite.
+    const FENCE_CLOSE = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/
+    const delimiterShaped = (line) => line.includes('|') && DELIMITER_ROW.test(line)
+    let fence = null
+    // The line before this one, when it was ordinary text outside a fence; null otherwise.
+    let previous = null
+    return String(text)
+      .split('\n')
+      .map((line) => {
+        if (fence) {
+          const close = FENCE_CLOSE.exec(line)
+          if (close && close[1][0] === fence.char && close[1].length >= fence.length) fence = null
+          previous = null
+          return line
+        }
+        const open = FENCE_OPEN.exec(line)
+        if (open) {
+          fence = { char: open[1][0], length: open[1].length }
+          previous = null
+          return line
+        }
+        const headed = previous !== null && previous.includes('|') && !delimiterShaped(previous)
+        const rewrite = headed && delimiterShaped(line)
+        previous = line
+        return rewrite ? line.replace(/-+/g, '---') : line
+      })
+      .join('\n')
+  },
 })
 
 /**

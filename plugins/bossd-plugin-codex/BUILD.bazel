@@ -88,6 +88,7 @@ go_test(
         "//lib/bossalib/agenterr",
         "//lib/bossalib/agentruntime",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/plugin",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_genproto_googleapis_rpc//errdetails",
         "@org_golang_google_grpc//:grpc",

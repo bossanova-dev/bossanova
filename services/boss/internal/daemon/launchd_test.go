@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -2030,14 +2031,27 @@ func mkdirLaunchAgents(t *testing.T) {
 // stubLaunchctlWithDeadAgent records launchctl invocations and answers `list`
 // the way launchd answers for a job that is NOT loaded: a non-zero exit.
 //
-// That detail decides whether every zero-`load` assertion in this file means
-// anything. platformGetStatus sets Running = true on ANY successful `list`, so
-// a stub that answered every verb with (nil, nil) would report the LaunchAgent
-// as already running, platformEnsureRunning would skip its LaunchAgent arm for
-// that reason instead of the routing one, and `countLaunchctlVerb(calls,
-// "load") == 0` would hold on a build with no routing in it at all. Measured:
-// with the permissive stub, TestPlatformEnsureRunningLoadsTheLaunchAgentWhenNoWatchdogIsInstalled
+// That detail decides what every zero-`load` assertion in this file is
+// asserting ABOUT. It was originally load-bearing for non-vacuity:
+// platformGetStatus set Running = true on ANY successful `list`, so a stub
+// answering every verb with (nil, nil) reported the LaunchAgent as already
+// running, platformEnsureRunning skipped its LaunchAgent arm for that reason
+// instead of the routing one, and `countLaunchctlVerb(calls, "load") == 0`
+// held on a build with no routing in it at all — measured: with the permissive
+// stub, TestPlatformEnsureRunningLoadsTheLaunchAgentWhenNoWatchdogIsInstalled
 // recorded zero loads.
+//
+// BOS-1218 moved that hazard rather than removing the need for this helper. A
+// permissive (nil, nil) stub now yields an EMPTY answer, which parses to no
+// PID and no PIDKnown — Status's "could not tell" state — so it no longer
+// fakes a running agent, but it does silently swap which host the test
+// describes: "launchd does not have this job" (what these tests mean, and what
+// the non-zero exit says) for "launchctl answered and we could not read it".
+// Those route the same today and are exactly the pair BOS-1218 R2a made
+// distinguishable, so the fixture must keep saying which one it means.
+// TestPlatformEnsureRunningLoadsTheLaunchAgentWhenNoWatchdogIsInstalled still
+// pins the counterfactual directly, which is what keeps the zero-load
+// assertions honest either way.
 func stubLaunchctlWithDeadAgent(t *testing.T, onCall func(args []string)) *[][]string {
 	t.Helper()
 	return stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
@@ -2684,5 +2698,527 @@ func TestPlatformSpawnHistorySkipShortCircuitNamesTheSubstrateTarget(t *testing.
 	}
 	if want := "system/" + WatchdogLabel; got.Target != want {
 		t.Fatalf("Target = %q, want %q", got.Target, want)
+	}
+}
+
+// launchctlRegisteredNoPIDOutput is what `launchctl list com.bossanova.bossd`
+// printed on the host `delta` on 2026-09-08 while the job was REGISTERED and
+// had never been spawned: exit 0, and no "PID" key anywhere in the answer.
+// `launchctl print` for the same job at the same instant reported
+// `state = not running` and `runs = 0` (BOS-1218).
+const launchctlRegisteredNoPIDOutput = `{
+	"LimitLoadToSessionType" = "Aqua";
+	"Label" = "com.bossanova.bossd";
+	"OnDemand" = false;
+	"LastExitStatus" = 0;
+};
+`
+
+// launchctlRunningOutput is the same answer for a job launchd actually spawned.
+const launchctlRunningOutput = `{
+	"LimitLoadToSessionType" = "Aqua";
+	"Label" = "com.bossanova.bossd";
+	"OnDemand" = false;
+	"LastExitStatus" = 0;
+	"PID" = 80034;
+};
+`
+
+// prepareLaunchAgentStatusEnvironment puts both LaunchAgent plists on disk
+// under a temp HOME so platformGetStatus and platformMcpGetStatus get past
+// their os.Stat guard and reach the launchctl probe the caller stubs.
+//
+// BOSS_DAEMON_SKIP_LAUNCHCTL is cleared explicitly: it short-circuits both
+// probes before any launchctl call, so a stray value inherited from the
+// environment would make every assertion below vacuous.
+func prepareLaunchAgentStatusEnvironment(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	for _, resolve := range []func() (string, error){platformServicePath, mcpServicePath} {
+		path, err := resolve()
+		if err != nil {
+			t.Fatalf("resolve service path: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create LaunchAgents dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("<plist/>"), 0o600); err != nil {
+			t.Fatalf("write plist: %v", err)
+		}
+	}
+}
+
+// TestPlatformGetStatusRequiresAPIDBeforeReportingRunning is BOS-1218's
+// central case, and there was no direct test of this parse loop before it.
+//
+// `launchctl list <label>` exits 0 for a job launchd has merely REGISTERED, so
+// the exit code alone cannot tell a registration from a running process. The
+// PID key in the answer is what separates them, and Running must be derived
+// from it.
+//
+// The last two rows are R2a: a zero PID must not stand for two opposite
+// observations. "registered, launchd reported no PID" is an ANSWER; a probe
+// that could not be run, or whose output carries no recognisable shape, is
+// "cannot tell". TestPlatformGetStatusSeparatesAnAbsentPIDFromAnUnreadableOne
+// pins that the two Status values actually differ.
+func TestPlatformGetStatusRequiresAPIDBeforeReportingRunning(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		out          string
+		listErr      bool
+		wantRunning  bool
+		wantPID      int
+		wantPIDKnown bool
+	}{
+		{
+			name:         "registered with no PID is not running",
+			out:          launchctlRegisteredNoPIDOutput,
+			wantRunning:  false,
+			wantPID:      0,
+			wantPIDKnown: true,
+		},
+		{
+			name:         "a reported PID is what makes it running",
+			out:          launchctlRunningOutput,
+			wantRunning:  true,
+			wantPID:      80034,
+			wantPIDKnown: true,
+		},
+		{
+			name:         "tab-separated fallback carries the PID",
+			out:          "80034\t0\tcom.bossanova.bossd\n",
+			wantRunning:  true,
+			wantPID:      80034,
+			wantPIDKnown: true,
+		},
+		{
+			name:         "tab-separated fallback with no PID is not running",
+			out:          "-\t0\tcom.bossanova.bossd\n",
+			wantRunning:  false,
+			wantPID:      0,
+			wantPIDKnown: true,
+		},
+		{
+			name:         "label not loaded is not running and settles nothing",
+			out:          "Could not find service \"com.bossanova.bossd\" in domain for uid: 501",
+			listErr:      true,
+			wantRunning:  false,
+			wantPID:      0,
+			wantPIDKnown: false,
+		},
+		{
+			name:         "an unreadable answer settles nothing and is not 'stopped'",
+			out:          "launchctl: something entirely unexpected\n",
+			wantRunning:  false,
+			wantPID:      0,
+			wantPIDKnown: false,
+		},
+		{
+			// The rest of the dictionary parses, so `known` was already true
+			// by the time this line is read: without the veto the answer would
+			// be reported as the SETTLED observation "launchd says this job
+			// owns no process", which is precisely the unknown-vs-absent
+			// collapse R2a exists to prevent.
+			name:         "an unparseable PID value vetoes the whole answer",
+			out:          strings.Replace(launchctlRunningOutput, `"PID" = 80034;`, `"PID" = bogus;`, 1),
+			wantRunning:  false,
+			wantPID:      0,
+			wantPIDKnown: false,
+		},
+		{
+			// readSystemdMainPID rejects `v <= 0` on the other substrate; a
+			// negative PID is not a process launchd owns and is not an
+			// observation that it owns none.
+			name:         "a negative PID value settles nothing",
+			out:          strings.Replace(launchctlRunningOutput, `"PID" = 80034;`, `"PID" = -1;`, 1),
+			wantRunning:  false,
+			wantPID:      0,
+			wantPIDKnown: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepareLaunchAgentStatusEnvironment(t)
+			stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+				if args[0] != "list" {
+					t.Fatalf("unexpected launchctl verb %q", args[0])
+				}
+				if tc.listErr {
+					return []byte(tc.out), fakeExitError(t, 113)
+				}
+				return []byte(tc.out), nil
+			})
+
+			st, err := platformGetStatus()
+			if err != nil {
+				t.Fatalf("platformGetStatus: %v", err)
+			}
+			if !st.Installed {
+				t.Fatalf("Installed = false, want true; the plist is on disk")
+			}
+			if st.Running != tc.wantRunning {
+				t.Fatalf("Running = %v, want %v (PID %d)", st.Running, tc.wantRunning, st.PID)
+			}
+			if st.PID != tc.wantPID {
+				t.Fatalf("PID = %d, want %d", st.PID, tc.wantPID)
+			}
+			if st.PIDKnown != tc.wantPIDKnown {
+				t.Fatalf("PIDKnown = %v, want %v", st.PIDKnown, tc.wantPIDKnown)
+			}
+			if st.Running && st.PID == 0 {
+				t.Fatalf("Running with no PID: %+v; R2 says Running implies a PID on launchd", st)
+			}
+		})
+	}
+}
+
+// TestPlatformGetStatusSeparatesAnAbsentPIDFromAnUnreadableOne is R2a stated
+// as one assertion: the two observations must not collapse to the same value.
+func TestPlatformGetStatusSeparatesAnAbsentPIDFromAnUnreadableOne(t *testing.T) {
+	read := func(out string, listErr bool) Status {
+		t.Helper()
+		prepareLaunchAgentStatusEnvironment(t)
+		stubRestartLaunchctl(t, func([]string) ([]byte, error) {
+			if listErr {
+				return []byte(out), fakeExitError(t, 113)
+			}
+			return []byte(out), nil
+		})
+		st, err := platformGetStatus()
+		if err != nil {
+			t.Fatalf("platformGetStatus: %v", err)
+		}
+		return *st
+	}
+
+	reportedAbsent := read(launchctlRegisteredNoPIDOutput, false)
+	couldNotTell := read("Could not find service", true)
+	if reportedAbsent == couldNotTell {
+		t.Fatalf("a registered job that reported no PID is indistinguishable from an unreadable probe: %+v", reportedAbsent)
+	}
+	if !reportedAbsent.PIDKnown {
+		t.Fatalf("PIDKnown = false for an answer that named no PID: %+v", reportedAbsent)
+	}
+	if couldNotTell.PIDKnown {
+		t.Fatalf("PIDKnown = true for a probe that could not be read: %+v", couldNotTell)
+	}
+}
+
+// TestPlatformMcpGetStatusRequiresAPIDBeforeReportingRunning repeats the two
+// decisive rows against McpLabel. The MCP probe carries a byte-identical
+// assignment against the same launchctl behaviour, and its consumer
+// mcpStillRunningProbe fills the same bootout-verify role as
+// bossdStillRunningProbe, so leaving it would have fixed one of two identical
+// causes (BOS-1218).
+func TestPlatformMcpGetStatusRequiresAPIDBeforeReportingRunning(t *testing.T) {
+	mcpOutput := func(body string) string {
+		return strings.ReplaceAll(body, Label, McpLabel)
+	}
+	for _, tc := range []struct {
+		name         string
+		out          string
+		wantRunning  bool
+		wantPID      int
+		wantPIDKnown bool
+	}{
+		{
+			name:         "registered with no PID is not running",
+			out:          mcpOutput(launchctlRegisteredNoPIDOutput),
+			wantPIDKnown: true,
+		},
+		{
+			name:         "a reported PID is what makes it running",
+			out:          mcpOutput(launchctlRunningOutput),
+			wantRunning:  true,
+			wantPID:      80034,
+			wantPIDKnown: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepareLaunchAgentStatusEnvironment(t)
+			stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+				if len(args) < 2 || args[1] != McpLabel {
+					t.Fatalf("launchctl called with %v, want the MCP label", args)
+				}
+				return []byte(tc.out), nil
+			})
+
+			st, err := platformMcpGetStatus()
+			if err != nil {
+				t.Fatalf("platformMcpGetStatus: %v", err)
+			}
+			if st.Running != tc.wantRunning {
+				t.Fatalf("Running = %v, want %v (PID %d)", st.Running, tc.wantRunning, st.PID)
+			}
+			if st.PID != tc.wantPID {
+				t.Fatalf("PID = %d, want %d", st.PID, tc.wantPID)
+			}
+			if st.PIDKnown != tc.wantPIDKnown {
+				t.Fatalf("PIDKnown = %v, want %v", st.PIDKnown, tc.wantPIDKnown)
+			}
+		})
+	}
+}
+
+// TestStillRunningProbesReportStoppedForARegisteredJobWithNoPID is the other
+// half: the ordinary already-stopped case must still verify cleanly, and a
+// registered job that owns no process now joins it.
+func TestStillRunningProbesReportStoppedForARegisteredJobWithNoPID(t *testing.T) {
+	prepareLaunchAgentStatusEnvironment(t)
+	stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		return []byte(strings.ReplaceAll(launchctlRegisteredNoPIDOutput, Label, args[1])), nil
+	})
+	if bossdStillRunningProbe() {
+		t.Fatalf("bossdStillRunningProbe = true for a job launchd reported no PID for")
+	}
+	if mcpStillRunningProbe() {
+		t.Fatalf("mcpStillRunningProbe = true for a job launchd reported no PID for")
+	}
+}
+
+// stubJobDisabledProbe installs a recording runLaunchctlBoundedProbe fake,
+// following the same save / reassign / t.Cleanup-restore shape
+// stubRestartLaunchctl uses for runLaunchctl.
+//
+// It stubs the BOUNDED seam and not runLaunchctl, which is the point of that
+// seam existing: the lifecycle verbs keep their own unbounded latency, and the
+// advisory diagnostic reads are the only thing under a deadline (BOS-1222 R7).
+func stubJobDisabledProbe(t *testing.T, respond func(args []string) ([]byte, error)) *[][]string {
+	t.Helper()
+	original := runLaunchctlBoundedProbe
+	calls := &[][]string{}
+	runLaunchctlBoundedProbe = func(args ...string) ([]byte, error) {
+		*calls = append(*calls, append([]string(nil), args...))
+		return respond(args)
+	}
+	t.Cleanup(func() { runLaunchctlBoundedProbe = original })
+	return calls
+}
+
+// TestPlatformJobDisabled covers the launchd wiring around
+// parseLaunchdDisabledServices: the domain it asks about, the
+// BOSS_DAEMON_SKIP_LAUNCHCTL short-circuit, the deadline, and the two
+// launchctl failure shapes. The classification itself is exercised
+// platform-agnostically in spawnhistory_test.go, so what is left to prove here
+// is that the probe asks launchd the right question and fails closed — never
+// "enabled" — when it does not get an answer. BOS-1222.
+func TestPlatformJobDisabled(t *testing.T) {
+	wantDomain := "gui/" + strconv.Itoa(os.Getuid())
+
+	t.Run("a disabled job is established", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		calls := stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+			return []byte("disabled services = {\n\t\"" + Label + "\" => true\n}\n"), nil
+		})
+
+		got, err := platformJobDisabled()
+		if err != nil {
+			t.Fatalf("platformJobDisabled: %v", err)
+		}
+		if got.State != JobDisabledStateDisabled {
+			t.Errorf("State = %q, want %q", got.State, JobDisabledStateDisabled)
+		}
+		if got.Domain != wantDomain || got.Label != Label {
+			t.Errorf("Domain/Label = %q/%q, want %q/%q", got.Domain, got.Label, wantDomain, Label)
+		}
+		wantArgs := []string{"print-disabled", wantDomain}
+		if len(*calls) != 1 || (*calls)[0][0] != wantArgs[0] || (*calls)[0][1] != wantArgs[1] {
+			t.Errorf("probe args = %q, want exactly one %q", *calls, wantArgs)
+		}
+	})
+
+	t.Run("an explicit false override rules the cause out", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+			return []byte("disabled services = {\n\t\"" + Label + "\" => false\n}\n"), nil
+		})
+
+		got, err := platformJobDisabled()
+		if err != nil {
+			t.Fatalf("platformJobDisabled: %v", err)
+		}
+		if got.State != JobDisabledStateEnabled {
+			t.Errorf("State = %q, want %q", got.State, JobDisabledStateEnabled)
+		}
+	})
+
+	t.Run("a label absent from the dump carries no override", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+			return []byte("disabled services = {\n\t\"com.example.other\" => true\n}\n"), nil
+		})
+
+		got, err := platformJobDisabled()
+		if err != nil {
+			t.Fatalf("platformJobDisabled: %v", err)
+		}
+		if got.State != JobDisabledStateEnabled {
+			t.Errorf("State = %q, want %q", got.State, JobDisabledStateEnabled)
+		}
+	})
+
+	t.Run("a malformed dump is unknown, never enabled", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		stubJobDisabledProbe(t, func(_ []string) ([]byte, error) { return nil, nil })
+
+		got, err := platformJobDisabled()
+		if err != nil {
+			t.Fatalf("platformJobDisabled: %v", err)
+		}
+		if got.State != JobDisabledStateUnknown {
+			t.Fatalf("State = %q for an empty dump, want %q", got.State, JobDisabledStateUnknown)
+		}
+		if got.Reason == "" {
+			t.Error("an unknown verdict must carry a Reason")
+		}
+		if got.Domain != wantDomain {
+			t.Errorf("Domain = %q, want %q even on the unreadable path", got.Domain, wantDomain)
+		}
+	})
+
+	t.Run("a launchctl that ran and refused is unknown with a nil error", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+			return []byte("Could not find domain for\n"), fakeExitError(t, 113)
+		})
+
+		got, err := platformJobDisabled()
+		if err != nil {
+			t.Fatalf("want a nil error for a launchctl that ran and refused, got %v", err)
+		}
+		if got.State != JobDisabledStateUnknown {
+			t.Errorf("State = %q, want %q", got.State, JobDisabledStateUnknown)
+		}
+		if !strings.Contains(got.Reason, "Could not find domain") {
+			t.Errorf("Reason = %q, want it to carry the launchctl output", got.Reason)
+		}
+	})
+
+	t.Run("a launchctl that could not be executed returns an error", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+			return nil, errors.New(`exec: "launchctl": executable file not found in $PATH`)
+		})
+
+		got, err := platformJobDisabled()
+		if err == nil {
+			t.Fatal("platformJobDisabled() = nil error when launchctl could not be executed, want an error")
+		}
+		if got.State != JobDisabledStateUnknown {
+			t.Errorf("State = %q, want %q even on the error path", got.State, JobDisabledStateUnknown)
+		}
+		if got.Domain != wantDomain {
+			t.Errorf("Domain = %q, want %q even on the error path", got.Domain, wantDomain)
+		}
+	})
+
+	t.Run("a probe past its deadline degrades to not-checked and names the bound", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+			return nil, fmt.Errorf("launchctl print-disabled did not answer within %s: %w",
+				launchctlProbeTimeout, context.DeadlineExceeded)
+		})
+
+		got, err := platformJobDisabled()
+		// A wedged launchd must never hold doctor open, and must never be
+		// reported as an execution failure either: it is "we asked and could
+		// not tell" (R7).
+		if err != nil {
+			t.Fatalf("a deadline expiry must be a populated fail-closed value, not an error: %v", err)
+		}
+		if got.State != JobDisabledStateUnknown {
+			t.Errorf("State = %q, want %q", got.State, JobDisabledStateUnknown)
+		}
+		if !strings.Contains(got.Reason, launchctlProbeTimeout.String()) {
+			t.Errorf("Reason = %q, want it to name the %s bound", got.Reason, launchctlProbeTimeout)
+		}
+	})
+
+	t.Run("skip_launchctl does not shell out", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+			t.Error("runLaunchctlBoundedProbe must not be called when BOSS_DAEMON_SKIP_LAUNCHCTL is set")
+			return nil, nil
+		})
+
+		got, err := platformJobDisabled()
+		if err != nil {
+			t.Fatalf("platformJobDisabled: %v", err)
+		}
+		if got.State != JobDisabledStateUnknown {
+			t.Errorf("State = %q, want %q", got.State, JobDisabledStateUnknown)
+		}
+		if !strings.Contains(got.Reason, "BOSS_DAEMON_SKIP_LAUNCHCTL") {
+			t.Errorf("Reason = %q, want it to name BOSS_DAEMON_SKIP_LAUNCHCTL", got.Reason)
+		}
+		if got.Domain != wantDomain {
+			t.Errorf("Domain = %q, want the short-circuit to still name the domain it would have probed", got.Domain)
+		}
+	})
+}
+
+// TestGetJobDisabledDelegates proves the exported entry point is wired to the
+// platform probe rather than to a default-valued zero struct — a zero
+// JobDisabled has an empty State, which no caller should ever be handed.
+func TestGetJobDisabledDelegates(t *testing.T) {
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	stubJobDisabledProbe(t, func(_ []string) ([]byte, error) {
+		return []byte("disabled services = {\n\t\"" + Label + "\" => true\n}\n"), nil
+	})
+
+	got, err := GetJobDisabled()
+	if err != nil {
+		t.Fatalf("GetJobDisabled: %v", err)
+	}
+	if got.State != JobDisabledStateDisabled {
+		t.Fatalf("State = %q, want %q", got.State, JobDisabledStateDisabled)
+	}
+}
+
+// TestRunLaunchctlBoundedProbeWrapsARealDeadlineExpiry drives the PRODUCTION
+// runLaunchctlBoundedProbe past a real deadline, which is the one thing every
+// other deadline test on this path cannot do: they install a stub that
+// hand-fabricates `fmt.Errorf("...: %w", context.DeadlineExceeded)`, so they
+// would pass byte-identically against a %v wrap here, or against the ctx.Err()
+// check deleted outright — at which point a wedged launchd would fall through
+// to the non-*exec.ExitError arm and platformJobDisabled would start returning
+// a non-nil error, contradicting the "a deadline expiry is nil-error with an
+// unknown verdict" contract (R7) the callers are built on.
+//
+// The bound is shrunk to a nanosecond rather than to a small millisecond
+// count: that is deterministic — the context is already expired by the time
+// exec reaches Start — so no launchctl is spawned, the test cannot race a fast
+// host, and it costs nothing on a wedged one.
+func TestRunLaunchctlBoundedProbeWrapsARealDeadlineExpiry(t *testing.T) {
+	original := launchctlProbeTimeout
+	launchctlProbeTimeout = time.Nanosecond
+	t.Cleanup(func() { launchctlProbeTimeout = original })
+
+	_, err := runLaunchctlBoundedProbe("print-disabled", "gui/501")
+	if err == nil {
+		t.Fatal("runLaunchctlBoundedProbe past its deadline returned a nil error")
+	}
+	// The %w wrap is what platformJobDisabled's errors.Is branch keys on.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+	// The ctx.Err() check is what turns exec's own error into a sentence that
+	// names the timeout; without it the caller cannot name the bound.
+	for _, want := range []string{"print-disabled gui/501", "did not answer within", launchctlProbeTimeout.String()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+
+	// The classifier above it must read that error as "we asked and could not
+	// tell", never as an execution failure.
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	got, err := platformJobDisabled()
+	if err != nil {
+		t.Fatalf("a real deadline expiry must be a populated fail-closed value, not an error: %v", err)
+	}
+	if got.State != JobDisabledStateUnknown {
+		t.Errorf("State = %q, want %q", got.State, JobDisabledStateUnknown)
 	}
 }

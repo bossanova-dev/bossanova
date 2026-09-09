@@ -325,18 +325,58 @@ func platformGetStatus() (*Status, error) {
 	}
 
 	// Get PID if running.
+	//
+	// PIDKnown is deliberately left false for an INACTIVE unit, and that is an
+	// asymmetry with launchd rather than an oversight: launchd's parse reports
+	// known for a readable answer that names no PID, so the same host state
+	// reads "settled: no process" there and "could not tell" here. Closing it
+	// would mean telling an `is-active` exit 3 (inactive — a definitive
+	// answer) apart from a systemctl that failed to run, which the `err == nil`
+	// test above conflates; BOS-1218 R6 scopes any behaviour change on this
+	// substrate out, so the asymmetry is recorded and left. It is currently
+	// unobservable: every consumer of PIDKnown reads it only under Running
+	// (cmd/daemon_supervision.go's no-service-PID rung, launchd.go's Running
+	// derivation), and this branch is the only place it is set on Linux.
 	if st.Running {
-		out, err := runSystemctl("--user", "show", "--property=MainPID", ServiceName)
-		if err == nil {
-			// Output format: "MainPID=12345"
-			line := strings.TrimSpace(string(out))
-			if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
-				_, _ = fmt.Sscanf(parts[1], "%d", &st.PID)
-			}
-		}
+		st.PID, st.PIDKnown = readSystemdMainPID(ServiceName)
 	}
 
 	return st, nil
+}
+
+// readSystemdMainPID reads a unit's MainPID, reporting whether the read
+// settled it.
+//
+// BOS-1218 R6 in one place, for both units: this substrate's Running verdict
+// is NOT changed — `systemctl --user is-active` is compared against the
+// literal "active", and a registered-but-unstarted unit reports "inactive", so
+// systemd already distinguishes registration from running and never had
+// launchd's defect. Only Status.PIDKnown is new here, and it must have a
+// defined value on this path too.
+//
+// What counts as settled differs from launchd's, because the question differs.
+// The PID read happens ONLY when the unit is already active, so for bossd's
+// Type=simple unit "active with no readable MainPID" is not systemd reporting
+// that the job owns no process — it is systemd failing to tell us which one:
+// the `show` call errored, or its output did not parse. Both are exactly the
+// state daemonSupervisionReasonNoServicePID names, which is why the rung stays
+// reachable here after the same rung became unreachable on launchd.
+func readSystemdMainPID(unit string) (pid int, known bool) {
+	out, err := runSystemctl("--user", "show", "--property=MainPID", unit)
+	if err != nil {
+		return 0, false
+	}
+	// Output format: "MainPID=12345"
+	line := strings.TrimSpace(string(out))
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 {
+		return 0, false
+	}
+	v, ok := parseLeadingInt(parts[1])
+	if !ok || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 // mcpServicePath returns the path to the MCP systemd user unit file.
@@ -548,13 +588,7 @@ func platformMcpGetStatus() (*Status, error) {
 
 	st.Running = isMcpUnitActive()
 	if st.Running {
-		out, err := runSystemctl("--user", "show", "--property=MainPID", McpServiceName)
-		if err == nil {
-			line := strings.TrimSpace(string(out))
-			if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
-				_, _ = fmt.Sscanf(parts[1], "%d", &st.PID)
-			}
-		}
+		st.PID, st.PIDKnown = readSystemdMainPID(McpServiceName)
 	}
 	return st, nil
 }
@@ -702,5 +736,22 @@ func platformSpawnHistory() (SpawnHistory, error) {
 	return SpawnHistory{
 		State:  SpawnStateUnsupported,
 		Reason: "systemd reports unit substates directly; no launchd-style spawn history",
+	}, nil
+}
+
+// platformJobDisabled reports that Linux has no launchd-style per-domain
+// disable override to read.
+//
+// BOS-1222 settles a candidate cause of the launchd-specific never-spawned
+// verdict, which systemd cannot reach at all: it has no equivalent of a job
+// registered into a domain that will not run it, and `systemctl --user
+// is-enabled` answers a different question (whether the unit starts at boot),
+// not "will the manager refuse to spawn this now". Returning "unsupported"
+// rather than a verdict keeps the Linux reporting path behaviourally
+// unchanged: this must never make Linux report unhealthy.
+func platformJobDisabled() (JobDisabled, error) {
+	return JobDisabled{
+		State:  JobDisabledStateUnsupported,
+		Reason: "systemd has no launchd-style per-domain disable override",
 	}, nil
 }

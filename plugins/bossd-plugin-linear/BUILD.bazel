@@ -44,11 +44,13 @@ go_test(
     srcs = [
         "github_test.go",
         "linear_test.go",
+        "main_test.go",
         "server_test.go",
     ],
     embed = [":bossd-plugin-linear_lib"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/plugin",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

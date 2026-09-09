@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/recurser/bossalib/config"
+	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 )
 
@@ -565,5 +568,109 @@ func TestKillWithTimeoutReturnsWhenKillCompletes(t *testing.T) {
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Fatalf("expected fast return, took %v", elapsed)
+	}
+}
+
+// effectiveEnv collapses a raw environment slice the way os/exec does before
+// exec: later entries win (dedupEnvCase builds its output in reverse "to
+// preserve the last occurrence of each key").
+func effectiveEnv(entries []string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range entries {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// TestLaunchPluginEnvStampsHostPIDWithoutConfig covers the case the old code
+// skipped outright: pluginEnvFromConfig returns nil for a plugin with no
+// config, so cmd.Env was left unset and nothing was ever stamped. Most plugins
+// carry no config, so this was the majority path.
+func TestLaunchPluginEnvStampsHostPIDWithoutConfig(t *testing.T) {
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242))
+
+	if got := env[sharedplugin.ParentPIDEnvVar]; got != "4242" {
+		t.Fatalf("%s = %q, want %q", sharedplugin.ParentPIDEnvVar, got, "4242")
+	}
+}
+
+// TestLaunchPluginEnvStampsHostPIDWithConfig pins that the stamp is additive:
+// the BOSS_PLUGIN_* projection still reaches the child alongside it.
+func TestLaunchPluginEnvStampsHostPIDWithConfig(t *testing.T) {
+	cfg := config.PluginConfig{
+		Name:   "claude",
+		Config: map[string]string{"dangerously_skip_permissions": "true"},
+	}
+	env := effectiveEnv(pluginSubprocessEnv(cfg, 4242))
+
+	if got := env[sharedplugin.ParentPIDEnvVar]; got != "4242" {
+		t.Errorf("%s = %q, want %q", sharedplugin.ParentPIDEnvVar, got, "4242")
+	}
+	if got := env["BOSS_PLUGIN_dangerously_skip_permissions"]; got != "true" {
+		t.Errorf("BOSS_PLUGIN_dangerously_skip_permissions = %q, want %q", got, "true")
+	}
+}
+
+// TestLaunchPluginEnvUsesHostProcessPID pins that launchPlugin stamps the
+// daemon's own PID — the value the plugin-side watchdog compares its
+// os.Getppid against — rather than some other identifier.
+func TestLaunchPluginEnvUsesHostProcessPID(t *testing.T) {
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, os.Getpid()))
+
+	want := strconv.Itoa(os.Getpid())
+	if got := env[sharedplugin.ParentPIDEnvVar]; got != want {
+		t.Fatalf("%s = %q, want the host PID %q", sharedplugin.ParentPIDEnvVar, got, want)
+	}
+}
+
+// TestLaunchPluginEnvPreservesHostInheritance pins that stamping did not
+// replace the host environment the child has always inherited.
+func TestLaunchPluginEnvPreservesHostInheritance(t *testing.T) {
+	t.Setenv("BOSS_TEST_INHERITED_MARKER", "inherited-value")
+
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242))
+
+	if got := env["BOSS_TEST_INHERITED_MARKER"]; got != "inherited-value" {
+		t.Fatalf("BOSS_TEST_INHERITED_MARKER = %q, want %q — host environment inheritance regressed",
+			got, "inherited-value")
+	}
+}
+
+// TestLaunchPluginEnvSurvivesGoPluginSecondEnvironAppend is the catastrophic
+// case in env form. go-plugin appends os.Environ() to cmd.Env AFTER we build
+// it (SkipHostEnv is false) and os/exec keeps the last duplicate, so a
+// same-named variable already in bossd's own environment would otherwise win
+// and hand every plugin a foreign parent identity. Simulate that second append
+// exactly and assert our stamp is still what the child sees.
+func TestLaunchPluginEnvSurvivesGoPluginSecondEnvironAppend(t *testing.T) {
+	t.Setenv(sharedplugin.ParentPIDEnvVar, "999999")
+
+	built := pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242)
+
+	// The host must no longer carry the variable, or go-plugin's append would
+	// reintroduce the stale value.
+	if v, ok := os.LookupEnv(sharedplugin.ParentPIDEnvVar); ok {
+		t.Fatalf("host environment still carries %s=%q; go-plugin's os.Environ() append would shadow the stamp",
+			sharedplugin.ParentPIDEnvVar, v)
+	}
+
+	// Replay go-plugin client.go's `cmd.Env = append(cmd.Env, os.Environ()...)`.
+	asGoPluginSeesIt := append(append([]string(nil), built...), os.Environ()...)
+	if got := effectiveEnv(asGoPluginSeesIt)[sharedplugin.ParentPIDEnvVar]; got != "4242" {
+		t.Fatalf("%s = %q after go-plugin's second os.Environ() append, want %q",
+			sharedplugin.ParentPIDEnvVar, got, "4242")
+	}
+
+	// And exactly one entry survives dedup ambiguity in the raw slice we own.
+	count := 0
+	for _, kv := range built {
+		if strings.HasPrefix(kv, sharedplugin.ParentPIDEnvVar+"=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("built env carries %d %s entries, want exactly 1", count, sharedplugin.ParentPIDEnvVar)
 	}
 }

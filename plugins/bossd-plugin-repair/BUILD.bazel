@@ -47,6 +47,7 @@ go_test(
     deps = [
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/plugin",
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",

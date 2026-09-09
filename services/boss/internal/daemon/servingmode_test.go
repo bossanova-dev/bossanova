@@ -6,11 +6,19 @@ import (
 )
 
 // TestClassifyServingModeMatrix walks the input matrix BOS-1181 named: plist
-// present/absent x service-manager job spawned/registered-only/absent x
-// standalone PID recorded/not. The row that matters most is
-// "registered-but-never-spawned launchd job with a live standalone daemon" —
-// the incident state, where Installed and Running are BOTH true and neither
-// says anything about what is actually serving.
+// present/absent x service-manager job running/claimed-without-a-PID/absent x
+// standalone PID recorded/not.
+//
+// Every verdict here is unchanged by BOS-1218, and that is the point of
+// running the table after it: the classifier is pure, so narrowing
+// Status.Running upstream must not move a single row. What changed is which
+// rows a real host can still produce. The `Running: true` rows with no
+// ServiceManagerPID were the BOS-1181 incident state — a launchd job that was
+// registered and never spawned reported exactly that — and no platform probe
+// emits that shape any more. They stay because ServingFacts is a plain struct
+// any caller fills by hand, and a supervised verdict is what routes stop and
+// restart onto the service-manager path: a caller that claims Running without
+// a PID must still never get one.
 func TestClassifyServingModeMatrix(t *testing.T) {
 	const jobPID = 4242
 
@@ -42,23 +50,26 @@ func TestClassifyServingModeMatrix(t *testing.T) {
 			wantUnsupported: ServingModeUnserved,
 		},
 		{
-			// The BOS-1181 incident. Installed is true (a plist exists) and
-			// Running is true (`launchctl list` exits 0 for a registered job),
-			// yet launchd never spawned anything: no PID. What is serving is
-			// the standalone process recorded for this profile.
-			name:            "plist present, job registered but never spawned, live standalone daemon",
+			// The BOS-1181 incident, as a real host could then produce it:
+			// Installed true (a plist exists) and Running true (`launchctl
+			// list` exited 0 for a registered job) while launchd had spawned
+			// nothing, so no PID. BOS-1218 narrowed Running so that host now
+			// reports Running false; the row is kept as the hand-filled
+			// caller, and the verdict it must get is unchanged — what is
+			// serving is the standalone process recorded for this profile.
+			name:            "plist present, Running claimed with no service PID, live standalone daemon",
 			facts:           ServingFacts{Installed: true, Running: true, StandalonePID: 27923, StandaloneAlive: true},
 			want:            ServingModeStandalone,
 			wantUnsupported: ServingModeUnserved,
 		},
 		{
-			name:            "plist present, job registered but never spawned, no standalone daemon",
+			name:            "plist present, Running claimed with no service PID, no standalone daemon",
 			facts:           ServingFacts{Installed: true, Running: true},
 			want:            ServingModeUnserved,
 			wantUnsupported: ServingModeUnserved,
 		},
 		{
-			name:            "plist present, job registered but never spawned, dead standalone record",
+			name:            "plist present, Running claimed with no service PID, dead standalone record",
 			facts:           ServingFacts{Installed: true, Running: true, StandalonePID: 27923},
 			want:            ServingModeUnserved,
 			wantUnsupported: ServingModeUnserved,

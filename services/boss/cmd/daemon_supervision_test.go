@@ -59,27 +59,64 @@ func TestDaemonSupervisionVerdictsMatchDoctor(t *testing.T) {
 	}{
 		{
 			name:       "service manager owns the recorded daemon",
-			st:         daemon.Status{Installed: true, Running: true, PID: recordedPID},
+			st:         daemon.Status{Installed: true, Running: true, PID: recordedPID, PIDKnown: true},
 			wantStatus: "supervised",
 			wantDoctor: "supervised",
 		},
 		{
-			name:       "service manager does not know the job",
-			st:         daemon.Status{Installed: true, Running: false},
+			// PIDKnown is stated rather than left at its zero value, for the
+			// reason TestDaemonSupervisionOfLiveRecordRefusesAnUnparseableServiceView
+			// gives: BOS-1218 made it the term separating "the service view
+			// could not be read" from "the service manager answered, and the
+			// job owns no process", and a fixture resting on the zero value
+			// stops saying which one it means. This row is the FIRST of those.
+			name:       "the service view could not be read",
+			st:         daemon.Status{Installed: true, Running: false, PID: 0, PIDKnown: false},
 			wantStatus: "unsupervised",
 			wantDoctor: "unsupervised",
+			wantShared: []string{"the service manager does not own"},
+		},
+		{
+			// The corrected registered-no-PID shape, and the one BOS-1217
+			// finding 1 was measured on: launchd ANSWERED about a job it has
+			// registered and never spawned, so PIDKnown settles true while
+			// Running is false. Before BOS-1218 that same host reported
+			// Running = true with no PID and reached the no-service-PID rung.
+			// It has its own honest verdict now, and the sibling tables pin
+			// that verdict on daemonSupervisionOfLiveRecord alone -- this row
+			// is what pins that BOTH surfaces render it, which is the property
+			// this test exists for.
+			name:       "a registered launchd job that reported no PID",
+			st:         daemon.Status{Installed: true, Running: false, PID: 0, PIDKnown: true},
+			wantStatus: "unsupervised",
+			wantDoctor: "unsupervised",
+			wantShared: []string{"the service manager does not own"},
 		},
 		{
 			name:       "service manager owns a different PID",
-			st:         daemon.Status{Installed: true, Running: true, PID: recordedPID + 1},
+			st:         daemon.Status{Installed: true, Running: true, PID: recordedPID + 1, PIDKnown: true},
 			wantStatus: "unsupervised",
 			wantDoctor: "unsupervised",
 		},
 		{
+			// Reachable on systemd only, after BOS-1218: `systemctl --user
+			// is-active` succeeded while the separate MainPID read did not. On
+			// launchd Running now implies a PID, so no launchd host lands here.
 			name:       "service manager reports running with no PID",
-			st:         daemon.Status{Installed: true, Running: true, PID: 0},
+			st:         daemon.Status{Installed: true, Running: true, PID: 0, PIDKnown: false},
 			wantStatus: "unknown",
 			wantDoctor: "unknown",
+		},
+		{
+			// The qualifier doing its work on BOTH surfaces: a settled zero PID
+			// alongside a Running claim is an ANSWER, not a tooling failure, so
+			// it falls through to the shared daemon.ClassifyServingMode
+			// delegation instead of being reported as an unknown by either.
+			name:       "a settled zero PID is not the unknown rung",
+			st:         daemon.Status{Installed: true, Running: true, PID: 0, PIDKnown: true},
+			wantStatus: "unsupervised",
+			wantDoctor: "unsupervised",
+			wantShared: []string{"two daemons, or a stale state record"},
 		},
 		{
 			name:           "no service installed",
@@ -275,12 +312,16 @@ func TestDaemonSupervisionOfLiveRecordDelegatesToClassifyServingMode(t *testing.
 // TestDaemonSupervisionOfLiveRecordRefusesAnUnparseableServiceView pins the one
 // place this reporting surface deliberately answers differently from
 // daemon.ClassifyServingMode. A service manager that reports the job running
-// while naming no PID is a tooling failure — unparseable launchctl output, a
-// failed systemd MainPID read — and the restart path is right to treat the live
-// recorded daemon as what it must preserve. A REPORT that did the same would
-// print an unsupervised fault nobody observed.
+// while its PID could not be established is a tooling failure — a failed or
+// unparseable systemd MainPID read — and the restart path is right to treat the
+// live recorded daemon as what it must preserve. A REPORT that did the same
+// would print an unsupervised fault nobody observed.
+//
+// PIDKnown is stated rather than left at its zero value: BOS-1218 made it the
+// term that separates this shape from an answer that settled on no PID, and a
+// fixture relying on the zero value would stop saying which one it means.
 func TestDaemonSupervisionOfLiveRecordRefusesAnUnparseableServiceView(t *testing.T) {
-	st := daemon.Status{Installed: true, Running: true, PID: 0}
+	st := daemon.Status{Installed: true, Running: true, PID: 0, PIDKnown: false}
 	verdict, reason := daemonSupervisionOfLiveRecord(&st, 77, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
 	if verdict != daemonSupervisionUnknown {
 		t.Fatalf("verdict = %v, want unknown for a service view with no PID", verdict)
@@ -296,6 +337,98 @@ func TestDaemonSupervisionOfLiveRecordRefusesAnUnparseableServiceView(t *testing
 		StandaloneSupported: true,
 	}); serving != daemon.ServingModeStandalone {
 		t.Fatalf("ClassifyServingMode = %q, want standalone; this test documents a divergence that no longer exists", serving)
+	}
+}
+
+// TestDaemonSupervisionNoServicePIDRungIsSettled is BOS-1218 R5a: narrowing
+// Status.Running made `Running && PID == 0` unreachable on launchd, and the
+// rung it keyed is the line an operator uses to recognise a recurrence
+// ("supervision: unknown (the service manager reports running but did not
+// report a PID; recorded daemon is PID N)"). Losing it silently was the worst
+// outcome available, so what it does and does not fire for is pinned here
+// rather than inferred.
+func TestDaemonSupervisionNoServicePIDRungIsSettled(t *testing.T) {
+	const recordedPID = 80034
+
+	for _, tc := range []struct {
+		name        string
+		st          daemon.Status
+		wantVerdict daemonSupervisionVerdict
+		wantReason  daemonSupervisionReason
+	}{
+		{
+			// systemd: `systemctl --user is-active` reports active while the
+			// separate MainPID read fails or will not parse. This is the
+			// substrate the rung stays live for.
+			name:        "the service manager reports running and its PID could not be established",
+			st:          daemon.Status{Installed: true, Running: true, PID: 0, PIDKnown: false},
+			wantVerdict: daemonSupervisionUnknown,
+			wantReason:  daemonSupervisionReasonNoServicePID,
+		},
+		{
+			// launchd, post-BOS-1218: the registered-but-never-spawned job that
+			// used to produce the rung. It has its own honest verdict now —
+			// the service manager owns nothing and the recorded daemon is live,
+			// which is detached — and must NOT be reported as an unknown.
+			name:        "a registered launchd job that reported no PID is detached, not unknown",
+			st:          daemon.Status{Installed: true, Running: false, PID: 0, PIDKnown: true},
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonDetached,
+		},
+		{
+			// The qualifier doing its work: a settled zero PID alongside a
+			// Running claim is an ANSWER, not a tooling failure, so it falls
+			// through to the delegation rather than reporting unknown. No
+			// platform probe emits this shape after BOS-1218; the rung must
+			// not claim it anyway.
+			name:        "a settled zero PID is not the unknown rung",
+			st:          daemon.Status{Installed: true, Running: true, PID: 0, PIDKnown: true},
+			wantVerdict: daemonSupervisionUnsupervised,
+			wantReason:  daemonSupervisionReasonForeignPID,
+		},
+		{
+			name:        "an established PID never reaches the rung",
+			st:          daemon.Status{Installed: true, Running: true, PID: recordedPID, PIDKnown: true},
+			wantVerdict: daemonSupervisionSupervised,
+			wantReason:  daemonSupervisionReasonManagerOwned,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.st
+			verdict, reason := daemonSupervisionOfLiveRecord(&st, recordedPID, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
+			if verdict != tc.wantVerdict {
+				t.Fatalf("verdict = %v, want %v (reason %v)", verdict, tc.wantVerdict, reason)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %v, want %v", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestDaemonSupervisionRungIsUnreachableFromALaunchdProbe closes the loop the
+// table above can only assert one shape at a time: on launchd the rung is
+// unreachable BY CONSTRUCTION, because platformGetStatus derives Running from
+// the parsed PID. Rather than restate that invariant, this drives the real
+// launchd parse over the answers a host can produce and checks none of them
+// reaches the rung.
+func TestDaemonSupervisionRungIsUnreachableFromALaunchdProbe(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the launchd status probe is macOS-only")
+	}
+	for _, st := range []daemon.Status{
+		// Registered, launchd reported no PID (the BOS-1217 finding-1 host).
+		{Installed: true, Running: false, PID: 0, PIDKnown: true},
+		// launchctl could not be run, or its answer could not be read.
+		{Installed: true, Running: false, PID: 0, PIDKnown: false},
+		// launchd owns the process.
+		{Installed: true, Running: true, PID: 4242, PIDKnown: true},
+	} {
+		status := st
+		_, reason := daemonSupervisionOfLiveRecord(&status, 80034, launchAgentSupervisionStatus(), daemon.WatchdogOwnership{})
+		if reason == daemonSupervisionReasonNoServicePID {
+			t.Fatalf("status %+v reached the no-service-PID rung; on launchd Running implies a known PID", status)
+		}
 	}
 }
 

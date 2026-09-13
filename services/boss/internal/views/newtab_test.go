@@ -32,6 +32,37 @@ func TestNewTabCmd(t *testing.T) {
 			wantArgs: []string{"new-window", "-c", cwd},
 		},
 		{
+			name:     "tmux takes priority over inherited iTerm on linux",
+			env:      map[string]string{"TMUX": "/tmp/tmux-1000/default,1234,0", "TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t0p0:1234"},
+			goos:     "linux",
+			wantBase: "tmux",
+			wantArgs: []string{"new-window", "-c", cwd},
+		},
+		{
+			name:    "iTerm via TERM_PROGRAM on linux is unsupported",
+			env:     map[string]string{"TERM_PROGRAM": "iTerm.app"},
+			goos:    "linux",
+			wantErr: true,
+		},
+		{
+			name:    "iTerm via ITERM_SESSION_ID on linux is unsupported",
+			env:     map[string]string{"ITERM_SESSION_ID": "w0t0p0:1234"},
+			goos:    "linux",
+			wantErr: true,
+		},
+		{
+			name:    "iTerm via TERM_PROGRAM on windows is unsupported",
+			env:     map[string]string{"TERM_PROGRAM": "iTerm.app"},
+			goos:    "windows",
+			wantErr: true,
+		},
+		{
+			name:    "iTerm via ITERM_SESSION_ID on windows is unsupported",
+			env:     map[string]string{"ITERM_SESSION_ID": "w0t0p0:1234"},
+			goos:    "windows",
+			wantErr: true,
+		},
+		{
 			name:     "iTerm via TERM_PROGRAM",
 			env:      map[string]string{"TERM_PROGRAM": "iTerm.app"},
 			goos:     "darwin",

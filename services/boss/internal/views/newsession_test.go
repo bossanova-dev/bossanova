@@ -2692,6 +2692,58 @@ func TestNewSession_CreatingPhase_BlankLineBeforeSetupScript(t *testing.T) {
 	}
 }
 
+// TestNewSessionCreatingPhaseCollapsesProgressBarsToOneRow drives the handler
+// with the BOS-1237 report's ten-step sequence and asserts the pane renders one
+// bar row, with the non-progress line that preceded it still visible.
+//
+// It goes through handleSetupScriptLine rather than assigning m.setupLines
+// directly, because the routing is the thing the fix changed: the same ten frames
+// used to produce ten rows, which pushed "added 25 packages in 4s" out of the
+// pane's ten-element window entirely.
+func TestNewSessionCreatingPhaseCollapsesProgressBarsToOneRow(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m.phase = newSessionPhaseCreating
+
+	frames := append([]string{"added 25 packages in 4s"}, tenStepProgressBars()...)
+	for _, text := range frames {
+		next, _ := m.handleSetupScriptLine(setupScriptLineMsg{text: text})
+		m = next.(NewSessionModel)
+	}
+	if len(m.setupLines) != 2 {
+		t.Fatalf("setupLines = %#v, want 2 elements (the non-progress line plus one bar)", m.setupLines)
+	}
+
+	view := stripANSI(m.View().Content)
+	lines := strings.Split(view, "\n")
+	statusIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, "Running setup script…") {
+			statusIdx = i
+		}
+	}
+	if statusIdx == -1 {
+		t.Fatalf("creating view missing 'Running setup script…' line in:\n%s", view)
+	}
+
+	barRows := 0
+	for _, line := range lines[statusIdx+1:] {
+		if strings.Contains(line, "% of 94.7 MiB") {
+			barRows++
+		}
+	}
+	if barRows != 1 {
+		t.Errorf("want exactly 1 bar row beneath the setup label, got %d in:\n%s", barRows, view)
+	}
+	if !strings.Contains(view, "100% of 94.7 MiB") {
+		t.Errorf("the surviving bar row should be the final redraw, got:\n%s", view)
+	}
+	// The ten-element retention cap evicted exactly this line before the fix.
+	if !strings.Contains(view, "added 25 packages in 4s") {
+		t.Errorf("the non-progress line preceding the bars should still be visible in:\n%s", view)
+	}
+}
+
 // --- Spinner animation tests ---
 
 // newTestNewSessionModel returns a minimal NewSessionModel for spinner tests.
@@ -3305,4 +3357,10 @@ func TestNewSession_OptedInExperimentalAgent_AppearsInPicker(t *testing.T) {
 func (s *stubClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
 	sessions, err := s.ListSessions(ctx, req, opts)
 	return sessions, nil, err
+}
+
+// MoveSession satisfies the BossClient seam (BOS-1231). This stub is not part
+// of a reorder test, so a call is a bug in the view under test.
+func (s *stubClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	panic("unused")
 }

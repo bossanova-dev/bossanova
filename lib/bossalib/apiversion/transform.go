@@ -3,6 +3,7 @@ package apiversion
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -494,8 +495,14 @@ type RefMsg struct {
 // RefreshChainUnprovenOutcomeChange (introduced at V20260914), which restores
 // the pre-BOS-1174 "healthy" / "" pair on Account.auth_check for a credential
 // check that ran cleanly but could not prove the credential's refresh chain.
+//
+// SessionListRankOrderChange (introduced at V20260915), which re-sorts the
+// ProxyListSessions response back to the pre-BOS-1232 created_at-descending /
+// id-ascending order for a client that predates the manual session rank. It is
+// the first ORDERING transform here: everything above it changes a value, this
+// one changes the arrangement of a repeated field.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260913 or newer runs zero registered transforms.
+// request resolved to the registry's Current runs zero registered transforms.
 //
 // V20260906's cloud-access change registers no entry here: that behavior is
 // caller-relative and stays handler-gated via apiversion.IsMemberOrgCloudAccess.
@@ -518,7 +525,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{}, CloudAccessOrganizationChange{}, ProxyListSessionsOwnerResolutionChange{}, ProxyListReposHolderResolutionChange{}, PendingInvitationResponseChange{}, AcceptedInvitationResponseChange{}, SupersededCredentialClassChange{}, RefreshChainUnprovenOutcomeChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{}, CloudAccessOrganizationChange{}, ProxyListSessionsOwnerResolutionChange{}, ProxyListReposHolderResolutionChange{}, PendingInvitationResponseChange{}, AcceptedInvitationResponseChange{}, SupersededCredentialClassChange{}, RefreshChainUnprovenOutcomeChange{}, SessionListRankOrderChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -1063,6 +1070,10 @@ func transformUnarySessionResponse(method string, msg any, transform func(*pb.Se
 		}
 	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
 		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyMoveSessionProcedure:
+		if m, ok := msg.(*pb.ProxyMoveSessionResponse); ok {
 			m.Session = transform(m.GetSession())
 		}
 	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
@@ -1992,6 +2003,91 @@ func (RefreshChainUnprovenOutcomeChange) TransformResponse(method string, msg an
 	case bossanovav1connect.OrchestratorServiceProxyTestAccountProcedure:
 		if m, ok := msg.(*pb.ProxyTestAccountResponse); ok {
 			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
+		}
+	}
+}
+
+// SessionListRankOrderChange is the production VersionChange introduced at
+// V20260915.
+//
+// At V20260915 bosso's three session comparators began consulting the session's
+// manual list_rank (BOS-1232), so ProxyListSessions serves its repeated
+// sessions field in a different ORDER: a ranked session before every unranked
+// one, then rank ascending, then the created_at-descending / id-ascending rule
+// that previously decided the whole order.
+//
+// Repeated-field order is observable output, not an implementation detail: the
+// web app and the CLI render this list top to bottom. A client that predates
+// the manual rank has no concept of one, so without this transform its session
+// list silently rearranges the first time any user presses the reorder
+// shortcut. That is why an ordering change is versioned here like a changed
+// value would be.
+//
+// THE TRANSFORM RE-SORTS; IT DOES NOT STRIP. Clearing Session.list_rank would
+// hide the CAUSE while leaving the response in whatever order the server
+// produced — which is not the legacy order and is not any order an older client
+// ever saw. list_rank is additive and stays populated: a pinned client that
+// never reads the field is unaffected by its presence, and one that learns to
+// read it can do so without renegotiating.
+//
+// SCOPE IS ONE PROCEDURE, deliberately. Only the session LIST has an order to
+// restore. Every other Session-bearing response carries a single session or a
+// set whose order this change never touched, so widening the match would re-sort
+// lists this version did not reorder. ProxyListSessionsAcrossOrganizations is
+// covered as well: it is the deprecated spelling of the same union read, so a
+// client still pinned to it observes the same reordering.
+type SessionListRankOrderChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260915, so
+// it is applied to any request resolved to a strictly older version.
+func (SessionListRankOrderChange) Version() Version { return V20260915 }
+
+// legacySessionListLess is the ordering ProxyListSessions served BEFORE
+// V20260915, reproduced here so a pinned client can be given it back: newest
+// first by created_at, then id ascending. It reads no rank, which is the point.
+//
+// A nil entry sorts last so the comparator stays total — sort.SliceStable does
+// not require a strict weak ordering the way slices.SortStableFunc does, but a
+// comparator that dereferences a nil session would panic on a malformed
+// response, and a transform must never be the thing that fails a request.
+func legacySessionListLess(left, right *pb.Session) bool {
+	if left == nil || right == nil {
+		return right == nil && left != nil
+	}
+	leftCreated := left.GetCreatedAt().AsTime()
+	rightCreated := right.GetCreatedAt().AsTime()
+	if !leftCreated.Equal(rightCreated) {
+		// Newest first.
+		return leftCreated.After(rightCreated)
+	}
+	return left.GetId() < right.GetId()
+}
+
+// downconvertSessionListOrder re-sorts sessions in place into the pre-V20260915
+// order. The slice header belongs to the response message this transform was
+// handed, so reordering it mutates no session and clones nothing: unlike the
+// value transforms above, which must clone because a response may hold a
+// pointer the registry also caches, this one never touches a *pb.Session at
+// all.
+func downconvertSessionListOrder(sessions []*pb.Session) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		return legacySessionListLess(sessions[i], sessions[j])
+	})
+}
+
+// TransformResponse implements VersionChange. It restores the pre-BOS-1232
+// created_at/id ordering on the session list. It is a no-op for any other
+// method or payload type.
+func (SessionListRankOrderChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			downconvertSessionListOrder(m.Sessions)
+		}
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure:
+		//nolint:staticcheck // The deprecated RPC remains supported for pinned clients.
+		if m, ok := msg.(*pb.ProxyListSessionsAcrossOrganizationsResponse); ok {
+			downconvertSessionListOrder(m.Sessions)
 		}
 	}
 }

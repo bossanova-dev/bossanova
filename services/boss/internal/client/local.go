@@ -418,6 +418,17 @@ func (c *LocalClient) UpdateSession(ctx context.Context, req *pb.UpdateSessionRe
 	return resp.Msg.Session, nil
 }
 
+// MoveSession forwards the reorder to the daemon, which owns the neighbour
+// arithmetic. is_moved comes back unchanged: a false is the daemon reporting a
+// successful boundary no-op, so callers must not treat it as a failure.
+func (c *LocalClient) MoveSession(ctx context.Context, req *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	resp, err := c.rpc.MoveSession(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, false, err
+	}
+	return resp.Msg.GetSession(), resp.Msg.GetIsMoved(), nil
+}
+
 func (c *LocalClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
 	resp, err := c.rpc.LinkSessionPR(ctx, connect.NewRequest(&pb.LinkSessionPRRequest{Id: id, Pr: pr}))
 	if err != nil {

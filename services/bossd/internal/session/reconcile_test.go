@@ -333,6 +333,12 @@ func (m *reconcileMockSessionStore) ListTmuxSessionNames(_ context.Context) ([]s
 	return nil, nil
 }
 
+// SetListRanks satisfies db.SessionStore (BOS-1230). No test in this file
+// exercises the manual list rank, so the stub is inert.
+func (m *reconcileMockSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) (int, error) {
+	return 0, nil
+}
+
 func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
 	if err := m.updateErr[id]; err != nil {
 		return nil, err

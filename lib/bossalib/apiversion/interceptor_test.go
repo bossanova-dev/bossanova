@@ -613,6 +613,84 @@ func TestInterceptor_WrapStreamingClient_PassThrough(t *testing.T) {
 	}
 }
 
+// TestResolvedVersionOK pins the BOS-1235 discriminator: the boolean tracks
+// whether the request passed through the interceptor, not which version it
+// resolved to. The header-less row is the load-bearing one — it resolves to
+// Baseline, the exact value the fallback returns, so a false there would mean
+// the accessor was reporting on the version rather than on the context key.
+func TestResolvedVersionOK(t *testing.T) {
+	baseline := apiversion.DefaultRegistry().Default()
+	interceptor := apiversion.Interceptor(apiversion.DefaultRegistry(), nil)
+
+	resolveThroughInterceptor := func(t *testing.T, header string) (apiversion.Version, bool) {
+		t.Helper()
+		req := connect.NewRequest(&struct{}{})
+		if header != "" {
+			req.Header().Set(apiversion.HeaderName, header)
+		}
+		var (
+			gotVersion apiversion.Version
+			gotOK      bool
+		)
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			gotVersion, gotOK = apiversion.ResolvedVersionOK(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", header, err)
+		}
+		return gotVersion, gotOK
+	}
+
+	cases := []struct {
+		name        string
+		resolve     func(t *testing.T) (apiversion.Version, bool)
+		wantVersion apiversion.Version
+		wantOK      bool
+	}{
+		{
+			name: "bare context never reached the interceptor",
+			resolve: func(*testing.T) (apiversion.Version, bool) {
+				return apiversion.ResolvedVersionOK(context.Background())
+			},
+			wantVersion: baseline,
+			wantOK:      false,
+		},
+		{
+			name: "header-less client resolved by the interceptor",
+			resolve: func(t *testing.T) (apiversion.Version, bool) {
+				return resolveThroughInterceptor(t, "")
+			},
+			wantVersion: baseline,
+			wantOK:      true,
+		},
+		{
+			name: "versioned client resolved by the interceptor",
+			resolve: func(t *testing.T) (apiversion.Version, bool) {
+				return resolveThroughInterceptor(t, apiversion.V20260908.String())
+			},
+			wantVersion: apiversion.V20260908,
+			wantOK:      true,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			gotVersion, gotOK := testCase.resolve(t)
+			if gotVersion != testCase.wantVersion || gotOK != testCase.wantOK {
+				t.Errorf("ResolvedVersionOK = (%q, %v), want (%q, %v)",
+					gotVersion, gotOK, testCase.wantVersion, testCase.wantOK)
+			}
+		})
+	}
+
+	// ResolvedVersion is now a one-line wrapper over the accessor; pin that it
+	// still erases the boolean and returns the same version.
+	if got, want := apiversion.ResolvedVersion(context.Background()), baseline; got != want {
+		t.Errorf("ResolvedVersion(bare ctx) = %q, want %q", got, want)
+	}
+}
+
 func TestResolvedVersion_NoContext_ReturnsDefault(t *testing.T) {
 	got := apiversion.ResolvedVersion(context.Background())
 	want := apiversion.DefaultRegistry().Default()

@@ -49,6 +49,7 @@ View or update global settings
 
 **Flags:**
 
+- `--daemon-name` — Set the daemon display name (blank resets to the machine hostname; restart the daemon to apply)
 - `--default-agent` — Set the default agent plugin (e.g. claude, opencode)
 - `--managed-accounts` — Enable managed accounts (bossd credential rotation)
 - `--no-managed-accounts` — Disable managed accounts (use the terminal's own login)

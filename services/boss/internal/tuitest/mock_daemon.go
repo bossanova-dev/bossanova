@@ -5,6 +5,7 @@ package tuitest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -118,6 +119,13 @@ type MockDaemon struct {
 	// updateSessionCalls records every UpdateSession request so tests can
 	// assert the TUI sent the expected title / field updates.
 	updateSessionCalls []*pb.UpdateSessionRequest
+	// moveSessionCalls records every MoveSession request (BOS-1231) so tests
+	// can assert the TUI asked for the move it rendered.
+	moveSessionCalls []*pb.MoveSessionRequest
+
+	// moveSessionBehaviour decides where a move lands. nil means the default
+	// adjacent swap; see MoveSession and RankedBlockMoveBehaviour.
+	moveSessionBehaviour MoveSessionBehaviour
 
 	// switchSessionAccountCalls records every SwitchSessionAccount request so
 	// tests can assert the TUI/CLI sent the expected session/account/force.
@@ -940,6 +948,179 @@ func (m *MockDaemon) ListSessions(_ context.Context, req *connect.Request[pb.Lis
 		out = append(out, s)
 	}
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: out}), nil
+}
+
+// MoveSession satisfies DaemonServiceHandler (BOS-1230) and actually reorders
+// the mock's list (BOS-1231), because the TUI's own proof that a reorder stuck
+// is the NEXT poll still serving the new order — a mock that only acknowledged
+// the call would let a broken optimistic override pass, since the order would
+// snap back and the test would be watching a one-frame flicker.
+//
+// The ordering model is the rendered list itself rather than list_rank
+// arithmetic. The DEFAULT is an adjacent swap, which keeps the mock's answer
+// reproducible — but it is a deliberate SIMPLIFICATION, not an equivalence. The
+// real daemon's rank move is multi-position in both directions (an unranked row
+// joins the END of the ranked block going up, so from the third row it rises to
+// the top; the last ranked row clears its rank and falls to its created_at slot
+// going down — see db.ComputeListRankMove), and a TUI that diverged from the
+// daemon's answer would still look correct against an adjacent swap. Tests that
+// need the daemon to settle somewhere the TUI did not guess install a richer
+// rule with WithMoveSessionBehaviour; RankedBlockMoveBehaviour is the one that
+// reproduces the multi-position rise.
+//
+// A move at the boundary is a successful no-op (IsMoved false), matching the
+// RPC's contract that a held-down key does not start failing.
+func (m *MockDaemon) MoveSession(_ context.Context, req *connect.Request[pb.MoveSessionRequest]) (*connect.Response[pb.MoveSessionResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.moveSessionCalls = append(m.moveSessionCalls, req.Msg)
+	index := -1
+	for i, s := range m.sessions {
+		if s.Id == req.Msg.GetId() {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %s not found", req.Msg.GetId()))
+	}
+	var up bool
+	switch req.Msg.GetDirection() {
+	case pb.MoveDirection_MOVE_DIRECTION_UP:
+		up = true
+	case pb.MoveDirection_MOVE_DIRECTION_DOWN:
+		up = false
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("direction must be UP or DOWN"))
+	}
+	moved := m.sessions[index]
+	behaviour := m.moveSessionBehaviour
+	if behaviour == nil {
+		behaviour = adjacentSwapMoveBehaviour
+	}
+	order, ok := behaviour(m.sessions, index, up)
+	if !ok {
+		return connect.NewResponse(&pb.MoveSessionResponse{Session: moved, IsMoved: false}), nil
+	}
+	m.sessions = order
+	return connect.NewResponse(&pb.MoveSessionResponse{Session: moved, IsMoved: true}), nil
+}
+
+// MoveSessionBehaviour computes the mock daemon's answer to a MoveSession
+// request: the whole rendered order afterwards, and whether anything moved.
+// Reporting false is a SUCCESSFUL no-op, matching the RPC's contract. sessions
+// is the order before the move and must not be mutated; index is the moved
+// session's position in it.
+type MoveSessionBehaviour func(sessions []*pb.Session, index int, up bool) ([]*pb.Session, bool)
+
+// adjacentSwapMoveBehaviour is the mock's default: exchange the session with its
+// immediate neighbour, and report a no-op at the boundary. It is the SIMPLEST
+// rule a reorder can have, not the daemon's rule — see MoveSession's comment.
+func adjacentSwapMoveBehaviour(sessions []*pb.Session, index int, up bool) ([]*pb.Session, bool) {
+	target := index + 1
+	if up {
+		target = index - 1
+	}
+	if target < 0 || target >= len(sessions) {
+		return nil, false
+	}
+	out := append([]*pb.Session(nil), sessions...)
+	out[index], out[target] = out[target], out[index]
+	return out, true
+}
+
+// RankedBlockMoveBehaviour models the one rule an adjacent swap cannot express,
+// and the reason the TUI must treat the daemon as authoritative: a rank sorts
+// above EVERY unranked row, so moving an unranked row up past an unranked
+// neighbour makes it join the END of the ranked block rather than swap with that
+// neighbour. From the first unranked row below the block that is a rise of one;
+// from deeper in the natural block it rises further, landing at the top of an
+// all-unranked list. See db.ComputeListRankMove ("Join the end of the ranked
+// block") in the daemon, whose behaviour this mirrors.
+//
+// The rows it has lifted are the ranked block, in lift order; everything else
+// keeps its relative order below them. Moving DOWN swaps inside the block, and
+// is the daemon's documented successful no-op for a row that has no rank to
+// clear ("An already-unranked session has no rank that sorts it below another
+// unranked row").
+//
+// The returned closure carries the lifted set, so each test needs its own. The
+// mock calls it under its own lock, so the state needs no further guarding.
+func RankedBlockMoveBehaviour() MoveSessionBehaviour {
+	var ranked []string
+	indexOf := func(id string) int {
+		for i, got := range ranked {
+			if got == id {
+				return i
+			}
+		}
+		return -1
+	}
+	// render lays the lifted block out first, then everything else in order.
+	render := func(sessions []*pb.Session) []*pb.Session {
+		out := make([]*pb.Session, 0, len(sessions))
+		for _, id := range ranked {
+			for _, sess := range sessions {
+				if sess.GetId() == id {
+					out = append(out, sess)
+					break
+				}
+			}
+		}
+		for _, sess := range sessions {
+			if indexOf(sess.GetId()) < 0 {
+				out = append(out, sess)
+			}
+		}
+		return out
+	}
+	return func(sessions []*pb.Session, index int, up bool) ([]*pb.Session, bool) {
+		if index < 0 || index >= len(sessions) {
+			return nil, false
+		}
+		id := sessions[index].GetId()
+		at := indexOf(id)
+		rankedCount := len(ranked)
+		if !up {
+			if at < 0 || at >= rankedCount-1 {
+				// Unranked, or the last row of the block: there is no rank that
+				// sorts it below an unranked neighbour, so the daemon reports a
+				// successful no-op rather than an error.
+				return nil, false
+			}
+			ranked[at], ranked[at+1] = ranked[at+1], ranked[at]
+			return render(sessions), true
+		}
+		if index == 0 {
+			return nil, false
+		}
+		if index <= rankedCount {
+			// The row above carries a rank, so the daemon slots this one
+			// strictly between it and the row above that: a one-position rise.
+			if at >= 0 {
+				ranked = append(ranked[:at], ranked[at+1:]...)
+			}
+			slot := index - 1
+			ranked = append(ranked, "")
+			copy(ranked[slot+1:], ranked[slot:])
+			ranked[slot] = id
+			return render(sessions), true
+		}
+		// The row above is unranked: join the END of the ranked block, which is
+		// a rise of index-rankedCount positions.
+		ranked = append(ranked, id)
+		return render(sessions), true
+	}
+}
+
+// MoveSessionCalls returns a copy of every MoveSession request recorded by the
+// mock.
+func (m *MockDaemon) MoveSessionCalls() []*pb.MoveSessionRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.MoveSessionRequest, len(m.moveSessionCalls))
+	copy(out, m.moveSessionCalls)
+	return out
 }
 
 func (m *MockDaemon) GetSession(_ context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {

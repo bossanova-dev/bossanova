@@ -578,16 +578,15 @@ func (t *Tracker) Waiting(agentSessionID string) string {
 // read surface — the chat/session status RPCs, the stream deltas and the
 // snapshot reader — routes through it so the rule cannot drift between them.
 //
-// Waiting is strictly a refinement of WORKING: a reason on any other reported
-// status is discarded rather than applied, so a marker left behind by a chat
-// that has since asked a question or hit a usage limit can never mask a signal
-// that demands human action.
+// Waiting refines WORKING or IDLE: a callback can be armed after the agent has
+// become idle. A reason on any status that demands human action is discarded,
+// so a stale marker can never mask a question or usage limit.
 func PromoteWaiting(reported pb.ChatStatus, reason string) (pb.ChatStatus, string) {
 	if reason == "" {
 		return reported, ""
 	}
 	switch reported {
-	case pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_WAITING:
+	case pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING:
 		return pb.ChatStatus_CHAT_STATUS_WAITING, reason
 	default:
 		return reported, ""

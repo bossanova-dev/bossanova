@@ -161,6 +161,20 @@ type Session struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 
+	// ListRank is the session's optional manual position in the user-facing
+	// session list (BOS-1230). Nil — the default for every existing row and
+	// every newly created session — means the session keeps its natural
+	// CreatedAt-descending position. Non-nil means the user explicitly moved
+	// it: ranked sessions sort as a block ahead of every unranked one, and
+	// among themselves by rank ascending.
+	//
+	// The value is a SPARSE ordering key, not a dense index. Gaps are left
+	// between adjacent ranks so moving one session writes exactly one row
+	// rather than renumbering its siblings, which is what makes "the rest of
+	// the list keeps its natural order" a property instead of a special case.
+	// Treat it as opaque and compare it only for ordering.
+	ListRank *int64
+
 	// Composite display fields, persisted so every client renders the same
 	// label/intent/spinner verbatim. Populated by the DisplayStatusComputer in
 	// Step 2; for now they round-trip as empty/zero values.

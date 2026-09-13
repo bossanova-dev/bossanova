@@ -9,6 +9,14 @@
       "surface": "docs"
     },
     {
+      "id": "docs-robots",
+      "surface": "docs"
+    },
+    {
+      "id": "docs-sitemap",
+      "surface": "docs"
+    },
+    {
       "id": "marketing-agent-coordination",
       "surface": "marketing"
     },

@@ -105,6 +105,38 @@ type HomeModel struct {
 	// RPC is still active, avoiding a picker stuck waiting on a resolved archive.
 	archiveInFlightIDs map[string]struct{}
 
+	// moveOverrideOrder is the session-id order the alt+up / alt+down chords
+	// imposed locally (BOS-1231), held so the list responds to the keystroke at
+	// once instead of at the next poll tick. The poll reassigns h.sessions
+	// wholesale from the daemon, so without this the row would snap back for up
+	// to a poll interval and then jump again when the write landed.
+	//
+	// Modelled on archivingOverrideIDs: an override kept only until the
+	// server's own answer supersedes it. applyMoveOverride drops it on the
+	// FIRST poll that arrives with no move work outstanding, whatever order
+	// that poll carries — the daemon's move is multi-position in general (see
+	// db.ComputeListRankMove), so waiting for the daemon to agree with this
+	// adjacent swap would mean never dropping it. It permutes only the ids it
+	// names, so a session the daemon added since keeps the position the daemon
+	// gave it.
+	moveOverrideOrder []string
+
+	// moveInFlight counts unresolved MoveSession RPCs. While it is non-zero a
+	// poll that still carries the pre-move order must not be allowed to clear
+	// moveOverrideOrder, or the row flashes back to where it started between
+	// the keystroke and the write landing. Requests are serialized, so it only
+	// ever holds 0 or 1; it stays a count so an extra reply cannot drive it
+	// negative.
+	moveInFlight int
+
+	// movePending holds the chords pressed while a MoveSession RPC was already
+	// outstanding, in keypress order. Each press would otherwise return its own
+	// tea.Cmd, and bubbletea runs commands concurrently: two fast chords could
+	// reach the daemon in either order, making the first a boundary no-op and
+	// leaving a persisted order that contradicts what was typed. The board
+	// still moves on every press — only the RPC waits.
+	movePending []queuedMove
+
 	// Auth
 	authMgr       *auth.Manager // nil means auth not configured
 	authChanges   *authChangeQueue
@@ -284,6 +316,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleTick()
 	case sessionRenamedMsg:
 		return h.handleSessionRenamed(msg)
+	case sessionMovedMsg:
+		return h.handleSessionMoved(msg)
 	// Bracketed paste is not a KeyMsg, so it must be forwarded explicitly or a
 	// pasted title never reaches the rename input. Placed ahead of the KeyMsg
 	// arm because a tea.PasteMsg would otherwise fall through to the default

@@ -161,6 +161,7 @@ type SessionCommandServer interface {
 	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
 	RetrySession(context.Context, *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error)
+	MoveSession(context.Context, *connect.Request[pb.MoveSessionRequest]) (*connect.Response[pb.MoveSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error)
 	RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error)
 	DeleteChat(context.Context, *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error)
@@ -499,6 +500,31 @@ func (a *CommandHandlerAdapter) UpdateSession(ctx context.Context, req *pb.Updat
 		return nil, fmt.Errorf("update session: %w", err)
 	}
 	return resp.Msg.GetSession(), nil
+}
+
+// MoveSession implements SessionCommandHandler.MoveSession by delegating to the
+// daemon's MoveSession connect handler, which owns the rank arithmetic.
+//
+// The direction rides through unvalidated on purpose: MoveSession rejects
+// MOVE_DIRECTION_UNSPECIFIED itself, and duplicating that check here would give
+// the same malformed command two different error messages depending on which
+// entry point it arrived through.
+func (a *CommandHandlerAdapter) MoveSession(ctx context.Context, req *pb.MoveSessionCommand) (*pb.MoveSessionResponse, error) {
+	if req.GetSessionId() == "" {
+		return nil, errors.New("move_session: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("move_session: command server not wired")
+	}
+	resp, err := a.Commands.MoveSession(ctx, connect.NewRequest(&pb.MoveSessionRequest{
+		Id:        req.GetSessionId(),
+		Direction: req.GetDirection(),
+		RepoId:    req.RepoId,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("move session: %w", err)
+	}
+	return resp.Msg, nil
 }
 
 // LinkSessionPR implements SessionCommandHandler.LinkSessionPR by delegating to

@@ -671,6 +671,49 @@ func TestNewHomeModelCopiesArchiveStateWithoutAliasing(t *testing.T) {
 	}
 }
 
+// TestNewHomeModelPreservesReorderState guards the other half of the optimistic
+// model newHomeModel already copies. home.sessions is preserved, so a rebuilt
+// board still renders the order the reorder chord swapped into it — but without
+// moveOverrideOrder the override that DEFENDS that order is gone, so the next
+// poll snaps the row back and it jumps again when the write lands: exactly the
+// flicker the override exists to prevent. A dropped moveInFlight is worse still,
+// because the outstanding reply then arrives against a model that believes
+// nothing is in flight, and a dropped queue silently loses a chord the user
+// already saw take effect.
+func TestNewHomeModelPreservesReorderState(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.sessions = []*pb.Session{{Id: "s2"}, {Id: "s1"}, {Id: "s3"}}
+	a.home.moveOverrideOrder = []string{"s2", "s1", "s3"}
+	a.home.moveInFlight = 1
+	a.home.movePending = []queuedMove{{sessionID: "s3", direction: pb.MoveDirection_MOVE_DIRECTION_UP}}
+
+	rebuilt := a.newHomeModel()
+
+	if got := sessionIDOrder(rebuilt.sessions); len(got) != 3 || got[0] != "s2" {
+		t.Fatalf("rebuilt session order = %v, want the optimistic s2 first; the rest of this test "+
+			"is about the override that defends exactly this order", got)
+	}
+	if len(rebuilt.moveOverrideOrder) != 3 || rebuilt.moveOverrideOrder[0] != "s2" {
+		t.Fatalf("rebuilt moveOverrideOrder = %v, want the prior model's; without it the next poll "+
+			"undoes the move the rebuilt board is already showing", rebuilt.moveOverrideOrder)
+	}
+	if rebuilt.moveInFlight != 1 {
+		t.Fatalf("rebuilt moveInFlight = %d, want 1; the outstanding reply would otherwise arrive "+
+			"against a model that believes nothing is in flight", rebuilt.moveInFlight)
+	}
+	if len(rebuilt.movePending) != 1 || rebuilt.movePending[0].sessionID != "s3" {
+		t.Fatalf("rebuilt movePending = %v, want the queued chord; dropping it loses a move the "+
+			"user already saw take effect on the board", rebuilt.movePending)
+	}
+
+	// Copied, not shared: the replacement model owns its own future.
+	rebuilt.moveOverrideOrder[0] = "s9"
+	rebuilt.movePending[0].sessionID = "s9"
+	if a.home.moveOverrideOrder[0] != "s2" || a.home.movePending[0].sessionID != "s3" {
+		t.Fatal("rebuilt Home aliases reorder state from the prior Home")
+	}
+}
+
 // TestNewHomeModelPreservesQuestionState ensures returning to Home does not
 // treat an already-notified question as a new notification edge.
 func TestNewHomeModelPreservesQuestionState(t *testing.T) {

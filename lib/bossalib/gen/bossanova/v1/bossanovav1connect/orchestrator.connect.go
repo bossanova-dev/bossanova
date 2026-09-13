@@ -196,6 +196,9 @@ const (
 	// OrchestratorServiceProxyUpdateSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyUpdateSession RPC.
 	OrchestratorServiceProxyUpdateSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateSession"
+	// OrchestratorServiceProxyMoveSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyMoveSession RPC.
+	OrchestratorServiceProxyMoveSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyMoveSession"
 	// OrchestratorServiceProxyLinkSessionPRProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyLinkSessionPR RPC.
 	OrchestratorServiceProxyLinkSessionPRProcedure = "/bossanova.v1.OrchestratorService/ProxyLinkSessionPR"
@@ -461,6 +464,11 @@ type OrchestratorServiceClient interface {
 	ProxyRetrySession(context.Context, *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error)
 	// ProxyUpdateSession updates a session's title/tracker (routes by session_id).
 	ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error)
+	// ProxyMoveSession moves a session up or down the rendered list (routes by
+	// session_id). It is a pure passthrough: the rank arithmetic lives in the
+	// daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
+	// the daemon's answer unchanged.
+	ProxyMoveSession(context.Context, *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error)
 	// ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
 	ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
@@ -893,6 +901,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSession")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyMoveSession: connect.NewClient[v1.ProxyMoveSessionRequest, v1.ProxyMoveSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyMoveSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyMoveSession")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyLinkSessionPR: connect.NewClient[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyLinkSessionPRProcedure,
@@ -1198,6 +1212,7 @@ type orchestratorServiceClient struct {
 	proxyEmptyTrash                      *connect.Client[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse]
 	proxyRetrySession                    *connect.Client[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse]
 	proxyUpdateSession                   *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
+	proxyMoveSession                     *connect.Client[v1.ProxyMoveSessionRequest, v1.ProxyMoveSessionResponse]
 	proxyLinkSessionPR                   *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
 	proxyUpdateChatTitle                 *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
 	proxyReportChatStatus                *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
@@ -1512,6 +1527,11 @@ func (c *orchestratorServiceClient) ProxyRetrySession(ctx context.Context, req *
 // ProxyUpdateSession calls bossanova.v1.OrchestratorService.ProxyUpdateSession.
 func (c *orchestratorServiceClient) ProxyUpdateSession(ctx context.Context, req *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error) {
 	return c.proxyUpdateSession.CallUnary(ctx, req)
+}
+
+// ProxyMoveSession calls bossanova.v1.OrchestratorService.ProxyMoveSession.
+func (c *orchestratorServiceClient) ProxyMoveSession(ctx context.Context, req *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error) {
+	return c.proxyMoveSession.CallUnary(ctx, req)
 }
 
 // ProxyLinkSessionPR calls bossanova.v1.OrchestratorService.ProxyLinkSessionPR.
@@ -1861,6 +1881,11 @@ type OrchestratorServiceHandler interface {
 	ProxyRetrySession(context.Context, *connect.Request[v1.ProxyRetrySessionRequest]) (*connect.Response[v1.ProxyRetrySessionResponse], error)
 	// ProxyUpdateSession updates a session's title/tracker (routes by session_id).
 	ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error)
+	// ProxyMoveSession moves a session up or down the rendered list (routes by
+	// session_id). It is a pure passthrough: the rank arithmetic lives in the
+	// daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
+	// the daemon's answer unchanged.
+	ProxyMoveSession(context.Context, *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error)
 	// ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
 	ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
@@ -2289,6 +2314,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyMoveSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyMoveSessionProcedure,
+		svc.ProxyMoveSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyMoveSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyLinkSessionPRHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyLinkSessionPRProcedure,
 		svc.ProxyLinkSessionPR,
@@ -2645,6 +2676,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyRetrySessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyUpdateSessionProcedure:
 			orchestratorServiceProxyUpdateSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyMoveSessionProcedure:
+			orchestratorServiceProxyMoveSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyLinkSessionPRProcedure:
 			orchestratorServiceProxyLinkSessionPRHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyUpdateChatTitleProcedure:
@@ -2950,6 +2983,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyRetrySession(context.Context
 
 func (UnimplementedOrchestratorServiceHandler) ProxyUpdateSession(context.Context, *connect.Request[v1.ProxyUpdateSessionRequest]) (*connect.Response[v1.ProxyUpdateSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyMoveSession(context.Context, *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyMoveSession is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error) {

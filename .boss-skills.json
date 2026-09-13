@@ -139,16 +139,7 @@
         "bug": "bug"
       },
       "githubLabels": { "proofInvalid": "proof-invalid" },
-      "followUpLabels": ["follow-up", "agent-plan"],
-      "descriptionNormalization": {
-        "tolerated": [
-          "unordered-list-marker-substitution",
-          "emphasis-delimiter-whitespace-migration",
-          "emphasis-span-restructuring",
-          "terminal-newline-trimming",
-          "table-delimiter-row-normalization"
-        ]
-      }
+      "followUpLabels": ["follow-up", "agent-plan"]
     }
   },
   "publishConfig": {

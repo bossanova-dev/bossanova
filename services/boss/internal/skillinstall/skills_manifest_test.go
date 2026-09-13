@@ -861,12 +861,11 @@ func notesToolboxResolver(t *testing.T, content, core, toolbox string) string {
 	// silently skips every remaining candidate along with its own error message.
 	env := strings.ToUpper(strings.ReplaceAll(core, "-", "_")) + "_ENV"
 	sourcedPattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(env) +
-		`="\$\{BOSS_SKILLS_HOME:-\$HOME/\.claude/skills\}/` + regexp.QuoteMeta(core) + `/toolbox/` +
-		regexp.QuoteMeta(core) + `-env\.sh"; \[ -f "\$` + regexp.QuoteMeta(env) + `" \] \|\| ` +
-		regexp.QuoteMeta(env) + `="\$HOME/\.claude/skills/` + regexp.QuoteMeta(core) + `/toolbox/` +
-		regexp.QuoteMeta(core) + `-env\.sh"; \[ -f "\$` + regexp.QuoteMeta(env) + `" \] \|\| ` +
-		regexp.QuoteMeta(env) + `="\$HOME/\.codex/skills/` + regexp.QuoteMeta(core) + `/toolbox/` +
-		regexp.QuoteMeta(core) + `-env\.sh"; \[ -f "\$` + regexp.QuoteMeta(env) + `" \] \|\| ` +
+		`=; for d in "\$\{BOSS_SKILLS_HOME:-\}" "\$HOME/\.claude/skills" "\$HOME/\.codex/skills"; do ` +
+		`if \[ -f "\$d/` + regexp.QuoteMeta(core) + `/toolbox/` + regexp.QuoteMeta(core) + `-env\.sh" \]; then ` +
+		regexp.QuoteMeta(env) + `="\$d/` + regexp.QuoteMeta(core) + `/toolbox/` + regexp.QuoteMeta(core) +
+		`-env\.sh"; break; fi; done; ` +
+		`\[ -n "\$` + regexp.QuoteMeta(env) + `" \] \|\| ` +
 		`\{ echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; \}; ` +
 		`\. "\$` + regexp.QuoteMeta(env) + `"$`)
 
@@ -989,17 +988,22 @@ func TestBossPlanDocumentsInteractiveBatchChildDrafting(t *testing.T) {
 
 // bossPlanSourcedPreamble is the ONE line every boss-plan Bash block spends resolving its toolbox
 // (BOS-1102). It is pinned byte-for-byte rather than by shape, because each candidate earns its
-// place: `${BOSS_SKILLS_HOME:-…}` defaults only when the variable is UNSET, so the explicit
-// ~/.claude candidate is the only thing keeping a healthy Claude install reachable once anything
-// pre-sets that variable, and the ~/.codex candidate is the only thing a Codex-only install has.
-// The `[ -f ]` locate is what makes both fallbacks and the BLOCKED message reachable — `.` is a
-// POSIX special built-in, so under sh/dash a missing file exits the shell outright and a
-// `. a || . b || { echo …; exit 1; }` chain would silently skip all of them. Drop any one and the
-// block still looks plausible while failing, in silence, on exactly the installs it exists for.
-const bossPlanSourcedPreamble = `BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; ` +
-	`[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; ` +
-	`[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; ` +
-	`[ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; ` +
+// place: BOSS_SKILLS_HOME is a CANDIDATE and never a `${BOSS_SKILLS_HOME:-…}` default — a default
+// substitutes only when the variable is UNSET, so spelling it that way drops ~/.claude out of the
+// search entirely once anything pre-sets it, and a healthy Claude install becomes unreachable. The
+// ~/.codex candidate is the only thing a Codex-only install has. The `[ -f ]` locate is what makes
+// both fallbacks and the BLOCKED message reachable — `.` is a POSIX special built-in, so under
+// sh/dash a missing file exits the shell outright and a `. a || . b || { echo …; exit 1; }` chain
+// would silently skip all of them. Drop any one and the block still looks plausible while failing,
+// in silence, on exactly the installs it exists for.
+//
+// Now a LOOP over the three candidates rather than a hand-unrolled `||` chain: 67 B lighter at each
+// of the eleven blocks that carry it, and one spelling of the candidate order instead of three. The
+// `if`/`fi` body rather than `&& break` is not style — `scripts/check-skill-shell.mjs` reads a
+// trailing `&&`/`||` guard inside a one-line loop body as an inert guard that falls through.
+const bossPlanSourcedPreamble = `BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do ` +
+	`if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; ` +
+	`[ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; ` +
 	`. "$BOSS_PLAN_ENV"`
 
 // TestBossPlanResolvesToolboxThroughSourcedHelper pins BOS-1102's preamble diet across the whole
@@ -2634,6 +2638,15 @@ func TestBossPlanPayloadVerifiesTheDescriptionWriteBack(t *testing.T) {
 			t.Fatalf("%s: read boss-plan payload: %v", label, err)
 		}
 		payload := string(b)
+		// Compare with runs of whitespace collapsed. These are PROSE pins, and prose is
+		// line-wrapped by prettier: `do **not**\n   attempt a corrective rewrite` carries exactly
+		// the meaning the pin is defending while failing a raw substring match on the newline the
+		// formatter chose. That is a false red that reports "the payload stopped saying this" when
+		// the payload says it in full, and it costs a CI cycle to discover. Collapsing whitespace
+		// keeps every phrase's meaning — word order and the emphasis markers still have to match —
+		// and removes only the sensitivity to where a line happens to break.
+		flatten := func(text string) string { return strings.Join(strings.Fields(text), " ") }
+		flatPayload := flatten(payload)
 		for _, want := range []string{
 			`plan-writeback-verify.mjs" --intended "$WB_FINAL" --stored "$WB_STORED"`,
 			"STOP — write-back verification (mandatory, mechanical, do not skip)",
@@ -2641,7 +2654,7 @@ func TestBossPlanPayloadVerifiesTheDescriptionWriteBack(t *testing.T) {
 			"not** attempt a corrective rewrite",
 			"tracker's **stored, normalized** text",
 		} {
-			if !strings.Contains(payload, want) {
+			if !strings.Contains(flatPayload, flatten(want)) {
 				t.Errorf("%s: boss-plan payload missing %q", label, want)
 			}
 		}

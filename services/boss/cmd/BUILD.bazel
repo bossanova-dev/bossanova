@@ -133,6 +133,7 @@ go_test(
         "session_json_test.go",
         "session_mcp_test.go",
         "session_review_ledger_test.go",
+        "settings_daemon_name_test.go",
         "settings_rotation_test.go",
         "skill_coverage_test.go",
         "skill_startup_test.go",

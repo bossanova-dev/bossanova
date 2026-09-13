@@ -70,10 +70,21 @@
       "viewport": { "width": 390, "height": 844 }
     },
     {
+      "id": "web-daemon-label-collision",
+      "surface": "web",
+      "title": "Web daemon-label collision",
+      "description": "Sessions daemon filter with two mac.lan daemons visibly qualified by their parenthesised ids, a unique solo.local daemon left clean, and All daemons retained as the unfiltered choice.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "cropToSelector": ".sub-header",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-sessions-filter-flow",
       "surface": "web",
       "title": "Web Sessions Filter Flow",
-      "description": "Choosing a daemon in the sessions-list daemon filter narrows the table: 'Proof session' is listed before the selection and gone after it, leaving only the Standby daemon's 'Proof quick chat' row while 'Standby daemon' shows as the selected value.",
+      "description": "The desktop Sessions daemon filter offers the peer-serving Standby daemon alongside inventory, then choosing it narrows the table: 'Proof session' is gone and only the Standby daemon's 'Proof quick chat' remains while 'Standby daemon' shows as selected.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -141,6 +152,54 @@
           "selector": ".data-table-wrap",
           "label": "Selection survived",
           "caption": "The daemon selection and the narrowed list survive the reload"
+        }
+      ]
+    },
+    {
+      "id": "web-sessions-reorder-flow",
+      "surface": "web",
+      "title": "Web Sessions Reorder Flow",
+      "description": "BOS-1233: the desktop Sessions list is reordered from the keyboard. The list opens with 'Proof session' above 'Merged proof session archiving' under the 'Name' column header; a bare arrow moves the selection down to 'Merged proof session archiving' without changing the order, and Alt+\u2191 then moves that row above 'Proof session' while it stays the selected row.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/",
+          "label": "Open home",
+          "caption": "Open the sessions list"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap",
+          "label": "Sessions list",
+          "caption": "The list renders the order the server sent"
+        },
+        {
+          "action": "press",
+          "key": "ArrowDown",
+          "label": "Select the second row",
+          "caption": "A bare arrow moves the selection only"
+        },
+        {
+          "action": "wait",
+          "timeoutMs": 600,
+          "label": "Second row selected",
+          "caption": "'Merged proof session archiving' is selected; the order is unchanged"
+        },
+        {
+          "action": "press",
+          "key": "Alt+ArrowUp",
+          "label": "Move the session up",
+          "caption": "Alt+\u2191 moves the selected session one position earlier"
+        },
+        {
+          "action": "wait",
+          "timeoutMs": 800,
+          "label": "Reordered",
+          "caption": "It now sits above 'Proof session', still selected"
         }
       ]
     },
@@ -2247,6 +2306,28 @@
       "viewport": { "width": 1280, "height": 1000 }
     },
     {
+      "id": "docs-robots",
+      "surface": "docs",
+      "title": "Docs — Robots",
+      "description": "Production robots.txt served by the built documentation site.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/robots.txt",
+      "selector": "body",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-sitemap",
+      "surface": "docs",
+      "title": "Docs — Sitemap",
+      "description": "Production sitemap served by the built documentation site.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/sitemap.xml",
+      "selector": "body",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
       "id": "docs-mcp-guide",
       "surface": "docs",
       "title": "Docs — MCP Guide",
@@ -2558,9 +2639,11 @@
         "web-sessions-mobile",
         "web-sessions-filters",
         "web-sessions-filters-mobile",
+        "web-daemon-label-collision",
         "web-sessions-filter-flow",
         "web-sessions-filter-persist",
         "web-sessions-org-filter-flow",
+        "web-sessions-reorder-flow",
         "web-session-detail",
         "web-session-detail-no-pr",
         "web-session-detail-rotation",
@@ -2650,7 +2733,7 @@
     {
       "name": "Docs site",
       "patterns": ["services/docs/"],
-      "recipeIds": ["docs-home"]
+      "recipeIds": ["docs-home", "docs-robots", "docs-sitemap"]
     },
     {
       "name": "Docs MCP guide",

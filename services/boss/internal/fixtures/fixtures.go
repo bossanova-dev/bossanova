@@ -6,6 +6,8 @@ package fixtures
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/recurser/bossalib/displaystatus"
@@ -1220,6 +1222,116 @@ func AsyncCreateWorld() World {
 			}},
 		}},
 	}
+	return w
+}
+
+// setupProgressSessionID is the session id the setup-progress preset's scripted
+// CreateSession frames carry, mirroring async-create's shape.
+const setupProgressSessionID = "sess-progress-1237"
+
+// SetupProgressSessionTitle is the title the setup-progress scenario types into
+// the new-session form. The wizard hands the settled session to the attach view,
+// which reads its title back over GetSession, so the seeded session below must
+// carry the same string the scenario types.
+const SetupProgressSessionTitle = "Render one advancing progress bar"
+
+// setupProgressBarWidth is the width of the bar body between the pipes.
+//
+// The BOS-1237 report's own bar is 80 wide, which with the pane's four-space
+// indent and the trailing "| 100% of 94.7 MiB" needs 104 columns. Proof
+// scenarios capture at 100, where that would SOFT-WRAP into two rows — and "one
+// bar occupies one row" is the entire claim under capture, so a wrapped bar
+// would read as the unfixed behaviour. 60 keeps the widest frame at 84 columns,
+// and divides by 10 so each step adds a whole number of glyphs.
+const setupProgressBarWidth = 60
+
+// setupProgressBars builds the ten-frame redraw sequence from the BOS-1237
+// report: one 94.7 MiB download reported ten times, each frame newline-terminated
+// because the setup child has no TTY. Consecutive frames differ only in the
+// ■/padding split and the percentage, which is exactly the shape the TUI's fold
+// helper collapses onto a single row.
+func setupProgressBars() []string {
+	bars := make([]string, 0, 10)
+	for step := 1; step <= 10; step++ {
+		filled := step * (setupProgressBarWidth / 10)
+		bars = append(bars, fmt.Sprintf("|%s%s| %3d%% of 94.7 MiB",
+			strings.Repeat("■", filled),
+			strings.Repeat(" ", setupProgressBarWidth-filled),
+			step*10))
+	}
+	return bars
+}
+
+// SetupProgressWorld is the demo world plus a scripted CreateSession stream that
+// replays the BOS-1237 report: a non-progress setup line, then one download's ten
+// progress-bar redraws as ten separate frames, then a closing non-progress line.
+//
+// It exists because no committed scenario streamed a progress-bar sequence, so
+// the fix had no replayable evidence. Pre-fix these twelve setup frames became
+// twelve buffer elements and the pane's ten-element window evicted "added 25
+// packages in 4s" outright; post-fix they are three elements and one bar row.
+//
+// The trailing "done in 12.4s" frame is not asserted on. It exists so the 100%
+// bar keeps a full frame delay of screen time: the settled SessionCreated frame
+// navigates the wizard onward, so without it the final bar's visible window
+// would be ~0ms — the same trap ResurrectProgressWorld documents.
+func SetupProgressWorld() World {
+	settledChatID := "chat-progress-1237"
+	w := DemoWorld()
+	w.Sessions = append(w.Sessions, &pb.Session{
+		Id:           setupProgressSessionID,
+		RepoId:       "repo-5",
+		Title:        SetupProgressSessionTitle,
+		BranchName:   "bos-1237-setup-progress",
+		BaseBranch:   "main",
+		WorktreePath: "/tmp/worktrees/design-system/bos-1237-setup-progress",
+		AgentName:    "claude",
+		State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+	})
+	// 1s rather than async-create's 2s: this script carries fourteen frames
+	// instead of three, and the delay applies between consecutive ones. A second
+	// is still wide enough for a waitFor to observe each bar and for the
+	// agent-frame video to show the percentage advancing in place.
+	w.CreateSessionFrameDelay = time.Second
+
+	setupLines := append([]string{"added 25 packages in 4s"}, setupProgressBars()...)
+	setupLines = append(setupLines, "done in 12.4s")
+
+	// One setup frame per line, bracketed by the accepted and settled
+	// SessionCreated pair.
+	frames := make([]*pb.CreateSessionResponse, 0, len(setupLines)+2)
+	// Accepted first: the row is addressable while the bootstrap still runs, which
+	// is the phase the setup pane renders in.
+	frames = append(frames, &pb.CreateSessionResponse{
+		Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:         setupProgressSessionID,
+				RepoId:     "repo-5",
+				BranchName: "bos-1237-setup-progress",
+				State:      pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
+			}},
+		},
+	})
+	for _, line := range setupLines {
+		frames = append(frames, &pb.CreateSessionResponse{
+			Event: &pb.CreateSessionResponse_SetupOutput{
+				SetupOutput: &pb.SetupScriptOutput{Text: line},
+			},
+		})
+	}
+	frames = append(frames, &pb.CreateSessionResponse{
+		Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:             setupProgressSessionID,
+				RepoId:         "repo-5",
+				BranchName:     "bos-1237-setup-progress",
+				WorktreePath:   "/tmp/worktrees/design-system/bos-1237-setup-progress",
+				AgentSessionId: &settledChatID,
+				State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			}},
+		},
+	})
+	w.CreateSessionScript = frames
 	return w
 }
 

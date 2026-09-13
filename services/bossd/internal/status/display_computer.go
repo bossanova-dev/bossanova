@@ -109,8 +109,8 @@ type DisplayStatusComputer struct {
 	waiting WaitingLookup
 }
 
-// SetWaitingLookup wires the resolver used to decide whether a working chat is
-// really parked on an external event. Set separately from the constructor
+// SetWaitingLookup wires the resolver used to decide whether an inactive chat
+// is really parked on an external event. Set separately from the constructor
 // because the lookup is backed by the GitHub callback store, which the daemon
 // builds after the computer.
 func (c *DisplayStatusComputer) SetWaitingLookup(l WaitingLookup) {
@@ -245,7 +245,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 				if e == nil {
 					continue
 				}
-				// A working chat parked on an external event reads as WAITING
+				// An inactive chat parked on an external event reads as WAITING
 				// from here down.
 				resolved = append(resolved, resolvedChat{
 					status:  c.deriveChatStatus(ctx, chat.AgentSessionID, e.Status),
@@ -347,7 +347,8 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 func (c *DisplayStatusComputer) deriveChatStatus(ctx context.Context, agentSessionID string, reported pb.ChatStatus) pb.ChatStatus {
 	writer, canWrite := c.chat.(WaitingWriter)
 
-	eligible := reported == pb.ChatStatus_CHAT_STATUS_WORKING && c.waiting != nil
+	eligible := (reported == pb.ChatStatus_CHAT_STATUS_WORKING ||
+		reported == pb.ChatStatus_CHAT_STATUS_IDLE) && c.waiting != nil
 	if eligible {
 		if stalled, ok := c.chat.(StalledReader); ok && stalled.Stalled(agentSessionID) {
 			eligible = false

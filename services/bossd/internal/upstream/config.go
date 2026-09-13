@@ -28,9 +28,13 @@ type Config struct {
 	OrchestratorURL string // e.g. "https://orchestrator.bossanova.dev"
 	DaemonID        string // unique daemon identifier — the routing key
 	// Hostname is the daemon's self-reported DISPLAY name: the operator's
-	// daemon_name override when set (applied by bossd startup), otherwise the
-	// machine hostname ConfigFromEnv reads. Presentation only — never a routing
-	// or identity input, and never an input to ResolveDaemonID.
+	// daemon_name override when set, otherwise config.DefaultDisplayHostname of
+	// the machine hostname ConfigFromEnv reads — both applied by bossd startup,
+	// which prefers the host's operator-facing computer name over the
+	// DHCP-derived name an operator cannot map to a machine. The field starts
+	// out holding the raw hostname; resolveDaemonIdentity replaces it.
+	// Presentation only — never a routing or identity input, and never an input
+	// to ResolveDaemonID.
 	Hostname string
 	UserJWT  string // user's OIDC JWT for initial registration
 }

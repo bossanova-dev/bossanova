@@ -4223,6 +4223,22 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 
 // --- Settings ---
 
+// settingsDaemonNameLine resolves the daemon display name for the `boss
+// settings` read-out. It takes the machine hostname as a parameter rather than
+// calling os.Hostname() itself so the hostname-unavailable branch is reachable
+// from a test. It resolves through config.DaemonDisplayName against the RAW
+// hostname so the value shown is exactly what bossd will advertise after its
+// next start; the trim/fallback rule is never re-implemented locally.
+func settingsDaemonNameLine(s config.Settings, hostname string) string {
+	daemonName := config.DaemonDisplayName(s, hostname)
+	if strings.TrimSpace(daemonName) == "" {
+		// os.Hostname() failed and no override is set. A bare blank here
+		// reads as a bug rather than as the prompt to set a name it is.
+		return "(machine hostname unavailable — set one with --daemon-name)"
+	}
+	return daemonName
+}
+
 func runSettings(cmd *cobra.Command) error {
 	s, err := config.Load()
 	if err != nil {
@@ -4238,7 +4254,8 @@ func runSettings(cmd *cobra.Command) error {
 		cmd.Flags().Changed("no-rotation") ||
 		cmd.Flags().Changed("worktree-dir") ||
 		cmd.Flags().Changed("default-agent") ||
-		cmd.Flags().Changed("poll-interval")
+		cmd.Flags().Changed("poll-interval") ||
+		cmd.Flags().Changed("daemon-name")
 
 	if !anyChanged {
 		fmt.Printf("  Skip permissions: %v\n", config.PluginConfigBool(&s, "claude", "dangerously_skip_permissions"))
@@ -4251,6 +4268,8 @@ func runSettings(cmd *cobra.Command) error {
 			interval = strconv.Itoa(s.PollIntervalSeconds)
 		}
 		fmt.Printf("  Poll interval:    %s seconds\n", interval)
+		hostname, _ := os.Hostname()
+		fmt.Printf("  Daemon name:      %s\n", settingsDaemonNameLine(s, hostname))
 		return nil
 	}
 
@@ -4298,12 +4317,26 @@ func runSettings(cmd *cobra.Command) error {
 		}
 		s.PollIntervalSeconds = v
 	}
+	daemonNameChanged := cmd.Flags().Changed("daemon-name")
+	if daemonNameChanged {
+		v, _ := cmd.Flags().GetString("daemon-name")
+		// Unlike --worktree-dir and --default-agent, a blank value here is the
+		// documented reset to the machine hostname rather than an error. This
+		// mirrors the TUI commit branch in services/boss/internal/views, and
+		// `daemon_name` is json:omitempty so "" drops the key entirely.
+		s.DaemonName = strings.TrimSpace(v)
+	}
 
 	if err := config.Save(s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 
 	fmt.Println("Settings updated.")
+	if daemonNameChanged {
+		// bossd reads daemon_name only at startup, which is why the TUI row
+		// carries a restart hint on every render.
+		fmt.Println("Restart the daemon for the new name to take effect: 'boss daemon restart'.")
+	}
 	return nil
 }
 

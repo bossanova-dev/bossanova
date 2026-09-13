@@ -104,6 +104,21 @@ type sessionRenamedMsg struct {
 	err     error
 }
 
+// sessionMovedMsg carries the result of the MoveSession RPC issued by the
+// hidden alt+up / alt+down reorder chords (BOS-1231). The daemon's refreshed
+// session is deliberately NOT carried: its only new information is list_rank,
+// which no column renders, and adopting the whole record would discard the
+// poll-derived display state the board has layered on — the same reason
+// handleSessionRenamed patches one field rather than swapping the row.
+//
+// moved mirrors MoveSessionResponse.is_moved: false is a SUCCESSFUL no-op (the
+// session was already at the boundary), never an error.
+type sessionMovedMsg struct {
+	sessionID string
+	moved     bool
+	err       error
+}
+
 // tickMsg signals a polling refresh.
 type tickMsg struct{}
 

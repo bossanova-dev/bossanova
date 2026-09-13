@@ -136,6 +136,7 @@ type harnessConfig struct {
 	skipSettingsAcknowledgedSeed  bool
 	firstRunOnboarding            bool
 	worktreeBaseDir               string
+	moveSessionBehaviour          MoveSessionBehaviour
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -149,6 +150,16 @@ func WithRepos(repos ...*pb.Repo) Option {
 func WithSessions(sessions ...*pb.Session) Option {
 	return func(c *harnessConfig) {
 		c.sessions = append(c.sessions, sessions...)
+	}
+}
+
+// WithMoveSessionBehaviour replaces the mock daemon's default adjacent-swap
+// reorder with a richer rule, so a test can make the daemon settle on an order
+// the TUI did not optimistically guess. RankedBlockMoveBehaviour is the one that
+// reproduces the real daemon's multi-position rise.
+func WithMoveSessionBehaviour(behaviour MoveSessionBehaviour) Option {
+	return func(c *harnessConfig) {
+		c.moveSessionBehaviour = behaviour
 	}
 }
 
@@ -456,6 +467,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	if len(cfg.agents) > 0 {
 		daemon.SetAgents(cfg.agents)
 	}
+	daemon.moveSessionBehaviour = cfg.moveSessionBehaviour
 	daemon.archiveDelay = cfg.archiveDelay
 	daemon.archiveError = cfg.archiveError
 	daemon.chatListDelay = cfg.chatListDelay

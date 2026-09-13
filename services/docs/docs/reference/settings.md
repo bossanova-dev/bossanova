@@ -63,19 +63,20 @@ are configured via environment variables. See
 
 ## Top-level fields
 
-| Field                     | Type   | Default                     | Description                                                                                                                                      |
-| ------------------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `worktree_base_dir`       | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                                     |
-| `app_data_dir`            | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.                      |
-| `socket_path`             | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`.                |
-| `default_agent`           | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                                          |
-| `skills_declined`         | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                                          |
-| `poll_interval_seconds`   | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                         |
-| `plugins`                 | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                 |
-| `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                     |
-| `tmux_delivery`           | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                       |
-| `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                          |
-| `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below. |
+| Field                     | Type   | Default                     | Description                                                                                                                                                              |
+| ------------------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `worktree_base_dir`       | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                                                             |
+| `app_data_dir`            | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.                                              |
+| `socket_path`             | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`.                                        |
+| `default_agent`           | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                                                                  |
+| `skills_declined`         | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                                                                  |
+| `daemon_name`             | string | machine hostname            | Display name this daemon advertises in the web daemon picker. Set with `boss settings --daemon-name`; blank resets to the machine hostname. Restart the daemon to apply. |
+| `poll_interval_seconds`   | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                                                 |
+| `plugins`                 | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                                         |
+| `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                                             |
+| `tmux_delivery`           | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                                               |
+| `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                                                  |
+| `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below.                         |
 
 ## Daemon PATH
 

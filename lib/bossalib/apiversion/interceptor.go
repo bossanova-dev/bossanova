@@ -13,14 +13,34 @@ const HeaderName = "Bossanova-Version"
 
 type contextKey struct{}
 
+// ResolvedVersionOK returns the API version stored in ctx by the server
+// Interceptor together with whether one was actually stored. If no version is
+// present (e.g. the call did not pass through the interceptor), it falls back
+// to DefaultRegistry().Default() and reports false.
+//
+// The boolean is the discriminator ResolvedVersion throws away, and it is
+// exact. versionInterceptor stores a value unconditionally on both the unary
+// and the streaming path once resolve succeeds, and returns before calling the
+// handler when resolve fails — so the context key is present if and only if the
+// request passed through the interceptor. A header-less client is therefore
+// (Baseline, true), while a read from HTTP middleware or a raw non-Connect
+// route is (Baseline, false). Those two are byte-identical through
+// ResolvedVersion, which is what made an out-of-interceptor-scope version gate
+// silently answer "oldest client" for every caller (BOS-1235).
+func ResolvedVersionOK(ctx context.Context) (Version, bool) {
+	if v, ok := ctx.Value(contextKey{}).(Version); ok {
+		return v, true
+	}
+	return DefaultRegistry().Default(), false
+}
+
 // ResolvedVersion returns the API version stored in ctx by the server
 // Interceptor. If no version is present (e.g. the call did not pass through
-// the interceptor), it falls back to DefaultRegistry().Default().
+// the interceptor), it falls back to DefaultRegistry().Default(). Callers that
+// need to tell those two cases apart must use ResolvedVersionOK.
 func ResolvedVersion(ctx context.Context) Version {
-	if v, ok := ctx.Value(contextKey{}).(Version); ok {
-		return v
-	}
-	return DefaultRegistry().Default()
+	v, _ := ResolvedVersionOK(ctx)
+	return v
 }
 
 func withResolvedVersion(ctx context.Context, v Version) context.Context {

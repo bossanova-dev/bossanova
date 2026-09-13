@@ -20,7 +20,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
+var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -200,6 +200,64 @@ func TestLookupPresetKnown(t *testing.T) {
 func TestPresetNamesSorted(t *testing.T) {
 	if got := PresetNames(); !reflect.DeepEqual(got, allPresetNames) {
 		t.Fatalf("PresetNames() = %v, want %v", got, allPresetNames)
+	}
+}
+
+// TestSetupProgressWorldScriptsOneBarSequence pins the frame shape the BOS-1237
+// proof scenario replays: an accepted SessionCreated, a non-progress setup line,
+// ten bar redraws that differ only in fill and percentage, a closing non-progress
+// line, and a settled SessionCreated.
+//
+// The counts are load-bearing for the capture, not decoration. Ten redraws are
+// what the report showed evicting every other line from the pane's ten-element
+// window; the leading non-progress line is the evidence token that proves the
+// eviction is gone; and the trailing line is what gives the 100% bar screen time
+// before the settled frame navigates the wizard onward.
+func TestSetupProgressWorldScriptsOneBarSequence(t *testing.T) {
+	w := SetupProgressWorld()
+	if w.CreateSessionFrameDelay <= 0 {
+		t.Fatal("CreateSessionFrameDelay must be positive or no frame is capturable")
+	}
+
+	var setupTexts []string
+	created := 0
+	for _, f := range w.CreateSessionScript {
+		if out := f.GetSetupOutput(); out != nil {
+			setupTexts = append(setupTexts, out.GetText())
+		}
+		if f.GetSessionCreated() != nil {
+			created++
+		}
+	}
+	if created != 2 {
+		t.Errorf("SessionCreated frames = %d, want 2 (accepted then settled)", created)
+	}
+	if len(setupTexts) != 12 {
+		t.Fatalf("setup frames = %d, want 12 (one line, ten bars, one line):\n%v", len(setupTexts), setupTexts)
+	}
+	if setupTexts[0] != "added 25 packages in 4s" {
+		t.Errorf("first setup frame = %q, want the non-progress line the pane used to evict", setupTexts[0])
+	}
+	if last := setupTexts[len(setupTexts)-1]; last != "done in 12.4s" {
+		t.Errorf("last setup frame = %q, want the trailing non-progress line", last)
+	}
+
+	bars := setupTexts[1 : len(setupTexts)-1]
+	if !strings.Contains(bars[0], " 10% of 94.7 MiB") {
+		t.Errorf("first bar = %q, want the 10%% redraw", bars[0])
+	}
+	if !strings.Contains(bars[len(bars)-1], "100% of 94.7 MiB") {
+		t.Errorf("last bar = %q, want the 100%% redraw", bars[len(bars)-1])
+	}
+	// A bar that soft-wraps at the scenario's capture width renders as two rows,
+	// which is indistinguishable from the defect this proof is evidence against.
+	// The bound is the scenario's 100-column capture minus the setup pane's
+	// four-space indent (newsession_view.go renders each line with PaddingLeft(4)).
+	const maxBarColumns = 100 - 4
+	for _, bar := range bars {
+		if got := len([]rune(bar)); got > maxBarColumns {
+			t.Errorf("bar is %d columns, too wide to stay on one row at a 100-column capture: %q", got, bar)
+		}
 	}
 }
 

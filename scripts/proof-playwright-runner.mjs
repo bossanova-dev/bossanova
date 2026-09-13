@@ -958,8 +958,10 @@ function webStageScript(recipe) {
       // repository', so BOS-656's sort does not move that target).
       daemons: [
         { id: 'daemon-proof', displayName: 'Proof daemon' },
-        { id: 'daemon-proof-standby', displayName: 'Standby daemon' },
       ],
+      // The sessions picker receives this peer-serving daemon separately from
+      // inventory, matching ListDaemonsResponse.session_daemons (BOS-1236).
+      sessionDaemons: [{ id: 'daemon-proof-standby', displayName: 'Standby daemon' }],
       // Cron jobs spanning BOTH daemons (BOS-657). The built-in defaultCronJobs()
       // binds every job to the first daemon, which leaves the cron list's daemon
       // filter with nothing to narrow and its Daemon column showing one value.
@@ -1160,6 +1162,7 @@ ${organizationStageScript(recipe)}
 ${sessionOrganizationStageScript(recipe)}
 ${cronOrganizationStageScript(recipe)}
 ${repositoryOrganizationStageScript(recipe)}
+${daemonLabelCollisionStageScript(recipe)}
 ${subscribeStageScript(recipe)}
 ${accountsProbeStageScript(recipe)}
 ${sessionExpiredStageScript(recipe)}
@@ -1294,6 +1297,33 @@ function repositoryOrganizationStageScript(recipe) {
       },
     };
   });`
+}
+
+// Collision recipes need two distinct daemon ids with one hostname, plus a
+// unique control daemon. Keep this scoped to the affected proof flows so the
+// rest of the web catalog keeps its readable Proof/Standby fixture labels.
+function daemonLabelCollisionStageScript(recipe) {
+  const stagedRecipeIds = new Set([
+    'web-daemon-label-collision',
+    'web-repositories-daemon-filter-flow',
+    'web-cron-filter-flow',
+  ])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return stageFixtureScript(`{
+    daemons: [
+      { id: 'daemon-proof', displayName: 'mac.lan' },
+      { id: 'daemon-proof-standby', displayName: 'mac.lan' },
+      { id: 'daemon-proof-solo', displayName: 'solo.local' },
+    ],
+    cronJobs: (window.bossanovaE2e?.cronJobs ?? []).map((job) => ({
+      ...job,
+      daemonHostname: job.daemonId === 'daemon-proof-standby' ? 'mac.lan' : job.daemonHostname === 'Proof daemon' ? 'mac.lan' : job.daemonHostname,
+    })),
+    repos: [
+      ...(window.bossanovaE2e?.repos ?? []),
+      { id: 'repo-proof-solo', displayName: 'Solo repository', daemonId: 'daemon-proof-solo' },
+    ],
+  }`)
 }
 
 // stageFixtureScript emits the ONE dual-global staging convention. Every stage

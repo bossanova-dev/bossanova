@@ -158,6 +158,9 @@ type fakeCommandHandler struct {
 	removeSessionID     string // last sessionID passed to RemoveSession
 	emptyTrashOlderThan *timestamppb.Timestamp
 	emptyTrashCount     int32
+
+	moveSessionCmd      *pb.MoveSessionCommand // last command passed to MoveSession
+	moveSessionResponse *pb.MoveSessionResponse
 }
 
 func (f *fakeCommandHandler) Stop(_ context.Context, _ string) (*pb.Session, error) {
@@ -403,6 +406,10 @@ func (f *fakeCommandHandler) ResurrectSession(_ context.Context, sessionID strin
 func (f *fakeCommandHandler) RemoveSession(_ context.Context, sessionID string) error {
 	f.removeSessionID = sessionID
 	return f.returnErr
+}
+func (f *fakeCommandHandler) MoveSession(_ context.Context, req *pb.MoveSessionCommand) (*pb.MoveSessionResponse, error) {
+	f.moveSessionCmd = req
+	return f.moveSessionResponse, f.returnErr
 }
 func (f *fakeCommandHandler) EmptyTrash(_ context.Context, olderThan *timestamppb.Timestamp) (int32, error) {
 	f.emptyTrashOlderThan = olderThan
@@ -1996,6 +2003,100 @@ func TestDispatchCommand_ResurrectSession_CallsHandler(t *testing.T) {
 	}
 	if r.GetSession().GetId() != "s-res" {
 		t.Fatalf("expected session id s-res, got %q", r.GetSession().GetId())
+	}
+}
+
+// TestDispatchCommand_MoveSession_ForwardsAndRepliesWithTheMoveResult pins two
+// things a Session-only reply would lose. The command reaches the handler with
+// the DIRECTION and repo scope intact — the daemon owns the rank arithmetic, so
+// a dispatcher that dropped either would silently move the wrong neighbour —
+// and the reply carries the move_session payload rather than the bare session,
+// which is the only shape that can report a boundary no-op.
+func TestDispatchCommand_MoveSession_ForwardsAndRepliesWithTheMoveResult(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		isMoved bool
+	}{
+		{name: "a real move", isMoved: true},
+		{name: "a boundary no-op is still a success", isMoved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rank := int64(4294967296)
+			handler := &fakeCommandHandler{moveSessionResponse: &pb.MoveSessionResponse{
+				Session: &pb.Session{Id: "s-move", ListRank: &rank},
+				IsMoved: tc.isMoved,
+			}}
+			client := newDispatcherClient(handler, nil, nil)
+			out := make(chan *pb.DaemonEvent, 4)
+
+			ev := client.dispatchCommand(context.Background(),
+				&pb.OrchestratorCommand{
+					CommandId: "c-move1",
+					Cmd: &pb.OrchestratorCommand_MoveSession{MoveSession: &pb.MoveSessionCommand{
+						SessionId: "s-move",
+						Direction: pb.MoveDirection_MOVE_DIRECTION_UP,
+						RepoId:    strPtr("repo-1"),
+					}},
+				}, out)
+
+			if handler.moveSessionCmd.GetSessionId() != "s-move" {
+				t.Fatalf("forwarded session_id = %q, want s-move", handler.moveSessionCmd.GetSessionId())
+			}
+			if got := handler.moveSessionCmd.GetDirection(); got != pb.MoveDirection_MOVE_DIRECTION_UP {
+				t.Fatalf("forwarded direction = %v, want UP", got)
+			}
+			if got := handler.moveSessionCmd.GetRepoId(); got != "repo-1" {
+				t.Fatalf("forwarded repo_id = %q, want repo-1", got)
+			}
+
+			r := ev.GetResult()
+			if r == nil || !r.GetOk() || r.GetCommandId() != "c-move1" {
+				t.Fatalf("expected ok result with command_id, got %+v", ev)
+			}
+			moved := r.GetMoveSession()
+			if moved == nil {
+				t.Fatalf("result must carry a move_session payload, got %+v", r.GetPayload())
+			}
+			if moved.GetSession().GetId() != "s-move" || moved.GetSession().GetListRank() != rank {
+				t.Fatalf("move result session = %+v, want s-move carrying its rank", moved.GetSession())
+			}
+			if moved.GetIsMoved() != tc.isMoved {
+				t.Fatalf("is_moved = %v, want %v", moved.GetIsMoved(), tc.isMoved)
+			}
+		})
+	}
+}
+
+// TestDispatchCommand_MoveSession_TypedErrorIsClassified proves an unknown
+// session reaches bosso as a typed NOT_FOUND rather than as an opaque abort.
+//
+// It deliberately does NOT claim the same for an unspecified direction: the
+// daemon rejects that with connect.CodeInvalidArgument (see
+// services/bossd/internal/server/move_session.go), and classifyCommandError
+// models only NotFound and FailedPrecondition — so that rejection collapses to
+// ERROR_CODE_UNSPECIFIED and bosso renders it as CodeAborted. Widening the
+// shared classifier is the versioned change classifyBroadcastCommandError's
+// note describes, not this test's subject.
+func TestDispatchCommand_MoveSession_TypedErrorIsClassified(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeNotFound, errors.New("session not found"))}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-move2",
+			Cmd: &pb.OrchestratorCommand_MoveSession{MoveSession: &pb.MoveSessionCommand{
+				SessionId: "s-missing",
+				Direction: pb.MoveDirection_MOVE_DIRECTION_DOWN,
+			}},
+		}, out)
+
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected a failed result, got %+v", ev)
+	}
+	if got := r.GetErrorCode(); got != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("error_code = %v, want NOT_FOUND", got)
 	}
 }
 

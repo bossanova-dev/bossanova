@@ -102,6 +102,10 @@ body carries the decision skeleton; every moved instruction is still reachable h
   a failed wait. This reflex applies
   everywhere a wait happens (Steps 8/9 are the concrete sites). Mechanics:
   [`references/callback-watches.md`](references/callback-watches.md).
+- **A repair push reopens the CI wait.** A push intended to repair PR checks is a wait even if the
+  run will not poll immediately: when callbacks are available, arm `checks_passed` and
+  `checks_failed` for that head before handoff, and report neither repaired nor green while checks
+  are only queued. Re-arm after every subsequent repair push.
 - A step is not complete until its artifact exists. "Plan fetched" means the file is in
   `docs/plans/`. "PR open" means `gh pr view <n>` returns.
 - Tagless conventional commits (`feat(scope): subject`); finalize injects `[#<PR>]` into the commits

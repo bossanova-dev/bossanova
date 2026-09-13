@@ -240,6 +240,12 @@ func (s *cleanupSessionStore) ListArchived(context.Context, string) ([]*models.S
 func (s *cleanupSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
+
+// SetListRanks satisfies db.SessionStore (BOS-1230). No test in this file
+// exercises the manual list rank, so the stub is inert.
+func (s *cleanupSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) (int, error) {
+	return 0, nil
+}
 func (s *cleanupSessionStore) Update(context.Context, string, db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }

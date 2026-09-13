@@ -15,7 +15,9 @@ import (
 //     invalidate a stream token.
 //   - cfg.Hostname is PRESENTATION metadata — the self-reported name bosso
 //     shows in daemon listings. The operator's daemon_name setting overrides it;
-//     blank keeps the machine hostname.
+//     blank falls back to config.DefaultDisplayHostname, which prefers the
+//     host's operator-facing computer name over the DHCP-derived hostname the
+//     operator would not recognise.
 //
 // A non-nil error means the persisted-id path failed and cfg.DaemonID holds the
 // hostname fallback; callers should log it and carry on (bossd's startup does).
@@ -44,6 +46,11 @@ func resolveDaemonIdentityWith(cfg *upstream.Config, settings config.Settings, g
 
 	daemonID, err := resolveID(getenv, dataDir, machineHostname)
 	cfg.DaemonID = daemonID
-	cfg.Hostname = config.DaemonDisplayName(settings, machineHostname)
+	// Presentation only, and deliberately composed HERE rather than inside
+	// upstream.ConfigFromEnv: that function's hostname also feeds the
+	// BOSSD_DAEMON_ID fallback, so deriving there would put a display name into
+	// an identity key. machineHostname above is still the raw value, and it is
+	// still what resolveID was handed.
+	cfg.Hostname = config.DaemonDisplayName(settings, config.DefaultDisplayHostname(machineHostname))
 	return err
 }

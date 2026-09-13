@@ -928,6 +928,7 @@ func settingsCmd() *cobra.Command {
 	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
 	cmd.Flags().String("default-agent", "", "Set the default agent plugin (e.g. claude, opencode)")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")
+	cmd.Flags().String("daemon-name", "", "Set the daemon display name (blank resets to the machine hostname; restart the daemon to apply)")
 	return cmd
 }
 

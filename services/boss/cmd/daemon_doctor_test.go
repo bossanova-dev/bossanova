@@ -265,10 +265,12 @@ func TestRunDaemonDoctorMissingOrEmptyPlistWithOKProbeHasNoPermissionGuidance(t 
 			if err := runDaemonDoctor(cmd); !errors.Is(err, errDaemonDoctorUnhealthy) {
 				t.Fatalf("runDaemonDoctor error = %v, want unhealthy error", err)
 			}
-			if !strings.Contains(output.String(), tt.want) || !strings.Contains(output.String(), tt.wantRemediation) {
+			got := output.String()
+			_, remediation, found := strings.Cut(got, "\nRemediation:")
+			if !strings.Contains(got, tt.want) || !found || !strings.Contains(remediation, tt.wantRemediation) {
 				t.Fatalf("output missing structural remediation:\n%s", output.String())
 			}
-			if strings.Contains(output.String(), tt.unwantRemediation) {
+			if strings.Contains(remediation, tt.unwantRemediation) {
 				t.Fatalf("output contains incorrect structural remediation:\n%s", output.String())
 			}
 			if strings.Contains(output.String(), "System Settings") || strings.Contains(output.String(), "Files and Folders") {
@@ -434,7 +436,7 @@ func TestRunDaemonDoctorReportsRunningImageUpToDate(t *testing.T) {
 	if !strings.Contains(output.String(), "running executable: "+stagedPath) || !strings.Contains(output.String(), "up to date (started") {
 		t.Fatalf("output missing healthy running-image verdict:\n%s", output.String())
 	}
-	if strings.Contains(output.String(), "Remediation:") || strings.Contains(output.String(), "boss daemon restart") {
+	if strings.Contains(output.String(), "Remediation:") {
 		t.Fatalf("healthy daemon offered remediation:\n%s", output.String())
 	}
 }
@@ -462,7 +464,8 @@ func TestRunDaemonDoctorReportsDeadRecordedPID(t *testing.T) {
 			t.Errorf("output missing %q:\n%s", want, output.String())
 		}
 	}
-	if strings.Contains(output.String(), "run 'boss daemon restart'") {
+	_, remediation, _ := strings.Cut(output.String(), "\nRemediation:")
+	if strings.Contains(remediation, "run 'boss daemon restart'") {
 		t.Fatalf("a dead daemon must not be told to restart:\n%s", output.String())
 	}
 }
@@ -516,6 +519,22 @@ func TestRunDaemonDoctorReportsUnknownStartTimeAsUnknown(t *testing.T) {
 }
 
 func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
+	_, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorState(t, stagedPath, true, nil)
+	appDataDir, err := config.DefaultAppDataDir()
+	if err != nil {
+		t.Fatalf("default app data dir: %v", err)
+	}
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+		PID:                 4242,
+		ExecutablePath:      stagedPath,
+		DaemonID:            "daemon-123",
+		DisplayName:         "studio-mini",
+		DisplayNameOverride: true,
+		TCCProbeCompleted:   true,
+	}); err != nil {
+		t.Fatalf("write daemon state: %v", err)
+	}
 	previous := daemonDoctorGOOS
 	daemonDoctorGOOS = "linux"
 	t.Cleanup(func() { daemonDoctorGOOS = previous })
@@ -539,6 +558,11 @@ func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
 	if !strings.Contains(output.String(), "not applicable") {
 		t.Fatalf("output missing not-applicable status:\n%s", output.String())
 	}
+	for _, want := range []string{"daemon identity: presents as studio-mini", "daemon_name override", "daemon-123", "boss settings --daemon-name <name>"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, output.String())
+		}
+	}
 	// Linux behaviour is unchanged: no staging comparison, no liveness probe,
 	// no launchd spawn history and no macOS startup-failure directive.
 	for _, unwanted := range []string{
@@ -551,6 +575,66 @@ func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
 	}
 	if *spawnCalls != 0 {
 		t.Fatalf("non-darwin doctor probed launchd %d times, want 0", *spawnCalls)
+	}
+}
+
+func TestReportDaemonIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata daemonstate.Metadata
+		wants    []string
+		unwants  []string
+	}{
+		{
+			name:     "machine hostname",
+			metadata: daemonstate.Metadata{DaemonID: "daemon-123", DisplayName: "studio-mini"},
+			wants:    []string{"presents as studio-mini", "machine default", "daemon-123", "boss settings --daemon-name <name>"},
+		},
+		{
+			name:     "unknown name",
+			metadata: daemonstate.Metadata{DaemonID: "daemon-123"},
+			wants:    []string{"presents as unknown", "boss daemon restart", "daemon-123"},
+		},
+		{
+			name:     "missing record",
+			metadata: daemonstate.Metadata{DisplayName: "not rendered"},
+		},
+		{
+			name:     "sanitizes persisted fields",
+			metadata: daemonstate.Metadata{DaemonID: "daemon-\n\u202eid", DisplayName: "studio\n\u202emini", DisplayNameOverride: true},
+			wants:    []string{"studio mini", "daemon id"},
+			unwants:  []string{"\u202e"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			metadataErr := error(nil)
+			if tt.name == "missing record" {
+				metadataErr = os.ErrNotExist
+			}
+			reportDaemonIdentity(&out, tt.metadata, metadataErr)
+			got := out.String()
+			if tt.name == "missing record" {
+				if got != "" {
+					t.Fatalf("missing metadata rendered an identity: %q", got)
+				}
+				return
+			}
+			if strings.Count(got, "\n") != 1 {
+				t.Fatalf("identity report must be one line, got %q", got)
+			}
+			for _, want := range tt.wants {
+				if !strings.Contains(got, want) {
+					t.Errorf("report missing %q: %q", want, got)
+				}
+			}
+			for _, unwanted := range tt.unwants {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("report unexpectedly contains %q: %q", unwanted, got)
+				}
+			}
+		})
 	}
 }
 
@@ -1543,7 +1627,8 @@ func TestRunDaemonDoctorWedgedAuthAloneDoesNotSuggestRestart(t *testing.T) {
 	if !strings.Contains(got, "run 'boss login'") {
 		t.Errorf("output missing the login remedy:\n%s", got)
 	}
-	if strings.Contains(got, "run 'boss daemon restart'") {
+	_, remediation, _ := strings.Cut(got, "\nRemediation:")
+	if strings.Contains(remediation, "run 'boss daemon restart'") {
 		t.Errorf("an auth wedge offered a restart, which cannot fix it:\n%s", got)
 	}
 }
@@ -2404,16 +2489,34 @@ func TestRunDaemonDoctorFailsAnUnreachableSocket(t *testing.T) {
 	home, _, stagedPath := prepareDaemonDoctorInstall(t)
 	writeDaemonDoctorPlist(t, home, stagedPath)
 	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	appDataDir, err := config.DefaultAppDataDir()
+	if err != nil {
+		t.Fatalf("default app data dir: %v", err)
+	}
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+		PID:                 4242,
+		ExecutablePath:      stagedPath,
+		DaemonID:            "daemon-123",
+		DisplayName:         "studio-mini",
+		DisplayNameOverride: true,
+		StartedAt:           time.Now(),
+		TCCProbeCompleted:   true,
+	}); err != nil {
+		t.Fatalf("write daemon state: %v", err)
+	}
 	daemonSocketReachable = func(string) bool { return false }
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&output)
-	err := runDaemonDoctor(cmd)
+	err = runDaemonDoctor(cmd)
 	got := output.String()
 
 	if !errors.Is(err, errDaemonDoctorUnhealthy) {
 		t.Fatalf("a daemon that is not serving must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	if !strings.Contains(got, "daemon identity: presents as studio-mini") {
+		t.Errorf("unreachable daemon omitted its persisted identity:\n%s", got)
 	}
 	socketLine := daemonDoctorLine(t, got, "FAIL daemon socket:")
 	if !strings.Contains(socketLine, "not serving") {

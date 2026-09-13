@@ -1408,12 +1408,15 @@ func run(opts runOpts) error {
 	}
 
 	daemonMetadata := daemonstate.Metadata{
-		PID:            os.Getpid(),
-		ExecutablePath: executablePath,
-		SettingsPath:   settingsPath,
-		SocketPath:     socketPath,
-		StartedAt:      time.Now().UTC(),
-		FileLimitSoft:  achievedFileLimitSoft,
+		PID:                 os.Getpid(),
+		ExecutablePath:      executablePath,
+		SettingsPath:        settingsPath,
+		SocketPath:          socketPath,
+		DaemonID:            tmuxDaemonID,
+		DisplayName:         config.DaemonDisplayName(settings, config.DefaultDisplayHostname(tmuxHostname)),
+		DisplayNameOverride: strings.TrimSpace(settings.DaemonName) != "",
+		StartedAt:           time.Now().UTC(),
+		FileLimitSoft:       achievedFileLimitSoft,
 	}
 	if err := daemonstate.Write(appDataDir, daemonMetadata); err != nil {
 		return err
@@ -3033,9 +3036,10 @@ func run(opts runOpts) error {
 		// rotating hostname) so a hostname change doesn't orphan the old
 		// id's rows in the orchestrator read model. BOSSD_DAEMON_ID still
 		// wins when set; hostname remains the last-resort fallback. The same
-		// call swaps cfg.Hostname for the operator's daemon_name display
-		// override (BOS-662) — presentation only, and applied after the real
-		// hostname has been handed to identity resolution.
+		// call swaps cfg.Hostname for the display name config.DaemonDisplayName
+		// and config.DefaultDisplayHostname derive (BOS-662, BOS-1226) —
+		// presentation only, and applied after the real hostname has been
+		// handed to identity resolution.
 		if idErr := resolveDaemonIdentity(cfg, settings, os.Getenv, appDataDir); idErr != nil {
 			log.Warn().Err(idErr).Str("daemon_id", cfg.DaemonID).Msg("stable daemon id unavailable; using fallback")
 		}
@@ -3576,6 +3580,7 @@ func run(opts runOpts) error {
 		CronScheduler:           cronScheduler,
 		CronActivity:            cronActivity,
 		ChatStatus:              chatStatusTracker,
+		StatusRecomputer:        displayComputer,
 		DisplayTracker:          displayTracker,
 		PRRefresher:             displayPoller,
 		RepairLease:             repairLease,

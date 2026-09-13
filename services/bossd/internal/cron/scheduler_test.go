@@ -286,6 +286,12 @@ func (f *fakeSessionStore) ListArchived(ctx context.Context, repoID string) ([]*
 func (f *fakeSessionStore) ListTmuxSessionNames(ctx context.Context) ([]string, error) {
 	panic("not used")
 }
+
+// SetListRanks satisfies db.SessionStore (BOS-1230). No test in this file
+// exercises the manual list rank, so the stub is inert.
+func (f *fakeSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) (int, error) {
+	return 0, nil
+}
 func (f *fakeSessionStore) Update(ctx context.Context, id string, p db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }

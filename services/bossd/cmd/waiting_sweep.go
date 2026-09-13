@@ -26,7 +26,7 @@ type sessionRecomputer interface {
 }
 
 // sweepWaitingChats re-derives the WAITING state (BOS-668) for every session
-// that currently holds a working chat.
+// that currently holds a working or idle chat.
 //
 // The derivation is otherwise purely event-driven: it runs inside Recompute,
 // which fires on session-store writes and on tracker status TRANSITIONS. Arming
@@ -37,9 +37,9 @@ type sessionRecomputer interface {
 // lifecycle also advances from GitHub webhooks and the reconcile sweep, so a
 // write-path hook would still miss the deliver/expire edges.
 //
-// Cost is bounded by the number of sessions with a working chat, deduped, and
-// the whole thing is skipped when nothing is working — the common case for an
-// idle daemon. SetWaiting only fires its hook on a real reason change, so a PR
+// Cost is bounded by the number of sessions with an active chat status, deduped,
+// and the whole thing is skipped when every chat needs human attention or has
+// stopped. SetWaiting only fires its hook on a real reason change, so a PR
 // that sits armed for an hour produces one stream event, not one per tick.
 func sweepWaitingChats(
 	ctx context.Context,
@@ -52,7 +52,8 @@ func sweepWaitingChats(
 	}
 	seen := map[string]struct{}{}
 	for agentSessionID, entry := range tracker.Snapshot() {
-		if entry == nil || entry.Status != bossanovav1.ChatStatus_CHAT_STATUS_WORKING {
+		if entry == nil || (entry.Status != bossanovav1.ChatStatus_CHAT_STATUS_WORKING &&
+			entry.Status != bossanovav1.ChatStatus_CHAT_STATUS_IDLE) {
 			continue
 		}
 		if ctx.Err() != nil {

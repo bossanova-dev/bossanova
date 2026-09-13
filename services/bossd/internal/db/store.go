@@ -252,6 +252,13 @@ type SessionStore interface {
 	// repo-scoped whitelist would leave other repos' live panes reapable.
 	ListTmuxSessionNames(ctx context.Context) ([]string, error)
 	Update(ctx context.Context, id string, params UpdateSessionParams) (*models.Session, error)
+	// SetListRanks writes sessions.list_rank for the named sessions in one
+	// transaction (BOS-1230). A nil value clears that row's rank, returning it
+	// to the natural block. Rows not named are left byte-identical, so a move
+	// that passes one entry provably does not renumber its siblings. Does not
+	// touch updated_at: a reorder is not a content change, and the recovery
+	// scans order by that column. Returns the number of rows updated.
+	SetListRanks(ctx context.Context, ranks map[string]*int64) (int, error)
 	// UpdateStateConditional runs the conditional `UPDATE sessions SET
 	// state=newState WHERE id=? AND state=expectedState` used as the
 	// idempotency gate for the Stop-hook finalize endpoint. Returns true if

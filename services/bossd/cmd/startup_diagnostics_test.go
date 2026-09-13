@@ -391,12 +391,19 @@ func TestPersistTCCProbeResultsConvertsEveryStatus(t *testing.T) {
 		{Path: "/Missing", Status: tccprobe.StatusAbsent, Err: os.ErrNotExist},
 		{Path: "/Unexpected", Status: tccprobe.StatusError, Err: errors.New("too many open files")},
 	}
-	base := daemonstate.Metadata{PID: 42, ExecutablePath: "/stable/bossd"}
+	base := daemonstate.Metadata{
+		PID:                 42,
+		ExecutablePath:      "/stable/bossd",
+		DaemonID:            "daemon-123",
+		DisplayName:         "studio-mini",
+		DisplayNameOverride: true,
+	}
 	var persisted daemonstate.Metadata
+	stateDir := t.TempDir()
 
-	got := persistTCCProbeResults(zerolog.Nop(), "/state", base, results, func(_ string, metadata daemonstate.Metadata) error {
+	got := persistTCCProbeResults(zerolog.Nop(), stateDir, base, results, func(dir string, metadata daemonstate.Metadata) error {
 		persisted = metadata
-		return nil
+		return daemonstate.Write(dir, metadata)
 	})
 
 	want := []daemonstate.TCCProbeResult{
@@ -412,7 +419,14 @@ func TestPersistTCCProbeResultsConvertsEveryStatus(t *testing.T) {
 	if !reflect.DeepEqual(persisted, got) {
 		t.Fatalf("persisted metadata = %#v, want %#v", persisted, got)
 	}
-	if got.PID != base.PID || got.ExecutablePath != base.ExecutablePath {
+	readBack, err := daemonstate.Read(stateDir)
+	if err != nil {
+		t.Fatalf("read persisted metadata: %v", err)
+	}
+	if !reflect.DeepEqual(readBack, got) {
+		t.Fatalf("read-back metadata = %#v, want %#v", readBack, got)
+	}
+	if got.PID != base.PID || got.ExecutablePath != base.ExecutablePath || got.DaemonID != base.DaemonID || got.DisplayName != base.DisplayName || got.DisplayNameOverride != base.DisplayNameOverride {
 		t.Fatalf("persistTCCProbeResults() lost daemon identity: %#v", got)
 	}
 	if !got.TCCProbeCompleted {

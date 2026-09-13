@@ -494,6 +494,40 @@ func daemonMetadataForDoctor() (daemonstate.Metadata, error) {
 	return daemonstate.Read(profile.AppDataDir)
 }
 
+// reportDaemonIdentity describes the identity the running daemon resolved at
+// startup and presents to the orchestrator. It intentionally consumes the
+// persisted record instead of today's settings: settings may have changed
+// since startup, while this diagnostic must describe the daemon currently
+// registered upstream.
+func reportDaemonIdentity(out io.Writer, metadata daemonstate.Metadata, metadataErr error) {
+	if metadataErr != nil {
+		return
+	}
+
+	name := sanitizeDaemonDoctorField(metadata.DisplayName)
+	if name == "" {
+		_, _ = fmt.Fprintf(out, "daemon identity: presents as unknown (daemon id: %s) — run 'boss daemon restart' to refresh it\n", daemonDoctorIdentityID(metadata.DaemonID))
+		return
+	}
+
+	// The no-override path uses config.DefaultDisplayHostname at daemon
+	// startup. On macOS that may be the operator-facing ComputerName rather
+	// than the raw hostname, so call it a machine default rather than claiming
+	// a more specific source than the persisted record can prove.
+	source := "machine default"
+	if metadata.DisplayNameOverride {
+		source = "daemon_name override"
+	}
+	_, _ = fmt.Fprintf(out, "daemon identity: presents as %s (from %s; daemon id: %s) — rename with 'boss settings --daemon-name <name>' and restart with 'boss daemon restart'\n", name, source, daemonDoctorIdentityID(metadata.DaemonID))
+}
+
+func daemonDoctorIdentityID(id string) string {
+	if id = sanitizeDaemonDoctorField(id); id != "" {
+		return id
+	}
+	return "unknown"
+}
+
 // reportDaemonSupervision answers a question none of the other checks ask: is
 // the bossd that is actually running the one the service manager started?
 //
@@ -1342,6 +1376,7 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// platformGetStatus fills PID on launchd and on systemd alike, so the check
 	// is genuinely cross-platform.
 	supervisionMetadata, supervisionMetadataErr := daemonMetadataForDoctor()
+	reportDaemonIdentity(out, supervisionMetadata, supervisionMetadataErr)
 	// Gathered ONCE for the whole run and threaded down, which is what makes
 	// the claim true rather than merely written: BOS-1204 gave this status
 	// three consumers — the ownership check, the substrate line, the

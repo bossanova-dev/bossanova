@@ -162,6 +162,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchResurrectSession(ctx, cmdID, cmd.GetResurrectSession(), outbound)
 	case *pb.OrchestratorCommand_RemoveSession:
 		return c.dispatchRemoveSession(ctx, cmdID, cmd.GetRemoveSession(), outbound)
+	case *pb.OrchestratorCommand_MoveSession:
+		return c.dispatchMoveSession(ctx, cmdID, cmd.GetMoveSession())
 	case *pb.OrchestratorCommand_EmptyTrash:
 		return c.dispatchEmptyTrash(ctx, cmdID, cmd.GetEmptyTrash(), outbound)
 	case *pb.OrchestratorCommand_CommandCancel:
@@ -652,6 +654,28 @@ func (c *StreamClient) dispatchUpdateSession(ctx context.Context, cmdID string, 
 		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 	}
 	return commandOK(cmdID, sess)
+}
+
+// dispatchMoveSession routes a MoveSessionCommand to the handler. Synchronous,
+// like the other session-scoped mutations: the move is a single indexed row
+// write, not filesystem work.
+//
+// It does NOT reply through commandOK. That helper carries a bare Session, and a
+// boundary move is a SUCCESSFUL no-op whose whole signal is is_moved == false —
+// a Session-only reply would report every such move as an ordinary success and
+// make a held-down key re-render for nothing.
+func (c *StreamClient) dispatchMoveSession(ctx context.Context, cmdID string, req *pb.MoveSessionCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	resp, err := c.commandHandler.MoveSession(ctx, req)
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+		CommandId: cmdID, Ok: true,
+		Payload: &pb.CommandResult_MoveSession{MoveSession: resp},
+	}}}
 }
 
 func (c *StreamClient) dispatchLinkSessionPR(ctx context.Context, cmdID string, req *pb.LinkSessionPRCommand) *pb.DaemonEvent {

@@ -152,6 +152,11 @@ service OrchestratorService {
   rpc ProxyRetrySession(ProxyRetrySessionRequest) returns (ProxyRetrySessionResponse);
   // ProxyUpdateSession updates a session's title/tracker (routes by session_id).
   rpc ProxyUpdateSession(ProxyUpdateSessionRequest) returns (ProxyUpdateSessionResponse);
+  // ProxyMoveSession moves a session up or down the rendered list (routes by
+  // session_id). It is a pure passthrough: the rank arithmetic lives in the
+  // daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
+  // the daemon's answer unchanged.
+  rpc ProxyMoveSession(ProxyMoveSessionRequest) returns (ProxyMoveSessionResponse);
   // ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
   rpc ProxyLinkSessionPR(ProxyLinkSessionPRRequest) returns (ProxyLinkSessionPRResponse);
   // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
@@ -305,12 +310,25 @@ message DaemonInfo {
   string organization_id = 7;
 }
 
+// DaemonRef is the minimal identity needed to filter sessions served by a
+// daemon the caller does not own. It deliberately excludes inventory details
+// such as repositories and connection timestamps.
+message DaemonRef {
+  string daemon_id = 1;
+  string hostname = 2;
+  string organization_id = 3;
+  bool is_online = 4;
+}
+
 message ListDaemonsResponse {
   repeated DaemonInfo daemons = 1;
   // Organizations whose daemon inventory could not be read. Their daemons are
   // absent from `daemons`; the rest of the union is still served. Always empty
   // for explicitly narrowed, legacy-version, and daemon-authenticated reads.
   repeated OrganizationDaemonReadFailure failed_organizations = 2;
+  // Minimal references for peer daemons serving sessions visible to the
+  // caller. This is intentionally distinct from the acting-user inventory.
+  repeated DaemonRef session_daemons = 3;
 }
 
 // One organization whose daemon inventory could not be read during a
@@ -861,6 +879,33 @@ message ProxyUpdateSessionRequest {
   optional string tracker_id = 4;
 }
 message ProxyUpdateSessionResponse { Session session = 1; }
+
+// ProxyMoveSessionRequest mirrors DaemonService.MoveSession: which session,
+// which way, and optionally which repo's list the caller is looking at. It
+// carries a direction rather than a position because the daemon owns the rank
+// arithmetic — two clients must never be able to derive different positions.
+message ProxyMoveSessionRequest {
+  // The session to move.
+  string id = 1;
+  // Which way to move it. UNSPECIFIED is rejected by the daemon rather than
+  // defaulted, so a client that forgets to set it gets an error.
+  MoveDirection direction = 2;
+  // Scope the neighbour computation to one repo, exactly as
+  // ProxyListSessionsRequest.repo_id does. Absent/empty means the cross-repo
+  // list, which is what the web app renders by default.
+  optional string repo_id = 3;
+}
+
+// ProxyMoveSessionResponse is the daemon's MoveSessionResponse, returned
+// unchanged.
+message ProxyMoveSessionResponse {
+  // The session after the move, carrying its updated list_rank.
+  Session session = 1;
+  // False when the move was a successful no-op: the session was already at the
+  // boundary of the list. Boundary moves succeed rather than erroring, so a
+  // held-down key does not start failing.
+  bool is_moved = 2;
+}
 
 message ProxyLinkSessionPRRequest {
   string id = 1;

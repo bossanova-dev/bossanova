@@ -403,6 +403,25 @@ func (c *RemoteClient) UpdateSession(ctx context.Context, req *pb.UpdateSessionR
 	return resp.Msg.GetSession(), nil
 }
 
+// MoveSession has no orchestrator proxy yet. Deliberately distinct from
+// errLocalOnly: reordering is not permanently local — the hosted list learning
+// list_rank is a separate, planned child (BOS-1232) — so the message says "not
+// yet routed" rather than implying it never will be.
+func (c *RemoteClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	return nil, false, connect.NewError(connect.CodeUnimplemented, errors.New(
+		"reordering sessions is only available against a local daemon: MoveSession is not yet routed through the orchestrator"))
+}
+
+// CanMoveSession answers the refusal ABOVE the RPC, so a caller can decline a
+// reorder before painting an optimistic one rather than reordering the list,
+// erroring, and reverting on the next poll.
+//
+// Deliberately NOT a BossClient method: only the client that refuses has
+// anything to say, so absence means capable and neither LocalClient nor any
+// test double pays for it. Delete it when BOS-1232 routes MoveSession through
+// the orchestrator.
+func (c *RemoteClient) CanMoveSession() bool { return false }
+
 func (c *RemoteClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
 	resp, err := c.rpc.ProxyLinkSessionPR(ctx, connect.NewRequest(&pb.ProxyLinkSessionPRRequest{Id: id, Pr: pr}))
 	if err != nil {

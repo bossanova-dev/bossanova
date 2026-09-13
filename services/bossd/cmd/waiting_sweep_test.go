@@ -78,12 +78,11 @@ func TestSweepWaitingChats_RecomputesSessionsWithWorkingChats(t *testing.T) {
 	}
 }
 
-// Recompute is not free, so the sweep must not fan out over chats that can never
-// be promoted: waiting is a refinement of WORKING and nothing else.
-func TestSweepWaitingChats_IgnoresNonWorkingChats(t *testing.T) {
+// A callback may be armed after its agent has become idle, so an idle chat must
+// be recomputed. States needing human attention stay out of the sweep.
+func TestSweepWaitingChats_RecomputesIdleChats(t *testing.T) {
 	tracker, chats, rec := sweepFixture(t)
 	for id, st := range map[string]bossanovav1.ChatStatus{
-		"agent-idle":     bossanovav1.ChatStatus_CHAT_STATUS_IDLE,
 		"agent-question": bossanovav1.ChatStatus_CHAT_STATUS_QUESTION,
 		"agent-limited":  bossanovav1.ChatStatus_CHAT_STATUS_LIMITED,
 		"agent-stopped":  bossanovav1.ChatStatus_CHAT_STATUS_STOPPED,
@@ -91,14 +90,16 @@ func TestSweepWaitingChats_IgnoresNonWorkingChats(t *testing.T) {
 		tracker.Update(id, st, time.Now())
 		chats.chats[id] = &models.AgentChat{AgentSessionID: id, SessionID: "sess-" + id}
 	}
+	tracker.Update("agent-idle", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+	chats.chats["agent-idle"] = &models.AgentChat{AgentSessionID: "agent-idle", SessionID: "sess-idle"}
 
 	sweepWaitingChats(context.Background(), tracker, chats, rec)
 
-	if got := rec.sorted(); len(got) != 0 {
-		t.Fatalf("recomputed %v, want none", got)
+	if got := rec.sorted(); len(got) != 1 || got[0] != "sess-idle" {
+		t.Fatalf("recomputed %v, want [sess-idle]", got)
 	}
-	if chats.calls != 0 {
-		t.Fatalf("chat lookups = %d, want 0 (no working chat to resolve)", chats.calls)
+	if chats.calls != 1 {
+		t.Fatalf("chat lookups = %d, want 1 (the idle chat only)", chats.calls)
 	}
 }
 

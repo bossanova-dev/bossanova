@@ -97,18 +97,6 @@ func confirmedAuthRotationEvent(sessionID, chatID string) db.RotationEvent {
 	}
 }
 
-func unconfirmedAuthRotationEvent(sessionID, chatID string) db.RotationEvent {
-	return db.RotationEvent{
-		ID:        "rot-unconfirmed",
-		SessionID: sessionID,
-		ChatID:    chatID,
-		Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
-		Outcome:   "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED",
-		Detail:    "auth probe did not confirm invalidation",
-		CreatedAt: time.Now(),
-	}
-}
-
 func confirmedAuthRotationProto(chatID ...string) *pb.RotationEvent {
 	id := "agent-1"
 	if len(chatID) > 0 {

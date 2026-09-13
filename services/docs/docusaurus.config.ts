@@ -1,19 +1,30 @@
 import { themes as prismThemes } from 'prism-react-renderer'
 import type { Config } from '@docusaurus/types'
 import type * as Preset from '@docusaurus/preset-classic'
+import { isStagingHost } from './scripts/generate-robots.mjs'
 
 const posthogHost = process.env.PUBLIC_POSTHOG_HOST ?? 'https://k.bossanova.dev'
 const posthogProjectToken = process.env.PUBLIC_POSTHOG_PROJECT_TOKEN
 const bossEnv = process.env.PUBLIC_BOSS_ENV ?? 'production'
 const buildSha = process.env.PUBLIC_BUILD_SHA
+const docsUrl = process.env.PUBLIC_DOCS_URL?.trim() || 'https://docs.bossanova.dev'
+
+function isStagingUrl(url: string) {
+  try {
+    return isStagingHost(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
 
 const config: Config = {
   title: 'Bossanova',
   tagline: 'Hyper efficient orchestration for AI coding agents — fast, lightweight, no Electron.',
   favicon: 'img/favicon.svg',
 
-  url: 'https://docs.bossanova.dev',
+  url: docsUrl,
   baseUrl: '/',
+  noIndex: isStagingUrl(docsUrl),
 
   organizationName: 'bossanova-dev',
   projectName: 'bossanova',

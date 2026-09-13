@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "title": "BOS-1231 hidden alt+up reorders the home session list and the cursor follows",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home session list settled, with no reorder hint on the action bar",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode[\\s\\S]*Fix login bug",
+              "match": "regex",
+              "label": "starting order: Add dark mode renders ABOVE Fix login bug"
+            },
+            {
+              "text": "❯.*Add dark mode",
+              "match": "regex",
+              "label": "chevron starts on the top session (sess-aaa-111)"
+            },
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "action bar advertises [n]ew session"
+            },
+            {
+              "text": "[enter] select",
+              "match": "normalized",
+              "label": "action bar advertises [enter] select"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "action bar advertises [q]uit"
+            }
+          ],
+          "caption": "Baseline order and the whole hint surface: reordering is nowhere on the bar, so the chord pressed next is genuinely hidden"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "select the session that will be moved",
+      "steps": [
+        { "key": "down", "caption": "Move the cursor down onto Fix login bug" },
+        {
+          "waitFor": {
+            "text": "❯.*Fix login bug",
+            "match": "regex",
+            "label": "cursor on Fix login bug (sess-bbb-222)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Fix login bug is selected, one position below Add dark mode"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "alt+up moves the selected session one position earlier",
+      "steps": [
+        {
+          "key": "alt+up",
+          "caption": "Press the hidden alt+up to move Fix login bug up one position"
+        },
+        {
+          "waitFor": {
+            "text": "Fix login bug[\\s\\S]*Add dark mode",
+            "match": "regex",
+            "label": "Fix login bug now renders ABOVE Add dark mode — the order changed"
+          },
+          "timeoutMs": 10000,
+          "caption": "The two sessions swapped places in the rendered list"
+        },
+        {
+          "expect": [
+            {
+              "text": "❯.*Fix login bug",
+              "match": "regex",
+              "label": "chevron followed the session that moved, not the row it vacated"
+            },
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "the session it swapped with is still listed, one row lower"
+            },
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "action bar unchanged: still [n]ew session, still no reorder hint"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "action bar unchanged: still [q]uit"
+            }
+          ],
+          "caption": "Fix login bug moved above Add dark mode, the cursor stayed on it, and the action bar grew nothing"
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "the new order survives the session poll",
+      "steps": [
+        {
+          "waitMs": 6000,
+          "caption": "Wait out several 2s session polls, which reassign the list wholesale"
+        },
+        {
+          "expect": [
+            {
+              "text": "Fix login bug[\\s\\S]*Add dark mode",
+              "match": "regex",
+              "label": "order still Fix login bug above Add dark mode after the poll — the move persisted, it was not a one-frame flicker"
+            },
+            {
+              "text": "❯.*Fix login bug",
+              "match": "regex",
+              "label": "chevron still on the moved session after the poll"
+            }
+          ],
+          "caption": "Several polls later the daemon is still serving the chosen order, with the cursor still on the moved session"
+        }
+      ]
+    }
+  ]
+}

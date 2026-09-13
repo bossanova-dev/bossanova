@@ -2108,8 +2108,30 @@ type Session struct {
 	// frozen lease. While it is set, last_repair_blocked_reason (51) carries the
 	// stall reason.
 	RepairStalledAt *timestamppb.Timestamp `protobuf:"bytes,64,opt,name=repair_stalled_at,json=repairStalledAt,proto3,oneof" json:"repair_stalled_at,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Manual list rank (BOS-1230). Absent — the default for every existing row
+	// and every newly created session — means the session keeps its natural
+	// created_at DESC position. Present means the user explicitly moved it: a
+	// ranked session sorts as part of a block ahead of every unranked one, and
+	// ranked sessions sort among themselves by rank ascending.
+	//
+	// The value is a SPARSE ordering key, not a dense index: gaps are left
+	// between adjacent ranks so moving one session writes exactly one row
+	// instead of renumbering its siblings. Clients MUST treat it as opaque and
+	// compare it only for ordering; the arithmetic lives in the daemon
+	// (MoveSession) so two clients cannot derive different positions.
+	//
+	// BOS-1232 — DEFERRED API-VERSION OBLIGATION. bossd's DaemonService mounts
+	// no apiversion.Interceptor and bosso's session comparators read only
+	// created_at and id, so this field does not yet affect any orchestrator
+	// response ordering and owes no version bump. The moment a bosso comparator
+	// sorts by it, ProxyListSessions ordering becomes observable to a pinned
+	// client and that change owes a date-based apiversion bump plus a
+	// down-convert transform, with tests.
+	//
+	// Persisted as sessions.list_rank.
+	ListRank      *int64 `protobuf:"varint,74,opt,name=list_rank,json=listRank,proto3,oneof" json:"list_rank,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -2651,6 +2673,13 @@ func (x *Session) GetRepairStalledAt() *timestamppb.Timestamp {
 		return x.RepairStalledAt
 	}
 	return nil
+}
+
+func (x *Session) GetListRank() int64 {
+	if x != nil && x.ListRank != nil {
+		return *x.ListRank
+	}
+	return 0
 }
 
 // Attempt represents a fix attempt within a session.
@@ -4919,7 +4948,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHttpEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\x8b!\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\xbb!\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -5006,7 +5035,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"(repo_should_archive_sessions_after_merge\x18= \x01(\bR#repoShouldArchiveSessionsAfterMerge\x12'\n" +
 	"\x0farchive_pending\x18> \x01(\bR\x0earchivePending\x12A\n" +
 	"\x0ehttp_endpoints\x18? \x03(\v2\x1a.bossanova.v1.HttpEndpointR\rhttpEndpoints\x12K\n" +
-	"\x11repair_stalled_at\x18@ \x01(\v2\x1a.google.protobuf.TimestampH\x13R\x0frepairStalledAt\x88\x01\x01B\x13\n" +
+	"\x11repair_stalled_at\x18@ \x01(\v2\x1a.google.protobuf.TimestampH\x13R\x0frepairStalledAt\x88\x01\x01\x12 \n" +
+	"\tlist_rank\x18J \x01(\x03H\x14R\blistRank\x88\x01\x01B\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
@@ -5027,7 +5057,9 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x17_last_agent_activity_atB\r\n" +
 	"\v_account_idB\x10\n" +
 	"\x0e_account_labelB\x14\n" +
-	"\x12_repair_stalled_at\"\xc0\x02\n" +
+	"\x12_repair_stalled_atB\f\n" +
+	"\n" +
+	"_list_rank\"\xc0\x02\n" +
 	"\aAttempt\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

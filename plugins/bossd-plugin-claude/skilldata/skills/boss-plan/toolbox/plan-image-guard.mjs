@@ -1071,8 +1071,16 @@ function verifyVerbatimOriginalNotes(originalText, rewrittenText) {
   const strippedOriginal = original.replace(/\n+$/, '')
   const strippedRewritten = rewritten.replace(/\n+$/, '')
   if (strippedOriginal === strippedRewritten) {
+    // Terminal newlines are the ONE difference this comparison can see that cannot carry reporter
+    // content: the two texts are identical up to them, which this branch has just established. It
+    // used to fail the run anyway, which meant a pre-write gate could refuse a correct plan over
+    // whitespace at end-of-file and send the agent round again to add or drop a `\n`. Warn instead
+    // — the observation is still worth surfacing, it is just not worth withholding a write for.
     const line = Math.max(1, Math.min(originalLineCount || 1, rewrittenLineCount || 1))
-    return `plan-image-guard: ## Original notes trailing newline differs at line ${line} (original lines: ${originalLineCount}, rewritten lines: ${rewrittenLineCount})`
+    console.error(
+      `plan-image-guard: ## Original notes trailing newline differs at line ${line} (original lines: ${originalLineCount}, rewritten lines: ${rewrittenLineCount}) — the blocks are otherwise identical, so this is reported, not fatal`,
+    )
+    return null
   }
 
   const originalLine = originalLines[differingIndex] ?? ''

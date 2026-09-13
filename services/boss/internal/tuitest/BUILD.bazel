@@ -30,6 +30,7 @@ go_test(
         "fixtureenv_perm_test.go",
         "fixtureenv_test.go",
         "harness_test.go",
+        "home_reorder_test.go",
         "home_test.go",
         "login_subscription_test.go",
         "login_test.go",

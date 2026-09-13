@@ -1631,17 +1631,86 @@ func TestGeneralSettings_DaemonNameOverrideWinsWhenHostnameUnresolvable(t *testi
 func TestGeneralSettings_CapturesMachineHostnameAtConstruction(t *testing.T) {
 	withTempConfigHome(t)
 	// Every other daemon-name test pins m.hostname for determinism, so this is
-	// the only assertion that the constructor captures it at all — without it,
+	// the only assertion that the constructor derives it at all — without it,
 	// dropping the capture would leave the row rendering "unknown" in
 	// production while the suite stayed green.
-	want, err := os.Hostname()
+	//
+	// The expected value is the DERIVED default, not the raw OS hostname: the
+	// row's whole promise is that it shows what bossd will advertise, and bossd
+	// advertises config.DefaultDisplayHostname of the machine hostname. Routing
+	// the expectation through the same helper is what pins R4 — a local
+	// re-implementation in the view is exactly the drift this catches.
+	machineHostname, err := os.Hostname()
 	if err != nil {
 		t.Skipf("os.Hostname unavailable: %v", err)
 	}
+	want := config.DefaultDisplayHostname(machineHostname)
 
 	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
 	if m.hostname != want {
-		t.Fatalf("hostname = %q, want the machine hostname %q", m.hostname, want)
+		t.Fatalf("hostname = %q, want the derived display default %q (machine hostname %q)", m.hostname, want, machineHostname)
+	}
+}
+
+// TestGeneralSettings_DerivesTheInjectedMachineHostname is the non-vacuous half
+// of the constructor pin. TestGeneralSettings_CapturesMachineHostnameAtConstruction
+// above routes its expectation through the same helper the constructor calls, so
+// on any host where the real hostname derives to itself — every Linux CI runner,
+// whose computerName() is the compile-time ("", false) and whose hostname carries
+// no .lan/.local — it holds with the derivation deleted.
+//
+// Injecting "mac.lan" removes that degree of freedom on BOTH platforms: on
+// !darwin the derivation strips it to "mac", on darwin the probe answers with
+// this host's ComputerName. Either way the stored value differs from the raw
+// input, so dropping config.DefaultDisplayHostname from the constructor goes red
+// everywhere.
+func TestGeneralSettings_DerivesTheInjectedMachineHostname(t *testing.T) {
+	withTempConfigHome(t)
+	const raw = "mac.lan"
+
+	m := newGeneralSettingsModelWith(
+		&settingsAgentStub{stubClient: &stubClient{}},
+		context.Background(),
+		func() (string, error) { return raw, nil },
+	)
+
+	want := config.DefaultDisplayHostname(raw)
+	if want == raw {
+		t.Fatalf("config.DefaultDisplayHostname(%q) = %q: the derivation is a no-op here, so this test cannot discriminate", raw, want)
+	}
+	if m.hostname != want {
+		t.Fatalf("hostname = %q, want the derived display default %q for machine hostname %q", m.hostname, want, raw)
+	}
+	if m.hostname == raw {
+		t.Fatalf("hostname = %q: the constructor stored the RAW machine hostname instead of the derived display default", m.hostname)
+	}
+}
+
+// TestGeneralSettings_PreviewsTheSameNameBossdAdvertises pins R4 at the RENDER
+// layer only: given an already-derived hostname, the row must compose it with
+// config.DaemonDisplayName exactly as bossd does, and must not print the
+// underived value alongside it. It pins nothing about the constructor — the
+// daemonNameRow helper assigns m.hostname, so the render never sees a raw
+// hostname and deleting the constructor's derivation leaves this green. The
+// constructor is pinned by TestGeneralSettings_DerivesTheInjectedMachineHostname.
+func TestGeneralSettings_PreviewsTheSameNameBossdAdvertises(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+
+	const machineHostname = "mac.lan"
+	derived := config.DefaultDisplayHostname(machineHostname)
+	if derived == machineHostname {
+		t.Skipf("this host derives %q from %q, so the preview assertion would be vacuous", derived, machineHostname)
+	}
+	m = daemonNameRow(t, m, derived)
+
+	view := m.View().Content
+	want := "Daemon name: " + derived + " (machine hostname; restart daemon to apply)"
+	if !strings.Contains(view, want) {
+		t.Errorf("row should preview the derived default %q. Got:\n%s", want, view)
+	}
+	if strings.Contains(view, "Daemon name: "+machineHostname) {
+		t.Errorf("row previewed the raw machine hostname %q instead of the derived default. Got:\n%s", machineHostname, view)
 	}
 }
 

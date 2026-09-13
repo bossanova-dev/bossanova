@@ -76,10 +76,11 @@ type GeneralSettingsModel struct {
 	pollIntervalInput textinput.Model
 	stringInput       textinput.Model // shared for plugin String rows
 
-	// hostname is this machine's OS hostname, shown as the daemon name's
-	// resolved default when no override is configured. Captured once at
-	// construction so the row renders the same value the daemon would fall
-	// back to; tests pin it for deterministic rendering.
+	// hostname is the daemon name's resolved default when no override is
+	// configured: config.DefaultDisplayHostname of this machine's OS hostname,
+	// NOT the raw hostname. Derived once at construction through the same helper
+	// bossd uses, so the row cannot drift from what the daemon will report;
+	// tests pin the field directly for deterministic rendering.
 	hostname string
 
 	width int
@@ -112,6 +113,17 @@ func (m GeneralSettingsModel) hostnameForDisplay() string {
 // sections. A nil client (legacy callers / tests) renders only the built-in
 // rows.
 func NewGeneralSettingsModel(c client.BossClient, ctx context.Context) GeneralSettingsModel {
+	return newGeneralSettingsModelWith(c, ctx, os.Hostname)
+}
+
+// newGeneralSettingsModelWith is NewGeneralSettingsModel with the machine
+// hostname injected, mirroring bossd's resolveDaemonIdentityWith. The seam
+// exists so a test can hand in a hostname the derivation demonstrably changes
+// ("mac.lan"): the constructor's real hostname is whatever the test host
+// reports, and on a CI runner that derives to itself, so an expectation routed
+// through config.DefaultDisplayHostname holds whether or not the constructor
+// derives at all.
+func newGeneralSettingsModelWith(c client.BossClient, ctx context.Context, machineHostnameFn func() (string, error)) GeneralSettingsModel {
 	s, _ := config.Load()
 
 	wtIn := textinput.New()
@@ -129,7 +141,11 @@ func NewGeneralSettingsModel(c client.BossClient, ctx context.Context) GeneralSe
 	strIn := textinput.New()
 	strIn.SetWidth(40)
 
-	hostname, _ := os.Hostname()
+	// Presentation only: derive through the SAME helper bossd uses, never a
+	// local re-implementation, or the row previews a name the daemon will not
+	// advertise. See CONCEPTS.md, "Daemon display name".
+	machineHostname, _ := machineHostnameFn()
+	hostname := config.DefaultDisplayHostname(machineHostname)
 
 	m := GeneralSettingsModel{
 		client:            c,
@@ -965,15 +981,18 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 		}
 		line = fmt.Sprintf("%s: %s", row.Label, val)
 	case settingsRowKindDaemonName:
-		// Resolve through config.DaemonDisplayName against the RAW hostname —
-		// never a local re-implementation and never a placeholder — so the value
-		// shown is exactly what bossd will advertise after its next start.
+		// Resolve through config.DaemonDisplayName against the DERIVED machine
+		// default m.hostname already holds — never a local re-implementation and
+		// never a placeholder — so the value shown is exactly what bossd will
+		// advertise after its next start. bossd composes the same two helpers in
+		// the same order (services/bossd/cmd/daemon_identity.go).
 		switch resolved := config.DaemonDisplayName(m.settings, m.hostname); {
 		case strings.TrimSpace(m.settings.DaemonName) != "":
 			line = fmt.Sprintf("%s: %s (%s)", row.Label, resolved, daemonRestartHint)
 		case strings.TrimSpace(resolved) == "":
-			// os.Hostname() failed and there is no override, so bossd would
-			// advertise an empty hostname — which bosso rejects at registration.
+			// os.Hostname() failed, the derivation found nothing to offer in its
+			// place, and there is no override — so bossd would advertise an
+			// empty hostname, which bosso rejects at registration.
 			// Rendering a placeholder here would read as a name; this is a
 			// prompt to set one.
 			line = fmt.Sprintf("%s: (machine hostname unavailable — set a name; %s)", row.Label, daemonRestartHint)

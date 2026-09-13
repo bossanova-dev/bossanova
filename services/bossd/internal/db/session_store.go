@@ -267,6 +267,25 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 	return s.Get(ctx, id)
 }
 
+// sessionListOrderSQL is the ordering rule every USER-FACING session list read
+// applies (BOS-1230). In order: a row carrying a manual rank sorts ahead of
+// every row without one; then rank ascending; then the natural rule this
+// replaced, created_at descending; then id ascending so the order is TOTAL and
+// no two sessions ever compare equal.
+//
+// `(s.list_rank IS NULL) ASC` is the ranked-before-unranked key: SQLite
+// evaluates it to 0 for a ranked row and 1 for an unranked one, so ascending
+// puts the ranked block first without relying on SQLite's NULL-ordering
+// default. The last two clauses are today's rule unchanged, which is what
+// keeps every unranked session exactly where it already was.
+//
+// Deliberately NOT applied to ListByState / ListByStates (daemon-startup and
+// stranded-cron recovery scans, ordered by updated_at and never rendered),
+// ListByRepoAndPR (a PR-keyed lookup whose order is an implementation detail
+// of a match), or ListArchived (a manual rank on a row the user archived has
+// no meaning). Those reads keep their current clause byte-identical.
+const sessionListOrderSQL = " ORDER BY (s.list_rank IS NULL) ASC, s.list_rank ASC, s.created_at DESC, s.id ASC"
+
 func (s *SQLiteSessionStore) Get(ctx context.Context, id string) (*models.Session, error) {
 	row := s.db.QueryRowContext(ctx, sessionSelectSQL+" WHERE s.id = ?", id)
 	return scanSession(row)
@@ -274,10 +293,10 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, id string) (*models.Sessio
 
 func (s *SQLiteSessionStore) List(ctx context.Context, repoID string) ([]*models.Session, error) {
 	if repoID == "" {
-		query := sessionSelectSQL + " ORDER BY s.created_at DESC"
+		query := sessionSelectSQL + sessionListOrderSQL
 		return s.querySessionList(ctx, query)
 	}
-	query := sessionSelectSQL + " WHERE s.repo_id = ? ORDER BY s.created_at DESC"
+	query := sessionSelectSQL + " WHERE s.repo_id = ?" + sessionListOrderSQL
 	return s.querySessionList(ctx, query, repoID)
 }
 
@@ -345,10 +364,10 @@ func (s *SQLiteSessionStore) ListTmuxSessionNames(ctx context.Context) ([]string
 
 func (s *SQLiteSessionStore) ListActive(ctx context.Context, repoID string) ([]*models.Session, error) {
 	if repoID == "" {
-		query := sessionSelectSQL + " WHERE s.archived_at IS NULL ORDER BY s.created_at DESC"
+		query := sessionSelectSQL + " WHERE s.archived_at IS NULL" + sessionListOrderSQL
 		return s.querySessionList(ctx, query)
 	}
-	query := sessionSelectSQL + " WHERE s.repo_id = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC"
+	query := sessionSelectSQL + " WHERE s.repo_id = ? AND s.archived_at IS NULL" + sessionListOrderSQL
 	return s.querySessionList(ctx, query, repoID)
 }
 
@@ -362,7 +381,7 @@ func (s *SQLiteSessionStore) ListActiveWithRepo(ctx context.Context, repoID stri
 		query += " AND s.repo_id = ?"
 		args = append(args, repoID)
 	}
-	query += " ORDER BY s.created_at DESC"
+	query += sessionListOrderSQL
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -384,7 +403,7 @@ func (s *SQLiteSessionStore) ListWithRepo(ctx context.Context, repoID string) ([
 		query += " WHERE s.repo_id = ?"
 		args = append(args, repoID)
 	}
-	query += " ORDER BY s.created_at DESC"
+	query += sessionListOrderSQL
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -745,7 +764,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
-	s.rotation_attempt_count, s.rotation_resume_at, s.account_id
+	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -760,7 +779,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
-	s.rotation_attempt_count, s.rotation_resume_at, s.account_id,
+	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank,
 	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -801,7 +820,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
-		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &repoDisplayName, &repoOriginURL)
+		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank, &repoDisplayName, &repoOriginURL)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -853,7 +872,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
-		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID)
+		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank)
 	if err != nil {
 		return nil, err
 	}

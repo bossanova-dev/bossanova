@@ -115,3 +115,9 @@ func TestApplyE2ECrossOrgSessionsWithholdsTheFailedOrganization(t *testing.T) {
 		t.Fatalf("ListSessions served %d sessions, want the same 1", len(only))
 	}
 }
+
+// MoveSession satisfies the BossClient seam (BOS-1231). This stub is not part
+// of a reorder test, so a call is a bug in the view under test.
+func (s *stubCrossOrgClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	panic("unused")
+}

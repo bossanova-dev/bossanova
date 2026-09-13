@@ -72,6 +72,9 @@ const (
 	// DaemonServiceListSessionsProcedure is the fully-qualified name of the DaemonService's
 	// ListSessions RPC.
 	DaemonServiceListSessionsProcedure = "/bossanova.v1.DaemonService/ListSessions"
+	// DaemonServiceMoveSessionProcedure is the fully-qualified name of the DaemonService's MoveSession
+	// RPC.
+	DaemonServiceMoveSessionProcedure = "/bossanova.v1.DaemonService/MoveSession"
 	// DaemonServiceAttachSessionProcedure is the fully-qualified name of the DaemonService's
 	// AttachSession RPC.
 	DaemonServiceAttachSessionProcedure = "/bossanova.v1.DaemonService/AttachSession"
@@ -281,6 +284,15 @@ type DaemonServiceClient interface {
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.ServerStreamForClient[v1.CreateSessionResponse], error)
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
 	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
+	// MoveSession moves one session up or down relative to its current
+	// neighbours in the rendered session list and returns the refreshed session.
+	// The move arithmetic lives here rather than in each client so that no two
+	// clients can derive different positions from the same list. Note the web
+	// app cannot reach this RPC yet, and bosso still sorts sessions by
+	// created_at, so until BOS-1232 teaches it list_rank a move reorders the TUI
+	// list while the web list is unchanged — the guarantee is the destination,
+	// not yet the interim state.
+	MoveSession(context.Context, *connect.Request[v1.MoveSessionRequest]) (*connect.Response[v1.MoveSessionResponse], error)
 	AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest]) (*connect.ServerStreamForClient[v1.AttachSessionResponse], error)
 	StopSession(context.Context, *connect.Request[v1.StopSessionRequest]) (*connect.Response[v1.StopSessionResponse], error)
 	PauseSession(context.Context, *connect.Request[v1.PauseSessionRequest]) (*connect.Response[v1.PauseSessionResponse], error)
@@ -603,6 +615,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceListSessionsProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ListSessions")),
+			connect.WithClientOptions(opts...),
+		),
+		moveSession: connect.NewClient[v1.MoveSessionRequest, v1.MoveSessionResponse](
+			httpClient,
+			baseURL+DaemonServiceMoveSessionProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("MoveSession")),
 			connect.WithClientOptions(opts...),
 		),
 		attachSession: connect.NewClient[v1.AttachSessionRequest, v1.AttachSessionResponse](
@@ -1007,6 +1025,7 @@ type daemonServiceClient struct {
 	createSession               *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
 	getSession                  *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
 	listSessions                *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
+	moveSession                 *connect.Client[v1.MoveSessionRequest, v1.MoveSessionResponse]
 	attachSession               *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
 	stopSession                 *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
 	pauseSession                *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
@@ -1136,6 +1155,11 @@ func (c *daemonServiceClient) GetSession(ctx context.Context, req *connect.Reque
 // ListSessions calls bossanova.v1.DaemonService.ListSessions.
 func (c *daemonServiceClient) ListSessions(ctx context.Context, req *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error) {
 	return c.listSessions.CallUnary(ctx, req)
+}
+
+// MoveSession calls bossanova.v1.DaemonService.MoveSession.
+func (c *daemonServiceClient) MoveSession(ctx context.Context, req *connect.Request[v1.MoveSessionRequest]) (*connect.Response[v1.MoveSessionResponse], error) {
+	return c.moveSession.CallUnary(ctx, req)
 }
 
 // AttachSession calls bossanova.v1.DaemonService.AttachSession.
@@ -1477,6 +1501,15 @@ type DaemonServiceHandler interface {
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest], *connect.ServerStream[v1.CreateSessionResponse]) error
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
 	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
+	// MoveSession moves one session up or down relative to its current
+	// neighbours in the rendered session list and returns the refreshed session.
+	// The move arithmetic lives here rather than in each client so that no two
+	// clients can derive different positions from the same list. Note the web
+	// app cannot reach this RPC yet, and bosso still sorts sessions by
+	// created_at, so until BOS-1232 teaches it list_rank a move reorders the TUI
+	// list while the web list is unchanged — the guarantee is the destination,
+	// not yet the interim state.
+	MoveSession(context.Context, *connect.Request[v1.MoveSessionRequest]) (*connect.Response[v1.MoveSessionResponse], error)
 	AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest], *connect.ServerStream[v1.AttachSessionResponse]) error
 	StopSession(context.Context, *connect.Request[v1.StopSessionRequest]) (*connect.Response[v1.StopSessionResponse], error)
 	PauseSession(context.Context, *connect.Request[v1.PauseSessionRequest]) (*connect.Response[v1.PauseSessionResponse], error)
@@ -1795,6 +1828,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceListSessionsProcedure,
 		svc.ListSessions,
 		connect.WithSchema(daemonServiceMethods.ByName("ListSessions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceMoveSessionHandler := connect.NewUnaryHandler(
+		DaemonServiceMoveSessionProcedure,
+		svc.MoveSession,
+		connect.WithSchema(daemonServiceMethods.ByName("MoveSession")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceAttachSessionHandler := connect.NewServerStreamHandler(
@@ -2209,6 +2248,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceListSessionsProcedure:
 			daemonServiceListSessionsHandler.ServeHTTP(w, r)
+		case DaemonServiceMoveSessionProcedure:
+			daemonServiceMoveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceAttachSessionProcedure:
 			daemonServiceAttachSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceStopSessionProcedure:
@@ -2396,6 +2437,10 @@ func (UnimplementedDaemonServiceHandler) GetSession(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListSessions is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) MoveSession(context.Context, *connect.Request[v1.MoveSessionRequest]) (*connect.Response[v1.MoveSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.MoveSession is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest], *connect.ServerStream[v1.AttachSessionResponse]) error {

@@ -6,7 +6,7 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -737,6 +737,34 @@ describe('checkPlanContract — each violation code fires', () => {
       ].join('\n'),
     )
     assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description), [])
+  })
+
+  test('verify-only command vacuity guard keeps new operand findings in its dynamic family', () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), 'boss-plan-contract-operands-'))
+    try {
+      writeFileSync(path.join(tmp, 'Makefile'), 'defined:\n\t@true\n')
+      const withCheck = (command) =>
+        conformant().replace(
+          '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+          `## Acceptance criteria\n\n- [ ] (verify-only) criterion — check: \`${command}\``,
+        )
+      assert.deepEqual(
+        checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, withCheck('make absent'), { cwd: tmp }).map(
+          (finding) => finding.code,
+        ),
+        ['vacuous-criterion-command-make-goal-undefined'],
+      )
+      assert.deepEqual(
+        checkVerifyOnlyCommandVacuity(
+          DEFAULT_CONFIG,
+          withCheck('node --test missing-dir/new.test.mjs'),
+          { cwd: tmp },
+        ).map((finding) => finding.code),
+        ['vacuous-criterion-command-path-operand-missing'],
+      )
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   test('verify-only command vacuity guard stays silent for sound commands', () => {

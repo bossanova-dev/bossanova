@@ -84,6 +84,12 @@ func (s *reaperSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, 
 	return s.recordedNames, nil
 }
 
+// SetListRanks satisfies db.SessionStore (BOS-1230). No test in this file
+// exercises the manual list rank, so the stub is inert.
+func (s *reaperSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) (int, error) {
+	return 0, nil
+}
+
 // reaperChatStore embeds the package's existing mock and overrides only the
 // global read the whitelist is assembled from.
 type reaperChatStore struct {

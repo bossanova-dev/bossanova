@@ -221,6 +221,261 @@ func (h HomeModel) handleSessionRenamed(msg sessionRenamedMsg) (tea.Model, tea.C
 	return h, nil
 }
 
+// moveSessionCmd asks the daemon to move one session up or down relative to its
+// neighbours (BOS-1231). Like renameSessionCmd everything is captured by value,
+// so the 2s poll replacing h.sessions between the keypress and the reply cannot
+// change what was requested. The neighbour arithmetic deliberately stays in the
+// daemon — the TUI sends a direction, never a target rank, so two clients
+// cannot derive different positions from the same list.
+//
+// No repo_id is set: Home renders the unfiltered cross-repo list, so the
+// neighbours the daemon reasons about are exactly the rows on screen.
+func moveSessionCmd(c client.BossClient, ctx context.Context, sessionID string, direction pb.MoveDirection) tea.Cmd {
+	return func() tea.Msg {
+		_, moved, err := c.MoveSession(ctx, &pb.MoveSessionRequest{
+			Id:        sessionID,
+			Direction: direction,
+		})
+		return sessionMovedMsg{sessionID: sessionID, moved: moved, err: err}
+	}
+}
+
+// moveSelectedSession swaps the selected session with the neighbour in the
+// given direction, records the optimistic order, and returns the RPC command.
+// A move at the boundary of the list is a no-op: the caller still reports the
+// key as handled, but nothing is reordered, no override is recorded and no RPC
+// is sent — the daemon would answer is_moved=false to the same effect, and not
+// asking keeps a held-down key from issuing a round trip per repeat.
+func (h HomeModel) moveSelectedSession(direction pb.MoveDirection) (HomeModel, tea.Cmd) {
+	if !sessionReorderAvailable(h.client) {
+		// Refuse BEFORE painting. Against the hosted orchestrator MoveSession is
+		// a hard Unimplemented, so swapping the slice first would reorder the
+		// board, report a failure, and revert on the next poll — one honest
+		// message beats a flicker plus that message.
+		h.status, h.statusErr = "Reordering sessions is only available against a local daemon", true
+		h.table.SetHeight(h.tableHeight())
+		return h, nil
+	}
+	sess := h.selectedSession()
+	if sess == nil {
+		return h, nil
+	}
+	index := -1
+	for i, s := range h.sessions {
+		if s.GetId() == sess.GetId() {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return h, nil
+	}
+	target := index - 1
+	if direction == pb.MoveDirection_MOVE_DIRECTION_DOWN {
+		target = index + 1
+	}
+	if target < 0 || target >= len(h.sessions) {
+		// Boundary: unchanged order, unchanged cursor, nothing reported.
+		return h, nil
+	}
+
+	// Copy before swapping: h.sessions is the very slice applySessionList
+	// handed to notifyForSessions, which a tea.Cmd goroutine can still be
+	// reading. Reordering in place would race that read.
+	reordered := make([]*pb.Session, len(h.sessions))
+	copy(reordered, h.sessions)
+	reordered[index], reordered[target] = reordered[target], reordered[index]
+	h.sessions = reordered
+	h.moveOverrideOrder = sessionIDOrder(reordered)
+	h.buildTableRows()
+	// Pin the cursor to the session that moved, by id rather than by row: one
+	// session can render several rows (endpoint, waiting and warning sub-rows),
+	// so the row it vacated is not in general the row it now occupies, and the
+	// row it vacated may not even be a session's primary row. Set directly
+	// rather than through restoreTableCursor, which would consume a pending
+	// highlightSessionID that belongs to the chat picker's return path.
+	if row, ok := h.tableCursorForSessionID(sess.GetId()); ok {
+		h.table.SetCursor(row)
+		updateCursorColumn(&h.table)
+	}
+	// One request at a time. Dispatching each press as its own tea.Cmd lets
+	// bubbletea run them concurrently, so the daemon can serve alt+down and
+	// alt+up in the opposite order to the keypresses — the first then lands as
+	// a boundary no-op and the persisted order contradicts what was typed. The
+	// board has already moved above; only the RPC queues.
+	queued := queuedMove{sessionID: sess.GetId(), direction: direction}
+	if h.moveInFlight > 0 {
+		// Copy before appending: HomeModel is passed by value, so appending in
+		// place could write through a backing array this model shares with the
+		// one it was copied from.
+		h.movePending = append(append([]queuedMove(nil), h.movePending...), queued)
+		return h, nil
+	}
+	h.moveInFlight++
+	return h, moveSessionCmd(h.client, h.ctx, queued.sessionID, queued.direction)
+}
+
+// sessionReorderCapable is the optional capability moveSelectedSession consults
+// before painting an optimistic reorder. Only a client that CANNOT serve
+// MoveSession implements it — the hosted orchestrator, until BOS-1232 — so
+// absence means capable and LocalClient and every test double are untouched.
+type sessionReorderCapable interface {
+	CanMoveSession() bool
+}
+
+// sessionReorderAvailable reports whether the reorder chords can do anything at
+// all against this client.
+func sessionReorderAvailable(c client.BossClient) bool {
+	capable, ok := c.(sessionReorderCapable)
+	return !ok || capable.CanMoveSession()
+}
+
+// queuedMove is a reorder chord whose RPC has not been sent yet.
+type queuedMove struct {
+	sessionID string
+	direction pb.MoveDirection
+}
+
+// moveSettled reports that no reorder work is outstanding: nothing in flight
+// and nothing queued behind it. It is the condition for releasing
+// moveOverrideOrder, because a queued move has not reached the daemon at all —
+// every poll is necessarily older than its write.
+func (h HomeModel) moveSettled() bool {
+	return h.moveInFlight == 0 && len(h.movePending) == 0
+}
+
+// handleSessionMoved records a MoveSession result. A successful move needs no
+// patch — the optimistic order already shows it, and the poll will confirm it.
+//
+// A failure drops the override and says so on the status line. The locally
+// reordered slice is deliberately left alone rather than un-swapped: the next
+// poll is at most one interval away and carries the daemon's real order, which
+// is the authority — reconstructing the pre-move order here would be a second
+// guess at the same answer, and would be wrong if a poll had landed in between.
+func (h HomeModel) handleSessionMoved(msg sessionMovedMsg) (tea.Model, tea.Cmd) {
+	if h.moveInFlight > 0 {
+		h.moveInFlight--
+	}
+	// Each press overwrites moveOverrideOrder with the newest full order, so on
+	// a SUCCESSFUL reply the override may describe a chord queued behind this
+	// one rather than this one's result: clearing it there would let a poll
+	// issued before that write flash the row back — the exact flicker the
+	// override exists to prevent. Hence moveSettled below. A failure is
+	// different: it empties the queue, so nothing is left for the override to
+	// describe.
+	if msg.err != nil {
+		// Requests are serialized, so this is the only one that reached the
+		// daemon, and every chord queued behind it was computed against a local
+		// order the daemon never accepted. Drop the queue with the override
+		// rather than send requests derived from it; the next poll is the
+		// authority.
+		h.movePending = nil
+		h.moveOverrideOrder = nil
+		h.status, h.statusErr = rpcStatusMessage("Move failed", msg.err), true
+		h.table.SetHeight(h.tableHeight())
+		return h, nil
+	}
+	if !msg.moved && h.moveSettled() {
+		// A successful no-op: the daemon found the session already at the
+		// boundary (the list moved under us between keypress and RPC). Drop the
+		// override so the next poll's order wins; never surface an error.
+		h.moveOverrideOrder = nil
+	}
+	if len(h.movePending) > 0 {
+		// Release the next chord now that the daemon has answered this one, so
+		// it reasons about a list that already carries the previous move.
+		next := h.movePending[0]
+		h.movePending = h.movePending[1:]
+		h.moveInFlight++
+		return h, moveSessionCmd(h.client, h.ctx, next.sessionID, next.direction)
+	}
+	return h, nil
+}
+
+// sessionIDOrder projects a session slice onto its id sequence.
+func sessionIDOrder(sessions []*pb.Session) []string {
+	ids := make([]string, len(sessions))
+	for i, s := range sessions {
+		ids[i] = s.GetId()
+	}
+	return ids
+}
+
+// applyMoveOverride re-imposes the locally chosen order on a fresh poll, and
+// reports whether the override is still needed.
+//
+// It permutes only the positions held by sessions the override names: every
+// other session keeps exactly the slot the daemon gave it, so a session created
+// since the chord was pressed lands where the daemon put it rather than being
+// shuffled by stale local state.
+//
+// The override is dropped — "the server's own answer supersedes it" — on the
+// first poll that arrives with no move RPC outstanding, WHATEVER order that
+// poll carries. Agreement is deliberately not the release condition: the
+// daemon's move is multi-position in general, so an override released only on
+// exact agreement would never be released at all after one. Holding it while an
+// RPC is in flight is what stops a poll issued before the write from flashing
+// the row back to where it started.
+func (h HomeModel) applyMoveOverride(incoming []*pb.Session) ([]*pb.Session, []string) {
+	if len(h.moveOverrideOrder) == 0 {
+		return incoming, nil
+	}
+	rank := make(map[string]int, len(h.moveOverrideOrder))
+	for i, id := range h.moveOverrideOrder {
+		rank[id] = i
+	}
+
+	// The slots the override is allowed to permute, and the sessions in them.
+	slots := make([]int, 0, len(incoming))
+	known := make([]*pb.Session, 0, len(incoming))
+	for i, sess := range incoming {
+		if _, ok := rank[sess.GetId()]; ok {
+			slots = append(slots, i)
+			known = append(known, sess)
+		}
+	}
+	if len(known) == 0 {
+		// Every session the override named is gone; it can say nothing about
+		// this list.
+		return incoming, nil
+	}
+
+	ordered := make([]*pb.Session, len(known))
+	copy(ordered, known)
+	sortSessionsByRank(ordered, rank)
+
+	if h.moveSettled() {
+		// Nothing is outstanding, so this poll already carries the daemon's own
+		// answer to the move — and the daemon is the authority even when that
+		// answer is NOT the adjacent swap the chord optimistically rendered. A
+		// rank move is multi-position in both directions (an unranked row joins
+		// the END of the ranked block on the way up, so from the third row it
+		// rises to the top; the last ranked row clears its rank and falls to its
+		// created_at slot on the way down — see db.ComputeListRankMove).
+		// Releasing the override only when the incoming order happened to match
+		// it would re-impose a wrong local order on every future poll, forever,
+		// and mask every later reorder from any source.
+		return incoming, nil
+	}
+
+	reordered := make([]*pb.Session, len(incoming))
+	copy(reordered, incoming)
+	for i, slot := range slots {
+		reordered[slot] = ordered[i]
+	}
+	return reordered, h.moveOverrideOrder
+}
+
+// sortSessionsByRank orders sessions by their position in rank. Insertion sort
+// keeps it stable and allocation-free; the session list is tens of rows.
+func sortSessionsByRank(sessions []*pb.Session, rank map[string]int) {
+	for i := 1; i < len(sessions); i++ {
+		for j := i; j > 0 && rank[sessions[j].GetId()] < rank[sessions[j-1].GetId()]; j-- {
+			sessions[j], sessions[j-1] = sessions[j-1], sessions[j]
+		}
+	}
+}
+
 // sessionByID returns the session with the given id, or nil when none matches
 // (including the empty id). Callers pass the result to nil-safe helpers.
 func sessionByID(sessions []*pb.Session, id string) *pb.Session {
@@ -432,7 +687,10 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	// selected. See BOS-367.
 	selectedID := h.selectedSessionID()
 	notifyCmd := h.notifyNewQuestions(msg.sessions)
-	h.sessions = msg.sessions
+	// Re-impose any order the reorder chords chose locally, before the rows are
+	// built from it. applyMoveOverride returns the override it wants retained,
+	// which is nil once the daemon's own order has caught up (BOS-1231).
+	h.sessions, h.moveOverrideOrder = h.applyMoveOverride(msg.sessions)
 	h.latchValueDeliveredIfNeeded()
 	h.daemonStatuses = msg.daemonStatuses
 	h.daemonWaitingReasons = msg.daemonWaitingReasons

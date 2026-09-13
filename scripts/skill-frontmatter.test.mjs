@@ -17,8 +17,8 @@ const SKILL_ROOTS = [
 ]
 
 // The cron/manual sweeps that must never be model-invocable. Deliberately an
-// explicit list rather than the discovered `bs-sweep-*` directory set: an
-// eleventh sweep has to be a considered edit here, not an accident.
+// explicit list rather than the discovered `bs-sweep-*` directory set: a new
+// sweep has to be a considered edit here, not an accident.
 const SWEEP_SKILLS = [
   'bs-sweep-debt',
   'bs-sweep-mutation',
@@ -30,6 +30,7 @@ const SWEEP_SKILLS = [
   'bs-sweep-sentry',
   'bs-sweep-tests',
   'bs-sweep-tidy-linear',
+  'bs-sweep-update',
 ]
 
 // Mirrors scripts/sync-codex-skills.mjs: frontmatter is the leading `---` block,
@@ -82,7 +83,7 @@ test('every bs-sweep-* skill disables model invocation', () => {
     (skill) => skill.root === '.claude/skills' && skill.name.startsWith('bs-sweep-'),
   )
 
-  // Discovered-vs-expected first: an eleventh sweep fails here whether or not it
+  // Discovered-vs-expected first: a new sweep fails here whether or not it
   // carries the flag, so a new sweep cannot silently leak its description back
   // into the model listing by simply omitting the key.
   const discovered = sweeps.map((skill) => skill.name).sort()

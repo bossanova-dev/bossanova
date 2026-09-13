@@ -140,9 +140,10 @@ type Server struct {
 	// (RUNNING only when the last-run agent is actively working). Shares the
 	// same instance as the scheduler's overlap check (cmd/main.go). Optional,
 	// may be nil — cronJobStatus then falls back to session-state heuristics.
-	cronActivity   cron.ActivityChecker
-	chatStatus     *status.Tracker
-	displayTracker *status.DisplayTracker
+	cronActivity     cron.ActivityChecker
+	chatStatus       *status.Tracker
+	statusRecomputer status.Recomputer
+	displayTracker   *status.DisplayTracker
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
 	// uses it to repopulate the display tracker after every merge attempt (see
 	// the SetMerging block there). Optional, may be nil in tests / older wiring.
@@ -375,9 +376,13 @@ type Config struct {
 	// scheduler's overlap suppression; cronJobStatus uses it so the TUI STATUS
 	// column reads RUNNING only for an actively-working last run. Optional, may
 	// be nil (STATUS then falls back to session-state heuristics).
-	CronActivity   cron.ActivityChecker
-	ChatStatus     *status.Tracker
-	DisplayTracker *status.DisplayTracker
+	CronActivity cron.ActivityChecker
+	ChatStatus   *status.Tracker
+	// StatusRecomputer refreshes the display state after a callback changes
+	// what an otherwise-idle chat is waiting for. Optional for minimal test
+	// wiring; the periodic sweep remains the recovery path when it is absent.
+	StatusRecomputer status.Recomputer
+	DisplayTracker   *status.DisplayTracker
 	// PRRefresher re-polls one PR's display status on demand, repopulating the
 	// display tracker. Satisfied by *session.DisplayPoller. Optional, may be
 	// nil; MergeSession then simply skips the post-merge re-poll and the next
@@ -660,18 +665,19 @@ func New(cfg Config) *Server {
 		usageProbe:              cfg.UsageProbe,
 		accountMaterializations: cfg.AccountMaterializations,
 
-		checkSnapshots:  cfg.CheckSnapshots,
-		agentRuns:       cfg.AgentRuns,
-		rotationEvents:  cfg.RotationEvents,
-		cronScheduler:   cfg.CronScheduler,
-		cronActivity:    cfg.CronActivity,
-		chatStatus:      cfg.ChatStatus,
-		displayTracker:  cfg.DisplayTracker,
-		prRefresher:     cfg.PRRefresher,
-		repairLease:     cfg.RepairLease,
-		tmuxPoller:      cfg.TmuxPoller,
-		lifecycle:       cfg.Lifecycle,
-		bootstrapRunner: cfg.BootstrapRunner,
+		checkSnapshots:   cfg.CheckSnapshots,
+		agentRuns:        cfg.AgentRuns,
+		rotationEvents:   cfg.RotationEvents,
+		cronScheduler:    cfg.CronScheduler,
+		cronActivity:     cfg.CronActivity,
+		chatStatus:       cfg.ChatStatus,
+		statusRecomputer: cfg.StatusRecomputer,
+		displayTracker:   cfg.DisplayTracker,
+		prRefresher:      cfg.PRRefresher,
+		repairLease:      cfg.RepairLease,
+		tmuxPoller:       cfg.TmuxPoller,
+		lifecycle:        cfg.Lifecycle,
+		bootstrapRunner:  cfg.BootstrapRunner,
 
 		agent:        cfg.Agent,
 		agentClients: cfg.AgentClients,

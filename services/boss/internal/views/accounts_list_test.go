@@ -918,3 +918,9 @@ func TestAccountsListRefreshChainUnprovenRendersAsItself(t *testing.T) {
 		t.Fatalf("accounts list did not render %q\n%s", authCheckRefreshChainUnproven, content)
 	}
 }
+
+// MoveSession satisfies the BossClient seam (BOS-1231). This stub is not part
+// of a reorder test, so a call is a bug in the view under test.
+func (s *accountsStub) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	panic("unused")
+}

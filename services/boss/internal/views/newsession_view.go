@@ -17,6 +17,13 @@ import (
 
 // renderErr renders the wizard error screen, including any captured setup
 // script output.
+//
+// This dump is UNCAPPED — unlike renderCreating it shows every buffered element,
+// because a failed setup is diagnosed from the whole transcript. Note the buffer
+// it reads has already been folded at ingest by foldSetupLine (BOS-1237): progress
+// redraws were collapsed before they got here, so this screen shows one row per
+// bar rather than one per frame, and it also carries that fold's documented
+// false-positive window. That is deliberate but not free — see foldSetupLine.
 func (m NewSessionModel) renderErr() string {
 	var b strings.Builder
 	b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
@@ -155,10 +162,13 @@ func (m NewSessionModel) renderCreating() string {
 	if len(m.setupLines) > 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script…"))
 		b.WriteString("\n")
-		// Show last 10 lines of setup output.
+		// Show only the tail of the setup output. This cap is why foldSetupLine
+		// exists (BOS-1237): before redraws were collapsed, one progress bar's ten
+		// frames filled the whole window and evicted every other line. Widening it
+		// does not make that helper unnecessary.
 		start := 0
-		if len(m.setupLines) > 10 {
-			start = len(m.setupLines) - 10
+		if len(m.setupLines) > setupPaneRetainedLines {
+			start = len(m.setupLines) - setupPaneRetainedLines
 		}
 		for _, line := range m.setupLines[start:] {
 			b.WriteString(lipgloss.NewStyle().PaddingLeft(4).Foreground(lipgloss.Color("8")).Render(line))

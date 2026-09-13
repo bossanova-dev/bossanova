@@ -1,6 +1,7 @@
 package tuidriver_test
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/recurser/boss/internal/tuidriver"
@@ -35,6 +36,13 @@ func TestKeyBytes(t *testing.T) {
 		{"downarrow alias", "downarrow", []byte("\x1b[B"), false},
 		{"rightarrow alias", "rightarrow", []byte("\x1b[C"), false},
 		{"leftarrow alias", "leftarrow", []byte("\x1b[D"), false},
+
+		// Alt+arrow (BOS-1231): parameterised CSI, modifier param 3. Asserted
+		// as the CSI form specifically — the ESC-prefix meta form would be
+		// indistinguishable from the legal two-key sequence ["esc","up"].
+		{"alt+up", "alt+up", []byte("\x1b[1;3A"), false},
+		{"alt+down", "alt+down", []byte("\x1b[1;3B"), false},
+		{"Alt+Up mixed case", "Alt+Up", []byte("\x1b[1;3A"), false},
 
 		// Tab / shift+tab.
 		{"tab", "tab", []byte("\t"), false},
@@ -100,6 +108,39 @@ func TestKeyBytes(t *testing.T) {
 						t.Errorf("KeyBytes(%q)[%d] = %d, want %d", tt.input, i, got[i], tt.want[i])
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestAltArrowIsNotTheEscPrefixForm pins the deliberate encoding choice behind
+// the BOS-1231 chord. ultraviolet decodes BOTH "\x1b[1;3A" and "\x1b\x1b[A" to
+// alt+up, but the "key" op writes a list's keys back-to-back with no delimiter,
+// so the ESC-prefix form is byte-identical to the already-legal two-key
+// sequence ["esc","up"]. Had the map used it, a scenario meaning "cancel, then
+// move up" would have reordered a session instead. This test fails the moment
+// namedKeys switches to the ambiguous encoding.
+func TestAltArrowIsNotTheEscPrefixForm(t *testing.T) {
+	esc, err := tuidriver.KeyBytes("esc")
+	if err != nil {
+		t.Fatalf("KeyBytes(esc): %v", err)
+	}
+	for _, tt := range []struct{ chord, plain string }{
+		{"alt+up", "up"},
+		{"alt+down", "down"},
+	} {
+		t.Run(tt.chord, func(t *testing.T) {
+			plain, err := tuidriver.KeyBytes(tt.plain)
+			if err != nil {
+				t.Fatalf("KeyBytes(%q): %v", tt.plain, err)
+			}
+			chord, err := tuidriver.KeyBytes(tt.chord)
+			if err != nil {
+				t.Fatalf("KeyBytes(%q): %v", tt.chord, err)
+			}
+			if ambiguous := append(append([]byte{}, esc...), plain...); bytes.Equal(chord, ambiguous) {
+				t.Fatalf("KeyBytes(%q) = %q, which is exactly KeyBytes(\"esc\")+KeyBytes(%q); "+
+					"the chord must not be producible by chaining two other vocabulary keys", tt.chord, chord, tt.plain)
 			}
 		})
 	}

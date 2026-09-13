@@ -16,15 +16,25 @@ import (
 
 func noEnv(string) string { return "" }
 
-func TestResolveDaemonIdentityBlankNameKeepsMachineHostname(t *testing.T) {
+// TestResolveDaemonIdentityBlankNameKeepsMachineDefault pins the no-override
+// branch through the public entry point. It compares against the shared
+// derivation rather than against the raw hostname because a host that exposes an
+// operator-facing computer name answers with THAT — which is the whole point of
+// the derivation. The ordering guard below is what keeps this from being a
+// tautology: it proves the value bosso is told is not the value identity
+// resolution was handed.
+func TestResolveDaemonIdentityBlankNameKeepsMachineDefault(t *testing.T) {
 	cfg := &upstream.Config{Hostname: "studio-imac"}
 
 	if err := resolveDaemonIdentity(cfg, config.Settings{}, noEnv, t.TempDir()); err != nil {
 		t.Fatalf("resolveDaemonIdentity: %v", err)
 	}
 
-	if cfg.Hostname != "studio-imac" {
-		t.Fatalf("Hostname = %q, want the machine hostname", cfg.Hostname)
+	if want := config.DefaultDisplayHostname("studio-imac"); cfg.Hostname != want {
+		t.Fatalf("Hostname = %q, want the derived machine default %q", cfg.Hostname, want)
+	}
+	if strings.TrimSpace(cfg.Hostname) == "" {
+		t.Fatalf("Hostname = %q, want a non-blank name — bosso rejects a blank hostname at registration", cfg.Hostname)
 	}
 }
 
@@ -133,5 +143,114 @@ func TestResolveDaemonIdentityEnvOverrideWinsOverDisplayName(t *testing.T) {
 	}
 	if cfg.Hostname != "studio-mini" {
 		t.Fatalf("Hostname = %q, want the display override", cfg.Hostname)
+	}
+}
+
+// TestResolveDaemonIdentityDerivesDisplayHostname is the R1 ordering guard for
+// the display derivation. The machine hostname carries a ".lan" suffix that the
+// derivation removes, so the value bosso is told and the value identity
+// resolution is handed are provably different strings — apply the derivation
+// before resolveID and this test goes red.
+func TestResolveDaemonIdentityDerivesDisplayHostname(t *testing.T) {
+	const machineHostname = "mac.lan"
+	derived := config.DefaultDisplayHostname(machineHostname)
+	if derived == machineHostname {
+		// Only reachable on a host whose ComputerName is literally "mac.lan".
+		// Skipping beats passing vacuously: with the two strings equal, the
+		// ordering assertion below could not distinguish the mutation it exists
+		// to catch.
+		t.Skipf("this host derives %q from %q, so the ordering guard would be vacuous", derived, machineHostname)
+	}
+
+	cfg := &upstream.Config{Hostname: machineHostname}
+
+	var calls int
+	var sawHostname string
+	resolver := func(_ func(string) string, _, hostname string) (string, error) {
+		calls++
+		sawHostname = hostname
+		return "generated-id", nil
+	}
+
+	if err := resolveDaemonIdentityWith(cfg, config.Settings{}, noEnv, t.TempDir(), resolver); err != nil {
+		t.Fatalf("resolveDaemonIdentityWith: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("id resolver called %d times, want exactly 1", calls)
+	}
+	// Identity: the RAW machine hostname, never the derived display name.
+	if sawHostname != machineHostname {
+		t.Fatalf("id resolver saw hostname %q, want the raw machine hostname %q", sawHostname, machineHostname)
+	}
+	// Presentation: the derived default, resolved through the SHARED helper the
+	// boss TUI previews with — not a local re-implementation (R4).
+	if cfg.Hostname != derived {
+		t.Fatalf("Hostname = %q, want the derived display default %q", cfg.Hostname, derived)
+	}
+	if cfg.Hostname == machineHostname {
+		t.Fatalf("Hostname = %q, want the derivation to have been applied", cfg.Hostname)
+	}
+	if cfg.DaemonID != "generated-id" {
+		t.Fatalf("DaemonID = %q, want the resolved id", cfg.DaemonID)
+	}
+	if cfg.DaemonID == cfg.Hostname {
+		t.Fatalf("DaemonID = %q, want it distinct from the display name", cfg.DaemonID)
+	}
+}
+
+// TestResolveDaemonIdentityOverrideBeatsDerivedDefault pins R3 against R1
+// together: the daemon_name override still wins over the derived default, and
+// identity resolution still sees the raw machine hostname behind both.
+func TestResolveDaemonIdentityOverrideBeatsDerivedDefault(t *testing.T) {
+	const machineHostname = "mac.lan"
+	cfg := &upstream.Config{Hostname: machineHostname}
+
+	var sawHostname string
+	resolver := func(_ func(string) string, _, hostname string) (string, error) {
+		sawHostname = hostname
+		return "generated-id", nil
+	}
+
+	if err := resolveDaemonIdentityWith(cfg, config.Settings{DaemonName: "studio-mini"}, noEnv, t.TempDir(), resolver); err != nil {
+		t.Fatalf("resolveDaemonIdentityWith: %v", err)
+	}
+
+	if cfg.Hostname != "studio-mini" {
+		t.Fatalf("Hostname = %q, want the daemon_name override", cfg.Hostname)
+	}
+	if sawHostname != machineHostname {
+		t.Fatalf("id resolver saw hostname %q, want the raw machine hostname %q", sawHostname, machineHostname)
+	}
+}
+
+// TestResolveDaemonIdentityEmptyMachineHostname pins the os.Hostname()-failed
+// edge: identity resolution is handed the empty string it actually read, and the
+// display name is whatever the shared derivation makes of it — on a host with an
+// operator-facing computer name that is a real name where there was none, and
+// everywhere else it stays empty for the caller's "hostname unavailable" branch.
+func TestResolveDaemonIdentityEmptyMachineHostname(t *testing.T) {
+	cfg := &upstream.Config{Hostname: ""}
+
+	var calls int
+	var sawHostname string
+	resolver := func(_ func(string) string, _, hostname string) (string, error) {
+		calls++
+		sawHostname = hostname
+		return "generated-id", nil
+	}
+
+	if err := resolveDaemonIdentityWith(cfg, config.Settings{}, noEnv, t.TempDir(), resolver); err != nil {
+		t.Fatalf("resolveDaemonIdentityWith: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("id resolver called %d times, want exactly 1", calls)
+	}
+	if sawHostname != "" {
+		t.Fatalf("id resolver saw hostname %q, want the empty machine hostname", sawHostname)
+	}
+	if want := config.DefaultDisplayHostname(""); cfg.Hostname != want {
+		t.Fatalf("Hostname = %q, want the derived default %q", cfg.Hostname, want)
 	}
 }

@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-14**. The engineering procedure for adding a new
+The current version is **2026-09-15**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -492,7 +492,7 @@ value on every response that carries an `Account`: `ProxyListAccounts`,
 `ProxyManageListAccounts`, `ProxyAddAccount` and `ProxyRefreshAccount`. A class
 on a non-healthy outcome is untouched — that shape predates this version.
 
-### 2026-09-14 — Unproven credential refresh chain (Current)
+### 2026-09-14 — Unproven credential refresh chain
 
 `Account.auth_check.outcome` began serving `refresh_chain_unproven` (with
 `failure_class` `refresh_not_observed`) for a credential check that completed
@@ -511,6 +511,30 @@ Before this version the identical clean run served `healthy` with an empty
 to choose a severity, so clients pinned to 2026-09-13 or older are
 down-converted back to that pair rather than being shown a token they were never
 built to read.
+
+### 2026-09-15 — Sessions honour a manual list order (Current)
+
+Session listings are ordered by the manual list rank a user sets with the
+reorder shortcut: a ranked session sorts before every unranked one, and two
+ranked sessions sort by rank ascending. Sessions with no rank keep the order
+they have always had: newest first by `created_at`, then by `id` ascending. That
+rule still decides the whole list wherever nobody has reordered anything.
+
+`Session.list_rank` itself is an additive field that shipped earlier and that
+nothing read. What changed at this version is the ORDER of the
+`sessions` field on `ProxyListSessions` (and its deprecated
+`ProxyListSessionsAcrossOrganizations` spelling). Repeated-field order is
+observable output for a list a client renders top to bottom, so a client that
+predates the manual rank would see its session list silently rearrange the
+first time any user pressed the shortcut.
+
+Clients pinned to 2026-09-14 or older therefore have the session list
+**re-sorted** back to `created_at` descending, then `id` ascending. The
+down-convert restores the ordering rather than clearing `list_rank`: blanking
+the field would hide the cause while leaving the response in the server's order,
+which is not the order those clients were built against. `list_rank` stays
+populated, so a pinned client that later learns to read it needs no
+renegotiation.
 
 ## See also
 

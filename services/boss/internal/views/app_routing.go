@@ -290,6 +290,17 @@ func (a *App) newHomeModel() HomeModel {
 	// RPCs must survive until the next poll or result reconciles each session.
 	home.archivingOverrideIDs = cloneSessionIDSet(a.home.archivingOverrideIDs)
 	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
+	// Same reason for the reorder override (BOS-1231): home.sessions above
+	// already carries the optimistically swapped order, so dropping the
+	// override that defends it would let the next poll snap the row back to its
+	// pre-move position and then jump again when the write lands. The in-flight
+	// count and the queue behind it travel with it — an outstanding reply must
+	// not arrive against a model that believes nothing is in flight, and a
+	// queued chord the board is already showing must still be sent. Copy the
+	// slices rather than sharing them, as with the archive sets.
+	home.moveOverrideOrder = append([]string(nil), a.home.moveOverrideOrder...)
+	home.moveInFlight = a.home.moveInFlight
+	home.movePending = append([]queuedMove(nil), a.home.movePending...)
 	// A logout command can still be waiting on the credential lock while the
 	// user visits another view. Preserve its state so rebuilding Home cannot
 	// expose a second logout action or accept a stale auth-status result.

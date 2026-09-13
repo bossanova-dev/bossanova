@@ -212,6 +212,8 @@ export const TOOL_DEFS = [
       '  • confirm/cancel: "enter" (alias "return"), "esc" (alias "escape");\n' +
       '  • arrows: "up" (alias "uparrow"), "down" (alias "downarrow"), "left" (alias "leftarrow"), ' +
       '"right" (alias "rightarrow");\n' +
+      '  • reorder chords (home session list): "alt+up", "alt+down" — move the SELECTED session ' +
+      'one position earlier/later; they never move the cursor;\n' +
       '  • fields: "tab", "shift+tab" (aliases "shifttab", "backtab");\n' +
       '  • paging: "pgup" (alias "pageup"), "pgdn" (alias "pagedown");\n' +
       '  • jumps: "home", "end";\n' +

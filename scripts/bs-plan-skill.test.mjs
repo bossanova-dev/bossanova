@@ -126,14 +126,19 @@ const PHASE_4_SECTION = sectionBetween(
 // contain the line verbatim and no BOSS_PLAN_TOOLBOX assignment of their own. The locate tests
 // `[ -f ]` rather than letting `.` fail: `.` is a POSIX special built-in, so under sh/dash a
 // missing file exits the shell outright and a `. a || . b || { echo …; exit 1; }` chain would
-// silently skip every remaining candidate along with its own BLOCKED message. ~/.claude is named
-// twice on purpose: `${BOSS_SKILLS_HOME:-…}` defaults only when the variable is UNSET, so without
-// the explicit second candidate a pre-set value drops ~/.claude out of the search entirely.
+// silently skip every remaining candidate along with its own BLOCKED message — which is also why
+// the loop below clears BOSS_PLAN_ENV on a miss and checks emptiness afterwards.
+//
+// Now a LOOP over the three candidates rather than a hand-unrolled `||` chain: ~100 bytes shorter
+// at each of the eleven blocks that carry it, and it cannot disagree with the helper about the
+// candidate order the way two separately-maintained spellings can. BOSS_SKILLS_HOME is the first
+// CANDIDATE, never a `${BOSS_SKILLS_HOME:-…}` default — a default substitutes only when the
+// variable is UNSET, so a pre-set value would drop ~/.claude out of the search entirely.
+// Exercised against all three shells and all four install shapes by the tests below.
 const TOOLBOX_PREAMBLE_LINE =
-  'BOSS_PLAN_ENV="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox/boss-plan-env.sh"; ' +
-  '[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.claude/skills/boss-plan/toolbox/boss-plan-env.sh"; ' +
-  '[ -f "$BOSS_PLAN_ENV" ] || BOSS_PLAN_ENV="$HOME/.codex/skills/boss-plan/toolbox/boss-plan-env.sh"; ' +
-  '[ -f "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run \'boss skills install\'"; exit 1; }; ' +
+  'BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do ' +
+  'if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; ' +
+  '[ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run \'boss skills install\'"; exit 1; }; ' +
   '. "$BOSS_PLAN_ENV"'
 const TOOLBOX_ENV_HELPER = read(`${CORE}/toolbox/boss-plan-env.sh`)
 
@@ -839,6 +844,12 @@ test('BOS-1199: Phase 4 runs the write-back verification once, after the final s
       /\*\*exactly\s+once\*\*[\s\S]{0,200}final\*\*\s+description\s+save/,
       `${payload.name}: the read-back must run once, after the FINAL description save`,
     )
+    // No prose pin is added here for the `unattributed` branch, deliberately. Its behaviour —
+    // exit zero, verdict on both streams, the corrective-rewrite refusal, nothing written — is
+    // asserted over the helper in skills-toolbox/plan-writeback-verify.test.mjs, which is the
+    // assertion that survives a rewrite of the surrounding prose. check-prose-pins refuses a new
+    // assertion over what a document SAYS, and it is right to: that is how these bodies stopped
+    // being able to shrink.
     // KTD5: loud but non-destructive. A corrective rewrite on a drift verdict is an unattended
     // agent overwriting a description it just proved it cannot reproduce.
     assert.match(
@@ -3116,7 +3127,16 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // what the snapshot must carry -- the tracker's stored description, nothing added -- and the
   // behaviour the deleted sentences described is asserted over the helper in
   // skills-toolbox/plan-writeback-verify.test.mjs. The measured body falls 123354 -> 123326 B.
-  const RATCHET = 123354 // measured resident body at migration, 2026-09-08 (BOS-1198 bytes)
+  // Re-banked DOWN 123354 -> 123047 (-307) by the write-back severity split. Two changes in
+  // opposite directions netted a shrink: the toolbox locate line became a loop over its three
+  // candidates instead of a hand-unrolled `||` chain, saving 67 B at each of the eleven blocks
+  // that carry it, which more than paid for the fourth verdict Phase 4 now has to explain. The
+  // RATIONALE for the split — the measured fire rate, why an already-stored write has nothing
+  // left to withhold — deliberately did not land here: it lives in the header of
+  // skills-toolbox/plan-writeback-verify.mjs, next to the code it governs, because the resident
+  // body needs the decision and not the argument for it. Banked rather than left as headroom so
+  // the saving cannot be silently spent.
+  const RATCHET = 123047 // measured resident body, 2026-09-13
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({

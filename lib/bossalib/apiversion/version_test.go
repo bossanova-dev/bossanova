@@ -2,6 +2,9 @@ package apiversion_test
 
 import (
 	"context"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -186,24 +189,24 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry has twenty-seven versions ordered oldest→newest:
+	// Production registry has twenty-eight versions ordered oldest→newest:
 	// Baseline, V20260704, V20260705, V20260706, V20260711, V20260718,
 	// V20260723, V20260803, V20260804, V20260812, V20260816, V20260820,
 	// V20260821, V20260825, V20260902, V20260903, V20260904, V20260905,
 	// V20260906, V20260907, V20260908, V20260909, V20260910, V20260911,
-	// V20260912, V20260913, and V20260914. Current is V20260914 (newest
-	// behavior) while Default stays Baseline (header-less callers pin to the
-	// oldest version).
+	// V20260912, V20260913, V20260914 and V20260915. Current is V20260915
+	// (newest behavior) while Default stays Baseline (header-less callers pin
+	// to the oldest version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20260914 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260914)
+	if reg.Current() != apiversion.V20260915 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260915)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 27 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 27", len(all))
+	if len(all) != 28 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 28", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -352,7 +355,7 @@ func TestConstants(t *testing.T) {
 // named constant. Current may be one trailing unreleased contract; released.go
 // remains the immutable ledger of versions that have actually shipped.
 func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-09-14")
+	const wantCurrent = apiversion.Version("2026-09-15")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}
@@ -613,5 +616,160 @@ func TestIsMemberOrgCloudAccess(t *testing.T) {
 	}
 	if got := assertResolved(t, apiversion.V20260906.String()); !got {
 		t.Errorf("IsMemberOrgCloudAccess(V20260906) = false, want true")
+	}
+}
+
+// gateWarnRecord is one captured unresolved-gate-read report.
+type gateWarnRecord struct {
+	level     slog.Level
+	gate      string
+	caller    string
+	answering string
+}
+
+// gateWarnRecorder is a slog.Handler that captures only the records carrying a
+// "gate" attribute, so unrelated logging from elsewhere in the process cannot
+// make either arm of TestUnresolvedGateRead pass or fail by accident.
+type gateWarnRecorder struct {
+	mu      sync.Mutex
+	records []gateWarnRecord
+}
+
+func (r *gateWarnRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (r *gateWarnRecorder) Handle(_ context.Context, record slog.Record) error {
+	captured := gateWarnRecord{level: record.Level}
+	record.Attrs(func(attr slog.Attr) bool {
+		switch attr.Key {
+		case "gate":
+			captured.gate = attr.Value.String()
+		case "caller":
+			captured.caller = attr.Value.String()
+		case "answering":
+			captured.answering = attr.Value.String()
+		}
+		return true
+	})
+	if captured.gate == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = append(r.records, captured)
+	return nil
+}
+
+func (r *gateWarnRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+
+func (r *gateWarnRecorder) WithGroup(string) slog.Handler { return r }
+
+func (r *gateWarnRecorder) snapshot() []gateWarnRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]gateWarnRecord(nil), r.records...)
+}
+
+// installGateWarnRecorder swaps in a capturing default logger for the duration
+// of the test. slog.SetDefault is process-global, so the prior default is
+// restored on cleanup and this test must not run in parallel with anything that
+// asserts on logs.
+func installGateWarnRecorder(t *testing.T) *gateWarnRecorder {
+	t.Helper()
+	prior := slog.Default()
+	recorder := &gateWarnRecorder{}
+	slog.SetDefault(slog.New(recorder))
+	t.Cleanup(func() { slog.SetDefault(prior) })
+	return recorder
+}
+
+// TestUnresolvedGateRead pins the BOS-1235 discriminator end to end: a version
+// gate evaluated off a context the interceptor never touched reports itself
+// exactly once per call site, and the same gate evaluated behind the
+// interceptor reports nothing — including for a header-less client, whose
+// resolved version is Baseline and therefore byte-identical to the fallback.
+// Both arms run in one test so the silent arm is demonstrably able to fire.
+func TestUnresolvedGateRead(t *testing.T) {
+	apiversion.ResetUnresolvedGateReadsForTest()
+	recorder := installGateWarnRecorder(t)
+
+	// Fire arm: a bare context, the shape an HTTP middleware or raw route has.
+	// Called twice from this one source line to pin the per-site dedupe.
+	for range 2 {
+		if got := apiversion.IsCrossOrgSessionCommands(context.Background()); got {
+			t.Fatalf("IsCrossOrgSessionCommands(bare ctx) = true, want false")
+		}
+	}
+
+	fired := recorder.snapshot()
+	if len(fired) != 1 {
+		t.Fatalf("unresolved gate read emitted %d records, want exactly 1: %+v", len(fired), fired)
+	}
+	if fired[0].level != slog.LevelWarn {
+		t.Errorf("unresolved gate read level = %v, want %v", fired[0].level, slog.LevelWarn)
+	}
+	if fired[0].gate != "IsCrossOrgSessionCommands" {
+		t.Errorf("unresolved gate read gate = %q, want %q", fired[0].gate, "IsCrossOrgSessionCommands")
+	}
+	if !strings.Contains(fired[0].caller, "version_test.go:") {
+		t.Errorf("unresolved gate read caller = %q, want a version_test.go file:line", fired[0].caller)
+	}
+	if want := apiversion.DefaultRegistry().Default().String(); fired[0].answering != want {
+		t.Errorf("unresolved gate read answering = %q, want %q", fired[0].answering, want)
+	}
+
+	// Quiet arm: the same predicate behind the interceptor. The header-less row
+	// is the load-bearing one — it resolves to Baseline, the same value the
+	// fallback returns, so a report here would prove the discriminator was the
+	// version rather than the presence of the context key.
+	interceptor := apiversion.Interceptor(apiversion.DefaultRegistry(), nil)
+	for _, header := range []string{"", apiversion.V20260908.String(), apiversion.Baseline.String()} {
+		req := connect.NewRequest(&struct{}{})
+		if header != "" {
+			req.Header().Set(apiversion.HeaderName, header)
+		}
+		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			apiversion.IsCrossOrgSessionCommands(ctx)
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
+			t.Fatalf("WrapUnary(%q): %v", header, err)
+		}
+	}
+
+	if after := recorder.snapshot(); len(after) != 1 {
+		t.Fatalf("interceptor-resolved gate reads emitted %d extra records, want 0: %+v", len(after)-1, after[1:])
+	}
+}
+
+// TestUnresolvedGateReadCoversEveryPredicate pins that the report is wired into
+// all nine handler-level gates, not only the one TestUnresolvedGateRead
+// exercises, and that each names itself.
+func TestUnresolvedGateReadCoversEveryPredicate(t *testing.T) {
+	apiversion.ResetUnresolvedGateReadsForTest()
+	recorder := installGateWarnRecorder(t)
+
+	predicates := map[string]func(context.Context) bool{
+		"IsOrgScopedVisibility":     apiversion.IsOrgScopedVisibility,
+		"IsCrossOrgRepoReads":       apiversion.IsCrossOrgRepoReads,
+		"IsCrossOrgSessionReads":    apiversion.IsCrossOrgSessionReads,
+		"IsCrossOrgCronReads":       apiversion.IsCrossOrgCronReads,
+		"IsCrossOrgFleetReads":      apiversion.IsCrossOrgFleetReads,
+		"IsInvitationRevocation":    apiversion.IsInvitationRevocation,
+		"IsCrossOrgSessionCommands": apiversion.IsCrossOrgSessionCommands,
+		"IsCrossOrgDaemonReads":     apiversion.IsCrossOrgDaemonReads,
+		"IsMemberOrgCloudAccess":    apiversion.IsMemberOrgCloudAccess,
+	}
+	for _, predicate := range predicates {
+		predicate(context.Background())
+	}
+
+	seen := make(map[string]struct{})
+	for _, record := range recorder.snapshot() {
+		seen[record.gate] = struct{}{}
+	}
+	for name := range predicates {
+		if _, ok := seen[name]; !ok {
+			t.Errorf("%s did not report an unresolved gate read", name)
+		}
 	}
 }

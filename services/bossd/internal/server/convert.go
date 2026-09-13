@@ -265,6 +265,14 @@ func SessionToProto(s *models.Session) *pb.Session {
 	if s.LastRepairBlockedAt != nil {
 		p.LastRepairBlockedAt = timestamppb.New(*s.LastRepairBlockedAt)
 	}
+	// Manual list rank (BOS-1230). Carried on every projection, not only the
+	// list read: bosso persists whole serialized Session payloads, so a
+	// converter that dropped the rank would make the cloud order disagree with
+	// the daemon's for no visible reason.
+	if s.ListRank != nil {
+		rank := *s.ListRank
+		p.ListRank = &rank
+	}
 	return p
 }
 

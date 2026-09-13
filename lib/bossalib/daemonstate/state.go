@@ -39,6 +39,15 @@ type Metadata struct {
 	SettingsPath   string    `json:"settings_path"`
 	SocketPath     string    `json:"socket_path"`
 	StartedAt      time.Time `json:"started_at"`
+	// DaemonID identifies this daemon to the orchestrator. It is distinct from
+	// DisplayName, which is presentation-only and may be changed by an operator.
+	DaemonID string `json:"daemon_id,omitempty"`
+	// DisplayName is the name this running daemon presents upstream, resolved at
+	// startup rather than re-derived from settings by local diagnostics.
+	DisplayName string `json:"display_name,omitempty"`
+	// DisplayNameOverride records whether DisplayName came from daemon_name
+	// instead of the machine hostname.
+	DisplayNameOverride bool `json:"display_name_override,omitempty"`
 	// FileLimitSoft is the RLIMIT_NOFILE soft limit bossd achieved at startup
 	// (0 when unknown / non-unix). Recorded so a low FD cap that would make
 	// FD-heavy setup scripts fail with EMFILE is visible without grepping logs

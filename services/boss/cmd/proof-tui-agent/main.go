@@ -6,13 +6,16 @@
 //
 // The "key" op's key names resolve through tuidriver.KeyBytes: single
 // characters, "ctrl+<a-z>", and the named keys and aliases enumerated in that
-// package's namedKeys map (arrows, tab, paging, home/end, backspace, delete, and
-// f1-f12) — see tuidriver.KeyBytes for the authoritative set, enough to drive
-// list- and form-shaped views. One caveat: the "key" op writes a list's keys
-// back-to-back with no delimiter, so a leading "esc" immediately followed by
-// another key in the SAME list decodes as alt+<key> (a bare ESC acts as a meta
-// prefix, per ultraviolet's input parser). Send "esc" alone — its own "key" op
-// or the standalone "esc" op — to cancel/back out.
+// package's namedKeys map (arrows, the "alt+up"/"alt+down" reorder chords, tab,
+// paging, home/end, backspace, delete, and f1-f12) — see tuidriver.KeyBytes for
+// the authoritative set, enough to drive list- and form-shaped views. One
+// caveat: the "key" op writes a list's keys back-to-back with no delimiter, so a
+// leading "esc" immediately followed by another key in the SAME list decodes as
+// alt+<key> (a bare ESC acts as a meta prefix, per ultraviolet's input parser).
+// Send "esc" alone — its own "key" op or the standalone "esc" op — to
+// cancel/back out. That caveat is why "alt+up"/"alt+down" are the parameterised
+// CSI sequences rather than the ESC-prefix meta form: the chord has to be
+// distinguishable from an "esc" the scenario chained before an arrow.
 package main
 
 import (

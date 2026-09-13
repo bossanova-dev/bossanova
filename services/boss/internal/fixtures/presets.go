@@ -168,6 +168,18 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// setup-progress: the demo world plus a scripted CreateSession stream that
+		// replays one download's ten progress-bar redraws as ten separate setup
+		// frames (BOS-1237). Separate from async-create rather than folded into it
+		// because that preset's three-frame script is asserted verbatim by the
+		// BOS-720 scenario, and widening it to fourteen frames would rewrite
+		// another PR's evidence. Carries the same cloud-access e2e pin as demo so
+		// boss lands on the home session list.
+		"setup-progress": {
+			World:      SetupProgressWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// accounts-superseded: the demo world plus a fourth codex account whose
 		// stored refresh chain has been superseded by an ambient `codex login`
 		// (BOS-1175). Separate from demo rather than folded into it because demo

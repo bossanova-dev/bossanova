@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,13 +15,16 @@ func TestWriteReadAndRemoveMetadata(t *testing.T) {
 	dir := t.TempDir()
 	startedAt := time.Date(2026, 6, 6, 12, 30, 0, 0, time.UTC)
 	want := Metadata{
-		PID:               12345,
-		ExecutablePath:    "/opt/homebrew/bin/bossd",
-		SettingsPath:      "/tmp/profile/settings.json",
-		SocketPath:        "/tmp/profile/bossd.sock",
-		StartedAt:         startedAt,
-		FileLimitSoft:     4096,
-		TCCProbeCompleted: true,
+		PID:                 12345,
+		ExecutablePath:      "/opt/homebrew/bin/bossd",
+		SettingsPath:        "/tmp/profile/settings.json",
+		SocketPath:          "/tmp/profile/bossd.sock",
+		DaemonID:            "daemon-123",
+		DisplayName:         "studio-mini",
+		DisplayNameOverride: true,
+		StartedAt:           startedAt,
+		FileLimitSoft:       4096,
+		TCCProbeCompleted:   true,
 		TCCProbeResults: []TCCProbeResult{
 			{Path: "/Users/alice/Documents", Status: TCCProbeStatusOK},
 			{Path: "/Users/alice/Desktop", Status: TCCProbeStatusDenied, Diagnostic: "operation not permitted"},
@@ -66,6 +70,9 @@ func TestWriteReadAndRemoveMetadata(t *testing.T) {
 	if decoded["tcc_probe_completed"] != true {
 		t.Fatalf("metadata JSON missing completed probe marker: %s", string(raw))
 	}
+	if decoded["daemon_id"] != "daemon-123" || decoded["display_name"] != "studio-mini" || decoded["display_name_override"] != true {
+		t.Fatalf("metadata JSON missing daemon identity: %s", string(raw))
+	}
 
 	if err := Remove(dir); err != nil {
 		t.Fatalf("Remove() returned error: %v", err)
@@ -94,6 +101,21 @@ func TestReadLegacyMetadataWithoutTCCProbeResults(t *testing.T) {
 	}
 	if got.TCCProbeCompleted {
 		t.Fatal("Read() legacy TCCProbeCompleted = true, want false")
+	}
+	if got.DaemonID != "" || got.DisplayName != "" || got.DisplayNameOverride {
+		t.Fatalf("Read() legacy daemon identity = %#v, want zero values", got)
+	}
+}
+
+func TestDefaultMetadataOmitsDaemonIdentity(t *testing.T) {
+	raw, err := json.Marshal(Metadata{})
+	if err != nil {
+		t.Fatalf("marshal default Metadata: %v", err)
+	}
+	for _, key := range []string{"daemon_id", "display_name", "display_name_override"} {
+		if strings.Contains(string(raw), key) {
+			t.Fatalf("default Metadata unexpectedly contains %q: %s", key, raw)
+		}
 	}
 }
 

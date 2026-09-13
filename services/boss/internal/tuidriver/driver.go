@@ -174,6 +174,20 @@ func (d *Driver) SendString(s string) error {
 	return err
 }
 
+// SendNamedKey writes the bytes for a proof key name (see KeyBytes) to the PTY:
+// "enter", "up", "alt+down", "ctrl+c", or any single character. Go PTY tests go
+// through the same vocabulary the proof scenarios do, so a chord that a test can
+// send is a chord a scenario can send — and one that neither can is caught in
+// one place rather than twice.
+func (d *Driver) SendNamedKey(name string) error {
+	b, err := KeyBytes(name)
+	if err != nil {
+		return err
+	}
+	_, err = d.pty.Write(b)
+	return err
+}
+
 // PasteString writes bracketed paste bytes to the PTY.
 func (d *Driver) PasteString(s string) error {
 	_, err := d.pty.Write([]byte("\x1b[200~" + s + "\x1b[201~"))

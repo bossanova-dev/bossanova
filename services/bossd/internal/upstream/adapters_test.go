@@ -50,6 +50,7 @@ type fakeSessionCommandServer struct {
 	lastEmptyTrashReq          *pb.EmptyTrashRequest
 	lastRetryID                string
 	lastUpdateReq              *pb.UpdateSessionRequest
+	lastMoveReq                *pb.MoveSessionRequest
 	lastLinkReq                *pb.LinkSessionPRRequest
 	lastUpdateChatTitle        *pb.UpdateChatTitleRequest
 	lastReportChatStatus       *pb.ReportChatStatusRequest
@@ -107,6 +108,15 @@ func (f *fakeSessionCommandServer) RetrySession(_ context.Context, req *connect.
 func (f *fakeSessionCommandServer) UpdateSession(_ context.Context, req *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
 	f.lastUpdateReq = req.Msg
 	return connect.NewResponse(&pb.UpdateSessionResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeSessionCommandServer) MoveSession(_ context.Context, req *connect.Request[pb.MoveSessionRequest]) (*connect.Response[pb.MoveSessionResponse], error) {
+	f.lastMoveReq = req.Msg
+	rank := int64(4294967296)
+	return connect.NewResponse(&pb.MoveSessionResponse{
+		Session: &pb.Session{Id: req.Msg.GetId(), ListRank: &rank},
+		IsMoved: true,
+	}), nil
 }
 
 func (f *fakeSessionCommandServer) LinkSessionPR(_ context.Context, req *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error) {
@@ -373,6 +383,10 @@ func (e *errCommandServer) RetrySession(context.Context, *connect.Request[pb.Ret
 }
 
 func (e *errCommandServer) UpdateSession(context.Context, *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) MoveSession(context.Context, *connect.Request[pb.MoveSessionRequest]) (*connect.Response[pb.MoveSessionResponse], error) {
 	return nil, e.err
 }
 

@@ -40,6 +40,17 @@ var namedKeys = map[string]string{
 	"rightarrow": "\x1b[C",
 	"left":       "\x1b[D",
 	"leftarrow":  "\x1b[D",
+	// Alt+arrow (BOS-1231): xterm's parameterised CSI form, modifier param 3
+	// (1 + 2 for alt/meta). Deliberately NOT the ESC-prefix meta form
+	// ("\x1b\x1b[A"), which ultraviolet also decodes to alt+up: the "key" op
+	// writes a list's keys back-to-back with no delimiter, so the ESC-prefix
+	// form is byte-identical to the already-legal sequence ["esc","up"] and a
+	// scenario meaning "cancel, then move down" would silently reorder a
+	// session instead. See services/boss/cmd/proof-tui-agent/main.go's package
+	// doc for that hazard. The CSI form cannot be produced by chaining any two
+	// other vocabulary entries, so the chord is only ever sent on purpose.
+	"alt+up":   "\x1b[1;3A",
+	"alt+down": "\x1b[1;3B",
 	// Tab / shift+tab (back-tab).
 	"tab":       "\t",
 	"shift+tab": "\x1b[Z",
@@ -76,9 +87,9 @@ var namedKeys = map[string]string{
 // KeyBytes maps a proof key name to the raw bytes to write to the PTY.
 // "ctrl+<a-z>" -> control byte; a single character -> that byte (case
 // preserved). Every other name is looked up case-insensitively in the namedKeys
-// map — enter/esc, the arrows, tab, paging, home/end, backspace, delete, and the
-// function keys, each with its aliases; see namedKeys for the authoritative set.
-// Any name not covered there is an error.
+// map — enter/esc, the arrows (plain and alt-modified), tab, paging, home/end,
+// backspace, delete, and the function keys, each with its aliases; see namedKeys
+// for the authoritative set. Any name not covered there is an error.
 func KeyBytes(name string) ([]byte, error) {
 	if len(name) == 1 {
 		return []byte{name[0]}, nil

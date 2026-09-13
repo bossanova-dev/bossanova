@@ -5,6 +5,9 @@ go_library(
     srcs = [
         "binaries.go",
         "config.go",
+        "displayhostname.go",
+        "displayhostname_darwin.go",
+        "displayhostname_other.go",
         "env.go",
         "heal.go",
         "pluginsum.go",
@@ -24,6 +27,7 @@ go_test(
         "binaries_test.go",
         "config_guard_test.go",
         "config_test.go",
+        "displayhostname_test.go",
         "env_test.go",
         "heal_test.go",
         "perms_unix_test.go",

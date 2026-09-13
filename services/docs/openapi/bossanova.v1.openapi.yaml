@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-14'
+  version: '2026-09-15'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -2100,6 +2100,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyMergeSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyMoveSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyMoveSession
+      description: |-
+        ProxyMoveSession moves a session up or down the rendered list (routes by
+         session_id). It is a pure passthrough: the rank arithmetic lives in the
+         daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
+         the daemon's answer unchanged.
+      operationId: bossanova.v1.OrchestratorService.ProxyMoveSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyMoveSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyMoveSessionResponse'
   /bossanova.v1.OrchestratorService/ProxyPauseSession:
     post:
       tags:
@@ -5256,6 +5296,19 @@ components:
                 - listTrackerIssues
             - type: object
               properties:
+                moveSession:
+                  title: move_session
+                  description: |-
+                    MoveSession returns the moved session plus is_moved (reuses daemon.proto
+                     type). It does NOT reuse session = 4: a boundary move is a successful
+                     no-op that must stay distinguishable from a move that changed the order,
+                     and the bare Session payload has nowhere to say so.
+                  $ref: '#/components/schemas/bossanova.v1.MoveSessionResponse'
+              title: move_session
+              required:
+                - moveSession
+            - type: object
+              properties:
                 recordChat:
                   title: record_chat
                   description: RecordChat returns the created/resumed chat.
@@ -6552,6 +6605,27 @@ components:
         DaemonOffline is the terminal event emitted by the orchestrator when the
          owning daemon's stream goes offline mid-subscription. The client should
          treat this as a signal to retry later.
+    bossanova.v1.DaemonRef:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        hostname:
+          type: string
+          title: hostname
+        organizationId:
+          type: string
+          title: organization_id
+        isOnline:
+          type: boolean
+          title: is_online
+      title: DaemonRef
+      additionalProperties: false
+      description: |-
+        DaemonRef is the minimal identity needed to filter sessions served by a
+         daemon the caller does not own. It deliberately excludes inventory details
+         such as repositories and connection timestamps.
     bossanova.v1.DaemonRepoRef:
       type: object
       properties:
@@ -8610,6 +8684,14 @@ components:
             Organizations whose daemon inventory could not be read. Their daemons are
              absent from `daemons`; the rest of the union is still served. Always empty
              for explicitly narrowed, legacy-version, and daemon-authenticated reads.
+        sessionDaemons:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.DaemonRef'
+          title: session_daemons
+          description: |-
+            Minimal references for peer daemons serving sessions visible to the
+             caller. This is intentionally distinct from the acting-user inventory.
       title: ListDaemonsResponse
       additionalProperties: false
     bossanova.v1.ListGitHubAppReposRequest:
@@ -9325,6 +9407,95 @@ components:
       description: |-
         MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
          domain values in lib/bossalib/models (merge / rebase / squash).
+    bossanova.v1.MoveDirection:
+      type: string
+      title: MoveDirection
+      enum:
+        - MOVE_DIRECTION_UNSPECIFIED
+        - MOVE_DIRECTION_UP
+        - MOVE_DIRECTION_DOWN
+      description: |-
+        MoveDirection is the direction a MoveSession request moves a session in the
+         rendered list. UNSPECIFIED is rejected rather than defaulted, so a client
+         that forgets to set it gets an error instead of an arbitrary move.
+    bossanova.v1.MoveSessionCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+          description: The session to move.
+        direction:
+          title: direction
+          description: |-
+            Which way to move it. UNSPECIFIED is rejected by the daemon rather than
+             defaulted.
+          $ref: '#/components/schemas/bossanova.v1.MoveDirection'
+        repoId:
+          type:
+            - string
+            - "null"
+          title: repo_id
+          description: |-
+            Scope the neighbour computation to one repo, exactly as
+             ListSessionsRequest.repo_id does. Absent/empty means the cross-repo list,
+             so the neighbours the daemon reasons about are the ones the caller is
+             actually looking at.
+      title: MoveSessionCommand
+      additionalProperties: false
+      description: |-
+        MoveSessionCommand asks the daemon to move a session one position up or down
+         the rendered list. Replies with CommandResult carrying a MoveSessionResponse
+         (move_session = 41).
+
+         It mirrors DaemonService.MoveSession field for field rather than reusing
+         MoveSessionRequest, because every command in this oneof names its subject
+         session_id and a lone `id` here would read as the command's own identity.
+         The daemon owns the rank arithmetic: this command carries a DIRECTION, never
+         a computed position, so two clients can never derive different ranks.
+    bossanova.v1.MoveSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          description: The session to move.
+        direction:
+          title: direction
+          description: Which way to move it.
+          $ref: '#/components/schemas/bossanova.v1.MoveDirection'
+        repoId:
+          type:
+            - string
+            - "null"
+          title: repo_id
+          description: |-
+            Scope the neighbour computation to one repo, exactly as
+             ListSessionsRequest.repo_id does. Absent/empty means the cross-repo list —
+             which is what the TUI renders by default — so the neighbours the daemon
+             reasons about are the ones the caller is actually looking at.
+      title: MoveSessionRequest
+      additionalProperties: false
+    bossanova.v1.MoveSessionResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          description: |-
+            The session after the move, carrying its updated list_rank. Returned so a
+             caller can reconcile optimistically without a second read.
+          $ref: '#/components/schemas/bossanova.v1.Session'
+        isMoved:
+          type: boolean
+          title: is_moved
+          description: |-
+            False when the move was a successful no-op: the session was already at the
+             boundary of the list, or the requested position is not expressible in the
+             ordering model. Boundary moves succeed rather than erroring, so a held-down
+             key does not start failing; this field lets a caller skip a redundant
+             re-render.
+      title: MoveSessionResponse
+      additionalProperties: false
     bossanova.v1.NoOpAction:
       type: object
       properties:
@@ -9797,6 +9968,18 @@ components:
               title: merge
               required:
                 - merge
+            - type: object
+              properties:
+                moveSession:
+                  title: move_session
+                  description: |-
+                    bosso → daemon: move a session up or down the rendered list. The rank
+                     arithmetic lives entirely in the daemon, so bosso forwards the direction
+                     and never computes a position. Replies CommandResult{move_session}.
+                  $ref: '#/components/schemas/bossanova.v1.MoveSessionCommand'
+              title: move_session
+              required:
+                - moveSession
             - type: object
               properties:
                 pause:
@@ -12020,6 +12203,54 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ProxyMergeSessionResponse
       additionalProperties: false
+    bossanova.v1.ProxyMoveSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          description: The session to move.
+        direction:
+          title: direction
+          description: |-
+            Which way to move it. UNSPECIFIED is rejected by the daemon rather than
+             defaulted, so a client that forgets to set it gets an error.
+          $ref: '#/components/schemas/bossanova.v1.MoveDirection'
+        repoId:
+          type:
+            - string
+            - "null"
+          title: repo_id
+          description: |-
+            Scope the neighbour computation to one repo, exactly as
+             ProxyListSessionsRequest.repo_id does. Absent/empty means the cross-repo
+             list, which is what the web app renders by default.
+      title: ProxyMoveSessionRequest
+      additionalProperties: false
+      description: |-
+        ProxyMoveSessionRequest mirrors DaemonService.MoveSession: which session,
+         which way, and optionally which repo's list the caller is looking at. It
+         carries a direction rather than a position because the daemon owns the rank
+         arithmetic — two clients must never be able to derive different positions.
+    bossanova.v1.ProxyMoveSessionResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          description: The session after the move, carrying its updated list_rank.
+          $ref: '#/components/schemas/bossanova.v1.Session'
+        isMoved:
+          type: boolean
+          title: is_moved
+          description: |-
+            False when the move was a successful no-op: the session was already at the
+             boundary of the list. Boundary moves succeed rather than erroring, so a
+             held-down key does not start failing.
+      title: ProxyMoveSessionResponse
+      additionalProperties: false
+      description: |-
+        ProxyMoveSessionResponse is the daemon's MoveSessionResponse, returned
+         unchanged.
     bossanova.v1.ProxyPauseSessionRequest:
       type: object
       properties:
@@ -14862,6 +15093,36 @@ components:
              its feet" — the signal an unattended driver reads to stop waiting on a
              frozen lease. While it is set, last_repair_blocked_reason (51) carries the
              stall reason.
+        listRank:
+          type:
+            - integer
+            - string
+            - "null"
+          title: list_rank
+          format: int64
+          description: |-
+            Manual list rank (BOS-1230). Absent — the default for every existing row
+             and every newly created session — means the session keeps its natural
+             created_at DESC position. Present means the user explicitly moved it: a
+             ranked session sorts as part of a block ahead of every unranked one, and
+             ranked sessions sort among themselves by rank ascending.
+
+             The value is a SPARSE ordering key, not a dense index: gaps are left
+             between adjacent ranks so moving one session writes exactly one row
+             instead of renumbering its siblings. Clients MUST treat it as opaque and
+             compare it only for ordering; the arithmetic lives in the daemon
+             (MoveSession) so two clients cannot derive different positions.
+
+
+             BOS-1232 — DEFERRED API-VERSION OBLIGATION. bossd's DaemonService mounts
+             no apiversion.Interceptor and bosso's session comparators read only
+             created_at and id, so this field does not yet affect any orchestrator
+             response ordering and owes no version bump. The moment a bosso comparator
+             sorts by it, ProxyListSessions ordering becomes observable to a pinned
+             client and that change owes a date-based apiversion bump plus a
+             down-convert transform, with tests.
+
+             Persisted as sessions.list_rank.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.

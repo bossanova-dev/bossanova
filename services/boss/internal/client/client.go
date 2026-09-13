@@ -82,6 +82,15 @@ type BossClient interface {
 	MergeSession(ctx context.Context, id string) (*pb.Session, string, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
+	// MoveSession moves one session up or down relative to its neighbours in
+	// the rendered session list (BOS-1230/BOS-1231). The move arithmetic lives
+	// in the daemon so no two clients can derive different positions from the
+	// same list, which is why the request carries a direction rather than a
+	// target rank. The second return is the response's is_moved: false is a
+	// SUCCESSFUL no-op — the session was already at the boundary — not an
+	// error, so a held-down key does not start failing. RemoteClient refuses:
+	// the orchestrator has no proxy for this RPC yet (BOS-1232).
+	MoveSession(ctx context.Context, req *pb.MoveSessionRequest) (*pb.Session, bool, error)
 	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)
 	RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error)
 	// SwitchSessionAccount stops the session's live chat, rebinds it to the

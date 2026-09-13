@@ -231,7 +231,10 @@ test('withSkillSourceRewriteLock waits for a live lock to be released', async ()
   )
 
   try {
-    await waitFor(() => existsSync(lockPath))
+    // A fresh Node process occasionally needs longer than the generic one-second
+    // polling allowance to load the lock helper on a busy CI worker. The lock's
+    // correctness assertion is unchanged; this only avoids racing its startup.
+    await waitFor(() => existsSync(lockPath), 5_000)
     let actionRan = false
     withSkillSourceRewriteLock(root, () => {
       actionRan = true

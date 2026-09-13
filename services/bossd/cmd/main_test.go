@@ -607,6 +607,19 @@ func TestRunUsesSettingsPathProfileForDBAndSocket(t *testing.T) {
 	if metadata.SocketPath != socketPath {
 		t.Fatalf("metadata socket path = %q, want %q", metadata.SocketPath, socketPath)
 	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	if want := config.DaemonDisplayName(settings, config.DefaultDisplayHostname(hostname)); metadata.DisplayName != want {
+		t.Fatalf("metadata display name = %q, want %q", metadata.DisplayName, want)
+	}
+	if metadata.DisplayNameOverride {
+		t.Fatal("metadata recorded an override for settings without daemon_name")
+	}
+	if want, err := upstream.ResolveDaemonID(os.Getenv, appDataDir, hostname); err != nil || metadata.DaemonID != want {
+		t.Fatalf("metadata daemon ID = %q, want %q (resolve error: %v)", metadata.DaemonID, want, err)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -630,6 +643,75 @@ func TestRunUsesSettingsPathProfileForDBAndSocket(t *testing.T) {
 	}
 	if _, err := daemonstate.Read(appDataDir); !os.IsNotExist(err) {
 		t.Fatalf("daemon metadata after shutdown error = %v, want not exist", err)
+	}
+}
+
+func TestRunPersistsDaemonNameOverrideInMetadata(t *testing.T) {
+	baseDir, err := os.MkdirTemp("/tmp", "bossd-profile-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+
+	settingsPath := filepath.Join(baseDir, "settings.json")
+	appDataDir := filepath.Join(baseDir, "data")
+	socketPath := filepath.Join(baseDir, "profile.sock")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	settings.SocketPath = socketPath
+	settings.DaemonName = "  studio-mini  "
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo() returned error: %v", err)
+	}
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- run(runOpts{
+			stopSig: stopSig,
+			plugins: []config.PluginConfig{},
+			onReady: func() { close(ready) },
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state within 15s")
+	}
+
+	metadata, err := daemonstate.Read(appDataDir)
+	if err != nil {
+		t.Fatalf("daemon metadata was not written: %v", err)
+	}
+	if want := config.DaemonDisplayName(settings, "ignored-hostname"); metadata.DisplayName != want {
+		t.Fatalf("metadata display name = %q, want %q", metadata.DisplayName, want)
+	}
+	if !metadata.DisplayNameOverride {
+		t.Fatal("metadata did not record daemon_name as the display-name source")
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	if want, err := upstream.ResolveDaemonID(os.Getenv, appDataDir, hostname); err != nil || metadata.DaemonID != want {
+		t.Fatalf("metadata daemon ID = %q, want %q (resolve error: %v)", metadata.DaemonID, want, err)
+	}
+
+	stopSig <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return within 15s of SIGTERM")
 	}
 }
 

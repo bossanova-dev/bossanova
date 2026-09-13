@@ -443,6 +443,11 @@ type SessionCommandHandler interface {
 	// UpdateSession updates a session's title/tracker fields (carried on the
 	// stream command's optional pointers) and returns the updated row.
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionCommand) (*pb.Session, error)
+	// MoveSession moves a session one position up or down the rendered list and
+	// returns the daemon's answer whole — the moved session AND whether the move
+	// changed anything. A boundary move is a successful no-op, so the caller
+	// needs both halves: a Session alone cannot say "nothing moved".
+	MoveSession(ctx context.Context, req *pb.MoveSessionCommand) (*pb.MoveSessionResponse, error)
 	// LinkSessionPR attaches an existing PR to a session and returns the updated row.
 	LinkSessionPR(ctx context.Context, sessionID, pr string) (*pb.Session, error)
 	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error)

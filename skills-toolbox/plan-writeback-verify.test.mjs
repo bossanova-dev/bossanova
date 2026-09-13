@@ -32,6 +32,7 @@ import {
   DESCRIPTION_TRANSFORM_NORMALIZERS,
   WRITEBACK_DESCRIPTION_MODES,
   WRITEBACK_VERDICTS,
+  WRITEBACK_CAUSES,
   normalizeDescription,
   parseWritebackVerifyArgs,
   verifyWriteback,
@@ -51,6 +52,24 @@ const UPLOAD = 'https://uploads.linear.app/abc-123/screenshot.png'
 const ALL_TRANSFORMS = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
 
 const NOTES = `Reporter context.\n\n- first observation\n- second observation\n`
+
+/**
+ * The durable invariant for a difference the transform vocabulary cannot account for: it must never
+ * be CERTIFIED as a clean round trip.
+ *
+ * Asserted this way rather than by pinning a verdict name, because the verdict name is exactly what
+ * moved. These cases used to be `drift` and are now `unattributed` — advisory rather than fatal,
+ * since every content conjunct (contract, uploads, verbatim block) has already passed on the same
+ * bytes. What each of these tests is really defending is the tier-2 boundary: an undeclared
+ * reshaping must not be laundered into `normalized-equivalent` or `byte-exact`. That is unchanged,
+ * and it is what this helper pins, so a future severity change cannot quietly erode it.
+ */
+function assertNotCertifiedEquivalent(result) {
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.UNATTRIBUTED)
+  assert.notEqual(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  assert.notEqual(result.verdict, WRITEBACK_VERDICTS.BYTE_EXACT)
+  assert.equal(result.cause, WRITEBACK_CAUSES.UNATTRIBUTED)
+}
 
 /** A minimal description that satisfies the DEFAULT_CONFIG child-plan contract. */
 function description({ notes = NOTES, sections = {} } = {}) {
@@ -175,14 +194,14 @@ test('tier 3: a literal corrupted emphasis run is drift, never a tolerated trans
     'found **7 of the 17****\n****already fixed**',
   )
   const result = verify(intended, stored)
-  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assertNotCertifiedEquivalent(result)
 })
 
 test('a drift verdict names the differing line and column', () => {
   const intended = description()
   const stored = intended.replace('Measure write-back', 'Measure writeback')
   const result = verify(intended, stored)
-  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assertNotCertifiedEquivalent(result)
   assert.match(result.reason, /line \d+, column \d+/)
   assert.equal(result.line, 3, 'the differing line is the Summary body')
   assert.ok(result.column > 0)
@@ -272,13 +291,32 @@ test('CLI: a declared transform prints normalized-equivalent and exits zero', ()
   assert.match(res.stdout, /^writeback-verdict: normalized-equivalent$/m)
 })
 
-test('CLI: a tier-3 run exits non-zero and leaves both input files byte-unmodified', () => {
+test('CLI: a content-loss run exits non-zero and leaves both input files byte-unmodified', () => {
+  // Retargeted onto a CONTENT-loss fixture. The original changed one word of Summary prose, which
+  // is now the advisory `unattributed` verdict; the guarantee this test exists for — the helper
+  // never writes anything, whatever it decides — belongs on the branch that still fails.
   const intended = description()
-  const stored = intended.replace('Measure write-back', 'Measure writeback')
+  const stored = intended.replace('first observation', 'FIRST observation')
   const { res, intended: intendedPath, stored: storedPath } = runCli(intended, stored)
   assert.notEqual(res.status, 0)
   assert.match(res.stdout, /^writeback-verdict: drift$/m)
   assert.match(res.stderr, /line \d+, column \d+/)
+  assert.equal(readFileSync(intendedPath, 'utf8'), intended, 'no corrective rewrite of the intent')
+  assert.equal(readFileSync(storedPath, 'utf8'), stored, 'no corrective rewrite of the stored text')
+})
+
+test('CLI: an advisory run exits ZERO, still says so on stderr, and rewrites nothing', () => {
+  // The severity split's headline behaviour: a difference with no detected content loss no longer
+  // strands a run whose tracker writes have all landed. It must still be audible — a silent pass
+  // here would be a gate that stopped reporting rather than a gate that stopped over-reacting.
+  const intended = description()
+  const stored = intended.replace('Measure write-back', 'Measure writeback')
+  const { res, intended: intendedPath, stored: storedPath } = runCli(intended, stored)
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /^writeback-verdict: unattributed$/m)
+  assert.match(res.stderr, /^writeback-verdict: unattributed$/m)
+  assert.match(res.stderr, /do NOT attempt a corrective rewrite/)
+  assert.ok(!res.stdout.includes('verdict: drift'), 'no content loss was detected, so not drift')
   assert.equal(readFileSync(intendedPath, 'utf8'), intended, 'no corrective rewrite of the intent')
   assert.equal(readFileSync(storedPath, 'utf8'), stored, 'no corrective rewrite of the stored text')
 })
@@ -359,8 +397,7 @@ test('tier 3: a stored description that LOST emphasis around a code span is drif
   const stored = intended.replace('**`plan-writeback-verify.mjs`**', '`plan-writeback-verify.mjs`')
   assert.notEqual(stored, intended)
   const result = verify(intended, stored, ['emphasis-span-restructuring'])
-  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
-  assert.notEqual(result.exitCode, 0)
+  assertNotCertifiedEquivalent(result)
 })
 
 // ---------------------------------------------------------------------------
@@ -500,23 +537,58 @@ test('records exactly one gate-outcome line per invocation without changing the 
       .filter((line) => line !== '')
       .map((line) => line.split('\t').slice(1))
 
+  // The recorded reason is the CAUSE, not the verdict. A bare `drift` could not distinguish a lost
+  // section from a bullet rewrite, so the question "has this gate ever caught real content loss?"
+  // could only be answered by hand-diffing retained scratch directories — which is how the 55%
+  // false-fire rate went unnoticed. Each conjunct now names itself in telemetry.
   const text = description()
   const pass = runCliRecording(text, text, outcomes)
   assert.equal(pass.status, 0, pass.stderr)
   assert.match(pass.stdout, /^writeback-verdict: byte-exact$/m)
-  assert.deepEqual(read(), [['plan-writeback-verify', 'pass', 'byte-exact']])
+  assert.deepEqual(read(), [['plan-writeback-verify', 'pass', 'equal']])
 
-  const fire = runCliRecording(
+  // An advisory difference records a PASS carrying its own cause, so it stays countable.
+  const advisory = runCliRecording(
     text,
     text.replace('Measure write-back', 'Measure writeback'),
+    outcomes,
+  )
+  assert.equal(advisory.status, 0, advisory.stderr)
+  assert.match(advisory.stdout, /^writeback-verdict: unattributed$/m)
+
+  // Content loss records a FIRE naming which conjunct caught it.
+  const fire = runCliRecording(
+    text,
+    text.replace('first observation', 'FIRST observation'),
     outcomes,
   )
   assert.notEqual(fire.status, 0)
   assert.match(fire.stdout, /^writeback-verdict: drift$/m)
   assert.deepEqual(read(), [
-    ['plan-writeback-verify', 'pass', 'byte-exact'],
-    ['plan-writeback-verify', 'fire', 'drift'],
+    ['plan-writeback-verify', 'pass', 'equal'],
+    ['plan-writeback-verify', 'pass', 'unattributed'],
+    ['plan-writeback-verify', 'fire', 'notes'],
   ])
+})
+
+test('each content-loss conjunct records its own distinct cause', () => {
+  // The point of the cause vocabulary: three different failures that used to be indistinguishable
+  // in telemetry are now three different tokens.
+  const outcomes = path.join(
+    mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-causes-')),
+    'outcomes.tsv',
+  )
+  const causeOf = (stored) => {
+    const res = runCliRecording(description(), stored, outcomes)
+    assert.notEqual(res.status, 0, 'content loss must stay fatal')
+    return readFileSync(outcomes, 'utf8').trim().split('\n').pop().split('\t')[3]
+  }
+  assert.equal(
+    causeOf(description().replace('## Required proof', '## Not a contract section')),
+    'contract',
+  )
+  assert.equal(causeOf(description().replace(`![shot](${UPLOAD})`, '')), 'uploads')
+  assert.equal(causeOf(description().replace('first observation', 'FIRST observation')), 'notes')
 })
 
 test('an unreadable stored description records one fire line and stays non-zero', () => {
@@ -601,8 +673,7 @@ test('BOS-1214: an UNDECLARED reshaping — entity escaping — is drift, not a 
     'this test is only meaningful while entity escaping is undeclared',
   )
   const result = verify(intended, stored)
-  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
-  assert.notEqual(result.exitCode, 0)
+  assertNotCertifiedEquivalent(result)
 })
 
 test('BOS-1214: a dropped WORD still fails, however tolerant the declared transform set is', () => {
@@ -637,7 +708,7 @@ test('BOS-1214 CLI: a failing run repeats the machine verdict on stderr', () => 
   // captured. Every failure branch in the skill bodies reads stderr; before this the verdict word
   // existed on stdout alone and a stderr-only caller had to infer `drift` from the exit status.
   const intended = description()
-  const stored = intended.replace('Measure write-back', 'Measure writeback')
+  const stored = intended.replace('first observation', 'FIRST observation')
   const { res } = runCli(intended, stored)
   assert.notEqual(res.status, 0)
   assert.match(res.stdout, /^writeback-verdict: drift$/m)
@@ -768,8 +839,7 @@ test('tier 3: the same table-delimiter difference is drift when the id is NOT de
   const intended = emphasis(`A table:\n\n${tableDoc('| --- | --- |')}`)
   const stored = emphasis(`A table:\n\n${tableDoc('| -- | -- |')}`)
   const result = verify(intended, stored, ['terminal-newline-trimming'])
-  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
-  assert.notEqual(result.exitCode, 0)
+  assertNotCertifiedEquivalent(result)
 })
 
 // ---------------------------------------------------------------------------
@@ -979,8 +1049,7 @@ test('tier 3: a body row rewritten to a delimiter row is drift, not tier 2', () 
   const intended = emphasis('A table:\n\n| a | b |\n| --- | --- |\n| - | - |\n')
   const stored = emphasis('A table:\n\n| a | b |\n| --- | --- |\n| --- | --- |\n')
   const result = verify(intended, stored, [TABLE_TRANSFORM])
-  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
-  assert.notEqual(result.exitCode, 0)
+  assertNotCertifiedEquivalent(result)
 })
 
 test('table-delimiter-row: a delimiter-shaped line with NO header row before it is left alone', () => {

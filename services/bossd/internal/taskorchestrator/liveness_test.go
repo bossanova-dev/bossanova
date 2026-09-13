@@ -52,6 +52,12 @@ func (m *mockSessionStoreLiveness) ListArchived(_ context.Context, _ string) ([]
 func (m *mockSessionStoreLiveness) ListTmuxSessionNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
+
+// SetListRanks satisfies db.SessionStore (BOS-1230). No test in this file
+// exercises the manual list rank, so the stub is inert.
+func (m *mockSessionStoreLiveness) SetListRanks(_ context.Context, _ map[string]*int64) (int, error) {
+	return 0, nil
+}
 func (m *mockSessionStoreLiveness) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	return nil, nil
 }

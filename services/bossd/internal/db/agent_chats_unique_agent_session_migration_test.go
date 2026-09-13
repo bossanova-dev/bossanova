@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"testing"
@@ -61,19 +60,28 @@ func agentSessionIDIndexIsUnique(t *testing.T, db *sql.DB) (exists, unique bool)
 // the raw inserts below cannot use a made-up session id.
 func seedChatSession(t *testing.T, db *sql.DB) string {
 	t.Helper()
-	ctx := context.Background()
-	repo := createTestRepo(t, NewRepoStore(db))
-	sess, err := NewSessionStore(db).Create(ctx, CreateSessionParams{
-		RepoID:       repo.ID,
-		Title:        "unique agent_session_id migration",
-		WorktreePath: "/tmp/wt/unique-agent-session",
-		BranchName:   "feat/unique-agent-session",
-		BaseBranch:   "main",
-	})
-	if err != nil {
-		t.Fatalf("create session: %v", err)
+	// Seeded with raw SQL, NOT through SQLiteSessionStore. These tests run
+	// against a database deliberately held at an OLDER migration version, and
+	// the store's SELECT is written against the LATEST schema — so every future
+	// column added to sessions would break this helper with "no such column"
+	// (BOS-1230 hit exactly that with list_rank). Raw INSERT names only the
+	// columns the pre-migration schema is guaranteed to have, which is the
+	// pattern the other migration tests in this package already follow.
+	const sessionID = "unique-agent-session"
+	if _, err := db.Exec(
+		`INSERT INTO repos (id, display_name, local_path, origin_url, worktree_base_dir)
+		 VALUES ('unique-agent-session-repo', 'test-repo', '/tmp/test-repo',
+		         'https://github.com/test/repo.git', '/tmp/worktrees')`); err != nil {
+		t.Fatalf("seed repo: %v", err)
 	}
-	return sess.ID
+	if _, err := db.Exec(
+		`INSERT INTO sessions (id, repo_id, title, worktree_path, branch_name, base_branch)
+		 VALUES (?, 'unique-agent-session-repo', 'unique agent_session_id migration',
+		         '/tmp/wt/unique-agent-session', 'feat/unique-agent-session', 'main')`,
+		sessionID); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return sessionID
 }
 
 // TestAgentChatsUniqueAgentSessionMigrationApplied asserts the migration is

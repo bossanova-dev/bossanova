@@ -23,7 +23,7 @@ func (e *unsupportedTerminalError) Error() string {
 // chosen by inspecting the environment. Detection order:
 //
 //  1. $TMUX set                         -> tmux new-window -c <cwd>
-//  2. iTerm2 (TERM_PROGRAM / session)   -> osascript ...
+//  2. iTerm2 (env signals, darwin)      -> osascript ...
 //  3. Ghostty (env signals, darwin)     -> open -a Ghostty <cwd>
 //  4. none                              -> unsupportedTerminalError
 //
@@ -36,6 +36,9 @@ func newTabCmd(env func(string) string, goos string, cwd string) (*exec.Cmd, err
 	termProgram := env("TERM_PROGRAM")
 
 	if termProgram == "iTerm.app" || env("ITERM_SESSION_ID") != "" {
+		if goos != "darwin" {
+			return nil, &unsupportedTerminalError{termProgram: "iTerm.app (non-darwin)"}
+		}
 		// #nosec G204 -- osascript -e <script>; cwd embedded via shell-single-quote + AppleScript escaping; local cwd
 		// owner=@recurser review-by=2027-01-18 issue=BOS-28
 		return exec.Command("osascript", "-e", buildITermScript(cwd)), nil

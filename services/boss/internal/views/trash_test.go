@@ -935,3 +935,9 @@ func (s *trashStubClient) ListSessionsWithReadFailures(ctx context.Context, req 
 	sessions, err := s.ListSessions(ctx, req, opts)
 	return sessions, nil, err
 }
+
+// MoveSession satisfies the BossClient seam (BOS-1231). This stub is not part
+// of a reorder test, so a call is a bug in the view under test.
+func (s *trashStubClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	panic("unused")
+}

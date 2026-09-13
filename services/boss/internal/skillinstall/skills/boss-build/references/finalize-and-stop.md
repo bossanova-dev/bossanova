@@ -250,9 +250,10 @@ naming the criterion.
 Before readying, run `validateVerifyOnlyEvidence(config, body)` from `toolbox/skill-config.mjs` over
 the **PR body**. It returns `{ ok, verifyOnly, missingEvidence, malformedMarker, advisory }`, and
 `ok` is true only when every criterion that is both marked and ticked carries a **non-empty** command,
-a **non-empty** result, and a statically resolvable command head. Every `missingEvidence` item carries
+a **non-empty** result, and no statically decidable command failure. Every `missingEvidence` item carries
 a closed-set `reason` plus a one-line `remedy`: `no-clause`, `undelimited-command`,
-`planned-tense-on-ticked`, `empty-command`, `empty-result`, or `command-unresolvable`. An `ok:false`
+`planned-tense-on-ticked`, `empty-command`, `empty-result`, `command-unresolvable`,
+`make-goal-undefined`, or `path-operand-missing`. An `ok:false`
 result makes each criterion it names a **deferred required item**, of the unsatisfied-in-scope-criterion
 kind: name each reason/remedy in the PR body and route through the `PARTIAL` gate below, not through
 `BLOCKED`. An **unticked** marked criterion is not a failure of this gate — it is already an open

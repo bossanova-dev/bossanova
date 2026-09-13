@@ -605,18 +605,24 @@ func extract(dir string, fsys fs.FS) error {
 	nsDir := filepath.Join(dir, Namespace)
 
 	// Remove stale boss-* entries (symlinks or real directories) in the parent directory.
-	if entries, err := os.ReadDir(dir); err == nil {
-		for _, e := range entries {
-			name := e.Name()
-			if !isBossSkill(name) {
-				continue
-			}
-			_ = os.RemoveAll(filepath.Join(dir, name))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read skill directory: %w", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !isBossSkill(name) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			return fmt.Errorf("remove stale skill %q: %w", name, err)
 		}
 	}
 
 	// Remove the entire namespace directory so stale skills are cleaned up.
-	_ = os.RemoveAll(nsDir)
+	if err := os.RemoveAll(nsDir); err != nil {
+		return fmt.Errorf("remove skill namespace: %w", err)
+	}
 
 	// Extract embedded skill files into the namespace directory.
 	if err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
@@ -652,7 +658,7 @@ func extract(dir string, fsys fs.FS) error {
 	}
 
 	// Create symlinks from dir/boss-* → bossanova/boss-* for each skill.
-	entries, err := os.ReadDir(nsDir)
+	entries, err = os.ReadDir(nsDir)
 	if err != nil {
 		return fmt.Errorf("read namespace dir: %w", err)
 	}

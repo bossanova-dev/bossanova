@@ -44,6 +44,7 @@ import {
   trackerConfigFor,
   toleratedDescriptionTransforms,
   DESCRIPTION_NORMALIZATION_TRANSFORMS,
+  unattributedDriftSeverity,
   publishConfigFor,
   planStorageFor,
   stateName,
@@ -2793,6 +2794,93 @@ test('classifyCheckCommand reports blocking and advisory shapes without executin
   assert.deepEqual(classifyCheckCommand('node --include "*.md" # pass 2').advisory, [])
 })
 
+test('classifyCheckCommand resolves make goals and path operands only when absence is decidable', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'boss-skill-config-operands-'))
+  try {
+    mkdirSync(join(tmp, 'scripts'))
+    writeFileSync(
+      join(tmp, 'Makefile'),
+      ['.PHONY: phony \\', '  continued', 'defined:', 'lint test:', 'continued-a \\', ' continued-b:', ''].join('\n'),
+    )
+    const options = { cwd: tmp, env: process.env }
+
+    assert.deepEqual(classifyCheckCommand('make defined', options).blocking, [])
+    assert.deepEqual(classifyCheckCommand('make phony continued', options).blocking, [])
+    assert.deepEqual(classifyCheckCommand('make lint test', options).blocking, [])
+    assert.deepEqual(classifyCheckCommand('make continued-a continued-b', options).blocking, [])
+    assert.deepEqual(classifyCheckCommand('make -j 8 defined', options).blocking, [])
+    assert.deepEqual(classifyCheckCommand('make --jobs 8 defined', options).blocking, [])
+    assert.equal(classifyCheckCommand('make absent', options).blocking[0].code, 'make-goal-undefined')
+    assert.equal(classifyCheckCommand('make -C scripts absent', options).advisory[0].code, 'make-goal-unresolved')
+    assert.equal(classifyCheckCommand('make -f absent.mk absent', options).advisory[0].code, 'make-goal-unresolved')
+
+    writeFileSync(join(tmp, 'Open.mk'), 'generated-%:\n\t@true\n')
+    assert.equal(
+      classifyCheckCommand('make -f Open.mk absent', options).advisory[0].code,
+      'make-goal-unresolved',
+    )
+    writeFileSync(join(tmp, 'Attached.mk'), 'defined:\n')
+    assert.deepEqual(classifyCheckCommand('make -fAttached.mk defined', options).blocking, [])
+    writeFileSync(join(tmp, 'GNUmakefile'), 'gnu-defined:\n')
+    assert.deepEqual(classifyCheckCommand('make gnu-defined', options).blocking, [])
+    assert.equal(
+      classifyCheckCommand('make defined', options).blocking[0].code,
+      'make-goal-undefined',
+    )
+    writeFileSync(join(tmp, 'first.mk'), 'from-first:\n')
+    writeFileSync(join(tmp, 'second.mk'), 'from-second:\n')
+    const multipleMakefiles = classifyCheckCommand('make -f first.mk -f second.mk from-first', options)
+    assert.deepEqual(multipleMakefiles.blocking, [])
+    assert.equal(multipleMakefiles.advisory[0].code, 'make-goal-unresolved')
+    assert.equal(
+      classifyCheckCommand('node --test missing-dir/new.test.mjs', options).blocking[0].code,
+      'path-operand-missing',
+    )
+    assert.equal(
+      classifyCheckCommand('node --test scripts/new.test.mjs', options).advisory[0].code,
+      'path-operand-absent',
+    )
+    assert.deepEqual(classifyCheckCommand('node --test scripts/*.test.mjs', options).blocking, [])
+    assert.deepEqual(
+      classifyCheckCommand(
+        'node --test --test-name-pattern missing-dir/pattern scripts/new.test.mjs',
+        options,
+      ).blocking,
+      [],
+    )
+    for (const option of [
+      '--test-concurrency',
+      '--test-coverage-exclude',
+      '--experimental-test-isolation',
+      '--test-global-setup',
+      '--test-isolation',
+      '--test-rerun-failures',
+      '--test-skip-pattern',
+      '--test-timeout',
+    ]) {
+      assert.deepEqual(
+        classifyCheckCommand(`node --test ${option} missing-dir/value`, options).blocking,
+        [],
+        option,
+      )
+    }
+    assert.deepEqual(classifyCheckCommand('node -e "true"', options).blocking, [])
+    assert.equal(
+      classifyCheckCommand('bash missing-dir/script.sh', options).blocking[0].code,
+      'path-operand-missing',
+    )
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+
+  assert.deepEqual(classifyCheckCommand('make target-that-does-not-exist-bos1239').blocking, [])
+  assert.ok(
+    classifyCheckCommand('make target-that-does-not-exist-bos1239').advisory.some(
+      (finding) => finding.code === 'make-goal-unresolved',
+    ),
+  )
+})
+
 // A negated check command is legitimate: `! grep -q needle file` is the natural way to assert a
 // pattern is ABSENT. `!` is the POSIX negation keyword and must be its own word, so it landed as
 // the segment head and resolved to no executable, making the whole shape unrecordable.
@@ -3037,10 +3125,16 @@ test('parsePremises throws the named swapped-argument error', () => {
 // BOS-1199 U3 — the tolerated description-normalization transform seam.
 //
 // A tracker that normalizes markdown on write reshapes a description without changing what it
-// means. The post-save read-back must tell that apart from a transcription slip, so a repo declares
-// the transforms it has OBSERVED — from a closed vocabulary, defaulting to the empty (strictest)
-// set. Absence must never be readable as "tolerate all"; that is what turns tier 2 into a rubber
-// stamp.
+// means. The post-save read-back must tell that apart from a transcription slip, so a repo may
+// declare which transforms it tolerates, from a closed vocabulary.
+//
+// The DEFAULT was inverted: absence now yields the FULL vocabulary, and an explicitly empty
+// `tolerated` array is the opt-in to byte-exact strictness. The empty default made the strictest
+// possible comparison apply to every repo that had never heard of the knob, and measured over 60
+// runs that fired on 55% of verifications with no content loss in any inspected case. Absence
+// yielding "tolerate all" is safe precisely because tolerance governs only the COSMETIC conjunct:
+// a lost section, a dropped upload identity, or a changed verbatim block is detected by conjuncts
+// this set does not touch, and each still blocks.
 // ---------------------------------------------------------------------------
 
 const withNormalization = (tolerated) =>
@@ -3067,10 +3161,56 @@ test('U3: a config declaring a valid subset loads and the accessor returns exact
   )
 })
 
-test('U3: an absent normalization block yields the empty set (default strict)', () => {
+test('U3: an absent normalization block yields the FULL vocabulary (default lenient)', () => {
   const config = withNormalization(undefined)
   validateConfig(config, 'test')
+  assert.deepEqual(
+    toleratedDescriptionTransforms(config),
+    new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS),
+  )
+})
+
+test('U3: an explicitly empty tolerated array is the opt-in to byte-exact strictness', () => {
+  const config = withNormalization([])
+  validateConfig(config, 'test')
   assert.deepEqual(toleratedDescriptionTransforms(config), new Set())
+})
+
+test('U3: absence and an explicitly empty array are NOT equivalent', () => {
+  // The inverted default turns on this distinction: "no opinion" and "I want byte-exact" used to
+  // be the same input. If these ever collapse again, one of the two intents has been lost.
+  assert.notDeepEqual(
+    toleratedDescriptionTransforms(withNormalization(undefined)),
+    toleratedDescriptionTransforms(withNormalization([])),
+  )
+})
+
+test('U3: onUnattributedDrift defaults to warn, honours block, and falls back on an unknown value', () => {
+  const withSeverity = (onUnattributedDrift) =>
+    mergeConfig(DEFAULT_CONFIG, {
+      adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+      trackerConfig: {
+        demo: {
+          mcpServer: 'demo-tracker',
+          team: 'Demo',
+          descriptionNormalization: { onUnattributedDrift },
+        },
+      },
+    })
+  assert.equal(unattributedDriftSeverity(withNormalization(undefined)), 'warn')
+  assert.equal(unattributedDriftSeverity(withSeverity('warn')), 'warn')
+  assert.equal(unattributedDriftSeverity(withSeverity('block')), 'block')
+
+  // An unrecognised value warns and falls back to the DEFAULT, not to the stricter reading: a
+  // severity this copy cannot parse must never start failing completed runs on its own.
+  const config = withSeverity('explode')
+  const warned = warningsFrom(() => validateConfig(config, 'test'))
+  assert.match(warned, /onUnattributedDrift is "explode"/)
+  assert.match(warned, /falling back to "warn"/)
+  assert.equal(unattributedDriftSeverity(config), 'warn')
+
+  // A structural fault still throws — a repo that meant to configure something and did not.
+  assert.throws(() => validateConfig(withSeverity(42), 'test'), /onUnattributedDrift/)
 })
 
 /** Capture whatever validation warns about, without letting it reach the suite's output. */
@@ -3140,13 +3280,18 @@ test('U3: a non-array tolerated fails validation, naming the expected type', () 
   )
 })
 
-test('U3: an explicitly empty array is equivalent to an absent block — never "tolerate all"', () => {
+test('U3: an explicitly empty array means byte-exact, and an absent block does not', () => {
+  // Inverted from its original form, which asserted the two were equivalent. They are now the two
+  // distinct intents this seam exists to express: "I want byte-exact" and "no opinion".
   const explicit = withNormalization([])
   const absent = withNormalization(undefined)
   validateConfig(explicit, 'test')
   validateConfig(absent, 'test')
-  assert.deepEqual(toleratedDescriptionTransforms(explicit), toleratedDescriptionTransforms(absent))
   assert.equal(toleratedDescriptionTransforms(explicit).size, 0)
+  assert.equal(
+    toleratedDescriptionTransforms(absent).size,
+    DESCRIPTION_NORMALIZATION_TRANSFORMS.length,
+  )
 })
 
 /** Every tolerated id as WRITTEN in a raw config object, across every tracker adapter it configures. */
@@ -3166,40 +3311,52 @@ test("U3: the repo's own .boss-skills.json parses and validates under the new ru
   // Strict on the authoring path, forgiving on the consuming one, is the whole shape of U3.
   const config = loadSkillConfig({ cwd: REPO_ROOT })
   validateConfig(config, 'repo')
+
+  // Whatever this repo commits — a list, or nothing at all — must be in the closed vocabulary.
+  // No longer requires it to commit one: the default is now the full vocabulary, and this repo
+  // deliberately relies on it rather than restating five of six ids that then rot out of step.
   const committed = rawToleratedIds(
     JSON.parse(readFileSync(join(REPO_ROOT, CONFIG_FILENAME), 'utf8')),
-  )
-  assert.ok(
-    committed.length > 0,
-    'this repo declares the transforms its tracker was observed to make',
   )
   assert.deepEqual(
     unrecognisedIn(committed),
     [],
     'every id this repo COMMITS must be in the closed vocabulary',
   )
-  // R10: the reshaping this repo's tracker was MEASURED performing on every table it stores. Without
-  // the declaration the write-back gate reports drift on any plan containing a table, and a verdict
-  // that fires on most runs trains its reader to discount it.
+
+  // R10: the reshaping this repo's tracker was MEASURED performing on every table it stores.
+  // Without it the write-back gate reports drift on any plan containing a table, and a verdict that
+  // fires on most runs trains its reader to discount it. The invariant is that the RESOLVED set
+  // carries it, which is what the gate actually reads — declared or defaulted is immaterial.
   assert.ok(
-    committed.includes('table-delimiter-row-normalization'),
-    "the measured table-delimiter reshaping is declared, so this repo's own gate can reach tier 2",
+    toleratedDescriptionTransforms(config).has('table-delimiter-row-normalization'),
+    "the measured table-delimiter reshaping resolves, so this repo's own gate can reach tier 2",
   )
 })
 
 test('U3: that authoring guard REDS on a mistyped id — proven, not merely passing today', () => {
   // A guard that has only ever passed proves nothing. Splice an id outside the vocabulary into a
-  // copy of the committed config and assert the guard's own predicate rejects it — and assert the
-  // splice LANDED first, so a reshaped config file turns this into a red rather than a silent no-op.
-  const raw = JSON.parse(readFileSync(join(REPO_ROOT, CONFIG_FILENAME), 'utf8'))
-  const target = Object.values(raw.trackerConfig ?? {}).find((tc) =>
-    Array.isArray(tc?.descriptionNormalization?.tolerated),
-  )
-  assert.ok(target, 'the probe needs a committed tolerated list to mistype')
-  target.descriptionNormalization.tolerated.push('terminal-newline-trimmingg')
+  // config and assert the guard's own predicate rejects it.
+  //
+  // Built on a SYNTHETIC config rather than a mutated copy of the repo's own. The probe used to
+  // require this repo to commit a tolerated list purely so there was something to mistype, which
+  // made a non-vacuity proof depend on an unrelated config choice — and it duly broke the moment
+  // this repo dropped its list in favour of the default. What is under test is the predicate, not
+  // the repo.
+  const raw = {
+    trackerConfig: {
+      demo: {
+        descriptionNormalization: {
+          tolerated: ['terminal-newline-trimming', 'terminal-newline-trimmingg'],
+        },
+      },
+    },
+  }
   assert.ok(
     rawToleratedIds(raw).includes('terminal-newline-trimmingg'),
     'the probe mutation must actually land, or a green below would be vacuous',
   )
   assert.deepEqual(unrecognisedIn(rawToleratedIds(raw)), ['terminal-newline-trimmingg'])
+  // And the valid neighbour is NOT flagged, so the predicate discriminates rather than rejecting.
+  assert.ok(unrecognisedIn(['terminal-newline-trimming']).length === 0)
 })

@@ -84,6 +84,44 @@
           ]
         }
       ]
+    },
+    {
+      "id": "scene-04",
+      "title": "clearing the override falls back to the machine default",
+      "steps": [
+        { "key": "enter", "caption": "Press [enter] to edit the saved daemon name" },
+        {
+          "waitFor": "Blank uses this machine's hostname",
+          "timeoutMs": 10000,
+          "caption": "The editor explains that blanking the field restores the machine default"
+        },
+        { "key": "ctrl+u", "caption": "Clear the whole saved daemon name in one keystroke" },
+        {
+          "waitFor": "Blank uses this machine's hostname",
+          "timeoutMs": 10000,
+          "caption": "The editor is empty and still offers the blank-to-reset behaviour"
+        },
+        { "key": "enter", "caption": "Press [enter] to save the now-blank daemon name" },
+        {
+          "waitFor": "machine hostname; restart daemon to apply",
+          "timeoutMs": 10000,
+          "caption": "With the override cleared the row falls back to the machine default the daemon will advertise"
+        },
+        {
+          "expect": [
+            {
+              "text": "Daemon name",
+              "match": "normalized",
+              "label": "daemon name setting label"
+            },
+            {
+              "text": "machine hostname; restart daemon to apply",
+              "match": "normalized",
+              "label": "cleared override falls back to the machine default"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

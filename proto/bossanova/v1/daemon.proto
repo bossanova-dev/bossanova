@@ -29,6 +29,15 @@ service DaemonService {
   rpc CreateSession(CreateSessionRequest) returns (stream CreateSessionResponse);
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  // MoveSession moves one session up or down relative to its current
+  // neighbours in the rendered session list and returns the refreshed session.
+  // The move arithmetic lives here rather than in each client so that no two
+  // clients can derive different positions from the same list. Note the web
+  // app cannot reach this RPC yet, and bosso still sorts sessions by
+  // created_at, so until BOS-1232 teaches it list_rank a move reorders the TUI
+  // list while the web list is unchanged — the guarantee is the destination,
+  // not yet the interim state.
+  rpc MoveSession(MoveSessionRequest) returns (MoveSessionResponse);
   rpc AttachSession(AttachSessionRequest) returns (stream AttachSessionResponse);
   rpc StopSession(StopSessionRequest) returns (StopSessionResponse);
   rpc PauseSession(PauseSessionRequest) returns (PauseSessionResponse);
@@ -574,6 +583,39 @@ message ListSessionsRequest {
 
 message ListSessionsResponse {
   repeated Session sessions = 1;
+}
+
+// MoveDirection is the direction a MoveSession request moves a session in the
+// rendered list. UNSPECIFIED is rejected rather than defaulted, so a client
+// that forgets to set it gets an error instead of an arbitrary move.
+enum MoveDirection {
+  MOVE_DIRECTION_UNSPECIFIED = 0;
+  MOVE_DIRECTION_UP = 1;
+  MOVE_DIRECTION_DOWN = 2;
+}
+
+message MoveSessionRequest {
+  // The session to move.
+  string id = 1;
+  // Which way to move it.
+  MoveDirection direction = 2;
+  // Scope the neighbour computation to one repo, exactly as
+  // ListSessionsRequest.repo_id does. Absent/empty means the cross-repo list —
+  // which is what the TUI renders by default — so the neighbours the daemon
+  // reasons about are the ones the caller is actually looking at.
+  optional string repo_id = 3;
+}
+
+message MoveSessionResponse {
+  // The session after the move, carrying its updated list_rank. Returned so a
+  // caller can reconcile optimistically without a second read.
+  Session session = 1;
+  // False when the move was a successful no-op: the session was already at the
+  // boundary of the list, or the requested position is not expressible in the
+  // ordering model. Boundary moves succeed rather than erroring, so a held-down
+  // key does not start failing; this field lets a caller skip a redundant
+  // re-render.
+  bool is_moved = 2;
 }
 
 message AttachSessionRequest {

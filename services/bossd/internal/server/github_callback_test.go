@@ -27,6 +27,22 @@ func (*callbackExpiryTelemetryRecorder) Identify(context.Context, string, map[st
 func (*callbackExpiryTelemetryRecorder) Alias(context.Context, string, string)            {}
 func (*callbackExpiryTelemetryRecorder) Close()                                           {}
 
+type callbackChatLookupFake struct {
+	db.AgentChatStore
+	chat *models.AgentChat
+}
+
+func (f *callbackChatLookupFake) GetByAgentSessionID(context.Context, string) (*models.AgentChat, error) {
+	return f.chat, nil
+}
+
+type callbackStatusRecomputerFake struct{ sessionIDs []string }
+
+func (f *callbackStatusRecomputerFake) Recompute(_ context.Context, sessionID string) error {
+	f.sessionIDs = append(f.sessionIDs, sessionID)
+	return nil
+}
+
 func enableGithubCallbackTelemetry(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -115,6 +131,23 @@ func TestCreateGithubCallback_HappyPathAppliesDefaults(t *testing.T) {
 	}
 	if cb.ShouldRequireTransition || cb.HasObservedBaseline {
 		t.Errorf("transition flags = %v/%v, want false/false", cb.ShouldRequireTransition, cb.HasObservedBaseline)
+	}
+}
+
+func TestCreateGithubCallback_ImmediatelyRefreshesTargetChatStatus(t *testing.T) {
+	srv := newGithubCallbackServer(t)
+	recomputer := &callbackStatusRecomputerFake{}
+	srv.agentChats = &callbackChatLookupFake{chat: &models.AgentChat{
+		AgentSessionID: "chat-1",
+		SessionID:      "session-1",
+	}}
+	srv.statusRecomputer = recomputer
+
+	if _, err := srv.CreateGithubCallback(context.Background(), connect.NewRequest(validCreateGithubCallbackRequest())); err != nil {
+		t.Fatalf("CreateGithubCallback: %v", err)
+	}
+	if got := recomputer.sessionIDs; len(got) != 1 || got[0] != "session-1" {
+		t.Fatalf("recomputed sessions = %v, want [session-1]", got)
 	}
 }
 

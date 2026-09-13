@@ -725,8 +725,9 @@ cleanup site, so that the set cleanup removes and the set the run creates cannot
 
 The optional command a scheduled job runs immediately before it would fire, to decide whether there
 is actually work to do. Exit zero means fire; anything else blocks the fire, creates no session, and
-still advances the job's next run time. The gate is a decision procedure, not a health check — it is
-the job's own answer to "is there anything to do right now".
+still advances the job's next run time. The gate is ordinarily a decision procedure, not a health check — it is
+the job's own answer to "is there anything to do right now". Compare **Worker gate**, the variant
+that answers with a permanent no because it has already done the work itself.
 
 The contract is deliberately **fail-closed**: when the gate's condition cannot be established, the
 fire is blocked rather than attempted, because an unverifiable condition should skip the run rather
@@ -734,6 +735,22 @@ than spend agent tokens on a state nobody confirmed. Failing closed is therefore
 and is separate from — never a substitute for — recording _why_ the fire was blocked. Gate authors
 signal "no work" with a plain non-zero exit; the shell's own "could not run what you asked" codes are
 reserved, and a gate that borrows one is reported as broken rather than as a skip.
+
+### Worker gate
+
+A cron gate whose side effect is the work itself, rather than a decision about whether to wake an
+agent. It inverts the ordinary polarity: where a selection gate exits zero to report that work is
+waiting, a worker gate performs the task inline and then always blocks, so no session is ever created
+and a tick costs no agent tokens. It suits purely mechanical upkeep — work with no judgement in it,
+where waking an agent would spend tokens on a job containing no decision.
+
+Two consequences follow from never firing. A worker gate's healthy steady state is a permanent
+skip, which on any dashboard is indistinguishable at a glance from a job that is broken or pointless,
+so the gate must say what it is where a reader about to remove it will be standing. And because no
+session is created, the recorded gate output is the only surface on which its work is observable —
+which makes the blocking exit code load-bearing: it must be the one that reports a deliberate skip,
+never one of the reserved "could not run" codes, or a working gate is escalated as a broken one. See
+**Gate outcome** for that distinction.
 
 ### Gate outcome
 
@@ -1105,6 +1122,16 @@ By contract each window is a single fraction, but a provider does not always rep
 
 The provider's usage endpoint refusing the daemon's own polling rate. It is evidence about our request volume, not about the account's quota, so it is deliberately not a Cooldown and does not make an account Limited: nothing is written to the account's stored state and its real capacity is untouched. The only correct reaction is caller-side backoff before the next poll, applied in memory by the refresh loop and forgotten on restart. A retry horizon stated by the provider is treated as an unvalidated hint and bounded at both ends before use, since neither an absent value nor an implausibly long one may be honoured literally.
 
+## Daemon identity
+
+### Daemon display name
+
+The name a daemon self-reports so a human can tell which machine they are looking at — what the cloud daemon picker, the TUI's General Settings row and bosso's registration record all show. It is strictly presentation, and its separation from the daemon's routing identity is load-bearing rather than stylistic: the routing id is an explicit override, else a UUID persisted under the data dir, else the machine hostname, and feeding a display name into that resolution would re-key the daemon, rotate the persisted UUID and invalidate its stream tokens. The same discriminator sorts every hostname read in the codebase — a value rendered as "which machine is this" is a display name, while one that keys a daemon id, a persisted UUID or a telemetry distinct id is identity and must keep reading the raw OS hostname.
+
+A daemon's display name resolves as: the operator's `daemon_name` override, else the host's operator-facing computer name where the platform keeps one separately from its hostname (macOS), else the machine hostname with a trailing `.lan`/`.local` removed. The fallback chain exists because the raw hostname is the wrong answer twice over on macOS: the DHCP-derived `mac.lan` is a name the operator never chose, and it is _generic_, so two similarly-configured machines report the same string and become indistinguishable in a list. The derivation must never turn a non-empty hostname into an empty one, because registration rejects a blank hostname outright.
+
+The name is captured once at daemon startup and reused for every re-registration, so changing it applies on daemon restart rather than live — which is why every surface that offers to edit it also says so. Because the TUI previews the value rather than reading it back from the daemon, both the daemon and the TUI must derive it through the same helper; a second implementation in either place is what makes the preview quietly disagree with what the daemon actually advertises.
+
 ## Daemon binary lifecycle
 
 ### Staged daemon binary
@@ -1138,6 +1165,12 @@ A fixed wait, imposed by a layer above the daemon, after which that layer stops 
 Because the shutdown's legs run in sequence, it is their _sum_ that must stay under the lowest ceiling, and that makes a lengthening setting a bounded one: what an operator may configure is capped at what the ceilings can service, not at what the setting's author intended. The corollary for tests is that an invariant proved against a leg's default value proves nothing about a configured one — the sum must be checked against the largest value each leg can be made to produce.
 
 ## Multi-instance owner routing
+
+### Daemon display name
+
+The human-facing label a daemon advertises so a user with several daemons can tell them apart when choosing one. It is presentation only and carries no routing or authentication weight — it is never how a daemon is addressed, authenticated, or claimed, and two daemons sharing a display name remain wholly distinct. Contrast **Daemon token authority**, which holds the identity a request is actually resolved against.
+
+Its override is optional, and the empty value is meaningful rather than missing: clearing the override is defined as a return to the machine's own hostname, which is also what an unset override resolves to. So the name is always resolved through the fallback rather than read directly, and a surface that re-implements the fallback locally will drift from the one the daemon itself applies. Because the daemon reads the value when it starts, a change made while it is running does not take effect until the next start — the setting and the advertised name legitimately disagree in the interval.
 
 ### Daemon token authority
 
@@ -1327,11 +1360,30 @@ intervenes or the customer pays a second time. Any write that moves an account d
 the strength of an external assertion must be treated as irreversible and refuse to proceed on an
 answer it could not confirm.
 
+### Accepted price set
+
+The set of subscription prices that entitle a Cloud account to paid access, as distinct from the
+single current price that new subscriptions are written onto.
+
+Prices at the payment provider are immutable: changing what Cloud costs mints a new price rather
+than editing the existing one, and every subscription already sold keeps the price it was sold on.
+Entitlement is therefore a membership question rather than an equality one — a read that judges
+entitlement consults the whole set, while a write (a checkout line item, a price change, a
+migration target) takes the current price alone. Collapsing the two roles into one value makes
+rotating the current price a silent revocation, because every subscription still on a superseded
+price answers "not entitled" the moment the new value reaches a running server, and that answer is
+indistinguishable from a genuine cancellation. The current price is always a member of the set, so
+a set naming no superseded prices is the ordinary steady state rather than a degenerate one. The
+set is not expressible to the provider — its subscription listing filters on a single price — so
+membership is decided after listing rather than within the query; a read that must resolve exactly
+one write target from several matching subscriptions therefore needs its own deterministic winner
+rule.
+
 ### Read-time subscription verification
 
 The bounded check that asks the payment provider whether a Cloud account's customer still holds a
-live subscription, memoised per customer for a short window so the entitlement path is not a provider
-call per request.
+live subscription on a price in the Accepted price set, memoised per customer for a short window so
+the entitlement path is not a provider call per request.
 
 It survives the arrival of pushed subscription events rather than being displaced by them. Event
 delivery is at-least-once but not guaranteed, and a delivery is recorded as seen before its effect
@@ -1620,6 +1672,14 @@ status value, a different error code, a different default, a narrowed validation
 schema field is added, removed, or retyped. Adding a new field or a new enum member is not on its own
 a versioned change; changing what an existing caller already reads is.
 
+The answer includes the _order_ of a repeated field, not only the values in it. A list a client
+renders top to bottom is read positionally, so a procedure that begins sorting by a new key serves a
+different answer to a pinned client even though every value it returns is unchanged — and the
+breakage is silent, because nothing errors and no field is missing. The additive exemption above is
+therefore time-bounded rather than permanent: a field that shipped unread is non-behavioural only
+while nothing reads it, and the version is owed by the later change that starts reading it, which may
+land under a different ticket in different code.
+
 ### Down-convert transform
 
 The rewrite that restores an older **Dated API version**'s answer, applied on the way out to a client
@@ -1635,6 +1695,14 @@ error path the discriminator is an in-process marker attached where the new beha
 and it does not survive serialization; an assertion that a transform fired is therefore a **Vacuous
 gate** unless it is made on the producing side rather than over an error a client reconstructed from
 the wire.
+
+A transform restores the older _answer_, which is not the same as removing whatever caused the new
+one. Where the changed answer is an ordering, clearing the field the new rule reads deletes the cause
+and leaves the response in the server's present order — an order no older client was ever built
+against, and now with nothing in the payload to explain it. The transform must reproduce the previous
+rule and re-sort, keeping its own frozen copy of that rule, since the live one is the thing that
+changed. The new field stays populated: a pinned client that does not read it is unaffected by its
+presence, and one that later learns to read it needs no renegotiation.
 
 ## Review and verification
 

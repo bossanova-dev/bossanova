@@ -739,22 +739,39 @@ test('CLI: --require-verbatim does not echo rejected note content', () => {
   assert.ok(!res.stderr.includes('live-token-value'))
 })
 
-test('CLI: --require-verbatim diagnoses one added trailing newline within original line range', () => {
+// A terminal newline is the one difference this comparison can see that cannot carry reporter
+// content — the branch reporting it has already established the two blocks are otherwise identical.
+// Both directions used to exit 1, which meant a correct plan could be refused over whitespace at
+// end-of-file and the agent sent round again to add or drop a `\n`. They now REPORT and pass; the
+// diagnostic text is unchanged, so a reader still sees exactly what moved.
+test('CLI: --require-verbatim REPORTS one added trailing newline and still passes', () => {
   const original = 'line one\nline two\nline three'
   const rewritten = `## Original notes\n\n${original}\n`
   const res = runCli(original, rewritten, ['--require-verbatim'])
-  assert.equal(res.status, 1)
+  assert.equal(res.status, 0, res.stderr)
   assert.match(res.stderr, /Original notes trailing newline differs at line 3/)
   assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
+  assert.match(res.stderr, /reported, not fatal/)
 })
 
-test('CLI: --require-verbatim diagnoses one removed trailing newline as trailing newline drift', () => {
+test('CLI: --require-verbatim REPORTS one removed trailing newline and still passes', () => {
   const original = 'line one\nline two\nline three\n'
   const rewritten = '## Original notes\n\nline one\nline two\nline three'
   const res = runCli(original, rewritten, ['--require-verbatim'])
-  assert.equal(res.status, 1)
+  assert.equal(res.status, 0, res.stderr)
   assert.match(res.stderr, /Original notes trailing newline differs at line 3/)
   assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
+  assert.match(res.stderr, /reported, not fatal/)
+})
+
+test('CLI: --require-verbatim still FAILS when a trailing newline hides a real difference', () => {
+  // The leniency is scoped to "otherwise identical". A change of content that also moves the
+  // terminal newline must not ride through on the newline branch.
+  const original = 'line one\nline two\nline three'
+  const rewritten = '## Original notes\n\nline one\nline TWO\nline three\n'
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /Original notes content difference at line 2/)
 })
 
 test('CLI: --require-verbatim diagnoses indentation-only drift after line one', () => {

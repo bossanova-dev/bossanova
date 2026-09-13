@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "title": "BOS-1237 setup-script progress bars re-render in place — ten redraws of one download occupy one row, and the setup output above them survives",
+  "fixture": {
+    "preset": "setup-progress"
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "reach the setup pane with a create that streams a progress bar",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        {
+          "key": "n",
+          "caption": "Press [n] to start a new session"
+        },
+        {
+          "waitFor": "Select a repository",
+          "timeoutMs": 10000,
+          "caption": "Wizard phase 1: the repo picker"
+        },
+        {
+          "key": "enter",
+          "caption": "Select design-system (row 0)"
+        },
+        {
+          "waitFor": "Starting a new session",
+          "timeoutMs": 10000,
+          "caption": "Wizard phase 2: the session-type chooser"
+        },
+        {
+          "key": "enter",
+          "caption": "Choose 'Create a new PR' (row 0)"
+        },
+        {
+          "waitFor": "Session name",
+          "timeoutMs": 10000,
+          "caption": "Wizard phase 3: the session-name form"
+        },
+        {
+          "type": "Render one advancing progress bar",
+          "caption": "Type the session name"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] submits the create and the scripted setup stream starts"
+        },
+        {
+          "waitFor": "added 25 packages in 4s",
+          "timeoutMs": 15000,
+          "caption": "The first setup frame — an ordinary non-progress line, emitted BEFORE the bar sequence"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the bar sequence collapses onto a single row — the BOS-1237 fix",
+      "steps": [
+        {
+          "waitFor": " 60% of 94.7 MiB",
+          "timeoutMs": 15000,
+          "caption": "The download's sixth redraw reaches the setup pane — unfixed, six bars would be stacked by now"
+        },
+        {
+          "expect": [
+            {
+              "text": "Running setup script…",
+              "match": "normalized",
+              "label": "the setup pane is open and the bootstrap is still in flight"
+            },
+            {
+              "text": " 60% of 94.7 MiB",
+              "match": "normalized",
+              "label": "the bar is on screen mid-sequence, at 60%"
+            },
+            {
+              "text": "^(?![\\s\\S]*% of[\\s\\S]*% of)[\\s\\S]*% of",
+              "match": "regex",
+              "label": "THE FIX: exactly ONE row on the whole screen carries a percentage bar. Before BOS-1237 each redraw appended, so by this point the pane held several stacked bars and the count only grew."
+            },
+            {
+              "text": "added 25 packages in 4s",
+              "match": "normalized",
+              "label": "THE FIX: the non-progress line that preceded the bars is still visible. The pane keeps only its last ten elements, so ten stacked bars used to evict it outright."
+            }
+          ],
+          "caption": "AC1/AC2: ten frames of one download occupy one row, and the real setup output above them survives. Asserted mid-sequence rather than at 100%, so the row count is measured while redraws are still arriving."
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "the same row advances to 100% rather than growing a new row",
+      "steps": [
+        {
+          "waitFor": "100% of 94.7 MiB",
+          "timeoutMs": 20000,
+          "caption": "Nine redraws later the bar reports 100% — in place, on the row that showed 10%"
+        },
+        {
+          "expect": [
+            {
+              "text": "100% of 94.7 MiB",
+              "match": "normalized",
+              "label": "the bar's final redraw"
+            },
+            {
+              "text": "^(?![\\s\\S]*% of[\\s\\S]*% of)[\\s\\S]*% of",
+              "match": "regex",
+              "label": "still exactly ONE percentage row after all ten redraws — the row was rewritten, not added to"
+            },
+            {
+              "text": "added 25 packages in 4s",
+              "match": "normalized",
+              "label": "and the preceding setup line is STILL on screen at the end of the sequence"
+            }
+          ],
+          "caption": "AC1: the row advanced in place across all ten redraws. This is assertable only because the fixture emits a trailing non-progress frame after the bars — the settled frame navigates the wizard onward, so the final bar would otherwise have a ~0ms visible window."
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "the create settles cleanly",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Launching|Attaching|Session created!",
+            "match": "regex",
+            "label": "the settled frame ends the wizard and hands off to the session"
+          },
+          "timeoutMs": 25000,
+          "caption": "The terminal SessionCreated frame settles the create, so the recording ends on its destination rather than mid-stream"
+        },
+        {
+          "expect": [
+            {
+              "text": "Render one advancing progress bar",
+              "match": "normalized",
+              "label": "the session the wizard created, by the title typed into the form"
+            }
+          ],
+          "caption": "Collapsing the bar changed only what the pane retains — the create itself still settles and navigates as before."
+        }
+      ]
+    }
+  ]
+}

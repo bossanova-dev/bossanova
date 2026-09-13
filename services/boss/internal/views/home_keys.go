@@ -14,6 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // authChangeQueue preserves the order in which local auth transitions finish
@@ -154,6 +155,18 @@ func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 		// including the no-session-selected one — "r" must never reach the
 		// table, where a user rebinding could turn it into navigation.
 		model, cmd := h.handleRenameStartKey()
+		return model, cmd, true
+	case "alt+up":
+		// Hidden shortcut (BOS-1231), following the [r] precedent above: a real
+		// binding deliberately absent from the action bar. handled is true on
+		// every path — no session selected, and the boundary no-op included —
+		// because the table's own keymap owns the unmodified arrows, and a user
+		// who rebinds navigation onto the chord must not be able to turn a
+		// reorder back into a cursor move.
+		model, cmd := h.moveSelectedSession(pb.MoveDirection_MOVE_DIRECTION_UP)
+		return model, cmd, true
+	case "alt+down":
+		model, cmd := h.moveSelectedSession(pb.MoveDirection_MOVE_DIRECTION_DOWN)
 		return model, cmd, true
 	}
 	return h, nil, false

@@ -20,13 +20,26 @@
 //                                   the semantic contract validates against the stored text, AND
 //                                   the verbatim block matches under the same normalization with
 //                                   its upload identities unchanged. All three, or it is not tier 2.
-//   tier 3  drift                   anything else. Exit non-zero, name the differing line and
-//                                   column, retain the scratch for triage.
+//   tier 3  unattributed            the three CONTENT conjuncts hold, but some difference is not
+//                                   attributable to a declared transform. Advisory by default.
+//   tier 4  drift                   a content conjunct failed: a contract section is gone, an
+//                                   upload identity is gone, or the verbatim block changed. Exit
+//                                   non-zero, name the differing line and column, retain scratch.
 //
-// The tier-3 branch is deliberately NON-DESTRUCTIVE. By the time this runs the description is
-// already stored, so the "no write, abort" branch the pre-write gates take is unavailable — and an
-// automatic corrective rewrite would be an unattended agent overwriting a description it has just
-// proven it cannot reproduce faithfully. This helper never writes anything.
+// Tiers 3 and 4 used to be one tier, and both exited non-zero. Separating them is the whole point
+// of this revision. Measured over 60 runs, the merged tier fired on 55% of verifications and every
+// retained artifact was a cosmetic bullet-marker rewrite; the run it failed had already created the
+// attachment, moved the ticket, and written every label. Exiting non-zero there withholds NOTHING —
+// the description is already stored and a corrective rewrite is forbidden — so the only effect was
+// to strand finished work. A tier-3 warning keeps every scrap of the triage signal (named cause,
+// located difference, retained scratch, a line in the run report) without that cost. Tier 4 keeps
+// blocking, because a missing section or a dropped image is exactly the case a human must see
+// before the artifact is trusted.
+//
+// Both branches are NON-DESTRUCTIVE. By the time this runs the description is already stored, so
+// the "no write, abort" branch the pre-write gates take is unavailable — and an automatic
+// corrective rewrite would be an unattended agent overwriting a description it has just proven it
+// cannot reproduce faithfully. This helper never writes anything.
 //
 // Node builtins only — this runs in dependency-light cron worktrees.
 
@@ -39,14 +52,33 @@ import {
   DESCRIPTION_NORMALIZATION_TRANSFORMS,
   loadSkillConfig,
   toleratedDescriptionTransforms,
+  unattributedDriftSeverity,
   validatePlanDescription,
 } from './skill-config.mjs'
 
-/** The three verdicts. Exactly one is emitted per run, or none at all on a refusal. */
+/** The four verdicts. Exactly one is emitted per run, or none at all on a refusal. */
 export const WRITEBACK_VERDICTS = Object.freeze({
   BYTE_EXACT: 'byte-exact',
   NORMALIZED_EQUIVALENT: 'normalized-equivalent',
+  UNATTRIBUTED: 'unattributed',
   DRIFT: 'drift',
+})
+
+/**
+ * Why a verdict was reached, as a closed slug vocabulary. The verdict alone was not enough to
+ * answer "is this gate earning its keep": every failing run recorded the single token `drift`, so
+ * telling a lost section from a bullet rewrite meant hand-diffing retained scratch directories.
+ * Each cause is recorded as the gate-outcome reason, so the question is answerable from telemetry.
+ *
+ * Slugs must satisfy gate-outcome's slug pattern; it replaces a non-matching token wholesale.
+ */
+export const WRITEBACK_CAUSES = Object.freeze({
+  EQUAL: 'equal',
+  NORMALIZED: 'normalized',
+  CONTRACT: 'contract',
+  UPLOADS: 'uploads',
+  NOTES: 'notes',
+  UNATTRIBUTED: 'unattributed',
 })
 
 // One canonicalizer per transform id in skill-config's closed vocabulary. Each maps BOTH spellings
@@ -296,9 +328,11 @@ export function verifyWriteback({
   intendedText,
   storedText,
   tolerated,
+  onUnattributed,
   mode = 'child-plan',
 } = {}) {
   const declared = tolerated ?? toleratedDescriptionTransforms(config)
+  const severity = onUnattributed ?? unattributedDriftSeverity(config)
   const resolvedMode = assertWritebackMode(mode)
 
   // Refuse to CERTIFY a comparison we could not meaningfully perform. An empty stored description is
@@ -307,6 +341,7 @@ export function verifyWriteback({
   if (String(storedText ?? '').trim() === '') {
     return {
       verdict: null,
+      cause: null,
       exitCode: 1,
       reason: 'stored description is empty — nothing was verified',
       line: null,
@@ -318,6 +353,7 @@ export function verifyWriteback({
   if (intendedText === storedText) {
     return {
       verdict: WRITEBACK_VERDICTS.BYTE_EXACT,
+      cause: WRITEBACK_CAUSES.EQUAL,
       exitCode: 0,
       reason:
         'stored description is byte-identical to the intended bytes; the transport round-trips',
@@ -329,8 +365,11 @@ export function verifyWriteback({
 
   const { line, column } = locate(intendedText, storedText)
   const at = `line ${line}, column ${column}`
-  const drift = (reason) => ({
+  // A CONTENT-LOSS verdict. Always fatal, and never governed by `onUnattributedDrift`: each of the
+  // three callers below has positively identified something that is gone from the stored text.
+  const drift = (cause, reason) => ({
     verdict: WRITEBACK_VERDICTS.DRIFT,
+    cause,
     exitCode: 1,
     reason: `${reason} (first difference at ${at})`,
     line,
@@ -354,12 +393,16 @@ export function verifyWriteback({
     const detail = contract.unsupportedVersion
       ? `stamped Contract: v${contract.version}, newer than this contract`
       : `missing ${contract.missing.join(', ')}`
-    return drift(`stored description fails the semantic description contract: ${detail}`)
+    return drift(
+      WRITEBACK_CAUSES.CONTRACT,
+      `stored description fails the semantic description contract: ${detail}`,
+    )
   }
 
   const droppedUploads = findDroppedImages(intendedText, storedText)
   if (droppedUploads.length > 0) {
     return drift(
+      WRITEBACK_CAUSES.UPLOADS,
       `stored description lost ${droppedUploads.length} upload identit${
         droppedUploads.length === 1 ? 'y' : 'ies'
       }: ${droppedUploads.join(', ')}`,
@@ -377,6 +420,7 @@ export function verifyWriteback({
     intendedNotes.some((body, index) => body !== storedNotes[index])
   ) {
     return drift(
+      WRITEBACK_CAUSES.NOTES,
       'stored `## Original notes` block differs from the intended block under the same normalization',
     )
   }
@@ -384,14 +428,41 @@ export function verifyWriteback({
   const normalizedIntended = normalizeDescription(intendedText, declared)
   const normalizedStored = normalizeDescription(storedText, declared)
   if (normalizedIntended !== normalizedStored) {
+    // The only conjunct that cannot tell a cosmetic reshape from a loss. Every CONTENT check above
+    // has already passed on these same bytes: the contract's sections are all present, every upload
+    // identity survived, and the verbatim block matches. What is left is a difference in the
+    // drafter's own prose that this copy's transform vocabulary does not have a name for — which is
+    // as likely to be a tracker normalization nobody has catalogued yet as it is to be a defect.
+    //
+    // Advisory by default, and `block` is available for a repo that wants the old behaviour. The
+    // verdict is UNATTRIBUTED either way, so a reader is never told "drift" about bytes whose
+    // content checks all passed.
     const declaredList = declared.size === 0 ? 'none declared' : [...declared].sort().join(', ')
-    return drift(
-      `stored description differs from the intended bytes outside the declared transform set (${declaredList})`,
-    )
+    const blocking = severity === 'block'
+    return {
+      verdict: WRITEBACK_VERDICTS.UNATTRIBUTED,
+      cause: WRITEBACK_CAUSES.UNATTRIBUTED,
+      exitCode: blocking ? 1 : 0,
+      // Word this as what was CHECKED, not as what is true. "No content loss was detected" reads as
+      // "the content is intact", and it is not the same claim: the three conjuncts cover the
+      // contract's section set, the verbatim block and the upload identities, so a dropped line of
+      // the drafter's own body prose passes all three and lands here. Saying which checks passed
+      // lets a reader see the gap; asserting a clean bill of health hides it.
+      reason:
+        `stored description differs from the intended bytes outside the declared transform set ` +
+        `(${declaredList}) (first difference at ${at}); the semantic contract, the verbatim block ` +
+        `and every upload identity are intact, so no content-loss check fired — but body prose is ` +
+        `not compared line-by-line, so read the diff at that location` +
+        (blocking ? '' : ' — reported, not fatal'),
+      line,
+      column,
+      tolerated: declared,
+    }
   }
 
   return {
     verdict: WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT,
+    cause: WRITEBACK_CAUSES.NORMALIZED,
     exitCode: 0,
     reason:
       `stored description differs only by declared transforms (${[...declared].sort().join(', ')}); ` +
@@ -459,12 +530,27 @@ function main() {
     return
   }
 
-  // The three verdicts are already a closed slug vocabulary, so the outcome line reuses them
-  // verbatim instead of inventing a second set of reason tokens that could drift from them.
-  gateRecorder.record(result.exitCode === 0 ? 'pass' : 'fire', result.verdict)
+  // Record the CAUSE, not the verdict. The verdict is already on stdout for the caller; the
+  // telemetry line's job is to answer "which conjunct fired, and how often" later, and a bare
+  // `drift` could not. Verdict and cause are 1:1 except across `drift`'s three causes, which is
+  // exactly the distinction that was missing.
+  gateRecorder.record(result.exitCode === 0 ? 'pass' : 'fire', result.cause ?? result.verdict)
 
   console.log(`writeback-verdict: ${result.verdict}`)
   console.log(`plan-writeback-verify: ${result.reason}`)
+
+  // An advisory verdict is a PASS that must still be seen. Put it on stderr too, and say plainly
+  // what the reader is expected to do, so a warning that scrolls past in a headless log is not
+  // mistaken for silence.
+  if (result.exitCode === 0 && result.verdict === WRITEBACK_VERDICTS.UNATTRIBUTED) {
+    console.error(`writeback-verdict: ${result.verdict}`)
+    console.error(`plan-writeback-verify: ${result.reason}`)
+    console.error(
+      'plan-writeback-verify: retain the run scratch and name this verdict in the run report; ' +
+        'do NOT attempt a corrective rewrite — the description is already stored',
+    )
+  }
+
   if (result.exitCode !== 0) {
     // The verdict is the thing the caller defers to, so a FAILING run must not leave it on stdout
     // alone. A caller that captured only stderr would otherwise have the diagnosis without the
@@ -497,6 +583,19 @@ if (invokedDirectly) {
     gateRecorder.record(process.exitCode ? 'fire' : 'pass', process.exitCode ? 'violations' : 'ok')
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
+    // A throw stays FATAL, unlike the advisory `unattributed` verdict, and the difference is not an
+    // inconsistency. `unattributed` is a MEASURED result: all three content conjuncts ran and
+    // passed, so content loss is positively ruled out and only an unnamed cosmetic difference is
+    // left. A throw measured nothing, so it rules out nothing — it is the same category as the
+    // empty-read-back refusal above, which this file already fails by explicit design. Passing here
+    // would mean a broken verifier silently certifies every write, which is the one failure mode a
+    // fidelity gate must not have. Crashes were ~1% of recorded invocations; the false-BLOCKED
+    // problem this split addresses was 55%, and it is entirely in the verdict path.
+    console.error(
+      'plan-writeback-verify: the gate itself failed, so the write is UNVERIFIED — this is not a ' +
+        'drift finding. The description is already stored; do NOT attempt a corrective rewrite. ' +
+        'Retain the scratch and compare the two files by hand.',
+    )
     process.exitCode = 1
     gateRecorder.record('fire', 'guard-threw')
   }

@@ -17,7 +17,10 @@ package apiversion
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -476,14 +479,44 @@ const V20260912 Version = "2026-09-12"
 // prior observable pair: outcome "healthy", failure_class "". It is applied to
 // every OrchestratorService procedure that can carry an Account.
 //
-// NOTE (branch/main skew): this constant is deliberately NOT added to
-// ReleasedVersions. It is the single trailing UNRELEASED Current contract that
-// released.go's ledger and TestReleasedVersions_AreRegistryPrefix explicitly
-// allow, which also keeps the immutable ledger free of a merge conflict with
-// the 2026-09-12 entry main shipped in parallel.
+// Both V20260913 and V20260914 have since been recorded in ReleasedVersions;
+// the single trailing UNRELEASED Current that released.go's ledger and
+// TestReleasedVersions_AreRegistryPrefix allow is now V20260915 below. An
+// earlier revision of this comment claimed V20260913 was deliberately held out
+// of the ledger — that stopped being true once release automation recorded it,
+// and the claim is removed rather than left asserting the opposite of the file
+// next to it.
 const V20260913 Version = "2026-09-13"
 
 const V20260914 Version = "2026-09-14"
+
+// V20260915 ships SessionListRankOrderChange: ProxyListSessions began ordering
+// its response by the session's manual list_rank (BOS-1232). A ranked session
+// sorts before every unranked one and two ranked sessions sort by rank
+// ascending; the created_at-descending / id-ascending clauses that decided the
+// whole order before are unchanged and still decide it for every unranked
+// session.
+//
+// No field was added: Session.list_rank shipped earlier as an additive optional
+// field that nothing read. What makes THIS behavioral is that bosso's three
+// session comparators began consulting it, so the ORDER OF THE REPEATED FIELD
+// changes — and repeated-field order is observable, load-bearing output for a
+// list a client renders top to bottom. A client that has never heard of a
+// manual rank sees its session list silently rearrange the moment any user
+// presses the reorder shortcut, even though that client asked for nothing.
+//
+// This repo treats an observable ordering change as behavioral, so it is
+// versioned like any other. The transform is expressible at the response layer
+// — unlike the cross-organization changes, which had to be handler-gated —
+// because restoring the legacy order needs only the response message, not the
+// request or the caller.
+//
+// For any request resolved older than V20260915 the transform RE-SORTS the
+// session list back to created_at descending, then id ascending. Re-sorting is
+// the operation, not clearing list_rank: blanking the field would leave the
+// response in whatever order the server produced, which is not the legacy
+// order. See SessionListRankOrderChange in transform.go.
+const V20260915 Version = "2026-09-15"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
@@ -604,14 +637,59 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825, V20260902, V20260903, V20260904, V20260905, V20260906, V20260907, V20260908, V20260909, V20260910, V20260911, V20260912, V20260913, V20260914},
-		V20260914,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825, V20260902, V20260903, V20260904, V20260905, V20260906, V20260907, V20260908, V20260909, V20260910, V20260911, V20260912, V20260913, V20260914, V20260915},
+		V20260915,
 		Baseline,
 	)
 	if err != nil {
 		panic("apiversion: DefaultRegistry is invalid: " + err.Error())
 	}
 	return reg
+}
+
+// reportedUnresolvedGateReads deduplicates the unresolved-read warning by
+// gate name and source site, so a gate on a hot path records once per call
+// site for the process lifetime rather than once per request.
+var reportedUnresolvedGateReads sync.Map
+
+// gateAtLeast is the single read point behind every handler-level version gate
+// below. It answers exactly as a direct ResolvedVersion comparison would — the
+// returned boolean is unchanged for every resolved version — and additionally
+// reports the one case ResolvedVersion cannot express: a gate evaluated against
+// a context the interceptor never touched.
+//
+// That read is not failed closed deliberately. A gate read off a detached
+// background context, a test helper, or a future non-Connect surface is
+// legitimate and answers correctly today; turning it into a panic or an error
+// would convert a working Baseline answer into a production request failure.
+// The fail-closed duty is carried at CI time instead, by the architecture gate
+// in services/bosso/internal/server, where a false positive costs a build
+// rather than a request. See docs/api-versioning.md (BOS-1235).
+func gateAtLeast(ctx context.Context, since Version, gate string) bool {
+	resolved, ok := ResolvedVersionOK(ctx)
+	if !ok {
+		reportUnresolvedGateRead(ctx, gate, resolved)
+	}
+	return !DefaultRegistry().Newer(since, resolved)
+}
+
+// reportUnresolvedGateRead emits one WARN per (gate, call site). The skip count
+// walks past this frame and gateAtLeast's to land on the predicate's own
+// caller, which is the layer that needs fixing.
+func reportUnresolvedGateRead(ctx context.Context, gate string, answering Version) {
+	caller := "unknown"
+	if _, file, line, ok := runtime.Caller(3); ok {
+		caller = fmt.Sprintf("%s:%d", file, line)
+	}
+	if _, seen := reportedUnresolvedGateReads.LoadOrStore(gate+"\x00"+caller, struct{}{}); seen {
+		return
+	}
+	slog.WarnContext(ctx,
+		"apiversion gate read outside interceptor scope; answering the default version for every client",
+		"gate", gate,
+		"caller", caller,
+		"answering", answering.String(),
+	)
 }
 
 // IsOrgScopedVisibility reports whether the version resolved for ctx observes
@@ -624,7 +702,7 @@ func DefaultRegistry() *Registry {
 // turned back into a NotFound. Streaming frame-sequence changes are likewise
 // outside the transform mechanism.
 func IsOrgScopedVisibility(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260902, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260902, "IsOrgScopedVisibility")
 }
 
 // IsCrossOrgRepoReads reports whether the version resolved for ctx observes the
@@ -635,7 +713,7 @@ func IsOrgScopedVisibility(ctx context.Context) bool {
 // WHICH organizations the response covers, which is relative to the requesting
 // caller, and TransformResponse never sees the request.
 func IsCrossOrgRepoReads(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260905, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260905, "IsCrossOrgRepoReads")
 }
 
 // IsCrossOrgSessionReads reports whether the resolved version observes the
@@ -645,7 +723,7 @@ func IsCrossOrgRepoReads(ctx context.Context) bool {
 // This is handler-level because the result set depends on the request and the
 // caller's membership set, which TransformResponse cannot inspect.
 func IsCrossOrgSessionReads(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260912, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260912, "IsCrossOrgSessionReads")
 }
 
 // IsCrossOrgCronReads reports whether the version resolved for ctx observes the
@@ -656,14 +734,14 @@ func IsCrossOrgSessionReads(ctx context.Context) bool {
 // TransformResponse does not receive the request context needed to reconstruct
 // the previous claimed-organization result.
 func IsCrossOrgCronReads(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260910, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260910, "IsCrossOrgCronReads")
 }
 
 // IsCrossOrgFleetReads reports whether the version resolved for ctx observes
 // the remaining fleet reads across every organization the caller belongs to.
 // Older callers retain the former single-organization behavior.
 func IsCrossOrgFleetReads(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260910, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260910, "IsCrossOrgFleetReads")
 }
 
 // IsInvitationRevocation reports whether the resolved version may interpret
@@ -672,7 +750,7 @@ func IsCrossOrgFleetReads(ctx context.Context) bool {
 // success response cannot be down-converted into that error after the side
 // effect has already happened.
 func IsInvitationRevocation(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260911, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260911, "IsInvitationRevocation")
 }
 
 // IsCrossOrgSessionCommands reports whether the version resolved for ctx may
@@ -683,7 +761,7 @@ func IsInvitationRevocation(ctx context.Context) bool {
 // NotFound into success. TransformError never sees the success path, and
 // TransformResponse cannot recreate the prior error.
 func IsCrossOrgSessionCommands(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260908, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260908, "IsCrossOrgSessionCommands")
 }
 
 // IsCrossOrgDaemonReads reports whether the version resolved for ctx observes
@@ -693,7 +771,7 @@ func IsCrossOrgSessionCommands(ctx context.Context) bool {
 // This is daemon-specific rather than reusing IsCrossOrgRepoReads: both share a
 // release cutover, but they guard independent request-relative API behaviors.
 func IsCrossOrgDaemonReads(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260905, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260905, "IsCrossOrgDaemonReads")
 }
 
 // IsMemberOrgCloudAccess reports whether the version resolved for ctx observes
@@ -706,5 +784,5 @@ func IsCrossOrgDaemonReads(ctx context.Context) bool {
 // from the caller's own organization or from a sibling is only decidable
 // against the request, and TransformResponse/TransformError never see it.
 func IsMemberOrgCloudAccess(ctx context.Context) bool {
-	return !DefaultRegistry().Newer(V20260906, ResolvedVersion(ctx))
+	return gateAtLeast(ctx, V20260906, "IsMemberOrgCloudAccess")
 }

@@ -214,6 +214,10 @@ message OrchestratorCommand {
     // bosso → daemon: cancel a previously-sent command by command_id. No
     // CommandResult is emitted for the cancellation command itself.
     CommandCancel command_cancel = 62;
+    // bosso → daemon: move a session up or down the rendered list. The rank
+    // arithmetic lives entirely in the daemon, so bosso forwards the direction
+    // and never computes a position. Replies CommandResult{move_session}.
+    MoveSessionCommand move_session = 63;
   }
 }
 
@@ -484,6 +488,11 @@ message CommandResult {
     UpdateNoteResponse update_note = 39;
     // GetChatStatuses returns the session's per-chat statuses (reuses daemon.proto type).
     GetChatStatusesResponse get_chat_statuses = 40;
+    // MoveSession returns the moved session plus is_moved (reuses daemon.proto
+    // type). It does NOT reuse session = 4: a boundary move is a successful
+    // no-op that must stay distinguishable from a move that changed the order,
+    // and the bare Session payload has nowhere to say so.
+    MoveSessionResponse move_session = 41;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -679,6 +688,28 @@ message ResurrectSessionCommand { string session_id = 1; }
 // RemoveSessionCommand asks the daemon to permanently remove a session and its
 // worktree. Replies with CommandResult{ok:true} and no payload.
 message RemoveSessionCommand { string session_id = 1; }
+
+// MoveSessionCommand asks the daemon to move a session one position up or down
+// the rendered list. Replies with CommandResult carrying a MoveSessionResponse
+// (move_session = 41).
+//
+// It mirrors DaemonService.MoveSession field for field rather than reusing
+// MoveSessionRequest, because every command in this oneof names its subject
+// session_id and a lone `id` here would read as the command's own identity.
+// The daemon owns the rank arithmetic: this command carries a DIRECTION, never
+// a computed position, so two clients can never derive different ranks.
+message MoveSessionCommand {
+  // The session to move.
+  string session_id = 1;
+  // Which way to move it. UNSPECIFIED is rejected by the daemon rather than
+  // defaulted.
+  MoveDirection direction = 2;
+  // Scope the neighbour computation to one repo, exactly as
+  // ListSessionsRequest.repo_id does. Absent/empty means the cross-repo list,
+  // so the neighbours the daemon reasons about are the ones the caller is
+  // actually looking at.
+  optional string repo_id = 3;
+}
 
 // RecordChatCommand asks the daemon to record or resume a chat.
 // Replies with CommandResult carrying a ClaudeChat payload (record_chat = 8).

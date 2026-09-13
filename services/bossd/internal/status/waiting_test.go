@@ -146,9 +146,9 @@ func (f *waitingFixture) label(t *testing.T) string {
 
 const armedReason = "awaiting checks_passed_ready on acme/widget#123"
 
-func TestRecompute_ArmedCallbackRendersWaitingWithReason(t *testing.T) {
+func TestRecompute_ArmedCallbackRendersIdleChatWaitingWithReason(t *testing.T) {
 	f := newWaitingFixture(t)
-	id := f.addChat(t, "a", pb.ChatStatus_CHAT_STATUS_WORKING, armedReason)
+	id := f.addChat(t, "a", pb.ChatStatus_CHAT_STATUS_IDLE, armedReason)
 
 	if got := f.label(t); got != displaystatus.WaitingLabel {
 		t.Fatalf("label = %q, want %q", got, displaystatus.WaitingLabel)
@@ -321,10 +321,10 @@ func TestRecompute_QuestionChatDoesNotSkipSiblingWaitingDerivation(t *testing.T)
 
 // PromoteWaiting is the ONE definition of "what status is this chat served
 // with"; the RPC layer, the stream deltas and the snapshot all route through
-// it, so the rule cannot drift between them. Waiting is strictly a refinement
-// of WORKING: every other reported status passes through untouched and drops
-// the reason, so a stale marker can never mask a signal that wants a human.
-func TestPromoteWaiting_OnlyRefinesWorking(t *testing.T) {
+// it, so the rule cannot drift between them. Waiting refines an otherwise
+// inactive chat: a callback can be armed after the agent has gone idle. States
+// that need human attention still pass through untouched and drop the reason.
+func TestPromoteWaiting_RefinesInactiveChat(t *testing.T) {
 	const reason = "awaiting checks_passed_ready on acme/widget#123"
 	for _, tc := range []struct {
 		name       string
@@ -337,7 +337,7 @@ func TestPromoteWaiting_OnlyRefinesWorking(t *testing.T) {
 		{"working without reason stays", pb.ChatStatus_CHAT_STATUS_WORKING, "", pb.ChatStatus_CHAT_STATUS_WORKING, ""},
 		{"question is untouched", pb.ChatStatus_CHAT_STATUS_QUESTION, reason, pb.ChatStatus_CHAT_STATUS_QUESTION, ""},
 		{"limited is untouched", pb.ChatStatus_CHAT_STATUS_LIMITED, reason, pb.ChatStatus_CHAT_STATUS_LIMITED, ""},
-		{"idle is untouched", pb.ChatStatus_CHAT_STATUS_IDLE, reason, pb.ChatStatus_CHAT_STATUS_IDLE, ""},
+		{"idle with reason promotes", pb.ChatStatus_CHAT_STATUS_IDLE, reason, pb.ChatStatus_CHAT_STATUS_WAITING, reason},
 		{"stopped is untouched", pb.ChatStatus_CHAT_STATUS_STOPPED, reason, pb.ChatStatus_CHAT_STATUS_STOPPED, ""},
 		{"already waiting keeps its reason", pb.ChatStatus_CHAT_STATUS_WAITING, reason, pb.ChatStatus_CHAT_STATUS_WAITING, reason},
 	} {

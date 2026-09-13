@@ -1268,8 +1268,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260914 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260914)
+	if got := reg.Current(); got != apiversion.V20260915 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260915)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -1581,6 +1581,9 @@ func waitingResponseCases() []struct {
 		{"ProxyUpdateSession", bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure,
 			func() any { return &pb.ProxyUpdateSessionResponse{Session: waitingSession()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyUpdateSessionResponse).GetSession() }},
+		{"ProxyMoveSession", bossanovav1connect.OrchestratorServiceProxyMoveSessionProcedure,
+			func() any { return &pb.ProxyMoveSessionResponse{Session: waitingSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyMoveSessionResponse).GetSession() }},
 		{"ProxyLinkSessionPR", bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure,
 			func() any { return &pb.ProxyLinkSessionPRResponse{Session: waitingSession()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyLinkSessionPRResponse).GetSession() }},
@@ -2176,6 +2179,9 @@ func erroredResponseCases(mk func() *pb.Session) []struct {
 		{"ProxyUpdateSession", bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure,
 			func() any { return &pb.ProxyUpdateSessionResponse{Session: mk()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyUpdateSessionResponse).GetSession() }},
+		{"ProxyMoveSession", bossanovav1connect.OrchestratorServiceProxyMoveSessionProcedure,
+			func() any { return &pb.ProxyMoveSessionResponse{Session: mk()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyMoveSessionResponse).GetSession() }},
 		{"ProxyLinkSessionPR", bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure,
 			func() any { return &pb.ProxyLinkSessionPRResponse{Session: mk()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyLinkSessionPRResponse).GetSession() }},
@@ -2421,6 +2427,9 @@ func stalledResponseCases() []struct {
 		{"ProxyUpdateSession", bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure,
 			func() any { return &pb.ProxyUpdateSessionResponse{Session: stalledSession()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyUpdateSessionResponse).GetSession() }},
+		{"ProxyMoveSession", bossanovav1connect.OrchestratorServiceProxyMoveSessionProcedure,
+			func() any { return &pb.ProxyMoveSessionResponse{Session: stalledSession()} },
+			func(m any) *pb.Session { return m.(*pb.ProxyMoveSessionResponse).GetSession() }},
 		{"ProxyLinkSessionPR", bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure,
 			func() any { return &pb.ProxyLinkSessionPRResponse{Session: stalledSession()} },
 			func(m any) *pb.Session { return m.(*pb.ProxyLinkSessionPRResponse).GetSession() }},

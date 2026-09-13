@@ -159,8 +159,15 @@ func (m NewSessionModel) handleCreateStream(msg createSessionStreamMsg) (tea.Mod
 	return m, readNextStreamMsg(m.createStream, nil)
 }
 
+// handleSetupScriptLine folds one setup-output frame into the pane's buffer.
+//
+// It routes through foldSetupLine rather than appending unconditionally
+// (BOS-1237): the setup child has no TTY, so a progress bar newline-terminates
+// every redraw and each redraw arrives as its own frame. Appending them all
+// filled the pane's ten-element window with one bar and evicted every other line
+// of setup output.
 func (m NewSessionModel) handleSetupScriptLine(msg setupScriptLineMsg) (tea.Model, tea.Cmd) {
-	m.setupLines = append(m.setupLines, msg.text)
+	m.setupLines = foldSetupLine(m.setupLines, msg.text)
 	return m, readNextStreamMsg(m.createStream, m.acceptedSess)
 }
 

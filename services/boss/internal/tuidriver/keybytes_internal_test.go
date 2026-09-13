@@ -11,6 +11,8 @@ import "testing"
 var mirroredSeqs = map[string]string{
 	"up":        "\x1b[A",
 	"down":      "\x1b[B",
+	"alt+up":    "\x1b[1;3A",
+	"alt+down":  "\x1b[1;3B",
 	"right":     "\x1b[C",
 	"left":      "\x1b[D",
 	"shift+tab": "\x1b[Z",

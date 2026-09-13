@@ -28,12 +28,14 @@ go_test(
     name = "apiversion_test",
     srcs = [
         "changelogversion_test.go",
+        "export_test.go",
         "interceptor_test.go",
         "procedureset_test.go",
         "production_coverage_test.go",
         "proxy_list_repos_holder_resolution_test.go",
         "proxy_list_sessions_owner_resolution_test.go",
         "released_test.go",
+        "session_list_rank_order_test.go",
         "superseded_credential_class_test.go",
         "transform_test.go",
         "version_test.go",
@@ -51,5 +53,6 @@ go_test(
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

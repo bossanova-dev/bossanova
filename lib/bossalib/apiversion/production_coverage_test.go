@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type responseProbe struct {
@@ -219,6 +221,8 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		}
 	case RefreshChainUnprovenOutcomeChange:
 		return refreshChainUnprovenProbes()
+	case SessionListRankOrderChange:
+		return sessionListRankOrderProbes()
 	case AcceptedInvitationResponseChange:
 		return []responseProbe{{
 			procedure: bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,
@@ -264,6 +268,8 @@ func sessionResponse(procedure string, sess *pb.Session) (any, func(any) *pb.Ses
 		return &pb.ProxyCloseSessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyCloseSessionResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
 		return &pb.ProxyGetSessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyGetSessionResponse).GetSession() }
+	case bossanovav1connect.OrchestratorServiceProxyMoveSessionProcedure:
+		return &pb.ProxyMoveSessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyMoveSessionResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
 		return &pb.ProxyLinkSessionPRResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyLinkSessionPRResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
@@ -428,6 +434,54 @@ func abandonedCheckoutStatus() *pb.CloudAccessStatus {
 		CanCreateCheckout: true,
 		CheckoutStarted:   true,
 		DenialReason:      "subscription_required",
+	}
+}
+
+// sessionListRankOrderProbes covers the ONE carrier shape V20260915 reorders:
+// the session list. It is deliberately NOT derived from the Session descriptor
+// the way sessionProbes is — every Session-bearing response would be in that
+// set, and this change targets only the two procedures that return a LIST whose
+// order it changed. A derived list here would demand the transform re-sort
+// single-session responses that have no order to restore.
+func sessionListRankOrderProbes() []responseProbe {
+	// Two ranked sessions that the CURRENT order puts first (rank ascending)
+	// and the legacy order puts last (they are the oldest), so a probe can only
+	// pass if the transform actually re-sorted.
+	build := func() []*pb.Session {
+		low, high := int64(100), int64(200)
+		return []*pb.Session{
+			{Id: "ranked-low", ListRank: &low, CreatedAt: timestamppb.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))},
+			{Id: "ranked-high", ListRank: &high, CreatedAt: timestamppb.New(time.Date(2026, time.January, 2, 0, 0, 0, 0, time.UTC))},
+			{Id: "unranked", CreatedAt: timestamppb.New(time.Date(2026, time.January, 9, 0, 0, 0, 0, time.UTC))},
+		}
+	}
+	legacyOrdered := func(sessions []*pb.Session) bool {
+		if len(sessions) != 3 {
+			return false
+		}
+		return sessions[0].GetId() == "unranked" &&
+			sessions[1].GetId() == "ranked-high" &&
+			sessions[2].GetId() == "ranked-low"
+	}
+	return []responseProbe{
+		{
+			procedure: bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
+			build:     func() any { return &pb.ProxyListSessionsResponse{Sessions: build()} },
+			mutated: func(msg any) bool {
+				return legacyOrdered(msg.(*pb.ProxyListSessionsResponse).GetSessions())
+			},
+		},
+		{
+			procedure: bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
+			build: func() any {
+				//nolint:staticcheck // The deprecated RPC remains supported for pinned clients.
+				return &pb.ProxyListSessionsAcrossOrganizationsResponse{Sessions: build()}
+			},
+			mutated: func(msg any) bool {
+				//nolint:staticcheck // The deprecated RPC remains supported for pinned clients.
+				return legacyOrdered(msg.(*pb.ProxyListSessionsAcrossOrganizationsResponse).GetSessions())
+			},
+		},
 	}
 }
 

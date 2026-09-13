@@ -67,7 +67,28 @@ func (s *Server) CreateGithubCallback(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, githubCallbackError("create github callback", err)
 	}
+	s.recomputeCallbackTarget(ctx, msg.TargetChatId)
 	return connect.NewResponse(&pb.CreateGithubCallbackResponse{GithubCallback: githubCallbackToProto(cb)}), nil
+}
+
+// recomputeCallbackTarget publishes a newly armed callback's waiting state
+// without waiting for the next chat heartbeat or periodic recovery sweep.
+// Registration remains durable even when this best-effort projection fails.
+func (s *Server) recomputeCallbackTarget(ctx context.Context, agentSessionID string) {
+	if s.statusRecomputer == nil || s.agentChats == nil || agentSessionID == "" {
+		return
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("agent_session_id", agentSessionID).Msg("create github callback: look up target chat for status refresh")
+		return
+	}
+	if chat == nil {
+		return
+	}
+	if err := s.statusRecomputer.Recompute(ctx, chat.SessionID); err != nil {
+		s.logger.Warn().Err(err).Str("session_id", chat.SessionID).Msg("create github callback: refresh target chat status")
+	}
 }
 
 // ListGithubCallbacks returns callbacks matching the optional request filters,

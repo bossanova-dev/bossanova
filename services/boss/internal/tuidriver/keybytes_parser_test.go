@@ -33,6 +33,12 @@ type parserContractRow struct {
 var parserContractRows = []parserContractRow{
 	{"up", "\x1b[A", uv.KeyUp, 0},
 	{"down", "\x1b[B", uv.KeyDown, 0},
+	// BOS-1231: the reorder chord. The assertion that matters is the decoded
+	// Mod — the bytes alone would not distinguish alt from meta ("\x1b[1;9A"),
+	// and boss binds on the string "alt+up", which only the ModAlt decode
+	// produces.
+	{"alt+up", "\x1b[1;3A", uv.KeyUp, uv.ModAlt},
+	{"alt+down", "\x1b[1;3B", uv.KeyDown, uv.ModAlt},
 	{"right", "\x1b[C", uv.KeyRight, 0},
 	{"left", "\x1b[D", uv.KeyLeft, 0},
 	{"shift+tab", "\x1b[Z", uv.KeyTab, uv.ModShift},

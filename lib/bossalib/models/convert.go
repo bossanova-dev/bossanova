@@ -101,6 +101,11 @@ func SessionToProto(s *Session) *pb.Session {
 	if s.LastRepairBlockedAt != nil {
 		p.LastRepairBlockedAt = timestamppb.New(*s.LastRepairBlockedAt)
 	}
+	// Manual list rank (BOS-1230); nil stays absent, which is "unranked".
+	if s.ListRank != nil {
+		rank := *s.ListRank
+		p.ListRank = &rank
+	}
 	return p
 }
 
@@ -149,6 +154,11 @@ func SessionFromProto(p *pb.Session) *Session {
 	if p.LastRepairBlockedAt != nil {
 		t := p.LastRepairBlockedAt.AsTime()
 		s.LastRepairBlockedAt = &t
+	}
+	// Manual list rank (BOS-1230); absent stays nil, which is "unranked".
+	if p.ListRank != nil {
+		rank := *p.ListRank
+		s.ListRank = &rank
 	}
 	return s
 }

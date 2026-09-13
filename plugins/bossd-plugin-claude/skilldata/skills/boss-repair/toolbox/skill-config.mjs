@@ -305,6 +305,17 @@ export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
 
 const DESCRIPTION_NORMALIZATION_TRANSFORM_SET = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
 
+/**
+ * How a repo wants the post-save read-back to treat a difference it cannot attribute to a declared
+ * transform. `warn` reports and continues; `block` fails the run the way every drift cause did
+ * before the severity split. The three content-loss causes are NOT governed by this — they block
+ * unconditionally.
+ */
+export const UNATTRIBUTED_DRIFT_SEVERITIES = Object.freeze(['warn', 'block'])
+
+/** The default severity. `warn`, because the write has already landed by the time it is known. */
+export const DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY = 'warn'
+
 export const PLAN_SECTION_REQUIRED_KINDS = new Set([
   'always',
   'needs-human',
@@ -590,11 +601,24 @@ export function validateConfig(config, source) {
         }
       }
     }
-    // descriptionNormalization: optional. Declares which markdown transforms this repo has OBSERVED
-    // its tracker perform on write, so the post-save read-back can class a reshaped description as
-    // normalized-equivalent instead of drift. Absent means the EMPTY set — the strictest check —
-    // never "tolerate everything"; a repo that declares nothing must not be silently granted
-    // tolerance.
+    // descriptionNormalization: optional. Declares which markdown transforms this repo tolerates
+    // its tracker performing on write, so the post-save read-back can class a reshaped description
+    // as normalized-equivalent instead of drift. Absent means the FULL vocabulary; an explicitly
+    // EMPTY `tolerated` array is the opt-in to byte-exact strictness.
+    //
+    // That default was inverted. Absence used to mean the empty set, on the reasoning that a repo
+    // which declares nothing must not be silently granted tolerance. Measured, it granted every
+    // repo a false alarm instead: the post-save gate fired on 55% of runs (28 of 51 verdicts) and
+    // every retained drift artifact — five runs across three repos — was pure `-`→`*` bullet
+    // substitution and nothing else. Each transform in the vocabulary is individually constructed
+    // to be meaning-preserving and is measured as such by its own tests, so tolerating them by
+    // default costs no safety: the read-back's other three conjuncts (semantic contract, verbatim
+    // block, upload identities) are what actually detect content loss, and they are unaffected by
+    // which cosmetic transforms are declared.
+    //
+    // onUnattributedDrift: optional, `warn` (default) or `block`. Governs only the conjunct that
+    // cannot distinguish cosmetic reshaping from loss — a difference outside the declared transform
+    // set. `block` restores the pre-BOS behaviour of failing the run.
     //
     // Strictness is split by ROLE, because this file is copy-distributed and then extracted into
     // every user's global skill directory, where each copy reads whatever repo config it is invoked
@@ -643,6 +667,27 @@ export function validateConfig(config, source) {
           dn.tolerated = dn.tolerated.filter((id) =>
             DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id),
           )
+        }
+      }
+      // Same role split as `tolerated`: a structural fault throws, an unfamiliar-but-well-formed
+      // value warns and falls back. The fallback here is the DEFAULT (`warn`), not the stricter
+      // reading — an unreadable severity must not silently start failing completed runs.
+      if ('onUnattributedDrift' in dn) {
+        const severity = dn.onUnattributedDrift
+        if (typeof severity !== 'string' || severity.length === 0) {
+          fail(
+            `trackerConfig.${adapter}.descriptionNormalization.onUnattributedDrift must be a non-empty string; got ${JSON.stringify(
+              severity,
+            )}`,
+          )
+        }
+        if (!UNATTRIBUTED_DRIFT_SEVERITIES.includes(severity)) {
+          console.warn(
+            `skill-config: ${source}: trackerConfig.${adapter}.descriptionNormalization.onUnattributedDrift ` +
+              `is ${JSON.stringify(severity)}, which this copy does not recognise; falling back to ` +
+              `${JSON.stringify(DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY)}. Known values: ${UNATTRIBUTED_DRIFT_SEVERITIES.join(', ')}`,
+          )
+          dn.onUnattributedDrift = DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY
         }
       }
     }
@@ -1177,23 +1222,47 @@ export function trackerConfigFor(config, adapter = adapterFor(config, 'tracker')
 }
 
 /**
- * The description-normalization transform ids this repo declares its tracker performs on write.
+ * The description-normalization transform ids this repo tolerates its tracker performing on write.
  *
- * Returns a `Set`. An ABSENT `descriptionNormalization` block and an explicitly EMPTY `tolerated`
- * array are deliberately equivalent — both yield the empty set, i.e. the strictest check — so
- * absence can never be read as "tolerate all".
+ * Returns a `Set`. An ABSENT `descriptionNormalization` block yields the FULL vocabulary; an
+ * explicitly EMPTY `tolerated` array yields the empty set. The two are deliberately DIFFERENT:
+ * absence is "no opinion, use the sane default", explicit-empty is "I want byte-exact".
+ *
+ * Absence used to yield the empty set too, which made the strictest possible comparison the
+ * default for every repo that had never heard of this knob. That is the direction that looks safe
+ * and measures badly — see the inverted-default note on the validator above. Tolerating a
+ * meaning-preserving reshape is not the same as tolerating content loss, and the read-back detects
+ * loss through conjuncts this set does not touch.
  *
  * Every member is in the closed vocabulary BY CONSTRUCTION: validation warns and drops an
  * unrecognised id, and the filter is repeated here so the guarantee holds even for a config that
- * never went through `validateConfig`. Dropping narrows the tolerated set, so an id this copy does
- * not know can only make the comparison stricter — never wave a difference through.
+ * never went through `validateConfig`.
  *
  * @returns {Set<string>}
  */
 export function toleratedDescriptionTransforms(config, adapter = adapterFor(config, 'tracker')) {
-  const tolerated = trackerConfigFor(config, adapter)?.descriptionNormalization?.tolerated
-  const declared = Array.isArray(tolerated) ? tolerated : []
+  const block = trackerConfigFor(config, adapter)?.descriptionNormalization
+  // Distinguish "no block / no key" from "declared, possibly empty". Only the former defaults.
+  const declared = block && Array.isArray(block.tolerated) ? block.tolerated : null
+  if (declared === null) return new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
   return new Set(declared.filter((id) => DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id)))
+}
+
+/**
+ * How this repo wants an UNATTRIBUTED difference — one outside the tolerated transform set —
+ * treated by the post-save read-back. Returns a member of `UNATTRIBUTED_DRIFT_SEVERITIES`.
+ *
+ * Defaults to `warn`, and falls back to `warn` for any unrecognised value, so a config this copy
+ * cannot parse never starts failing completed runs. It governs ONLY that one conjunct: a lost
+ * section, a dropped upload identity, or a changed verbatim block blocks regardless.
+ *
+ * @returns {'warn'|'block'}
+ */
+export function unattributedDriftSeverity(config, adapter = adapterFor(config, 'tracker')) {
+  const declared = trackerConfigFor(config, adapter)?.descriptionNormalization?.onUnattributedDrift
+  return UNATTRIBUTED_DRIFT_SEVERITIES.includes(declared)
+    ? declared
+    : DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY
 }
 
 function trackerRoleName(config, field, role, required = true) {
@@ -1668,6 +1737,24 @@ const PREMISES_HEADING = '## Premises'
 const CENTRAL_PREMISE_MARKER_RE = /^(?:\*\*|__|\*|_)?\(central\)(?:\*\*|__|\*|_)?\s*/i
 const SHELL_BUILTINS = new Set(['[', 'cd', 'echo', 'false', 'printf', 'pwd', 'set', 'test', 'true'])
 const SHELL_COMMAND_SEPARATORS = new Set([';', '|', '&&', '||'])
+const NODE_TEST_OPTIONS_WITH_VALUE = new Set([
+  '--test-concurrency',
+  '--test-coverage-branches',
+  '--test-coverage-exclude',
+  '--test-coverage-functions',
+  '--test-coverage-include',
+  '--test-coverage-lines',
+  '--test-global-setup',
+  '--experimental-test-isolation',
+  '--test-isolation',
+  '--test-name-pattern',
+  '--test-reporter',
+  '--test-reporter-destination',
+  '--test-rerun-failures',
+  '--test-shard',
+  '--test-skip-pattern',
+  '--test-timeout',
+])
 
 /** A markdown checkbox list item: `- [ ] text` / `- [x] text` (either box case, any list marker). */
 const CRITERION_RE = /^[-*+]\s+\[([ xX])\]\s*(.*)$/
@@ -1906,6 +1993,172 @@ function commandSegments(tokens) {
   )
 }
 
+function resolveMakeInvocation(segment, cwd) {
+  let directory = cwd
+  const makefiles = []
+  let makefileUnresolved = false
+  const goals = []
+  for (let index = 1; index < segment.length; index += 1) {
+    const token = segment[index]
+    if (token === '-C' || token === '--directory') {
+      const value = segment[++index]
+      if (value) directory = isAbsolute(value) ? value : join(directory, value)
+    } else if (token.startsWith('-C') && token.length > 2) {
+      const value = token.slice(2)
+      directory = isAbsolute(value) ? value : join(directory, value)
+    } else if (token.startsWith('--directory=')) {
+      const value = token.slice('--directory='.length)
+      if (value) directory = isAbsolute(value) ? value : join(directory, value)
+    } else if (token === '-f' || token === '--file' || token === '--makefile') {
+      const value = segment[++index]
+      if (value) makefiles.push(value)
+      else makefileUnresolved = true
+    } else if (token.startsWith('-f') && token.length > 2) {
+      makefiles.push(token.slice(2))
+    } else if (token.startsWith('--file=')) {
+      const value = token.slice('--file='.length)
+      if (value) makefiles.push(value)
+      else makefileUnresolved = true
+    } else if (token.startsWith('--makefile=')) {
+      const value = token.slice('--makefile='.length)
+      if (value) makefiles.push(value)
+      else makefileUnresolved = true
+    } else if (
+      token === '-I' ||
+      token === '-o' ||
+      token === '-W' ||
+      token === '-E' ||
+      token === '--include-dir' ||
+      token === '--old-file' ||
+      token === '--assume-old' ||
+      token === '--what-if' ||
+      token === '--new-file' ||
+      token === '--assume-new' ||
+      token === '--eval'
+    ) {
+      index += 1
+    } else if (
+      (token === '-j' || token === '--jobs') &&
+      /^\d+$/.test(segment[index + 1] ?? '')
+    ) {
+      index += 1
+    } else if (
+      (token === '-l' || token === '--load-average' || token === '--max-load') &&
+      /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(segment[index + 1] ?? '')
+    ) {
+      index += 1
+    } else if (!token.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      goals.push(token)
+    }
+  }
+  const makefile =
+    makefileUnresolved || makefiles.length > 1
+      ? null
+      : makefiles.length === 1
+        ? makefiles[0]
+        : defaultMakefile(directory)
+  return {
+    makefile: makefile && (isAbsolute(makefile) ? makefile : join(directory, makefile)),
+    goals,
+  }
+}
+
+function defaultMakefile(directory) {
+  for (const name of ['GNUmakefile', 'makefile', 'Makefile']) {
+    const candidate = join(directory, name)
+    if (existsSync(candidate)) return candidate
+  }
+  return join(directory, 'Makefile')
+}
+
+function readMakefileTargets(makefile) {
+  if (!makefile) return { ok: false, closed: false, targets: new Set() }
+  let source
+  try {
+    source = readFileSync(makefile, 'utf8')
+  } catch {
+    return { ok: false, closed: false, targets: new Set() }
+  }
+  const targets = new Set()
+  const lines = source.replace(/\\\n/g, ' ').split('\n')
+  let closed = true
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (/^\s*-?include\b/.test(line) || /\$\(eval\b/.test(line)) closed = false
+    const phony = /^\s*\.PHONY:\s*(.*)$/.exec(line)
+    if (phony) {
+      let names = phony[1]
+      while (names.endsWith('\\')) {
+        names = names.slice(0, -1)
+        names += ` ${lines[++index] ?? ''}`
+      }
+      for (const name of names.split(/\s+/)) if (name) targets.add(name)
+      continue
+    }
+    const rule = /^\s*([^:#][^:]*)\s*:(?!=)/.exec(line)
+    if (!rule) continue
+    const head = rule[1].trim()
+    if (head.includes('%') || head.includes('$(')) closed = false
+    if (head === '.SECONDEXPANSION' || head === '.DEFAULT') closed = false
+    for (const target of head.split(/\s+/)) {
+      if (/^[A-Za-z][A-Za-z0-9_.-]*$/.test(target)) targets.add(target)
+    }
+  }
+  return { ok: true, closed, targets }
+}
+
+function plainMakeGoal(goal) {
+  return !/[/%$~*?[]/.test(goal)
+}
+
+function pathOperandsForSegment(segment) {
+  const [head, ...args] = segment
+  if (!['node', 'bash', 'sh', 'zsh'].includes(head)) return []
+  if (args.some((arg) => ['-e', '--eval', '-p', '--print', '-c', '--input-type'].includes(arg) || arg.startsWith('--input-type='))) {
+    return []
+  }
+  const paths = []
+  const testIndex = head === 'node' ? args.indexOf('--test') : -1
+  if (testIndex >= 0) {
+    const testArgs = args.slice(testIndex + 1)
+    for (let index = 0; index < testArgs.length; index += 1) {
+      const arg = testArgs[index]
+      if (arg === '--') break
+      if (NODE_TEST_OPTIONS_WITH_VALUE.has(arg)) {
+        index += 1
+        continue
+      }
+      if (!arg.startsWith('-')) paths.push(arg)
+    }
+  } else {
+    for (const arg of args) {
+      if (arg === '--' || arg === '#') break
+      if (!arg.startsWith('-')) {
+        paths.push(arg)
+        break
+      }
+    }
+  }
+  return paths.filter((path) => !/[*?[$~]/.test(path))
+}
+
+function operandPathFinding(path, cwd) {
+  const resolved = isAbsolute(path) ? path : join(cwd, path)
+  if (existsSync(resolved)) return null
+  if (!existsSync(dirname(resolved))) {
+    return {
+      blocking: true,
+      code: 'path-operand-missing',
+      message: `the command path operand's parent directory does not exist: ${path}`,
+    }
+  }
+  return {
+    blocking: false,
+    code: 'path-operand-absent',
+    message: `the command path operand is absent but its parent directory exists: ${path}`,
+  }
+}
+
 // Measured false-drift shape #1: `grep -c '<th' Daemons.tsx` returned 6 against a correct
 // five-column premise, because a bare-substring count also counts `<thead>`. The count flag is
 // matched as `-c`, a short cluster containing `c`, or `--count`; `--color` and `-C` (context) are
@@ -2016,6 +2269,32 @@ export function classifyCheckCommand(command, { cwd = process.cwd(), env = proce
       message:
         'the command head resolves to no executable PATH binary or executable repo-relative script',
     })
+  }
+  for (const segment of segments) {
+    if (segment[0] === 'make') {
+      const invocation = resolveMakeInvocation(segment, cwd)
+      const makefile = readMakefileTargets(invocation.makefile)
+      for (const goal of invocation.goals) {
+        if (!plainMakeGoal(goal) || makefile.targets.has(goal)) continue
+        const finding = makefile.ok && makefile.closed
+          ? {
+              code: 'make-goal-undefined',
+              message: `the make goal is not defined by the statically closed Makefile: ${goal}`,
+            }
+          : advisory(
+              'make-goal-unresolved',
+              `the make goal cannot be resolved from a missing, unreadable, or open Makefile: ${goal}`,
+            )
+        if (makefile.ok && makefile.closed) blocking.push(finding)
+        else advisoryFindings.push(finding)
+      }
+    }
+    for (const path of pathOperandsForSegment(segment)) {
+      const finding = operandPathFinding(path, cwd)
+      if (!finding) continue
+      if (finding.blocking) blocking.push({ code: finding.code, message: finding.message })
+      else advisoryFindings.push(advisory(finding.code, finding.message))
+    }
   }
 
   if (
@@ -2339,9 +2618,8 @@ export function validateVerifyOnlyEvidence(config, body) {
       const classified = classifyCheckCommand(criterion.check)
       advisory.push(...classified.advisory.map((finding) => ({ ...finding, criterion })))
       if (classified.blocking.length > 0) {
-        reason = 'command-unresolvable'
-        remedy =
-          'Use a command whose head resolves to an executable PATH binary or executable repo-relative script.'
+        reason = classified.blocking[0].code
+        remedy = commandFindingRemedy(reason)
       }
     }
     if (reason) {
@@ -2360,4 +2638,14 @@ export function validateVerifyOnlyEvidence(config, body) {
     malformedMarker,
     advisory,
   }
+}
+
+function commandFindingRemedy(code) {
+  if (code === 'make-goal-undefined') {
+    return 'Use a goal defined by the named Makefile, or record the underlying check command.'
+  }
+  if (code === 'path-operand-missing') {
+    return 'Use a path whose parent directory exists in the checkout, or record the correct check command.'
+  }
+  return 'Use a command whose head resolves to an executable PATH binary or executable repo-relative script.'
 }

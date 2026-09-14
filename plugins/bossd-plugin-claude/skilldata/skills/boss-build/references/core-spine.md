@@ -105,6 +105,20 @@ A result that fails that validation is **not** a valid result: record
 that returned nothing. Discovery accepting a role and validation understanding it are two different
 things, and a core that dispatches a role it cannot then validate folds an unchecked envelope.
 
+Shape is not content: that validation asks whether the declared keys are present, never whether
+their values name anything real. Extract each checkable claim the contract cites into a JSON list of
+`{kind, claim}` objects — a `file` or `file:line` as `path`, a quoted short or full SHA as
+`git-object`, a hash offered as the tree the gates ran on as `tree` — and run
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/bs-dispatch-claims.mjs" verify --file <claims.json>
+```
+
+A `verified` claim may be cited and published. A `refuted` one is struck from the report and never
+forwarded, and whatever it was offered as evidence for is unproven. An `unverifiable` one is
+recorded and not cited, never promoted to verified. Striking a claim does not discard the dispatch;
+its other claims stand or fall on their own.
+
 Validation is a **necessary** condition, never a sufficient one. A well-shaped contract can still
 report scope it did not finish, so the branch check — the commits it claims present in the
 post-dispatch log range, and the dispatch's acceptance criteria actually satisfied by the diff —

@@ -2,14 +2,38 @@ package clitest_test
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/recurser/boss/internal/clitest"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+// writeHarnessPluginModel pins a model on one agent plugin in the harness's own
+// settings file — the same shape the daemon host reads as BOSS_PLUGIN_model.
+func writeHarnessPluginModel(t *testing.T, h *clitest.Harness, plugin, model string) {
+	t.Helper()
+	settings := config.Settings{
+		DefaultAgent: plugin,
+		Plugins: []config.PluginConfig{{
+			Name:    plugin,
+			Path:    "/nonexistent/bossd-plugin-" + plugin,
+			Enabled: true,
+			Config:  map[string]string{"model": model},
+		}},
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if err := os.WriteFile(h.SettingsPath(), data, 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+}
 
 // newHarness seeds the standard repos and scripts CreateSession to stream one
 // setup line followed by the created session, which is the shape the daemon
@@ -554,5 +578,135 @@ func TestCLI_New_InvalidTrackerSourceWithoutJSON(t *testing.T) {
 	}
 	if !strings.Contains(res.Stderr, "tracker-source") {
 		t.Errorf("stderr = %q, want the rejection to name the flag", res.Stderr)
+	}
+}
+
+// newModelHarness seeds the same shape as newHarness but with an effective
+// model on the created session, which is what the daemon persists after
+// resolving `--model` against the agent plugin's default.
+func newModelHarness(t *testing.T, effectiveModel string) *clitest.Harness {
+	t.Helper()
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	h.Daemon.SetCreateSessionScript([]*pb.CreateSessionResponse{
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:              "sess-new-999",
+				RepoId:          "repo-1",
+				AgentSessionId:  proto.String("chat-new-888"),
+				BranchName:      "boss/add-tmux-unattended",
+				State:           pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
+				RepoDisplayName: "my-app",
+				EffectiveModel:  effectiveModel,
+			}},
+		}},
+	}, 0)
+	return h
+}
+
+// TestCLI_New_JSONCarriesEffectiveModel pins that the envelope names the model
+// the session will actually run under. Before this the envelope carried no
+// model field at all, so a caller that spawned a child with `--model` had no
+// way to confirm what it got.
+func TestCLI_New_JSONCarriesEffectiveModel(t *testing.T) {
+	h := newModelHarness(t, "claude-opus-5")
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing", "--model", "claude-opus-5", "--json")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	var env struct {
+		Session struct {
+			Model string `json:"model"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &env); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v (stdout=%q)", err, res.Stdout)
+	}
+	if env.Session.Model != "claude-opus-5" {
+		t.Errorf("session.model = %q, want claude-opus-5", env.Session.Model)
+	}
+}
+
+// TestCLI_New_JSONAlwaysEmitsModel proves the key is present even when the
+// daemon resolved nothing, so an absent key never has to be told apart from an
+// unresolved model.
+func TestCLI_New_JSONAlwaysEmitsModel(t *testing.T) {
+	h := newModelHarness(t, "")
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing", "--json")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	var raw struct {
+		Session map[string]json.RawMessage `json:"session"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &raw); err != nil {
+		t.Fatalf("unmarshal %q: %v", res.Stdout, err)
+	}
+	if _, ok := raw.Session["model"]; !ok {
+		t.Errorf("session is missing the always-emitted key \"model\": %q", res.Stdout)
+	}
+}
+
+// TestCLI_New_ExplicitModelAnnouncesDisplacedDefault is the disclosure. The
+// plugin-level pin exists BECAUSE an unpinned run resolves non-deterministically,
+// so an explicit --model does not merely choose a model — it opts the session
+// out of the host's pin, which can change the context window it gets. Nothing
+// said so.
+func TestCLI_New_ExplicitModelAnnouncesDisplacedDefault(t *testing.T) {
+	h := newModelHarness(t, "claude-opus-5")
+	writeHarnessPluginModel(t, h, "claude", "opus[1m]")
+
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing", "--model", "claude-opus-5", "--json")
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	// Both values, so the reader can see what they gave up as well as what they
+	// asked for.
+	for _, want := range []string{"claude-opus-5", "opus[1m]", "claude"} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr should name %q; got %q", want, res.Stderr)
+		}
+	}
+	// The notice is on stderr precisely so stdout stays exactly one JSON object.
+	dec := json.NewDecoder(strings.NewReader(res.Stdout))
+	var env map[string]any
+	if err := dec.Decode(&env); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v (stdout=%q)", err, res.Stdout)
+	}
+	if dec.More() {
+		t.Fatalf("stdout carried more than one JSON value: %q", res.Stdout)
+	}
+}
+
+// TestCLI_New_NoNoticeWithoutADisplacedDefault covers the three silent cases:
+// no --model at all, a --model that matches the configured default, and a host
+// with no configured default to displace. A notice in any of them would be
+// noise on the ordinary path.
+func TestCLI_New_NoNoticeWithoutADisplacedDefault(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure string
+		args      []string
+	}{
+		{"no --model", "opus[1m]", nil},
+		{"--model matches the configured default", "opus[1m]", []string{"--model", "opus[1m]"}},
+		{"no configured default", "", []string{"--model", "claude-opus-5"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newModelHarness(t, "claude-opus-5")
+			if tc.configure != "" {
+				writeHarnessPluginModel(t, h, "claude", tc.configure)
+			}
+			args := append([]string{"new", "--repo", "repo-1", "--prompt", "add a thing", "--json"}, tc.args...)
+			res := h.Run(args...)
+			if res.ExitCode != 0 {
+				t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+			}
+			if strings.Contains(res.Stderr, "displaces the configured") {
+				t.Errorf("unexpected displacement notice: %q", res.Stderr)
+			}
+		})
 	}
 }

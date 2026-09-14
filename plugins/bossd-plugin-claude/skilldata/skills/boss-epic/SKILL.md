@@ -581,13 +581,14 @@ draft-aware set replaces generic `policy.watchTriggers` for boss-epic's in-fligh
 gate stays authoritative — a wake is a signal, not proof. Re-arm consumed or expired watches,
 keeping one `group` per trigger so re-arm cancels only same-trigger siblings.
 
-**How the driver waits.** Callbacks are primary; a **session cron** (a scheduled prompt
-re-entering this poll cycle every 2–5 minutes) is the bounded fallback. **Never** rely on
+**How the driver waits.** Callbacks are primary; an **in-session scheduled wake-up**
+(never `boss cron` — it starts a new session per fire and outlives the epic) re-entering
+this poll cycle every 2–5 minutes is the bounded fallback. **Never** rely on
 backgrounded shell watchers or sleep loops to hold the wait — session hosts may kill them
 within the turn, and a driver that assumes them stalls silently. When
-`callbacksAvailable` is false, skip arming and let the cron/poll alone drive Phase 3 — a
+`callbacksAvailable` is false, skip arming and let the wake-up/poll alone drive Phase 3 — a
 clean no-op, never a failed wait. Every wake runs the same idempotent cycle below; the
-driver never cares _why_ it woke. Trigger policy, cron cadence caveats, and the full
+driver never cares _why_ it woke. Trigger policy, cadence caveats, and the full
 arm/reconcile/re-arm/cleanup protocol:
 [`references/callback-watches.md`](references/callback-watches.md).
 

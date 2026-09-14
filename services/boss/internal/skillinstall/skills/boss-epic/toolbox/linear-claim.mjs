@@ -31,10 +31,36 @@ export function formatClaimComment(token, sessionId = null) {
   return `🔒 ${CLAIM_MARKER}:${token} (bs-implement run claiming this ticket)${ownerSuffix}`
 }
 
-// Extract { token, createdAt, sessionId } from claim comments; ignore everything else.
+/**
+ * The two shapes a caller actually holds, normalized to the comment array.
+ *
+ * The tracker's `list_comments` returns `{comments:[…]}`, and handing that envelope straight in used
+ * to reach `for (const c of comments)` and throw `comments is not iterable` — surfaced by the CLI as
+ * `claim arbitration failed`, which reads as malformed EVIDENCE rather than a wrong argument shape.
+ * That is the R2 misattribution: the diagnostic named a fault nobody had. Both shapes are now simply
+ * accepted, and anything else raises naming the two it accepts.
+ *
+ * Nullish stays legal and means "no comments": the CLI boundaries above this refuse an absent
+ * `--comments` flag by name, and an empty claim set is a real answer (`NO_WINNER`), not a fault.
+ */
+export function normalizeClaimComments(comments) {
+  if (comments === undefined || comments === null) return []
+  if (Array.isArray(comments)) return comments
+  if (typeof comments === 'object' && Array.isArray(comments.comments)) return comments.comments
+  throw new Error(
+    `linear-claim: parseClaimComments(comments) — expected a comment ARRAY or a {comments:[…]} envelope, got ${
+      typeof comments === 'object'
+        ? `an object with keys ${Object.keys(comments).join(', ')}`
+        : `a ${typeof comments}`
+    }`,
+  )
+}
+
+// Extract { token, createdAt, sessionId } from claim comments; ignore everything else. Accepts either
+// the bare array or the tracker's `{comments:[…]}` envelope — see `normalizeClaimComments`.
 export function parseClaimComments(comments) {
   const claims = []
-  for (const c of comments || []) {
+  for (const c of normalizeClaimComments(comments)) {
     const body = typeof c?.body === 'string' ? c.body : ''
     const match = body.match(CLAIM_RE)
     if (!match) continue

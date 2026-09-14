@@ -101,7 +101,7 @@ CALLBACK_CHAT="$(
   '
 )"
 if [ -z "$CALLBACK_CHAT" ]; then
-  echo "No verified callback target; retain cron/poll reconciliation. Continue to Phase 3b reconciliation and the bounded poll/session cron."
+  echo "No verified callback target; retain cron/poll reconciliation. Continue to Phase 3b reconciliation and the bounded poll/in-session wake-up."
 fi
 ```
 
@@ -114,7 +114,7 @@ callback. If there is no verified target, skip callback registration, re-arm, li
 retain the existing cron/poll reconciliation for that child. The bridge emits JSON, reads the selected
 chat into `CALLBACK_CHAT`, and produces an empty value for no target. An empty chat disables only the
 callback commands guarded below; it must fall through to the normal Phase 3b authoritative
-reconciliation and bounded poll/session cron for that child. `CHILD_PR_REPOSITORY` remains the
+reconciliation and bounded poll/in-session wake-up for that child. `CHILD_PR_REPOSITORY` remains the
 verified selector input; callback CLI operations use the selected target's normalized repository.
 
 The capability contract is the callback-notifier adapter (`toolbox/callback/adapter.mjs`, default
@@ -292,7 +292,8 @@ read are the authoritative filter, and both run again on every wake regardless o
 
 5. **Bounded fallback poll.** Whether or not watches are armed, back the wait with the bounded
    `policy.fallbackPoll` (`gh pr checks "$PR" --watch --fail-fast`) and the Phase 3 poll cadence
-   (every 2–5 minutes), driven by a session cron — see the wait recipe below. When callbacks are
+   (every 2–5 minutes), driven by an in-session scheduled wake-up — never a `boss cron` job; see
+   the wait recipe below. When callbacks are
    available it is a safety net for a missed/expired delivery; when `callbacksAvailable` is false it
    is the sole wait mechanism. Keep it bounded by the per-ticket wall clock and repair-round caps so
    the loop never blocks unboundedly.
@@ -327,36 +328,55 @@ read are the authoritative filter, and both run again on every wake regardless o
 ## The wait recipe: how a session-hosted driver actually sleeps
 
 Phase 3 says "poll every 2–5 minutes". A driver hosted inside an agent session has no reliable way to
-_sleep_ across that interval on its own — the turn ends. Use these two mechanisms, in this order.
+_sleep_ across that interval on its own — the turn ends. Use these mechanisms, in this order.
 
 **1. Primary — per-PR draft-aware callbacks.** Armed as above, they deliver a prompt into the driver
 chat the moment a child's PR reaches `checks_passed_ready` / `checks_failed` / `merged`. This is the
-low-latency path and the only one that costs nothing while nothing is happening.
+low-latency path and the only one that costs nothing while nothing is happening. A settle
+subscription (`boss broadcast subscribe --on settled --to chat:<driver-chat-id>`, registered against
+the child's session) complements them: a callback watches the child's **PR**, a subscription watches
+the child's **session** reaching an outcome. A subscription can fire while the child is still
+mid-flight, so re-arm anything that fired.
 
-**2. Fallback — a session cron.** Register a scheduled prompt (whatever the host calls a recurring
-job / scheduled prompt) that re-enters the Phase 3b poll cycle on a 2–5 minute cadence. It covers a
-missed or expired delivery, and it is the sole wait mechanism when `callbacksAvailable(env)` is false.
-Two caveats, both learned the hard way:
+**2. Fallback — a bounded in-turn wait, then an in-session scheduled wake-up.** `boss chat wait
+<session-id|chat-id> --timeout <duration>` blocks in the **foreground** until that chat goes idle. It
+is **awaited**, never backgrounded, and `--timeout` (30m default) bounds it — so it is not the reaped
+watcher of item 3. It waits on one child, so reach for it when the driver is down to the child it is
+actually blocked on. To re-enter the Phase 3b poll cycle across a turn boundary, register a scheduled
+prompt **inside this chat** — whatever the host calls an in-session scheduled prompt or wake-up,
+which is session-local and expires with the session. It covers a missed or expired delivery, and it
+is the sole wait mechanism when `callbacksAvailable(env)` is false.
+
+**Never `boss cron`.** `boss cron` schedules a recurring job that starts a **new session** on every
+fire. Fires overlap; each one begins with no memory of what the last saw; and the schedule keeps
+firing long after the epic it was watching settled, because nothing about a settled epic retires a
+cron job. It is for **starting** work on a schedule, never for **waiting on** work already in flight.
+To observe a child rather than wait for one, use the Phase 3b reads directly: `boss chats`,
+`boss show`, `boss tail <agent-session-id>`, `boss session checks`.
+
+**Scheduling boss-epic itself (setup-time only).** These two caveats apply to the legitimate case — a
+recurring job that _starts_ an epic run — and never to waiting on one:
 
 - **Step syntax may be rejected.** Not every host accepts `*/N` in the minute field. If `*/7` is
   refused, **enumerate the minutes** instead: `4,11,18,25,32,39,46,53 * * * *`.
 - **Avoid the herd minutes.** Do not schedule on `:00` or `:30` — every naively-configured job in the
   world fires there. Offset by a few minutes (the `4,11,18,…` set above is already offset).
 
-Tear the cron down when Phase 4 posts the final report unless a fail-isolated session is still live;
+Tear the wake-up down when Phase 4 posts the final report unless a fail-isolated session is still live;
 in that case keep only the cron/callback teardown needed to observe or resume it, and remove settled
-child watches. A cron outliving a fully settled run wakes a driver with no epic to schedule.
+child watches. A wake-up outliving a fully settled run wakes a driver with no epic to schedule.
 
 **3. Anti-pattern — backgrounded watchers.** Do **not** hold the wait with a backgrounded shell loop
 (`… &`, a host's "run this in the background" affordance, `sleep` / `while true` polling). Session
 hosts may reap such
 processes within the turn that spawned them, and the failure is **silent**: the driver believes a
-watcher is running, no wake ever arrives, and the epic stalls until its wall clock expires. Callbacks
-and the cron are the only two mechanisms that survive the end of a turn.
+watcher is running, no wake ever arrives, and the epic stalls until its wall clock expires. Callbacks,
+a settle subscription and an in-session wake-up are the mechanisms that survive the end of a turn.
 
-**4. Every wake runs the same cycle.** Callback wake, cron tick, or manual re-invocation — the driver
-re-runs the identical idempotent Phase 3b reconciliation and never branches on _why_ it woke. That is
-what makes the two mechanisms safe to run at once: a duplicate wake is a no-op, not a double action.
+**4. Every wake runs the same cycle.** Callback wake, subscription, scheduled wake-up or manual
+re-invocation — the driver re-runs the identical idempotent Phase 3b reconciliation and never
+branches on _why_ it woke. That is what makes the mechanisms safe to run at once: a duplicate wake is
+a no-op, not a double action.
 
 ## Invariants
 
@@ -364,8 +384,11 @@ what makes the two mechanisms safe to run at once: a duplicate wake is a no-op, 
   driven by a callback trigger name alone — only by the Phase 3b authoritative state read.
 - **Draft-aware green only.** Arm `checks_passed_ready`, never bare `checks_passed`, on a child PR
   opened as a draft — a green-on-draft fire consumes the one-shot watch for nothing.
-- **The wait survives the turn.** Callbacks and a session cron are the only two wait mechanisms;
-  a backgrounded watcher or sleep loop may be killed within its turn and stalls the epic silently.
+- **The wait survives the turn.** Callbacks, a settle subscription, a bounded foreground
+  `boss chat wait`, and an in-session scheduled wake-up are the wait mechanisms; a backgrounded
+  watcher or sleep loop may be killed within its turn and stalls the epic silently.
+- **A cron job is never a monitor.** `boss cron` starts a **new session** per fire, overlaps itself,
+  and outlives the epic it was pointed at. It schedules work; it does not wait for it.
 - **Idempotent under duplicate/late delivery** (`policy.dedupById`). Re-delivery is a no-op.
 - **Group only mutually exclusive triggers.** Sharing a group across triggers that can both hold
   makes the first fire cancel a still-needed watch.

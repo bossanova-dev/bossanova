@@ -123,11 +123,70 @@ func SourceDrift(dir, srcRoot string) (bool, error) {
 	return NeedsUpdate(dir, os.DirFS(srcRoot))
 }
 
+// DriftKind classifies a single installed-vs-payload difference. A caller that
+// only has the path cannot tell an installed file that is missing entirely from
+// one whose bytes merely changed, which is the discrimination consumers of the
+// drift report need in order to choose a remedy.
+type DriftKind string
+
+const (
+	// DriftAbsent is a payload file with no installed counterpart.
+	DriftAbsent DriftKind = "absent"
+	// DriftContent is an installed file whose bytes differ from the payload.
+	DriftContent DriftKind = "content"
+	// DriftMode is an installed file whose executable bit was lost.
+	DriftMode DriftKind = "mode"
+	// DriftUnexpected is an installed file or skill directory the payload does
+	// not contain.
+	DriftUnexpected DriftKind = "unexpected"
+	// DriftBrokenSymlink is a top-level skill symlink that is missing or points
+	// somewhere other than the namespaced payload directory.
+	DriftBrokenSymlink DriftKind = "broken-symlink"
+)
+
+// DriftEntry is one installed-vs-payload difference: the slash-separated path
+// relative to the payload root, plus what kind of difference it is.
+type DriftEntry struct {
+	Path string
+	Kind DriftKind
+}
+
+// DriftReport is the structured result of one drift walk. Compared counts the
+// payload files the walk checked, so a clean report can state its own coverage
+// instead of being a silent success.
+type DriftReport struct {
+	Installed bool
+	Compared  int
+	Entries   []DriftEntry
+}
+
+// Paths projects the report onto the sorted slash-separated path slice that
+// SourceDriftPaths has always returned. The projection is the only producer of
+// that slice, so the two cannot disagree.
+func (r DriftReport) Paths() []string {
+	paths := make([]string, 0, len(r.Entries))
+	for _, entry := range r.Entries {
+		paths = append(paths, entry.Path)
+	}
+	return paths
+}
+
+// SourceDriftReport reports each installed path that differs from the canonical
+// skill sources at srcRoot, carrying the kind of each difference. It reports an
+// uninstalled tree as Installed false with no entries.
+func SourceDriftReport(dir, srcRoot string) (DriftReport, error) {
+	return driftReport(dir, os.DirFS(srcRoot))
+}
+
 // SourceDriftPaths reports the installed paths that differ from the canonical
 // skill sources at srcRoot, as slash-separated paths relative to the payload
 // root. It returns an empty slice when no skills are installed.
 func SourceDriftPaths(dir, srcRoot string) ([]string, error) {
-	return driftPaths(dir, os.DirFS(srcRoot))
+	report, err := driftReport(dir, os.DirFS(srcRoot))
+	if err != nil {
+		return nil, err
+	}
+	return report.Paths(), nil
 }
 
 // SourceManifest returns the canonical skill-source manifest at srcRoot.
@@ -199,45 +258,45 @@ func NeedsUpdate(dir string, fsys fs.FS) (bool, error) {
 	return needsUpdate, err
 }
 
-func driftPaths(dir string, fsys fs.FS) ([]string, error) {
+func driftReport(dir string, fsys fs.FS) (DriftReport, error) {
 	if _, statErr := os.Stat(dir); statErr != nil {
 		if os.IsNotExist(statErr) {
-			return nil, nil
+			return DriftReport{}, nil
 		}
-		return nil, statErr
+		return DriftReport{}, statErr
 	}
 	for {
 		lock, locked, lockErr := acquireExistingUpdateLock(dir)
 		if lockErr != nil {
-			return nil, lockErr
+			return DriftReport{}, lockErr
 		}
 		if locked {
 			if !IsInstalled(dir) {
 				if unlockErr := lock.Unlock(); unlockErr != nil {
-					return nil, fmt.Errorf("release skill update lock: %w", unlockErr)
+					return DriftReport{}, fmt.Errorf("release skill update lock: %w", unlockErr)
 				}
-				return nil, nil
+				return DriftReport{}, nil
 			}
-			paths, err := driftPathsLocked(dir, fsys)
+			report, err := driftReportLocked(dir, fsys)
 			if unlockErr := lock.Unlock(); err == nil && unlockErr != nil {
-				return nil, fmt.Errorf("release skill update lock: %w", unlockErr)
+				return DriftReport{}, fmt.Errorf("release skill update lock: %w", unlockErr)
 			}
-			return paths, err
+			return report, err
 		}
 
 		if !IsInstalled(dir) {
-			return nil, nil
+			return DriftReport{}, nil
 		}
-		paths, err := driftPathsLocked(dir, fsys)
+		report, err := driftReportLocked(dir, fsys)
 		if err != nil {
-			return nil, err
+			return DriftReport{}, err
 		}
 		if _, statErr := os.Stat(filepath.Join(dir, updateLockFile)); statErr == nil {
 			continue
 		} else if !os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("stat skill update lock: %w", statErr)
+			return DriftReport{}, fmt.Errorf("stat skill update lock: %w", statErr)
 		}
-		return paths, nil
+		return report, nil
 	}
 }
 
@@ -335,13 +394,16 @@ func needsUpdateLocked(dir string, fsys fs.FS) (bool, error) {
 	return false, nil
 }
 
-func driftPathsLocked(dir string, fsys fs.FS) ([]string, error) {
+func driftReportLocked(dir string, fsys fs.FS) (DriftReport, error) {
 	files, err := embeddedFiles(fsys)
 	if err != nil {
-		return nil, err
+		return DriftReport{}, err
 	}
 
-	drift := map[string]bool{}
+	// Each branch below owns a disjoint key space — payload-relative file paths,
+	// unexpected installed paths, and bare top-level skill names — so a path is
+	// classified exactly once and the first kind recorded is the only one.
+	drift := map[string]DriftKind{}
 	expectedFiles := make(map[string][]byte, len(files))
 	expectedSkills := map[string]bool{}
 	for _, file := range files {
@@ -355,21 +417,21 @@ func driftPathsLocked(dir string, fsys fs.FS) ([]string, error) {
 		data, err := os.ReadFile(installedPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				drift[file.rel] = true
+				drift[file.rel] = DriftAbsent
 				continue
 			}
-			return nil, err
+			return DriftReport{}, err
 		}
 		if !bytes.Equal(data, file.data) {
-			drift[file.rel] = true
+			drift[file.rel] = DriftContent
 			continue
 		}
 		modeDrift, err := executableModeDrift(installedPath, file)
 		if err != nil {
-			return nil, err
+			return DriftReport{}, err
 		}
 		if modeDrift {
-			drift[file.rel] = true
+			drift[file.rel] = DriftMode
 		}
 	}
 
@@ -387,7 +449,7 @@ func driftPathsLocked(dir string, fsys fs.FS) ([]string, error) {
 				return err
 			}
 			if filepath.Dir(rel) == "." && isBossSkill(filepath.Base(rel)) && !expectedSkills[filepath.Base(rel)] {
-				drift[filepath.ToSlash(rel)+"/"] = true
+				drift[filepath.ToSlash(rel)+"/"] = DriftUnexpected
 			}
 			return nil
 		}
@@ -397,32 +459,33 @@ func driftPathsLocked(dir string, fsys fs.FS) ([]string, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		if _, ok := expectedFiles[rel]; !ok {
-			drift[rel] = true
+			drift[rel] = DriftUnexpected
 		}
 		return nil
 	}); err != nil {
-		return nil, err
+		return DriftReport{}, err
 	}
 
 	for skill := range expectedSkills {
 		link := filepath.Join(dir, skill)
 		target, err := os.Readlink(link)
 		if err != nil || target != filepath.Join(Namespace, skill) {
-			drift[skill] = true
+			drift[skill] = DriftBrokenSymlink
 		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			drift[Namespace+"/"] = true
+			// The whole installed tree is gone, so a reinstall only adds files.
+			drift[Namespace+"/"] = DriftAbsent
 		} else {
-			return nil, err
+			return DriftReport{}, err
 		}
 	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if isBossSkill(name) && !expectedSkills[name] {
-			drift[name] = true
+			drift[name] = DriftUnexpected
 		}
 	}
 
@@ -431,7 +494,11 @@ func driftPathsLocked(dir string, fsys fs.FS) ([]string, error) {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	return paths, nil
+	report := DriftReport{Installed: true, Compared: len(files), Entries: make([]DriftEntry, 0, len(paths))}
+	for _, path := range paths {
+		report.Entries = append(report.Entries, DriftEntry{Path: path, Kind: drift[path]})
+	}
+	return report, nil
 }
 
 func executableModeDrift(path string, file embeddedFile) (bool, error) {

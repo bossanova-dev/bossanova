@@ -32,8 +32,14 @@
 import { readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 
+// The citation resolver lives in its own module so a caller that needs ONLY that mechanic
+// (bs-dispatch-claims.mjs, bs-review-triage.mjs) imports it alone instead of dragging this
+// guard's whole closure into three published skill payloads. It is imported here, not
+// re-exported: a second import path for one module is the drift R1 exists to close.
+import { resolveCitationCoordinate, resolveCitationPath } from './citation-coordinate.mjs'
 import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
+import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
 import {
   classifyCheckCommand,
   DEFAULT_CONFIG,
@@ -162,6 +168,7 @@ export const VIOLATION_CODES = [
   'section-order',
   'self-falsified-literal-search',
   'stale-premise-citation',
+  'subject-areas-unresolved',
   'unanchored-premise-citation',
   'unknown-section',
   'unresolvable-citation',
@@ -536,14 +543,6 @@ function fixedStringNeedle(command) {
   return null
 }
 
-function resolveCitationPath(root, file) {
-  const resolvedRoot = resolve(root)
-  const resolvedFile = resolve(resolvedRoot, file)
-  const rel = relative(resolvedRoot, resolvedFile)
-  if (rel === '' || rel.startsWith('..') || rel.split(/[\\/]/).includes('..')) return null
-  return resolvedFile
-}
-
 export function checkPlanCitations(
   config,
   description,
@@ -587,35 +586,22 @@ export function checkPlanCitations(
   }
 
   for (const hit of scanCitationSections(config, description, mode)) {
-    const resolved = resolveCitationPath(root, hit.file)
-    if (!resolved) {
-      violations.push(
-        violation(
-          'unresolvable-citation',
-          `${hit.heading} cites ${hit.citation}, but ${hit.file} escapes the working tree root`,
-        ),
-      )
-      continue
-    }
-    const { body, error } = readBody(resolved)
-    if (error) {
-      violations.push(
-        violation(
-          'unresolvable-citation',
-          `${hit.heading} cites ${hit.citation}, but ${hit.file} could not be read: ${error.message}`,
-        ),
-      )
-      continue
-    }
-    const lineCount = body.split('\n').length
-    if (hit.line > lineCount) {
-      violations.push(
-        violation(
-          'unresolvable-citation',
-          `${hit.heading} cites ${hit.citation}, but ${hit.file} has only ${lineCount} line(s)`,
-        ),
-      )
-    }
+    const resolved = resolveCitationCoordinate(root, hit.file, hit.line, { readBody })
+    if (resolved.ok) continue
+    const detail =
+      resolved.code === 'escapes-root'
+        ? 'escapes the working tree root'
+        : resolved.code === 'bad-line'
+          ? `has no line ${hit.line}`
+          : resolved.code === 'unreadable'
+            ? `could not be read: ${resolved.error.message}`
+            : `has only ${resolved.lineCount} line(s)`
+    violations.push(
+      violation(
+        'unresolvable-citation',
+        `${hit.heading} cites ${hit.citation}, but ${hit.file} ${detail}`,
+      ),
+    )
   }
 
   // The premise ANCHOR pass. `## Premises` is the one section a drafter writes deliberately to
@@ -862,6 +848,7 @@ export function checkPlanContract({
   planFileExemption = null,
   citationCwd = undefined,
   citationFs = undefined,
+  moduleRoots = [],
 } = {}) {
   if (typeof description !== 'string') {
     throw new Error(
@@ -981,6 +968,9 @@ export function checkPlanContract({
   couldNotEvaluateResults.push(...citation.couldNotEvaluate)
   violations.push(...checkPrBodyOnlyEvidence(config, description))
   violations.push(...checkVerifyOnlyCommandVacuity(config, description, { cwd: citationCwd }))
+  if (!unterminated) {
+    violations.push(...checkSubjectAreas(config, description, { mode, moduleRoots }))
+  }
 
   return {
     ok: violations.length === 0 && couldNotEvaluateResults.length === 0,
@@ -989,8 +979,72 @@ export function checkPlanContract({
   }
 }
 
+/**
+ * Resolve the subject's OWN change areas from the composed description, and fail when the scan
+ * that Phase 4's dependency step will run could not have matched anything.
+ *
+ * WHY IT LIVES IN THIS GATE. The same resolution runs later, in the dependency scan, and its
+ * remedy for an unresolved token is "rewrite `## Key changes` as repo-relative paths". By then the
+ * plan file has already been uploaded and byte-verified, so acting on the remedy costs a delete
+ * plus a re-upload of an artifact whose bytes were supposed to be frozen. This gate already runs
+ * BEFORE the attachment finalize, so raising the same fact here is the whole fix: nothing reorders,
+ * and no resident skill prose has to describe a new procedure.
+ *
+ * The two faults are reported under ONE code with the fault named in the message, because their
+ * remedies differ (name concrete paths / rewrite the named tokens) but their timing does not.
+ *
+ * Scoped to modes whose contract actually requires `## Key changes`, and to descriptions that
+ * emitted it: an epic-parent overview has no such section, and a description missing it is already
+ * reported as `missing-sections` — one mistake must not trip two codes.
+ *
+ * `moduleRoots` is the caller's repo module list, and it reaches this gate from the CLI's
+ * `--module-roots` flag so a caller can hand it the SAME list it hands the dependency scan. That
+ * reachability is the point: the classifier admits a slash-free token only when it is a declared
+ * root, so a gate run with an empty list while the scan runs with the repo's roots is STRICTER than
+ * the scan it reports for — and its remedy names a seam the caller could not otherwise reach. Left
+ * empty the classifier still degrades to admitting any slash-carrying token, which is the lenient
+ * direction for the tokens it does cover.
+ */
+function checkSubjectAreas(config, description, { mode, moduleRoots }) {
+  const required = planSectionsForDescriptionMode(config, mode).map((section) => section.heading)
+  if (!required.includes(KEY_CHANGES_HEADING)) return []
+  if (!emittedContractHeadings(config, description, { mode }).includes(KEY_CHANGES_HEADING)) {
+    return []
+  }
+  const { areas, unresolved } = extractKeyChangeAreas(config, description, { moduleRoots })
+  const faults = []
+  if (areas.length === 0) {
+    faults.push(
+      `it resolves to NO change areas, so the dependency scan can only compare it against nothing` +
+        ` — name concrete repo-relative paths there`,
+    )
+  }
+  if (unresolved.length > 0) {
+    faults.push(
+      `${unresolved.length} path-shaped token(s) do not resolve to a repo-relative area ` +
+        `(${unresolved.join(', ')}) — rewrite them as repo-relative paths, or declare their ` +
+        `leading directory in the dependency scan's \`moduleRoots\``,
+    )
+  }
+  if (faults.length === 0) return []
+  return [
+    violation(
+      'subject-areas-unresolved',
+      `${KEY_CHANGES_HEADING} cannot be resolved into change areas: ${faults.join('; ')}. ` +
+        'Fix it now, before the attachment is finalized: after the upload the same remedy costs a ' +
+        'delete plus a re-upload of bytes that were meant to be frozen.',
+    ),
+  ]
+}
+
 export function parseContractGuardArgs(argv) {
-  const args = { description: null, plan: null, mode: 'child-plan', planFileExemption: null }
+  const args = {
+    description: null,
+    plan: null,
+    mode: 'child-plan',
+    planFileExemption: null,
+    moduleRoots: [],
+  }
   const readFlagValue = (flag, index) => {
     const value = argv[index + 1]
     if (!value || value.startsWith('--')) {
@@ -1017,6 +1071,17 @@ export function parseContractGuardArgs(argv) {
     } else if (flag === '--plan-file-exemption') {
       args.planFileExemption = readFlagValue(flag, i)
       i += 1
+    } else if (flag === '--module-roots') {
+      // The SAME list the dependency scan is given. Without a way to pass it, this gate ran with
+      // an empty one while the scan it claims to mirror ran with the repo's roots, so a
+      // `## Key changes` naming a marked bare module name was a violation here and an area there
+      // — and the violation's own remedy ("declare their leading directory") named a seam no
+      // caller could reach. Comma-separated, so one shell word carries the whole list.
+      args.moduleRoots = readFlagValue(flag, i)
+        .split(',')
+        .map((root) => root.trim())
+        .filter((root) => root !== '')
+      i += 1
     } else {
       throw new Error(`unknown argument: ${flag}`)
     }
@@ -1028,7 +1093,7 @@ export function parseContractGuardArgs(argv) {
 }
 
 function main() {
-  const { description, plan, mode, planFileExemption } = parseContractGuardArgs(
+  const { description, plan, mode, planFileExemption, moduleRoots } = parseContractGuardArgs(
     process.argv.slice(2),
   )
   // A file we cannot read is itself a violation, never a pass: an unreadable input is exactly the
@@ -1065,6 +1130,7 @@ function main() {
     config,
     mode,
     planFileExemption,
+    moduleRoots,
     citationCwd: process.env.PLAN_CONTRACT_GUARD_CWD,
   })
   for (const { code, message } of couldNotEvaluate) {

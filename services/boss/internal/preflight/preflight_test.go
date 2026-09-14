@@ -489,6 +489,10 @@ func TestCheckAgentsResolvableProbesConcurrently(t *testing.T) {
 		close(all)
 	}()
 
+	// The fallback a probe waits out when the probes did NOT overlap, which is exactly what the
+	// elapsed bound below must stay clear of.
+	const serialFallback = 10 * time.Second
+
 	var mu sync.Mutex
 	var probed []string
 	run := func(_, _, line string) error {
@@ -499,7 +503,7 @@ func TestCheckAgentsResolvableProbesConcurrently(t *testing.T) {
 		select {
 		case <-all:
 			return nil
-		case <-time.After(10 * time.Second):
+		case <-time.After(serialFallback):
 			// Only reachable if the probes did not overlap.
 			return errors.New("probes ran serially: this one waited alone")
 		}
@@ -509,7 +513,9 @@ func TestCheckAgentsResolvableProbesConcurrently(t *testing.T) {
 	if issue := checkAgentsResolvable("/bin/sh", agents, t.TempDir(), run); issue != nil {
 		t.Fatalf("probes did not overlap; got blocking issue %q", issue.Title)
 	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
+	// Half the serial fallback: probes that ran serially would each wait it out in full, so a
+	// run that overlapped correctly cannot approach this.
+	if elapsed := time.Since(start); elapsed > serialFallback/2 {
 		t.Errorf("startup took %s, want roughly one probe budget", elapsed)
 	}
 	mu.Lock()

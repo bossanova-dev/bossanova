@@ -681,3 +681,115 @@ func noteIDs(notes []*pb.Note) []string {
 	}
 	return out
 }
+
+// errorEnvelope mirrors the failure envelope every `--json` command emits. It
+// is declared here rather than shared with the CLI's own struct on purpose:
+// this copy is the wire contract a driver branches on.
+type errorEnvelope struct {
+	Error struct {
+		Code        string `json:"code"`
+		ConnectCode string `json:"connect_code"`
+		Message     string `json:"message"`
+	} `json:"error"`
+}
+
+// TestCLI_Notes_Add_PluralTagSuggestsSingular proves the named Class B site:
+// `--tags` is the natural near-miss for the repeatable singular `--tag`, and a
+// bare `unknown flag: --tags` left the caller with no way to discover that.
+func TestCLI_Notes_Add_PluralTagSuggestsSingular(t *testing.T) {
+	h := clitest.New(t)
+	res := h.Run("notes", "add", "a body", "--repo", "r1", "--tags", "improvement")
+
+	if res.ExitCode == 0 {
+		t.Fatalf("expected a non-zero exit for an unknown flag; stdout=%q", res.Stdout)
+	}
+	if !strings.Contains(res.Stderr, "unknown flag: --tags") {
+		t.Errorf("stderr should still name the rejected flag, got %q", res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "--tag") {
+		t.Errorf("stderr should name the registered flag --tag, got %q", res.Stderr)
+	}
+	if n := len(h.Daemon.CreateNoteCalls()); n != 0 {
+		t.Errorf("a rejected flag must reach no RPC, got %d CreateNote calls", n)
+	}
+}
+
+// TestCLI_Notes_Add_FlagRejectionJSONIsInvalidArgument proves the same
+// rejection classifies as INVALID_ARGUMENT rather than the UNKNOWN an untagged
+// local error resolves to, so a driver can branch on `code` without matching
+// message text.
+func TestCLI_Notes_Add_FlagRejectionJSONIsInvalidArgument(t *testing.T) {
+	h := clitest.New(t)
+	res := h.Run("notes", "add", "a body", "--repo", "r1", "--tags", "improvement", "--json")
+
+	if res.ExitCode == 0 {
+		t.Fatalf("expected a non-zero exit; stdout=%q", res.Stdout)
+	}
+	var env errorEnvelope
+	if err := json.Unmarshal([]byte(res.Stdout), &env); err != nil {
+		t.Fatalf("stdout is not a single JSON envelope: %v (stdout=%q)", err, res.Stdout)
+	}
+	if env.Error.Code != "INVALID_ARGUMENT" {
+		t.Errorf("code = %q, want INVALID_ARGUMENT (stdout=%q)", env.Error.Code, res.Stdout)
+	}
+	if !strings.Contains(env.Error.Message, "--tag") {
+		t.Errorf("envelope message should name the registered flag, got %q", env.Error.Message)
+	}
+}
+
+// TestCLI_FlagSuggestionIsGeneric walks every remaining Class B row. One
+// root-level hook covers all of them; five special cases would not prove that.
+func TestCLI_FlagSuggestionIsGeneric(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		rejected string
+		suggests string
+	}{
+		{"notes ls plural tag", []string{"notes", "ls", "--tags", "x"}, "--tags", "--tag"},
+		{"notes edit plural tag", []string{"notes", "edit", "n1", "--tags", "x"}, "--tags", "--tag"},
+		{"ls plural state", []string{"ls", "--states", "active"}, "--states", "--state"},
+		{
+			"account update singular allowed-model",
+			[]string{"account", "update", "a1", "--allowed-model", "opus"},
+			"--allowed-model", "--allowed-models",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := clitest.New(t)
+			res := h.Run(tc.args...)
+			if res.ExitCode == 0 {
+				t.Fatalf("expected a non-zero exit; stdout=%q", res.Stdout)
+			}
+			if !strings.Contains(res.Stderr, "unknown flag: "+tc.rejected) {
+				t.Errorf("stderr should name the rejected flag %s, got %q", tc.rejected, res.Stderr)
+			}
+			if !strings.Contains(res.Stderr, "did you mean "+tc.suggests) {
+				t.Errorf("stderr should suggest %s, got %q", tc.suggests, res.Stderr)
+			}
+		})
+	}
+}
+
+// TestCLI_FlagRejectionWithNoNearMissStillClassifies proves the suggestion is
+// dropped when nothing is close, while the INVALID_ARGUMENT classification —
+// which needs no near-miss to be true — still holds.
+func TestCLI_FlagRejectionWithNoNearMissStillClassifies(t *testing.T) {
+	h := clitest.New(t)
+	res := h.Run("notes", "ls", "--wildly-unrelated-flag-name", "x", "--json")
+
+	if res.ExitCode == 0 {
+		t.Fatalf("expected a non-zero exit; stdout=%q", res.Stdout)
+	}
+	if strings.Contains(res.Stderr, "did you mean") {
+		t.Errorf("no flag is within the edit-distance bound, so no suggestion should be made: %q", res.Stderr)
+	}
+	var env errorEnvelope
+	if err := json.Unmarshal([]byte(res.Stdout), &env); err != nil {
+		t.Fatalf("stdout is not a single JSON envelope: %v (stdout=%q)", err, res.Stdout)
+	}
+	if env.Error.Code != "INVALID_ARGUMENT" {
+		t.Errorf("code = %q, want INVALID_ARGUMENT", env.Error.Code)
+	}
+}

@@ -1034,6 +1034,7 @@ func TestGeneratePlist(t *testing.T) {
 		"<key>KeepAlive</key>",
 		"bossd.stdout.log",
 		"bossd.stderr.log",
+		"<key>ProcessType</key>",
 		// BOS-457: raise the FD limit so setup scripts bossd spawns don't
 		// inherit macOS's low default (256) and die with EMFILE.
 		"<key>SoftResourceLimits</key>",
@@ -1046,6 +1047,33 @@ func TestGeneratePlist(t *testing.T) {
 		if !strings.Contains(plist, check) {
 			t.Errorf("plist missing %q", check)
 		}
+	}
+}
+
+// TestGeneratedPlistProcessTypeIsInteractive pins the launchd resource class.
+// An absent ProcessType is not neutral — launchd applies "light resource
+// limits [...] throttling its CPU usage and I/O bandwidth" (launchd.plist(5)),
+// which measurably scheduled bossd below the agent CLIs it supervises and
+// starved startup past LifecycleStartupTimeout on a loaded host. Background and
+// Standard reintroduce that throttle, and Adaptive degrades to Background for a
+// daemon that never opens XPC transactions, so only Interactive holds the
+// property this pins.
+func TestGeneratedPlistProcessTypeIsInteractive(t *testing.T) {
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+
+	marker := "<key>ProcessType</key>"
+	idx := strings.Index(plist, marker)
+	if idx < 0 {
+		t.Fatalf("plist has no ProcessType key; launchd would throttle bossd's CPU and I/O")
+	}
+
+	rest := strings.TrimSpace(plist[idx+len(marker):])
+	const want = "<string>Interactive</string>"
+	if !strings.HasPrefix(rest, want) {
+		t.Fatalf("ProcessType = %q, want %q so launchd does not throttle the daemon the CLI blocks on", rest[:min(len(rest), 40)], want)
 	}
 }
 

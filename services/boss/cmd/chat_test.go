@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/chatdelivery"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type chatTargetClient struct {
@@ -479,7 +480,7 @@ func TestChatWaitTickUsesScopedStatusAndBaseline(t *testing.T) {
 		cmd := &cobra.Command{}
 		var out bytes.Buffer
 		cmd.SetOut(&out)
-		if err := chatWaitTimeout(cmd, c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", "agent-123", 5*time.Second); err != nil {
+		if err := chatWaitTimeout(cmd, c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", "agent-123", 5*time.Second, false); err != nil {
 			t.Fatalf("chatWaitTimeout: %v", err)
 		}
 		if strings.TrimSpace(out.String()) != "old" {
@@ -494,7 +495,7 @@ func TestChatWaitTickUsesScopedStatusAndBaseline(t *testing.T) {
 		cmd := &cobra.Command{}
 		var out bytes.Buffer
 		cmd.SetOut(&out)
-		err := chatWaitTimeout(cmd, c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", "agent-123", 5*time.Second)
+		err := chatWaitTimeout(cmd, c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", "agent-123", 5*time.Second, false)
 		if err == nil || !strings.Contains(err.Error(), "timed out") {
 			t.Fatalf("error = %v, want timed out", err)
 		}
@@ -807,5 +808,75 @@ func TestReportChatSendOutcomeRecognisesTheQueuedGuidance(t *testing.T) {
 	}
 	if n := strings.Count(got, chatdelivery.QueuedGuidance); n != 1 {
 		t.Fatalf("output %q states the guidance %d times, want exactly 1", got, n)
+	}
+}
+
+func TestChatWaitLivenessNote(t *testing.T) {
+	seeded := timestamppb.New(time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC))
+	cases := []struct {
+		name  string
+		entry *pb.ChatStatusEntry
+		want  string
+	}{
+		{
+			// Nothing known must produce no clause at all, so a caller never
+			// appends an empty one to the timeout sentence.
+			name:  "no status read",
+			entry: nil,
+			want:  "",
+		},
+		{
+			name: "spinning but never observed",
+			entry: &pb.ChatStatusEntry{
+				SpinnerPresent: true, LastOutputSeeded: true, LastOutputAt: seeded,
+			},
+			want: "a live spinner is present and no substantive output has been observed yet (the timestamps are still the daemon's seed)",
+		},
+		{
+			name: "spinning with a real substantive timestamp",
+			entry: &pb.ChatStatusEntry{
+				SpinnerPresent: true, LastSubstantiveOutputAt: seeded,
+			},
+			want: "a live spinner is present and the last substantive output was at 2026-05-06T07:08:09Z",
+		},
+		{
+			name:  "no spinner and no substantive timestamp",
+			entry: &pb.ChatStatusEntry{},
+			want:  "no spinner is present and no substantive-output timestamp is recorded",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chatWaitLivenessNote(tc.entry); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewChatWaitJSONMarksUnknownLiveness(t *testing.T) {
+	// A nil entry must not read as a positive claim. Without `known` the zero
+	// values would say "no spinner, never seeded" about a chat nothing is known
+	// about — the same fabricated-observation failure the seed flag exists for.
+	env := newChatWaitJSON("agent-1", nil, 90*time.Second, true, "")
+	if env.Liveness.Known {
+		t.Error("liveness.known = true for a chat with no status entry")
+	}
+	if env.Timeout != "1m30s" {
+		t.Errorf("timeout = %q, want 1m30s", env.Timeout)
+	}
+	if !env.TimedOut {
+		t.Error("timed_out = false")
+	}
+
+	known := newChatWaitJSON("agent-1", &pb.ChatStatusEntry{
+		Status:         pb.ChatStatus_CHAT_STATUS_WORKING,
+		SpinnerPresent: true,
+	}, time.Minute, true, "")
+	if !known.Liveness.Known {
+		t.Error("liveness.known = false for a chat with a status entry")
+	}
+	if known.Liveness.Status != "WORKING" {
+		t.Errorf("liveness.status = %q, want WORKING", known.Liveness.Status)
 	}
 }

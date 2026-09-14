@@ -686,6 +686,7 @@ func TestRunnerSessionIDFromOutputReturnsWhenIDArrives(t *testing.T) {
 	if sid != "fast-1234" {
 		t.Fatalf("Start returned sid=%q, want fast-1234", sid)
 	}
+	// timing-bound: bounds subprocess spawn plus the first-line read of the session id printed by that subprocess. The read half IS budgeted — runner.go's earlyOutputTimeout (5s) times exactly this wait — but that constant is unexported and this file is the external test package agentruntime_test, so the identifier is not in scope here; the spawn half has no budget at all.
 	if elapsed > 6*time.Second {
 		t.Fatalf("Start took %s after session ID output; want under 6s", elapsed)
 	}

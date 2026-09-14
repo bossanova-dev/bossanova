@@ -471,8 +471,33 @@ export function formatDriftNote(report) {
   return `Base drift: ${moved} and overlaps this branch on: ${shared}.${attributionClause(report)} Textual mergeability is UNEVALUATED (${report.notes.join('; ') || 'reason unrecorded'}) — assume the overlap is unreviewed.`
 }
 
+// The subcommand + flag surface. `--help` used to be rejected by the flag loop below
+// as an unknown argument, with no usage printed at all — the listless path. The
+// pre-scan ahead of the loop is the shape scripts/proof.mjs already uses.
+export const BASE_DRIFT_USAGE = `usage: node base-drift.mjs check --base <ref> [--head <ref>] [--repo <dir>] [--fetch-failed]
+
+subcommands:
+  check --base <ref>
+      Report whether the base branch moved under this branch and whether the
+      overlap is textually clean, conflicting, or unevaluated. Writes the human
+      note to stderr and the full JSON report to stdout.
+      --head <ref>      grade this ref instead of HEAD
+      --repo <dir>      run against this checkout instead of the cwd
+      --fetch-failed    the base ref could not be refreshed; grade it as stale
+
+  --help, -h
+      Print this message and exit 0.
+`
+
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2)
+  // Resolved BEFORE the flag loop: the loop rejects any unrecognised dash-dash token,
+  // so `--help` exited 2 with nothing printed. No flag below takes `--help` or `-h` as
+  // its value (--repo/--base/--head all take refs or paths), so the pre-scan is safe.
+  if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') {
+    process.stdout.write(BASE_DRIFT_USAGE)
+    process.exit(0)
+  }
   const [cmd, ...rest] = argv
   const opts = { repo: process.cwd(), base: '', head: 'HEAD', fetchFailed: false }
   for (let i = 0; i < rest.length; i += 1) {
@@ -489,13 +514,12 @@ if (isMainModule(import.meta.url)) {
       i += 1
     } else {
       process.stderr.write(`base-drift: unknown argument ${flag}\n`)
+      process.stderr.write(BASE_DRIFT_USAGE)
       process.exit(2)
     }
   }
   if (cmd !== 'check') {
-    process.stderr.write(
-      'usage: node base-drift.mjs check --base <ref> [--head <ref>] [--repo <dir>] [--fetch-failed]\n',
-    )
+    process.stderr.write(BASE_DRIFT_USAGE)
     process.exit(2)
   }
   if (!opts.base) {

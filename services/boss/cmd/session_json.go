@@ -47,6 +47,16 @@ type sessionJSON struct {
 	TrackerID *string `json:"tracker_id"`
 	// LastAgentActivityAt is empty when no agent output/activity has been
 	// observed, matching the absent timestamp rendering used by CreatedAt.
+	//
+	// It is a FLOOR, not liveness. Any pane change advances it — a spinner
+	// redraw keeps it fresh — and every session working at the moment of the
+	// fetch reports it to the nanosecond, so one sample cannot tell a live
+	// session from a frozen snapshot and two sessions sharing a value is not a
+	// collision. There is deliberately no session-level discriminator here:
+	// the fields that DO discriminate are per-chat, and a caller that needs
+	// them reads `boss chats --json` (spinner_present,
+	// last_substantive_output_at, last_output_seeded) — the same three the MCP
+	// get_chat_statuses tool description names.
 	LastAgentActivityAt string `json:"last_agent_activity_at"`
 }
 

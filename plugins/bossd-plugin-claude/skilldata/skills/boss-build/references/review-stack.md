@@ -65,17 +65,23 @@ re-affirm the same line as your **last action**:
 SENTINEL="$RUN_SENTINEL"
 CAPS="$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs"
 node "$SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$CAPS" sentinel clean)" \
-  "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"   # clean; or: sentinel capped <N>
+  "$(node "$CAPS" verdict --in "$REPORT_JSON")" \
+  "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"   # derived; or: sentinel capped <N>
 ```
 
 Two generated arguments, neither hand-written.
 
-- **`bs-review-caps.mjs sentinel clean` / `sentinel capped <N>` generates the verdict line.**
-  Never hand-write a sentinel literal: `matchSentinel` classifies that line, so its bytes are never
-  interpolated. A capped line is matchable only with the helper's full `after <N> rounds.` tail; an
-  improvised one is **present but unmatchable** -> `dispatch-failure`. `<N>` is a **positive**
-  integer — the helper exits non-zero on `0`.
+- **`bs-review-caps.mjs verdict --in "$REPORT_JSON"` DERIVES the verdict line; `sentinel capped <N>`
+  generates a capped one where no report exists.** The clean line is a function of report evidence
+  and of nothing else: `verdict` emits it only when the report carries zero open must-fix **and**
+  zero unrepaired `invalid` entries, and emits the capped line otherwise. There is no verb that
+  prints a clean line from no report — `sentinel clean` now requires `--in <report.json>` and exits
+  non-zero both when evidence is absent and when the evidence it is given refuses clean, so a pass
+  cannot assert a verdict its own report contradicts. Never hand-write a sentinel literal either:
+  `matchSentinel` classifies that line, so its bytes are never interpolated. A capped line is
+  matchable only with the helper's full `after <N> rounds.` tail; an improvised one is **present but
+  unmatchable** -> `dispatch-failure`. `<N>` is a **positive** integer — the helper exits non-zero
+  on `0`.
 - **`bs-review-caps.mjs sentinel-payload "${STEP_6C_FUNDING_REASON:-}"` generates the payload.**
   It prints `'{"provisional":false}'` for a step that was priced and funded, and
   `'{"provisional":false,"funding":{"reason":"funding-starved"}}'` for one whose funding call priced
@@ -107,12 +113,16 @@ was really done, and forces the run to publish `coverage unknown` over a review 
 something. Write at each point below, then re-affirm at the end. Rewriting is always safe: the
 writer replaces the run file wholesale rather than appending or refusing a second write.
 
-- **The review pass reported clean** — `boss-review`'s Phase 7 report carries zero open must-fix,
-  and the conditional API-surface check has also run → write `sentinel clean` **there**, the moment
-  that report is in hand, not after composing the return.
-- **The review pass capped** — `boss-review`'s Phase 6 fix loop ended with open must-fix, its
-  oscillation guard tripped, its round cap was reached, or a leg budget went non-positive → write
-  `sentinel capped <N>` **there**, `<N>` = the rounds reached.
+- **The review pass reported clean** — `boss-review`'s Phase 7 report carries zero open must-fix
+  **and** zero unrepaired `invalid` entries, and the conditional API-surface check has also run →
+  write `verdict --in "$REPORT_JSON"` **there**, the moment that report is in hand, not after
+  composing the return. Both blockers, never the must-fix half alone: a run caps with zero open
+  must-fix whenever unrepaired `invalid` evidence is all that is left, which is exactly the two-part
+  condition `boss-review`'s own Phase 5 states. You do not pick the line — the report does.
+- **The review pass capped** — `boss-review`'s Phase 6 fix loop ended with open must-fix or
+  unrepaired `invalid` evidence, its oscillation guard tripped, its round cap was reached, or a leg
+  budget went non-positive → write `verdict --in "$REPORT_JSON"` **there** too; the same call emits
+  the capped line, `<N>` = the report's own round count.
 - **The pass did not report at all** — it errored, timed out, or returned nothing structured → write
   `sentinel capped 1`. An empty result is **not** a reviewer that found nothing.
 
@@ -1205,8 +1215,11 @@ else
   # Re-derive the tag outcome AFTER the loop, never from the pre-push scan. The reconcile above
   # rebases, and rebase skips commits by PATCH id, which ignores the message entirely: a tagged copy
   # of a commit origin still holds untagged is dropped as a duplicate and the tag goes with it. So
-  # read the branch as it now stands, with the predicate the injector itself verifies — a SUBJECT
-  # carrying the tag — over the same range the injector walked. Unverifiable is `partial`, never
+  # read the branch as it now stands, over the same range the injector walked, and grade it with the
+  # injector's OWN predicate: `commit-work-predicate.mjs untagged-work`. Grading every subject
+  # instead asked a STRONGER question than the injector answers — it skips a known-empty commit
+  # before any amend by design, so the daemon's empty bootstrap placeholder survives untagged inside
+  # the range and this block called a fully tagged branch `partial`. Unverifiable is `partial`, never
   # `all`: this block may not publish a tag state it did not observe. Read what the push published,
   # so check FIRST that `HEAD` is still the branch: a failed re-attach above leaves a detached,
   # partly-tagged `HEAD` while the branch — the ref the loop pushes — still points at the untagged
@@ -1215,10 +1228,51 @@ else
   # pipeline's status is `grep`'s, and an unreadable range prints nothing, which `grep -qv` reports
   # exactly as a fully tagged one.
   if [ "$TAG_INJECTED" = yes ]; then
+    # Re-derive `BOSS_BUILD_TOOLBOX` the way every other block here does: shell state survives
+    # neither between Bash calls nor into a dispatched subagent.
+    if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
+      for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+        if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
+      done
+    fi
+    export BOSS_BUILD_TOOLBOX
     # `|| TAG_RANGE_BASE=` for the same reason as the PR lookup: a bare capture would abort under
     # `set -e` before reaching the `[ -z … ]` arm that exists precisely to handle it, turning the
     # intended `partial`/unverifiable outcome into an aborted publication.
     TAG_RANGE_BASE=$(git merge-base HEAD "origin/$TAG_BASE" 2>/dev/null) || TAG_RANGE_BASE=
+    # Grade the range with the injector's OWN predicate, BEFORE the chain below, so each arm
+    # reads a settled answer. `TAG_GRADE_OK` is kept apart from `TAG_UNTAGGED` for the same
+    # reason the `ls-remote` read keeps its status apart from its answer: the grader printing
+    # nothing means "every work commit carries the tag", and the grader FAILING also prints
+    # nothing — one variable could not tell those apart, and the failure would publish `all`.
+    TAG_GRADE_OK=no
+    TAG_UNTAGGED=
+    TAG_UNTAGGED_SUBJECTS=
+    if [ -n "$TAG_RANGE_BASE" ] && [ -n "${BOSS_BUILD_TOOLBOX:-}" ]; then
+      # Emptiness is a TREE comparison, so the empty-tree oid comes from git rather than being
+      # hard-coded — it depends on the repository's hash algorithm.
+      TAG_EMPTY_TREE=$(git hash-object -t tree /dev/null 2>/dev/null) || TAG_EMPTY_TREE=
+      # The capture sits DIRECTLY after `elif`, in a CONDITION, which errexit exempts: a failing
+      # grader lands on the `else` arm instead of aborting the block before the push. The
+      # empty-tree guard is its own arm so the capture stays in condition position.
+      if [ -z "$TAG_EMPTY_TREE" ]; then
+        TAG_UNTAGGED=
+      elif TAG_UNTAGGED=$(
+        {
+          # One extra row BELOW the range: the oldest commit needs a parent tree, and the
+          # module never grades a row carrying no subject.
+          git show -s --format='%H%x09%T%x09%P' "$TAG_RANGE_BASE"
+          git log --format='%H%x09%T%x09%P%x09%s' "$TAG_RANGE_BASE..HEAD"
+        } 2>/dev/null | node "$BOSS_BUILD_TOOLBOX/commit-work-predicate.mjs" untagged-work \
+          --empty-tree "$TAG_EMPTY_TREE" --tag "[#$PR_NUMBER]"
+      ); then
+        TAG_GRADE_OK=yes
+        # Name the commits, not just the fact: the grader prints "<sha><TAB><subject>" per line.
+        TAG_UNTAGGED_SUBJECTS=$(printf '%s' "$TAG_UNTAGGED" | cut -f2 | tr '\n' ';') || TAG_UNTAGGED_SUBJECTS=
+      else
+        TAG_UNTAGGED=
+      fi
+    fi
     if [ "$(git rev-parse HEAD 2>/dev/null)" != "$(git rev-parse "refs/heads/$SESSION_BRANCH" 2>/dev/null)" ]; then
       TAGGED=partial
       TAG_NOTE="tag state unverifiable: HEAD is not on $SESSION_BRANCH"
@@ -1228,9 +1282,14 @@ else
     elif ! TAG_SUBJECTS=$(git log --format=%s "$TAG_RANGE_BASE..HEAD" 2>/dev/null); then
       TAGGED=partial
       TAG_NOTE="tag state unverifiable: the branch range would not resolve"
-    elif [ -n "$TAG_SUBJECTS" ] && printf '%s\n' "$TAG_SUBJECTS" | grep -qvF "[#$PR_NUMBER]"; then
+    elif [ -n "$TAG_SUBJECTS" ] && [ "$TAG_GRADE_OK" != yes ]; then
+      # The grader itself failed. Unverifiable is `partial` here for the same reason it is
+      # everywhere else on this route — never `all`.
       TAGGED=partial
-      TAG_NOTE="commits on this branch still carry no [#$PR_NUMBER]"
+      TAG_NOTE="tag state unverifiable: the tag predicate would not run"
+    elif [ -n "$TAG_SUBJECTS" ] && [ -n "$TAG_UNTAGGED" ]; then
+      TAGGED=partial
+      TAG_NOTE="work commits on this branch still carry no [#$PR_NUMBER]: $TAG_UNTAGGED_SUBJECTS"
     elif [ -z "$TAG_SUBJECTS" ]; then
       # An empty range satisfies "every commit carries the tag" VACUOUSLY, and that is the outcome
       # the reconcile above produces when it drops this run's tagged copies as patch-identical —

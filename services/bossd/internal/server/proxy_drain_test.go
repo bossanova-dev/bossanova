@@ -410,7 +410,8 @@ func TestProxyShutdown_IdleReturnsImmediately(t *testing.T) {
 	upstream := newHeldStreamUpstream(t)
 	ps, _, _ := startDrainProxy(t, upstream.srv.URL)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	const drainBudget = 120 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), drainBudget)
 	defer cancel()
 	started := time.Now()
 	outcome, err := ps.Shutdown(ctx)
@@ -427,7 +428,8 @@ func TestProxyShutdown_IdleReturnsImmediately(t *testing.T) {
 	if outcome.StopReason != DrainStopNone {
 		t.Errorf("outcome.StopReason = %q, want %q when idle", outcome.StopReason, DrainStopNone)
 	}
-	if elapsed > 2*time.Second {
+	// A sixtieth of the drain budget: paying that budget out is exactly the failure this pins.
+	if elapsed > drainBudget/60 {
 		t.Errorf("idle Shutdown took %v, want it to return promptly rather than wait out the budget", elapsed)
 	}
 }

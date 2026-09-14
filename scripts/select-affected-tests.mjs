@@ -364,7 +364,7 @@ export function selectTargets(files) {
     }
 
     if (
-      PATH_FILTERED_WORKFLOW_INPUTS.has(file) ||
+      file.startsWith(WORKFLOW_INPUT_ROOT) ||
       file === 'README.md' ||
       file === 'buf.yaml' ||
       file === 'buf.gen.yaml' ||
@@ -568,6 +568,27 @@ export function selectTargets(files) {
       selectedPrimaryTarget = true
     }
 
+    // scripts/go-pin-drift.test.mjs pins the release images' Go version to the workspace
+    // `go` directive, so both sides of that comparison are script-gate inputs. Neither is
+    // reached by anything else here: go.work is a bazel graph-wide trigger (it forces a
+    // FULL Go run) but selects no script target, and services/*/Dockerfile.k8s is built
+    // only by the staging and production release workflows, so no module rule claims it.
+    // Without this rule a workspace Go bump runs green locally and on every PR, and fails
+    // at release time -- the 1.25 -> 1.26 drift this gate was written for. No `continue`:
+    // go.work must still reach its graph-wide Go selection.
+    if (file === 'go.work' || /^services\/[^/]+\/Dockerfile\.k8s$/.test(file)) {
+      selectWholeTarget(selections, 'test-scripts')
+      // go.work matched no rule before this one, so it fell through to the empty-selection
+      // test-smoke fallback. Keep that explicitly rather than letting the new script-gate
+      // selection suppress it: this rule is here to ADD the drift gate, not to narrow what
+      // a workspace edit runs. A Dockerfile needs no such line -- its module rule below
+      // already claims it, so it was never on the fallback path.
+      if (file === 'go.work') {
+        selectWholeTarget(selections, 'test-smoke')
+      }
+      selectedPrimaryTarget = true
+    }
+
     const moduleRule = moduleRules.find(({ root }) => file.startsWith(root))
     if (moduleRule) {
       selectModuleTarget(selections, moduleRule, file)
@@ -662,15 +683,12 @@ const PRETTIER_PIN_INPUTS = new Set([
   'services/docs/pnpm-lock.yaml',
 ])
 
-const PATH_FILTERED_WORKFLOW_INPUTS = new Set([
-  '.github/workflows/test-bosso-production-deployment.yml',
-  '.github/workflows/test-docs.yml',
-  '.github/workflows/test-marketing.yml',
-  '.github/workflows/test-plugin-distribution.yml',
-  '.github/workflows/test-proto.yml',
-  '.github/workflows/test-scripts.yml',
-  '.github/workflows/test-web.yml',
-])
+// Every workflow file, not the seven path-filtered ones it used to name (BOS-1242).
+// scripts/check-vacuous-job-gates.mjs scans the whole .github/workflows directory, and
+// test-scripts.yml's on.push.paths was widened to match; a narrower local rule would leave the
+// affected loop unable to run the gate on the change class it guards, so an author would first
+// meet it after pushing.
+const WORKFLOW_INPUT_ROOT = '.github/workflows/'
 
 function isManifestPath(file) {
   return (

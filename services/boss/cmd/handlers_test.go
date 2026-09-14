@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -2750,5 +2751,137 @@ func TestStopAndRestartAgreeOnTheServingMode(t *testing.T) {
 					gotStandalone, restartTakesStandalonePath(st), mode)
 			}
 		})
+	}
+}
+
+// TestNewMergeJSONFallsBackWhenReReadFails covers the one path the end-to-end
+// merge assertions cannot reach: the post-merge re-read failed, so state falls
+// back to the merge response's possibly-lagging value. Without state_settled
+// that fallback would silently reintroduce the pre-merge state the re-read
+// exists to remove.
+func TestNewMergeJSONFallsBackWhenReReadFails(t *testing.T) {
+	response := &pb.Session{
+		Id:    "sess-1",
+		Title: "add dark mode",
+		State: pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+	}
+
+	env := newMergeJSON(response, nil, "")
+	if env.Session.State != "SESSION_STATE_READY_FOR_REVIEW" {
+		t.Errorf("state = %q, want the merge response's value as the fallback", env.Session.State)
+	}
+	if env.Session.StateSettled {
+		t.Error("state_settled = true after a failed re-read")
+	}
+
+	settled := &pb.Session{
+		Id:    "sess-1",
+		Title: "add dark mode",
+		State: pb.SessionState_SESSION_STATE_MERGED,
+	}
+	env = newMergeJSON(response, settled, "")
+	if env.Session.State != "SESSION_STATE_MERGED" {
+		t.Errorf("state = %q, want the settled value", env.Session.State)
+	}
+	if !env.Session.StateSettled {
+		t.Error("state_settled = false after a successful re-read")
+	}
+	// Identity still comes from the merge response.
+	if env.Session.ID != "sess-1" || env.Session.Title != "add dark mode" {
+		t.Errorf("identity drifted: %+v", env.Session)
+	}
+}
+
+// TestDaemonRestartEnvelope pins the `boss daemon restart --json` schema and
+// its outcome vocabulary. Driven through emitDaemonRestart rather than end to
+// end, because the surrounding handler stops and starts real daemons on the
+// host; the parts under test here are the envelope and the code selection.
+func TestDaemonRestartEnvelope(t *testing.T) {
+	run := func(asJSON bool, outcome string, supervised bool, message string) (string, error) {
+		cmd := &cobra.Command{Use: "restart"}
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		err := emitDaemonRestart(cmd, asJSON, outcome, supervised, "/tmp/bossd.sock", message)
+		return out.String(), err
+	}
+
+	stdout, err := run(true, outcomeDaemonRestartedUnsupervised, false, "Daemon restarted by starting bossd directly: …")
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	var env struct {
+		Daemon struct {
+			Outcome    string `json:"outcome"`
+			Supervised bool   `json:"supervised"`
+			SocketPath string `json:"socket_path"`
+			Message    string `json:"message"`
+		} `json:"daemon"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v (stdout=%q)", err, stdout)
+	}
+	if env.Daemon.Outcome != "RESTARTED_UNSUPERVISED" {
+		t.Errorf("outcome = %q, want RESTARTED_UNSUPERVISED", env.Daemon.Outcome)
+	}
+	if env.Daemon.Supervised {
+		t.Error("supervised = true on the degraded fallback")
+	}
+	if env.Daemon.SocketPath != "/tmp/bossd.sock" {
+		t.Errorf("socket_path = %q", env.Daemon.SocketPath)
+	}
+	if env.Daemon.Message == "" {
+		t.Error("message should carry the same sentence the human path prints")
+	}
+
+	// Without --json the output is byte-identical to what it printed before the
+	// flag existed — the human line goes to stdout via fmt.Println, so the
+	// command's own buffer stays empty.
+	humanStdout, err := run(false, outcomeDaemonRestarted, true, "Daemon restarted.")
+	if err != nil {
+		t.Fatalf("emit human: %v", err)
+	}
+	if humanStdout != "" {
+		t.Errorf("the human path must not write the envelope, got %q", humanStdout)
+	}
+}
+
+// TestRestartFallbackOutcomeIsProbedNotAssumed pins that the announced fallback
+// does not automatically mean supervision was lost: the follow-up start can
+// land under the service manager after all, and reporting that as a loss would
+// be as wrong as reporting a real loss as an ordinary restart.
+func TestRestartFallbackOutcomeIsProbedNotAssumed(t *testing.T) {
+	if got := restartFallbackOutcome(false); got != outcomeDaemonRestartedUnsupervised {
+		t.Errorf("unsupervised fallback = %q, want %q", got, outcomeDaemonRestartedUnsupervised)
+	}
+	if got := restartFallbackOutcome(true); got != outcomeDaemonRestartedAfterFallback {
+		t.Errorf("supervised fallback = %q, want %q", got, outcomeDaemonRestartedAfterFallback)
+	}
+	// The four success outcomes are distinct, or a driver cannot branch on them.
+	seen := map[string]bool{}
+	for _, o := range []string{
+		outcomeDaemonRestarted, outcomeDaemonRestartedStandalone,
+		outcomeDaemonStartedStandalone, outcomeDaemonRestartedUnsupervised,
+		outcomeDaemonRestartedAfterFallback,
+	} {
+		if seen[o] {
+			t.Errorf("duplicate restart outcome code %q", o)
+		}
+		seen[o] = true
+	}
+}
+
+// TestDaemonRestartRegistersJSONFlag proves the flag reached the real command
+// tree, so the envelope is reachable rather than merely implemented.
+func TestDaemonRestartRegistersJSONFlag(t *testing.T) {
+	root := rootCmd()
+	restart, _, err := root.Find([]string{"daemon", "restart"})
+	if err != nil {
+		t.Fatalf("find daemon restart: %v", err)
+	}
+	if restart.Name() != "restart" {
+		t.Fatalf("resolved %q, not the restart command", restart.Name())
+	}
+	if restart.Flags().Lookup(jsonFlagName) == nil {
+		t.Error("boss daemon restart registers no --json flag")
 	}
 }

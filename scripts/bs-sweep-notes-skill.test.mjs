@@ -117,6 +117,39 @@ test('weekly cron registration records the no-gate cadence branch and names the 
   }
 })
 
+// The theme partition is authored fresh per run, so a reviewed dry run is not the filed shape.
+// The body used to invite a review-then-schedule workflow, which reads as a promise the machinery
+// cannot keep. Pin the structural lead of the replacement rule and the absence of the prerequisite
+// framing, not the sentences that explain either.
+test('a dry run is documented as previewing shape and volume only, never the filed themes', () => {
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    assert.match(
+      skill,
+      /\*\*Dry-run\s+fidelity[^*]*\*\*/,
+      `${label} must carry the dry-run fidelity rule under its own bolded lead`,
+    )
+    assert.match(skill, /shape\s+and\s+volume/i, `${label} must state what a dry run does preview`)
+    assert.match(
+      skill,
+      /\*\*never\*\*[^.]{0,16}specific\s+themes/i,
+      `${label} must state that the specific themes are not previewed`,
+    )
+    assert.match(
+      skill,
+      /\*\*not\*\*\s+a\s+prerequisite/i,
+      `${label} must drop the dry run as a prerequisite for the scheduled write run`,
+    )
+    assert.doesNotMatch(
+      skill,
+      /before\s+the\s*\n?\s*first\s+scheduled\s+write\s+run/i,
+      `${label} must not keep the review-then-schedule framing`,
+    )
+  }
+})
+
 test('production triage pins Linear injection and the full gate pipeline', () => {
   assert.ok(SKILL.includes('const { linearRequest } = await import(process.env.LIB)'))
   assert.ok(SKILL.includes('fetchMarkedLinearIssues({'))
@@ -466,5 +499,50 @@ test('live gate falls back to PATH when BOSS_BIN names a deleted worktree', () =
     assert.equal(result.status, 0, result.stderr)
   } finally {
     rmSync(pathDir, { recursive: true, force: true })
+  }
+})
+
+test('BOS-1245: Phase 3 pins the measured size rule and routes evidence through the defang helper', () => {
+  // Behaviour-shaped pins -- a rule name and a structural lead, not a transcribed sentence. Both
+  // are rules whose absence let an upload report a value its artifact never carried.
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    const flat = skill.replace(/\s+/g, ' ')
+    assert.match(
+      flat,
+      /a\s+\*\*BYTE\*\*\s+count\s+measured\s+on\s+the\s+exact\s+file\s+about\s+to\s+be\s+PUT[\s\S]{0,80}`wc\s+-c\s+[\s\S]{0,200}Never\s+a\s+character\s+count,\s+and\s+never\s+a\s+count\s+taken\s+from\s+the\s+buffer/,
+      `${label}: the attach step must name the measuring command AND forbid both wrong size sources`,
+    )
+    assert.match(
+      flat,
+      /`sanitizeEvidenceText\(value\)`/,
+      `${label}: evidence rendering must call the defang helper rather than restate a prose rule`,
+    )
+    assert.match(
+      flat,
+      /defangs\s+image\s+markdown[\s\S]{0,220}Non-image\s+markdown\s+is\s+left\s+intact/,
+      `${label}: the defang rule must say what it leaves alone`,
+    )
+  }
+})
+
+test('BOS-1245: Phase 4 cites the command that discharges the deletion precondition', () => {
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    const flat = skill.replace(/\s+/g, ' ')
+    assert.match(
+      flat,
+      /node "\$GATE" attachments "\$ATTACH_JSON"/,
+      `${label}: Phase 4 must name the gate subcommand, not leave the re-read to an improvised query`,
+    )
+    assert.match(
+      flat,
+      /Only\s+`present`\s+ids\s+may\s+enter\s+the\s+deletion\s+set/,
+      `${label}: Phase 4 must bind the deletion set to the command's own verdict`,
+    )
   }
 })

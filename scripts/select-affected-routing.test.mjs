@@ -5,6 +5,14 @@
 // CI workflows and scripts/select-affected-tests.mjs are separate routing tables.
 // Keep every intentional divergence in workflowRouteExemptions with a reason, and
 // fail when a workflow adds a path class that neither routes locally nor is exempt.
+//
+// BOS-1242 removed a second test here, which asserted that test-scripts.yml's on.push.paths list
+// was byte-identical to the dorny/paths-filter list duplicated inside its `check` job. That job
+// published a step's completion status as a job output, so every consumer condition reading it was
+// a tautology and the inner filter was never read. Deleting the dead job deleted the duplicate
+// list, so the drift the test guarded no longer has two copies to drift between; the on.push.paths
+// list below is now the single route table, and scripts/check-vacuous-job-gates.mjs is the ratchet
+// that stops the dead-output shape coming back.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -106,19 +114,18 @@ export const workflowRouteExemptions = [
     pattern: '**/*_test.go',
     reason: 'CI is deliberately broad; local mirroring would run scripts on every Go test edit',
   },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: '**/*.test.mjs',
+    reason:
+      'scripts/check-timing-bounds.mjs scans this corpus repo-wide, so CI is deliberately broad ' +
+      '(BOS-1252); scripts/** and skills-toolbox/** already route to test-scripts locally, and ' +
+      'mirroring the rest would run the scripts suite on every docs and marketing test edit',
+  },
 ]
 
 test('workflow route rules cover every path-filtered workflow', () => {
   assert.deepEqual(pathFilteredWorkflows(), workflowRouteRules.map((rule) => rule.workflow).sort())
-})
-
-test('test-scripts push paths and paths-filter scripts list stay byte-identical', () => {
-  const workflow = readWorkflow('test-scripts.yml')
-  assert.deepEqual(
-    extractPushPaths(workflow),
-    extractPathsFilterList(workflow, 'scripts'),
-    'test-scripts.yml duplicates its route list; edit both copies together',
-  )
 })
 
 test('workflow path filters either route to the local target or carry a reasoned exemption', () => {
@@ -323,13 +330,6 @@ export function extractPushPaths(text, { required = true } = {}) {
   if (pathsLine === -1 && !required) return []
   assert.notEqual(pathsLine, -1, 'workflow push.paths block not found')
   return extractDashList(lines, pathsLine)
-}
-
-function extractPathsFilterList(text, filterName) {
-  const lines = text.split('\n')
-  const filterLine = lines.findIndex((line) => new RegExp(`^\\s{12}${filterName}:\\s*$`).test(line))
-  assert.notEqual(filterLine, -1, `${filterName} paths-filter block not found`)
-  return extractDashList(lines, filterLine)
 }
 
 function extractDashList(lines, headingLine) {

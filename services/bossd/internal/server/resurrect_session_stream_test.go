@@ -539,9 +539,10 @@ func TestResurrectSessionIsStillBounded(t *testing.T) {
 			}
 		},
 	}
+	const callerDeadline = 30 * time.Second
 	h := newResurrectStreamHarnessWithBootstrapTimeout(t, wt, &script, 400*time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
 
 	started := time.Now()
@@ -551,7 +552,9 @@ func TestResurrectSessionIsStillBounded(t *testing.T) {
 	if out.err == nil {
 		t.Fatal("a resurrect that never finishes must be ended by its own bound")
 	}
-	if elapsed > 10*time.Second {
+	// A third of the caller's deadline: a resurrect the bootstrap bound never ended would run
+	// until that deadline, so the bound stays well below it.
+	if elapsed > callerDeadline/3 {
 		t.Fatalf("resurrect ran %v before failing; the bootstrap bound is not being applied", elapsed)
 	}
 	if out.session != nil {

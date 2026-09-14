@@ -369,3 +369,33 @@ test('legacy CLI verdict exits 1 when required flags are missing', () => {
   assert.equal(result.stdout, '')
   assert.match(result.stderr, /--me <token> is required/)
 })
+
+// ---------------------------------------------------------------------------
+// Shape acceptance (BOS-1244 row 12)
+// ---------------------------------------------------------------------------
+
+test('parseClaimComments accepts the tracker {comments:[…]} envelope as well as a bare array', () => {
+  const list = [
+    { body: `🔒 bs-implement-claim:${'a'.repeat(32)}`, createdAt: '2026-01-01T00:00:00.000Z' },
+  ]
+  assert.deepEqual(parseClaimComments({ comments: list }), parseClaimComments(list))
+  assert.equal(parseClaimComments({ comments: list }).length, 1)
+  // Nullish stays "no comments": an empty claim set is a real answer, not a fault.
+  assert.deepEqual(parseClaimComments(undefined), [])
+  assert.deepEqual(parseClaimComments(null), [])
+})
+
+test('parseClaimComments raises a shape-named error for anything else', () => {
+  for (const bad of ['a string', 42, { nodes: [] }, {}, true]) {
+    assert.throws(
+      () => parseClaimComments(bad),
+      (error) => {
+        assert.match(error.message, /parseClaimComments\(comments\)/, 'names the function')
+        assert.match(error.message, /\{comments:\[…\]\} envelope/, 'and both accepted shapes')
+        assert.doesNotMatch(error.message, /is not iterable/, 'never the raw iteration TypeError')
+        return true
+      },
+      `${JSON.stringify(bad)} must raise`,
+    )
+  }
+})

@@ -243,7 +243,13 @@ test('size ratchet', () => {
   // of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket
   // (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would give
   // without equalising it.
-  const RATCHET = 66872 // measured resident body at migration, 2026-09-08
+  // Raised 66872 -> 66945 (+73 B) for the `boss cron` wait-mechanism prohibition. The growth is
+  // BEHAVIOURAL, not explanatory: a driver choosing how to wait was registering recurring cron
+  // jobs to watch its own children, and a prohibition it must open a reference to discover is a
+  // prohibition it does not have when it decides. Only the rail itself is resident — the failure
+  // mode, the replacement mechanisms and the setup-time caveats all live in the unratcheted
+  // references/callback-watches.md.
+  const RATCHET = 66945 // measured resident body, 2026-09-14
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
 
@@ -269,6 +275,11 @@ test('size ratchet', () => {
       // stale sentence parked here would satisfy the next raise without anybody having
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 66872,
+      justification:
+        'the resident wait paragraph gained the `boss cron` prohibition (+73 B). Agents were ' +
+        'registering recurring cron jobs to monitor in-flight children — each fire a NEW session, ' +
+        'overlapping, outliving the epic. The rail has to be readable at the point the driver ' +
+        'picks a wait mechanism; everything explaining it went to references/callback-watches.md.',
     },
     residual:
       'the references/ files the body routes to, and the plugin mirror — this budget measures ' +
@@ -574,7 +585,7 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup', () => {
     )
     assert.match(
       ref,
-      /if \[ -z "\$CALLBACK_CHAT" \]; then\s+echo "No\s+verified\s+callback\s+target; retain\s+cron\/poll\s+reconciliation\. Continue\s+to\s+Phase\s+3b\s+reconciliation\s+and\s+the\s+bounded\s+poll\/session\s+cron\."/,
+      /if \[ -z "\$CALLBACK_CHAT" \]; then\s+echo "No\s+verified\s+callback\s+target; retain\s+cron\/poll\s+reconciliation\. Continue\s+to\s+Phase\s+3b\s+reconciliation\s+and\s+the\s+bounded\s+poll\/in-session\s+wake-up\."/,
       `${dir} bridge must make the no-target cron/poll fallback explicit`,
     )
     assert.doesNotMatch(
@@ -584,7 +595,7 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup', () => {
     )
     assert.match(
       ref,
-      /No[ ]verified[ ]callback[ ]target; retain[ ]cron\/poll[ ]reconciliation\. Continue[ ]to[ ]Phase[ ]3b[ ]reconciliation[ ]and[ ]the[ ]bounded[ ]poll\/session[ ]cron\./,
+      /No[ ]verified[ ]callback[ ]target; retain[ ]cron\/poll[ ]reconciliation\. Continue[ ]to[ ]Phase[ ]3b[ ]reconciliation[ ]and[ ]the[ ]bounded[ ]poll\/in-session[ ]wake-up\./,
       `${dir} no-target branch must retain mandatory reconciliation and fallback polling`,
     )
 
@@ -1419,12 +1430,20 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe', () => {
       `${dir}/SKILL.md must keep the merge gate authoritative over any wake`,
     )
 
-    // (b) The wait recipe: callbacks primary, session cron fallback, and the
-    // backgrounded-watcher anti-pattern — the failure that stalls silently.
+    // (b) The wait recipe: callbacks primary, an in-session wake-up fallback, and the two
+    // anti-patterns — the backgrounded watcher that stalls silently, and `boss cron`, which
+    // agents kept reaching for to monitor children. A cron fire is a NEW session: fires
+    // overlap, each starts blind, and the schedule outlives the epic. The rail is pinned by
+    // its RULE, not its sentence — the explanation is free to be rewritten.
     assert.match(
       prose,
-      /Callbacks\s+are\s+primary; a \*\*session\s+cron\*\*/,
-      `${dir}/SKILL.md must name callbacks primary with a session cron fallback`,
+      /Callbacks\s+are\s+primary; an \*\*in-session\s+scheduled\s+wake-up\*\*/,
+      `${dir}/SKILL.md must name callbacks primary with an in-session wake-up fallback`,
+    )
+    assert.match(
+      prose,
+      /never\s+`boss\s+cron`/,
+      `${dir}/SKILL.md must forbid boss cron as a wait mechanism`,
     )
     assert.match(
       prose,

@@ -76,6 +76,9 @@ func chatCmd() *cobra.Command {
 		},
 	}
 	wait.Flags().Duration("timeout", 30*time.Minute, "Maximum time to wait (e.g. 5m, 1h)")
+	wait.Flags().Bool(jsonFlagName, false,
+		"Emit the outcome as a stable JSON schema, including the chat's liveness "+
+			"discriminators on a timeout, instead of the plain result text")
 
 	// rename subcommand. MinimumNArgs(2) plus the strings.Join mirrors
 	// `boss rename` (main.go renameCmd) so a multi-word title can be typed
@@ -432,11 +435,12 @@ func runChatWait(cmd *cobra.Command, chatID string) error {
 	}
 
 	timeout, _ := cmd.Flags().GetDuration("timeout")
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	target, err := resolveChatTarget(ctx, c, chatID)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 	baseline := ""
 	if resp, err := c.GetChatTranscript(ctx, &pb.GetChatTranscriptRequest{
@@ -463,18 +467,21 @@ func runChatWait(cmd *cobra.Command, chatID string) error {
 		done, result, err := chatWaitTick(ctx, c, target, baseline, baselineGraceExpired)
 		if err != nil {
 			if ctx.Err() != nil {
-				return chatWaitTimeout(cmd, c, target, baseline, chatID, timeout)
+				return chatWaitTimeout(cmd, c, target, baseline, chatID, timeout, asJSON)
 			}
-			return fmt.Errorf("wait: %w", err)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("wait: %w", err))
 		}
 		if done {
+			if asJSON {
+				return emitJSON(cmd, newChatWaitJSON(target.AgentSessionID, chatWaitLiveness(ctx, c, target), timeout, false, result))
+			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), result)
 			return nil
 		}
 
 		select {
 		case <-ctx.Done():
-			return chatWaitTimeout(cmd, c, target, baseline, chatID, timeout)
+			return chatWaitTimeout(cmd, c, target, baseline, chatID, timeout, asJSON)
 		case <-time.After(pollInterval):
 		}
 	}
@@ -491,13 +498,22 @@ func runChatWait(cmd *cobra.Command, chatID string) error {
 func chatWaitTimeout(cmd *cobra.Command, c interface {
 	GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error)
 	GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
-}, target chatTarget, baseline, chatID string, timeout time.Duration) error {
+}, target chatTarget, baseline, chatID string, timeout time.Duration, asJSON bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if done, result, err := chatWaitTick(ctx, c, target, baseline, true); err == nil && done {
+		if asJSON {
+			return emitJSON(cmd, newChatWaitJSON(target.AgentSessionID, chatWaitLiveness(ctx, c, target), timeout, false, result))
+		}
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), result)
 		return nil
 	}
+	// The three liveness discriminators the daemon already computes are what
+	// separate a pane that is genuinely working from one whose only sign of
+	// life is a spinner redraw. Without them a 30-minute wait ended with a
+	// sentence that said only that it had ended.
+	st := chatWaitLiveness(ctx, c, target)
+	reasons := make([]string, 0, 2)
 	// Surface the daemon's fail-loud reason (e.g. "codex rollout not yet
 	// discovered for this chat") when the last read reported one, so a timeout
 	// explains why the transcript never became readable.
@@ -505,9 +521,123 @@ func chatWaitTimeout(cmd *cobra.Command, c interface {
 		SessionId:      target.SessionID,
 		AgentSessionId: target.AgentSessionID,
 	}); err == nil && !resp.GetExists() && resp.GetReason() != "" {
-		return fmt.Errorf("timed out waiting for chat %s after %s: %s", chatID, timeout, resp.GetReason())
+		reasons = append(reasons, resp.GetReason())
 	}
-	return fmt.Errorf("timed out waiting for chat %s after %s", chatID, timeout)
+	if note := chatWaitLivenessNote(st); note != "" {
+		reasons = append(reasons, note)
+	}
+	err := fmt.Errorf("timed out waiting for chat %s after %s", chatID, timeout)
+	if len(reasons) > 0 {
+		err = fmt.Errorf("timed out waiting for chat %s after %s: %s", chatID, timeout, strings.Join(reasons, "; "))
+	}
+	if asJSON {
+		// The structured envelope is the stable surface; the prose above is
+		// human-only and deliberately free to change.
+		return emitJSONReportedFailure(cmd, newChatWaitJSON(target.AgentSessionID, st, timeout, true, ""), err)
+	}
+	return err
+}
+
+// chatWaitLiveness reads the chat's status entry for its liveness
+// discriminators. Best effort by construction: a daemon too old to serve the
+// call, or a target resolved from a chat id with no session, yields nil, and
+// every consumer treats nil as "nothing is known" rather than as a settled
+// state.
+func chatWaitLiveness(ctx context.Context, c interface {
+	GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error)
+}, target chatTarget) *pb.ChatStatusEntry {
+	if target.SessionID == "" {
+		return nil
+	}
+	statuses, err := c.GetChatStatuses(ctx, target.SessionID)
+	if err != nil {
+		return nil
+	}
+	for _, s := range statuses {
+		if s.GetAgentSessionId() == target.AgentSessionID {
+			return s
+		}
+	}
+	return nil
+}
+
+// chatWaitLivenessNote explains a timeout in terms of the discriminators. It
+// returns "" when nothing is known, so a caller never appends an empty clause.
+func chatWaitLivenessNote(st *pb.ChatStatusEntry) string {
+	if st == nil {
+		return ""
+	}
+	var b strings.Builder
+	if st.GetSpinnerPresent() {
+		b.WriteString("a live spinner is present")
+	} else {
+		b.WriteString("no spinner is present")
+	}
+	switch {
+	case st.GetLastOutputSeeded():
+		// The seed is stamped when the daemon first sees a chat, and every chat
+		// registered in one poll tick shares it — so an unseeded-looking
+		// timestamp here would be a fabricated observation.
+		b.WriteString(" and no substantive output has been observed yet (the timestamps are still the daemon's seed)")
+	case st.GetLastSubstantiveOutputAt() != nil:
+		fmt.Fprintf(&b, " and the last substantive output was at %s", rfc3339OrEmpty(st.GetLastSubstantiveOutputAt()))
+	default:
+		b.WriteString(" and no substantive-output timestamp is recorded")
+	}
+	return b.String()
+}
+
+// chatWaitJSON is the `boss chat wait --json` envelope, emitted on BOTH
+// outcomes. On a timeout it goes to stdout and the command still exits
+// non-zero, so `timed_out` — not the exit status — is the discriminator, and a
+// driver reads the liveness fields to tell a spinning-but-idle pane from one
+// still producing output.
+type chatWaitJSON struct {
+	ChatID string `json:"chat_id"`
+	// Timeout is the --timeout value as a duration string ("30m0s").
+	Timeout  string           `json:"timeout"`
+	TimedOut bool             `json:"timed_out"`
+	Result   string           `json:"result"`
+	Liveness chatLivenessJSON `json:"liveness"`
+}
+
+// chatLivenessJSON carries the same three discriminators as a `boss chats
+// --json` row, under the same names, so one vocabulary covers both surfaces.
+// LivenessKnown is false when the status read produced nothing for this chat;
+// without it every other field's zero value would read as a positive claim
+// ("no spinner, never seeded") about a chat nothing is known about.
+type chatLivenessJSON struct {
+	Known                   bool   `json:"known"`
+	Status                  string `json:"status"`
+	SpinnerPresent          bool   `json:"spinner_present"`
+	LastOutputAt            string `json:"last_output_at"`
+	LastSubstantiveOutputAt string `json:"last_substantive_output_at"`
+	LastOutputSeeded        bool   `json:"last_output_seeded"`
+}
+
+// newChatWaitJSON builds the wait envelope. agentSessionID must be the RESOLVED
+// chat id (chatTarget.AgentSessionID), never the caller's raw positional: `wait`
+// accepts <session-id|chat-id>, so echoing the argument back would put a session
+// id under a key named `chat_id` and break a driver joining this envelope
+// against `boss chats --json` or `boss new --json`.
+func newChatWaitJSON(agentSessionID string, st *pb.ChatStatusEntry, timeout time.Duration, timedOut bool, result string) chatWaitJSON {
+	env := chatWaitJSON{
+		ChatID:   agentSessionID,
+		Timeout:  timeout.String(),
+		TimedOut: timedOut,
+		Result:   result,
+	}
+	if st != nil {
+		env.Liveness = chatLivenessJSON{
+			Known:                   true,
+			Status:                  chatStatusName(st.GetStatus()),
+			SpinnerPresent:          st.GetSpinnerPresent(),
+			LastOutputAt:            rfc3339OrEmpty(st.GetLastOutputAt()),
+			LastSubstantiveOutputAt: rfc3339OrEmpty(st.GetLastSubstantiveOutputAt()),
+			LastOutputSeeded:        st.GetLastOutputSeeded(),
+		}
+	}
+	return env
 }
 
 // chatWaitTick checks whether the chat is done. When the target was resolved

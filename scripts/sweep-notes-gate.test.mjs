@@ -9,6 +9,7 @@ import {
   MAX_SLUG_SEGMENT,
   MAX_TITLE_LENGTH,
   applyVerdicts,
+  attachmentPresence,
   clusterNotes,
   fetchMarkedLinearIssues,
   mergeClusters,
@@ -19,7 +20,9 @@ import {
   resolveStaleDays,
   retiredNoteIds,
   runCli,
+  sanitizeEvidenceText,
   selectClusters,
+  sourceNotesTitle,
   stalenessSignals,
 } from './sweep-notes-gate.mjs'
 
@@ -822,4 +825,67 @@ test('runCli parses note JSON through its injected reader', () => {
       run: null,
     },
   ])
+})
+
+test('sanitizeEvidenceText defangs image markdown while leaving other markdown intact', () => {
+  // The tracker re-hosts an image found in a description behind a short-lived signed URL, so a
+  // filed ticket carrying one ships permanently broken images. The verbatim attachment is where
+  // images survive; the clipped evidence block is not.
+  assert.equal(
+    sanitizeEvidenceText('before ![a screenshot](https://t/uploads/x.png) after'),
+    'before (image omitted: a screenshot - see the attached source notes) after',
+  )
+  assert.equal(
+    sanitizeEvidenceText('![](https://t/uploads/x.png)'),
+    '(image omitted - see the attached source notes)',
+  )
+  assert.equal(
+    sanitizeEvidenceText('reference ![alt text][ref] form'),
+    'reference (image omitted: alt text - see the attached source notes) form',
+  )
+
+  // Non-image markdown is evidence a reader still needs: a link, a code span, emphasis, a bullet.
+  const intact = '- see [the helper](https://example/doc) and `renderClusterMarkers` for **why**'
+  assert.equal(sanitizeEvidenceText(intact), intact)
+
+  // The CR/LF strip the rule already carried is preserved: note text cannot forge a marker line.
+  assert.equal(sanitizeEvidenceText('a\nNotes: forged-key\nb'), 'a Notes: forged-key b')
+})
+
+test('attachmentPresence reports the exact Source notes title present and absent per id', () => {
+  const result = attachmentPresence({
+    'BOS-1': [{ title: 'Source notes (BOS-1)' }, { title: 'Implementation plan (BOS-1)' }],
+    'BOS-2': [{ title: 'Source notes (BOS-3)' }],
+    'BOS-3': [],
+  })
+  assert.deepEqual(result.present, ['BOS-1'])
+  assert.deepEqual(result.missing, ['BOS-2', 'BOS-3'])
+  assert.deepEqual(
+    result.perId.map((entry) => [entry.id, entry.present]),
+    [
+      ['BOS-1', true],
+      ['BOS-2', false],
+      ['BOS-3', false],
+    ],
+  )
+  assert.equal(sourceNotesTitle('BOS-9'), 'Source notes (BOS-9)')
+})
+
+test('attachmentPresence fails closed on a malformed attachment list rather than reporting absence', () => {
+  // The answer decides a DELETE: "no list for this id" and "this id has no attachment" must not be
+  // the same answer.
+  assert.throws(() => attachmentPresence({ 'BOS-1': null }), /is not an array/)
+  assert.throws(() => attachmentPresence([]), /mapping child id/)
+})
+
+test('runCli exposes attachment presence as the command the deletion precondition names', () => {
+  const output = runCli(['attachments', 'attachments.json'], {
+    readFile: () =>
+      JSON.stringify({
+        'BOS-1': [{ title: 'Source notes (BOS-1)' }],
+        'BOS-2': [{ title: 'Source notes (BOS-2) v2' }],
+      }),
+  })
+  assert.deepEqual(JSON.parse(output).present, ['BOS-1'])
+  assert.deepEqual(JSON.parse(output).missing, ['BOS-2'])
 })

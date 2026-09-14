@@ -523,8 +523,9 @@ func TestListSessions_BoundsPRAssociationReconciliation(t *testing.T) {
 		State:      machine.AwaitingChecks,
 		CreatedAt:  time.Now(),
 	}
+	const providerDelay = 2 * time.Second
 	provider := &listSessionsVCSProviderFake{
-		listOpenDelay:          2 * time.Second,
+		listOpenDelay:          providerDelay,
 		listOpenIgnoresContext: true,
 		openPRs: []vcs.PRSummary{
 			{
@@ -547,8 +548,10 @@ func TestListSessions_BoundsPRAssociationReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("ListSessions took %s, want bounded below 1s", elapsed)
+	// Half the provider's delay: a ListSessions that waited the context-ignoring provider out
+	// would take the whole of it, so this cannot pass by accident.
+	if elapsed := time.Since(start); elapsed > providerDelay/2 {
+		t.Fatalf("ListSessions took %s, want bounded below the provider's delay", elapsed)
 	}
 
 	got := onlySession(t, resp.Msg.Sessions)

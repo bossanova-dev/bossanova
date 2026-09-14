@@ -876,7 +876,7 @@ export function admitFixRound({
 // Thin CLI (the surface the skill prose invokes):
 //   node bs-review-caps.mjs rounds            → effective cap (reads BS_REVIEW_MAX_ROUNDS)
 //   node bs-review-caps.mjs dispatched-rounds → effective dispatched cap
-//   node bs-review-caps.mjs sentinel clean    → the clean sentinel line
+//   node bs-review-caps.mjs sentinel clean --in <report.json> → the clean line, DERIVED
 //   node bs-review-caps.mjs sentinel capped N → the capped sentinel line for N rounds
 //   node bs-review-caps.mjs match "<line>"    → JSON classification of a sentinel line
 //   node bs-review-caps.mjs verdict --in <report.json> → sentinel derived from report evidence
@@ -917,6 +917,38 @@ if (isMainModule(import.meta.url)) {
   } else if (cmd === 'dispatched-rounds') {
     process.stdout.write(`${reviewMaxDispatchedRounds()}\n`)
   } else if (cmd === 'sentinel' && rest[0] === 'clean') {
+    // DERIVED CLEAN ONLY. A clean terminal sentinel is a function of report evidence,
+    // never an unconditional literal. The evidence-free form this replaces let a pass
+    // that had repaired nothing print a contract-valid clean line, die before its repair
+    // pass re-categorized, and publish a false green over an open must-fix — while
+    // `reviewVerdict`, the owner that already refuses clean on unrepaired `invalid`
+    // evidence, was never consulted. Both refusals below fail CLOSED (no line on stdout,
+    // non-zero exit), and the two exit codes are distinct so the caller can tell "you
+    // supplied no evidence" from "your evidence says otherwise".
+    //
+    // `sentinel capped <N>` deliberately keeps its evidence-free form: the pre-dispatch
+    // seed and the decline routes legitimately hold no report, and those routes are
+    // pessimistic, so an evidence-free capped line can only ever under-claim.
+    if (rest[1] !== '--in' || !rest[2]) {
+      process.stderr.write(
+        'sentinel clean requires report evidence: sentinel clean --in <report.json>\n',
+      )
+      process.exit(2)
+    }
+    let cleanReport
+    try {
+      cleanReport = JSON.parse(readFileSync(rest[2], 'utf8'))
+    } catch (err) {
+      process.stderr.write(`unable to read report JSON ${rest[2]}: ${err.message}\n`)
+      process.exit(2)
+    }
+    const cleanVerdict = reviewVerdict(cleanReport)
+    if (cleanVerdict.status !== 'clean') {
+      process.stderr.write(
+        `refusing a clean sentinel: derived verdict is ${cleanVerdict.status} (${cleanVerdict.reasons.join(', ')})\n`,
+      )
+      process.exit(3)
+    }
     process.stdout.write(`${cleanSentinel()}\n`)
   } else if (cmd === 'sentinel' && rest[0] === 'capped') {
     // rest[1] is the actual round count reached; require a positive integer.
@@ -1080,7 +1112,7 @@ if (isMainModule(import.meta.url)) {
     process.stdout.write(`${JSON.stringify(sentinelPayload(requested))}\n`)
   } else {
     process.stderr.write(
-      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>' | funding '<json>' | sentinel-payload [<reason>]>\n",
+      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean --in <report.json> | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>' | funding '<json>' | sentinel-payload [<reason>]>\n",
     )
     process.exit(2)
   }

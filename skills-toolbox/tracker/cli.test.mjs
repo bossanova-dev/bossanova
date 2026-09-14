@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { runCli, generateClaimToken } from './cli.mjs'
+import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
 import { createLinearAdapter } from './linear.mjs'
 
 const won = '11111111111111111111111111111111'
@@ -643,4 +643,106 @@ test('states through the real Linear adapter emits a parseable map (end-to-end)'
   const map = JSON.parse(out)
   assert.equal(map !== null && typeof map === 'object', true)
   assert.ok('planned' in map, 'the real adapter must answer for the planned role')
+})
+
+// ---------------------------------------------------------------------------
+// Shape acceptance (BOS-1244 row 12)
+// ---------------------------------------------------------------------------
+
+test('claim-verdict accepts both a bare array and the {comments:[…]} envelope, identically', () => {
+  // `list_comments` returns the envelope. It used to reach `for (const c of comments)`, throw
+  // `comments is not iterable`, and be reported as `claim arbitration failed` — a diagnostic naming
+  // malformed EVIDENCE when the fault was an argument shape.
+  const list = [
+    { body: marker(won), createdAt: early },
+    { body: marker(lost), createdAt: late },
+  ]
+  for (const [label, me, expected] of [
+    ['WON', won, 0],
+    ['LOST', lost, 3],
+  ]) {
+    const bare = runCli(['claim-verdict', '--me', me, '--comments', JSON.stringify(list)], {})
+    const enveloped = runCli(
+      ['claim-verdict', '--me', me, '--comments', JSON.stringify({ comments: list })],
+      {},
+    )
+    assert.equal(bare, expected, `${label}: bare array`)
+    assert.equal(enveloped, expected, `${label}: envelope must produce the same verdict`)
+  }
+
+  // The envelope's other fields do not matter, only that it carries a `comments` array.
+  const withExtras = runCli(
+    ['claim-verdict', '--me', won, '--comments', JSON.stringify({ comments: list, cursor: 'abc' })],
+    {},
+  )
+  assert.equal(withExtras, 0)
+})
+
+test('claim-verdict refuses any other --comments shape by name, not as a claim failure', () => {
+  for (const bad of ['"a string"', '42', 'null', '{"nodes":[]}', '{}']) {
+    let err = ''
+    const code = runCli(['claim-verdict', '--me', won, '--comments', bad], {
+      errWrite: (s) => (err += s),
+    })
+    assert.equal(code, 2, `${bad} must exit 2`)
+    assert.match(err, /--comments \(/, `${bad}: the message must name the flag`)
+    assert.match(err, /envelope/, `${bad}: and the two accepted shapes`)
+    assert.doesNotMatch(
+      err,
+      /claim arbitration failed/,
+      `${bad}: a wrong shape must not be reported as malformed evidence`,
+    )
+    assert.doesNotMatch(err, / a object/, `${bad}: the descriptor must read as English`)
+  }
+
+  // BOS-1244 review round 1 (boss-review-thermonuclear + boss-review-ce). The descriptor names the
+  // KEYS an object carried, matching `normalizeClaimComments` in the library this flag fronts — a
+  // bare `a object` discarded exactly the detail that identifies the likeliest remaining misuse.
+  let nodesErr = ''
+  runCli(['claim-verdict', '--me', won, '--comments', '{"nodes":[]}'], {
+    errWrite: (s) => (nodesErr += s),
+  })
+  assert.match(nodesErr, /an object with keys nodes/, 'the offending key is named back')
+  let emptyErr = ''
+  runCli(['claim-verdict', '--me', won, '--comments', '{}'], {
+    errWrite: (s) => (emptyErr += s),
+  })
+  assert.match(emptyErr, /an object with keys /, 'and an empty object still reads as an object')
+})
+
+// --- help surface -------------------------------------------------------------
+
+// The capability names are derived from this module's OWN dispatch literals, so a new
+// `cmd === '...'` branch cannot be added without appearing in help.
+function dispatchedTrackerCommands() {
+  const source = fs.readFileSync(new URL('./cli.mjs', import.meta.url), 'utf8')
+  return [...source.matchAll(/cmd === '([^']+)'/g)]
+    .map((m) => m[1])
+    .filter((c) => !c.startsWith('-') && c !== 'help')
+}
+
+for (const flag of ['--help', '-h', 'help']) {
+  test(`${flag} exits 0 and names every dispatched tracker capability`, () => {
+    let out = ''
+    let err = ''
+    const code = runCli([flag], { write: (s) => (out += s), errWrite: (s) => (err += s) })
+    assert.equal(code, 0)
+    assert.equal(err, '')
+    const dispatched = dispatchedTrackerCommands()
+    assert.ok(dispatched.includes('claim-token'), 'the dispatch scan found no capabilities')
+    for (const cmd of dispatched) {
+      assert.ok(out.includes(cmd), `help output is missing capability ${cmd}`)
+    }
+  })
+}
+
+test('an unknown tracker capability rejection carries the capability list', () => {
+  let err = ''
+  const code = runCli(['bogus'], { errWrite: (s) => (err += s), write: () => {} })
+  assert.equal(code, 2)
+  assert.match(err, /unknown tracker capability: bogus/)
+  for (const cmd of dispatchedTrackerCommands()) {
+    assert.ok(err.includes(cmd), `rejection is missing capability ${cmd}`)
+  }
+  assert.ok(err.includes(TRACKER_USAGE))
 })

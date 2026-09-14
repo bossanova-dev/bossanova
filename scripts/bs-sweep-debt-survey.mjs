@@ -240,18 +240,53 @@ export function filterValidSurveyCandidates(candidates, options = {}) {
   return { dropped, valid }
 }
 
-function runCli(argv) {
+// The command surface. This entrypoint used to return 0 for ANY command it did not
+// recognise, having printed nothing at all — so `--help` reported success and did
+// nothing, and a typo'd command read as an empty-but-successful survey. Both now
+// print this block; only `--help` exits 0.
+export const DEBT_SURVEY_USAGE = `usage: node scripts/bs-sweep-debt-survey.mjs <command> [args]
+
+commands:
+  validate-candidates <json-array>
+      Filter a raw detector candidate list to the module-attributed, repo-relative
+      candidates the survey is allowed to report. Prints the surviving candidates as
+      JSON on stdout and one "dropped <path>: <reason>" line per rejection on stderr.
+      The json-array argument defaults to [].
+
+  --help, -h, help
+      Print this message and exit 0.
+`
+
+/**
+ * Dispatch one survey command. Returns the process exit code; never calls
+ * process.exit directly so it is unit-testable.
+ * @param {string[]} argv
+ * @param {{write?: (s: string) => void, errWrite?: (s: string) => void}} [io]
+ * @returns {number}
+ */
+export function runCli(
+  argv,
+  { write = (s) => process.stdout.write(s), errWrite = (s) => process.stderr.write(s) } = {},
+) {
   const [cmd, json = '[]'] = argv
-  if (cmd !== 'validate-candidates') return 0
+  if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    write(DEBT_SURVEY_USAGE)
+    return 0
+  }
+  if (cmd !== 'validate-candidates') {
+    errWrite(`bs-sweep-debt survey: unknown command: ${cmd ?? '(none)'}\n`)
+    errWrite(DEBT_SURVEY_USAGE)
+    return 2
+  }
   const { dropped, valid } = filterValidSurveyCandidates(JSON.parse(json), {
     repoRoot: process.cwd(),
   })
   for (const drop of dropped) {
-    process.stderr.write(
+    errWrite(
       `bs-sweep-debt survey: dropped ${drop.candidate.path || drop.candidate.file || '<missing path>'}: ${drop.reason}\n`,
     )
   }
-  process.stdout.write(JSON.stringify(valid))
+  write(JSON.stringify(valid))
   return 0
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -192,14 +193,17 @@ func TestServeMalformedThenValid(t *testing.T) {
 // TestServeWaitTimeout asserts wait against an anchor the fake never shows
 // returns ok:false / error:timeout within the timeout.
 func TestServeWaitTimeout(t *testing.T) {
-	f := &fakeTUI{screen: "loading", waitErr: errors.New("timeout after 30ms")}
-	in := strings.NewReader(`{"id":7,"op":"wait","text":"never","timeoutMs":30}` + "\n")
+	const waitTimeout = 30 * time.Millisecond
+	f := &fakeTUI{screen: "loading", waitErr: fmt.Errorf("timeout after %v", waitTimeout)}
+	in := strings.NewReader(fmt.Sprintf(`{"id":7,"op":"wait","text":"never","timeoutMs":%d}`, waitTimeout.Milliseconds()) + "\n")
 	var out strings.Builder
 	start := time.Now()
 	if err := serve(f, &fakeDaemon{}, in, &out, fastSettle()); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	// 60x the wait budget the request declares: the fake returns its timeout error at once, so
+	// anything near this bound means serve hung rather than propagating it.
+	if elapsed := time.Since(start); elapsed > 60*waitTimeout {
 		t.Fatalf("wait took too long: %v", elapsed)
 	}
 	resps := decodeResponses(t, out.String())

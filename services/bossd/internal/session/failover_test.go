@@ -584,7 +584,8 @@ func TestCurrentBearer_ChatTargetUsesChatAccount(t *testing.T) {
 
 func TestCurrentBearer_BlockingMaterializeHonorsRetryBudget(t *testing.T) {
 	f := newRotationFixture(t)
-	f.lc.SetBearerRetryForTest(1, 0, 10*time.Millisecond)
+	const retryBudget = 10 * time.Millisecond
+	f.lc.SetBearerRetryForTest(1, 0, retryBudget)
 	enableFailoverProxy(f.lc)
 	f.binding.bound = true
 	f.materializer.blockUntilContext = true
@@ -604,7 +605,9 @@ func TestCurrentBearer_BlockingMaterializeHonorsRetryBudget(t *testing.T) {
 	if !errors.Is(err, ErrBearerUnavailable) {
 		t.Fatalf("CurrentBearer error = %v, want wrapped ErrBearerUnavailable", err)
 	}
-	if elapsed > 500*time.Millisecond {
+	// 50x the retry budget: a materialize the budget failed to cap blocks on the context
+	// instead, which never returns here.
+	if elapsed > 50*retryBudget {
 		t.Fatalf("CurrentBearer elapsed %s, want retry budget to cap blocking materialize promptly", elapsed)
 	}
 	if f.materializer.calls != 1 {

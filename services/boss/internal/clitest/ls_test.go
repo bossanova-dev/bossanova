@@ -101,3 +101,29 @@ func TestCLI_Ls_Archived(t *testing.T) {
 		t.Errorf("expected archived sess-zzz in output with --archived, got: %q", res.Stdout)
 	}
 }
+
+// TestCLI_LS_HelpCarriesActivityCaveat proves the caveat reaches the surface a
+// CLI caller actually reads. The same warning already lives in the MCP
+// get_chat_statuses tool description; before this it existed on the CLI side
+// only as a source comment, which is the failure this ticket names — a
+// documented-but-unreadable caveat is not documented.
+func TestCLI_LS_HelpCarriesActivityCaveat(t *testing.T) {
+	h := clitest.New(t)
+	res := h.Run("ls", "--help")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	out := res.Stdout + res.Stderr
+	for _, want := range []string{
+		"last_agent_activity_at",
+		"spinner_present",
+		"last_substantive_output_at",
+		"last_output_seeded",
+		"boss chats --json",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("`boss ls --help` is missing %q; got:\n%s", want, out)
+		}
+	}
+}

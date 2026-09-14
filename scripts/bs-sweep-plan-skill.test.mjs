@@ -66,6 +66,64 @@ for (const [label, skill] of [
     assert.match(phase5, /`skipped\s+<ISSUE-ID>:\s+already\s+planned`/)
   })
 
+  // Phase 2's all-unprioritized branch used to hand the run an unnamed "most impactful"
+  // judgement, so two runs over the same queue could select differently and neither was wrong.
+  // Pin the RULE NAME and the ranking it encodes (not the prose that explains it), plus the
+  // absence of the improvisation marker the rule replaced.
+  test(`${label}: the all-unprioritized branch names the durable-corruption-first discriminator`, () => {
+    const phase2 = phaseSection(skill, 'Phase 2')
+    assert.match(phase2, /`durable-corruption-first`/, 'Phase 2 must name the selection rule')
+    assert.match(
+      phase2,
+      /\*\*always\*\*[^.]{0,40}beats[^.]{0,40}in-run/i,
+      'the rule must rank durable failure above in-run cost, not merely list the buckets',
+    )
+    assert.match(
+      phase2,
+      /oldest\s+`createdAt`\s+first/,
+      'the rule must carry a deterministic within-bucket tie-break',
+    )
+    assert.doesNotMatch(
+      phase2,
+      /most\s+impactful/i,
+      'the unnamed-judgement marker must be gone, not merely supplemented',
+    )
+  })
+
+  test(`${label}: the edge-case row routes to the one discriminator definition`, () => {
+    const edgeCases = phaseSection(skill, 'Edge cases')
+    assert.match(
+      edgeCases,
+      /All\s+candidates\s+unprioritized[^\n]*`durable-corruption-first`/,
+      'the edge-case row must point at the Phase 2 rule by name',
+    )
+    assert.doesNotMatch(
+      edgeCases,
+      /most\s+impactful/i,
+      'the edge-case row must not keep a second improvisable copy of the judgement',
+    )
+  })
+
+  // An epic outcome has no singular attachment id / estimate / priority, so the single-ticket
+  // report shape could only be improvised. Pin the outcome TOKEN and the roster fields.
+  test(`${label}: Phase 5 has an epic terminal outcome carrying a per-child roster`, () => {
+    const phase5 = phaseSection(skill, 'Phase 5')
+    assert.match(phase5, /`planned\s+epic\s+<PARENT-ID>`/, 'must add the epic terminal outcome')
+    for (const field of [/per-child\s+roster/i, /`id`/, /`estimate`/, /`priority`/]) {
+      assert.match(phase5, field, `the epic roster must carry ${field.source}`)
+    }
+    assert.match(
+      phase5,
+      /`attached\s+<attachment-id>`[\s\S]{0,40}`missing`/,
+      'the roster must carry both plan-attachment states',
+    )
+    assert.match(
+      phase5,
+      /status\s+change\s+`<unplanned\s+state>\s+→\s+planned`/,
+      'the epic outcome must report the parent state flip',
+    )
+  })
+
   test(`${label}: no-lock edge case points at supersede and the existing heartbeat option`, () => {
     const edgeCases = phaseSection(skill, 'Edge cases')
     assert.doesNotMatch(edgeCases, /bossd\s+schedules\s+one\s+cron\s+session\s+per\s+job/)

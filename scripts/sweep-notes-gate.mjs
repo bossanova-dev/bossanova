@@ -312,6 +312,86 @@ export function renderClusterMarkers(cluster) {
     .join('\n')
 }
 
+/**
+ * Markdown image syntax, inline (`![alt](src)`) and reference (`![alt][ref]`) alike.
+ *
+ * Deliberately anchored on the `!`, so an ordinary link `[text](url)` is NOT matched: a note body
+ * that cites a URL is evidence a reader still wants, and defanging it would be a silent loss.
+ */
+const EVIDENCE_IMAGE = /!\[([^\]]*)\](?:\(([^)]*)\)|\[([^\]]*)\])/g
+
+/**
+ * Make one note field safe to interpolate into a filed issue description.
+ *
+ * TWO defects, one function, because both are properties of the same untrusted text and a prose
+ * rule that names only the first is what let the second ship:
+ *
+ *   1. CR/LF is stripped, so note text cannot forge a `Notes: <key>` marker line.
+ *   2. Image markdown is DEFANGED. The tracker re-hosts an image it finds in a description behind
+ *      a short-lived signed URL, so a filed ticket that carries one ships permanently broken
+ *      images -- and the clipped evidence block is not where images were ever meant to survive.
+ *      The verbatim attachment is.
+ *
+ * Non-image markdown is left intact: a link, a code span, emphasis and a bullet are all evidence a
+ * reader still needs.
+ */
+export function sanitizeEvidenceText(value) {
+  return String(value ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(EVIDENCE_IMAGE, (_match, alt, _inline, reference) => {
+      const label = String(alt ?? reference ?? '')
+        .replace(/\s+/g, ' ')
+        .trim()
+      return `(image omitted${label ? `: ${label}` : ''} - see the attached source notes)`
+    })
+    .trim()
+}
+
+/** The exact attachment title a filed child must carry before its notes may be deleted. */
+export function sourceNotesTitle(issueID) {
+  return `Source notes (${issueID})`
+}
+
+/**
+ * Per child id, is the exact `Source notes (<issue-id>)` attachment present?
+ *
+ * This is the command the deletion precondition names. It existed only as a prose instruction to
+ * "re-read each child's attachments and confirm the exact title is present", and a precondition
+ * that gates a destructive action while supplying no command is a precondition each run improvises
+ * -- which is how an ad-hoc unsigned attachment query came to decide whether evidence was deleted.
+ *
+ * Fails CLOSED and LOUD on a malformed entry rather than reporting absence: "no attachment list
+ * for this id" and "this id has no attachment" must not be the same answer when the answer decides
+ * a delete.
+ *
+ * @param {Record<string, Array<{title?: string}|string>>} byId child id -> its attachment list
+ * @returns {{present: string[], missing: string[], perId: Array<{id: string, present: boolean}>}}
+ */
+export function attachmentPresence(byId) {
+  if (!byId || typeof byId !== 'object' || Array.isArray(byId)) {
+    throw new Error('attachmentPresence requires an object mapping child id to its attachments')
+  }
+  const perId = []
+  for (const [id, attachments] of Object.entries(byId)) {
+    if (!Array.isArray(attachments)) {
+      throw new Error(
+        `attachment list for ${id} is not an array — re-read that child's attachments`,
+      )
+    }
+    const wanted = sourceNotesTitle(id)
+    const present = attachments.some((attachment) => {
+      const title = typeof attachment === 'string' ? attachment : attachment?.title
+      return title === wanted
+    })
+    perId.push({ id, title: wanted, present })
+  }
+  return {
+    present: perId.filter((entry) => entry.present).map((entry) => entry.id),
+    missing: perId.filter((entry) => !entry.present).map((entry) => entry.id),
+    perId,
+  }
+}
+
 function carriesMarker(cluster, markedIssues) {
   const markers = clusterMarkerKeys(cluster).map(
     (key) => new RegExp(`^Notes: ${escapeRegExp(key)}[ \\t]*$`, 'm'),
@@ -641,6 +721,8 @@ export function runCli(
       return JSON.stringify(stalenessSignals(readJson(args[0]), { pathExists, lastChangeAt }))
     case 'verdicts':
       return JSON.stringify(applyVerdicts(readJson(args[0]), readJson(args[1])))
+    case 'attachments':
+      return JSON.stringify(attachmentPresence(readJson(args[0])))
     case 'retired':
       return JSON.stringify(retiredNoteIds(readJson(args[0]), args[1] ? readJson(args[1]) : {}))
     case 'select':

@@ -478,7 +478,7 @@ async function main() {
   const explicitRecipe = args.recipes.length > 0
 
   if (!explicitRecipe && plan.order.length > 0) {
-    return runAgentSurfaces({ plan, changedFiles, args })
+    return runAgentSurfaces({ plan, changedFiles, args, registry: surfaceRegistry })
   }
   if (!explicitRecipe && plan.recipes.length === 0) {
     // No agent surface AND no recipe to capture → honest "no UI surface" note
@@ -504,18 +504,15 @@ async function main() {
   }
 
   // Preflight ffmpeg/ffprobe only when a browser-video recipe is selected for a
-  // run. Still runs (and the `plan` command above) must not require ffmpeg.
-  // Normalize first: a route-only browser recipe defaults to video in
-  // captureRecipe, so reading the raw capture here would skip the preflight and
-  // fail deep in finishVideo instead of with this clear message.
-  if (selected.some((recipe) => normalizeRecipe(recipe).capture === 'video')) {
-    const ffmpegOk = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0
-    const ffprobeOk = spawnSync('ffprobe', ['-version'], { stdio: 'ignore' }).status === 0
-    if (!ffmpegOk || !ffprobeOk) {
-      throw new Error(
-        'ffmpeg and ffprobe are required for video proof recipes — install ffmpeg (e.g. brew install ffmpeg)',
-      )
-    }
+  // run. Still runs (and the `plan` command above) must not require ffmpeg. The
+  // probe itself lives in `videoRecipeToolchainMissing` (BOS-1250) so this path
+  // and the agent path's recipe leg cannot drift; the two paths keep their own
+  // reactions to a miss — this one throws with an install hint, the agent leg
+  // defers that surface `env-unavailable` rather than unwinding its sibling legs.
+  if (videoRecipeToolchainMissing(selected).length > 0) {
+    throw new Error(
+      'ffmpeg and ffprobe are required for video proof recipes — install ffmpeg (e.g. brew install ffmpeg)',
+    )
   }
 
   const shouldUpload = !args.dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
@@ -1361,6 +1358,200 @@ function syntheticDeferredRun(surface, reasonCode, { missing } = {}) {
 }
 
 /**
+ * Admission budget for the recipe leg of an agent run (BOS-1250).
+ *
+ * The recipe SURFACE_DESCRIPTORS (`marketing`, `docs`) carry `budget: null`, so
+ * `surfaceBudget()` grants them no slice of the shared ladder (BOS-818, still
+ * open). Feeding that null to `planSurfaceBudget` would defer the leg
+ * `budget-exceeded` on EVERY run — a visible deferral, but an inert fix. The leg
+ * therefore carries its own admission budget HERE, in the dispatcher that owns
+ * "which legs run under one budget", leaving the descriptors (and BOS-818's
+ * premise) untouched.
+ *
+ * `floorMs` covers a docs capture's worst case: `services/docs/playwright.config.ts`
+ * gives its `webServer` a 180s build timeout before the browser capture even
+ * starts. NOTE the grant gates ADMISSION only — `captureRecipe` takes no
+ * wall-clock parameter, so `maxWallClockMs` is advisory for this leg.
+ */
+const RECIPE_LEG_BUDGET = { defaultMs: 8 * 60 * 1000, floorMs: 4 * 60 * 1000 }
+
+function videoToolPresent(bin) {
+  return spawnSync(bin, ['-version'], { stdio: 'ignore' }).status === 0
+}
+
+/**
+ * Which video prerequisites are missing for a selected recipe set (BOS-1250).
+ * Single-sources the ffmpeg/ffprobe probe that `main()`'s recipe path and the
+ * agent path's recipe leg both need, so the two cannot drift.
+ *
+ * Normalizes first: a route-only browser recipe defaults to `capture: 'video'`
+ * inside captureRecipe, so probing the RAW `capture` would skip the check and
+ * fail deep in finishVideo instead. A set with no video recipe needs neither
+ * binary and returns `[]` — `plan` and still-only runs must not require ffmpeg.
+ *
+ * @param {object[]} recipes
+ * @param {{ probe?: (bin: string) => boolean }} [deps]
+ * @returns {string[]} missing binary names, in probe order
+ */
+export function videoRecipeToolchainMissing(recipes, { probe = videoToolPresent } = {}) {
+  const needsVideo = (recipes ?? []).some((recipe) => normalizeRecipe(recipe).capture === 'video')
+  if (!needsVideo) return []
+  return ['ffmpeg', 'ffprobe'].filter((bin) => !probe(bin))
+}
+
+/**
+ * Turns the recipe set the surface classifier already selected into surface runs
+ * for the agent dispatch (BOS-1250 U1/U2).
+ *
+ * THE DEFECT THIS CLOSES: `main()` returns into `runAgentSurfaces` whenever the
+ * diff classifies into any agent surface, and that function used to read only
+ * `plan.order`/`plan.scoped` — never `plan.recipes`. Every marketing/docs recipe
+ * the SAME classifier selected was dropped, with the run still exiting 0 and the
+ * consolidated comment never naming the dropped surface (BOS-864). The rule is
+ * that a path returning after classification must ACCOUNT for the recipe set
+ * `plan` printed: captured, or recorded as a per-surface deferral with a reason
+ * code.
+ *
+ * Grouped by `recipe.surface` so `marketing` and `docs` stay SEPARATE perSurface
+ * rows. Gated in the dispatcher's established order — hard preflight, then the
+ * video toolchain, then the shared-budget grant — with each miss deferring via
+ * `syntheticDeferredRun` rather than crashing the run. A leg-wide miss (preflight
+ * or toolchain) defers EVERY recipe surface, so the selected ids stay accounted
+ * for either way.
+ *
+ * EXIT CONTRACT (deliberate): a failed capture NEVER sets `hasFailure`. A run
+ * with `hasFailure: true` and no reasonCode is classified by
+ * `classifySurfaceOutcomes` as `agent-incomplete`, which `surfaceExitContribution`
+ * maps to exit 1 — so a flaky marketing capture would start failing runs that
+ * pass today, and `hasFailure` additionally flips the SHARED manifest verdict for
+ * the sibling agent surfaces. A capture failure is therefore recorded as the
+ * neutral `no-media` deferral (contributing 0) carrying the capture's own error,
+ * leaving `pipeline-error` to genuine crashes. The failed capture shape itself
+ * stays in `captureShapes`, so the manifest still names the recipe.
+ *
+ * Pure apart from the injected deps: `deps.capture` / `deps.evaluatePreflight` /
+ * `deps.toolchainMissing` / `deps.now` are the seams the tests drive, so no
+ * browser, ffmpeg or network is touched under test.
+ *
+ * @param {{
+ *   recipes: object[],
+ *   localDir?: string,
+ *   registry?: object,
+ *   shouldUpload?: boolean,
+ *   repoRoot?: string,
+ *   elapsedMs?: number,
+ *   totalBudgetMs?: number,
+ *   deps?: object,
+ * }} opts
+ * @returns {object[]} one surface run per recipe surface; `[]` for an empty set
+ */
+export function planRecipeSurfaceRuns({
+  recipes,
+  localDir,
+  registry = BUILTIN_SURFACES,
+  shouldUpload = false,
+  repoRoot: root = repoRoot,
+  elapsedMs = 0,
+  totalBudgetMs = DEFAULT_TOTAL_PROOF_BUDGET_MS,
+  deps = {},
+} = {}) {
+  const selected = recipes ?? []
+  // An agent-only run stays byte-identical: no extra surface runs, no gates run.
+  if (selected.length === 0) return []
+
+  const {
+    capture = captureRecipe,
+    evaluatePreflight = evaluateRunPreflight,
+    toolchainMissing = videoRecipeToolchainMissing,
+    budget = RECIPE_LEG_BUDGET,
+    now = Date.now,
+  } = deps
+
+  const groups = new Map()
+  for (const recipe of selected) {
+    const surface = recipe?.surface
+    if (!groups.has(surface)) groups.set(surface, [])
+    groups.get(surface).push(recipe)
+  }
+  const deferEvery = (reasonCode, missing) =>
+    [...groups.keys()].map((surface) => syntheticDeferredRun(surface, reasonCode, { missing }))
+
+  const preflight = evaluatePreflight({ surface: 'recipe', shouldUpload, repoRoot: root })
+  if (preflight) return deferEvery('env-unavailable', preflight.missing)
+
+  const missingTools = toolchainMissing(selected)
+  if (missingTools.length > 0) return deferEvery('env-unavailable', missingTools)
+
+  const runs = []
+  let spentMs = elapsedMs
+  for (const [surface, group] of groups) {
+    const grant = planSurfaceBudget({ surface, elapsedMs: spentMs, totalBudgetMs, budget })
+    if (!grant.run) {
+      runs.push(syntheticDeferredRun(surface, 'budget-exceeded'))
+      continue
+    }
+    const startedAt = now()
+    let captureShapes
+    try {
+      captureShapes = group.map((recipe) =>
+        capture({ recipe, localDir, registry, keepWebm: !shouldUpload }),
+      )
+    } catch (err) {
+      // A THROWN capture is not the same shape as a returned `status: 'failed'`
+      // one, and it is reachable: captureRecipe normalizes, validates the id,
+      // resolves the surface descriptor and writes the recipe dir BEFORE its own
+      // try opens, and captureSurfaceDescriptor throws `unknown proof surface`
+      // for a recipe whose surface is absent from the RESOLVED registry. Left
+      // uncaught it unwinds the whole dispatcher and discards the agent legs'
+      // captures, which is exactly the R2 violation this leg must not cause. Per
+      // the sibling legs' contract a crashed stage is OUR bug: record it as this
+      // surface's pipeline-error and let the remaining surfaces continue.
+      const record = toStageErrorRecord(err)
+      runs.push({
+        surface,
+        captureShapes: [],
+        brief: {},
+        agentResult: { passed: false, summary: '', evidence: [], steps: 0 },
+        hasFailure: true,
+        noSurface: false,
+        reasonCode: null,
+        pipelineError: {
+          stage: record.stage,
+          message: err instanceof Error ? err.message : String(err),
+          stderrTail: record.stderrTail,
+        },
+        elapsedMs: Math.max(0, now() - startedAt),
+      })
+      spentMs += Math.max(0, now() - startedAt)
+      continue
+    }
+    const surfaceElapsedMs = Math.max(0, now() - startedAt)
+    spentMs += surfaceElapsedMs
+    const failures = captureShapes.filter((shape) => shape?.status === 'failed')
+    const captured = captureShapes.filter((shape) => shape?.status !== 'failed')
+    runs.push({
+      surface,
+      captureShapes,
+      brief: {},
+      agentResult: {
+        passed: failures.length === 0,
+        summary: captured.length
+          ? `Captured ${captured.map((shape) => shape.recipeId).join(', ')}.`
+          : '',
+        evidence: [],
+        steps: 0,
+      },
+      hasFailure: false,
+      noSurface: false,
+      reasonCode: failures.length > 0 ? 'no-media' : null,
+      ...(failures.length > 0 ? { error: failures[0].error ?? null } : {}),
+      elapsedMs: surfaceElapsedMs,
+    })
+  }
+  return runs
+}
+
+/**
  * Runs the agent surfaces in `plan.order` SEQUENTIALLY under ONE shared budget
  * (BOS-139 D5) and posts ONE consolidated comment. Each surface gets its own
  * per-surface preflight + gate; a miss (env-unavailable / agent-unavailable /
@@ -1369,9 +1560,9 @@ function syntheticDeferredRun(surface, reasonCode, { missing } = {}) {
  * pipeline-error so the other surface still finalizes. Exit code is the
  * aggregate of the per-surface outcomes (set inside finalizeAgentProof).
  *
- * @param {{ plan: object, changedFiles: string[], args: object }} opts
+ * @param {{ plan: object, changedFiles: string[], args: object, registry?: object }} opts
  */
-async function runAgentSurfaces({ plan, changedFiles, args }) {
+async function runAgentSurfaces({ plan, changedFiles, args, registry = BUILTIN_SURFACES }) {
   const shouldUpload = !args.dryRun && process.env.BOSS_PROOF_UPLOAD !== '0'
   // Resolve the R2 bucket WITHOUT throwing: a missing BOSS_PROOF_R2_BUCKET is a
   // shared upload prerequisite that the per-surface preflight below classifies as
@@ -1596,6 +1787,56 @@ async function runAgentSurfaces({ plan, changedFiles, args }) {
         elapsedMs: 0,
       })
     }
+  }
+
+  // BOS-1250: account for the recipe set THIS run's classifier already selected.
+  // Runs LAST, out of the shared pool's remainder, because the recipe leg is the
+  // expensive one (each recipe spawns its own Playwright process, and a docs
+  // capture rebuilds the site first) — ordering it after the agent legs keeps it
+  // from starving the surfaces that carry the primary evidence. All of the logic
+  // lives in the exported helper: this call site is deliberately one call and one
+  // push, because `runAgentSurfaces` is unexported and process-coupled and the
+  // tests can only reach the behaviour through the helper.
+  //
+  // The try/catch is the SAME contract the per-surface loop above applies to
+  // `driver.run`, and the recipe leg needs it for the same reason: a throw here
+  // unwinds `runAgentSurfaces` before `finalizeAgentProof` below, which would
+  // discard the agent captures this run already produced — no manifest, no
+  // comment, exit 1 — and invert this ticket's own R2 (a recipe-leg failure
+  // defers that surface ONLY). `captureRecipe` cannot self-report every throw:
+  // it normalizes the recipe, validates the id, resolves the surface descriptor
+  // and writes the recipe dir BEFORE its own `try` opens, and
+  // `captureSurfaceDescriptor` throws `unknown proof surface` for any recipe
+  // whose surface is missing from the RESOLVED registry — reachable from an
+  // ordinary catalog misconfiguration.
+  try {
+    surfaceRuns.push(
+      ...planRecipeSurfaceRuns({
+        recipes: plan.recipes,
+        localDir,
+        registry,
+        shouldUpload,
+        elapsedMs,
+        totalBudgetMs,
+      }),
+    )
+  } catch (err) {
+    const record = toStageErrorRecord(err)
+    surfaceRuns.push({
+      surface: 'recipe',
+      captureShapes: [],
+      brief: {},
+      agentResult: { passed: false, summary: '', evidence: [], steps: 0 },
+      hasFailure: true,
+      noSurface: false,
+      reasonCode: null,
+      pipelineError: {
+        stage: record.stage,
+        message: err instanceof Error ? err.message : String(err),
+        stderrTail: record.stderrTail,
+      },
+      elapsedMs: 0,
+    })
   }
 
   // Dynamic import breaks the proof.mjs ⇄ proof-agent-finalize.mjs cycle

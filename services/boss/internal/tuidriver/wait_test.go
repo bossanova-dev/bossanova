@@ -11,12 +11,16 @@ func TestWaitClosedReportsAClosedChannel(t *testing.T) {
 	ch := make(chan struct{})
 	close(ch)
 
+	const waitBudget = 5 * time.Second
 	start := time.Now()
-	if !waitClosed(ch, 5*time.Second) {
+	if !waitClosed(ch, waitBudget) {
 		t.Fatal("waitClosed reported false for a closed channel; want true")
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("waitClosed on a closed channel took %s; want ~0", elapsed)
+	// A fifth of the budget handed to waitClosed, which is the 1s ceiling this assertion always
+	// carried, now expressed as a derivation: an implementation that polled the whole budget out
+	// instead of observing the closed channel immediately would exceed it by 5x.
+	if elapsed := time.Since(start); elapsed > waitBudget/5 {
+		t.Errorf("waitClosed on a closed channel took %s; want ~0, ceiling %s", elapsed, waitBudget/5)
 	}
 }
 
@@ -40,11 +44,13 @@ func TestWaitClosedReportsAChannelClosedDuringTheWait(t *testing.T) {
 func TestWaitClosedGivesUpOnAChannelThatNeverCloses(t *testing.T) {
 	ch := make(chan struct{}) // never closed
 
+	const waitBudget = 20 * time.Millisecond
 	start := time.Now()
-	if waitClosed(ch, 20*time.Millisecond) {
+	if waitClosed(ch, waitBudget) {
 		t.Fatal("waitClosed reported true for a channel that never closes; want false")
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	// 100x the budget: a waitClosed that never gave up would not return at all.
+	if elapsed := time.Since(start); elapsed > 100*waitBudget {
 		t.Errorf("waitClosed took %s; want it bounded near 20ms", elapsed)
 	}
 }

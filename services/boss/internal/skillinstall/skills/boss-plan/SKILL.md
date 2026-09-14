@@ -280,8 +280,9 @@ for the Phase 4 secret gate.
    the plan to `PLAN_PATH`, write the terminal sentinel with a `planPath` payload, and **return only**
    the bounded metadata object
    (`planPath`, `labels`, `agentFriendly`, `estimate`, `priority`, `openQuestions`,
-   `descriptionSummary`) — **never the plan file's content** (returning content re-inflates the
-   caller: codex fold).
+   `descriptionSummary` — that one **by reference**, `{path}` naming the run's `description`
+   artifact) — **never the plan file's content**, and never drafted text of any kind: it re-inflates
+   the caller (codex fold), and this channel escapes `<`/`>`/`&`.
 
    If the dispatch tool itself errors before the subagent starts, treat that as a dispatch failure:
    print one clear stderr line, clean up the sentinel context if it exists, make **no Linear write**,
@@ -295,16 +296,23 @@ for the Phase 4 secret gate.
    require artifact manifests (`guardScratchPaths`,`epicSpecPaths`).
    Zero-byte original guard sources
    (`.image-guard-orig.md` / `.attachment-guard-orig.md`) are ok; others non-empty.
-   Missing, empty, directory or wrong-path ⇒
-   `echo "$DISPATCH_FAILURE: sentinel ok but artifact missing/empty or wrong path (<path>) — no Linear write, aborting" >&2`.
+   Missing, empty, directory or wrong-path ⇒ `$DISPATCH_FAILURE`, no Linear write, abort (the
+   verifier below owns the wording).
 
    ```bash
    READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" draft)"
-   RC_STATUS="$(printf '%s' "$READ" | jq -r '.status')"
-   if [ "$RC_STATUS" != "ok" ]; then
-     # missing/stale sentinel: SAFE branch — NO Linear write, non-zero exit.
-     echo "$DISPATCH_FAILURE: drafting subagent left no valid sentinel (status=$RC_STATUS) — no Linear write, aborting" >&2
+   AWAIT="${RUN_SENTINEL%/*}/bs-dispatch-await.mjs"
+   # `disposition` demotes a provisional (never-upgraded) payload on EVERY kind.
+   DISP="$(node "$AWAIT" disposition "$RUN_DIR" "$RUN_ID" draft)"
+   if [ "$(printf '%s' "$DISP" | jq -r '.publishable')" != true ]; then
+     # SAFE branch — NO Linear write, non-zero exit.
+     echo "$DISPATCH_FAILURE: no publishable sentinel ($(printf '%s' "$DISP" | jq -r '.reason')) — aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
+     # Probe every artifact the payload DECLARES: an epic outcome carries no `planPath`, so a
+     # plan-only probe finds nothing, authorises the removal below and eats finished child plans.
+     set -- "$PLAN_PATH"
+     while IFS= read -r A; do set -- "$@" "$A"; done <<<"$(printf '%s' "$READ" | jq -r '[.payload.epicSpecPaths,.payload.guardScratchPaths,(.payload.childPlanPaths|if type=="object" then [.[]] else . end)]|flatten|.[]|strings')"
+     node "$AWAIT" guard-discard "$@" || exit 1   # read before discard; non-zero = retain
      # Abort skips Phase 5; delete the epic/guard/run-boundary scratch families now.
      CLEANUP_RC=0
      rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
@@ -375,8 +383,9 @@ for the Phase 4 secret gate.
    and re-run reconciliation, never to accept the sentinel alone. Otherwise safe-abort so the next
    sweep resumes it. On success skip Phase 3.5–4; re-running them would turn the parent into a
    `boss-build` target. A single-ticket `ok` sentinel proceeds only when its metadata `planPath`
-   resolves to `PLAN_PATH` and names a non-empty plan file. Its `descriptionSummary` becomes the
-   Linear description; read the plan file only for the secret gate.
+   resolves to `PLAN_PATH` and names a non-empty plan file. Its `descriptionSummary` names the
+   `description` artifact whose bytes become the Linear description; read the plan file only for the
+   secret gate.
 
    After an `ok` sentinel and the plan-file reverify pass, validate the returned bounded metadata
    before Phase 3.5. Write exactly the returned metadata object to
@@ -388,6 +397,8 @@ for the Phase 4 secret gate.
    if ! node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata "$METADATA"; then
      echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs metadata — no Linear write, aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
+     # Read before discard, most sharply here: the plan already PASSED re-verify.
+     node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" guard-discard "$PLAN_PATH" || exit 1
      # Abort skips Phase 5; remove this run's whole scratch directory, as every sibling abort does.
      CLEANUP_RC=0
      rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
@@ -894,18 +905,21 @@ subagent → validate its envelope → fold or skip), against
 > Linear write. Reuse the raw snapshot Phase 2 already wrote at
 > `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`; do not rewrite it here. An **empty** or
 > whitespace-only original is refused (exit 1); pass `--allow-empty-original` only if it truly is
-> empty. Write the returned `descriptionSummary` to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md`
-> (per-issue paths avoid
-> clobbering). Also write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` as the same Phase 1
+> empty. Materialise `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md` by **copying
+> the `description` artifact `descriptionSummary` names** (the `cp` below), never from a returned
+> string: what these gates read, and what step 4 writes back, must be the bytes the drafter composed
+> (per-issue paths avoid clobbering). Also write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` as the same Phase 1
 > source with **only** the mandatory secret/PII redactions and upload-signature stripping applied;
-> do not derive it from either generated artifact. Both the returned `descriptionSummary` and the
-> final attachment must preserve this safe source under `## Original notes`. Set `EXPECTED_IMAGES`
+> do not derive it from either generated artifact. Both the composed description and the final
+> attachment must preserve this safe source under `## Original notes`. Set `EXPECTED_IMAGES`
 > to the number of distinct canonical upload identities observed in the Phase 1 description — the
 > `uploads.linear.app` origin plus pathname, ignoring query strings — then run the guard:
 >
 > ```bash
 > BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 > ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
+> BODY=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the path descriptionSummary returned
+> cp "$BODY" "$NEW" || { echo "descriptionSummary artifact unreadable — aborting" >&2; exit 1; }
 > PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
 > EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"
 > cleanup_guard_scratch() {
@@ -957,15 +971,15 @@ subagent → validate its envelope → fold or skip), against
 >
 > On non-zero exit take the **SAFE branch** — identical to the dispatch-failure branch: **no Linear
 > write**, a one-line stderr reason carrying the guard's own message (it prints each), discard the
-> scratch (Phase 5 cleanup), and exit non-zero. The guard reuses the in-hand original description and
-> returned `descriptionSummary`, so it adds no new Linear read.
+> scratch (Phase 5 cleanup), and exit non-zero. The guard reuses the in-hand original description
+> and the on-disk description artifact, so it adds no new Linear read.
 
 > **STOP — plan-contract gate (mandatory, mechanical, do not skip).** "Exactly these
 > `descriptionSummary` `##` sections, in order" was until now enforced only by the **consumer**, days after a malformed artifact had
 > already been published: descriptions missing most required sections, a whole-field self-describing
 > placeholder, an unsubstituted `<ATTACHMENT-ID>`-style token, an off-contract heading, and a plan
 > file ending in literal tool-call scaffolding all passed every earlier gate. Verify
-> **mechanically**, reusing the in-hand `descriptionSummary` and `PLAN_FILE` — **zero** extra tracker
+> **mechanically**, reusing that same `$NEW` copy and `PLAN_FILE` — **zero** extra tracker
 > reads. Re-derive the toolbox dir here; blocks inherit nothing:
 >
 > ```bash
@@ -1008,7 +1022,8 @@ subagent → validate its envelope → fold or skip), against
 > One stderr line per violation, each tagged `line-spanning-emphasis`, `missing-sections`,
 > `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
 > `plan-file-structure-exemption`, `pr-body-only-evidence`, `section-order`,
-> `self-falsified-literal-search`, `stale-premise-citation`, `unanchored-premise-citation`,
+> `self-falsified-literal-search`, `stale-premise-citation`, `subject-areas-unresolved`,
+> `unanchored-premise-citation`,
 > `unknown-section`, `unresolvable-citation`, any `vacuous-*` code, or
 > `unreadable-input`; a missing
 > or unreadable file is itself a violation, never a pass, and an `unknown-section` message names both
@@ -1048,8 +1063,8 @@ subagent → validate its envelope → fold or skip), against
    existing ∪ additions ∖ strips.
 3. Decide the metadata (headless: derive from the subagent's returned metadata; interactive: from
    the interview):
-   - **description**: the composed description-summary block (headless: the returned
-     `descriptionSummary`, verbatim; interactive: composed per the drafting spec in
+   - **description**: the composed description-summary block (headless: the bytes of the artifact
+     `descriptionSummary` names, verbatim; interactive: composed per the drafting spec in
      `references/headless-drafting-brief.md` § "Step 7", matching the Phase 3 section contract).
    - **labels**: union of existing labels + relevant ones (`bug`/`feature`/`improvement`/`docs`) minus `stripLabels`. **Agent-friendly is the default:** add **`agent-friendly`** to every plan **unless** an autonomous agent genuinely could not complete the task (headless: `agentFriendly == false`) — in that case add **`needs-human`** **instead** (never both) and ensure the plan body carries the **## Why this needs a human** section (see Phase 3). Complexity alone is not a reason for `needs-human` — a large but well-specced ticket is still `agent-friendly`. Add **`agent-question`** (headless only) **if and only if** ≥1 open question was recorded (`openQuestions` non-empty); union it in, never clobber — it is independent of the agent-friendly/needs-human call. Set `stripLabels` to `agent-plan` on a successful plan. When there are no open questions, do not add `agent-question`; when it is already present, do not strip it — **headless only**. **Interactive** resolves every fork with the human and by contract produces no `## Open Questions` section at all, so a pre-existing `agent-question` there is a claim the run has just disproved and cannot otherwise clear: an interactive run adds it to `stripLabels`.
    - **estimate** (Fibonacci): `0` trivial/minimal · `1`/`2`/`3` well-defined single-PR ticket, clear path · `5`/`8` too big for one PR ⇒ **triage EPIC** (Phase 2.5), never a single-ticket estimate (sole exception: a genuinely atomic, un-splittable `5` with a recorded `- Atomic-5:` justification under `## Planning`). Every planned ticket gets a non-null estimate.

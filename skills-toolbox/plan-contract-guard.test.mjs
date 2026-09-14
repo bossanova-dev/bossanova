@@ -30,6 +30,7 @@ import {
   planFileResidue,
 } from './plan-contract-guard.mjs'
 import { DEFAULT_CONFIG, planSections, requiredPlanSections } from './skill-config.mjs'
+import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
 
 // Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
 process.env.BOSS_GATE_OUTCOME_FILE = path.join(
@@ -42,6 +43,15 @@ const codes = (result) => result.violations.map((v) => v.code)
 
 // A conformant description: every required heading, in contract order, with a v1 stamp and enough
 // body to clear the byte floor.
+// `## Key changes` carries REPO-RELATIVE PATHS rather than the shared prose filler, because a
+// conformant description must also be one the subject-area scan can resolve: prose that names no
+// path resolves to zero areas, which `subject-areas-unresolved` reports. Every test built on this
+// fixture therefore doubles as the negative half of that check — a description with repo-relative
+// paths raises no area violation.
+const KEY_CHANGES_BLOCK =
+  '## Key changes\n\n- `skills-toolbox/plan-contract-guard.mjs`: the substantive change.\n' +
+  '- `skills-toolbox/plan-contract-guard.test.mjs`: coverage for it.'
+
 const conformant = (planningLine = '- Contract: v1') =>
   `${requiredPlanSections(DEFAULT_CONFIG)
     .map((h) => `${h}\n\nSubstantive body prose for this section, long enough to be a real plan.`)
@@ -49,6 +59,10 @@ const conformant = (planningLine = '- Contract: v1') =>
     .replace(
       '## Planning\n\nSubstantive body prose for this section, long enough to be a real plan.',
       `## Planning\n\n${planningLine}`,
+    )
+    .replace(
+      '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      KEY_CHANGES_BLOCK,
     )}\n`
 
 const epicParentConformant = () =>
@@ -138,6 +152,10 @@ describe('checkPlanContract — conformant input', () => {
       .replace(
         '## Planning\n\nbody prose that is long enough to matter for the byte floor',
         '## Planning\n\n- Contract: v1',
+      )
+      .replace(
+        '## Key changes\n\nbody prose that is long enough to matter for the byte floor',
+        '## Key changes\n\n- `skills-toolbox/plan-contract-guard.mjs`: the change.',
       )}\n`
     const result = checkPlanContract({ description: rendered })
     assert.deepEqual(result.violations, [])
@@ -392,11 +410,109 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.deepEqual(codes(unknown), ['plan-file-structure-exemption'])
   })
 
+  test('subject-areas-unresolved fires on an arealess `## Key changes`, and not on repo-relative paths', () => {
+    // The point of the code is its TIMING: this gate already runs before the attachment finalize,
+    // where the same fact was previously raised by the post-finalize dependency scan whose remedy
+    // is a rewrite of the very bytes step 1 had already uploaded and byte-verified.
+    const arealess = conformant().replace(
+      KEY_CHANGES_BLOCK,
+      '## Key changes\n\nTouch the config, the guard, the skill prose, and the tests.',
+    )
+    const result = checkPlanContract({ description: arealess })
+    assert.ok(codes(result).includes('subject-areas-unresolved'))
+    assert.match(
+      result.violations.find((v) => v.code === 'subject-areas-unresolved').message,
+      /NO change areas/,
+    )
+
+    // The negative half of the criterion: repo-relative paths raise nothing.
+    assert.deepEqual(checkPlanContract({ description: conformant() }).violations, [])
+  })
+
+  test('subject-areas-unresolved names the path-shaped tokens it could not resolve', () => {
+    const unresolved = conformant().replace(
+      KEY_CHANGES_BLOCK,
+      '## Key changes\n\n- `skills-toolbox/plan-contract-guard.mjs`: the change.\n' +
+        '- `SKILL.md`: a bare basename that names dozens of files.',
+    )
+    const result = checkPlanContract({ description: unresolved })
+    const found = result.violations.find((v) => v.code === 'subject-areas-unresolved')
+    assert.ok(found, 'an unresolved path-shaped token must raise the code even when areas exist')
+    assert.match(found.message, /skill\.md/)
+    assert.match(found.message, /moduleRoots/)
+  })
+
+  test('subject-areas-unresolved does not fire for an epic parent, whose contract has no `## Key changes`', () => {
+    // One mistake must not trip two codes, and a section the mode never required is not a mistake.
+    const result = checkPlanContract({
+      description: epicParentConformant(),
+      mode: 'epic-parent',
+    })
+    assert.equal(codes(result).includes('subject-areas-unresolved'), false)
+  })
+
+  test('subject-areas-unresolved is not raised on top of missing-sections', () => {
+    const withoutKeyChanges = conformant().replace(`${KEY_CHANGES_BLOCK}\n\n`, '')
+    const result = checkPlanContract({ description: withoutKeyChanges })
+    assert.ok(codes(result).includes('missing-sections'))
+    assert.equal(codes(result).includes('subject-areas-unresolved'), false)
+  })
+
+  test('declared moduleRoots admit a marked bare module name as an area', () => {
+    const bareModule = conformant().replace(
+      KEY_CHANGES_BLOCK,
+      '## Key changes\n\n- `bossalib`: the shared library.',
+    )
+    assert.ok(
+      codes(checkPlanContract({ description: bareModule })).includes('subject-areas-unresolved'),
+    )
+    assert.deepEqual(
+      checkPlanContract({ description: bareModule, moduleRoots: ['bossalib'] }).violations,
+      [],
+    )
+  })
+
+  test('moduleRoots reaches the gate from the CLI and classifies as the dependency scan does', () => {
+    // Reachability: the option existed with no flag able to set it, so every real invocation ran
+    // this gate with an empty list while the Phase 4 dependency scan ran with the repo's roots.
+    assert.deepEqual(
+      parseContractGuardArgs(['--description', 'd.md', '--module-roots', 'bossalib, services'])
+        .moduleRoots,
+      ['bossalib', 'services'],
+    )
+    assert.deepEqual(parseContractGuardArgs(['--description', 'd.md']).moduleRoots, [])
+
+    // Parity, in BOTH directions: the same slash-free token under the same roots resolves
+    // identically here and in the scan this gate reports for. A gate stricter than the scan
+    // rejects a plan the scan would have read, under a remedy naming the seam above.
+    const bareModule = conformant().replace(
+      KEY_CHANGES_BLOCK,
+      '## Key changes\n\n- `bossalib`: the shared library.',
+    )
+    const { moduleRoots } = parseContractGuardArgs([
+      '--description',
+      'd.md',
+      '--module-roots',
+      'bossalib',
+    ])
+    assert.deepEqual(extractKeyChangeAreas(DEFAULT_CONFIG, bareModule, { moduleRoots }).areas, [
+      'bossalib',
+    ])
+    assert.deepEqual(checkPlanContract({ description: bareModule, moduleRoots }).violations, [])
+    assert.deepEqual(
+      extractKeyChangeAreas(DEFAULT_CONFIG, bareModule, { moduleRoots: [] }).areas,
+      [],
+    )
+    assert.ok(
+      codes(checkPlanContract({ description: bareModule })).includes('subject-areas-unresolved'),
+    )
+  })
+
   test('self-falsified-literal-search fires when a criterion forbids text the plan mandates', () => {
     const descriptionFor = (check) =>
       conformant()
         .replace(
-          '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+          KEY_CHANGES_BLOCK,
           '## Key changes\n\nAdd the exact phrase `must stay visible` to the skill body.',
         )
         .replace(
@@ -480,10 +596,7 @@ describe('checkPlanContract — each violation code fires', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-key-changes-'))
     writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
     const keyChanges = (bullet) =>
-      conformant().replace(
-        '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
-        `## Key changes\n\n${bullet}`,
-      )
+      conformant().replace(KEY_CHANGES_BLOCK, `## Key changes\n\n${bullet}`)
 
     const past = checkPlanCitations(DEFAULT_CONFIG, keyChanges('- `present.md:9` is rewritten'), {
       cwd: dir,
@@ -509,6 +622,37 @@ describe('checkPlanContract — each violation code fires', () => {
       { cwd: dir },
     )
     assert.deepEqual(creates.violations, [])
+  })
+
+  test('BOS-1243: a line-zero citation is an unresolvable citation, not a silent pass', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-bad-line-'))
+    writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
+    const keyChanges = (bullet) =>
+      conformant().replace(KEY_CHANGES_BLOCK, `## Key changes\n\n${bullet}`)
+
+    // The citation pattern's line group is `(\d+)`, which matches `0`, so `present.md:0`
+    // reaches the resolver carrying line 0. Before this branch routed the check through
+    // `resolveCitationCoordinate`, the only line test was `hit.line > lineCount` — and
+    // `0 > 2` is false, so a coordinate no file can have raised NO violation at all. This
+    // pins the `bad-line` code onto a blocking violation, and pins its message: it is new
+    // blocking behaviour in a published plan gate.
+    for (const bullet of ['- `present.md:0` is rewritten', '- `present.md:00` is rewritten']) {
+      const result = checkPlanCitations(DEFAULT_CONFIG, keyChanges(bullet), { cwd: dir })
+      assert.deepEqual(
+        result.violations.map((v) => v.code),
+        ['unresolvable-citation'],
+        bullet,
+      )
+      assert.match(result.violations[0].message, /present\.md has no line 0/)
+    }
+
+    // The neighbouring line, on the same file, still resolves — so the violation above is
+    // the line-zero rule firing and not the fixture being unreadable.
+    assert.deepEqual(
+      checkPlanCitations(DEFAULT_CONFIG, keyChanges('- `present.md:1` is rewritten'), { cwd: dir })
+        .violations,
+      [],
+    )
   })
 
   describe('premise citation anchors (BOS-1186)', () => {
@@ -593,7 +737,7 @@ describe('checkPlanContract — each violation code fires', () => {
       assert.deepEqual(checkPlanCitations(DEFAULT_CONFIG, inCriteria, { cwd: dir }).violations, [])
 
       const inKeyChanges = conformant().replace(
-        '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        KEY_CHANGES_BLOCK,
         '## Key changes\n\n- target.mjs:3 gains the new branch',
       )
       assert.deepEqual(
@@ -849,8 +993,9 @@ describe('checkPlanContract — the scoping guarantees', () => {
     // skill body and in docs/skills/skill-config.md. Rejecting either makes a plan that describes
     // the plan contract unpublishable, and unlike `unknown-section` this rule has no config remedy.
     const fenced = conformant().replace(
-      '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
-      '## Key changes\n\n```bash\nNEW=".linear-plans/<ISSUE-ID>.new.md"\n```',
+      KEY_CHANGES_BLOCK,
+      '## Key changes\n\n```bash\nNEW=".linear-plans/<ISSUE-ID>.new.md"\n```' +
+        '\n\n- `skills-toolbox/plan-contract-guard.mjs`: the change area, so the subject still resolves.',
     )
     assert.deepEqual(checkPlanContract({ description: fenced }).violations, [])
 
@@ -921,8 +1066,8 @@ describe('checkPlanContract — the scoping guarantees', () => {
       '## <branch>...origin/<branch>',
     ]) {
       const description = conformant().replace(
-        '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
-        `## Key changes\n\n\`\`\`\n${quoted}\n\`\`\``,
+        KEY_CHANGES_BLOCK,
+        `## Key changes\n\n\`\`\`\n${quoted}\n\`\`\`\n\n- \`skills-toolbox/plan-contract-guard.mjs\`: the change area.`,
       )
       assert.deepEqual(
         checkPlanContract({ description }).violations,
@@ -943,7 +1088,7 @@ describe('checkPlanContract — the scoping guarantees', () => {
       '`<LENS_SKILL>`',
     ]) {
       const description = conformant().replace(
-        '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        KEY_CHANGES_BLOCK,
         `## Key changes\n\nThe flag is spelled ${quoted} in its usage string.`,
       )
       assert.deepEqual(
@@ -954,7 +1099,7 @@ describe('checkPlanContract — the scoping guarantees', () => {
     }
     // …but the SAME token unquoted is still residue: outside a span, any placeholder shape counts.
     const bare = conformant().replace(
-      '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      KEY_CHANGES_BLOCK,
       '## Key changes\n\nThe <APPROVAL_POLICY> flag, unquoted.',
     )
     assert.deepEqual(placeholderResidue(DEFAULT_CONFIG, bare), ['<APPROVAL_POLICY>'])
@@ -968,7 +1113,7 @@ describe('checkPlanContract — the scoping guarantees', () => {
     // after it, and a drafter forgetting a closing fence is at least as likely as a truncated
     // transcript. Scanning the raw lines there is the fail-closed direction.
     const unclosed = conformant().replace(
-      '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      KEY_CHANGES_BLOCK,
       '## Key changes\n\n```bash\nX=1\n\nand then a bare <ISSUE-ID> token in prose',
     )
     assert.deepEqual(placeholderResidue(DEFAULT_CONFIG, unclosed), ['<ISSUE-ID>'])
@@ -979,8 +1124,9 @@ describe('checkPlanContract — the scoping guarantees', () => {
     // TOP-LEVEL fence. Quoted output under a bullet is the shape plans use most, so the strict
     // limit let its sample lines read as document structure and hard-aborted the run.
     const description = conformant().replace(
-      '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
-      '## Key changes\n\n- The help output is:\n\n    ```\n    ## test: Run tests with coverage\n    ```\n',
+      KEY_CHANGES_BLOCK,
+      '## Key changes\n\n- The help output is:\n\n    ```\n    ## test: Run tests with coverage\n    ```\n' +
+        '\n\n- `skills-toolbox/plan-contract-guard.mjs`: the change area, so the subject still resolves.',
     )
     assert.deepEqual(checkPlanContract({ description }).violations, [])
   })
@@ -989,10 +1135,7 @@ describe('checkPlanContract — the scoping guarantees', () => {
     // One missing backtick line made every later heading invisible to the splitter, which reported
     // it as six missing sections — sending an unattended drafter off to re-add sections it had
     // already written. The structural checks are skipped because they read the broken split.
-    const description = conformant().replace(
-      '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
-      '## Key changes\n\n```bash\nX=1',
-    )
+    const description = conformant().replace(KEY_CHANGES_BLOCK, '## Key changes\n\n```bash\nX=1')
     const result = checkPlanContract({ description })
     assert.deepEqual(codes(result), ['not-a-description'])
     assert.match(result.violations[0].message, /never closed/)
@@ -1220,6 +1363,7 @@ describe('exported helpers', () => {
       plan: 'p.md',
       mode: 'child-plan',
       planFileExemption: null,
+      moduleRoots: [],
     })
     assert.throws(() => parseContractGuardArgs([]), /--description <path> is required/)
   })
@@ -1230,6 +1374,7 @@ describe('exported helpers', () => {
       plan: null,
       mode: 'epic-parent',
       planFileExemption: null,
+      moduleRoots: [],
     })
     assert.throws(
       () => parseContractGuardArgs(['--description', 'd.md', '--mode', 'future-parent']),
@@ -1256,6 +1401,7 @@ describe('exported helpers', () => {
         plan: 'p.md',
         mode: 'child-plan',
         planFileExemption: 'adopted-child-redraft',
+        moduleRoots: [],
       },
     )
   })

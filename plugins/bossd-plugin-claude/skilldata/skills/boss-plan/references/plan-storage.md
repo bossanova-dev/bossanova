@@ -4,7 +4,14 @@ Store every implementation plan as a native tracker attachment. Do not load publ
 write a plan link. Before any description, labels, estimate, priority, or state update:
 
 1. Call `preparePlanAttachment` with the **target issue id**, Markdown filename, `text/markdown`,
-   and byte size.
+   and byte size. **`size` is a BYTE count measured on the exact file about to be PUT** — take it
+   from `wc -c < "$PLAN_FILE"` (or `stat` on that same path), never from anything else. A character
+   count is **forbidden**: a string length counts code units, so one multi-byte character makes the
+   declared size disagree with the bytes and the signed PUT is rejected for a reason nothing in the
+   message names. A count taken from the **buffer used to build the file** is forbidden for the same
+   reason and is the harder one to spot: it measures a value that was correct before a final newline
+   or a normalization pass, so every upload is short by a byte or two and the declared size is
+   plausible. Measure the file, after it is written, on the path you are about to send.
 2. Save `uploadRequest.headers` in a private scratch JSON file named
    `.linear-plans/run-<RUN-SCRATCH-ID>/<RUN-ISSUE-ID>.attachment-headers-<n>.json`, retain its exact path until the PUT
    returns, then invoke `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" put "$PLAN_FILE" <uploadRequest.url>
@@ -16,18 +23,53 @@ write a plan link. Before any description, labels, estimate, priority, or state 
    run's own `.linear-plans/run-<RUN-SCRATCH-ID>/` directory, which Phase 5 removes whole — but the basename
    is part of the declared `attachment-headers` family in
    `$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs`, so keep it.
+   **The signed URL is short-lived — treat its validity as seconds, not minutes.** Run the prepare
+   and the PUT **back to back**: no other tool call, no intervening message, no batch of prepares
+   ahead of the uploads. A single interleaved step is enough to expire it, and an expired URL is
+   rejected with the same status as a payload mismatch.
    **A successful PUT writes the HTTP status line to stdout, and that line is the proof of work.**
    Treat an exit 0 that printed **no** status line on stdout as a **failed PUT**, never a success:
    a helper whose entry-point guard does not fire exits 0 having uploaded nothing, and finalization
    would then mint an attachment row over bytes that were never written. Read the status, do not
    infer it from the exit code alone.
-3. On a non-2xx PUT only, obtain one fresh prepare response and retry once with its URL and headers,
+   **A usage exit is a caller error to correct, never a PUT failure to retry.** The helper exits 2
+   with `plan-attachment: usage-error (no request sent)` as its first stderr line when an operand is
+   missing; nothing was sent, so re-preparing a signed URL cannot fix it. Fix the invocation and
+   re-run step 2. A PUT that actually reached the server exits 1 and prints the status — and, on a
+   non-2xx, the server's own response body, which is what separates an expired URL (re-prepare) from
+   a declared-size or header mismatch (fix step 1, then re-run).
+3. On a non-2xx PUT only — a PUT that **reached the server** and was rejected, never a usage exit —
+   obtain one fresh prepare response and retry once with its URL and headers,
    using and immediately deleting a new scratch file for that response.
 4. Call `finalizePlanAttachment` with the prepare response `assetUrl` and title
    `Implementation plan (<ISSUE-ID>)`; retain the returned attachment **id** and exact title for
    the completion report.
 5. **Read the artifact back before trusting it.** Immediately after finalization, invoke
-   `readPlanAttachment` with the retained attachment **id** and require **non-empty** content. On a
+   `readPlanAttachment` with the retained attachment **id** **in the mode that returns content**
+   (`format="content"`). The other mode, `format="url"`, returns a URL and **no content at all**, so
+   a read-back specified against it is not merely weak — it is unexecutable, and a run that reports
+   it as satisfied verified nothing.
+   **An attachment record's own `url` field is never a body source.** The bare
+   `attachment(id) { url }` shape the tracker's API exposes is **unsigned**: fetching it answers an
+   authorization error whose short JSON body is small-but-present, which is exactly what a
+   presence test scores as a healthy attachment. Only the content mode above, or a **signed** URL
+   the tracker just issued, carries the stored bytes.
+   **That signed URL has exactly one source: `readPlanAttachment` in its `format="url"` mode.** It is
+   the same mode disqualified just above — disqualified _as the read-back_, because it returns no
+   bytes, which is a different question from where a fetchable URL comes from. Call it on the
+   retained id to obtain the `<signed-url>` the digest command below takes, and treat that URL as
+   seconds-lived exactly like the upload one. Where that mode is absent, or hands back the bare
+   unsigned record `url` instead of a freshly signed one, the content-mode comparison below is the
+   whole recipe — there is no third source, and inventing one repeats the unsigned-url mistake.
+   **Compare the digest, not the size.** Require the stored bytes to equal the local plan file:
+   `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" verify "$PLAN_FILE" <signed-url>` fetches the
+   signed URL and compares SHA-256 against the file, printing `verify: match …` on stdout and
+   exiting 0, or naming both digests and both byte counts on stderr and exiting 1. It never puts the
+   stored body in your context. Where only the content mode is available, write its returned bytes
+   to a scratch file inside this run's own scratch directory and compare
+   that file's SHA-256 with the plan file's. A **digest mismatch is a confirmed-unreadable artifact**
+   and takes the same delete-then-SAFE branch as an empty read below: the row exists over bytes that
+   are not the plan. On a
    transport error, retry the read **once**; a second transport error is an unverified artifact and
    takes the SAFE branch below without deleting anything, because an unreadable transport does not
    prove the bytes are missing. A read that **succeeds** and returns empty (or otherwise absent)
@@ -38,8 +80,15 @@ write a plan link. Before any description, labels, estimate, priority, or state 
    destroy a healthy artifact.
 6. **Supersede stale duplicate plan attachments only after verified read-back.** After the
    read-back succeeds, take a **single fresh** attachment list and call
-   `selectSupersededPlanAttachments` with the freshly finalized id as `keepAttachmentId`. Delete
-   each returned exact-title attachment id with `deletePlanAttachment`. A failed supersede list takes
+   `selectSupersededPlanAttachments` with the freshly finalized id as `keepAttachmentId`, **and with
+   `keepJustFinalized: true`** — this run finalized that id moments ago, which is knowledge no field
+   on the attachment payload carries. Delete
+   each returned exact-title attachment id with `deletePlanAttachment`. **The selector throws rather
+   than returning an empty set** when it is handed exact-title candidates it cannot order and the
+   declaration is absent: an empty array and "nothing is stale" are the same value, so a selector
+   that quietly returned one let a stale duplicate survive under a clean report. A thrown selector is
+   a **failed supersede list** and takes the SAFE branch below — it is not a reason to delete
+   anything, and it never rolls back the verified publish. A failed supersede list takes
    the SAFE branch: no plan metadata/state write, no deletes from stale state, and it does not roll
    back the successful publish. Retry each failed `deletePlanAttachment` once; if it still fails,
    report the surviving duplicate attachment id in the completion report and continue with the

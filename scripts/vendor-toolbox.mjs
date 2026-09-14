@@ -31,6 +31,15 @@ export const VENDOR_MAP = {
     // repo-root skills-toolbox/ to reach back into, so without this the vendored copy fails to
     // resolve its `./gate-outcome.mjs` import and the caps helper stops loading entirely.
     'gate-outcome.mjs',
+    // bs-dispatch-claims.mjs (BOS-1243) is the single adjudicator of a dispatch report's
+    // mechanically checkable claims — a cited path, a quoted object name, a tree hash offered as
+    // the tree the gates ran on. It resolves a cited path through citation-coordinate.mjs, the
+    // one citation resolver in the tree, rather than growing a second one, so that module ships
+    // with it; an installed core has no repo-root skills-toolbox/ to reach back into. The
+    // resolver sits in its own module precisely so this reuse costs a core two kilobytes rather
+    // than plan-contract-guard.mjs's whole import closure.
+    'bs-dispatch-claims.mjs',
+    'citation-coordinate.mjs',
     'bs-review-ledger.mjs',
     'bs-review-triage.mjs',
     'bs-review-report.mjs',
@@ -53,6 +62,15 @@ export const VENDOR_MAP = {
     // See boss-review: bs-review-caps.mjs imports gate-outcome.mjs (BOS-1209) for its per-round
     // admission outcomes, and an installed core cannot reach into another core's toolbox copy.
     'gate-outcome.mjs',
+    // bs-dispatch-claims.mjs (BOS-1243) is the single adjudicator of a dispatch report's
+    // mechanically checkable claims — a cited path, a quoted object name, a tree hash offered as
+    // the tree the gates ran on. It resolves a cited path through citation-coordinate.mjs, the
+    // one citation resolver in the tree, rather than growing a second one, so that module ships
+    // with it; an installed core has no repo-root skills-toolbox/ to reach back into. The
+    // resolver sits in its own module precisely so this reuse costs a core two kilobytes rather
+    // than plan-contract-guard.mjs's whole import closure.
+    'bs-dispatch-claims.mjs',
+    'citation-coordinate.mjs',
     'bs-review-ledger.mjs',
     'bs-review-report.mjs',
     // BOS-1020: the Step 6 review loop re-checks base drift at every round boundary, so the
@@ -65,6 +83,12 @@ export const VENDOR_MAP = {
     // this skill's own toolbox rather than referenced from boss-review's copy.
     'skill-config.mjs',
     'plan-attachment.mjs',
+    // BOS-1251: Step 9's tag-state re-derivation grades the branch with the SAME
+    // non-empty-work-commit predicate the injector uses, so the module has to resolve
+    // from an installed boss-build toolbox — the push procedure runs in user repos that
+    // have no repo-root skills-toolbox/ to reach back into. boss-finalize vendors its own
+    // copy for add-pr-numbers.sh; an installed core cannot reach into another core's.
+    'commit-work-predicate.mjs',
     // Tracker operations are part of boss-build's installed runtime. Keep the
     // seam and its pure Linear helpers co-located with the skill, including the
     // bs-epic scheduler transitively imported by tracker/linear.mjs.
@@ -207,6 +231,10 @@ export const VENDOR_MAP = {
     'plan-epic-lib.mjs',
     'plan-epic-phase25.mjs',
     'plan-image-guard.mjs',
+    // citation-coordinate.mjs is plan-contract-guard.mjs's citation resolver, extracted so the
+    // claim adjudicator can reuse it without dragging this whole closure into three more cores.
+    // The guard imports it, so wherever the guard ships it must ship too.
+    'citation-coordinate.mjs',
     'plan-contract-guard.mjs',
     // plan-writeback-verify.mjs (BOS-1199) is the post-save read-back the finalize phase names by
     // path. Without it here the installed tree lacks a helper the SKILL invokes, which is a gate
@@ -273,7 +301,25 @@ export const VENDOR_MAP = {
     // bs-run-sentinel.mjs (for the shipped terminal vocabulary its terminal rung reuses) and
     // main-module.mjs, both already vendored here.
     'bs-repair-escalation.mjs',
+    // BOS-1249: bs-repair-derivations.mjs owns the round's push-state, decline-reply,
+    // residual-sink and problem-source classifications. Like the escalation ladder above, the body
+    // invokes it by path from sites that run in a CONSUMING repo — one with no repo-root
+    // skills-toolbox/ to reach back into and no guarantee any other core is installed — so it must
+    // resolve inside an INSTALLED boss-repair toolbox. It imports boss-binary.mjs (the residual
+    // sink detects the CLI through the same resolver the callback seam already uses, rather than
+    // assuming a binary a published core cannot assume) and main-module.mjs, both already vendored
+    // here.
+    'bs-repair-derivations.mjs',
     'dag-scheduler.mjs',
+    // bs-dispatch-claims.mjs (BOS-1243) is the single adjudicator of a dispatch report's
+    // mechanically checkable claims — a cited path, a quoted object name, a tree hash offered as
+    // the tree the gates ran on. It resolves a cited path through citation-coordinate.mjs, the
+    // one citation resolver in the tree, rather than growing a second one, so that module ships
+    // with it; an installed core has no repo-root skills-toolbox/ to reach back into. The
+    // resolver sits in its own module precisely so this reuse costs a core two kilobytes rather
+    // than plan-contract-guard.mjs's whole import closure.
+    'bs-dispatch-claims.mjs',
+    'citation-coordinate.mjs',
     'skill-extensions.mjs',
     // skill-config.mjs exposes notesSampleRate, which the post-terminal notes phase reads to
     // take its per-run sampling roll. boss-repair installs into user repos that have no

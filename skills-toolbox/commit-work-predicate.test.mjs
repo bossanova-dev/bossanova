@@ -15,6 +15,7 @@ import {
   parseCommitRows,
   runCli,
   selectEmptyCommits,
+  selectUntaggedWorkCommits,
   stripTagRun,
 } from './commit-work-predicate.mjs'
 
@@ -210,4 +211,107 @@ test('runCli returns 2 on a missing argument and never exits the process', () =>
   )
   assert.equal(runCli([], io), 2, 'no command at all is a usage error')
   assert.equal(runCli(['nope'], io), 2, 'an unknown command is a usage error')
+})
+
+// --- untagged-work: the tag-state re-derivation's predicate --------------------
+
+const TAG = '[#42]'
+
+// One context row below the range (no subject, never graded), then: the daemon's
+// empty bootstrap placeholder, a tagged work commit, and an untagged work commit.
+const TAG_ROWS = [
+  { sha: 'base', tree: TREE_A, parents: ['outside'] },
+  { sha: 'bootstrap', tree: TREE_A, parents: ['base'], subject: BOOTSTRAP_COMMIT_SUBJECT },
+  { sha: 'tagged', tree: TREE_B, parents: ['bootstrap'], subject: 'feat: [#42] add x' },
+  { sha: 'untagged', tree: 'c'.repeat(40), parents: ['tagged'], subject: 'fix: y' },
+]
+
+test('selectUntaggedWorkCommits exempts the commits the injector is entitled to skip', () => {
+  // The whole defect: the injector skips a known-EMPTY commit before any amend, so the
+  // bootstrap placeholder survives untagged inside the graded range. A re-derivation
+  // that graded every subject called that branch `partial` when it was fully tagged.
+  const got = selectUntaggedWorkCommits(TAG_ROWS, { emptyTree: EMPTY_TREE, tag: TAG })
+  assert.deepEqual(got, [{ sha: 'untagged', subject: 'fix: y' }])
+})
+
+test('selectUntaggedWorkCommits reports nothing when every work commit carries the tag', () => {
+  const rows = TAG_ROWS.filter((r) => r.sha !== 'untagged')
+  assert.deepEqual(selectUntaggedWorkCommits(rows, { emptyTree: EMPTY_TREE, tag: TAG }), [])
+})
+
+test('selectUntaggedWorkCommits never grades a context-only row', () => {
+  // The base row carries no subject and its own emptiness is unresolvable, so grading
+  // it would report the commit BELOW the range as untagged work.
+  const got = selectUntaggedWorkCommits(TAG_ROWS, { emptyTree: EMPTY_TREE, tag: TAG })
+  assert.ok(!got.some((c) => c.sha === 'base'))
+})
+
+test('selectUntaggedWorkCommits treats an unresolvable commit as work that owes a tag', () => {
+  // Fail-safe direction: an unresolvable parent must NOT become a licence to publish
+  // untagged work.
+  const rows = [{ sha: 'orphan', tree: TREE_A, parents: ['missing'], subject: 'fix: y' }]
+  assert.deepEqual(selectUntaggedWorkCommits(rows, { emptyTree: EMPTY_TREE, tag: TAG }), [
+    { sha: 'orphan', subject: 'fix: y' },
+  ])
+})
+
+test('parseCommitRows keeps a subject with a tab in it whole', () => {
+  const rows = parseCommitRows(`s1\t${TREE_A}\tp1\tfeat: a\tb\n`)
+  assert.equal(rows[0].subject, 'feat: a\tb')
+  // A row with only three fields has NO subject key, which is how a context-only row
+  // is distinguished from one whose subject is the empty string.
+  assert.equal(parseCommitRows(`s2\t${TREE_B}\tp1\n`)[0].subject, undefined)
+})
+
+test('the untagged-work CLI prints sha and subject for each untagged work commit', () => {
+  let out = ''
+  let err = ''
+  const stdin = [
+    `base\t${TREE_A}\toutside`,
+    `bootstrap\t${TREE_A}\tbase\t${BOOTSTRAP_COMMIT_SUBJECT}`,
+    `untagged\t${TREE_B}\tbootstrap\tfix: y`,
+  ].join('\n')
+  const code = runCli(['untagged-work', '--empty-tree', EMPTY_TREE, '--tag', TAG], {
+    stdin,
+    stdout: (t) => (out += t),
+    stderr: (t) => (err += t),
+  })
+  assert.equal(code, 0)
+  assert.equal(err, '')
+  assert.equal(out, 'untagged\tfix: y\n')
+})
+
+test('the untagged-work CLI refuses a missing --tag rather than reporting everything', () => {
+  // An absent --tag must not read as "nothing carries the tag": that reports every work
+  // commit as untagged, which looks like a catastrophic injector failure caused by a typo.
+  let out = ''
+  let err = ''
+  const code = runCli(['untagged-work', '--empty-tree', EMPTY_TREE], {
+    stdin: `c1\t${TREE_A}\tbase\tfix: y`,
+    stdout: (t) => (out += t),
+    stderr: (t) => (err += t),
+  })
+  assert.equal(code, 2)
+  assert.equal(out, '')
+  assert.match(err, /missing required --tag/)
+})
+
+test('the CLI answers --help with exit 0 and both commands', () => {
+  for (const flag of ['--help', '-h', 'help']) {
+    let out = ''
+    let err = ''
+    const code = runCli([flag], { stdout: (t) => (out += t), stderr: (t) => (err += t) })
+    assert.equal(code, 0)
+    assert.equal(err, '')
+    assert.match(out, /empty-commits/)
+    assert.match(out, /untagged-work/)
+  }
+})
+
+test('an unknown command still prints the usage block', () => {
+  let err = ''
+  const code = runCli(['bogus'], { stdout: () => {}, stderr: (t) => (err += t) })
+  assert.equal(code, 2)
+  assert.match(err, /unknown command: bogus/)
+  assert.match(err, /untagged-work/)
 })

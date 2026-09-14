@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, utimesSync } from 'node:fs'
+import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +18,9 @@ import {
   awaitAll,
   awaitDeadlineMs,
   classifyDispatch,
+  dispatchDisposition,
   legTimeoutMsFromEnv,
+  probeArtifacts,
   openDispatches,
   planBatches,
   toSentinelRouting,
@@ -224,24 +226,39 @@ test('planBatches is pure', () => {
   assert.equal(JSON.stringify(nodes), before)
 })
 
+// Both dispatch-ordering tests below record entry and exit instead of reading a clock. The claim
+// in each case is ordering, and a clock cannot establish ordering: it can only establish that a run
+// was fast or slow, which a loaded host is free to change underneath the assertion. awaitAll starts
+// every member of a wave synchronously (Promise.all over the batch), so a zero-delay yield is enough
+// to let a concurrent wave interleave while a sequential one cannot — deterministic, and in
+// milliseconds rather than the six seconds of real sleeps this replaced.
+const yieldToTheEventLoop = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+async function traceDispatch(trace, node) {
+  trace.push(`enter:${node.id}`)
+  await yieldToTheEventLoop()
+  trace.push(`exit:${node.id}`)
+  return node.id
+}
+
 test('awaitAll runs one wave concurrently through the injected dispatcher', async () => {
-  const started = Date.now()
-  const result = await awaitAll([{ id: 'a' }, { id: 'b' }], async (node) => {
-    await new Promise((resolve) => setTimeout(resolve, 2_000))
-    return node.id
-  })
-  const elapsed = Date.now() - started
-  assert.ok(elapsed < 3_000, `expected one concurrent wave under 3000ms; got ${elapsed}`)
+  const trace = []
+  const result = await awaitAll([{ id: 'a' }, { id: 'b' }], (node) => traceDispatch(trace, node))
   assert.deepEqual(result.results, [['a', 'b']])
+  // BOTH entries precede EITHER exit. Only one concurrent wave produces that; a dispatcher that ran
+  // the two one at a time would interleave enter/exit per member and fail here.
+  assert.deepEqual(trace, ['enter:a', 'enter:b', 'exit:a', 'exit:b'])
 })
 
 test('sequential waves remain sequential', async () => {
-  const started = Date.now()
-  await awaitAll([{ id: 'a' }, { id: 'b', blockedBy: ['a'] }], async () => {
-    await new Promise((resolve) => setTimeout(resolve, 2_000))
-  })
-  const elapsed = Date.now() - started
-  assert.ok(elapsed > 4_000, `expected ordered waves over 4000ms; got ${elapsed}`)
+  const trace = []
+  const result = await awaitAll([{ id: 'a' }, { id: 'b', blockedBy: ['a'] }], (node) =>
+    traceDispatch(trace, node),
+  )
+  assert.deepEqual(result.results, [['a'], ['b']])
+  // `b` has no entry before `a`'s exit. A planBatches that ignored blockedBy would put both in one
+  // wave and produce the concurrent trace above, so this cannot pass by accident.
+  assert.deepEqual(trace, ['enter:a', 'exit:a', 'enter:b', 'exit:b'])
 })
 
 test('CLI seed, classify, open, and batches are exercised by subprocesses', () => {
@@ -265,4 +282,158 @@ test('CLI seed, classify, open, and batches are exercised by subprocesses', () =
 
 test('CLI exits non-zero on bad input', () => {
   assert.notEqual(runCli(['batches', '[{\"id\":\"a\",\"blockedBy\":[\"missing\"]}]']).status, 0)
+})
+
+// ---------------------------------------------------------------------------
+// dispatchDisposition — the single publishable-verdict + recovery decision.
+// Every case is built from CONSTRUCTED sentinel state (a real run file written through
+// writeSentinel, or a real file on disk), never from a returned prose fixture.
+// ---------------------------------------------------------------------------
+
+function artifact(name, body = 'complete') {
+  const path = join(mkdtempSync(join(tmpdir(), 'bda-art-')), name)
+  writeFileSync(path, body)
+  return path
+}
+
+test('probeArtifacts splits complete survivors from absent and empty paths', () => {
+  const complete = artifact('plan.md')
+  const empty = artifact('empty.md', '')
+  const absent = join(tmpdir(), 'bda-absent-artifact.md')
+  const dir = mkdtempSync(join(tmpdir(), 'bda-dir-'))
+  const probe = probeArtifacts([complete, empty, absent, dir, '', null])
+  assert.deepEqual(probe.surviving, [complete], 'only a non-empty regular file survives')
+  assert.deepEqual(probe.missing, [empty, absent, dir])
+})
+
+test('a provisional payload is non-publishable on EVERY kind, clean included', () => {
+  for (const kind of ['clean', 'capped', 'bs-review clean: no open must-fix findings.']) {
+    const ctx = context()
+    writeSentinel(ctx, 'review', kind, { provisional: true })
+    const d = dispatchDisposition(ctx, 'review', { now: 1_000, deadlineAt: 2_000 })
+    assert.equal(d.publishable, false, `kind ${kind} must not be publishable while provisional`)
+    assert.equal(d.disposition, 'resume')
+    assert.equal(d.reason, 'provisional-payload')
+    assert.equal(d.kind, kind, 'the kind is still reported, so the caller can say what was demoted')
+  }
+  // Able to fire: the SAME kind with the marker explicitly false is publishable, so the demotion
+  // is the marker's doing and not a blanket refusal.
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', { provisional: false })
+  const earned = dispatchDisposition(ctx, 'review', { now: 1_000, deadlineAt: 2_000 })
+  assert.equal(earned.publishable, true)
+  assert.equal(earned.disposition, 'publish')
+  assert.equal(earned.reason, 'derived-verdict')
+})
+
+test('the disposition splits a resume-worthy dispatch death from a discardable one', () => {
+  // Past the deadline but inside the staleness window: the agent may still be live, so one resume
+  // is worth attempting before anything is re-dispatched from scratch.
+  const live = context()
+  const timedOut = dispatchDisposition(live, 'draft', {
+    now: 2_001,
+    deadlineAt: 2_000,
+    dispatchedAt: 2_000,
+  })
+  assert.equal(timedOut.status, TIMED_OUT)
+  assert.deepEqual(
+    [timedOut.disposition, timedOut.reason, timedOut.retainScratch],
+    ['resume', 'timed-out', false],
+  )
+
+  // Stale, and the probe found nothing: there is no evidence left to salvage, so removal is the
+  // honest action. This is the ONLY arm that authorises a destructive cleanup.
+  const dead = context()
+  const abandoned = dispatchDisposition(dead, 'draft', {
+    now: DEFAULT_OPEN_DISPATCH_STALE_MS + 1,
+    deadlineAt: 1,
+    dispatchedAt: 0,
+    openedAt: 0,
+    artifacts: [join(tmpdir(), 'bda-never-written.md')],
+  })
+  assert.equal(abandoned.status, ABANDONED)
+  assert.deepEqual(
+    [abandoned.disposition, abandoned.reason, abandoned.retainScratch],
+    ['discard', 'abandoned', false],
+  )
+})
+
+test('a surviving complete artifact outranks the death class and blocks the discard', () => {
+  const plan = artifact('BOS-plan.md', '# a finished plan the dispatch never got to report\n')
+  const ctx = context()
+  const salvaged = dispatchDisposition(ctx, 'draft', {
+    now: DEFAULT_OPEN_DISPATCH_STALE_MS + 1,
+    deadlineAt: 1,
+    dispatchedAt: 0,
+    openedAt: 0,
+    artifacts: [plan],
+  })
+  assert.equal(salvaged.status, ABANDONED, 'the death class itself is unchanged')
+  assert.equal(salvaged.disposition, 'resume', 'but recovery, not removal, is the disposition')
+  assert.equal(salvaged.reason, 'surviving-artifact')
+  assert.equal(salvaged.retainScratch, true, 'unread evidence must survive the failure branch')
+  assert.deepEqual(salvaged.surviving, [plan])
+  assert.equal(salvaged.publishable, false, 'salvage is never a verdict')
+})
+
+test('a still-running dispatch waits and keeps its scratch', () => {
+  const ctx = context()
+  const d = dispatchDisposition(ctx, 'draft', { now: 1_000, deadlineAt: 2_000, dispatchedAt: 900 })
+  assert.deepEqual(
+    [d.status, d.disposition, d.reason, d.publishable, d.retainScratch],
+    [STILL_RUNNING, 'wait', 'still-running', false, true],
+  )
+})
+
+test('CLI `disposition` and `probe` expose the same decision to shell callers', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', { provisional: true })
+  const cli = JSON.parse(runCli(['disposition', ctx.dir, ctx.runId, 'review']).stdout)
+  assert.equal(cli.disposition, 'resume')
+  assert.equal(cli.reason, 'provisional-payload')
+  assert.equal(cli.publishable, false)
+
+  const plan = artifact('plan.md')
+  const probed = JSON.parse(runCli(['probe', plan, join(tmpdir(), 'bda-nope.md')]).stdout)
+  assert.deepEqual(probed.surviving, [plan])
+
+  // Repeated --artifact flags, never a comma list: zsh does not word-split an unquoted parameter
+  // expansion, so a joined list would arrive as one path that exists nowhere.
+  const withArtifact = JSON.parse(
+    runCli(['disposition', ctx.dir, ctx.runId, 'absent', '--artifact', plan, '--deadline', '1'])
+      .stdout,
+  )
+  assert.deepEqual(withArtifact.surviving, [plan])
+  assert.equal(withArtifact.retainScratch, true)
+
+  const bad = runCli(['disposition', ctx.dir, ctx.runId, 'review', '--nope', 'x'])
+  assert.equal(bad.status, 2)
+  assert.match(bad.stderr, /unknown disposition flag/)
+
+  // A non-numeric deadline must FAIL, not fall through: NaN survives the `??=` default and loses
+  // every comparison, so an unrejected typo would classify a dead dispatch as `still-running`.
+  for (const flag of ['--deadline', '--now']) {
+    const typo = runCli(['disposition', ctx.dir, ctx.runId, 'review', flag, '3O0'])
+    assert.equal(typo.status, 2, `${flag} with a non-numeric value must fail, never default`)
+    assert.match(typo.stderr, /requires a finite number/)
+  }
+})
+
+test('CLI `guard-discard` authorises an empty probe and refuses a surviving one', () => {
+  const absent = join(tmpdir(), 'bda-guard-absent.md')
+  const authorised = runCli(['guard-discard', absent])
+  assert.equal(authorised.status, 0, 'nothing survived — the removal is authorised')
+  assert.equal(authorised.stderr, '')
+
+  const plan = artifact('plan.md', '# finished\n')
+  const refused = runCli(['guard-discard', absent, plan])
+  assert.equal(refused.status, 1, 'a survivor must REFUSE the removal, not merely report it')
+  assert.match(refused.stderr, /REFUSING removal/)
+  assert.ok(refused.stderr.includes(plan), 'the refusal must NAME what it saved')
+
+  assert.equal(
+    runCli(['guard-discard']).status,
+    2,
+    'a path-less call is a wiring error, not a pass',
+  )
 })

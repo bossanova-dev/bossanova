@@ -419,18 +419,20 @@ func TestExecute_Timeout_PreservesDeadline(t *testing.T) {
 	}
 	wt := t.TempDir()
 
+	const timeout = 200 * time.Millisecond
 	s := Spec{Type: TypeCommand, Argv: []string{"sleep", "5"}}
 	start := time.Now()
 	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: wt,
-		Timeout:      200 * time.Millisecond,
+		Timeout:      timeout,
 	})
 	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if elapsed > 2*time.Second {
+	// 10x the timeout under test, and well inside the 5s the sleep would otherwise run.
+	if elapsed > 10*timeout {
 		t.Fatalf("timeout not enforced: elapsed %v", elapsed)
 	}
 }
@@ -457,13 +459,14 @@ func TestExecute_Timeout_BoundedDespiteSurvivingGrandchild(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh and sleep binaries assumed")
 	}
-	withSetupWaitDelay(t, 200*time.Millisecond)
+	const timeout = 200 * time.Millisecond
+	withSetupWaitDelay(t, timeout)
 
 	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "sleep 10 & sleep 10"}}
 	start := time.Now()
 	_, err := s.Execute(context.Background(), ExecuteOpts{
 		WorktreePath: t.TempDir(),
-		Timeout:      200 * time.Millisecond,
+		Timeout:      timeout,
 	})
 	elapsed := time.Since(start)
 
@@ -472,7 +475,9 @@ func TestExecute_Timeout_BoundedDespiteSurvivingGrandchild(t *testing.T) {
 	}
 	// The grandchild lives 10s, so returning well inside that can only mean the
 	// pipe wait was bounded rather than waited out.
-	if elapsed > 5*time.Second {
+	// 25x the bounded wait, and half the grandchild's 10s lifetime, so a run that waited the
+	// pipe out still fails this.
+	if elapsed > 25*timeout {
 		t.Fatalf("deadline not bounded by WaitDelay: elapsed %v", elapsed)
 	}
 }
@@ -486,7 +491,8 @@ func TestExecute_SuccessfulScript_SurvivingGrandchildIsNotAFailure(t *testing.T)
 	if runtime.GOOS == "windows" {
 		t.Skip("sh and sleep binaries assumed")
 	}
-	withSetupWaitDelay(t, 200*time.Millisecond)
+	const waitDelay = 200 * time.Millisecond
+	withSetupWaitDelay(t, waitDelay)
 
 	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "sleep 10 & exit 0"}}
 	start := time.Now()
@@ -499,7 +505,8 @@ func TestExecute_SuccessfulScript_SurvivingGrandchildIsNotAFailure(t *testing.T)
 	if err != nil {
 		t.Fatalf("a successful script that left a background process must not fail: %v", err)
 	}
-	if elapsed > 5*time.Second {
+	// 25x the bounded wait, and half the background sleep's 10s lifetime.
+	if elapsed > 25*waitDelay {
 		t.Fatalf("did not return once the pipe wait was bounded: elapsed %v", elapsed)
 	}
 }

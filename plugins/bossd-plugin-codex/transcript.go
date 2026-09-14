@@ -752,7 +752,7 @@ func sessionIndexThreadName(agentSessionID string) string {
 
 	var title string
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, rolloutScanInitialBytes), rolloutScanMaxBytes)
 	for scanner.Scan() {
 		var entry codexSessionIndexEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
@@ -787,7 +787,7 @@ func chatTitleAtPath(path string) string {
 	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, rolloutScanInitialBytes), rolloutScanMaxBytes)
 
 	// Two passes via a single walk: prefer event_msg/user_message because that
 	// is the post-hello, real-user-typed entry. Fall back to the first
@@ -879,6 +879,49 @@ func truncate(s string) string {
 	return s[:cut] + ellipsis
 }
 
+// Codex rollout JSONL line limits.
+//
+// rolloutScanInitialBytes is what bufio allocates up front; rolloutScanMaxBytes
+// is the ceiling it may GROW to. Splitting them matters: the previous code
+// passed 256 KiB for both, so every scan paid the ceiling eagerly and a line
+// one byte over it failed. bufio only grows to what a line actually needs, so
+// raising the ceiling raises a bound, not a steady-state cost.
+//
+// 256 KiB was too small in practice, not in theory: a single codex rollout
+// event carrying an inlined tool result was observed at roughly 742 KiB, which
+// made `boss chat wait` fail on the transcript with a bare
+// `bufio.Scanner: token too long`. 8 MiB is ~11x that observed maximum — chosen
+// against the measurement rather than picked round, since a ceiling raised
+// without a named reason is the same defect one order of magnitude later.
+//
+// Shared by all three scanners in this file on purpose. They read the same
+// family of codex JSONL, and a divergent cap is precisely this defect
+// reappearing at a different call site.
+const (
+	rolloutScanInitialBytes = 64 * 1024
+	rolloutScanMaxBytes     = 8 * 1024 * 1024
+)
+
+// errRolloutLineTooLong classifies bufio.ErrTooLong. Without it the failure
+// reached a caller as `get transcript: bufio.Scanner: token too long` — a
+// message that names neither the file, nor the limit, nor the fact that this is
+// a readable transcript the reader refused rather than a missing one.
+var errRolloutLineTooLong = errors.New("codex rollout line exceeds the scanner limit")
+
+// classifyRolloutScanErr names an over-long line and leaves every other scanner
+// error untouched. line is the 1-based index of the last line the scanner
+// completed, so the offending line is the one after it.
+func classifyRolloutScanErr(err error, path string, line int) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, bufio.ErrTooLong) {
+		return fmt.Errorf("%w of %d bytes at %s line %d: the transcript exists but cannot be parsed",
+			errRolloutLineTooLong, rolloutScanMaxBytes, path, line+1)
+	}
+	return err
+}
+
 // parseRolloutMessages reads all chat turns from the codex rollout JSONL at
 // path and returns them as ordered []*bossanovav1.ChatMessage. Only
 // event_msg/user_message and event_msg/agent_message envelopes are converted;
@@ -900,8 +943,10 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, erro
 	var lastAssistant string
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, rolloutScanInitialBytes), rolloutScanMaxBytes)
+	line := 0
 	for scanner.Scan() {
+		line++
 		var env codexEnvelope
 		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
 			continue
@@ -933,7 +978,7 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, erro
 			lastAssistant = text
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := classifyRolloutScanErr(scanner.Err(), cleaned, line); err != nil {
 		return nil, "", err
 	}
 	return msgs, lastAssistant, nil

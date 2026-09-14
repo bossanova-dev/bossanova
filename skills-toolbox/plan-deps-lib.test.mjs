@@ -365,9 +365,32 @@ test('extractKeyChangeAreas rejects a swapped argument order rather than reading
   )
 })
 
-// The duplicated guard splits the same two faults as its `skill-config.mjs` original: a correctly
-// ordered contractless config needs a config loaded, not arguments reordered. Both directions are
+// The duplicated guard splits the same three faults as its `skill-config.mjs` original: a correctly
+// ordered contractless config needs a config loaded, not arguments reordered. Every direction is
 // pinned — the swapped case above must keep failing, or this relaxation is a vacuous gate.
+//
+// This suite is what turns the "kept in step BY HAND" note above the copy into a gate for the fault
+// CLASSIFICATION (never for the message text, which legitimately differs between the two).
+test('extractKeyChangeAreas reports an absent config as a missing config, not swapped arguments', () => {
+  const description = '## Key changes\n\n- `app/api/x.ts`\n'
+  for (const absent of [undefined, null]) {
+    assert.throws(
+      () => extractKeyChangeAreas(absent, description),
+      (error) => {
+        assert.match(error.message, /^plan-deps-lib: extractKeyChangeAreas\(config, description\)/)
+        assert.match(error.message, /no config passed/)
+        assert.doesNotMatch(
+          error.message,
+          /arguments look swapped/,
+          'an absent config is not an argument-ORDER fault',
+        )
+        return true
+      },
+      `extractKeyChangeAreas(${String(absent)}, description)`,
+    )
+  }
+})
+
 test('extractKeyChangeAreas diagnoses a correctly ordered empty config as a missing contract', () => {
   assert.throws(
     () => extractKeyChangeAreas({}, '## Key changes\n\n- `app/api/x.ts`\n'),
@@ -2049,4 +2072,68 @@ test('caller-supplied tuning that is not a list degrades instead of throwing', (
     'oriented-by-priority',
     'the header promises nothing here throws; a malformed tuning list must fall back to the default, not abort the run',
   )
+})
+
+// ---------------------------------------------------------------------------
+// Shape guard (BOS-1244 row 5)
+// ---------------------------------------------------------------------------
+
+test('areasOverlap — a bare area string raises, so the per-candidate .some() misuse fails loudly', () => {
+  const subjectAreas = ['app/api/handlers.ts']
+  const candidateAreas = ['app/web/page.tsx', 'docs/guide.md']
+
+  // The recorded misuse. `areasOverlap` returns an OBJECT, so this predicate is truthy for every
+  // candidate whatever it compared, and over-links the whole set.
+  assert.throws(
+    () => candidateAreas.some((area) => areasOverlap(subjectAreas, area)),
+    (err) => {
+      assert.match(err.message, /areasOverlap\(/, 'the message must name the function')
+      assert.match(err.message, /candidateAreas\[\]/, 'and the expected array shape')
+      return true
+    },
+  )
+
+  // Either position, and every non-array shape.
+  for (const bad of ['app/web/page.tsx', null, undefined, 42, { area: 'app/api' }]) {
+    assert.throws(() => areasOverlap(subjectAreas, bad), /areasOverlap\(/, `b=${String(bad)}`)
+    assert.throws(() => areasOverlap(bad, candidateAreas), /areasOverlap\(/, `a=${String(bad)}`)
+  }
+
+  // The correct call is untouched, in both directions.
+  assert.equal(areasOverlap(subjectAreas, candidateAreas).overlap, false)
+  assert.equal(areasOverlap(subjectAreas, ['app/api/handlers.ts']).overlap, true)
+})
+
+test('classifyDependencyEdge — a non-array area set still answers by NAME, never by throwing', () => {
+  // The ladder's never-throws promise is unchanged: it normalizes before calling the guarded helper,
+  // because it already has a named rung for an empty subject set. Both are loud; only one of them is
+  // `areasOverlap`'s own contract.
+  const result = classifyDependencyEdge({
+    config: CONFIG,
+    stateRoles: STATE_ROLES,
+    subject: { id: 'AAA-1', identifier: 'AAA-1', priority: 2, state: { name: 'Planned' } },
+    candidate: { id: 'AAA-2', identifier: 'AAA-2', priority: 2, state: { name: 'Planned' } },
+    subjectAreas: 'app/api/handlers.ts',
+    candidateAreas: 'app/api/handlers.ts',
+  })
+  assert.equal(result.edge, 'none')
+  assert.match(
+    result.reason,
+    /areas/,
+    'the ladder must reach its own named no-areas rung rather than raising',
+  )
+})
+
+test('DEFAULT_CLEARED_STATE_TYPES / DEFAULT_CANCELED_STATE_TYPES stay frozen ARRAYS (BOS-1244 row 6)', () => {
+  // Adjudicated `not a defect`: a `.has()` misuse already raises a TypeError at the call site, which
+  // is the behaviour R1 asks for. Converting either to a Set would break the two `Array.isArray`
+  // consumers in classifyDependencyEdge, silently restoring the shipped defaults over an override.
+  for (const [name, value] of [
+    ['DEFAULT_CLEARED_STATE_TYPES', DEFAULT_CLEARED_STATE_TYPES],
+    ['DEFAULT_CANCELED_STATE_TYPES', DEFAULT_CANCELED_STATE_TYPES],
+  ]) {
+    assert.ok(Array.isArray(value), `${name} must remain an array`)
+    assert.ok(Object.isFrozen(value), `${name} must remain frozen`)
+    assert.equal(typeof value.has, 'undefined', `${name}.has() must keep raising at the call site`)
+  }
 })

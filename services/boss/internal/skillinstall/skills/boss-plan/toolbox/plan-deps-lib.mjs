@@ -42,6 +42,17 @@
 // file — which is never vendored and may import anything — imports the
 // originals and asserts the copies still agree with them.
 //
+// Both state-type constants stay FROZEN ARRAYS, deliberately, and converting
+// either to a `Set` was adjudicated and rejected. The argument
+// for a `Set` is that `DEFAULT_CLEARED_STATE_TYPES.has(type)` is the natural
+// call; the answer is that it already raises `TypeError: …has is not a function`
+// at the call site, which is loud, immediate and correctly located — the
+// behaviour a shape guard exists to produce, not the misleading-verdict class
+// guards are added to remove. Converting them would additionally break the two consumers
+// below, which guard with `Array.isArray` and fall back to the default the
+// moment a `Set` fails that test — silently restoring the shipped defaults over
+// a caller's real override. Do not re-litigate this without new evidence.
+//
 // ---------------------------------------------------------------------------
 // The result shape, and the three things a naive shape gets wrong
 // ---------------------------------------------------------------------------
@@ -217,13 +228,15 @@ function namesAFile(value) {
 // the alternative is a swapped call parsing a config object as a description
 // and reporting every ticket as arealess.
 //
-// It reports TWO distinct faults, and they need OPPOSITE fixes. A value that
-// cannot be a config but could be a description — a string, above all — is a
-// genuinely swapped call, and the remedy is to reorder the arguments. A value
-// that IS config-shaped, or is simply absent, but carries no `planContract` is
-// correctly ordered; the remedy is to load a real config. Reporting the second
-// as "arguments look swapped" sends the fix toward argument order when the
-// caller passed `{}` in exactly the right position. Fault CLASSIFICATION is
+// It reports THREE distinct faults, and they need DIFFERENT fixes. An ABSENT
+// config (`undefined`/`null`) was never loaded — overwhelmingly the
+// `loadConfig`-for-`loadSkillConfig` typo — and nothing about the argument ORDER
+// is wrong. A value that cannot be a config but could be a description — a
+// string, above all — is a genuinely swapped call, and the remedy is to reorder
+// the arguments. A value that IS config-shaped but carries no `planContract` is
+// correctly ordered; the remedy is to load a real config. Reporting either of
+// the other two as "arguments look swapped" sends the fix toward argument order
+// when the caller had the order right. Fault CLASSIFICATION is
 // kept identical to the `skill-config.mjs` original this mirrors; the message
 // TEXT is not (that one also names the config file it merges), so do not diff
 // the two byte-for-byte. Nothing gates them staying in step — a new fault class
@@ -233,6 +246,11 @@ function isConfigShaped(value) {
 }
 
 function assertConfigFirst(config, fn) {
+  if (config === undefined || config === null) {
+    throw new Error(
+      `plan-deps-lib: ${fn}(config, description) — no config passed; the first argument is ${config === null ? 'null' : 'undefined'}, so nothing about the argument ORDER is wrong. Pass a config from loadSkillConfig().`,
+    )
+  }
   if (!isConfigShaped(config)) {
     throw new Error(
       `plan-deps-lib: ${fn}(config, description) — arguments look swapped; pass the config first`,
@@ -700,8 +718,28 @@ function sharedRegion(a, b) {
  *   making this module know anything about that repo.
  * @returns {{overlap: boolean, shared: string[]}} `shared` is sorted, so a
  *   re-plan of unchanged tickets produces an unchanged dependency line.
+ *
+ * BOTH positional arguments are AREA SETS, and passing a bare area string
+ * raises. The return is an OBJECT, so the natural-looking per-candidate call
+ * `candidateAreas.some(t => areasOverlap(subjectAreas, t))` is always truthy
+ * whatever it compared, and over-links every candidate in the set — a wrong
+ * answer the caller then writes to the tracker as a real blocking edge. A bare
+ * string also expands to the EMPTY set, so the misuse cannot be caught by
+ * reading `shared` either. Raising is the only report that reaches the caller.
  */
 export function areasOverlap(a, b, options = {}) {
+  for (const [label, value] of [
+    ['a', a],
+    ['b', b],
+  ]) {
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `plan-deps-lib: areasOverlap(subjectAreas[], candidateAreas[], options) — ${label} is not an array; got ${
+          value === null ? 'null' : typeof value
+        } ${JSON.stringify(value)}. Both positional arguments are area SETS; the return is {overlap, shared}, so a per-candidate .some(t => areasOverlap(a, t)) is always truthy.`,
+      )
+    }
+  }
   const supplied = Array.isArray(options.repoWideTokens) ? options.repoWideTokens : []
   const wide = new Set(
     (options.replaceRepoWideTokens === true
@@ -912,7 +950,18 @@ export function classifyDependencyEdge(input = {}) {
 
   // Rung 3 — establish a basis. No basis means STOP: orientation is unreachable
   // from here, which is what stops priority from serializing disjoint tickets.
-  const overlap = areasOverlap(subjectAreas, candidateAreas, { repoWideTokens, areaAliases })
+  // Normalized to arrays HERE, not inside `areasOverlap`: that helper raises on a non-array (the
+  // per-candidate `.some(t => areasOverlap(a, t))` misuse is invisible otherwise), while the ladder
+  // keeps this module's never-throws promise and already answers a non-array subject set by NAME,
+  // through the `no-areas` rung below (measured: a string `subjectAreas` yields `reason:'no-areas'`).
+  // The similarly-named `no-subject-areas` is a NOTE reason emitted by the CALLER,
+  // `planDependencyEdges`, and not a rung in this function — do not go looking for it here. Both are
+  // loud; only one of them is this function's contract.
+  const overlap = areasOverlap(
+    Array.isArray(subjectAreas) ? subjectAreas : [],
+    Array.isArray(candidateAreas) ? candidateAreas : [],
+    { repoWideTokens, areaAliases },
+  )
   const logical = normalizeLogical(logicalDependency)
   // Logical outranks overlap: rung 4 keeps a cleared logical prerequisite and
   // drops a cleared overlap, so a pair holding both must take the logical path.

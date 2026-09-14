@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +29,9 @@ const TEST_CONFIG = {
   },
 }
 
+// `## Key changes` names repo-relative paths rather than the shared filler prose: the plan-contract
+// gate resolves the subject's own change areas from the composed description before the attachment
+// is finalized, and prose that names no path resolves to zero areas.
 const descriptionSummary = (planningLines = ['- Contract: v1']) =>
   `${requiredPlanSections(DEFAULT_CONFIG)
     .map((heading) => `${heading}\n\nBounded metadata summary prose for ${heading}.`)
@@ -36,6 +39,10 @@ const descriptionSummary = (planningLines = ['- Contract: v1']) =>
     .replace(
       '## Planning\n\nBounded metadata summary prose for ## Planning.',
       `## Planning\n\n${planningLines.join('\n')}`,
+    )
+    .replace(
+      '## Key changes\n\nBounded metadata summary prose for ## Key changes.',
+      '## Key changes\n\n- `skills-toolbox/plan-run-guards.mjs`: the bounded change.',
     )}\n`
 
 const metadata = (overrides = {}) => ({
@@ -63,6 +70,24 @@ test('validateDraftMetadata accepts a well-formed bounded metadata object', () =
   assert.deepEqual(result.missing, [])
   assert.deepEqual(result.invalid, [])
   assert.deepEqual(result.violations, [])
+})
+
+test('validateDraftMetadata hands moduleRoots to the contract check', () => {
+  // The same list the dependency scan gets. Without it the contract check ran with an empty one
+  // and rejected a `## Key changes` naming a marked bare module name that the scan resolves fine.
+  const bareModule = metadata({
+    descriptionSummary: descriptionSummary().replace(
+      '- `skills-toolbox/plan-run-guards.mjs`: the bounded change.',
+      '- `bossalib`: the shared library.',
+    ),
+  })
+  const codes = (result) => result.violations.map((violation) => violation.code)
+  assert.ok(
+    codes(validateDraftMetadata(bareModule)).includes(
+      'description-summary-subject-areas-unresolved',
+    ),
+  )
+  assert.deepEqual(validateDraftMetadata(bareModule, { moduleRoots: ['bossalib'] }).violations, [])
 })
 
 test('validateDraftMetadata rejects missing descriptionSummary', () => {
@@ -113,6 +138,270 @@ test('validateDraftMetadata rejects unknown keys and leaked plan bodies in descr
   assert.ok(
     leaked.violations.some((violation) => violation.code === 'description-summary-unknown-section'),
   )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1254: `descriptionSummary` is a discriminated union — today's inline string, or a
+// by-reference `{ path }` naming THIS run's declared `description` scratch artifact. The
+// contract required the field inline while forbidding the drafter to return plan content, and
+// the dispatch return channel is not byte-preserving, so the bytes a `--require-verbatim` gate
+// later compares had no legal channel. These cases pin the widening as FAIL-CLOSED: the check
+// still runs, and it runs over the resolved BYTES rather than over the path.
+// ---------------------------------------------------------------------------
+
+const DESCRIPTION_REF = '.linear-plans/run-abc123/BOS-1.description.md'
+const PLAN_REF = '.linear-plans/run-abc123/BOS-1-test.md'
+
+test('validateDraftMetadata accepts a by-reference descriptionSummary when a resolver is supplied', () => {
+  const bytes = descriptionSummary()
+  const seen = []
+  const result = validateDraftMetadata(
+    metadata({ descriptionSummary: { path: DESCRIPTION_REF } }),
+    {
+      resolveDescription: (file) => {
+        seen.push(file)
+        return bytes
+      },
+    },
+  )
+
+  assert.equal(result.ok, true, JSON.stringify(result.violations))
+  assert.deepEqual(result.invalid, [])
+  assert.deepEqual(result.violations, [])
+  assert.deepEqual(seen, [DESCRIPTION_REF], 'the guard must resolve the reference it was given')
+})
+
+test('validateDraftMetadata refuses a by-reference descriptionSummary with no resolver', () => {
+  // The non-vacuity pin: widening the accepted SHAPE must not become a blanket pass. A caller
+  // that accepts the reference without hydrating it is refused, never silently skipped.
+  const result = validateDraftMetadata(metadata({ descriptionSummary: { path: DESCRIPTION_REF } }))
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.code === 'description-summary-unresolved'),
+    'an unhydrated reference must fire description-summary-unresolved',
+  )
+})
+
+test('validateDraftMetadata refuses a reference outside the description scratch family', () => {
+  for (const path of [PLAN_REF, '.linear-plans/BOS-1.description.md', 'BOS-1.description.md']) {
+    const result = validateDraftMetadata(metadata({ descriptionSummary: { path } }), {
+      resolveDescription: () => descriptionSummary(),
+    })
+    assert.equal(result.ok, false, path)
+    assert.ok(result.invalid.includes('descriptionSummary'), path)
+    assert.ok(
+      result.violations.some((violation) => violation.code === 'description-summary-bad-reference'),
+      `${path} must fire description-summary-bad-reference`,
+    )
+  }
+})
+
+test('validateDraftMetadata refuses a malformed reference object and non-union values', () => {
+  const malformed = validateDraftMetadata(
+    metadata({ descriptionSummary: { path: DESCRIPTION_REF, inline: 'also this' } }),
+    { resolveDescription: () => descriptionSummary() },
+  )
+  assert.equal(malformed.ok, false)
+  assert.ok(
+    malformed.violations.some(
+      (violation) => violation.code === 'description-summary-bad-reference',
+    ),
+  )
+
+  for (const value of [42, ['a'], null, '', '   ']) {
+    const result = validateDraftMetadata(metadata({ descriptionSummary: value }), {
+      resolveDescription: () => descriptionSummary(),
+    })
+    assert.equal(result.ok, false, JSON.stringify(value))
+    assert.deepEqual(result.invalid, ['descriptionSummary'], JSON.stringify(value))
+  }
+})
+
+test('validateDraftMetadata runs the description contract over the RESOLVED bytes', () => {
+  // Proves the resolver reads bytes rather than pattern-matching a path: the reference is the
+  // same accepted one as the passing case above, and only the file's content differs.
+  const truncated = descriptionSummary().replace(
+    /## Required proof\n\nBounded metadata summary prose for ## Required proof\.\n\n/,
+    '',
+  )
+  assert.ok(!truncated.includes('## Required proof'), 'the fixture must drop a required section')
+
+  const result = validateDraftMetadata(
+    metadata({ descriptionSummary: { path: DESCRIPTION_REF } }),
+    {
+      resolveDescription: () => truncated,
+    },
+  )
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some(
+      (violation) => violation.code === 'description-summary-missing-sections',
+    ),
+    `expected description-summary-missing-sections, got ${JSON.stringify(result.violations.map((v) => v.code))}`,
+  )
+})
+
+test('validateDraftMetadata reports an unreadable reference rather than throwing', () => {
+  const result = validateDraftMetadata(
+    metadata({ descriptionSummary: { path: DESCRIPTION_REF } }),
+    {
+      resolveDescription: () => {
+        throw new Error('ENOENT: no such file')
+      },
+    },
+  )
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.code === 'description-summary-unreadable'),
+  )
+})
+
+test('the Atomic-5 justification is read from the resolved bytes of a by-reference summary', () => {
+  // The estimate-5 sub-check reads the same union arm the contract check does; a reference whose
+  // bytes carry the justification must not be refused for a justification it does carry.
+  const withAtomic = validateDraftMetadata(
+    metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } }),
+    {
+      resolveDescription: () =>
+        descriptionSummary(['- Contract: v1', '- Atomic-5: one indivisible cutover']),
+    },
+  )
+  assert.equal(withAtomic.ok, true, JSON.stringify(withAtomic.violations))
+
+  const without = validateDraftMetadata(
+    metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } }),
+    { resolveDescription: () => descriptionSummary() },
+  )
+  assert.equal(without.ok, false)
+  assert.ok(without.violations.some((violation) => violation.code === 'missing-atomic-5'))
+})
+
+test('an estimate-5 arm that carried no bytes is not also accused of missing its Atomic-5', () => {
+  // Regression: reading the union once, above the estimate check, made `descriptionText` null on
+  // every non-`text` arm — so an unhydrated or unreadable reference fabricated `missing-atomic-5`
+  // on top of its real cause, sending the reader to edit a `## Planning` section in a file this
+  // run never opened. Only arms that actually carried bytes may be judged for the justification.
+  const assertNoFabricatedAtomic5 = (result, expectedCode) => {
+    const codes = result.violations.map((violation) => violation.code)
+    assert.equal(result.ok, false, JSON.stringify(codes))
+    assert.ok(
+      codes.includes(expectedCode),
+      `expected ${expectedCode}, got ${JSON.stringify(codes)}`,
+    )
+    assert.ok(
+      !codes.includes('missing-atomic-5'),
+      `a non-text arm must not fabricate missing-atomic-5, got ${JSON.stringify(codes)}`,
+    )
+    assert.ok(
+      !result.invalid.includes('estimate'),
+      `a non-text arm must not mark estimate invalid, got ${JSON.stringify(result.invalid)}`,
+    )
+  }
+
+  // No resolver: the shape is well-formed, the cause is that nobody hydrated it.
+  assertNoFabricatedAtomic5(
+    validateDraftMetadata(metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } })),
+    'description-summary-unresolved',
+  )
+
+  // Unreadable: hydration was attempted and failed; that is the cause, and the only one.
+  assertNoFabricatedAtomic5(
+    validateDraftMetadata(
+      metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } }),
+      {
+        resolveDescription: () => {
+          throw new Error('ENOENT: no such file')
+        },
+      },
+    ),
+    'description-summary-unreadable',
+  )
+
+  // A reference outside the description family never got as far as bytes either.
+  assertNoFabricatedAtomic5(
+    validateDraftMetadata(metadata({ estimate: 5, descriptionSummary: { path: PLAN_REF } }), {
+      resolveDescription: () => descriptionSummary(),
+    }),
+    'description-summary-bad-reference',
+  )
+
+  // Unchanged for every shape that was legal before the union existed: an inline string still
+  // carries its own bytes, and an absent key still leaves estimate 5 with nothing to justify it.
+  const inline = validateDraftMetadata(
+    metadata({
+      estimate: 5,
+      descriptionSummary: descriptionSummary(['- Contract: v1', '- Atomic-5: one cutover']),
+    }),
+  )
+  assert.equal(inline.ok, true, JSON.stringify(inline.violations))
+
+  const inlineWithout = validateDraftMetadata(metadata({ estimate: 5 }))
+  assert.ok(inlineWithout.violations.some((violation) => violation.code === 'missing-atomic-5'))
+  assert.ok(inlineWithout.invalid.includes('estimate'))
+
+  const absent = metadata({ estimate: 5 })
+  delete absent.descriptionSummary
+  const absentResult = validateDraftMetadata(absent)
+  assert.ok(
+    absentResult.violations.some((violation) => violation.code === 'missing-atomic-5'),
+    'a missing descriptionSummary still cannot justify an estimate 5',
+  )
+  assert.ok(absentResult.invalid.includes('estimate'))
+
+  // `invalid` is deliberately still judged — an empty string behaved that way before the union.
+  const empty = validateDraftMetadata(metadata({ estimate: 5, descriptionSummary: '' }))
+  assert.ok(empty.violations.some((violation) => violation.code === 'missing-atomic-5'))
+  assert.deepEqual(empty.invalid, ['estimate', 'descriptionSummary'])
+})
+
+// The CLI verb is the boundary the orchestrator actually invokes, and it is the only place the
+// reference is hydrated — an exported-function test alone cannot prove hydration happens there.
+function writeByReferenceFixture({ descriptionBytes }) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-ref-'))
+  const runDir = path.join(dir, '.linear-plans', 'run-abc123')
+  mkdirSync(runDir, { recursive: true })
+  writeFileSync(path.join(runDir, 'BOS-1.description.md'), descriptionBytes)
+  const metadataPath = path.join(dir, 'metadata.json')
+  writeFileSync(
+    metadataPath,
+    JSON.stringify(metadata({ descriptionSummary: { path: DESCRIPTION_REF } })),
+  )
+  return { dir, metadataPath }
+}
+
+test('the metadata CLI hydrates a by-reference descriptionSummary from disk', () => {
+  const good = writeByReferenceFixture({ descriptionBytes: descriptionSummary() })
+  const pass = spawnSync(process.execPath, [GUARD, 'metadata', good.metadataPath], {
+    cwd: good.dir,
+    encoding: 'utf8',
+  })
+  assert.equal(pass.status, 0, pass.stderr)
+
+  const bad = writeByReferenceFixture({
+    descriptionBytes: descriptionSummary().replace('## Required proof', '## Not A Real Section'),
+  })
+  const fire = spawnSync(process.execPath, [GUARD, 'metadata', bad.metadataPath], {
+    cwd: bad.dir,
+    encoding: 'utf8',
+  })
+  assert.equal(fire.status, 1)
+  assert.match(fire.stderr, /description-summary-/)
+
+  const missing = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-ref-'))
+  const missingMetadata = path.join(missing, 'metadata.json')
+  writeFileSync(
+    missingMetadata,
+    JSON.stringify(metadata({ descriptionSummary: { path: DESCRIPTION_REF } })),
+  )
+  const unreadable = spawnSync(process.execPath, [GUARD, 'metadata', missingMetadata], {
+    cwd: missing,
+    encoding: 'utf8',
+  })
+  assert.equal(unreadable.status, 1)
+  assert.match(unreadable.stderr, /description-summary-unreadable/)
 })
 
 test('planIdempotencePrecheck noops only when all three conjuncts hold', () => {
@@ -351,4 +640,65 @@ test('every verb whose body throws records under its own gate id, never the usag
       [`plan-run-guards.${verb}`, 'fire', 'unreadable-input'],
     ])
   }
+})
+
+// ---------------------------------------------------------------------------
+// Shape guard (BOS-1244 row 7)
+// ---------------------------------------------------------------------------
+
+test('the idempotence verb refuses a {issue:{…}} wrapper instead of printing action:"plan"', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-wrapper-'))
+  const bare = path.join(dir, 'bare.json')
+  const wrapped = path.join(dir, 'wrapped.json')
+  const unplanned = path.join(dir, 'unplanned.json')
+  writeFileSync(bare, JSON.stringify(issue()))
+  writeFileSync(wrapped, JSON.stringify({ issue: issue() }))
+  writeFileSync(unplanned, JSON.stringify(issue({ status: 'Unplanned', attachments: [] })))
+
+  // The wrapper used to leave every field undefined, so all three reasons fired and the verb printed
+  // a verdict byte-identical to the genuinely-unplanned one below — the guard reading as working
+  // while having evaluated nothing.
+  const wrappedRun = runGuardRecording(['idempotence', wrapped], path.join(dir, 'wrapped.tsv'))
+  assert.notEqual(wrappedRun.status, 0, 'a wrapper must exit non-zero')
+  assert.equal(wrappedRun.stdout, '', 'and must print no verdict line at all')
+  assert.match(wrappedRun.stderr, /unreadable-input/, 'routed through the named verb reason')
+  assert.match(
+    wrappedRun.stderr,
+    /idempotence <issue\.json>/,
+    'the message names the expected shape',
+  )
+  assert.deepEqual(recordedOutcomes(path.join(dir, 'wrapped.tsv')), [
+    ['plan-run-guards.idempotence', 'fire', 'unreadable-input'],
+  ])
+  // BOS-1244 review round 1 (boss-review-ce). The `unreadable-input` handler supplies the module
+  // prefix itself, so the thrown message must not carry a second one: this printed
+  // `unreadable-input: plan-run-guards: plan-run-guards: …`, a stutter no sibling diagnostic here has.
+  assert.doesNotMatch(
+    wrappedRun.stderr,
+    /plan-run-guards: plan-run-guards:/,
+    'the module prefix must appear exactly once',
+  )
+
+  // The verdict the wrapper used to impersonate is still produced for a real unplanned ticket.
+  const unplannedRun = runGuardRecording(
+    ['idempotence', unplanned],
+    path.join(dir, 'unplanned.tsv'),
+  )
+  assert.equal(unplannedRun.status, 0, unplannedRun.stderr)
+  assert.equal(JSON.parse(unplannedRun.stdout).action, 'plan')
+
+  // And the bare object — the documented shape — is unaffected.
+  const bareRun = runGuardRecording(['idempotence', bare], path.join(dir, 'bare.tsv'))
+  assert.equal(bareRun.status, 0, bareRun.stderr)
+  assert.ok(['noop', 'plan'].includes(JSON.parse(bareRun.stdout).action))
+})
+
+test('planIdempotencePrecheck is unchanged for an issue that legitimately carries an `issue` field', () => {
+  // The guard is scoped to an object whose ONLY own key is `issue`; a real payload with its own
+  // fields plus one called `issue` is not the recorded mistake and must still be evaluated.
+  const result = planIdempotencePrecheck({
+    issue: issue({ issue: 'a field of its own' }),
+    config: TEST_CONFIG,
+  })
+  assert.deepEqual(result, { action: 'noop', reasons: [] })
 })

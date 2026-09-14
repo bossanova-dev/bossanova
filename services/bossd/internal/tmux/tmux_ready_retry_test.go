@@ -267,10 +267,11 @@ func TestReadyRetry_VanishedPaneStopsImmediately(t *testing.T) {
 				failCapturePaneFrom: &zero,
 				failWithStderr:      map[string]string{"has-session": defaultCaptureFailStderr},
 			}
+			const attemptBudget = 5 * time.Second
 			c := NewClient(WithCommandFactory(fake.factory))
 			started := time.Now()
 			err := c.sendPlan(context.Background(), "boss-test-sess", retryPlanBody, sendPlanOpts{
-				deadline:      5 * time.Second,
+				deadline:      attemptBudget,
 				pollInterval:  retryPollInterval,
 				readyAttempts: attempts,
 			})
@@ -288,9 +289,13 @@ func TestReadyRetry_VanishedPaneStopsImmediately(t *testing.T) {
 			if !strings.Contains(err.Error(), "has-session reports no such session") {
 				t.Errorf("vanished error does not say how it knows: %v", err)
 			}
-			// Roughly one poll interval, against a 5s budget per attempt.
-			if elapsed > time.Second {
-				t.Errorf("waited %v for a session tmux said was gone", elapsed)
+			// A hundred poll intervals — the 1s ceiling this assertion always carried, now derived
+			// from the quantity the claim actually names. The shortcut returns after roughly ONE
+			// poll interval, so the margin is 100x; a run that failed to notice the vanished
+			// session would poll the whole 5s attemptBudget out, 5x above this.
+			const vanishCeiling = 100 * retryPollInterval
+			if elapsed > vanishCeiling {
+				t.Errorf("waited %v for a session tmux said was gone; ceiling %v", elapsed, vanishCeiling)
 			}
 			assertNoDestructiveTmuxCalls(t, fake)
 		})
@@ -428,24 +433,26 @@ func TestReadyRetry_NoAttemptStartsItCannotFinish(t *testing.T) {
 	}
 	fake := neverReadyFactory()
 	c := NewClient(WithCommandFactory(fake.factory))
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	const attemptDeadline = 100 * time.Millisecond
+	const callerBudget = 250 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), callerBudget)
 	defer cancel()
-	started := time.Now()
 	err := c.sendPlan(ctx, "boss-test-sess", "plan body", sendPlanOpts{
-		deadline:      100 * time.Millisecond,
+		deadline:      attemptDeadline,
 		pollInterval:  retryPollInterval,
 		readyAttempts: 3,
 	})
-	elapsed := time.Since(started)
 	if err == nil {
 		t.Fatal("expected a readiness timeout, got nil")
 	}
+	// One attempt, not three, and the count is the whole claim: waitForReadyMarkerWithAttempts
+	// increments attemptsRun BEFORE each wait, so a second attempt that started and was then cut
+	// short still reports "2 of 3" here. A wall-clock bound cannot add to that and subtracts from
+	// it — one attempt and two differ by roughly one attemptDeadline, which a loaded host closes.
+	// This test read the clock until BOS-1252 and went red at 208ms against a 200ms bound while
+	// the implementation was correct; the recorded count cannot drift under load.
 	if !strings.Contains(err.Error(), "after 1 of 3 attempts") {
 		t.Errorf("error does not report that the remaining budget stopped the retry: %v", err)
-	}
-	// One attempt, not three: the guard must fire before the second starts.
-	if elapsed > 200*time.Millisecond {
-		t.Errorf("ran for %v — a second attempt was started with no budget to finish it", elapsed)
 	}
 }
 

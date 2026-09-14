@@ -21,11 +21,13 @@ import {
   resolveSurfacePlan,
   shouldPostDocsBuildCheck,
   shouldCleanupRunDir,
+  planRecipeSurfaceRuns,
   tuiAgentBridgeEnv,
   tuiAgentCanCapture,
   tuiAgentUsable,
   uploadBundle,
   UPLOAD_RETRY_BACKOFF_MS,
+  videoRecipeToolchainMissing,
 } from './proof.mjs'
 
 const repoRootForTest = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -997,6 +999,345 @@ test('D5: TUI consuming the shared budget defers web with budget-exceeded (exit 
   assert.equal(perSurface[1].outcome, 'deferred')
   assert.equal(perSurface[1].reasonCode, 'budget-exceeded')
   assert.equal(aggregateExitCode(perSurface), 0)
+})
+
+// ── BOS-1250: the agent dispatch ACCOUNTS for the classifier's recipe set ────
+//
+// `main()` returns into runAgentSurfaces whenever the diff classifies into any
+// agent surface; that path used to read plan.order/plan.scoped but never
+// plan.recipes, so every marketing/docs recipe the SAME classifier selected was
+// dropped while the run still exited 0 (BOS-864). planRecipeSurfaceRuns is the
+// exported seam that closes it — runAgentSurfaces itself is unexported and
+// process-coupled, so its call site is deliberately one call + one push and all
+// the behaviour under test lives here.
+
+const recipeFor = (id, surface) => ({
+  id,
+  surface,
+  title: `${id} title`,
+  route: '/',
+  capture: 'still',
+})
+
+const MARKETING_HOME = recipeFor('marketing-home', 'marketing')
+const MARKETING_CHANGELOG = recipeFor('marketing-changelog', 'marketing')
+const DOCS_TROUBLESHOOTING = recipeFor('docs-troubleshooting', 'docs')
+
+const captureOk = ({ recipe }) => ({
+  recipeId: recipe.id,
+  title: recipe.title,
+  surface: recipe.surface,
+  status: 'passed',
+  mediaType: 'png',
+  fileName: `${recipe.id}/${recipe.id}.png`,
+})
+const captureFails = ({ recipe }) => ({
+  recipeId: recipe.id,
+  title: recipe.title,
+  surface: recipe.surface,
+  status: 'failed',
+  error: `capture blew up: ${recipe.id}`,
+})
+
+// No browser, no ffmpeg, no network: every impure seam is injected.
+const legDeps = (over = {}) => ({
+  evaluatePreflight: () => null,
+  toolchainMissing: () => [],
+  capture: captureOk,
+  now: () => 0,
+  ...over,
+})
+
+/**
+ * R1 as an executable rule: every selected recipe id is either CAPTURED (its id
+ * appears in a surface run's captureShapes) or NAMED (its surface appears in a
+ * perSurface entry carrying a reason code). Anything else is the silent drop.
+ */
+function assertEveryRecipeAccountedFor(selected, runs) {
+  const captureShapeIds = new Set(runs.flatMap((r) => r.captureShapes ?? []).map((c) => c.recipeId))
+  const deferredSurfaces = new Set(
+    classifySurfaceOutcomes(runs)
+      .filter((p) => p.reasonCode)
+      .map((p) => p.surface),
+  )
+  for (const recipe of selected) {
+    assert.ok(
+      captureShapeIds.has(recipe.id) || deferredSurfaces.has(recipe.surface),
+      `recipe ${recipe.id} (${recipe.surface}) was dropped: neither captured nor named with a reason code`,
+    )
+  }
+}
+
+const RECIPE_LEG_CASES = [
+  {
+    name: 'mixed marketing+docs set → one run per recipe surface, capture ids == selected ids',
+    recipes: [MARKETING_HOME, MARKETING_CHANGELOG, DOCS_TROUBLESHOOTING],
+    deps: {},
+    surfaces: ['marketing', 'docs'],
+    reasonCodes: [null, null],
+    captureShapeIds: ['marketing-home', 'marketing-changelog', 'docs-troubleshooting'],
+  },
+  {
+    name: 'empty recipe set → zero surface runs (agent-only runs stay unchanged)',
+    recipes: [],
+    deps: {},
+    surfaces: [],
+    reasonCodes: [],
+    captureShapeIds: [],
+  },
+  {
+    name: 'exhausted shared pool → budget-exceeded with zero captures',
+    recipes: [MARKETING_HOME, DOCS_TROUBLESHOOTING],
+    deps: {},
+    opts: { elapsedMs: 17 * 60 * 1000, totalBudgetMs: 17 * 60 * 1000 },
+    surfaces: ['marketing', 'docs'],
+    reasonCodes: ['budget-exceeded', 'budget-exceeded'],
+    captureShapeIds: [],
+  },
+  {
+    name: 'failed capture → neutral no-media deferral for that surface, never pipeline-error',
+    recipes: [MARKETING_HOME],
+    deps: { capture: captureFails },
+    surfaces: ['marketing'],
+    reasonCodes: ['no-media'],
+    // The FAILED shape is retained: that is what keeps the recipe named in the
+    // manifest instead of silently dropped. It carries no fileName, so
+    // surfaceRunHasMedia stays false and the surface classifies as a deferral.
+    captureShapeIds: ['marketing-home'],
+  },
+  {
+    name: 'recipe preflight miss → every recipe surface deferred env-unavailable, none dropped',
+    recipes: [MARKETING_HOME, DOCS_TROUBLESHOOTING],
+    deps: {
+      evaluatePreflight: () => ({
+        reasonCode: 'env-unavailable',
+        missing: ['BOSS_PROOF_R2_BUCKET'],
+      }),
+    },
+    surfaces: ['marketing', 'docs'],
+    reasonCodes: ['env-unavailable', 'env-unavailable'],
+    captureShapeIds: [],
+  },
+  {
+    name: 'missing ffmpeg/ffprobe → every recipe surface deferred env-unavailable naming the tools',
+    recipes: [MARKETING_HOME, DOCS_TROUBLESHOOTING],
+    deps: { toolchainMissing: () => ['ffmpeg', 'ffprobe'] },
+    surfaces: ['marketing', 'docs'],
+    reasonCodes: ['env-unavailable', 'env-unavailable'],
+    captureShapeIds: [],
+  },
+]
+
+for (const tc of RECIPE_LEG_CASES) {
+  test(`planRecipeSurfaceRuns: ${tc.name}`, () => {
+    let captureCalls = 0
+    const deps = legDeps({
+      ...tc.deps,
+      capture: (arg) => {
+        captureCalls += 1
+        return (tc.deps.capture ?? captureOk)(arg)
+      },
+    })
+    const runs = planRecipeSurfaceRuns({
+      recipes: tc.recipes,
+      localDir: '/tmp/does-not-exist',
+      shouldUpload: false,
+      deps,
+      ...(tc.opts ?? {}),
+    })
+
+    assert.deepEqual(
+      runs.map((r) => r.surface),
+      tc.surfaces,
+      'one surface run per recipe surface, in selection order',
+    )
+    const perSurface = classifySurfaceOutcomes(runs)
+    assert.deepEqual(
+      perSurface.map((p) => p.reasonCode),
+      tc.reasonCodes,
+    )
+    assert.deepEqual(
+      runs.flatMap((r) => r.captureShapes ?? []).map((c) => c.recipeId),
+      tc.captureShapeIds,
+    )
+    // A gate miss must cost nothing: no capture is spawned behind a closed gate.
+    // (A capture that RAN and failed still produces a shape, so this keys off the
+    // shapes rather than off the reason code.)
+    assert.equal(
+      captureCalls,
+      tc.captureShapeIds.length,
+      'a deferred leg must not spawn a capture, and a run leg spawns exactly one per recipe',
+    )
+    // R1 holds in EVERY row, deferral or capture.
+    assertEveryRecipeAccountedFor(tc.recipes, runs)
+    // R3 / the exit contract: the recipe leg never contributes a failing exit.
+    assert.equal(aggregateExitCode(perSurface), 0)
+    assert.ok(
+      runs.every((r) => r.hasFailure === false),
+      'hasFailure would flip the SHARED manifest verdict and map to agent-incomplete (exit 1)',
+    )
+  })
+}
+
+test('planRecipeSurfaceRuns: a failed recipe capture degrades ONLY its own surface', () => {
+  const runs = planRecipeSurfaceRuns({
+    recipes: [MARKETING_HOME, DOCS_TROUBLESHOOTING],
+    localDir: '/tmp/does-not-exist',
+    shouldUpload: false,
+    deps: legDeps({
+      capture: (arg) => (arg.recipe.surface === 'docs' ? captureFails(arg) : captureOk(arg)),
+    }),
+  })
+  // The sibling agent surface is appended by the dispatcher ahead of these runs.
+  const agentRun = {
+    surface: 'tui',
+    captureShapes: [{ recipeId: 'tui-scene', fileName: 'tui/tui.mp4' }],
+    brief: {},
+    agentResult: { passed: true, summary: 'tui scene', evidence: [], steps: 0 },
+    hasFailure: false,
+    noSurface: false,
+    reasonCode: null,
+    elapsedMs: 60_000,
+  }
+  const all = [agentRun, ...runs]
+  const perSurface = classifySurfaceOutcomes(all)
+
+  assert.deepEqual(
+    perSurface.map((p) => [p.surface, p.outcome, p.reasonCode]),
+    [
+      ['tui', 'passed', null],
+      ['marketing', 'passed', null],
+      ['docs', 'deferred', 'no-media'],
+    ],
+  )
+  // The failing surface carries the capture's real error, so the deferral is not opaque.
+  assert.match(perSurface[2].error ?? '', /capture blew up: docs-troubleshooting/)
+  // R2: the agent surface keeps its captures and its outcome, untouched.
+  assert.deepEqual(agentRun.captureShapes, [{ recipeId: 'tui-scene', fileName: 'tui/tui.mp4' }])
+  // The failed recipe is still NAMED in the manifest's flat captures.
+  assert.deepEqual(
+    all.flatMap((r) => r.captureShapes ?? []).map((c) => c.recipeId),
+    ['tui-scene', 'marketing-home', 'docs-troubleshooting'],
+  )
+  // Neutral: a flaky marketing/docs capture must not start failing runs that pass today.
+  assert.equal(aggregateExitCode(perSurface), 0)
+  assert.equal(
+    all.some((r) => r.hasFailure),
+    false,
+    'the shared manifest verdict stays passed for the sibling agent surface',
+  )
+})
+
+// The BOS-864 scene end-to-end, through the REAL default catalog: a TUI diff
+// that also edits a docs page classified to `order: ["tui"]` with four docs
+// recipes selected, and the dispatch dropped all four while exiting 0. The
+// classifier is unchanged by this fix — what changes is that the dispatch now
+// accounts for what it already selected.
+test('BOS-864: a mixed TUI+docs diff accounts for every docs recipe the classifier selected', () => {
+  withAgentSurfaceEnv({}, () => {
+    const changedFiles = [
+      'services/boss/internal/views/home.go',
+      'services/docs/docs/help/troubleshooting.md',
+    ]
+    const plan = resolveSurfacePlan({
+      catalog: defaultCatalog,
+      changedFiles,
+      requiredProofBullets: [],
+    })
+    assert.deepEqual(plan.order, ['tui'], 'the agent path is the branch that used to drop recipes')
+    assert.ok(plan.recipes.length > 0, 'the same classifier selected docs recipes')
+    assert.ok(
+      plan.recipes.some((r) => r.id === 'docs-troubleshooting'),
+      "the edited page's own recipe is in the selected set",
+    )
+
+    const runs = planRecipeSurfaceRuns({
+      recipes: plan.recipes,
+      localDir: '/tmp/does-not-exist',
+      shouldUpload: false,
+      deps: legDeps(),
+    })
+    // Every selected id is captured or named — the defect was that NONE were.
+    assertEveryRecipeAccountedFor(plan.recipes, runs)
+    assert.deepEqual(
+      runs.flatMap((r) => r.captureShapes ?? []).map((c) => c.recipeId),
+      plan.recipes.map((r) => r.id),
+      'selected ids == accounted ids',
+    )
+    // Recipe surfaces are separate perSurface rows, alongside the agent surface.
+    assert.deepEqual(
+      runs.map((r) => r.surface),
+      ['docs'],
+    )
+    assert.equal(aggregateExitCode(classifySurfaceOutcomes(runs)), 0)
+  })
+})
+
+test('planRecipeSurfaceRuns: a THROWN capture defers only its own surface and never unwinds the leg', () => {
+  // captureRecipe normalizes the recipe, validates the id, resolves the surface
+  // descriptor and writes the recipe dir BEFORE its own try opens, and
+  // captureSurfaceDescriptor THROWS `unknown proof surface` for a recipe whose
+  // surface is absent from the resolved registry. An uncaught throw here unwinds
+  // runAgentSurfaces before finalizeAgentProof, discarding the agent legs'
+  // captures — the R2 violation this leg must never cause. A returned
+  // `status: 'failed'` shape does NOT exercise this path.
+  const runs = planRecipeSurfaceRuns({
+    recipes: [MARKETING_HOME, DOCS_TROUBLESHOOTING],
+    localDir: '/tmp/does-not-exist',
+    shouldUpload: false,
+    deps: legDeps({
+      capture: ({ recipe }) => {
+        if (recipe.surface === 'marketing') throw new Error('unknown proof surface: marketing')
+        return captureOk({ recipe })
+      },
+    }),
+  })
+
+  assert.deepEqual(
+    runs.map((r) => r.surface),
+    ['marketing', 'docs'],
+    'the throwing surface is recorded, and its sibling still runs',
+  )
+  const perSurface = classifySurfaceOutcomes(runs)
+  assert.deepEqual(perSurface[0].reasonCode, 'pipeline-error')
+  assert.match(perSurface[0].error ?? '', /unknown proof surface: marketing/)
+  // The sibling recipe surface still captured normally.
+  assert.deepEqual(perSurface[1], {
+    surface: 'docs',
+    outcome: 'passed',
+    reasonCode: null,
+    error: null,
+  })
+  assert.deepEqual(
+    runs.flatMap((r) => r.captureShapes ?? []).map((c) => c.recipeId),
+    ['docs-troubleshooting'],
+  )
+  // A crash IS our bug, so unlike a returned capture failure it contributes exit 1.
+  assert.equal(aggregateExitCode(perSurface), 1)
+})
+
+test('videoRecipeToolchainMissing: probes only when a recipe normalizes to video', () => {
+  const absent = () => false
+  // A route-only browser recipe DEFAULTS to video inside captureRecipe, so the
+  // raw `capture` must not be what is probed.
+  assert.deepEqual(
+    videoRecipeToolchainMissing([{ id: 'r', surface: 'marketing', route: '/' }], { probe: absent }),
+    ['ffmpeg', 'ffprobe'],
+  )
+  // An opted-out still needs neither binary; `plan` and still runs must not require ffmpeg.
+  assert.deepEqual(
+    videoRecipeToolchainMissing([{ id: 'r', surface: 'marketing', capture: 'still' }], {
+      probe: absent,
+    }),
+    [],
+  )
+  assert.deepEqual(videoRecipeToolchainMissing([], { probe: absent }), [])
+  assert.deepEqual(
+    videoRecipeToolchainMissing([{ id: 'r', surface: 'marketing', route: '/' }], {
+      probe: () => true,
+    }),
+    [],
+  )
 })
 
 // BOS-203: anchor the dispatcher's driver-selection contract in this suite. The

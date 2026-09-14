@@ -1790,20 +1790,33 @@ function isConfigShaped(value) {
  * the natural-reading swapped call, and the correctly ordered contractless config, by name instead
  * of letting either surface as a TypeError from deep inside `planSections()`.
  *
- * **Every config-first export in this module shares this guard, and it reports TWO distinct
- * faults** — conflating them sends the caller to the wrong fix. A value that cannot be a config but
- * could be a description (a string, above all) is a genuinely swapped call, and the remedy is to
- * reorder the arguments. A value that IS config-shaped, or is simply absent, but carries no
- * `planContract` is correctly ordered — the remedy is to load a real config, not to reorder
- * anything. Reporting the second as "arguments look swapped" was measured sending a fix toward
- * argument order when the caller had passed `{}` in exactly the right position.
+ * **Every config-first export in this module shares this guard, and it reports THREE distinct
+ * faults** — conflating any two of them sends the caller to the wrong fix.
  *
- * Both messages stay module-prefixed and both name `fn(config, description)`, so the call site is
- * identifiable from the message alone. `plan-deps-lib.mjs` carries its own copy of this guard
- * rather than importing it, and the two are kept in step BY HAND: a third fault class added here
- * must be added there too, and nothing fails if it is not.
+ *   1. An ABSENT config (`undefined`/`null`) is a config that was never loaded — overwhelmingly the
+ *      `loadConfig`-for-`loadSkillConfig` typo, where the import resolves to `undefined` and the
+ *      call site looks correct. The remedy is to load one, and NOTHING about argument order is
+ *      wrong. This used to fall into fault 2 and be reported as "arguments look swapped", naming a
+ *      bug the caller did not have; the doc comment claiming an absent value reached fault 3 was
+ *      simply false, because `undefined` fails `isConfigShaped` first.
+ *   2. A value that cannot be a config but COULD be a description (a string, above all) is a
+ *      genuinely swapped call, and the remedy is to reorder the arguments.
+ *   3. A value that IS config-shaped but carries no `planContract` is correctly ordered — the remedy
+ *      is to load a real config, not to reorder anything. Reporting this as "arguments look swapped"
+ *      was measured sending a fix toward argument order when the caller had passed `{}` in exactly
+ *      the right position.
+ *
+ * All three messages stay module-prefixed and all three name `fn(config, description)`, so the call
+ * site is identifiable from the message alone. `plan-deps-lib.mjs` carries its own copy of this
+ * guard rather than importing it, and the two are kept in step BY HAND: a fourth fault class added
+ * here must be added there too, and nothing fails if it is not.
  */
 function assertConfigFirst(config, fn) {
+  if (config === undefined || config === null) {
+    throw new Error(
+      `skill-config: ${fn}(config, description) — no config passed; the first argument is ${config === null ? 'null' : 'undefined'}, so nothing about the argument ORDER is wrong. Pass a config from loadSkillConfig() (note the name: there is no loadConfig export).`,
+    )
+  }
   if (!isConfigShaped(config)) {
     throw new Error(
       `skill-config: ${fn}(config, description) — arguments look swapped; pass the config first`,
@@ -2037,10 +2050,7 @@ function resolveMakeInvocation(segment, cwd) {
       token === '--eval'
     ) {
       index += 1
-    } else if (
-      (token === '-j' || token === '--jobs') &&
-      /^\d+$/.test(segment[index + 1] ?? '')
-    ) {
+    } else if ((token === '-j' || token === '--jobs') && /^\d+$/.test(segment[index + 1] ?? '')) {
       index += 1
     } else if (
       (token === '-l' || token === '--load-average' || token === '--max-load') &&
@@ -2114,7 +2124,13 @@ function plainMakeGoal(goal) {
 function pathOperandsForSegment(segment) {
   const [head, ...args] = segment
   if (!['node', 'bash', 'sh', 'zsh'].includes(head)) return []
-  if (args.some((arg) => ['-e', '--eval', '-p', '--print', '-c', '--input-type'].includes(arg) || arg.startsWith('--input-type='))) {
+  if (
+    args.some(
+      (arg) =>
+        ['-e', '--eval', '-p', '--print', '-c', '--input-type'].includes(arg) ||
+        arg.startsWith('--input-type='),
+    )
+  ) {
     return []
   }
   const paths = []
@@ -2276,15 +2292,16 @@ export function classifyCheckCommand(command, { cwd = process.cwd(), env = proce
       const makefile = readMakefileTargets(invocation.makefile)
       for (const goal of invocation.goals) {
         if (!plainMakeGoal(goal) || makefile.targets.has(goal)) continue
-        const finding = makefile.ok && makefile.closed
-          ? {
-              code: 'make-goal-undefined',
-              message: `the make goal is not defined by the statically closed Makefile: ${goal}`,
-            }
-          : advisory(
-              'make-goal-unresolved',
-              `the make goal cannot be resolved from a missing, unreadable, or open Makefile: ${goal}`,
-            )
+        const finding =
+          makefile.ok && makefile.closed
+            ? {
+                code: 'make-goal-undefined',
+                message: `the make goal is not defined by the statically closed Makefile: ${goal}`,
+              }
+            : advisory(
+                'make-goal-unresolved',
+                `the make goal cannot be resolved from a missing, unreadable, or open Makefile: ${goal}`,
+              )
         if (makefile.ok && makefile.closed) blocking.push(finding)
         else advisoryFindings.push(finding)
       }

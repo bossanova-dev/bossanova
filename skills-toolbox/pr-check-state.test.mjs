@@ -19,7 +19,10 @@ import {
   epochMs,
   isGreen,
   mergeStateVerdict,
+  PROVES_GREEN_REASONS,
   provesGreen,
+  provesGreenAgrees,
+  provesGreenReason,
   runLiveness,
   verdictAt,
 } from './pr-check-state.mjs'
@@ -675,4 +678,288 @@ test('CLI classify — a payload file that does not exist degrades to absent, an
   const noChecksParsed = JSON.parse(noChecks.stdout)
   assert.equal(noChecksParsed.state, CHECK_STATES.UNKNOWN)
   assert.equal(noChecksParsed.green, false)
+})
+
+// ---------------------------------------------------------------------------
+// Shape guards (BOS-1244). Each of these was a call that returned a well-formed verdict the caller
+// then acted on. The assertions match the STABLE FRAGMENT of each message — the function name and the
+// expected shape — never the whole sentence, so rewording the diagnostic does not red the suite.
+// ---------------------------------------------------------------------------
+
+test('classifyChecks — a positional array raises instead of returning a no-checks verdict', () => {
+  // The recorded misuse: `classifyChecks(buckets)` next to `contextNames(buckets)` in the same
+  // expression. The sibling accepts the bare array, so the wrong call looks right, and the verdict
+  // came back `state:unknown, reason:no-checks, total:0` for a PR whose checks were all green.
+  const buckets = [
+    { name: 'test-go', state: 'SUCCESS', bucket: 'pass' },
+    { name: 'web-e2e', state: 'SUCCESS', bucket: 'pass' },
+  ]
+  assert.throws(
+    () => classifyChecks(buckets),
+    (err) => {
+      assert.match(err.message, /classifyChecks\(/, 'the message must name the function')
+      assert.match(err.message, /checkRuns/, 'and the expected options shape')
+      assert.match(err.message, /an array of 2 item\(s\)/, 'and what was actually passed')
+      return true
+    },
+  )
+  // Proof the wrong call really was silent before: the RIGHT call on the same payload is green.
+  const right = classifyChecks({ buckets, priorContexts: ['test-go', 'web-e2e'] })
+  assert.equal(right.state, CHECK_STATES.GREEN)
+  assert.equal(right.total, 2)
+})
+
+test('classifyChecks — a string, null and a keyless object all raise; no argument stays all-defaults', () => {
+  for (const bad of ['abc123', null, 42, { totally: 'unrelated' }, {}]) {
+    assert.throws(
+      () => classifyChecks(bad),
+      /classifyChecks\(/,
+      `${JSON.stringify(bad)} must raise, not return a verdict`,
+    )
+  }
+  // The documented no-argument call is untouched: every field is optional and the answer is unknown.
+  const defaults = classifyChecks()
+  assert.equal(defaults.state, CHECK_STATES.UNKNOWN)
+  assert.equal(defaults.reason, CHECK_REASONS.NO_CHECKS)
+  assert.equal(defaults.total, 0)
+})
+
+test('mergeStateVerdict — the raw gh mergeStateStatus field is an alias for mergeState', () => {
+  // `gh pr view --json mergeable,mergeStateStatus` returns `mergeStateStatus`; the parameter was
+  // `mergeState`, so handing the gh object straight in reported `{unknown, unreadable}` — a verdict.
+  for (const state of ['CLEAN', 'DIRTY', 'UNSTABLE', 'BLOCKED', 'BEHIND']) {
+    assert.deepEqual(
+      mergeStateVerdict({ mergeStateStatus: state }),
+      mergeStateVerdict({ mergeState: state }),
+      `${state} must read identically under either spelling`,
+    )
+  }
+  // And the whole gh object, extra fields and all, is accepted.
+  const fromGh = mergeStateVerdict({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' })
+  assert.equal(fromGh.mergeState, 'CLEAN')
+  assert.equal(fromGh.blocking, false)
+})
+
+test('mergeStateVerdict — an argument carrying NEITHER key raises', () => {
+  // The guard must fire on shapes carrying neither key, not merely on a missing `mergeState` —
+  // otherwise accepting the alias would have widened the silent-wrong-answer surface, not closed it.
+  for (const bad of ['CLEAN', null, { mergeable: 'MERGEABLE' }, {}, ['CLEAN']]) {
+    assert.throws(
+      () => mergeStateVerdict(bad),
+      (err) => {
+        assert.match(err.message, /mergeStateVerdict\(/)
+        assert.match(err.message, /mergeStateStatus/, 'the shape must name both accepted spellings')
+        return true
+      },
+      `${JSON.stringify(bad)} must raise`,
+    )
+  }
+  // `mergeStateVerdict()` with no argument keeps its documented unreadable answer.
+  assert.equal(mergeStateVerdict().reason, CHECK_REASONS.UNREADABLE)
+})
+
+test('provesGreenReason — no-prior-sha is distinguished from an incomplete head set', () => {
+  const buckets = [{ name: 'test-go', state: 'SUCCESS', bucket: 'pass' }]
+
+  // Green, a gate ran, but no prior SHA was ever recorded: completeness was never established.
+  const noPrior = classifyChecks({ buckets })
+  assert.equal(noPrior.state, CHECK_STATES.GREEN)
+  assert.equal(provesGreen(noPrior), false)
+  assert.equal(provesGreenReason(noPrior), PROVES_GREEN_REASONS.NO_PRIOR_SHA)
+
+  // A prior SHA IS known and carried a gate the head set does not: waiting never resolves this one.
+  const absent = classifyChecks({ buckets, priorContexts: ['test-go', 'web-e2e'] })
+  assert.equal(absent.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.equal(provesGreenReason(absent), PROVES_GREEN_REASONS.INCOMPLETE_HEAD_SET)
+  assert.notEqual(
+    provesGreenReason(absent),
+    provesGreenReason(noPrior),
+    'the two remedies differ, so the two reasons must too',
+  )
+
+  // The proving case, and the two remaining non-proving ones.
+  const proves = classifyChecks({ buckets, priorContexts: ['test-go'] })
+  assert.equal(provesGreen(proves), true)
+  assert.equal(provesGreenReason(proves), PROVES_GREEN_REASONS.OK)
+
+  const failing = classifyChecks({
+    buckets: [{ name: 'test-go', state: 'FAILURE', bucket: 'fail' }],
+    priorContexts: ['test-go'],
+  })
+  assert.equal(provesGreenReason(failing), PROVES_GREEN_REASONS.NOT_GREEN)
+
+  const nothingRan = classifyChecks({
+    buckets: [{ name: 'test-go', state: 'SKIPPED', bucket: 'skipping' }],
+    priorContexts: ['test-go'],
+    acceptNoGateRan: true,
+  })
+  assert.equal(nothingRan.state, CHECK_STATES.GREEN)
+  assert.equal(provesGreenReason(nothingRan), PROVES_GREEN_REASONS.NO_GATE_RAN)
+})
+
+test('provesGreen — the boolean is unchanged for every shape the reason now discriminates', () => {
+  // The reason is ADDITIVE. `provesGreen` must still be exactly green ∧ passed>0 ∧ priorKnown, so the
+  // suite's existing green-gate assertions keep meaning what they meant.
+  const cases = [
+    classifyChecks({ buckets: [{ name: 'test-go', state: 'SUCCESS', bucket: 'pass' }] }),
+    classifyChecks({
+      buckets: [{ name: 'test-go', state: 'SUCCESS', bucket: 'pass' }],
+      priorContexts: ['test-go'],
+    }),
+    classifyChecks({
+      buckets: [{ name: 'test-go', state: 'SUCCESS', bucket: 'pass' }],
+      priorContexts: ['test-go', 'web-e2e'],
+    }),
+    classifyChecks({ buckets: [{ name: 'test-go', state: 'FAILURE', bucket: 'fail' }] }),
+  ]
+  for (const verdict of cases) {
+    assert.equal(
+      provesGreen(verdict),
+      isGreen(verdict) && verdict.passed > 0 && verdict.priorKnown === true,
+    )
+    assert.equal(
+      provesGreen(verdict),
+      provesGreenReason(verdict) === PROVES_GREEN_REASONS.OK,
+      'the reason and the boolean must agree on the proving case',
+    )
+  }
+})
+
+test('CLI classify — inline JSON is parsed, and the named reason is printed beside provesGreen', () => {
+  const inline = JSON.stringify([
+    { name: 'test-go', state: 'SUCCESS', bucket: 'pass' },
+    { name: 'web-e2e', state: 'SUCCESS', bucket: 'pass' },
+  ])
+  const result = runCli([
+    'classify',
+    '--head-sha',
+    'abc',
+    '--observed-sha',
+    'abc',
+    '--checks',
+    inline,
+  ])
+  assert.equal(result.status, 0, result.stderr)
+  const parsed = JSON.parse(result.stdout)
+  assert.equal(parsed.total, 2, 'inline JSON must be read, not swallowed as a missing path')
+  assert.equal(parsed.state, CHECK_STATES.GREEN)
+  assert.notEqual(parsed.reason, CHECK_REASONS.NO_CHECKS)
+  assert.equal(parsed.provesGreenReason, PROVES_GREEN_REASONS.NO_PRIOR_SHA)
+  assert.equal(parsed.provesGreen, false, 'the boolean is unchanged by the new reason')
+
+  // An inline payload far past the filesystem name limit takes the same arm — it used to throw a raw
+  // ENAMETOOLONG straight past the ENOENT guard.
+  const long = JSON.stringify(
+    Array.from({ length: 400 }, (_, i) => ({
+      name: `gate-${i}`,
+      state: 'SUCCESS',
+      bucket: 'pass',
+    })),
+  )
+  assert.ok(long.length > 4096, 'the payload must exceed any plausible path length')
+  const longResult = runCli(['classify', '--checks', long])
+  assert.equal(longResult.status, 0, longResult.stderr)
+  assert.equal(JSON.parse(longResult.stdout).total, 400)
+})
+
+test('CLI classify — an unreadable non-inline value raises naming the path-or-stdin contract', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pr-check-state-'))
+  // A DIRECTORY is a value that is not a usable path at all: it used to throw a raw EISDIR with no
+  // mention of what the flag actually accepts.
+  const result = runCli(['classify', '--checks', dir])
+  assert.equal(result.status, 1, 'an unusable value must not reach a verdict')
+  assert.equal(result.stdout, '', 'and must print no verdict line')
+  assert.match(result.stderr, /--checks \(/, 'the message must name the flag')
+  assert.match(result.stderr, /inline JSON/, 'and the path-or-`-`-or-inline contract')
+
+  // Malformed inline JSON is named as such rather than reported as a missing file.
+  const malformed = runCli(['classify', '--checks', '[{"name":'])
+  assert.equal(malformed.status, 1)
+  assert.match(malformed.stderr, /inline JSON payload is malformed/)
+
+  // And the deliberately-narrow ENOENT degrade is untouched: the shipped recipes pass --prior
+  // unconditionally into a fresh mktemp dir, so a path that is simply absent stays absent.
+  const absent = runCli(['classify', '--prior', path.join(dir, 'prior-contexts.json')])
+  assert.equal(absent.status, 0, absent.stderr)
+  assert.equal(JSON.parse(absent.stdout).priorKnown, false)
+})
+
+// BOS-1244 review round 1 (boss-review-ce + boss-review-thermonuclear, converging on one region).
+// The reason ladder is what the CLI prints beside `provesGreen` on every `classify` line, so a rung
+// that describes the wrong fault is this ticket's own misleading-verdict class inside the helper
+// added to end it. Two rungs were in the wrong order, and the existing agreement test could not see
+// either: it asserts `provesGreen === (reason === OK)`, which is satisfied by EVERY wrong non-OK
+// reason. These pin the reason itself.
+test('provesGreenReason — a failing set reports its failure, not a missing prior SHA', () => {
+  // The first-push shape: the shipped recipes pass `--prior` into a fresh mktemp dir, so
+  // `priorKnown:false` accompanies most real red CI. Reporting `no-prior-sha` there named a remedy
+  // ("record a prior SHA") that cannot fix a failing gate, while the failure went unreported.
+  const failingNoPrior = classifyChecks({
+    buckets: [{ name: 'test-go', state: 'FAILURE', bucket: 'fail' }],
+  })
+  assert.equal(failingNoPrior.state, CHECK_STATES.FAILING)
+  assert.equal(failingNoPrior.priorKnown, false)
+  assert.equal(provesGreenReason(failingNoPrior), PROVES_GREEN_REASONS.NOT_GREEN)
+  assert.notEqual(
+    provesGreenReason(failingNoPrior),
+    PROVES_GREEN_REASONS.NO_PRIOR_SHA,
+    'red CI must not be reported as an unrecorded prior SHA',
+  )
+
+  // And the converse ordering: a FAILING set can carry a non-empty `absent` too, so the
+  // incomplete-head-set rung must key on the verdict's own `absent-gate` reason rather than on
+  // `absent.length > 0` — otherwise a red gate is reported as a missing job to re-trigger.
+  const failingWithAbsent = classifyChecks({
+    buckets: [{ name: 'test-go', state: 'FAILURE', bucket: 'fail' }],
+    priorContexts: ['test-go', 'web-e2e'],
+  })
+  assert.ok(failingWithAbsent.absent.length > 0, 'the fixture must actually carry an absent gate')
+  assert.equal(provesGreenReason(failingWithAbsent), PROVES_GREEN_REASONS.NOT_GREEN)
+
+  // The absent-gate arm itself is unchanged — that reason is still reachable and still distinct.
+  const absentGate = classifyChecks({
+    buckets: [{ name: 'test-go', state: 'SUCCESS', bucket: 'pass' }],
+    priorContexts: ['test-go', 'web-e2e'],
+  })
+  assert.equal(absentGate.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.equal(provesGreenReason(absentGate), PROVES_GREEN_REASONS.INCOMPLETE_HEAD_SET)
+})
+
+test('provesGreenAgrees — the boolean and the reason agree on every verdict classifyChecks builds', () => {
+  // `main()` prints both onto one JSON line, so a drift between them ships `provesGreen:true` beside
+  // a named failure reason. Asserted over the verdicts this module can actually construct: a
+  // hand-built object may pair `state:'green'` with `reason:'absent-gate'`, which no path here
+  // produces and which the two answer differently by construction.
+  const pass = { name: 'test-go', state: 'SUCCESS', bucket: 'pass' }
+  const fail = { name: 'test-go', state: 'FAILURE', bucket: 'fail' }
+  const pending = { name: 'test-go', state: 'PENDING', bucket: 'pending' }
+  const skipped = { name: 'test-go', state: 'SKIPPED', bucket: 'skipping' }
+  const verdicts = [
+    classifyChecks(),
+    classifyChecks({ buckets: [] }),
+    classifyChecks({ buckets: [], priorContexts: [] }),
+    classifyChecks({ buckets: [pass] }),
+    classifyChecks({ buckets: [pass], priorContexts: ['test-go'] }),
+    classifyChecks({ buckets: [pass], priorContexts: ['test-go', 'web-e2e'] }),
+    classifyChecks({ buckets: [fail] }),
+    classifyChecks({ buckets: [fail], priorContexts: ['test-go'] }),
+    classifyChecks({ buckets: [fail], priorContexts: ['test-go', 'web-e2e'] }),
+    classifyChecks({ buckets: [pending] }),
+    classifyChecks({ buckets: [pending], priorContexts: ['test-go'] }),
+    classifyChecks({ buckets: [skipped], priorContexts: ['test-go'] }),
+    classifyChecks({ buckets: [skipped], priorContexts: ['test-go'], acceptNoGateRan: true }),
+    classifyChecks({ buckets: [pass], priorContexts: ['test-go'], readError: 'boom' }),
+  ]
+  for (const verdict of verdicts) {
+    assert.equal(
+      provesGreenAgrees(verdict),
+      true,
+      `provesGreen ${provesGreen(verdict)} disagrees with reason ${provesGreenReason(verdict)} for ${JSON.stringify(verdict)}`,
+    )
+  }
+  // Non-vacuity: the matrix must actually exercise the OK arm and at least one non-OK arm, or a
+  // ladder that answered OK for everything would pass this test.
+  const reasons = new Set(verdicts.map((v) => provesGreenReason(v)))
+  assert.ok(reasons.has(PROVES_GREEN_REASONS.OK), 'the matrix must include a proving verdict')
+  assert.ok(reasons.size > 1, 'and at least one non-proving one')
 })

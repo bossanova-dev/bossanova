@@ -12,12 +12,16 @@ import {
   putPlanAttachment,
   selectImplementationPlanAttachment,
   selectSupersededPlanAttachments,
+  USAGE_ERROR_TOKEN,
+  verifyPlanAttachment,
 } from './plan-attachment.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./plan-attachment.mjs', import.meta.url))
 const TOOLBOX_ROOT = fileURLToPath(new URL('.', import.meta.url))
 const USAGE =
+  `${USAGE_ERROR_TOKEN}\n` +
   'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +
+  '       plan-attachment.mjs verify <local-file> <signed-url>\n' +
   '       plan-attachment.mjs decode <in-file> <out-file>\n'
 
 // Built by concatenation so this file is not itself a match for the scan below.
@@ -163,6 +167,282 @@ test('selectSupersededPlanAttachments returns empty when there is no older plan 
     ),
     [],
   )
+})
+
+test('selectSupersededPlanAttachments throws instead of silently superseding nothing', () => {
+  // The shape the tracker actually returns: {id, title, subtitle, url} and no createdAt. Before
+  // this threw, every comparison was `0 < 0`, the function returned [] and the run reported a
+  // clean supersede over a stale duplicate it had never looked at.
+  assert.throws(
+    () =>
+      selectSupersededPlanAttachments(
+        [
+          { id: 'stale', title: 'Implementation plan (BOS-999)', url: 'https://t/1' },
+          { id: 'keep', title: 'Implementation plan (BOS-999)', url: 'https://t/2' },
+        ],
+        { issueID: 'BOS-999', keepAttachmentId: 'keep' },
+      ),
+    /plan-attachment: unorderable supersede candidates for BOS-999[\s\S]*keepJustFinalized/,
+  )
+})
+
+test('selectSupersededPlanAttachments supersedes the tracker shape when the caller just finalized keep', () => {
+  // The one real caller's escape: it finalized `keep` moments ago in this same run, which no
+  // timestamp on this payload can express. Criterion 3 -- the stale id is still selected.
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [
+        { id: 'stale', title: 'Implementation plan (BOS-999)', url: 'https://t/1' },
+        { id: 'keep', title: 'Implementation plan (BOS-999)', url: 'https://t/2' },
+        { id: 'notes', title: 'BOS-999 design notes', contentType: 'text/markdown' },
+        { id: 'other', title: 'Implementation plan (BOS-123)' },
+      ],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep', keepJustFinalized: true },
+    ),
+    ['stale'],
+  )
+})
+
+test('selectSupersededPlanAttachments never deletes a newer attachment on the declaration', () => {
+  // The concurrent-run hazard the declaration must not swallow: a peer run finalized its own plan
+  // between this run's finalize and this list read, so its row is NEWER than anything this run
+  // wrote. It carries a timestamp; the stale duplicate does not. Only the unorderable one is swept.
+  const concurrent = new Date(Date.now() + 60_000).toISOString()
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [
+        { id: 'stale', title: 'Implementation plan (BOS-999)', url: 'https://t/1' },
+        { id: 'keep', title: 'Implementation plan (BOS-999)', url: 'https://t/2' },
+        { id: 'concurrent', title: 'Implementation plan (BOS-999)', createdAt: concurrent },
+      ],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep', keepJustFinalized: true },
+    ),
+    ['stale'],
+  )
+})
+
+test('selectSupersededPlanAttachments still orders timestamped rows under the declaration', () => {
+  // With both rows orderable the declaration changes nothing: older goes, newer stays.
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [
+        { id: 'old', title: 'Implementation plan (BOS-999)', createdAt: '2026-01-01T00:00:00Z' },
+        { id: 'keep', title: 'Implementation plan (BOS-999)', createdAt: '2026-02-01T00:00:00Z' },
+        { id: 'new', title: 'Implementation plan (BOS-999)', createdAt: '2026-03-01T00:00:00Z' },
+      ],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep', keepJustFinalized: true },
+    ),
+    ['old'],
+  )
+})
+
+test('selectSupersededPlanAttachments still fails closed on a missing keep without ordering', () => {
+  // The declaration is not a bypass of the fail-closed path: no keep row means no supersede,
+  // timestamps or not.
+  assert.deepEqual(
+    selectSupersededPlanAttachments([{ id: 'stale', title: 'Implementation plan (BOS-999)' }], {
+      issueID: 'BOS-999',
+      keepAttachmentId: 'keep',
+      keepJustFinalized: true,
+    }),
+    [],
+  )
+})
+
+test('selectSupersededPlanAttachments does not throw when there is nothing to order', () => {
+  // A timestamp-less keep with no exact-title candidates is not an ordering failure: there is
+  // no decision to get wrong, so the loud path must not fire on the common healthy shape.
+  assert.deepEqual(
+    selectSupersededPlanAttachments([{ id: 'keep', title: 'Implementation plan (BOS-999)' }], {
+      issueID: 'BOS-999',
+      keepAttachmentId: 'keep',
+    }),
+    [],
+  )
+})
+
+test('putPlanAttachment surfaces the rejected upload response body beside the status', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-'))
+  const file = join(directory, 'plan.md')
+  writeFileSync(file, '# plan\n')
+  try {
+    await assert.rejects(
+      putPlanAttachment({
+        file,
+        uploadURL: 'https://uploads.example/signed',
+        headers: {},
+        fetchImpl: async () => ({
+          status: 403,
+          text: async () => '<Error><Code>ExpiredToken</Code></Error>',
+        }),
+      }),
+      (error) => {
+        // The status prefix the existing assertion pins still leads the message.
+        assert.match(error.message, /^signed attachment upload returned 403/)
+        assert.match(error.message, /ExpiredToken/)
+        return true
+      },
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('putPlanAttachment caps the quoted rejection body in BYTES, not characters', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-'))
+  const file = join(directory, 'plan.md')
+  writeFileSync(file, '# plan\n')
+  try {
+    // 4000 three-byte characters: 4000 UTF-16 code units, 12000 bytes. A character-counted cap of
+    // 2048 lets all 12000 bytes through, which is the byte-vs-character confusion this module's
+    // own upload contract exists to prevent.
+    const body = '\u4e2d'.repeat(4000)
+    await assert.rejects(
+      putPlanAttachment({
+        file,
+        uploadURL: 'https://uploads.example/signed',
+        headers: {},
+        fetchImpl: async () => ({ status: 413, text: async () => body }),
+      }),
+      (error) => {
+        assert.match(error.message, /^signed attachment upload returned 413/)
+        assert.match(error.message, /… \(truncated\)$/)
+        const quoted = error.message.replace(/^signed attachment upload returned 413: /, '')
+        const kept = quoted.replace(/… \(truncated\)$/, '')
+        assert.ok(
+          Buffer.byteLength(kept, 'utf8') <= 2048,
+          `quoted body kept ${Buffer.byteLength(kept, 'utf8')} bytes, above the 2048-byte cap`,
+        )
+        // Whole characters only: a mid-character cut must not be quoted back as U+FFFD.
+        assert.equal(kept.includes('\uFFFD'), false)
+        return true
+      },
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('putPlanAttachment bounds a streaming rejection body without buffering all of it', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-'))
+  const file = join(directory, 'plan.md')
+  writeFileSync(file, '# plan\n')
+  let delivered = 0
+  let cancelled = false
+  const chunk = Buffer.from('x'.repeat(1024))
+  try {
+    await assert.rejects(
+      putPlanAttachment({
+        file,
+        uploadURL: 'https://uploads.example/signed',
+        headers: {},
+        fetchImpl: async () => ({
+          status: 403,
+          // An effectively endless body: a reader that keeps going is the unbounded read.
+          body: {
+            getReader: () => ({
+              read: async () => {
+                delivered += chunk.length
+                return { done: false, value: chunk }
+              },
+              cancel: async () => {
+                cancelled = true
+              },
+            }),
+          },
+          text: async () => {
+            throw new Error('text() must not be used when a stream is readable')
+          },
+        }),
+      }),
+      (error) => {
+        assert.match(error.message, /^signed attachment upload returned 403/)
+        assert.match(error.message, /… \(truncated\)$/)
+        return true
+      },
+    )
+    assert.ok(delivered <= 2048 + chunk.length, `read ${delivered} bytes past the cap`)
+    assert.equal(cancelled, true, 'the transfer must be cancelled rather than drained')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('putPlanAttachment still reports a body-less rejection as the bare status', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-'))
+  const file = join(directory, 'plan.md')
+  writeFileSync(file, '# plan\n')
+  try {
+    await assert.rejects(
+      putPlanAttachment({
+        file,
+        uploadURL: 'https://uploads.example/signed',
+        headers: {},
+        fetchImpl: async () => ({
+          status: 500,
+          text: async () => {
+            throw new Error('stream already consumed')
+          },
+        }),
+      }),
+      /^Error: signed attachment upload returned 500$/,
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('verifyPlanAttachment matches identical bytes and reports a one-byte difference', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-verify-'))
+  const file = join(directory, 'plan.md')
+  writeFileSync(file, '# plan\nstored bytes\n')
+  try {
+    const same = await verifyPlanAttachment({
+      file,
+      url: 'https://uploads.example/signed',
+      fetchImpl: async () => ({
+        status: 200,
+        arrayBuffer: async () => Buffer.from('# plan\nstored bytes\n'),
+      }),
+    })
+    assert.equal(same.match, true)
+    assert.equal(same.local.sha256, same.fetched.sha256)
+
+    const off = await verifyPlanAttachment({
+      file,
+      url: 'https://uploads.example/signed',
+      fetchImpl: async () => ({
+        status: 200,
+        // One byte short: the measured buffer-versus-file defect, which a non-empty check passes.
+        arrayBuffer: async () => Buffer.from('# plan\nstored bytes'),
+      }),
+    })
+    assert.equal(off.match, false)
+    assert.equal(off.local.bytes - off.fetched.bytes, 1)
+    assert.notEqual(off.local.sha256, off.fetched.sha256)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('verifyPlanAttachment rejects an unauthorized read-back instead of scoring its body', async () => {
+  // The unsigned GraphQL attachment URL answers 401 with a short JSON body, which a
+  // non-empty-content check reads as a small-but-present attachment.
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-verify-'))
+  const file = join(directory, 'plan.md')
+  writeFileSync(file, '# plan\n')
+  try {
+    await assert.rejects(
+      verifyPlanAttachment({
+        file,
+        url: 'https://tracker.example/attachment',
+        fetchImpl: async () => ({ status: 401, text: async () => '{"error":"unauthorized"}' }),
+      }),
+      /attachment read-back fetch returned 401[\s\S]*unauthorized/,
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('putPlanAttachment sends raw bytes and every signed header verbatim', async () => {
@@ -317,6 +597,65 @@ test('CLI writes the HTTP status to stdout, so a caller can tell a real PUT from
     await new Promise((resolve) => server.close(resolve))
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('CLI separates a usage error from a transport failure by its stderr token alone', async () => {
+  const usage = runCli(['put', 'plan.md', 'https://uploads.example/signed'])
+  assert.equal(usage.status, 2)
+  assert.equal(usage.stderr.split('\n')[0], USAGE_ERROR_TOKEN)
+
+  // A real transport failure: nothing is listening, so a request WAS attempted and failed.
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-cli-'))
+  const file = join(directory, 'plan.md')
+  const headersFile = join(directory, 'headers.json')
+  writeFileSync(file, '# plan\n')
+  writeFileSync(headersFile, JSON.stringify({}))
+  try {
+    // Port 1 is privileged and unbound, so the connection is refused rather than served.
+    const failure = await runCliAsync(['put', file, 'http://127.0.0.1:1/signed', headersFile])
+    assert.equal(failure.status, 1)
+    assert.equal(failure.stderr.includes(USAGE_ERROR_TOKEN), false)
+    assert.notEqual(failure.stderr.trim(), '')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('CLI verify passes on matching bytes and names both sides on a one-byte difference', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-verify-cli-'))
+  const file = join(directory, 'plan.md')
+  writeFileSync(file, '# plan\nstored bytes\n')
+  let served = '# plan\nstored bytes\n'
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/markdown' })
+    response.end(served)
+  })
+  try {
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address()
+    const url = `http://127.0.0.1:${port}/signed`
+
+    const pass = await runCliAsync(['verify', file, url])
+    assert.equal(pass.status, 0)
+    assert.match(pass.stdout, /^verify: match sha256=[0-9a-f]{64} bytes=20\n$/)
+    assert.equal(pass.stderr, '')
+
+    served = '# plan\nstored bytes'
+    const fail = await runCliAsync(['verify', file, url])
+    assert.equal(fail.status, 1)
+    assert.equal(fail.stdout, '')
+    assert.match(fail.stderr, /verify MISMATCH - local sha256=[0-9a-f]{64} bytes=20/)
+    assert.match(fail.stderr, /differs from fetched sha256=[0-9a-f]{64} bytes=19/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('CLI verify with a missing operand exits 2 with the usage token', () => {
+  const result = runCli(['verify', 'plan.md'])
+  assert.equal(result.status, 2)
+  assert.equal(result.stderr, USAGE)
 })
 
 test('plan-attachment.mjs guards its entry point with isMainModule, not the runtime-dependent property', () => {

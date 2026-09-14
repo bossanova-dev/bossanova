@@ -25,6 +25,8 @@ import {
   parseDetectorFindings,
   candidateKey,
   validateSurveyCandidate,
+  runCli as runSurveyCli,
+  DEBT_SURVEY_USAGE,
 } from './bs-sweep-debt-survey.mjs'
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 import {
@@ -646,4 +648,51 @@ test('the codex mirror is exactly what regenerating it from the .claude source p
     regenerate: rewriteClaudeSkillMarkdown,
     sourcePath: path.join(rootDir, skillDirs[0], 'SKILL.md'),
   })
+})
+
+// --- survey CLI command surface -----------------------------------------------
+
+for (const flag of ['--help', '-h', 'help']) {
+  test(`survey ${flag} exits 0 and names validate-candidates`, () => {
+    let out = ''
+    let err = ''
+    const code = runSurveyCli([flag], { write: (s) => (out += s), errWrite: (s) => (err += s) })
+    assert.equal(code, 0)
+    assert.equal(err, '')
+    assert.ok(out.includes('validate-candidates'))
+    assert.equal(out, DEBT_SURVEY_USAGE)
+  })
+}
+
+test('survey rejects an unrecognised command instead of reporting success', () => {
+  // The inverse-shape defect: any non-matching command used to return 0 having printed
+  // nothing, so a typo read as an empty-but-successful survey.
+  let out = ''
+  let err = ''
+  const code = runSurveyCli(['bogus'], { write: (s) => (out += s), errWrite: (s) => (err += s) })
+  assert.equal(code, 2)
+  assert.equal(out, '')
+  // prose-pin: literal-space ok — this is the CLI's own one-line stderr string, not prose.
+  assert.match(err, /unknown command: bogus/)
+  assert.ok(err.includes('validate-candidates'))
+})
+
+test('survey rejects an empty invocation instead of reporting success', () => {
+  let out = ''
+  let err = ''
+  const code = runSurveyCli([], { write: (s) => (out += s), errWrite: (s) => (err += s) })
+  assert.equal(code, 2)
+  assert.equal(out, '')
+  // prose-pin: literal-space ok — this is the CLI's own one-line stderr string, not prose.
+  assert.match(err, /unknown command: \(none\)/)
+})
+
+test('survey validate-candidates still succeeds and prints JSON', () => {
+  let out = ''
+  const code = runSurveyCli(['validate-candidates', '[]'], {
+    write: (s) => (out += s),
+    errWrite: () => {},
+  })
+  assert.equal(code, 0)
+  assert.deepEqual(JSON.parse(out), [])
 })

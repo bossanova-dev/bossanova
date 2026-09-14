@@ -139,7 +139,8 @@ func TestSocketProberTimeoutIsNegativeAndBounded(t *testing.T) {
 	if ok {
 		t.Fatalf("expected negative for non-responsive server, got scheme=%q", scheme)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	// 8x the per-probe deadline, which covers the plaintext and TLS attempts the prober makes.
+	if elapsed := time.Since(start); elapsed > 8*probeTimeout {
 		t.Fatalf("probe took %v, expected it to be bounded", elapsed)
 	}
 }
@@ -156,7 +157,8 @@ func TestSocketProberOversizedHeaderIsBounded(t *testing.T) {
 	if ok {
 		t.Fatalf("expected negative for oversized garbage, got scheme=%q", scheme)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	// 8x the per-probe deadline, as above.
+	if elapsed := time.Since(start); elapsed > 8*probeTimeout {
 		t.Fatalf("probe took %v, expected it to be bounded", elapsed)
 	}
 }

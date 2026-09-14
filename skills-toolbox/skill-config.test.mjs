@@ -1635,10 +1635,10 @@ test('validatePlanDescription throws a named argument-order error when arguments
   )
 })
 
-// The config-first guard reports TWO faults that need OPPOSITE fixes, so they must not share one
-// message. `{}` passed FIRST is correctly ordered — the remedy is to load a real config — but the
+// The config-first guard reports THREE faults that need different fixes, so no two of them may share
+// one message. `{}` passed FIRST is correctly ordered — the remedy is to load a real config — but the
 // old single predicate reported it as "arguments look swapped", sending the fix toward argument
-// order. Both directions are pinned at all three sites, because a relaxation with only the new
+// order. Every direction is pinned at all four sites, because a relaxation with only the new
 // message asserted would still pass if the swapped-argument branch were deleted outright.
 test('a correctly ordered contractless config reports the missing contract, not argument order', () => {
   const description = planDesc('- Contract: v1')
@@ -1670,13 +1670,62 @@ test('a correctly ordered contractless config reports the missing contract, not 
       `${name} must diagnose an empty config distinctly`,
     )
   }
-  // The BOUNDARY of the relaxation, pinned deliberately. Only a CONFIG-SHAPED first argument earns
-  // the new message; a nullish or non-object one keeps the argument-order error it has always had.
-  // Widening it to nullish would be a second behaviour change this ticket did not measure, and the
-  // narrow split is what keeps the relaxation to exactly the fault that was recorded.
-  assert.throws(() => validatePlanDescription(null, description), /arguments look swapped/)
-  assert.throws(() => validatePlanDescription(undefined, description), /arguments look swapped/)
+  // The BOUNDARY of the split, pinned deliberately. A non-object that could be a description keeps
+  // the argument-order error it has always had; an ABSENT config now gets its own message (below).
   assert.throws(() => validatePlanDescription([], description), /arguments look swapped/)
+})
+
+// The third fault class (BOS-1244 row 8). An absent config was measured being reported as "arguments
+// look swapped", which names a bug the caller does not have: the recorded call was the
+// `loadConfig`-for-`loadSkillConfig` typo, where the import resolves to `undefined` and the argument
+// ORDER is perfectly correct. The guard's own doc comment claimed an absent value reached the
+// missing-contract arm; it could not, because `undefined` fails `isConfigShaped` first.
+test('an absent config reports a missing config, never swapped arguments', () => {
+  const description = planDesc('- Contract: v1')
+  const sites = [
+    ['validatePlanDescription', (config) => validatePlanDescription(config, description)],
+    ['parseAcceptanceCriteria', (config) => parseAcceptanceCriteria(config, description)],
+    ['parsePremises', (config) => parsePremises(config, description)],
+    ['validateVerifyOnlyEvidence', (config) => validateVerifyOnlyEvidence(config, description)],
+  ]
+  for (const [name, call] of sites) {
+    for (const absent of [undefined, null]) {
+      assert.throws(
+        () => call(absent),
+        (error) => {
+          assert.match(error.message, /^skill-config: /, `${name} must stay module-prefixed`)
+          assert.match(error.message, new RegExp(`${name}\\(config, description\\)`))
+          assert.match(error.message, /no config passed/)
+          assert.match(
+            error.message,
+            /loadSkillConfig\(\)/,
+            'must name where a real config comes from',
+          )
+          assert.doesNotMatch(
+            error.message,
+            /arguments look swapped/,
+            `${name}: an absent config is not an argument-ORDER fault`,
+          )
+          return true
+        },
+        `${name}(${String(absent)}, description) must diagnose the absent config`,
+      )
+    }
+  }
+  // All three faults stay DISTINCT messages, or the split bought nothing: a test asserting only the
+  // new one would still pass with either of the other two arms deleted outright.
+  const messageOf = (call) => {
+    try {
+      call()
+      return ''
+    } catch (error) {
+      return error.message
+    }
+  }
+  const absent = messageOf(() => validatePlanDescription(undefined, description))
+  const swapped = messageOf(() => validatePlanDescription(description, DEFAULT_CONFIG))
+  const contractless = messageOf(() => validatePlanDescription({}, description))
+  assert.equal(new Set([absent, swapped, contractless]).size, 3, 'three faults, three messages')
 })
 
 test('a genuinely swapped call still throws the module-prefixed argument-order error', () => {
@@ -2800,7 +2849,15 @@ test('classifyCheckCommand resolves make goals and path operands only when absen
     mkdirSync(join(tmp, 'scripts'))
     writeFileSync(
       join(tmp, 'Makefile'),
-      ['.PHONY: phony \\', '  continued', 'defined:', 'lint test:', 'continued-a \\', ' continued-b:', ''].join('\n'),
+      [
+        '.PHONY: phony \\',
+        '  continued',
+        'defined:',
+        'lint test:',
+        'continued-a \\',
+        ' continued-b:',
+        '',
+      ].join('\n'),
     )
     const options = { cwd: tmp, env: process.env }
 
@@ -2810,9 +2867,18 @@ test('classifyCheckCommand resolves make goals and path operands only when absen
     assert.deepEqual(classifyCheckCommand('make continued-a continued-b', options).blocking, [])
     assert.deepEqual(classifyCheckCommand('make -j 8 defined', options).blocking, [])
     assert.deepEqual(classifyCheckCommand('make --jobs 8 defined', options).blocking, [])
-    assert.equal(classifyCheckCommand('make absent', options).blocking[0].code, 'make-goal-undefined')
-    assert.equal(classifyCheckCommand('make -C scripts absent', options).advisory[0].code, 'make-goal-unresolved')
-    assert.equal(classifyCheckCommand('make -f absent.mk absent', options).advisory[0].code, 'make-goal-unresolved')
+    assert.equal(
+      classifyCheckCommand('make absent', options).blocking[0].code,
+      'make-goal-undefined',
+    )
+    assert.equal(
+      classifyCheckCommand('make -C scripts absent', options).advisory[0].code,
+      'make-goal-unresolved',
+    )
+    assert.equal(
+      classifyCheckCommand('make -f absent.mk absent', options).advisory[0].code,
+      'make-goal-unresolved',
+    )
 
     writeFileSync(join(tmp, 'Open.mk'), 'generated-%:\n\t@true\n')
     assert.equal(
@@ -2829,7 +2895,10 @@ test('classifyCheckCommand resolves make goals and path operands only when absen
     )
     writeFileSync(join(tmp, 'first.mk'), 'from-first:\n')
     writeFileSync(join(tmp, 'second.mk'), 'from-second:\n')
-    const multipleMakefiles = classifyCheckCommand('make -f first.mk -f second.mk from-first', options)
+    const multipleMakefiles = classifyCheckCommand(
+      'make -f first.mk -f second.mk from-first',
+      options,
+    )
     assert.deepEqual(multipleMakefiles.blocking, [])
     assert.equal(multipleMakefiles.advisory[0].code, 'make-goal-unresolved')
     assert.equal(

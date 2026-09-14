@@ -859,12 +859,85 @@ test('CLI `dispatched-rounds` reads the env and clamps lower-only', () => {
   assert.equal(runCli(['dispatched-rounds'], { BS_REVIEW_MAX_DISPATCHED_ROUNDS: '' }).stdout, '6')
 })
 
-test('CLI `sentinel clean|capped` prints byte-identical lines', () => {
-  assert.equal(runCli(['sentinel', 'clean']).stdout, 'bs-review clean: no open must-fix findings.')
+/** Write `report` to a scratch file and return its path. */
+function reportFile(report) {
+  const path = join(mkdtempSync(join(tmpdir(), 'bs-review-caps-report-')), 'report.json')
+  writeFileSync(path, JSON.stringify(report))
+  return path
+}
+
+test('CLI `sentinel clean --in|capped` prints byte-identical lines', () => {
+  const clean = reportFile({ mustfix: { unresolved: 0 }, invalid: [], ledger: cleanLedger })
+  assert.equal(
+    runCli(['sentinel', 'clean', '--in', clean]).stdout,
+    'bs-review clean: no open must-fix findings.',
+  )
   assert.equal(
     runCli(['sentinel', 'capped', '3']).stdout,
     'bs-review capped: unresolved must-fix findings or invalid evidence remain after 3 rounds.',
   )
+})
+
+// THE FALSIFICATION. A report with zero open must-fix and a non-empty `invalid` list is the exact
+// shape that published a false green: `reviewVerdict` has always refused it, but the clean CLI verb
+// printed its line without ever consulting the verdict owner. Both halves are asserted — the gate
+// fires on the unrepaired report, and it is demonstrably ABLE to pass on an otherwise identical
+// report with `invalid` emptied — so a gate that refused everything could not pass this test.
+test('a clean sentinel is unobtainable from a report carrying unrepaired invalid evidence', () => {
+  const unrepaired = {
+    mustfix: { unresolved: 0 },
+    invalid: [{ reason: 'malformed' }],
+    ledger: cleanLedger,
+  }
+  const refused = runCli(['sentinel', 'clean', '--in', reportFile(unrepaired)])
+  assert.equal(refused.status, 3, 'the refusal must be a distinct non-zero exit')
+  assert.equal(refused.stdout, '', 'no clean line may reach stdout')
+  assert.match(refused.stderr, /refusing a clean sentinel/)
+  assert.match(refused.stderr, /invalid-evidence/, 'the refusal must NAME the blocking reason')
+
+  // The other documented route over the same evidence: `verdict --in` emits capped, never clean.
+  const derived = runCli(['verdict', '--in', reportFile(unrepaired)])
+  assert.equal(derived.status, 0)
+  assert.deepEqual(matchSentinel(derived.stdout), { status: 'capped', rounds: 1 })
+
+  // Able to fire: the same report with `invalid` emptied passes by BOTH routes.
+  const repaired = { ...unrepaired, invalid: [] }
+  assert.equal(
+    runCli(['sentinel', 'clean', '--in', reportFile(repaired)]).stdout,
+    cleanSentinel(),
+    'the gate must be demonstrably able to pass, or the refusal proves nothing',
+  )
+  assert.equal(runCli(['verdict', '--in', reportFile(repaired)]).stdout, cleanSentinel())
+})
+
+test('CLI `sentinel clean` refuses outright when no report evidence is supplied', () => {
+  for (const args of [
+    ['sentinel', 'clean'],
+    ['sentinel', 'clean', '--in'],
+    ['sentinel', 'clean', 'report.json'],
+  ]) {
+    const res = runCli(args)
+    assert.equal(res.status, 2, `${args.join(' ')} must fail closed`)
+    assert.equal(res.stdout, '', `${args.join(' ')} must print no sentinel line`)
+    assert.match(res.stderr, /sentinel clean requires report evidence/)
+  }
+  const missing = runCli([
+    'sentinel',
+    'clean',
+    '--in',
+    join(tmpdir(), 'bs-caps-absent-report.json'),
+  ])
+  assert.equal(missing.status, 2)
+  assert.equal(missing.stdout, '')
+  assert.match(missing.stderr, /unable to read report JSON/)
+})
+
+// The evidence-free CAPPED form is deliberately preserved: the pre-dispatch seed and the decline
+// routes hold no report, and a capped line can only under-claim, so no false green is reachable.
+test('CLI `sentinel capped <N>` still needs no report evidence', () => {
+  const res = runCli(['sentinel', 'capped', '2'])
+  assert.equal(res.status, 0)
+  assert.deepEqual(matchSentinel(res.stdout), { status: 'capped', rounds: 2 })
 })
 
 test('CLI `sentinel capped` rejects missing / 0 / non-integer counts', () => {
@@ -1719,7 +1792,12 @@ test('the pure-computation verbs record nothing — they have no verdict to reco
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-caps-outcomes-'))
   const outcomes = join(dir, 'outcomes.tsv')
   const env = { BOSS_GATE_OUTCOME_FILE: outcomes }
-  for (const args of [['rounds'], ['dispatched-rounds'], ['sentinel', 'clean'], ['match', 'x']]) {
+  for (const args of [
+    ['rounds'],
+    ['dispatched-rounds'],
+    ['sentinel', 'capped', '1'],
+    ['match', 'x'],
+  ]) {
     const res = runCli(args, env)
     assert.equal(res.status, 0, `${args.join(' ')}: ${res.stderr}`)
   }

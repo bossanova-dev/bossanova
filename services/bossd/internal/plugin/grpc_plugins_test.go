@@ -52,16 +52,19 @@ func TestInvokePluginUnaryAppliesTimeoutCeiling(t *testing.T) {
 	// Use the *WithTimeout variant with a short bound to exercise the timeout
 	// path in under a second. This proves the ceiling is actually applied —
 	// invokePluginUnary itself uses the production 30s default.
+	const pluginTimeout = 100 * time.Millisecond
 	req := &bossanovav1.WorkflowServiceGetInfoRequest{}
 	resp := &bossanovav1.WorkflowServiceGetInfoResponse{}
 	start := time.Now()
-	err := invokePluginUnaryWithTimeout(context.Background(), conn, 100*time.Millisecond, "/bossanova.v1.WorkflowService/GetInfo", req, resp)
+	err := invokePluginUnaryWithTimeout(context.Background(), conn, pluginTimeout, "/bossanova.v1.WorkflowService/GetInfo", req, resp)
 	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if elapsed > 2*time.Second {
+	// 20x the injected ceiling, and two orders of magnitude below the production 30s default
+	// a call that ignored the ceiling would wait.
+	if elapsed > 20*pluginTimeout {
 		t.Fatalf("timeout not applied, elapsed %v", elapsed)
 	}
 	if !strings.Contains(err.Error(), "DeadlineExceeded") &&
@@ -76,7 +79,8 @@ func TestInvokePluginUnaryHonorsCallerDeadline(t *testing.T) {
 	defer cleanup()
 
 	// Default timeout is 30s; caller's 100ms ctx must still win.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	const callerDeadline = 100 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
 
 	req := &bossanovav1.WorkflowServiceGetInfoRequest{}
@@ -88,7 +92,9 @@ func TestInvokePluginUnaryHonorsCallerDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if elapsed > time.Second {
+	// 10x the caller's deadline, far below the 30s default that would end the call if the
+	// caller's own deadline were not honoured.
+	if elapsed > 10*callerDeadline {
 		t.Fatalf("caller deadline ignored; elapsed %v", elapsed)
 	}
 }

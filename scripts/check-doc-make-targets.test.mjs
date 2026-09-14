@@ -582,19 +582,22 @@ test('script workflow runs the doc-target guard when checked docs change', () =>
     'utf8',
   )
 
+  // One occurrence each, not two: BOS-1242 deleted the workflow's `check` job, which carried a
+  // dorny/paths-filter copy of this same route list. That job published a step's completion status
+  // as its only output, so the consumer condition reading it was a tautology and the inner filter
+  // was never read. on.push.paths is now the single route table this guard rides on.
   for (const doc of ['README.md', 'CLAUDE.md', 'AGENTS.md', 'docs/build-and-ci.md']) {
-    assert.equal(workflow.match(new RegExp(`- ${doc}`, 'g'))?.length, 2)
+    assert.equal(workflow.match(new RegExp(`- ${doc}`, 'g'))?.length, 1)
   }
 
-  // Skill docs are scanned too, so a skill edit must also trigger the guard
-  // (once in the push paths filter, once in the dorny/paths-filter block).
+  // Skill docs are scanned too, so a skill edit must also trigger the guard.
   for (const skillRoot of [
     '.claude/skills/**',
     '.codex/skills/**',
     'plugins/bossd-plugin-claude/skilldata/skills/**',
     'services/boss/internal/skillinstall/skills/**',
   ]) {
-    assert.equal(workflow.split(`- ${skillRoot}`).length - 1, 2)
+    assert.equal(workflow.split(`- ${skillRoot}`).length - 1, 1)
   }
 })
 

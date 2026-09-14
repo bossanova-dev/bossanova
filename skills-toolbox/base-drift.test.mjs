@@ -672,3 +672,36 @@ test('a disjoint base move attempts no attribution and says so', () => {
   assert.equal(report.attribution.status, UNEVALUATED)
   assert.deepEqual(report.attribution.commits, [])
 })
+
+// --- help surface -------------------------------------------------------------
+
+const BASE_DRIFT_CLI = fileURLToPath(new URL('./base-drift.mjs', import.meta.url))
+
+function runBaseDriftCli(args) {
+  return spawnSync(process.execPath, [BASE_DRIFT_CLI, ...args], { encoding: 'utf8' })
+}
+
+for (const flag of ['--help', '-h']) {
+  test(`base-drift ${flag} exits 0 with usage on stdout`, () => {
+    // The flag loop used to reject this as "unknown argument" with exit 2 and no usage
+    // at all; the pre-scan ahead of the loop is what makes help reachable.
+    const res = runBaseDriftCli([flag])
+    assert.equal(res.status, 0, res.stderr)
+    assert.match(res.stdout, /usage: node base-drift\.mjs check --base <ref>/)
+    assert.match(res.stdout, /--fetch-failed/)
+    assert.equal(res.stderr, '')
+  })
+}
+
+test('base-drift rejects an unknown argument with the usage block', () => {
+  const res = runBaseDriftCli(['check', '--nope'])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /base-drift: unknown argument --nope/)
+  assert.match(res.stderr, /usage: node base-drift\.mjs check --base <ref>/)
+})
+
+test('base-drift rejects an unknown subcommand with the usage block', () => {
+  const res = runBaseDriftCli(['bogus'])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /usage: node base-drift\.mjs check --base <ref>/)
+})

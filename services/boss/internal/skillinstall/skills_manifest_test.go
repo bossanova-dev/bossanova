@@ -2582,11 +2582,27 @@ func TestBossPlanArtifactVerifierFailureCleansScratch(t *testing.T) {
 // never see. boss-epic, boss-finalize and boss-repair each have this test; boss-plan did not.
 func TestBossPlanEmbeddedSkillCopiesStayIdentical(t *testing.T) {
 	repoRoot := findRepoRoot(t)
-	for _, rel := range []string{
-		"SKILL.md",
-		filepath.Join("references", "headless-drafting-brief.md"),
-		filepath.Join("references", "plan-storage.md"),
-	} {
+	// Walk the embedded payload rather than hand-listing: a list has to be extended by hand
+	// every time a reference is added, and the file it forgets is unguarded while the test
+	// still reads as covering the core. references/interactive-mode.md and
+	// references/extension-reviewers.md were both missing from the hand-list this replaces.
+	var rels []string
+	if err := fs.WalkDir(SkillsFS, "skills/boss-plan", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rels = append(rels, filepath.FromSlash(strings.TrimPrefix(p, "skills/boss-plan/")))
+		return nil
+	}); err != nil {
+		t.Fatalf("walk embedded boss-plan: %v", err)
+	}
+	if len(rels) == 0 {
+		t.Fatal("walked embedded boss-plan and found no files; the gate would pass vacuously")
+	}
+	for _, rel := range rels {
 		t.Run(rel, func(t *testing.T) {
 			embedded, err := SkillsFS.ReadFile("skills/boss-plan/" + filepath.ToSlash(rel))
 			if err != nil {

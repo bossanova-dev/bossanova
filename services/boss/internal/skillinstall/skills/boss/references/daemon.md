@@ -23,11 +23,15 @@ boss daemon install
 boss daemon install --force
 ```
 
-### `boss daemon restart`
+### `boss daemon restart [flags]`
 
 Restart the bossd daemon
 
 Restarts the bossd daemon via the platform service manager. Errors out if the daemon isn't installed.
+
+**Flags:**
+
+- `--json` — Emit the restart outcome as a stable JSON schema, so a driver can tell a supervised restart from one that fell back to an unsupervised direct start
 
 ```bash
 boss daemon restart

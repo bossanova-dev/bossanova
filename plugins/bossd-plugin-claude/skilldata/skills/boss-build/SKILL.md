@@ -137,6 +137,10 @@ body carries the decision skeleton; every moved instruction is still reachable h
   exhaustive — open review findings are **not** on it.
 - Never merge. Terminal success is review-ready, never "Done".
 - Never `run_in_background`; use `toolbox/bs-dispatch-await.mjs` (`Task`/`spawn_agent`+`wait_agent`).
+- Never `boss cron` to wait for anything. A cron job starts a **new session** on every fire; fires
+  overlap, each starts blind, and the schedule outlives the run it was pointed at. It schedules
+  work, it does not watch it. To wait, arm a callback; to observe, read the session directly
+  (`boss chats`, `boss show`, `boss tail <agent-session-id>`, `boss session checks`).
 - **No raw bulk output in main thread.** Never paste full diffs, CI logs, or review threads into
   orchestrator context. Read them
   **inside a subagent that returns a short summary**, or filter to few lines (`gh pr checks --json
@@ -531,7 +535,7 @@ the artifact `createdAt`, cap the body at 1 MiB, and save the returned bytes as 
 before parsing.
 If validation or fetch fails, comment the reason and go to **Stop cleanly** with BLOCKED.
 
-**Contract check.** Run `validatePlanDescription` in `toolbox/skill-config.mjs` on the ticket
+**Contract check.** Run `validatePlanDescription(config, description)` in `toolbox/skill-config.mjs` on the ticket
 **description** (Step 2's `getIssue` read — the `- Contract:` stamp and `##` sections live there, not
 the fetched file); on `unsupportedVersion` or a missing section, comment and **Stop cleanly** BLOCKED
 (no stamp = v1).
@@ -885,11 +889,12 @@ the blocking verdict is determined**, re-affirmed as its last action —
 ```bash
 CAPS="${RUN_SENTINEL%/*}/bs-review-caps.mjs"
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$CAPS" sentinel clean)" "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"
+  "$(node "$CAPS" verdict --in "$REPORT_JSON")" "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"
 ```
 
-— `bs-review clean:` when `boss-review`'s Phase 7 report carries zero open must-fix,
-`bs-review capped:` (N = rounds reached) when its Phase 6 fix loop capped with open must-fix. That
+— the line is **derived from the report, never hand-picked**: `verdict --in` (`$REPORT_JSON` is the
+pass's own Phase 7 report) emits `bs-review clean:` only when that report carries zero open must-fix
+**and** zero unrepaired `invalid` evidence, and `bs-review capped:` otherwise. That
 verdict is **blocking**: it is the only review verdict this run has, so nothing downstream may demote
 it to advisory.
 
@@ -899,19 +904,26 @@ it to advisory.
 note, and the finding ledger. Bulk stays in the subagent's context,
 **NOT pasted back**.
 
-**Classify from the run file only.** Read the sentinel and route on `matchSentinel`:
+**Classify from the run file only** — and do it through `toolbox/bs-dispatch-await.mjs`, which owns
+the decision, rather than re-deriving it here. Its `disposition` verb answers one question the four
+hand-rolled arms below used to answer four different ways: **is this verdict publishable?** A
+provisional payload demotes **every** kind, `clean` included, so a seed nobody upgraded can never
+route onward as a verdict:
 
 ```bash
-READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" review)"
-if [ "$(printf '%s' "$READ" | jq -r '.status')" = "ok" ]; then
+DISP="$(node "${RUN_SENTINEL%/*}/bs-dispatch-await.mjs" disposition "$RUN_DIR" "$RUN_ID" review)"
+if [ "$(printf '%s' "$DISP" | jq -r '.publishable')" = "true" ]; then
   # matchSentinel classifies the byte-stable `bs-review clean:` / `bs-review capped:` prefixes.
-  VERDICT="$(node "${RUN_SENTINEL%/*}/bs-review-caps.mjs" match "$(printf '%s' "$READ" | jq -r '.kind')" | jq -r '.status // empty')"
+  VERDICT="$(node "${RUN_SENTINEL%/*}/bs-review-caps.mjs" match "$(printf '%s' "$DISP" | jq -r '.kind')" | jq -r '.status // empty')"
   if [ -z "$VERDICT" ]; then VERDICT="$DISPATCH_FAILURE"; fi
-  PROVISIONAL="$(printf '%s' "$READ" | jq -r '.payload.provisional // empty')"
+  PROVISIONAL=
 else
-  # status == missing (dead subagent) OR stale (foreign leftover): a distinct dispatch-failure
-  # that routes to the SAFE non-clean branch and is NEVER treated as clean.
+  # Every non-publishable disposition — a provisional payload on ANY kind, a missing sentinel (dead
+  # subagent), a stale one (foreign leftover), a timed-out or abandoned dispatch — is a distinct
+  # dispatch-failure that routes to the SAFE non-clean branch and is NEVER treated as clean.
+  # `.reason` says which; only `provisional-payload` takes the coverage-unknown arm.
   VERDICT="$DISPATCH_FAILURE"
+  PROVISIONAL="$(printf '%s' "$DISP" | jq -r 'if .reason == "provisional-payload" then "true" else empty end')"
 fi
 node "$RUN_SENTINEL" cleanup "$RUN_DIR"
 case "$VERDICT" in clean|capped) REVIEW_VERDICT="$VERDICT" ;; *) REVIEW_VERDICT="none" ;; esac
@@ -933,11 +945,12 @@ headed for human review, so the honest terminal state is `REVIEW_READY` with the
 turn any of these into `BLOCKED`, and of those only the first two are decidable here.
 
 - `clean` → proceed to **Step 6.5**, which is the only route onward to Step 7.
-- `capped` with `PROVISIONAL` = `true` (the seed was never upgraded) → the
+- `PROVISIONAL` = `true` on **any** kind (the seed was never upgraded) → the
   **REVIEW_READY-with-findings** route, **never** clean and **never** `PARTIAL` — no reviewer
   settled anything, so there is no certified criterion to stand on. Take this arm **before** the
   next one, and decide it from the payload marker alone, never from the kind, the round count or the
-  returned prose. Publish via [review-stack.md](references/review-stack.md)
+  returned prose: a provisional `clean` is exactly as unearned as a provisional `capped`, which is
+  why the helper demotes both. Publish via [review-stack.md](references/review-stack.md)
   §REVIEW_READY-with-findings publication with the honest `none: …` coverage token that route names
   for this sub-case (`none: review coverage unknown (review stack entered; provisional verdict never
 upgraded — <reason>)`); it becomes `BLOCKED` **only** when the push or the quality gates fail.

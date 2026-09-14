@@ -203,6 +203,118 @@ func TestSourceDriftPathsUninstalledTree(t *testing.T) {
 	}
 }
 
+func TestSourceDriftReportClassifiesEachDriftKind(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), testFS())
+	installed := t.TempDir()
+	if err := Extract(installed, testFS()); err != nil {
+		t.Fatal(err)
+	}
+
+	// One fixture carrying one instance of every kind, so a report that
+	// collapsed any two of them into a single label fails here.
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss-test", "SKILL.md"), []byte("changed skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(installed, Namespace, "boss-finalize", "add-pr.sh")); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(installed, Namespace, "boss-repair", "scripts", "review-feedback-probe.js")
+	if err := os.Chmod(script, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, Namespace, "boss-other", "EXTRA.md"), []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(installed, "boss")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(Namespace, "boss-other"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := SourceDriftReport(installed, srcRoot)
+	if err != nil {
+		t.Fatalf("SourceDriftReport: %v", err)
+	}
+	if !report.Installed {
+		t.Fatal("SourceDriftReport Installed = false, want true for an installed tree")
+	}
+	if report.Compared != len(testFS()) {
+		t.Fatalf("SourceDriftReport Compared = %d, want %d payload files", report.Compared, len(testFS()))
+	}
+
+	kinds := map[string]DriftKind{}
+	for _, entry := range report.Entries {
+		kinds[entry.Path] = entry.Kind
+	}
+	// Every difference above is a different kind of difference, so the report
+	// must tell them apart. Derived from the observed kinds and checked before
+	// the exact-match assertion below, so an implementation that collapses two
+	// kinds fails here on its own rather than only as a whole-map mismatch.
+	distinct := map[DriftKind]bool{}
+	for _, kind := range kinds {
+		distinct[kind] = true
+	}
+	if len(distinct) != len(kinds) {
+		t.Fatalf("drift kinds = %#v, want a distinct kind per difference, got %d kinds for %d differences",
+			kinds, len(distinct), len(kinds))
+	}
+
+	want := map[string]DriftKind{
+		"boss":                    DriftBrokenSymlink,
+		"boss-finalize/add-pr.sh": DriftAbsent,
+		"boss-other/EXTRA.md":     DriftUnexpected,
+		"boss-repair/scripts/review-feedback-probe.js": DriftMode,
+		"boss-test/SKILL.md":                           DriftContent,
+	}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("SourceDriftReport kinds = %#v, want %#v", kinds, want)
+	}
+}
+
+func TestSourceDriftPathsIsTheReportProjection(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), testFS())
+	installed := t.TempDir()
+	if err := Extract(installed, testFS()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss-test", "SKILL.md"), []byte("changed skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(installed, Namespace, "boss-finalize", "add-pr.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, Namespace, "boss-other", "EXTRA.md"), []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(installed, Namespace, "boss-removed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := SourceDriftReport(installed, srcRoot)
+	if err != nil {
+		t.Fatalf("SourceDriftReport: %v", err)
+	}
+	paths, err := SourceDriftPaths(installed, srcRoot)
+	if err != nil {
+		t.Fatalf("SourceDriftPaths: %v", err)
+	}
+	// The pre-change contract: the same sorted, slash-separated path slice.
+	want := []string{
+		"boss-finalize/add-pr.sh",
+		"boss-other/EXTRA.md",
+		"boss-removed/",
+		"boss-test/SKILL.md",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("SourceDriftPaths = %#v, want %#v", paths, want)
+	}
+	if !reflect.DeepEqual(report.Paths(), want) {
+		t.Fatalf("DriftReport.Paths() = %#v, want %#v", report.Paths(), want)
+	}
+}
+
 func TestExtractFromSourceWritesCanonicalSourceBytes(t *testing.T) {
 	srcRoot := writeSourceTree(t, t.TempDir(), changedFS())
 	dest := t.TempDir()

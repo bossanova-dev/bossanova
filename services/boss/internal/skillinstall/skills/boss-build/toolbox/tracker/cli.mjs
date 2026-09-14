@@ -66,6 +66,41 @@ function parseJsonFlag(value, label, errWrite) {
   }
 }
 
+// The capability surface, printed by `--help` and appended to the unknown-capability
+// rejection. It used to exist only as the dispatch chain below, so the accepted
+// capabilities could be learned only by reading this file — and `--help` itself fell
+// through to `unknown tracker capability: --help` with exit 2 and no list at all.
+// tracker/cli.test.mjs derives the expected names from the dispatch chain's own
+// `cmd === '...'` literals, so a capability cannot be added without appearing here.
+export const TRACKER_USAGE = `usage: node tracker/cli.mjs <capability> [flags]
+
+capabilities:
+  claim-token
+      Print a fresh tracker-agnostic run token (32-char hex) on stdout.
+
+  claim-comment --token <token> [--session-id <id>]
+      Print the tracker-specific claim comment body. Session id defaults to
+      BOSS_SESSION_ID.
+
+  claim-verdict --me <token> --comments <json-array> [--liveness <json>]
+      Resolve first-writer-wins over the claim comments.
+      exit 0 WON | exit 3 LOST | exit 4 NO_WINNER.
+
+  states
+      Print {"planned":...,"inProgress":...,"inReview":...} for the resolved adapter.
+      OPTIONAL: an adapter without it exits 2 with a diagnostic and no stdout.
+
+  update-comment --id <commentId> --body-file <path>
+      Print the MCP tool descriptor for a single-comment progress update.
+
+  write-description --id <issueId> --body-file <path>
+      Print the MCP tool descriptor for a file-sourced description write.
+      OPTIONAL: an adapter without it exits 2 and the caller sends inline instead.
+
+  --help, -h, help
+      Print this message and exit 0.
+`
+
 /**
  * Dispatch one tracker capability. Returns the process exit code; never calls
  * process.exit directly so it is unit-testable.
@@ -87,6 +122,12 @@ export function runCli(
   } = {},
 ) {
   const [cmd, ...rest] = argv
+  // Resolved BEFORE the dispatch chain so `--help` cannot fall through to the
+  // unknown-capability rejection it used to answer with.
+  if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    write(TRACKER_USAGE)
+    return 0
+  }
   if (cmd === 'claim-token') {
     write(generateClaimToken() + '\n')
     return 0
@@ -120,6 +161,37 @@ export function runCli(
     }
     const parsedComments = parseJsonFlag(comments, 'claim-verdict: --comments', errWrite)
     if (parsedComments === undefined) return 2
+    // Normalized HERE, at the flag, not left to surface through `resolveClaim`'s catch below. The
+    // tracker's `list_comments` returns `{comments:[…]}`, and that envelope used to reach
+    // `for (const c of comments)` and throw `comments is not iterable`, which this CLI reported as
+    // `claim arbitration failed` — a diagnostic naming malformed EVIDENCE when the fault was an
+    // argument shape. Both the bare array and the envelope are accepted; anything else is refused by
+    // name against the flag that carried it.
+    let commentList
+    if (Array.isArray(parsedComments)) {
+      commentList = parsedComments
+    } else if (
+      parsedComments !== null &&
+      typeof parsedComments === 'object' &&
+      Array.isArray(parsedComments.comments)
+    ) {
+      commentList = parsedComments.comments
+    } else {
+      // Names the KEYS an object carried, matching `normalizeClaimComments`'s descriptor in
+      // `linear-claim.mjs` — the library this flag fronts. A bare `a object` discarded exactly the
+      // detail that identifies the remaining likely misuse: `{nodes:[…]}`, the GraphQL spelling of
+      // the same payload.
+      errWrite(
+        `claim-verdict: --comments (a JSON comment ARRAY, or the tracker's {"comments":[…]} envelope) — got ${
+          parsedComments === null
+            ? 'null'
+            : typeof parsedComments === 'object'
+              ? `an object with keys ${Object.keys(parsedComments).join(', ')}`
+              : `a ${typeof parsedComments}`
+        }\n`,
+      )
+      return 2
+    }
     let livenessOptions = null
     if (liveness !== undefined) {
       livenessOptions = parseJsonFlag(liveness, 'claim-verdict: --liveness', errWrite)
@@ -128,7 +200,7 @@ export function runCli(
     const adapter = resolveAdapter({ env })
     let won
     try {
-      won = adapter.resolveClaim(parsedComments, me, livenessOptions)
+      won = adapter.resolveClaim(commentList, me, livenessOptions)
     } catch (err) {
       errWrite(`claim-verdict: claim arbitration failed: ${err?.message ?? err}\n`)
       return 2
@@ -285,6 +357,9 @@ export function runCli(
     return 0
   }
   errWrite(`unknown tracker capability: ${cmd ?? '(none)'}\n`)
+  // The capability list goes out on the rejection too: a caller who guessed wrong
+  // learns the real set here rather than having to read this file.
+  errWrite(TRACKER_USAGE)
   return 2
 }
 

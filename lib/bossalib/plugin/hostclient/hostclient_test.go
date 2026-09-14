@@ -85,7 +85,8 @@ func newBufconnEagerClient(t *testing.T, opts ...ClientOption) (*EagerClient, fu
 
 func TestDirectClientAppliesDefaultTimeout(t *testing.T) {
 	t.Parallel()
-	c, cleanup := newBufconnDirectClient(t, WithTimeout(150*time.Millisecond))
+	const clientTimeout = 150 * time.Millisecond
+	c, cleanup := newBufconnDirectClient(t, WithTimeout(clientTimeout))
 	defer cleanup()
 
 	start := time.Now()
@@ -95,7 +96,9 @@ func TestDirectClientAppliesDefaultTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if elapsed > 2*time.Second {
+	// 13x the configured timeout, and far below the 30s default a client that ignored
+	// WithTimeout would wait, so the bound moves with the budget this test supplies.
+	if elapsed > 13*clientTimeout {
 		t.Fatalf("expected fast timeout, elapsed %v", elapsed)
 	}
 	if elapsed < 100*time.Millisecond {
@@ -109,7 +112,8 @@ func TestDirectClientHonorsCallerDeadline(t *testing.T) {
 	c, cleanup := newBufconnDirectClient(t)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	const callerDeadline = 100 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
 
 	start := time.Now()
@@ -119,7 +123,9 @@ func TestDirectClientHonorsCallerDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if elapsed > time.Second {
+	// 10x the caller's deadline, and two orders of magnitude below the 30s client default a
+	// client that ignored the caller would wait.
+	if elapsed > 10*callerDeadline {
 		t.Fatalf("caller deadline ignored; elapsed %v", elapsed)
 	}
 }
@@ -195,8 +201,9 @@ func TestDialWithTimeoutFiresOnStuckDial(t *testing.T) {
 		return nil, errors.New("unblocked-with-error")
 	}
 
+	const dialTimeout = 80 * time.Millisecond
 	start := time.Now()
-	conn, err := dialWithTimeout(dial, 80*time.Millisecond)
+	conn, err := dialWithTimeout(dial, dialTimeout)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -205,7 +212,9 @@ func TestDialWithTimeoutFiresOnStuckDial(t *testing.T) {
 	if conn != nil {
 		t.Fatal("expected nil conn on timeout")
 	}
-	if elapsed > 500*time.Millisecond || elapsed < 50*time.Millisecond {
+	// Upper half derived at 6x the dial timeout; the lower half stays a literal because load
+	// only ever pushes elapsed time up, so it cannot flip a too-fast bound red.
+	if elapsed > 6*dialTimeout || elapsed < 50*time.Millisecond {
 		t.Fatalf("timeout not within expected range, elapsed %v", elapsed)
 	}
 	if !strings.Contains(err.Error(), "timed out") {
@@ -295,7 +304,8 @@ func TestStartChatRunIgnoresClientDefaultTimeout(t *testing.T) {
 
 	// The caller's deadline is what actually ends this test: waiting out the
 	// real 90s ceiling is not a thing a unit test may do.
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	const callerDeadline = 250 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
 
 	start := time.Now()
@@ -309,7 +319,9 @@ func TestStartChatRunIgnoresClientDefaultTimeout(t *testing.T) {
 		t.Fatalf("StartChatRun returned after %v: the client's 80ms configured default is still clamping it. "+
 			"StartChatRun must be bounded by StartChatRunRPCTimeout instead.", elapsed)
 	}
-	if elapsed > 2*time.Second {
+	// 8x the caller's deadline, and far below the 90s StartChatRunRPCTimeout ceiling that
+	// would end the call if the caller's deadline were not propagated.
+	if elapsed > 8*callerDeadline {
 		t.Fatalf("expected the caller's 250ms deadline to end the call, elapsed %v", elapsed)
 	}
 }
@@ -322,7 +334,8 @@ func TestStartChatRunHonorsShorterCallerDeadline(t *testing.T) {
 	c, cleanup := newBufconnDirectClient(t, WithStartChatRunTimeout(600*time.Second))
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	const callerDeadline = 100 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
 
 	start := time.Now()
@@ -339,17 +352,21 @@ func TestStartChatRunHonorsShorterCallerDeadline(t *testing.T) {
 		t.Fatalf("StartChatRun returned after %v, well before the caller's 100ms deadline: "+
 			"the call failed for some reason other than the deadline, so this test proved nothing", elapsed)
 	}
-	if elapsed > 2*time.Second {
+	// 20x the caller's deadline, and four orders of magnitude below the 600s ceiling that
+	// would end the call if the tighter caller deadline did not win.
+	if elapsed > 20*callerDeadline {
 		t.Fatalf("expected the caller's 100ms deadline to win over StartChatRunRPCTimeout, elapsed %v", elapsed)
 	}
 }
 
 func TestStartChatRunUsesConfiguredCeiling(t *testing.T) {
 	t.Parallel()
-	c, cleanup := newBufconnDirectClient(t, WithStartChatRunTimeout(160*time.Millisecond))
+	const configuredCeiling = 160 * time.Millisecond
+	const callerDeadline = 500 * time.Millisecond
+	c, cleanup := newBufconnDirectClient(t, WithStartChatRunTimeout(configuredCeiling))
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
 
 	start := time.Now()
@@ -362,21 +379,25 @@ func TestStartChatRunUsesConfiguredCeiling(t *testing.T) {
 	if elapsed < 120*time.Millisecond {
 		t.Fatalf("StartChatRun returned after %v, before the configured 160ms ceiling could be observed", elapsed)
 	}
-	if elapsed > 350*time.Millisecond {
+	// 70% of the caller's deadline: a run that reached the deadline is exactly the failure
+	// this guards, so the bound stays strictly below it and cannot go vacuous.
+	if elapsed > callerDeadline*7/10 {
 		t.Fatalf("StartChatRun returned after %v; configured ceiling was not applied before the caller's 500ms deadline", elapsed)
 	}
 }
 
 func TestEagerStartChatRunForwardsConfiguredCeiling(t *testing.T) {
 	t.Parallel()
-	c, cleanup := newBufconnEagerClient(t, WithStartChatRunTimeout(160*time.Millisecond))
+	const configuredCeiling = 160 * time.Millisecond
+	const callerDeadline = 500 * time.Millisecond
+	c, cleanup := newBufconnEagerClient(t, WithStartChatRunTimeout(configuredCeiling))
 	defer cleanup()
 
-	if c.inner.startChatRunTimeout != 160*time.Millisecond {
+	if c.inner.startChatRunTimeout != configuredCeiling {
 		t.Fatalf("eager inner StartChatRun timeout = %v, want 160ms", c.inner.startChatRunTimeout)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 	defer cancel()
 
 	start := time.Now()
@@ -389,7 +410,8 @@ func TestEagerStartChatRunForwardsConfiguredCeiling(t *testing.T) {
 	if elapsed < 120*time.Millisecond {
 		t.Fatalf("StartChatRun returned after %v, before the configured 160ms ceiling could be observed", elapsed)
 	}
-	if elapsed > 350*time.Millisecond {
+	// 70% of the caller's deadline, for the same reason as the direct-client sibling above.
+	if elapsed > callerDeadline*7/10 {
 		t.Fatalf("StartChatRun returned after %v; eager client did not forward the configured ceiling", elapsed)
 	}
 }

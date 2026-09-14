@@ -331,7 +331,34 @@ Based on the output, categorize the issue:
 - **Merge Conflict**: Git reports conflicts in files
 - **Failing Checks**: PR checks show failures (tests, lint, build)
 - **Review Feedback**: PR has requested changes or comments
-- **No problem**: every signal is already clear — checks passing with none pending, `repair_status=clean`, and `mergeable` not `CONFLICTING`. `repair_status=not_evaluated` is not clean and never selects this category. This is a **valid categorization result**, not a failure to categorize: route straight to the **nothing to repair** outcome in [Terminal outcomes](#terminal-outcomes) and select no strategy.
+- **Report-only finding**: a must-fix finding recorded only in the dispatching core's review report or in the PR body, matching none of the three probes above. Read both, and count a finding that is still **open**. The three probes above are places a finding can be written, not a definition of what a finding is — a finding opens a repair cycle because it is real and unresolved, never because of where it happened to be recorded.
+- **No problem**: every signal is already clear — checks passing with none pending, `repair_status=clean`, `mergeable` not `CONFLICTING`, and no open report-only finding. `repair_status=not_evaluated` is not clean and never selects this category. This is a **valid categorization result**, not a failure to categorize: route straight to the **nothing to repair** outcome in [Terminal outcomes](#terminal-outcomes) and select no strategy.
+
+The list above is what this round **probes**. What it **reports** is the helper's answer — do not pick
+a `**Problem Identified**` value from the list by hand:
+
+```bash
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+# Write {"conflict":…,"failingChecks":…,"reviewThreads":…,"reportOnlyFindings":[…]} with your file
+# tool, then substitute that file's path for <problem-sources-path>. It is a placeholder you fill
+# in, NOT a variable this block sets: no shell state survives between the tool calls a pass is made
+# of, so a variable would expand to the empty string and the command would exit on an unreadable path.
+node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" problem-sources --in "<problem-sources-path>"
+```
+
+| `sources` entry       | what this round does                                                        |
+| --------------------- | --------------------------------------------------------------------------- |
+| `merge-conflict`      | Strategy A.                                                                 |
+| `failing-checks`      | Strategy B.                                                                 |
+| `review-feedback`     | Strategy C.                                                                 |
+| `report-only-finding` | Strategy C, reading the finding from the report or PR body that carries it. |
+| `none`                | Route to **nothing to repair** and select no strategy.                      |
+
+**`None` is unreportable while any source is open.** The helper returns `none` only when all four
+sources are absent, and a probe answer it cannot read counts as **present** — so a round reports
+`None` because it looked and found nothing, never because it did not look. Paste the printed `line`
+into the [Repair Summary](#repair-summary)'s `**Problem Identified**` field.
 
 **1.3 Identify Project Gate Commands**
 
@@ -386,6 +413,25 @@ owned the failure, and why the failure belongs to this branch. Assess the return
 evidence it cites independently. A correct verdict supported by a mis-cited line is still a
 mis-citation; a wrong verdict attached to a correctly quoted line still tells you what the log said.
 Never promote narrative to authority when the log is available.
+
+Adjudicate the cited evidence mechanically before any of it is published. Extract each checkable
+claim into a JSON list of `{kind, claim}` objects — a cited `file` or `file:line` as `path`, a
+quoted short or full SHA as `git-object`, a hash offered as the tree the gates ran on as `tree` —
+and run
+
+```bash
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+node "$BOSS_REPAIR_TOOLBOX/bs-dispatch-claims.mjs" verify --file <claims.json>
+```
+
+A `verified` claim may be cited in a PR reply. A `refuted` one is struck: never publish or forward
+it, and treat the conclusion resting on it as unproven — re-derive it from the artefact. An
+`unverifiable` one (no git, no repo root, a path outside it) is recorded and not cited; it is never
+promoted to verified. Striking a claim does not discard the round: every other claim is adjudicated
+on its own. Exit 2 is an operator error — bad usage, an unreadable claim list — and never a verdict:
+nothing was adjudicated, so an empty record list there is not "nothing was refuted"; fix the
+invocation and re-run before citing any of it.
 
 **Round freshness — capture the head SHA before reading PR state.** The first thing a round does,
 before reading review threads, check runs, or mergeability, is record the commit the **PR head**
@@ -612,6 +658,21 @@ newer commit.** Report it as a **residual** naming both SHAs, and do not claim t
    fi
    test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }
    git fetch origin "$BASE_BRANCH"
+   # Conflict-sizing preflight, BEFORE the rebase. merge-tree computes the merge in the object
+   # database only: it writes no index entry, no worktree file and no ref, so it does not touch the
+   # worktree at all. That is what makes it safe here — a peer session may be mid-edit in this
+   # worktree, which is the same reason `git stash` is forbidden throughout this document. Record the
+   # files it names as this round's conflict scope before anything starts rewriting history.
+   CONFLICT_SCOPE=$(git merge-tree --write-tree --name-only "origin/$BASE_BRANCH" HEAD)
+   CONFLICT_STATUS=$?
+   if [ "$CONFLICT_STATUS" -eq 0 ]; then
+     echo "conflict scope: none — the rebase is expected to apply cleanly"
+   elif [ "$CONFLICT_STATUS" -eq 1 ]; then
+     echo "conflict scope (only these files need resolving):"
+     printf '%s\n' "$CONFLICT_SCOPE" | tail -n +2
+   else
+     echo "conflict scope: unreadable (merge-tree exited $CONFLICT_STATUS) — size it from the rebase itself, do not report it as none"
+   fi
    MERGE_AMENDMENTS=$(
      git rev-list --merges "origin/$BASE_BRANCH"..HEAD |
        while read -r merge_commit; do
@@ -1025,6 +1086,39 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 
    The reply must do three things: **affirm the defect is real**, state precisely why the suggested change is not being applied, and **record a residual or follow-up instead of implementing it**. Post it through the same reply path as (b) — the same temporary-path block, the same submission block — then resolve the thread the same way. A reply that declines without affirming the defect is category (b) wrongly applied, and one that affirms without recording the residual loses the finding entirely.
 
+   **The sink, and the order: record first, reply second.** The residual has a named destination, and
+   the reply is inadmissible until that record exists and its identifier is in hand. A reply is
+   posted once and cannot be un-posted, so one drafted before the record is written can promise a
+   follow-up that never gets made — an unbacked claim on a public PR that nothing downstream
+   re-checks. Resolve the destination first:
+
+   ```bash
+   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" residual-sink
+   ```
+
+   | `sink`       | `degraded` | what this round does                                                                                                                                                                                                                                                                   |
+   | ------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `boss-notes` | `false`    | Write the residual body to a file, substitute its path for the printed command's `<residual-body-path>`, and run that command. The note id it prints is the record id.                                                                                                                 |
+   | `pr-comment` | `true`     | The same, with the printed fallback command; the comment URL is the record id. Say in the [Repair Summary](#repair-summary) that the residual sink was **degraded** — the fallback is a weaker, less searchable record, and reporting it is what stops it being a silent substitution. |
+
+   Then gate the reply on that id, once per declined part:
+
+   ```bash
+   # Write {"residualRecordId":"<the id the write returned>"} with your file tool and substitute its
+   # path for <decline-reply-path> — a placeholder, not a variable this block sets.
+   node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" decline-reply --in "<decline-reply-path>"
+   ```
+
+   | `reason`         | what this round does                                                                                                                                                                                                                     |
+   | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `record-cited`   | The reply is admissible. Post it, citing that record id so a reader can check the follow-up exists.                                                                                                                                      |
+   | `unbacked-claim` | **Do not post.** The record does not exist yet. Write the residual, take the id the write returned, and re-run the gate — never edit the reply to stop claiming a record, which loses the finding exactly as an unrecorded decline does. |
+
+   A blank or whitespace-only id is refused, not accepted: the id arrives from a command
+   substitution, and a write that failed most easily yields an empty line.
+
    **d) Unclear — ask for clarification:**
    - Add a reply comment asking for clarification:
      First create and print a temporary path, then write the reply to that exact printed path with
@@ -1167,34 +1261,72 @@ After applying the repair:
    git fetch origin "$BRANCH" || exit 1
    LOCAL=$(git rev-parse HEAD) || exit 1
    REMOTE=$(git rev-parse "origin/$BRANCH") || exit 1
+   # This block's only irreplaceable job is the two ancestry probes and the answers they produce.
+   # The verdict, and its wording, are the helper's — see the routing table below. There is no
+   # second, paraphrased rendering of the same decision here to drift out of step with it, and a
+   # round that landed no commits still emits the field because the helper always answers.
+   REMOTE_IS_ANCESTOR_OF_LOCAL=false
+   LOCAL_IS_ANCESTOR_OF_REMOTE=false
    if [ "$LOCAL" = "$REMOTE" ]; then
-     echo "already published — no push owed"
+     : # equal SHAs settle it without either probe; the helper reads `published` off the SHAs alone
    elif git merge-base --is-ancestor "$LOCAL" "$REMOTE"; then
-     echo "remote is ahead of this worktree — do not push; re-derive the round from the new head"
+     LOCAL_IS_ANCESTOR_OF_REMOTE=true
    elif git merge-base --is-ancestor "$REMOTE" "$LOCAL"; then
-     echo "push owed — unless this commit was withheld by the stale-SHA cancellation, in which case report it and do not push"
-   else
-     echo "diverged — a concurrent writer rewrote the branch; do not push and do not force-push, report a residual and re-derive the round from the new head"
+     REMOTE_IS_ANCESTOR_OF_LOCAL=true
    fi
+   # WITHHELD is a value you PASTE, exactly as SENT_SHAS is — NOT a variable an earlier tool call
+   # set: no shell state survives between the tool calls a pass is made of, so a defaulted read of
+   # such a variable takes its default on every round, and `false` is the fail-OPEN direction here —
+   # it routes a deliberately withheld commit to `push-owed`, whose row below says "Push." Left
+   # unfilled, the placeholder makes the input invalid JSON and the helper exits non-zero, which is
+   # the refusal this shape is for. Paste `true` only for the stale-SHA cancellation carved out below.
+   WITHHELD="<true if the stale-SHA cancellation withheld this round's commit, else false>"
+   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   PUSH_STATE_IN=$(mktemp)
+   printf '{"localSha":"%s","remoteSha":"%s","remoteIsAncestorOfLocal":%s,"localIsAncestorOfRemote":%s,"withheld":%s}\n' \
+     "$LOCAL" "$REMOTE" "$REMOTE_IS_ANCESTOR_OF_LOCAL" "$LOCAL_IS_ANCESTOR_OF_REMOTE" "$WITHHELD" >"$PUSH_STATE_IN"
+   node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" push-state --in "$PUSH_STATE_IN"
+   rm -f "$PUSH_STATE_IN"
    ```
 
    Compare the two SHAs as **strings**, with `|| exit 1` on each substitution, per the fail-closed
    style the [Linear-History Invariant](#linear-history-invariant) already mandates: an empty
    substitution comparing equal under `-eq` is precisely the fail-open form that section forbids.
 
-   **Four arms, because "not equal" is three different situations.** Only the third owes a push. The
-   fourth is **divergence, not a routine push**: local and remote share nothing newer than an older
-   base, because a concurrent writer rewrote the branch. A plain `git push` is rejected there and a
-   force-push clobbers that writer's work, so this is the same concurrent-writer case the
+   **Both probes run, because "not equal" is three different situations.** Only one of them owes a
+   push. Another is **divergence, not a routine push**: local and remote share nothing newer than an
+   older base, because a concurrent writer rewrote the branch: do not push and do not force-push. A
+   plain `git push` is rejected there and a force-push clobbers that writer's work, so this is the
+   same concurrent-writer case the
    `PUSHED_HEAD` assertion in [Phase 2](#phase-2-execute-repair-strategy) forbids resolving by force
    — report it as a residual and re-derive the round from the new head. Collapsing the last two arms
-   back into one `else` reads a clobber as ordinary unpushed work, which is the failure this whole
-   section exists to prevent.
+   back into one — skipping the second probe and letting the remaining branch mean "ahead" — reads a
+   clobber as ordinary unpushed work, which is the failure this whole section exists to prevent.
 
    One case legitimately leaves the branch ahead of origin: the stale-SHA cancellation above, where
    the CI half was cancelled and its commit was built but deliberately not pushed. A branch ahead of
    origin is **expected** there and is reported as that cancellation, not pushed — this check must
    read it the same way the clean-tree check does.
+
+   **The helper owns the reported answer, and every round reports it.** Route on the printed `state`,
+   and paste the printed `line` into the [Repair Summary](#repair-summary)'s **Push state** field
+   verbatim — including on a round that landed no commits, which is exactly the round where "nothing
+   to push" and "forgot to push" otherwise render identically.
+
+   | `state`        | what this round does                                                                            |
+   | -------------- | ----------------------------------------------------------------------------------------------- |
+   | `published`    | Nothing owed — local and origin agree.                                                          |
+   | `remote-ahead` | Do not push; re-derive the round from the new head.                                             |
+   | `push-owed`    | Push.                                                                                           |
+   | `diverged`     | Do not push and do not force-push; report a residual and re-derive the round from the new head. |
+   | `withheld`     | Report it; do not push it.                                                                      |
+
+   A `diverged` verdict whose `reason` is `unreadable-input` is the fail-closed arm, not an observed
+   rewrite: a SHA or an ancestry answer did not resolve, so the round takes the same do-not-push
+   action and says so rather than claiming a concurrent writer nobody saw. The helper never answers
+   `published` from a read it could not make, because `published` is the one value that lets a round
+   which forgot to push say nothing at all.
 
 3. Poll the remote PR state, then report the final PR state (default mode performs one post-push poll; in Watch Mode you loop per the [Watch Mode](#watch-mode) section). Decide the check state through the shared classifier — this body states no green-or-red rule of its own:
 
@@ -1257,7 +1389,7 @@ Provide a concise summary:
 ```
 ## Repair Summary
 
-**Problem Identified**: [Merge conflict | Failing tests | Review feedback]
+**Problem Identified**: [the `line` printed by `bs-repair-derivations.mjs problem-sources` — `None` only when every source is absent]
 
 **Actions Taken**:
 - [Action 1]
@@ -1270,6 +1402,8 @@ Provide a concise summary:
 **Status**:
 - Changes pushed to origin
 - [Checks are now passing | Checks are pending | Awaiting review]
+
+**Push state**: [the `line` printed by `bs-repair-derivations.mjs push-state` — on every round, including one that landed no commits]
 
 **Gate results**:
 - [Each gate run with authoritative completion evidence plus its quoted final summary line | `unverified` for any gate missing either the completion evidence or quoted line | none]

@@ -88,13 +88,26 @@ with the doctor output embedded, so a human can provision it.
 
 ```bash
 node scripts/proof.mjs plan                         # classify; read `recipes`, `surfaces`, `order`
-node scripts/proof.mjs run --recipe <id> --recipe <id>   # select this change's browser recipes
+node scripts/proof.mjs run                          # capture what `plan` just selected
+node scripts/proof.mjs run --recipe <id> --recipe <id>   # narrow to specific recipe ids
 ```
 
-Always select this change's browser recipes explicitly. A bare `run` executes the catalog's default
-preset, which can include recipes unrelated to this change; one unrelated failure still fails the
-aggregate process. The TUI surface is proved by a committed `proof/scenarios/*.scenario.json`, not by
-`--recipe`.
+There is no "default preset". A bare `run` captures what your diff selected rather than a fixed
+catalog set: the recipe catalog (`proof/recipes/default.json`) maps changed paths to recipe ids
+through its `pathRules`, so the selection is derived from your diff and is already scoped to the
+change. Read `plan` first, and read `order` alongside `recipes`: a surface `order` names is proved
+**live by the agent**, so the ids in `recipes` that belong to it are deliberately not captured by the
+recipe leg. The ids `run` must account for — captured, or named in the run's per-surface summary
+with a reason code — are the recipe-surface ids `order` does not claim. Pass `--recipe` when you
+deliberately want a narrower set than the diff selected, for example to re-run one failing capture.
+The TUI surface is proved by a committed `proof/scenarios/*.scenario.json`, not by `--recipe`.
+
+When `plan` prints **zero recipes** (`recipes: []`) and an empty `order`, the change has no
+capturable browser surface — that is an expected outcome, not a failure to work around. Let `run`
+post its own honest note and cite the diff and tests as the evidence. Do **not** invent a recipe id,
+pass an unrelated one to produce a video, or hand-write a proof note. If a page you actually changed
+has no matching path rule, the gap is a missing entry in the catalog: fix it as its own change
+rather than capturing something unrelated to stand in for it.
 
 `run` performs the doctor preflight itself, scoped to the selected surface, and posts the appropriate
 structured note. Do not run the finalize sequence here (it already ran in Steps 8–9). Never change

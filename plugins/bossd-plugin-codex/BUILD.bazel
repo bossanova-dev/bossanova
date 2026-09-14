@@ -79,6 +79,7 @@ go_test(
         "rotation_test.go",
         "runner_test.go",
         "server_test.go",
+        "transcript_scan_test.go",
         "transcript_test.go",
         "unavailable_test.go",
     ],

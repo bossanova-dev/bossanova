@@ -1770,7 +1770,7 @@ match the caller field. Callers still route on the `bs-review clean:` / `bs-revi
 (the tested `matchSentinel` classifier; the empty-diff guard's `bs-review clean: no changes to
 review.` from Phase 0 is the third recognized clean variant):
 
-- clean: `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" sentinel clean` → `bs-review clean: no open must-fix findings.`
+- clean: `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" verdict --in "$REPORT_JSON"` → `bs-review clean: no open must-fix findings.`, and **only** when the report carries zero open must-fix **and** zero unrepaired `invalid` entries — the same two-part condition Phase 5 states. There is no evidence-free clean verb: `sentinel clean` requires `--in <report.json>` and exits non-zero when the evidence it is given refuses clean, so a clean line no report produced is not obtainable.
 - capped: `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" sentinel capped <N>` → `bs-review capped: unresolved must-fix findings or invalid evidence remain after N rounds.` (only the round-count tail varies). The wording names both blockers deliberately: a run caps with **zero** open must-fix findings whenever unrepaired `invalid` entries are the only thing left, so a must-fix-only sentinel would state the wrong reason.
 
 For whole captured output, `classify --in <captured-output>` returns `missing` when no sentinel line
@@ -1795,16 +1795,18 @@ N rounds.` bytes the verdict verb above emits. Generate it through the helper; a
 literal is unmatchable:
 
 ```bash
-# $VERDICT_ARGS is `clean`, or `capped <N>` with N = the rounds Phase 6 actually ran
+# The line is DERIVED from $REPORT_JSON — clean or capped is the report's call, not yours
 CAPS="$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs"
 node "$BOSS_REVIEW_TOOLBOX/bs-run-sentinel.mjs" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$CAPS" sentinel $VERDICT_ARGS)" \
+  "$(node "$CAPS" verdict --in "$REPORT_JSON")" \
   "$(node "$CAPS" sentinel-payload "${STEP_6C_FUNDING_REASON:-}")"
 ```
 
-- Phase 7's report is clean — zero open must-fix and zero unrepaired `invalid` entries → `sentinel clean`.
-- Phase 6's fix loop capped with open must-fix or unrepaired `invalid` evidence → `sentinel capped <N>`,
-  N = the rounds actually run. Never `0`: the helper rejects a non-positive round count.
+- Phase 7's report is clean — zero open must-fix and zero unrepaired `invalid` entries → `verdict`
+  emits the clean line. Both blockers, never the must-fix half alone.
+- Phase 6's fix loop capped with open must-fix or unrepaired `invalid` evidence → the same call
+  emits `capped <N>`, N = the report's own round count. Never `0`: the helper rejects a non-positive
+  round count.
 - The payload's `provisional: false` marks the verdict as earned, so the caller can tell it apart
   from its own provisional seed.
 - **The payload is where the caller's funding reason reaches its consumer, and this route is the one

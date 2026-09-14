@@ -73,15 +73,17 @@ func TestTryPushTimesOutWhenChannelFull(t *testing.T) {
 		}
 	}
 
+	const pushTimeout = 50 * time.Millisecond
 	start := time.Now()
 	err := d.TryPushStateChange(id,
 		pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
 		pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
-		50*time.Millisecond)
+		pushTimeout)
 	if err == nil {
 		t.Fatal("TryPushStateChange should error when the buffer is full")
 	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+	// 10x the push timeout; a TryPush that blocked on the full buffer would never return.
+	if elapsed := time.Since(start); elapsed > 10*pushTimeout {
 		t.Fatalf("TryPushStateChange blocked too long (%v); it must give up near the timeout", elapsed)
 	}
 }

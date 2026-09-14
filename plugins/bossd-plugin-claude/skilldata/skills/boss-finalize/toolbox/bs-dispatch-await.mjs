@@ -33,6 +33,8 @@ import {
 } from './bs-run-sentinel.mjs'
 import { isMainModule } from './main-module.mjs'
 
+export { DISPATCH_FAILURE }
+
 export const DISPATCH_AWAIT_RESULTS = ['completed', 'still-running', 'timed-out', 'abandoned']
 export const COMPLETED = 'completed'
 export const STILL_RUNNING = 'still-running'
@@ -108,6 +110,125 @@ export function toSentinelRouting(result) {
   if (result?.status === COMPLETED) return result.kind
   if (result?.status === TIMED_OUT || result?.status === ABANDONED) return DISPATCH_FAILURE
   return null
+}
+
+// The single publishable-verdict + recovery disposition. `toSentinelRouting` above collapses
+// `timed-out` and `abandoned` into one `dispatch-failure` token, which is right for ROUTING and
+// lossy for RECOVERY: the two differ precisely in whether resuming the existing dispatch is worth
+// attempting. This is the vocabulary that keeps both questions separable at one call site.
+export const DISPATCH_DISPOSITIONS = ['publish', 'wait', 'resume', 'discard']
+export const DISPOSITION_REASONS = [
+  'derived-verdict',
+  'provisional-payload',
+  'still-running',
+  'surviving-artifact',
+  'timed-out',
+  'abandoned',
+  'unclassified',
+]
+
+/**
+ * Stat each declared artifact path and split it into what SURVIVED a dispatch death and what did
+ * not. "Complete" is deliberately the weakest decidable predicate — an existing regular file with
+ * a non-zero size — because this probe's only job is to answer "is there something here nobody has
+ * read yet?". It never promotes what it finds: a surviving artifact re-enters through the caller's
+ * existing verification, contract and secret gates, exactly as a live dispatch's would.
+ * @param {string[]} paths
+ * @returns {{surviving: string[], missing: string[]}}
+ */
+export function probeArtifacts(paths = []) {
+  const surviving = []
+  const missing = []
+  for (const candidate of Array.isArray(paths) ? paths : []) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue
+    let st
+    try {
+      st = statSync(candidate)
+    } catch {
+      missing.push(candidate)
+      continue
+    }
+    if (st.isFile() && st.size > 0) surviving.push(candidate)
+    else missing.push(candidate)
+  }
+  return { surviving, missing }
+}
+
+/**
+ * Decide whether a dispatch's verdict is publishable, and — when it is not — whether the dispatch
+ * is resume-worthy, whether its scratch still holds unread evidence, and why.
+ *
+ * Two rules this centralizes, because both were being re-derived per call site and got a different
+ * answer at each:
+ *
+ * 1. **A provisional payload demotes EVERY kind.** A seeded, never-upgraded sentinel is
+ *    non-publishable whatever kind string it carries — a `clean` seed is exactly as unearned as a
+ *    `capped` one. The read below is deliberately the RAW `readSentinel`, not `classifyDispatch`'s
+ *    provisional-aware wrapper, so the reason reported is `provisional-payload` rather than the
+ *    age-derived death class that wrapper would fall through to.
+ * 2. **Read before discard.** `retainScratch` is true whenever the probe found a complete artifact
+ *    nobody has consumed, so a dispatch-failure branch cannot remove the evidence that would have
+ *    distinguished "died having finished" from "produced nothing".
+ *
+ * @param {{runId: string, dir: string, sentinelPath: (n: string) => string}} ctx
+ * @param {string} name
+ * @param {{artifacts?: string[], surviving?: string[]}} [opts] plus every `classifyDispatch` option
+ */
+export function dispatchDisposition(ctx, name, opts = {}) {
+  const probed = Array.isArray(opts.surviving)
+    ? { surviving: opts.surviving.filter((p) => typeof p === 'string' && p.length), missing: [] }
+    : probeArtifacts(opts.artifacts ?? [])
+  const { surviving, missing } = probed
+  const decide = (disposition, reason, extra = {}) => ({
+    name,
+    disposition,
+    reason,
+    publishable: disposition === 'publish',
+    retainScratch: disposition === 'wait' || surviving.length > 0,
+    surviving,
+    missing,
+    ...extra,
+  })
+
+  const raw = readSentinel(ctx, name)
+  if (raw.status === 'ok') {
+    if (raw.payload?.[PROVISIONAL_KEY] === true) {
+      // Non-publishable on EVERY kind. Resume-worthy because the seed proves a dispatch was
+      // opened, and normalizing an existing one beats re-dispatching from scratch.
+      return decide('resume', 'provisional-payload', {
+        status: COMPLETED,
+        kind: raw.kind,
+        payload: raw.payload,
+      })
+    }
+    return decide('publish', 'derived-verdict', {
+      status: COMPLETED,
+      kind: raw.kind,
+      payload: raw.payload ?? {},
+    })
+  }
+
+  const classified = classifyDispatch(ctx, name, opts)
+  if (classified.status === STILL_RUNNING) {
+    return decide('wait', 'still-running', { status: STILL_RUNNING, ageMs: classified.ageMs })
+  }
+  // Every death arm probes FIRST. A surviving complete artifact outranks the death class: there is
+  // something to recover, so recover it rather than removing it.
+  if (surviving.length > 0) {
+    return decide('resume', 'surviving-artifact', {
+      status: classified.status,
+      ageMs: classified.ageMs,
+    })
+  }
+  if (classified.status === TIMED_OUT) {
+    // The deadline passed but the run is not yet stale, so the agent may still be live — one
+    // resume is worth attempting before anything is re-dispatched from scratch.
+    return decide('resume', 'timed-out', { status: TIMED_OUT, ageMs: classified.ageMs })
+  }
+  if (classified.status === ABANDONED) {
+    return decide('discard', 'abandoned', { status: ABANDONED, ageMs: classified.ageMs })
+  }
+  return decide('discard', 'unclassified', { status: classified.status })
 }
 
 function sentinelNames(runDir) {
@@ -252,8 +373,44 @@ export async function awaitAll(dispatchNodes, dispatcher, opts = {}) {
 
 function usage() {
   return [
-    'usage: bs-dispatch-await.mjs <classify <dir> <runId> <name> <deadlineAtMs> [nowMs] | open <dir> <runId> [nowMs] | batches <json>>',
+    'usage: bs-dispatch-await.mjs <classify <dir> <runId> <name> <deadlineAtMs> [nowMs]',
+    '  | disposition <dir> <runId> <name> [--deadline <ms>] [--now <ms>] [--artifact <path>]...',
+    '  | probe <path>... | guard-discard <path>...',
+    '  | open <dir> <runId> [nowMs] | batches <json>>',
   ].join('\n')
+}
+
+// `--artifact` is REPEATED rather than comma-joined: a comma list would have to be split by the
+// caller's shell, and zsh does not word-split an unquoted parameter expansion, so a two-path list
+// would silently arrive as one path that exists nowhere. One flag per path has no such failure.
+function parseDispositionFlags(argv, fail) {
+  const opts = { artifacts: [] }
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i]
+    const value = argv[i + 1]
+    if (!['--artifact', '--deadline', '--now'].includes(flag)) {
+      return fail(`unknown disposition flag: ${flag}`)
+    }
+    if (value === undefined) return fail(`${flag} requires a value`)
+    if (flag === '--artifact') opts.artifacts.push(value)
+    else {
+      // A non-numeric value must FAIL, never default. `Number('3O0')` is NaN, NaN is neither null
+      // nor undefined so it survives the `??=` below, and every NaN comparison is false — so
+      // `classifyDispatch` falls past both its death tests to `still-running` and a typo'd
+      // deadline reports a dead dispatch as live, which is the one answer this helper exists to
+      // never give.
+      const parsed = Number(value)
+      if (!Number.isFinite(parsed)) return fail(`${flag} requires a finite number, got: ${value}`)
+      if (flag === '--deadline') opts.deadlineAt = parsed
+      else opts.now = parsed
+    }
+    i += 1
+  }
+  // With no explicit deadline the dispatch has already returned, so `still-running` is not a
+  // reachable state: default the deadline to now and let the staleness window pick the death class.
+  opts.now ??= Date.now()
+  opts.deadlineAt ??= opts.now
+  return opts
 }
 
 if (isMainModule(import.meta.url)) {
@@ -275,6 +432,30 @@ if (isMainModule(import.meta.url)) {
           }),
         )}\n`,
       )
+    } else if (cmd === 'disposition') {
+      const [dir, runId, name, ...flags] = rest
+      if (!dir || !runId || !name) fail('disposition requires <dir> <runId> <name> [flags]')
+      const opts = parseDispositionFlags(flags, fail)
+      process.stdout.write(
+        `${JSON.stringify(dispatchDisposition(ctxFor(dir, runId), name, opts))}\n`,
+      )
+    } else if (cmd === 'probe') {
+      if (rest.length === 0) fail('probe requires at least one <path>')
+      process.stdout.write(`${JSON.stringify(probeArtifacts(rest))}\n`)
+    } else if (cmd === 'guard-discard') {
+      // The read-before-discard guard, as ONE call a dispatch-failure branch puts ahead of its
+      // removal. Exit 0 AUTHORISES the discard — the probe found nothing, so nothing unexamined is
+      // lost. Exit 1 REFUSES it and names what survived, so the caller retains the scratch and
+      // resumes instead of re-dispatching from scratch. Written once here rather than re-derived
+      // per branch, because a branch that re-derives it is a branch that gets it wrong once.
+      if (rest.length === 0) fail('guard-discard requires at least one <path>')
+      const { surviving } = probeArtifacts(rest)
+      if (surviving.length > 0) {
+        process.stderr.write(
+          `guard-discard: REFUSING removal — ${surviving.length} complete artifact(s) survived the dispatch and nothing has read them: ${surviving.join(', ')}. Retain the scratch and resume; a salvaged artifact re-enters through the caller's own verification gates, never around them.\n`,
+        )
+        process.exit(1)
+      }
     } else if (cmd === 'open') {
       const [dir, runId, nowRaw] = rest
       if (!dir || !runId) fail('open requires <dir> <runId> [nowMs]')

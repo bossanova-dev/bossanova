@@ -1251,3 +1251,74 @@ test('CLI validate reports a missing file as clean JSON, never a stack trace', (
   assert.equal(parsed.ok, false)
   assert.ok(parsed.errors.length >= 1)
 })
+
+// ---------------------------------------------------------------------------
+// CLI flag surface (BOS-1244 rows 10-11)
+// ---------------------------------------------------------------------------
+
+test('discover --role <unknown> exits non-zero naming the valid roles', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-plan-drafts', [
+    'name: bs-plan-drafts',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+  ])
+
+  // A typo'd role used to be recorded as a per-extension `unknown-requested-role` skip and exit 0,
+  // which reads as "the extensions are misinstalled" — the opposite diagnosis.
+  const run = runCli(['discover', '--core', 'bs-plan', '--root', root, '--role', 'draftt'])
+  assert.notEqual(run.status, 0, 'an unknown role must not exit 0')
+  assert.match(run.stderr, /unknown --role/, 'the message must name the flag')
+  assert.match(run.stderr, /"draftt"/, 'and the value it rejected')
+  for (const role of Object.keys(EXTENSION_ROLES)) {
+    assert.ok(run.stderr.includes(role), `the valid-role list must name ${role}`)
+  }
+  assert.equal(run.stdout, '', 'and must print no extension list')
+
+  // A KNOWN role on the same tree still works, so the guard is not just refusing everything.
+  const ok = runCli(['discover', '--core', 'bs-plan', '--root', root, '--role', 'draft', '--json'])
+  assert.equal(ok.status, 0, ok.stderr)
+  assert.deepEqual(
+    JSON.parse(ok.stdout).extensions.map((e) => e.name),
+    ['bs-plan-drafts'],
+  )
+})
+
+test('discoverExtensions keeps its per-extension unknown-requested-role skip for programmatic callers', () => {
+  // The hard exit is scoped to `main`. A programmatic caller that reads `skipped[]` and continues —
+  // the contract cores are instructed to record — is deliberately left on the old path.
+  const root = scratchRoot()
+  writeSkill(root, 'bs-plan-drafts', [
+    'name: bs-plan-drafts',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+  ])
+  const result = discoverExtensions({ core: 'bs-plan', root, role: 'draftt' })
+  assert.deepEqual(result.extensions, [])
+  const skip = result.skipped.find((entry) => entry.code === 'unknown-requested-role')
+  assert.ok(skip, 'the skip entry must survive for programmatic callers')
+  assert.equal(skip.name, 'bs-plan-drafts')
+  assert.equal(skip.deliberate, false)
+})
+
+test('--help exits 0 and prints both subcommands with their accepted flags', () => {
+  const run = runCli(['--help'])
+  assert.equal(run.status, 0, run.stderr)
+  for (const token of ['discover', 'validate', '--core', '--role', '--root', '--json', '--file']) {
+    assert.ok(run.stdout.includes(token), `usage must name ${token}`)
+  }
+  for (const role of Object.keys(EXTENSION_ROLES)) {
+    assert.ok(run.stdout.includes(role), `usage must name the ${role} role`)
+  }
+  // `--help` used to fall through to `unknown subcommand: --help` with exit 2 and no flag surface.
+  assert.doesNotMatch(run.stdout, /unknown subcommand/)
+  assert.equal(runCli(['-h']).status, 0)
+
+  // An unknown subcommand still exits 2, but now prints the surface too.
+  const unknown = runCli(['bogus'])
+  assert.equal(unknown.status, 2)
+  assert.match(unknown.stderr, /unknown subcommand: bogus/)
+  assert.match(unknown.stderr, /^usage: skill-extensions\.mjs/m)
+})

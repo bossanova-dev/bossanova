@@ -73,6 +73,25 @@ const (
 	// up without a reinstall — but it boots the old job out FIRST, so the one
 	// restart that performs the upgrade still shuts down under the previous
 	// ExitTimeOut. Only the restart after that is covered.
+	//
+	// ProcessType classifies the job for launchd's resource manager. Leaving it
+	// unspecified is NOT neutral: launchd then "will apply light resource
+	// limits to the job, throttling its CPU usage and I/O bandwidth"
+	// (launchd.plist(5)). Measured on a busy multi-session host, an unclassified
+	// bossd ran at priority 20 while the agent CLIs it supervises ran at 31 —
+	// launchd scheduled the daemon BELOW its own workload. Under a load average
+	// of 170 on 10 cores that starved startup to 0.64s of CPU in 3.5 minutes, so
+	// the socket missed LifecycleStartupTimeout and `boss daemon start` reported
+	// a failure for a daemon that was merely descheduled.
+	//
+	// Interactive is the right class, not Adaptive: Adaptive moves between
+	// Background and Interactive based on XPC transaction activity
+	// (xpc_transaction_begin(3)), which a Go daemon never signals, so it would
+	// settle at Background. The CLI and TUI block on this socket, so the user's
+	// perceived responsiveness depends on it directly.
+	//
+	// Reach: platformRestart rewrites the plist, so existing installs pick this
+	// up on their next restart without a reinstall.
 	plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -87,6 +106,8 @@ const (
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<key>ProcessType</key>
+	<string>Interactive</string>
 	<key>StandardOutPath</key>
 	<string>{{.LogDir}}/bossd.stdout.log</string>
 	<key>StandardErrorPath</key>

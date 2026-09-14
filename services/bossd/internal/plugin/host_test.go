@@ -470,14 +470,17 @@ func TestKillWithTimeoutForceKillsStuckProcess(t *testing.T) {
 	// killWithTimeout must defend against.
 	stuckKill := func() { select {} }
 
+	const killTimeout = 50 * time.Millisecond
 	start := time.Now()
-	killWithTimeout(zerolog.Nop(), "test-plugin", stuckKill, pid, 50*time.Millisecond)
+	killWithTimeout(zerolog.Nop(), "test-plugin", stuckKill, pid, killTimeout)
 	elapsed := time.Since(start)
 
-	if elapsed < 50*time.Millisecond {
+	if elapsed < killTimeout {
 		t.Fatalf("killWithTimeout returned too early: %v", elapsed)
 	}
-	if elapsed > 2*time.Second {
+	// 40x the kill timeout, and well inside the subprocess's 60s lifetime: a fallback that
+	// never fired would leave this waiting on the sleep itself.
+	if elapsed > 40*killTimeout {
 		t.Fatalf("killWithTimeout took too long to fall through to SIGKILL: %v", elapsed)
 	}
 
@@ -557,8 +560,9 @@ func TestKillWithTimeoutReturnsWhenKillCompletes(t *testing.T) {
 	done := make(chan struct{})
 	quickKill := func() { close(done) }
 
+	const killTimeout = time.Second
 	start := time.Now()
-	killWithTimeout(zerolog.Nop(), "test-plugin", quickKill, 0, time.Second)
+	killWithTimeout(zerolog.Nop(), "test-plugin", quickKill, 0, killTimeout)
 	elapsed := time.Since(start)
 
 	select {
@@ -566,7 +570,8 @@ func TestKillWithTimeoutReturnsWhenKillCompletes(t *testing.T) {
 	default:
 		t.Fatal("kill func was not invoked")
 	}
-	if elapsed > 100*time.Millisecond {
+	// A tenth of the fallback deadline: waiting that deadline out is the failure this catches.
+	if elapsed > killTimeout/10 {
 		t.Fatalf("expected fast return, took %v", elapsed)
 	}
 }

@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 
 import { checkPlanContract } from './plan-contract-guard.mjs'
 import { selectImplementationPlanAttachment } from './plan-attachment.mjs'
+import { planScratchToken } from './plan-scratch-paths.mjs'
 import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import {
@@ -41,7 +42,72 @@ function hasAtomic5Justification(descriptionSummary) {
   return /^[-*]\s*Atomic-5:\s*\S/m.test(planning ?? '')
 }
 
-export function validateDraftMetadata(metadata, { config = DEFAULT_CONFIG } = {}) {
+// `descriptionSummary` is the one returned field whose exact bytes are gated downstream
+// (`plan-image-guard.mjs --require-verbatim` over its `## Original notes` block), and the headless
+// dispatch return channel is not byte-preserving. So the value is a discriminated union: today's
+// inline string, or a by-reference `{ path }` naming a declared `description` scratch artifact —
+// the kind of file the drafter already assembled and the write-back already reads.
+//
+// The widening is fail-closed by construction, which is what keeps it from being a blanket pass:
+// a reference is accepted only for the `description` family, and only a caller that supplies
+// `resolveDescription` gets the reference resolved at all. A caller that widens the accepted shape
+// without hydrating it is refused (`description-summary-unresolved`) rather than skipping the
+// contract check, and a resolved reference is held to exactly the contract an inline string is —
+// the check runs over the BYTES, never over the path.
+//
+// What that check does NOT establish is run identity: `planScratchToken` proves family membership
+// under SOME `run-<id>/`, not that the path is THIS run's. Nothing here compares it against the
+// run scratch id or the `planPath` issue, so a reference to a peer run's description artifact
+// validates. The residual is bounded downstream rather than here: Phase 4 derives `$BODY` from the
+// run-scratch template rather than from this returned value, and the image-parity, verbatim and
+// plan-contract STOP gates — plus the write-back itself — all read that template-derived copy.
+// A divergent path therefore mis-targets only this guard's own verdict, and a false pass from it
+// is re-caught by the plan-contract gate running `checkPlanContract` over the bytes actually
+// written. Binding the reference here would need an expected-artifact input this CLI does not
+// have today; do not "fix" it by making Phase 4 consume the returned path instead, which would
+// move the gates OFF the run-scoped artifact and turn a bounded residual into a live one.
+function readDescriptionSummary(value, resolveDescription) {
+  if (typeof value === 'string') {
+    return value.trim() === '' ? { kind: 'invalid' } : { kind: 'text', text: value }
+  }
+  // Arrays and `null` are `typeof 'object'` but are not attempts at the reference form; they are
+  // the same plain `invalid` a number is, with no reference reason worth printing.
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { kind: 'invalid' }
+
+  const badReference = (reason) => ({ kind: 'bad-reference', reason })
+  const keys = Object.keys(value)
+  if (keys.length !== 1 || keys[0] !== 'path' || typeof value.path !== 'string') {
+    return badReference(
+      'a by-reference descriptionSummary must be exactly {"path": "<this run\'s description artifact>"}',
+    )
+  }
+  const token = planScratchToken(value.path)
+  if (!token.ok) return badReference(token.reason)
+  const families = token.families ?? []
+  if (token.kind !== 'artifact' || families.length !== 1 || families[0] !== 'description') {
+    return badReference(
+      `${value.path} is not a declared description artifact — it resolves to ` +
+        `${families.length > 0 ? families.join(', ') : token.kind}, and only the \`description\` ` +
+        'scratch family may carry a by-reference descriptionSummary',
+    )
+  }
+  if (typeof resolveDescription !== 'function') return { kind: 'unresolved', path: value.path }
+  let text
+  try {
+    text = resolveDescription(value.path)
+  } catch (error) {
+    return { kind: 'unreadable', path: value.path, reason: error?.message ?? String(error) }
+  }
+  if (typeof text !== 'string' || text.trim() === '') {
+    return { kind: 'unreadable', path: value.path, reason: 'resolved to no description bytes' }
+  }
+  return { kind: 'text', text }
+}
+
+export function validateDraftMetadata(
+  metadata,
+  { config = DEFAULT_CONFIG, resolveDescription, moduleRoots = [] } = {},
+) {
   const missing = []
   const invalid = []
   const violations = []
@@ -62,6 +128,13 @@ export function validateDraftMetadata(metadata, { config = DEFAULT_CONFIG } = {}
     }
   }
 
+  // Read the union ONCE, before the estimate check, so the Atomic-5 justification is looked for in
+  // the same bytes the contract check runs over whichever arm of the union carried them.
+  const summary = Object.hasOwn(object, 'descriptionSummary')
+    ? readDescriptionSummary(object.descriptionSummary, resolveDescription)
+    : null
+  const descriptionText = summary?.kind === 'text' ? summary.text : null
+
   if (Object.hasOwn(object, 'planPath')) {
     if (typeof object.planPath !== 'string' || object.planPath.trim() === '')
       invalid.push('planPath')
@@ -77,7 +150,15 @@ export function validateDraftMetadata(metadata, { config = DEFAULT_CONFIG } = {}
   if (Object.hasOwn(object, 'estimate')) {
     if (!Number.isInteger(object.estimate) || !VALID_ESTIMATES.has(object.estimate)) {
       invalid.push('estimate')
-    } else if (object.estimate === 5 && !hasAtomic5Justification(object.descriptionSummary)) {
+    } else if (
+      object.estimate === 5 &&
+      // Only arms that actually carried bytes can be judged here. An unhydrated or unreadable
+      // reference already reports its own cause under `descriptionSummary`; re-reporting it as a
+      // missing justification sends the reader to edit a `## Planning` section that may well be
+      // correct, in a file this run never opened.
+      (summary === null || summary.kind === 'text' || summary.kind === 'invalid') &&
+      !hasAtomic5Justification(descriptionText)
+    ) {
       invalid.push('estimate')
       violations.push(
         entry(
@@ -101,11 +182,37 @@ export function validateDraftMetadata(metadata, { config = DEFAULT_CONFIG } = {}
       invalid.push('openQuestions')
     }
   }
-  if (Object.hasOwn(object, 'descriptionSummary')) {
-    if (typeof object.descriptionSummary !== 'string' || object.descriptionSummary.trim() === '') {
+  if (summary) {
+    if (summary.kind === 'invalid') {
       invalid.push('descriptionSummary')
+    } else if (summary.kind === 'bad-reference') {
+      invalid.push('descriptionSummary')
+      violations.push(
+        entry('description-summary-bad-reference', 'descriptionSummary', summary.reason),
+      )
+    } else if (summary.kind === 'unresolved') {
+      violations.push(
+        entry(
+          'description-summary-unresolved',
+          'descriptionSummary',
+          `descriptionSummary names ${summary.path} but this caller supplied no resolveDescription, ` +
+            'so the description contract could not be checked over the referenced bytes — ' +
+            'hydrate the reference rather than accepting it unchecked',
+        ),
+      )
+    } else if (summary.kind === 'unreadable') {
+      violations.push(
+        entry(
+          'description-summary-unreadable',
+          'descriptionSummary',
+          `descriptionSummary names ${summary.path}, which could not be read: ${summary.reason}`,
+        ),
+      )
     } else {
-      const contract = checkPlanContract({ description: object.descriptionSummary, config })
+      // `moduleRoots` rides along so this caller's contract check classifies a `## Key changes`
+      // token exactly as the dependency scan given the same roots would. Dropping it here made the
+      // check stricter than the scan it reports for, on a seam no caller could reach.
+      const contract = checkPlanContract({ description: summary.text, config, moduleRoots })
       for (const violation of contract.violations) {
         violations.push(
           entry(
@@ -192,6 +299,28 @@ function readJSON(file) {
   return JSON.parse(readFileSync(file, 'utf8'))
 }
 
+// The `idempotence` verb reads its file as the BARE issue object. A `{issue:{…}}` wrapper — the
+// natural mistake, because the function it feeds takes `{issue}` — leaves every field it reads
+// undefined, so all three reasons fire at once and the verb prints `action:"plan"` with a full reason
+// list. That output is byte-identical to the verdict a genuinely unplanned ticket produces, so the
+// guard reads as working while having evaluated nothing at all.
+//
+// Scoped to an object whose ONLY own key is `issue`: a real issue payload that happens to carry an
+// `issue` field alongside its own is not this mistake and is passed through untouched.
+function assertBareIssuePayload(value, file) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return
+  const keys = Object.keys(value)
+  if (keys.length === 1 && keys[0] === 'issue') {
+    throw new Error(
+      // No module prefix here: this throw is caught by the `unreadable-input` handler below, which
+      // supplies `plan-run-guards: ` itself. Prefixing again printed
+      // `unreadable-input: plan-run-guards: plan-run-guards: …` — a stutter no sibling diagnostic in
+      // this file has.
+      `idempotence <issue.json> (the BARE issue object) — ${file} contains a {issue:{…}} wrapper; every field would read as undefined and the verdict would be action:"plan" with every reason fired, which is exactly what an unplanned ticket looks like. Pass the issue object itself.`,
+    )
+  }
+}
+
 function printViolations(result) {
   for (const field of result.missing ?? []) {
     process.stderr.write(`plan-run-guards: missing ${field}\n`)
@@ -205,6 +334,18 @@ function printViolations(result) {
 }
 
 /** Run one verb and report the exit code alongside the gate id and reason to record for it. */
+// The dependency scan's repo module roots, as a comma-separated `--module-roots` value. Optional
+// and positional-agnostic: every verb here takes positional inputs, so the flag is read out of the
+// whole argv rather than from a fixed slot. Absent, the contract check keeps its old empty list.
+function parseModuleRootsFlag(argv) {
+  const index = argv.indexOf('--module-roots')
+  if (index === -1) return []
+  return String(argv[index + 1] ?? '')
+    .split(',')
+    .map((root) => root.trim())
+    .filter((root) => root !== '')
+}
+
 function runGuardVerb(argv) {
   const [command, first, second] = argv
   // The verbs are gates in their own right: each is invoked at a different point in a planning run
@@ -219,7 +360,14 @@ function runGuardVerb(argv) {
   try {
     if (command === 'metadata' && first) {
       verb = 'metadata'
-      const result = validateDraftMetadata(readJSON(first), { config: loadSkillConfig() })
+      // This verb IS the orchestrator's boundary, so it is where the by-reference
+      // `descriptionSummary` gets hydrated: the guard itself stays pure and refuses an
+      // unhydrated reference, and the disk read lives here where the run's scratch is.
+      const result = validateDraftMetadata(readJSON(first), {
+        config: loadSkillConfig(),
+        resolveDescription: (file) => readFileSync(file, 'utf8'),
+        moduleRoots: parseModuleRootsFlag(argv),
+      })
       printViolations(result)
       return {
         verb,
@@ -229,7 +377,11 @@ function runGuardVerb(argv) {
     }
     if (command === 'idempotence' && first) {
       verb = 'idempotence'
-      const result = planIdempotencePrecheck({ issue: readJSON(first), config: loadSkillConfig() })
+      const payload = readJSON(first)
+      // Raised through the existing `unreadable-input` catch below, so the CLI exits non-zero with a
+      // named reason rather than printing a plausible verdict it never computed.
+      assertBareIssuePayload(payload, first)
+      const result = planIdempotencePrecheck({ issue: payload, config: loadSkillConfig() })
       process.stdout.write(`${JSON.stringify(result)}\n`)
       // This verb never refuses — it reports whether planning is still needed. Both answers are a
       // `pass`; the reason carries which one, so the record stays informative without inventing a
@@ -271,7 +423,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> | idempotence <issue.json> | premises <premises.json> <live-states.json>\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | idempotence <issue.json> | premises <premises.json> <live-states.json>\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

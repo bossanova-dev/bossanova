@@ -895,6 +895,12 @@ test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () =
         if (heading === '## Planning')
           return `${heading}\n\n- Contract: v${PLAN_CONFIG.planContract.version}`
         if (heading === '## Original notes') return `${heading}\n\n${safeNotes}`
+        // `## Key changes` names repo-relative paths rather than the shared filler: a conformant
+        // description must also be one the pre-finalize subject-area scan can resolve, and prose
+        // naming no path resolves to zero areas (`subject-areas-unresolved`).
+        if (heading === '## Key changes') {
+          return `${heading}\n\n- \`skills-toolbox/plan-contract-guard.mjs\`: the projected change.`
+        }
         return `${heading}\n\nSubstantive projected description for ${heading.slice(3)}.`
       })
       .join('\n\n')

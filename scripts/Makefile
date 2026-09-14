@@ -139,6 +139,7 @@ lint:
 	@node check-prose-pins.mjs
 	@node check-settings-readiness-figure.mjs
 	@node check-exec-waitdelay.mjs
+	@node check-timing-bounds.mjs
 	@node check-email-course.mjs
 	@node check-price-parity.mjs
 	@node check-ellipsis-consistency.mjs
@@ -151,4 +152,4 @@ test:
 # exercise the detector against stub fixtures; this runs it against the real tree. `test-all`
 # is not reached by any feature-push job (see .github/workflows/bazel.yml), so wiring the
 # ratchet there alone would let a new offender merge green and only surface post-merge.
-	cd .. && node scripts/run-nontap-gates.mjs scripts/check-test-command-manifest.mjs scripts/check-skill-symbols.mjs scripts/check-vacuous-regions.mjs scripts/check-raw-size-ratchets.mjs
+	cd .. && node scripts/run-nontap-gates.mjs scripts/check-test-command-manifest.mjs scripts/check-skill-symbols.mjs scripts/check-vacuous-regions.mjs scripts/check-vacuous-job-gates.mjs scripts/check-raw-size-ratchets.mjs

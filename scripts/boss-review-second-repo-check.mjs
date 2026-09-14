@@ -209,7 +209,18 @@ function exerciseHelpers(repoDir, toolbox) {
   const secondVoice = runNode(detectPath, ['--second-voice', 'claude'], repoDir)
   const caps = path.join(toolbox, 'bs-review-caps.mjs')
   const rounds = runNode(caps, ['rounds'], repoDir)
-  const sentinel = runNode(caps, ['sentinel', 'clean'], repoDir)
+  // The clean sentinel is DERIVED from report evidence, never printed from nothing, so the
+  // self-containment smoke exercises the only route that can still produce it.
+  const verdictInput = path.join(repoDir, 'verdict-input.json')
+  fs.writeFileSync(
+    verdictInput,
+    JSON.stringify({
+      mustfix: { unresolved: 0 },
+      invalid: [],
+      ledger: { discovered: 1, completed: 1, skipped: 0, timedOut: 0, notReached: 0 },
+    }),
+  )
+  const sentinel = runNode(caps, ['verdict', '--in', verdictInput], repoDir)
   const codexProbe = runNode(path.join(toolbox, 'codex-review.mjs'), ['probe'], repoDir)
   const claudeProbe = runNode(path.join(toolbox, 'claude-review.mjs'), ['probe'], repoDir)
 

@@ -42,6 +42,28 @@ small metadata object.
   cleanup pattern matches, so it survives into a checkout other runs share. It is not the sentinel
   `RUN_ID`.
 
+## If you are a RESUMED dispatch, normalize — do not redraft
+
+A dispatch that died after writing its artifact but before writing its sentinel leaves a complete
+plan behind, and the orchestrator's salvage probe retains that scratch precisely so the work can be
+recovered. **If `PLAN_PATH` already exists and is non-empty when you start, you are that resume.**
+Your job is then to _normalize what is there_ — re-verify it against this brief's contract, fix only
+what fails, then complete Steps 6–9 (secret hygiene, description summary, terminal sentinel, bounded
+metadata) — **not** to redraft it from the description. Redrafting throws away work that was already
+done and paid for, and it re-opens every drafting decision the dead pass had already settled.
+
+Two rules that hold from the orchestrator's side of the same failure, stated here so both ends agree:
+
+- **Resume before re-dispatch.** A stalled or dead dispatch is resumed **once** before anything is
+  re-dispatched from scratch. `toolbox/bs-dispatch-await.mjs`'s `disposition` verb says which of
+  those two a given death is: `resume` when the dispatch may still be live or its artifact survived,
+  `discard` only when the probe found nothing.
+- **A dead dispatch's returned prose is still READ, and verified against source.** Routing ignores
+  it — the run file is the only oracle, and that does not change — but a dead pass's partial findings
+  are evidence a human or a resume can use. Read them, then confirm every claim against the file it
+  names before acting on it. "Not routable" is not "not worth reading"; it means the prose decides
+  nothing on its own.
+
 ## Step 1 — Triage triviality
 
 Read the title + description and classify:
@@ -418,6 +440,27 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
 
 ## Step 2 — Codebase recon
 
+**Enumerate the ticket's attachments and read the evidence ones before you fix scope.** A
+`description` is frequently a _summary_ of evidence that lives in full in an attached file — a
+filed ticket may list only the first few items inline and put the remainder in an attachment, and
+a clipped description reads exactly like a complete one, so nothing in the text itself signals
+that it is a clipping. So before scope is fixed: list the ticket's `attachments[]`, and read the
+body of every attachment that carries **source evidence** rather than process metadata — an
+attached notes / findings / log / report file, a transcript, a spec, a survey, a dump the
+description points at. Judge that by the attachment's shape, not by its title: an attachment the
+description refers to as holding the rest of something is evidence, whatever it is called.
+
+Then treat the description's inline evidence bullets as an **index into** that evidence, never as
+the evidence itself. Scope against the union of the description and the attachment bodies, and
+where an attachment carries more items than the description lists, the attachment is authoritative
+for scope and for the estimate. Say in the plan how many items you scoped against, so a reader can
+tell the plan covered the whole set.
+
+This is the one recon failure that produces a **durably wrong artifact rather than a stalled run**:
+a plan scoped from a clipped description covers a fraction of the reported work, passes every gate,
+and reads as complete to everyone downstream, because nothing after this step knows what was left
+out.
+
 Read the code the ticket touches: the files, the surrounding module, the existing conventions,
 tests, and any relevant `docs/solutions/` or `CONCEPTS.md`. Ground every plan claim in real symbols
 (`file:line`) — do not invent constructor signatures, structs, helpers, or styles. This recon is
@@ -735,8 +778,9 @@ the value. When in doubt, redact.
 
 ## Step 7 — Compose the description summary (byte-identical template)
 
-Assemble the Linear description block the orchestrator will write back **verbatim** and return it as
-`descriptionSummary`. This template is the **byte-identical external contract** boss-build and
+Assemble the Linear description block the orchestrator will write back **verbatim**, then return the
+**path** of the file you assembled it in as `descriptionSummary`. This template is the
+**byte-identical external contract** boss-build and
 bs-sweep-plan consume — do not rename or drop sections. Do NOT add the `- Dependencies:` line — the
 orchestrator appends that itself when it links conflicting dependencies.
 
@@ -795,7 +839,8 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 ## Planning
 
 - Contract: v1
-- Complexity: <fib> · Priority: <label> · Agent-friendly: <yes | needs-human (see "Why this needs a human")>
+- Agent-friendly: <yes | needs-human (see "Why this needs a human")>
+- The authoritative estimate and priority for this ticket live on the issue, not in this body.
 - Atomic-5: <ONLY when a single ticket is estimated `5` — the explicit reason it is atomic & un-splittable and cannot be an epic. Omit this bullet for `0/1/2/3` tickets.>
 - Plan attachment: `Implementation plan (<ISSUE-ID>)`
 - On implementation: copy the plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in the PR.
@@ -805,9 +850,16 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 <verbatim prior description if the ticket had one — preserved, never discarded>
 ```
 
+`## Planning` stamps **contract notation only** — never a mutable metadata echo. The estimate and
+the priority are resolved in Phase 4 **after** this body has been uploaded and byte-verified, so a
+value stamped here that the orchestrator then resolves differently costs a delete plus a re-upload
+of an artifact that was supposed to be frozen. Nothing parses these values out of the body; the
+issue's own fields are the authority. Read the estimate or priority from the issue, never from a
+plan body that may predate them.
+
 For headless runs, append the prior description from `DESCRIPTION_SNAPSHOT_PATH` only. Do not fetch,
-reconstruct, or retype it from any other source. Build the summary body as bytes, then return
-`descriptionSummary` from those assembled file bytes:
+reconstruct, or retype it from any other source. Build the summary body as bytes on disk — those
+bytes never travel the return channel, only their path does:
 
 ```bash
 # The `description` family in $BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs. A bare `mktemp` here would
@@ -821,8 +873,14 @@ DESCRIPTION_SUMMARY_WITHOUT_ORIGINAL_NOTES
 cat "${DESCRIPTION_SNAPSHOT_PATH:?DESCRIPTION_SNAPSHOT_PATH unset}" >>"$BODY"
 ```
 
-Return the contents of `"$BODY"` as `descriptionSummary` — read the file, never a shell capture of
-it, since a capture that reshapes the assembled block is a change to the very text that must survive.
+Return the path of `"$BODY"` as `descriptionSummary` — the object `{"path": "<that path>"}`, never
+the file's contents and never a shell capture of them. This is the field's **one legal channel**:
+the return channel HTML-escapes `<`, `>` and `&`, so a block whose `## Original notes` must later
+survive `--require-verbatim` cannot cross it intact, while the file itself is already where every
+downstream gate and the tracker write read from. The guard resolves the reference and runs the
+description contract over the bytes on disk, so a path that names anything but this run's own
+`description` artifact, or a file that is off-contract, is refused exactly as an off-contract inline
+string is.
 
 **Preserve the whole `## Original notes` block.** Its body must be copied unchanged from
 `DESCRIPTION_SNAPSHOT_PATH`, except that an upload URL may, and a signed upload URL **must**, be
@@ -834,8 +892,8 @@ destroys them permanently (this is the exact screenshot-dropping data-loss failu
 _additionally_ list the images under a `## Screenshots` bullet list in the plan body for the
 implementer's convenience, but the original URLs must stay intact inside `## Original notes`. A
 mechanical orchestrator-side guard (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`) aborts the Linear
-write if any source image is missing from your `descriptionSummary`, so a dropped image fails the
-whole run — do not let it.
+write if any source image is missing from the description file you composed, so a dropped image
+fails the whole run — do not let it.
 The unsigned-upload rule is plan-wide: query-strip every query-bearing upload URL anywhere in the
 plan file, including URLs outside `## Original notes`.
 For any literal whose leading or trailing whitespace is semantically significant, use a fenced code
@@ -954,6 +1012,7 @@ It prints one stderr line per violation, tagged `line-spanning-emphasis`, `missi
 `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
 `plan-file-structure-exemption`,
 `pr-body-only-evidence`, `section-order`, `self-falsified-literal-search`, `stale-premise-citation`,
+`subject-areas-unresolved`,
 `unanchored-premise-citation`, `unknown-section`, `unresolvable-citation`, any `vacuous-*` code
 (the dynamic `vacuous-<kind>-command-<reason>` family), or `unreadable-input`. **A non-zero exit
 means write no `ok` sentinel** — fix the description or the plan file and re-run, or leave the
@@ -973,8 +1032,9 @@ report that size as `unmeasured` rather than inventing a number.
 ## Step 9 — Return only bounded metadata (never the plan content)
 
 Return a single small object — **never the plan file's content** (returning content re-inflates the
-caller, defeating the isolation). The `descriptionSummary` block is the only substantial string you
-return, and it is bounded (a summary, not the plan):
+caller, defeating the isolation). Every value here is bounded by construction, `descriptionSummary`
+included: it travels as the **path** of the `description` artifact Step 7 assembled, so no drafted
+text crosses this channel at all.
 
 ```
 {
@@ -984,9 +1044,14 @@ return, and it is bounded (a summary, not the plan):
   estimate:      <fib 0|1|2|3; a bare 5 ONLY for a recorded atomic & un-splittable single ticket — an 8 is never a single ticket, it becomes an epic or needs-human>,
   priority:      <1|2|3|4>,
   openQuestions: ["<one line per recorded controversial fork>", ...],  // may be empty
-  descriptionSummary: "<the composed `## Summary … ## Original notes` markdown block>"
+  descriptionSummary: {path: ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"}  // the Step 7 artifact, BY REFERENCE — this is the form to send
 }
 ```
+
+`descriptionSummary` is a union the guard accepts in two forms: the by-reference object above, and a
+legacy inline string carrying the composed `## Summary … ## Original notes` block. **Send the
+reference.** The inline form is retained only so the interactive batch path and third-party draft
+extensions keep validating, and its bytes are the ones this channel corrupts.
 
 `premises` is deliberately absent from this returned metadata object. It rides the run-file sentinel
 payload instead, where the orchestrator already classifies trusted dispatch outcomes.

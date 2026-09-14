@@ -253,7 +253,8 @@ func TestLocalClientWithToken_UnaryRPCBoundedAgainstWedgedDaemon(t *testing.T) {
 // off at the default.
 func TestLocalClient_CallerDeadlineHonouredVerbatim(t *testing.T) {
 	t.Run("shorter than the default is not extended", func(t *testing.T) {
-		shrinkDefaultRPCDeadline(t, 10*time.Second)
+		const shrunkDefault = 10 * time.Second
+		shrinkDefaultRPCDeadline(t, shrunkDefault)
 		socketPath, _ := startWedgedDaemon(t, time.Second)
 
 		c := NewLocal(socketPath)
@@ -266,8 +267,9 @@ func TestLocalClient_CallerDeadlineHonouredVerbatim(t *testing.T) {
 		// CI at 95.257356ms against this very 100ms deadline. Timers never fire
 		// early, so measured from here the bound cannot be undershot unless the
 		// call genuinely returned before the caller's deadline.
+		const callerDeadline = 100 * time.Millisecond
 		start := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
 		defer cancel()
 
 		_, err := callWithinBudget(t, func() error { return c.Ping(ctx) })
@@ -275,10 +277,22 @@ func TestLocalClient_CallerDeadlineHonouredVerbatim(t *testing.T) {
 		if err == nil {
 			t.Fatal("Ping with a 100ms deadline against a wedged daemon returned nil error")
 		}
-		if elapsed >= time.Second {
-			t.Errorf("Ping took %v, want ~100ms: the caller's deadline was extended toward the %v default", elapsed, defaultRPCDeadline)
+		// Ten times the caller's OWN deadline, bound in the same scope as the assertion rather
+		// than read back off the package-level var the setup shrank twenty lines up. Deriving it
+		// from defaultRPCDeadline instead made the subtest unsatisfiable for any shrink value at
+		// or below 1s: the band this pair of checks leaves open is
+		// [callerDeadline, defaultRPCDeadline/10), which is empty once defaultRPCDeadline/10 no
+		// longer exceeds callerDeadline — and the sibling subtest below already shrinks to 200ms.
+		// Derived from callerDeadline the band is non-empty by construction; the guard below keeps
+		// it meaningful by pinning it an order of magnitude under the default it must not reach.
+		const extendedDeadlineBound = 10 * callerDeadline
+		if extendedDeadlineBound >= shrunkDefault {
+			t.Fatalf("bound %v no longer sits below the %v default it proves was not reached", extendedDeadlineBound, shrunkDefault)
 		}
-		if elapsed < 100*time.Millisecond {
+		if elapsed >= extendedDeadlineBound {
+			t.Errorf("Ping took %v, want ~%v: the caller's deadline was extended toward the %v default", elapsed, callerDeadline, defaultRPCDeadline)
+		}
+		if elapsed < callerDeadline {
 			t.Errorf("Ping returned after %v, before the caller's own 100ms deadline", elapsed)
 		}
 	})
@@ -348,7 +362,8 @@ func TestLocalClient_ServerOwnDeadlineIsNotReportedAsAWedgedDaemon(t *testing.T)
 	if err == nil {
 		t.Fatal("Ping against a daemon returning CodeDeadlineExceeded returned nil error")
 	}
-	if elapsed > time.Second {
+	// A tenth of the (shrunk) default: waiting on that bound is the failure this catches.
+	if elapsed > defaultRPCDeadline/10 {
 		t.Fatalf("Ping took %v: the daemon answers immediately, so nothing here should have waited on the %v bound", elapsed, defaultRPCDeadline)
 	}
 	if connect.CodeOf(err) != connect.CodeDeadlineExceeded {

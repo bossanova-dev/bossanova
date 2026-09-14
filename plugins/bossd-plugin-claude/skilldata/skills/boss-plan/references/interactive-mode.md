@@ -27,8 +27,19 @@ ask (AskUserQuestion) whether to re-plan before continuing.
 
 ## Phase 2 — Triage triviality (interactive)
 
-Read the title + description and compute an honest estimate, which drives the classification — this
-sets how deep the interview and plan go:
+Read the title + description **and the ticket's attachments**, then compute an honest estimate,
+which drives the classification — this sets how deep the interview and plan go.
+
+**The attachments are part of the input, not an appendix.** Enumerate `attachments[]` and read the
+body of every attachment carrying **source evidence** rather than process metadata — an attached
+notes / findings / log / report file, a transcript, a spec, a survey, a dump the description points
+at — before you fix scope or compute the estimate. A description is often a summary of evidence
+held in full in an attachment, and a clipped description reads exactly like a complete one. Treat
+the description's inline evidence bullets as an **index into** that evidence, never as the evidence:
+scope and estimate against the union, and where an attachment carries more items than the
+description lists, the attachment is authoritative.
+
+The classification itself:
 
 - **TRIVIAL** — copy/doc tweak, a single obvious one-liner, no design decisions (e.g. "Mention setup
   scripts on the home page"). Use a short interview and a lightweight plan.

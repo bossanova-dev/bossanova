@@ -30,6 +30,8 @@ const read = (rel) => readFileSync(here(rel), 'utf8')
 
 const SKILL = read('../.claude/skills/bs-sweep-tests/SKILL.md')
 const CODEX = read('../.codex/skills/bs-sweep-tests/SKILL.md')
+const KILL_SET_GATE = read('../.claude/skills/bs-sweep-tests/references/kill-set-gate.md')
+const CODEX_KILL_SET_GATE = read('../.codex/skills/bs-sweep-tests/references/kill-set-gate.md')
 const GATE = read('../.claude/skills/bs-sweep-tests/gate/gate.mjs')
 const CODEX_GATE = read('../.codex/skills/bs-sweep-tests/gate/gate.mjs')
 const OPENAI = read('../.claude/skills/bs-sweep-tests/agents/openai.yaml')
@@ -311,6 +313,57 @@ test('the removal sentinel reports the kill-set, and shrinking it is a rejection
     /would\s+shrink\s+the\s+kill-set: reject/i,
     'failure handling must reject a candidate whose removal shrinks the kill-set',
   )
+})
+
+// A non-Go area has no kill-set, so coverage-neutrality IS the whole gate — which makes the
+// command and the metric load-bearing. `scripts/` was admissible with no command named at all, so
+// the run invented one, and `services/docs` had no constructible command at all. The reference is
+// where these land: the body sits exactly at its banked byte budget. Assertions pin the table
+// rows and the metric keyword, never the prose explaining either.
+test('the kill-set gate reference names an exact scripts recipe keyed on the per-file metric', () => {
+  for (const [label, ref] of [
+    ['.claude', KILL_SET_GATE],
+    ['.codex', CODEX_KILL_SET_GATE],
+  ]) {
+    assert.match(
+      ref,
+      /\|\s*`scripts\/`\s*\|[^\n]*per-file[^\n]*`line\s+%`/,
+      `${label} must key the scripts baseline row on the per-file line percentage`,
+    )
+    assert.match(
+      ref,
+      /--experimental-test-coverage/,
+      `${label} must name the runtime coverage flag the recipe needs`,
+    )
+    assert.match(
+      ref,
+      /--test-coverage-include='/,
+      `${label} must name the include selector and show it quoted`,
+    )
+    assert.match(
+      ref,
+      /never\*\*[^.]{0,16}`#\s+all\s+files`/i,
+      `${label} must forbid reading neutrality off the aggregate row`,
+    )
+  }
+})
+
+test('the kill-set gate reference marks the docs module inadmissible for want of a provider', () => {
+  for (const [label, ref] of [
+    ['.claude', KILL_SET_GATE],
+    ['.codex', CODEX_KILL_SET_GATE],
+  ]) {
+    assert.match(
+      ref,
+      /\|\s*`services\/docs`\s*\|[^\n]*inadmissible/i,
+      `${label} applicability table must carry an inadmissible services/docs row`,
+    )
+    assert.match(
+      ref,
+      /@vitest\/coverage-\*/,
+      `${label} must name the absent provider that makes the area inadmissible`,
+    )
+  }
 })
 
 test('judgment guardrails protect invariant / regression / golden / security tests', () => {

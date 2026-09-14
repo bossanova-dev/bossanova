@@ -263,5 +263,10 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
   `fallbackPoll` — an explicit no-op, never a failed wait. The gate, not a runtime CLI failure,
   decides, and a false gate **reports its reason** (`callbacksUnavailableReason(env)`) so a fallback
   poll is always explained.
+- **A cron job is never a monitor.** `boss cron` starts a **new session** per fire, overlaps itself,
+  and outlives the run it was pointed at — nothing about finished work retires a schedule. It is for
+  starting work on a schedule, never for waiting on work already in flight. Wait with a callback or
+  the bounded in-turn `fallbackPoll`; observe with `boss chats` / `boss show` / `boss tail` /
+  `boss session checks`.
 - **Project-agnostic.** Only the generic `boss callback` interface and `gh` are named; no host- or
   tracker-specific identifiers appear here.

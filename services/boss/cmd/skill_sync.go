@@ -1102,7 +1102,11 @@ func runSkillCheck(out io.Writer, only string) error {
 		_, _ = fmt.Fprintf(out, "boss skills: %s\n  skills dir: %s\n  installed: %s\n  payload source: %s\n  payload: %s\n", target.command, dir, yesNo(installed), payloadSource, payloadStatus)
 		if payloadStale {
 			drift = true
-			_, _ = fmt.Fprintf(out, "  ⚠ drift — installed skills differ from the selected payload; run `%s`\n", skillInstallRemedy(payload))
+			advice, adviceErr := skillCheckRemedyAdvice(payload, dir, installed)
+			if adviceErr != nil {
+				checkErr = errors.Join(checkErr, fmt.Errorf("check %s skills: %w", target.command, adviceErr))
+			}
+			_, _ = fmt.Fprintf(out, "  ⚠ drift — installed skills differ from the selected payload; %s\n", advice.inline())
 		}
 		if !found {
 			_, _ = fmt.Fprintln(out, "  sources: not found in this checkout (no skill sources in this checkout)")
@@ -1174,16 +1178,20 @@ func runSkillGate(out io.Writer, only string) error {
 		if err != nil {
 			return fmt.Errorf("%s skills dir: %w", target.command, err)
 		}
-		paths, err := libskillinstall.SourceDriftPaths(dir, srcRoot)
+		report, err := libskillinstall.SourceDriftReport(dir, srcRoot)
 		if err != nil {
 			gateErr = errors.Join(gateErr, fmt.Errorf("check %s skills: %w", target.command, err))
 			continue
 		}
-		if len(paths) == 0 {
+		if len(report.Entries) == 0 {
+			// A zero exit states its own coverage rather than being a silent
+			// green a caller can only read as "everything matched".
+			_, _ = fmt.Fprintf(out, "boss skills gate: %s %s — compared %d file(s) · skills dir: %s · payload source: %s\n",
+				target.command, currentStale(!report.Installed, "clean", "no skills installed"), report.Compared, dir, srcRoot)
 			continue
 		}
 
-		selfEdited, unexplained, fallback := classifySkillGateDrift(repoRoot, paths)
+		selfEdited, unexplained, fallback := classifySkillGateDrift(repoRoot, report.Entries)
 		if len(selfEdited) > 0 {
 			_, _ = fmt.Fprintf(out, "boss skills gate: %s self-edited drift: %s", target.command, strings.Join(selfEdited, ", "))
 			if fallback {
@@ -1198,10 +1206,14 @@ func runSkillGate(out io.Writer, only string) error {
 				_, _ = fmt.Fprint(out, " (origin/HEAD unavailable; used git status fallback)")
 			}
 			_, _ = fmt.Fprintln(out)
-			for _, path := range unexplained {
-				_, _ = fmt.Fprintf(out, "  - %s\n", path)
+			entries := skillDriftEntriesWithDirection(repoRoot, dir, unexplained)
+			for _, entry := range entries {
+				_, _ = fmt.Fprintf(out, "  - %s\n", entry.label())
 			}
-			_, _ = fmt.Fprintf(out, "  run `%s`\n", skillInstallRemedy(payload))
+			advice := composeSkillInstallRemedy(payload, entries, skillCheckoutHasAncestry(repoRoot), true)
+			for _, line := range advice.lines("  ") {
+				_, _ = fmt.Fprintln(out, line)
+			}
 		}
 	}
 	return gateErr
@@ -1221,13 +1233,18 @@ func skillGateAgentFilter(only string) string {
 	}
 }
 
-func classifySkillGateDrift(repoRoot string, paths []string) (selfEdited, unexplained []string, usedFallback bool) {
+// classifySkillGateDrift splits drift entries into those explained by an edit
+// to this checkout's own skill sources and those that are not. Entries stay
+// whole so their kind reaches the direction lookup instead of being shredded
+// into a lookup table that answers "" for a miss.
+func classifySkillGateDrift(repoRoot string, entries []libskillinstall.DriftEntry) (selfEdited []string, unexplained []libskillinstall.DriftEntry, usedFallback bool) {
 	branchBase, baseErr := checkoutGitOutput(repoRoot, "merge-base", "HEAD", "origin/HEAD")
 	if baseErr != nil || strings.TrimSpace(branchBase) == "" {
 		usedFallback = true
 		branchBase = ""
 	}
-	for _, rel := range paths {
+	for _, entry := range entries {
+		rel := entry.Path
 		sourcePath := filepath.Join(libskillinstall.SourceRelPath, "skills", filepath.FromSlash(strings.TrimSuffix(rel, "/")))
 		diff := ""
 		var err error
@@ -1247,7 +1264,7 @@ func classifySkillGateDrift(repoRoot string, paths []string) (selfEdited, unexpl
 			selfEdited = append(selfEdited, rel)
 			continue
 		}
-		unexplained = append(unexplained, rel)
+		unexplained = append(unexplained, entry)
 	}
 	return selfEdited, unexplained, usedFallback
 }
@@ -1272,6 +1289,320 @@ func skillInstallRemedy(payload selectedSkillPayload) string {
 		return trustCheckoutSkillSourcesEnv + "=1 " + shellQuote(filepath.Join(root, "bin", "boss")) + " skills install"
 	}
 	return "boss skills install"
+}
+
+// skillDriftDirection is how the installed bytes at a drifted path relate to
+// this checkout's recorded history of the matching source file. It decides
+// whether a reinstall of that path is a lossless forward fix.
+type skillDriftDirection string
+
+const (
+	// skillDriftLossless replaces no installed content, so no history is needed.
+	skillDriftLossless skillDriftDirection = "lossless"
+	// skillDriftBehind is a reachable earlier revision of the source path.
+	skillDriftBehind skillDriftDirection = "behind"
+	// skillDriftUnrecoverable is content no reachable revision of the source
+	// path contains, so a reinstall would replace bytes this checkout cannot
+	// restore.
+	skillDriftUnrecoverable skillDriftDirection = "unrecoverable"
+	// skillDriftUnknown is an undecided lookup: git failed, the object is not
+	// present locally, or the bounded lookback ended without a match. Treated as
+	// unrecoverable for the remedy decision, but labelled honestly.
+	skillDriftUnknown skillDriftDirection = "unknown"
+)
+
+// skillDriftHistoryLookback bounds the per-path history walk so a pathological
+// history cannot turn a preflight into a stall, at the price of an "unknown"
+// verdict that fails safe toward not destroying.
+const skillDriftHistoryLookback = 500
+
+// skillDriftHistoryGit reads a drifted path's recorded history. It is a seam so
+// a test can make the query fail without removing git from the machine.
+var skillDriftHistoryGit = checkoutGitOutput
+
+// skillDriftEntry pairs a library drift kind with the direction resolved here.
+// Direction is a property of the checkout, so the library stays repository
+// unaware and this command owns the git seam.
+type skillDriftEntry struct {
+	path      string
+	kind      libskillinstall.DriftKind
+	direction skillDriftDirection
+}
+
+func (e skillDriftEntry) label() string {
+	return fmt.Sprintf("%s (%s, %s)", e.path, e.kind, e.direction)
+}
+
+// skillCheckoutHasAncestry reports whether this checkout has any history to
+// consult. A repository without a resolvable HEAD cannot answer the direction
+// question at all, which is distinct from answering it and not deciding.
+func skillCheckoutHasAncestry(repoRoot string) bool {
+	head, err := skillDriftHistoryGit(repoRoot, "rev-parse", "--verify", "--quiet", "HEAD")
+	return err == nil && strings.TrimSpace(head) != ""
+}
+
+// resolveSkillDriftDirection reports how one drifted path's installed copy
+// relates to this checkout's history of the matching source file.
+//
+// Kinds that replace no installed content are lossless without a git call: a
+// reinstall that adds an absent file, restores an executable bit onto bytes
+// that already match the payload, or relinks a top-level symlink destroys
+// nothing.
+func resolveSkillDriftDirection(repoRoot, dir, rel string, kind libskillinstall.DriftKind) skillDriftDirection {
+	switch kind {
+	case libskillinstall.DriftAbsent, libskillinstall.DriftMode:
+		return skillDriftLossless
+	case libskillinstall.DriftBrokenSymlink:
+		return skillTopLevelEntryDirection(dir, rel)
+	case libskillinstall.DriftContent, libskillinstall.DriftUnexpected:
+		// Decided from this checkout's recorded history, below.
+	}
+	if strings.HasSuffix(rel, "/") {
+		// A stale installed skill directory. The reinstall removes a tree this
+		// checkout has no source path for, so no forward revision of it exists.
+		return skillDriftUnrecoverable
+	}
+	if isTopLevelSkillKey(rel) {
+		// The library keys a leftover top-level entry on its bare skill name,
+		// so it lives at <dir>/<name> rather than under the namespace. Hashing
+		// the namespaced path instead would always fail and label the entry
+		// unknown, where its namespaced sibling "<name>/" is correctly called
+		// unrecoverable — one removed skill, two directions.
+		return skillTopLevelEntryDirection(dir, rel)
+	}
+	installedPath := filepath.Join(dir, libskillinstall.Namespace, filepath.FromSlash(rel))
+	sourcePath := filepath.Join(libskillinstall.SourceRelPath, "skills", filepath.FromSlash(rel))
+	return resolveSkillDriftAncestry(repoRoot, installedPath, sourcePath)
+}
+
+// isTopLevelSkillKey reports whether a drift path is the library's bare
+// top-level skill name key space — an entry directly in the agent skills dir —
+// rather than a payload-relative path under the namespace. Namespaced skill
+// directories carry a trailing slash and namespaced files carry their skill
+// directory, so only a bare boss skill name lands here.
+func isTopLevelSkillKey(rel string) bool {
+	if strings.Contains(rel, "/") {
+		return false
+	}
+	return rel == "boss" || strings.HasPrefix(rel, "boss-")
+}
+
+// skillTopLevelEntryDirection decides a drifted entry that lives directly in
+// the agent skills dir rather than under the namespace.
+//
+// extract() os.RemoveAll's every top-level boss-* entry — its own comment says
+// "(symlinks or real directories)" — so a reinstall is lossless only when there
+// is nothing there or the entry is genuinely a symlink it merely relinks. A
+// real directory at <dir>/<skill> is the legacy pre-namespacing layout: a tree
+// the reinstall deletes and this checkout has no source path to reproduce.
+func skillTopLevelEntryDirection(dir, rel string) skillDriftDirection {
+	info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(strings.TrimSuffix(rel, "/"))))
+	switch {
+	case err != nil && os.IsNotExist(err):
+		return skillDriftLossless
+	case err != nil:
+		return skillDriftUnknown
+	case info.Mode()&os.ModeSymlink != 0:
+		return skillDriftLossless
+	default:
+		return skillDriftUnrecoverable
+	}
+}
+
+// resolveSkillDriftAncestry hashes the installed file as a git blob and asks
+// whether that blob is the content of sourcePath at any commit reachable from
+// HEAD, in one bounded git log per path rather than one per commit.
+func resolveSkillDriftAncestry(repoRoot, installedPath, sourcePath string) skillDriftDirection {
+	blob, err := skillDriftHistoryGit(repoRoot, "hash-object", "--", installedPath)
+	if err != nil || blob == "" {
+		return skillDriftUnknown
+	}
+	out, err := skillDriftHistoryGit(repoRoot, "log", "--format=%H", "--raw", "--no-renames",
+		"--abbrev=40", fmt.Sprintf("-n%d", skillDriftHistoryLookback), "HEAD", "--", sourcePath)
+	if err != nil {
+		return skillDriftUnknown
+	}
+	commits := 0
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, ":") {
+			commits++
+			continue
+		}
+		// ":<oldmode> <newmode> <oldblob> <newblob> <status>\t<path>"
+		fields := strings.Fields(strings.ReplaceAll(line, "\t", " "))
+		if len(fields) < 4 {
+			continue
+		}
+		for _, candidate := range fields[2:4] {
+			if candidate == blob {
+				return skillDriftBehind
+			}
+		}
+	}
+	if commits >= skillDriftHistoryLookback {
+		return skillDriftUnknown
+	}
+	return skillDriftUnrecoverable
+}
+
+func skillDriftEntriesWithDirection(repoRoot, dir string, entries []libskillinstall.DriftEntry) []skillDriftEntry {
+	resolved := make([]skillDriftEntry, 0, len(entries))
+	for _, entry := range entries {
+		resolved = append(resolved, skillDriftEntry{
+			path:      entry.Path,
+			kind:      entry.Kind,
+			direction: resolveSkillDriftDirection(repoRoot, dir, entry.Path, entry.Kind),
+		})
+	}
+	return resolved
+}
+
+const skillRemedyUnverifiedNote = "reinstall direction unverified: no checkout history to compare the installed copy against"
+
+const skillRemedyWithheldLead = "reinstall withheld — it would overwrite installed content this checkout cannot restore:"
+
+// skillRemedyUndecidedLead is the withheld lead for a safety decision that
+// could not be computed at all. Failing to read the installed tree while
+// deciding whether a reinstall destroys it is not evidence that it does not,
+// so it withholds in the same direction as a known loss.
+const skillRemedyUndecidedLead = "reinstall withheld — the installed-vs-checkout comparison failed, so whether a reinstall would overwrite unrecoverable content is undecided"
+
+// skillRemedyNextActionDestroys and skillRemedyNextActionUndecided are the
+// operator's way out of a refusal. Every other outcome in this command family
+// ends in a runnable command; a withheld remedy fires at a preflight that has
+// just failed an unattended build, so it must not end in a dead end either.
+// Neither names a command, because nothing a shell would run may be emitted on
+// this path.
+const skillRemedyNextActionDestroys = "next: move the listed paths out of the skills directory (or delete them if they are disposable); with nothing unrecoverable left, the reinstall command is offered again"
+
+const skillRemedyNextActionUndecided = "next: re-run this check once the skills directory is readable and no longer changing underneath it"
+
+// skillRemedyAdvice is a composed reinstall prescription: either a runnable
+// command or an explicit refusal naming what the command would have destroyed.
+type skillRemedyAdvice struct {
+	command    string
+	withheld   bool
+	unverified bool
+	// lead overrides the withheld headline when nothing could be enumerated.
+	lead     string
+	destroys []skillDriftEntry
+}
+
+// withheldLead is the headline for a refusal, naming why it refused.
+func (a skillRemedyAdvice) withheldLead() string {
+	if a.lead != "" {
+		return a.lead
+	}
+	return skillRemedyWithheldLead
+}
+
+// nextAction is what the operator does about a refusal.
+func (a skillRemedyAdvice) nextAction() string {
+	if len(a.destroys) == 0 {
+		return skillRemedyNextActionUndecided
+	}
+	return skillRemedyNextActionDestroys
+}
+
+// composeSkillInstallRemedy is the single decision point every drift surface
+// uses, so the surfaces cannot drift apart in their safety behaviour.
+//
+// overwrites reports whether an installed tree exists for the reinstall to
+// write over; ancestry reports whether this checkout has history to consult.
+// Without ancestry the direction is stated as unverified rather than silently
+// assumed correct; with it, any path that is not a lossless forward fix
+// withholds the command entirely.
+func composeSkillInstallRemedy(payload selectedSkillPayload, entries []skillDriftEntry, ancestry, overwrites bool) skillRemedyAdvice {
+	command := skillInstallRemedy(payload)
+	if !overwrites {
+		return skillRemedyAdvice{command: command}
+	}
+	if !ancestry {
+		return skillRemedyAdvice{command: command, unverified: true}
+	}
+	var destroys []skillDriftEntry
+	for _, entry := range entries {
+		switch entry.direction {
+		case skillDriftLossless, skillDriftBehind:
+			// A reinstall here adds or moves forward; nothing is lost.
+		case skillDriftUnrecoverable, skillDriftUnknown:
+			destroys = append(destroys, entry)
+		}
+	}
+	if len(destroys) == 0 {
+		return skillRemedyAdvice{command: command}
+	}
+	return skillRemedyAdvice{withheld: true, destroys: destroys}
+}
+
+func (a skillRemedyAdvice) runLine() string {
+	line := "run `" + a.command + "`"
+	if a.unverified {
+		line += " (" + skillRemedyUnverifiedNote + ")"
+	}
+	return line
+}
+
+// inline renders the advice as a clause appended to a one-line drift warning.
+func (a skillRemedyAdvice) inline() string {
+	if !a.withheld {
+		return a.runLine()
+	}
+	if len(a.destroys) == 0 {
+		return a.withheldLead() + "; " + a.nextAction()
+	}
+	paths := make([]string, 0, len(a.destroys))
+	for _, entry := range a.destroys {
+		paths = append(paths, entry.label())
+	}
+	return a.withheldLead() + " " + strings.Join(paths, ", ") + "; " + a.nextAction()
+}
+
+// lines renders the advice as indented report lines under a drift verdict.
+func (a skillRemedyAdvice) lines(indent string) []string {
+	if !a.withheld {
+		return []string{indent + a.runLine()}
+	}
+	out := make([]string, 0, len(a.destroys)+2)
+	out = append(out, indent+a.withheldLead())
+	for _, entry := range a.destroys {
+		out = append(out, indent+"  "+entry.label())
+	}
+	return append(out, indent+a.nextAction())
+}
+
+// skillCheckRemedyAdvice resolves the same remedy decision the gate makes, from
+// whatever evidence `boss skills check` has. Comparing against the binary's
+// embedded payload leaves no ancestry to consult, so that surface reports the
+// direction as unverified instead of asserting the reinstall is correct.
+func skillCheckRemedyAdvice(payload selectedSkillPayload, dir string, installed bool) (skillRemedyAdvice, error) {
+	if !installed {
+		return composeSkillInstallRemedy(payload, nil, false, false), nil
+	}
+	if !payload.fromSource {
+		return composeSkillInstallRemedy(payload, nil, false, true), nil
+	}
+	repoRoot := repoRootFromSourceRoot(payload.srcRoot)
+	if !skillCheckoutHasAncestry(repoRoot) {
+		return composeSkillInstallRemedy(payload, nil, false, true), nil
+	}
+	report, err := libskillinstall.SourceDriftReport(dir, payload.srcRoot)
+	if err != nil {
+		// The failure happened while computing the safety decision, so it is
+		// neither the no-ancestry case nor a clean one: surface it and refuse.
+		return skillRemedyAdvice{withheld: true, lead: skillRemedyUndecidedLead}, fmt.Errorf("resolve reinstall safety: %w", err)
+	}
+	if len(report.Entries) == 0 {
+		// The installed tree is stale against the payload yet matches the
+		// checkout source, so it moved under us. Nothing enumerable means
+		// nothing decided, not that the reinstall is safe.
+		return skillRemedyAdvice{withheld: true, lead: skillRemedyUndecidedLead}, nil
+	}
+	return composeSkillInstallRemedy(payload, skillDriftEntriesWithDirection(repoRoot, dir, report.Entries), true, true), nil
 }
 
 // runSkillSync writes the embedded skill payload into the global skill dir of each

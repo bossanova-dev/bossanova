@@ -147,24 +147,75 @@ export function selectEmptyCommits(rows, emptyTree) {
   return empty
 }
 
-/** Parse `sha<TAB>tree<TAB>parent parent` lines. Blank lines and short rows are dropped. */
+/**
+ * Parse `sha<TAB>tree<TAB>parent parent[<TAB>subject]` lines. Blank lines and short
+ * rows are dropped.
+ *
+ * The fourth field is OPTIONAL and its absence is meaningful: a row with no subject is
+ * CONTEXT ONLY — the extra row below the range that supplies a parent tree — and is
+ * never itself graded. Everything after the third tab is the subject, because a commit
+ * subject may legitimately contain a tab and splitting on it would truncate one.
+ */
 export function parseCommitRows(text) {
   const rows = []
   for (const line of String(text ?? '').split('\n')) {
     if (line.trim() === '') continue
-    const [sha, tree, parents = ''] = line.split('\t')
+    const fields = line.split('\t')
+    const [sha, tree, parents = ''] = fields
     if (!sha || !tree) continue
-    rows.push({
+    const row = {
       sha: sha.trim(),
       tree: tree.trim(),
       parents: parents.trim().split(/\s+/).filter(Boolean),
-    })
+    }
+    if (fields.length > 3) row.subject = fields.slice(3).join('\t')
+    rows.push(row)
   }
   return rows
 }
 
-const USAGE = `usage: commit-work-predicate.mjs empty-commits --empty-tree <oid>
-  reads "<sha>\\t<tree>\\t<parents>" rows on stdin, prints the sha of each empty commit`
+/**
+ * The commits in `rows` that are real work and do NOT carry `tag` in their subject —
+ * the set a tag-state re-derivation may legitimately call `partial`.
+ *
+ * It exists because a re-derivation that graded EVERY subject in the range was asking
+ * a STRONGER question than the injector answers. The injector skips a known-empty
+ * commit before any amend, by design, so an empty commit (the daemon's bootstrap
+ * placeholder, say) survives untagged inside the graded range and the grader reported
+ * `partial` for a branch the injector had fully tagged. Both sides now ask this module.
+ *
+ * Rows with no `subject` are context-only and are never graded. Emptiness is decided
+ * by tree comparison through selectEmptyCommits, so an UNRESOLVABLE commit counts as
+ * real work that still owes a tag — the same fail-safe direction as everywhere else
+ * here, and the one that keeps this from becoming a licence to publish untagged work.
+ */
+export function selectUntaggedWorkCommits(rows, { emptyTree, tag } = {}) {
+  const needle = String(tag ?? '')
+  const empty = new Set(selectEmptyCommits(rows, emptyTree))
+  const out = []
+  for (const row of rows) {
+    if (row.subject === undefined) continue
+    if (empty.has(row.sha)) continue
+    if (needle !== '' && row.subject.includes(needle)) continue
+    out.push({ sha: row.sha, subject: row.subject })
+  }
+  return out
+}
+
+const USAGE = `usage: commit-work-predicate.mjs <command> [flags]
+
+commands:
+  empty-commits --empty-tree <oid>
+      reads "<sha>\\t<tree>\\t<parents>" rows on stdin, prints the sha of each empty commit
+
+  untagged-work --empty-tree <oid> --tag <tag>
+      reads "<sha>\\t<tree>\\t<parents>[\\t<subject>]" rows on stdin, prints
+      "<sha>\\t<subject>" for each NON-EMPTY commit whose subject lacks <tag>.
+      A row with no subject is context only (the extra row below the range) and is
+      never graded. Empty stdout means every work commit carries the tag.
+
+  --help, -h, help
+      print this message`
 
 /**
  * CLI entry point. RETURNS an exit code and never calls process.exit, so a caller can
@@ -175,32 +226,69 @@ export function runCli(argv = [], io = {}) {
   const stderr = io.stderr ?? ((text) => process.stderr.write(text))
   const [command, ...rest] = argv
 
-  if (command !== 'empty-commits') {
+  if (command === '--help' || command === '-h' || command === 'help') {
+    stdout(`${USAGE}\n`)
+    return 0
+  }
+  if (command !== 'empty-commits' && command !== 'untagged-work') {
     stderr(
       `${command === undefined ? 'missing command' : `unknown command: ${command}`}\n${USAGE}\n`,
     )
     return 2
   }
 
-  const flagAt = rest.indexOf('--empty-tree')
-  const emptyTree = flagAt === -1 ? undefined : rest[flagAt + 1]
-  if (!emptyTree || emptyTree.startsWith('--')) {
+  const flagValue = (name) => {
+    const at = rest.indexOf(name)
+    const value = at === -1 ? undefined : rest[at + 1]
+    return value === undefined || value.startsWith('--') ? undefined : value
+  }
+
+  const emptyTree = flagValue('--empty-tree')
+  if (!emptyTree) {
     stderr(`missing required --empty-tree <oid>\n${USAGE}\n`)
     return 2
   }
 
   const rows = parseCommitRows(io.stdin ?? '')
-  const empty = selectEmptyCommits(rows, emptyTree.trim())
-  stdout(empty.length === 0 ? '' : `${empty.join('\n')}\n`)
+  if (command === 'empty-commits') {
+    const empty = selectEmptyCommits(rows, emptyTree.trim())
+    stdout(empty.length === 0 ? '' : `${empty.join('\n')}\n`)
+    return 0
+  }
+
+  // An absent or empty --tag is a USAGE error, never "nothing carries the tag": the
+  // latter would report every work commit as untagged, which reads as a catastrophic
+  // injector failure caused by a typo'd flag.
+  const tag = flagValue('--tag')
+  if (!tag) {
+    stderr(`missing required --tag <tag>\n${USAGE}\n`)
+    return 2
+  }
+  const untagged = selectUntaggedWorkCommits(rows, { emptyTree: emptyTree.trim(), tag })
+  stdout(
+    untagged.length === 0 ? '' : `${untagged.map((c) => `${c.sha}\t${c.subject}`).join('\n')}\n`,
+  )
   return 0
 }
 
 if (isMainModule(import.meta.url)) {
-  let stdin = ''
-  try {
-    stdin = readFileSync(0, 'utf8')
-  } catch {
-    stdin = ''
+  // Read stdin LAZILY. Reading it up front blocks forever on a terminal, so
+  // `commit-work-predicate.mjs --help` typed by hand hung instead of printing —
+  // the listless-help failure in a different costume. runCli touches `io.stdin`
+  // only on a command that consumes rows, so help and every usage error return
+  // without ever touching the descriptor.
+  let stdin
+  const io = {
+    get stdin() {
+      if (stdin === undefined) {
+        try {
+          stdin = readFileSync(0, 'utf8')
+        } catch {
+          stdin = ''
+        }
+      }
+      return stdin
+    },
   }
-  process.exitCode = runCli(process.argv.slice(2), { stdin })
+  process.exitCode = runCli(process.argv.slice(2), io)
 }

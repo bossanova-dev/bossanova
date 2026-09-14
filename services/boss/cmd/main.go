@@ -212,6 +212,11 @@ func rootCmd() *cobra.Command {
 	// Commands".
 	root.AddCommand(resurrectCmd(), newGenSkillCmd())
 
+	// Installed once on the root, after the whole tree is registered: cobra's
+	// FlagErrorFunc walks up to the parent when a command sets none, so this
+	// single registration covers every subcommand's flag rejections.
+	installFlagErrorHook(root)
+
 	return root
 }
 
@@ -397,6 +402,13 @@ func lsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List sessions (non-interactive)",
+		Long: "List sessions.\n\n" +
+			"last_agent_activity_at is a floor, not liveness: any pane change advances it " +
+			"(a spinner redraw keeps it fresh), and every session working at the moment of " +
+			"the fetch reports it to the nanosecond, so one sample cannot tell a live session " +
+			"from a frozen snapshot. To judge whether a peer is actually progressing, read " +
+			"the per-chat discriminators with `boss chats --json <session-id>`: " +
+			"spinner_present, last_substantive_output_at and last_output_seeded.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLS(cmd)
 		},
@@ -858,6 +870,17 @@ func daemonCmd() *cobra.Command {
 	}
 	stop.Flags().Bool("all-standalone", false, "Stop all user-owned bossd processes instead of only the current profile")
 
+	restart := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the bossd daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemonRestart(cmd)
+		},
+	}
+	restart.Flags().Bool(jsonFlagName, false,
+		"Emit the restart outcome as a stable JSON schema, so a driver can tell a "+
+			"supervised restart from one that fell back to an unsupervised direct start")
+
 	d.AddCommand(
 		install,
 		&cobra.Command{
@@ -889,13 +912,7 @@ func daemonCmd() *cobra.Command {
 			},
 		},
 		stop,
-		&cobra.Command{
-			Use:   "restart",
-			Short: "Restart the bossd daemon",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runDaemonRestart(cmd)
-			},
-		},
+		restart,
 		&cobra.Command{
 			Use:   "rotate-token",
 			Short: "Rotate the daemon socket auth token (regenerated on next daemon start)",

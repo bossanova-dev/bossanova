@@ -354,3 +354,40 @@ test('states() maps a blank configured state name to null, never an empty string
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// Shape guard (BOS-1244 row 9)
+// ---------------------------------------------------------------------------
+
+test('buildLinearOperationMap raises for a non-string, so no mcp__[object Object]__* map exists', () => {
+  // The recorded misuse: every other helper in this tree takes an options object, so
+  // `buildLinearOperationMap({mcpServer: 'bossanova-linear'})` is the natural call. It used to return
+  // a well-formed map whose every tool name was `mcp__[object Object]__*`, failing only much later at
+  // invocation against the live tracker.
+  for (const bad of [
+    { mcpServer: 'bossanova-linear' },
+    undefined,
+    null,
+    42,
+    '',
+    '   ',
+    ['bossanova-linear'],
+  ]) {
+    assert.throws(
+      () => buildLinearOperationMap(bad),
+      (error) => {
+        assert.match(error.message, /buildLinearOperationMap\(mcpServer\)/, 'names the function')
+        assert.match(error.message, /non-empty string/, 'and the expected shape')
+        return true
+      },
+      `${JSON.stringify(bad)} must raise rather than produce a map`,
+    )
+  }
+
+  // The correct call is untouched, and no reachable value can mint the broken namespace.
+  const operationMap = buildLinearOperationMap('bossanova-linear')
+  for (const [name, op] of Object.entries(operationMap)) {
+    assert.doesNotMatch(op.tool, /\[object Object\]/, `${name} must carry a real tool name`)
+    assert.match(op.tool, /^mcp__bossanova-linear__/, `${name} must use the supplied server name`)
+  }
+})

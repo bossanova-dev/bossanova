@@ -73,3 +73,21 @@ test('BOS-1002: installed-skill gate derives the current tree and degrades for a
     )
   }
 })
+
+test('BOS-1243: claim adjudication names an action for the operator-error exit too', () => {
+  {
+    const dir = REPAIR_CANONICAL
+    const pass = region(
+      skillText(dir),
+      'Adjudicate the cited evidence mechanically',
+      '**Round freshness',
+    )
+    // The three verdicts each carry an action. The CLI's fourth outcome is exit 2 —
+    // bad usage or an unreadable claim list — where nothing was adjudicated at all,
+    // and an empty record list there reads exactly like "nothing was refuted". Without
+    // a named action the prose contract fails green on its own operator error.
+    // ONE pin, not two: the prose-pin budget is a real cost and this clause is the whole
+    // contract — the exit code and the action it obliges.
+    assert.match(pass, /exit\s+2[\s\S]{0,240}(never\s+a\s+verdict|not\s+a\s+verdict)/i, dir)
+  }
+})

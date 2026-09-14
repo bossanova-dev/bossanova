@@ -362,7 +362,8 @@ func TestExecuteAccountSwitch_JoinerBoundedByItsOwnContext(t *testing.T) {
 	}
 	defer close(spy.release)
 
-	joinerCtx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	const joinerDeadline = 80 * time.Millisecond
+	joinerCtx, cancel := context.WithTimeout(context.Background(), joinerDeadline)
 	defer cancel()
 	started := time.Now()
 	_, err := s.executeAccountSwitch(joinerCtx, "sess-1", "agent-1", "acct-joiner", false)
@@ -374,7 +375,9 @@ func TestExecuteAccountSwitch_JoinerBoundedByItsOwnContext(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeDeadlineExceeded {
 		t.Errorf("code = %v, want DeadlineExceeded", got)
 	}
-	if elapsed > 2*time.Second {
+	// 25x the joiner's own deadline: a joiner that inherited the leader's clock would wait
+	// until the leader was released, which this test never does.
+	if elapsed > 25*joinerDeadline {
 		t.Errorf("the joiner waited %v — it inherited the leader's clock instead of its own", elapsed)
 	}
 	if got := spy.callCount(); got != 1 {
@@ -429,7 +432,9 @@ func TestExpireSwitchBudgetForTest_RealExpiryMapsToDeadlineExceeded(t *testing.T
 	if !strings.Contains(err.Error(), "switch session account:") {
 		t.Fatalf("error = %q, want switch session account provenance", err.Error())
 	}
-	if elapsed < budget || elapsed > 2*time.Second {
+	// Upper half is 13x the budget under test; the lower half stays a literal because load only
+	// ever pushes elapsed time up and so cannot flip a too-fast bound red.
+	if elapsed < budget || elapsed > 13*budget {
 		t.Fatalf("elapsed = %v, want real budget expiry near %v", elapsed, budget)
 	}
 }

@@ -468,9 +468,34 @@ function parseArgs(argv) {
   return args
 }
 
+// The flag surface, printed by `--help`. It used to exist only as the dispatch chain below, so the
+// accepted flags could be learned only by reading this file's tail — and `--help` itself fell through
+// to `unknown subcommand: --help` with exit 2 and no usage output at all.
+const USAGE = `usage: skill-extensions.mjs <subcommand> [flags]
+
+subcommands:
+  discover --core <name> [--role <role>] [--root <dir>] [--json]
+      List the extensions of <core> found under the extension roots, in \`order\`.
+      --role  restrict to one role: ${Object.keys(EXTENSION_ROLES).join(' | ')}
+      --root  scan below this directory instead of the current one
+      --json  print the full {extensions, skipped} envelope instead of one TSV line per extension
+
+  validate [--file <path>] [--role <role>]
+      Validate an extension result envelope read from <path>, or from stdin when --file is absent.
+      Prints {ok, errors[]} and exits non-zero when it is not ok.
+      --role  the role whose result schema to validate against (see the list above)
+
+  --help, -h
+      Print this message.
+`
+
 export function main(argv) {
   const [subcommand, ...rest] = argv
   const args = parseArgs(rest)
+  if (subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
+    process.stdout.write(USAGE)
+    return 0
+  }
   if (subcommand === 'discover') {
     const core = args.core
     if (typeof core !== 'string' || core === '') {
@@ -479,6 +504,16 @@ export function main(argv) {
     }
     const root = typeof args.root === 'string' ? args.root : process.cwd()
     const role = typeof args.role === 'string' ? args.role : undefined
+    // Validated HERE, before scanning. An unrecognised role used to be recorded as a per-extension
+    // `unknown-requested-role` skip and exit 0, which is the OPPOSITE diagnosis: a typo'd role reads
+    // as "the extensions are misinstalled". The per-extension skip stays in `discoverExtensionsInRoot`
+    // for programmatic callers of `discoverExtensions`, which never come through `main`.
+    if (role !== undefined && !KNOWN_EXTENSION_ROLES.has(role)) {
+      process.stderr.write(
+        `discover: unknown --role ${JSON.stringify(role)}; valid roles are ${[...KNOWN_EXTENSION_ROLES].join(', ')}\n`,
+      )
+      return 2
+    }
     const result = discoverExtensions({ core, root, role })
     if (args.json) {
       process.stdout.write(`${JSON.stringify(result)}\n`)
@@ -520,6 +555,7 @@ export function main(argv) {
     return result.ok ? 0 : 1
   }
   process.stderr.write(`unknown subcommand: ${subcommand ?? '(none)'}\n`)
+  process.stderr.write(USAGE)
   return 2
 }
 

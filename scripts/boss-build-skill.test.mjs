@@ -590,7 +590,7 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // banks 81368 -> 81344 (-24 B) by deleting the doubled "— all **non-routing**" tail from Step 6's
   // `**What comes back (thin, non-routing).**` paragraph, whose primary statement is that
   // paragraph's own bolded lead three lines above it, and whose operative rule is the
-  // `**Classify from the run file only.**` block immediately after. Against origin/main's 81363 the
+  // `**Classify from the run file only**` block immediately after. Against origin/main's 81363 the
   // branch is -19 B net; 20 B of live headroom now remains below PRE_EXTRACTION_BASELINE.
   //
   // The first trim tried here was the Step 5 restatement of _continue from committed state; do not
@@ -733,7 +733,15 @@ test('BOS-1216: the always-read review-stack reference stays under a descending 
   const REVIEW_STACK_PATH = `${CORE}/references/review-stack.md`
   // Measured 2026-09-08, after the BOS-1216 rewrite (162041 B before it). A SHRINK costs nothing
   // here — no edit to this constant, no recorded reason — so only growth is priced.
-  const REVIEW_STACK_RATCHET = 156053
+  // Re-banked UP 156053 -> 160063 (+4010 B), the second and third RAISEs this budget records,
+  // banked together because they landed on opposite sides of a rebase and the file now carries
+  // BOTH edits; the measured size is the sum, not either raise alone. Reasons are below in
+  // `raise.justification`, newest first. In short: BOS-1251 routes the tag-state re-derivation
+  // through the injector's own predicate (+3015 B), and the clean-write correction named the
+  // second of two blockers so a pass could no longer print a clean line over unrepaired
+  // `invalid` evidence (+995 B). Both are resident by necessity: this reference IS what the
+  // dispatched pass executes, and a write rule documented elsewhere is one run from a stale copy.
+  const REVIEW_STACK_RATCHET = 160063
   assertDescendingBudget({
     budget: REVIEW_STACK_RATCHET,
     constFile: 'scripts/boss-build-skill.test.mjs',
@@ -747,15 +755,31 @@ test('BOS-1216: the always-read review-stack reference stays under a descending 
       // direction this primitive prices goes free — the structurally dead arm the BOS-1208 review
       // found at every migrated call site. 155954 is the seed this rewrite first measured; the
       // budget now sits 99 B above it, so this raise is priced and carries the reason below.
-      from: 155954,
+      from: 156053,
       justification:
+        "BOS-1251: the post-loop tag-state re-derivation now grades the range with the INJECTOR's " +
+        'own non-empty-work-commit predicate (commit-work-predicate.mjs untagged-work) instead of ' +
+        'testing every subject for the tag. The old grader asked a STRICTLY STRONGER question than ' +
+        'the injector answers — it skips a known-empty commit before any amend by design, so the ' +
+        "daemon's empty bootstrap placeholder survived untagged inside the graded range and a fully " +
+        'tagged branch published `partial`. +3015 B buys the row assembly (one context row below ' +
+        'the range for parent trees), the grader-failed arm kept apart from the nothing-untagged ' +
+        'arm (both print nothing, and one variable could not tell them apart), the ' +
+        'BOSS_BUILD_TOOLBOX re-derivation this block previously had no reason to do, and the ' +
+        'untagged subjects named in TAG_NOTE. It is the one direction this budget prices; the ' +
+        'reference is still 1978 B below the 162041 B it started at. Earlier entry: ' +
+        'The clean-write instruction stated only the must-fix half of the two-part rule, so a pass ' +
+        'reading this reference could write a contract-valid clean sentinel over unrepaired ' +
+        '`invalid` evidence that the derived verdict owner has always refused. The correction is ' +
+        '+995 B and buys four things this file cannot delegate: the second blocker in the ' +
+        'condition, the derived `verdict --in "$REPORT_JSON"` spelling at the runnable fence, the ' +
+        'same spelling at both write-point bullets, and the statement that no evidence-free clean ' +
+        'verb remains. Earlier entry: ' +
         'BOS-1216 review (boss-review round, thermonuclear): the rewrite dropped what a REFUSED ' +
         'sentinel-payload write COSTS, and left the surviving clause next to the sentence saying an ' +
         'empty payload still lands its verdict line. A top-down reader could infer malformed behaves ' +
         'like empty, when the whole write is refused and the pessimistic seed publishes `coverage ' +
-        'unknown` over a review that really settled. Restoring that consequence is +99 B and is the ' +
-        'one direction this budget prices — the reference is still 5988 B below the 162041 B it ' +
-        'started at.',
+        'unknown` over a review that really settled. Restoring that consequence is +99 B.',
     },
     residual:
       'the OTHER references this protocol points at — callback-watches.md and ' +
@@ -1241,15 +1265,37 @@ test('BOS-913: Step 3 scans activity timestamps before claim-verdict', () => {
       /Scan\s+recent\s+sessions\s+in\s+this\s+repository[\s\S]{0,180}`last_agent_activity_at`[\s\S]{0,120}`tracker_id`/i,
       `${dir}: the reference must name the boss ls --json session scan fields`,
     )
+    // BOS-1251 re-aimed this pin. It used to require the reference to point at
+    // `get_chat_statuses`'s `last_output_at` as the "richer" signal — but a spinner redraw
+    // advances that field, so it discriminates nothing, and the CLI transport was declared
+    // unavoidably weaker on the strength of it. The rule now pinned is the corrected one:
+    // name the three fields that DO discriminate, and name BOTH transports that carry them.
+    for (const field of ['spinner_present', 'last_substantive_output_at', 'last_output_seeded']) {
+      assert.match(
+        ref,
+        new RegExp(`\`${field}\``),
+        `${dir}: the reference must name the liveness discriminator ${field}`,
+      )
+    }
     assert.match(
       ref,
-      /`get_chat_statuses`[\s\S]{0,80}`last_output_at`/i,
-      `${dir}: the reference must name the richer MCP chat-status activity field`,
+      /`boss\s+chats\s+--json[^`]*`[\s\S]{0,200}`get_chat_statuses`/i,
+      `${dir}: the reference must name BOTH transports that carry the per-chat discriminators`,
     )
+    // BOS-1251 INVERTED this pin. It used to require the reference to say the chat-status
+    // signal is UNAVAILABLE on the CLI transport, so a CLI run proceeded on the session scan
+    // alone. `boss chats --json` now carries the same three discriminators, so that sentence
+    // was a false premise about the tool, not a policy: the rule pinned now is that a CLI run
+    // consults the per-chat signal rather than settling for the session scan.
     assert.match(
       ref,
-      /CLI\s+transport[\s\S]{0,160}chat-status\s+signal\s+is\s+unavailable[\s\S]{0,140}session\s+scan\s+alone/i,
-      `${dir}: the reference must say CLI runs proceed on session scan alone`,
+      /CLI-transport\s+run\s+consults\s+the\s+per-chat\s+signal[\s\S]{0,80}session\s+scan\s+alone/i,
+      `${dir}: the reference must say a CLI run consults the per-chat signal, not the session scan alone`,
+    )
+    assert.doesNotMatch(
+      ref,
+      /chat-status\s+signal\s+is\s+unavailable/i,
+      `${dir}: the CLI transport is no longer weaker for this check; the old claim must not survive`,
     )
     assert.match(
       ref,
@@ -1281,10 +1327,14 @@ test('BOS-913: Step 3 scans activity timestamps before claim-verdict', () => {
       /if\s*\(!lastAgentActivityAt\)\s*continue/,
       `${dir}: sessions without activity timestamps must remain unknown rather than malformed`,
     )
+    // BOS-1251 re-aimed this too: the merged field is `last_substantive_output_at`, never
+    // `last_output_at`, which a spinner redraw advances — merging that one would date a
+    // frozen pane as live. The rest of the encoding rule (merge only when newer, keep
+    // unknown owners absent) is unchanged and still pinned.
     assert.match(
       ref,
-      /MCP\s+transport[\s\S]{0,120}`lastAgentActivityAt`[\s\S]{0,160}get_chat_statuses[\s\S]{0,120}`last_output_at`[\s\S]{0,180}`lastAgentActivityAt`[\s\S]{0,180}unknown\s+claim\s+owners\s+absent/i,
-      `${dir}: the reference must say how MCP last_output_at is encoded in the liveness payload`,
+      /MCP\s+transport[\s\S]{0,120}`lastAgentActivityAt`[\s\S]{0,240}`last_substantive_output_at`[\s\S]{0,120}newer\s+than\s+`last_agent_activity_at`[\s\S]{0,80}never\s+`last_output_at`[\s\S]{0,320}unknown\s+claim\s+owners\s+absent/i,
+      `${dir}: the reference must say how the per-chat signal is encoded in the liveness payload, and that the spinner-advanced last_output_at is never the one merged`,
     )
   }
 })
@@ -2287,8 +2337,11 @@ test('the review pass is bounded by a hard deadline, not a 15-minute guess', asy
       // literal spaces below are the shell command's own spacing — the thing under test.
       assert.match(
         block,
+        // The clean line is DERIVED (`verdict --in <report>`), never printed from nothing: the
+        // evidence-free `sentinel clean` form let a pass assert a verdict its own report
+        // contradicted. `capped 1` keeps its evidence-free form on the two report-less routes.
         // prose-pin: literal-space ok
-        /"\$\(node "\$[A-Z_]+(?:\/bs-review-caps\.mjs)?" sentinel (?:clean|capped 1)\)"/,
+        /"\$\(node "\$[A-Z_]+(?:\/bs-review-caps\.mjs)?" (?:verdict --in "\$[A-Z_]+"|sentinel capped 1)\)"/,
         `${dir}: the sentinel LINE must be the helper's unmodified stdout — matchSentinel classifies it, so an interpolated reason is unmatchable`,
       )
       assert.doesNotMatch(
@@ -3289,15 +3342,31 @@ test('BOS-791: proof-capture guidance matches proof.mjs run outcomes', () => {
     'repo-local boss-proof must state proof-surface parity is a snapshot test, not a proof.mjs verb',
   )
 
+  // BOS-1250: the blanket "never show a bare run" rule below encoded a premise
+  // that does not hold — there is no catalog "default preset" for a bare `run`
+  // to execute (the catalog's top-level keys are $schema, version, surfaces,
+  // recipes, pathRules), and the agent dispatch now ACCOUNTS for the path-derived
+  // set `plan` selected instead of silently dropping it. So a bare `run` is a
+  // correct invocation to show, PROVIDED the body says what it selects. The rule
+  // is therefore inverted rather than deleted, and the guard below tests BOTH
+  // halves of that conditional: a body may show a bare run only when it refutes
+  // the preset premise AND states the zero-recipe action. Either half alone still
+  // fails, so a body cannot buy the exemption with one sentence. Expressed purely
+  // as the loop's guard — no extra prose pin, since what matters is the
+  // CONDITIONAL, not the sentence.
   for (const [label, body] of [
     ['proof-capture.md', proofCapture],
     [FINALIZE_REF, finalize],
     ['.claude/skills/boss-proof/SKILL.md', bossProof],
   ]) {
+    const refutesPresetPremise = /no\s+["“]?default\s+preset/i.test(body)
+    const statesZeroRecipeAction = /zero\s+recipes?/i.test(body)
+    const mayShowBareRun = refutesPresetPremise && statesZeroRecipeAction
     for (const line of body.split('\n')) {
       if (!/node\s+scripts\/proof\.mjs\s+run/.test(line)) continue
       if (/--recipe/.test(line)) continue
       if (/\bbare\b|not\s+to\s+do|default\s+preset|automatically/.test(line)) continue
+      if (mayShowBareRun) continue
       assert.fail(`${label} must not show a bare proof.mjs run invocation: ${line}`)
     }
   }
@@ -7740,6 +7809,12 @@ const runPushBlock = (
   )
   if (!noToolbox) {
     fs.mkdirSync(path.join(toolbox, 'finalize'), { recursive: true })
+    // The REAL predicate module, not a stub: the post-loop re-derivation grades the branch
+    // with it, and a stub would let this gate agree with a grader that had drifted from the
+    // injector. It imports ./main-module.mjs, so both ship.
+    for (const helper of ['commit-work-predicate.mjs', 'main-module.mjs']) {
+      fs.copyFileSync(path.join(rootDir, 'skills-toolbox', helper), path.join(toolbox, helper))
+    }
     // Stands in for the shipped finalize CLI: it records the argv it was invoked with (so the gate
     // can prove the PR number is passed POSITIONALLY — a flag form would tag commits with a literal
     // `[#--pr]`), then does what the real injector does, which is REWRITE every commit since the
@@ -10699,11 +10774,22 @@ test('BOS-964: the shipped Step 6 seed block really writes a provisional capped 
 
       // (d) THE UPGRADE PATH. A later non-provisional write to the same (dir, runId, name) must
       // OVERWRITE the seed — otherwise the seed pins every run pessimistically forever.
+      // The upgrade goes through the DERIVED route, because that is now the only producer of a
+      // clean line: `sentinel clean` refuses without report evidence.
+      const upgradeReport = path.join(base, 'upgrade-report.json')
+      fs.writeFileSync(
+        upgradeReport,
+        JSON.stringify({
+          mustfix: { unresolved: 0 },
+          invalid: [],
+          ledger: { discovered: 1, completed: 1, skipped: 0, timedOut: 0, notReached: 0 },
+        }),
+      )
       execFileSync(
         'bash',
         [
           '-c',
-          `node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review "$(node "$CAPS" sentinel clean)" '{"provisional":false}'`,
+          `node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review "$(node "$CAPS" verdict --in "$REPORT_JSON")" '{"provisional":false}'`,
         ],
         {
           encoding: 'utf8',
@@ -10713,6 +10799,7 @@ test('BOS-964: the shipped Step 6 seed block really writes a provisional capped 
             CAPS: caps,
             RUN_DIR: runDir,
             RUN_ID: runId,
+            REPORT_JSON: upgradeReport,
           },
         },
       )
@@ -10743,12 +10830,23 @@ test('BOS-964: the classify block reads the marker and the route list carries th
       '## Step 6.5: Knowledge extensions',
     )
 
-    // The orchestrator already has `jq` and the read result in hand, so the discriminator costs one
-    // line rather than a second node spawn.
+    // The marker is no longer re-derived here: `bs-dispatch-await.mjs disposition` owns it and
+    // demotes a provisional payload on EVERY kind, so the block reads the helper's reason rather
+    // than reaching into the raw payload and consulting it on one arm out of four.
     assert.match(
       step6,
-      /PROVISIONAL="\$\(printf '%s' "\$READ" \| jq -r '\.payload\.provisional \/\/ empty'\)"/,
-      `${dir}/SKILL.md: the classify block must read the payload marker, or the fourth route arm has no input`,
+      /bs-dispatch-await\.mjs" disposition "\$RUN_DIR" "\$RUN_ID" review/,
+      `${dir}/SKILL.md: the classify block must route through the helper that owns the disposition`,
+    )
+    assert.match(
+      step6,
+      /PROVISIONAL="\$\(printf '%s' "\$DISP" \| jq -r 'if \.reason == "provisional-payload"/,
+      `${dir}/SKILL.md: the classify block must read the helper's reason, or the fourth route arm has no input`,
+    )
+    assert.doesNotMatch(
+      step6,
+      /jq -r '\.payload\.provisional/,
+      `${dir}/SKILL.md: the marker must not be re-lifted into a shell variable — that is the read that got consulted on one arm only`,
     )
     // The arm itself: a seed nobody upgraded is never PARTIAL (no lens ran, so T1 is
     // unestablishable) and never clean. BOS-1104 changed only where it DOES land — the published
@@ -10758,18 +10856,18 @@ test('BOS-964: the classify block reads the marker and the route list carries th
     // all three hold together, because the token is what stops the publication reading as clean.
     assert.match(
       step6,
-      /`capped`\s+with\s+`PROVISIONAL`\s*=\s*`true`[\s\S]{0,240}REVIEW_READY-with-findings/i,
+      /`PROVISIONAL`\s*=\s*`true`\s+on\s+\*\*any\*\*\s+kind[\s\S]{0,240}REVIEW_READY-with-findings/i,
       `${dir}/SKILL.md: the route list must carry a fourth arm for a provisional verdict that survived`,
     )
     assert.match(
       step6,
-      /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,240}\*\*never\*\*\s+clean\s+and\s+\*\*never\*\*\s+`PARTIAL`/i,
+      /`PROVISIONAL`\s*=\s*`true`\s+on\s+\*\*any\*\*\s+kind[\s\S]{0,240}\*\*never\*\*\s+clean\s+and\s+\*\*never\*\*\s+`PARTIAL`/i,
       `${dir}/SKILL.md: the provisional arm must exclude BOTH the clean and the PARTIAL routes by name`,
     )
     assertFalsifiable({
       source: step6,
       pattern:
-        /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,700}`none:\s+review\s+coverage\s+unknown\s+\(review\s+stack\s+entered;\s+provisional\s+verdict\s+never\s*\n?upgraded\s+—\s+<reason>\)`/,
+        /`PROVISIONAL`\s*=\s*`true`\s+on\s+\*\*any\*\*\s+kind[\s\S]{0,760}`none:\s+review\s+coverage\s+unknown\s+\(review\s+stack\s+entered;\s+provisional\s+verdict\s+never\s*\n?upgraded\s+—\s+<reason>\)`/,
       mutation: {
         find: '`none: review coverage unknown (review stack entered; provisional verdict never\nupgraded — <reason>)`',
         replacement: '`full`',
@@ -10779,7 +10877,7 @@ test('BOS-964: the classify block reads the marker and the route list carries th
     assertFalsifiable({
       source: step6,
       pattern:
-        /`capped`\s+with\s+`PROVISIONAL`[\s\S]{0,900}becomes\s+`BLOCKED`\s+\*\*only\*\*\s+when\s+the\s+push\s+or\s+the\s+quality\s+gates\s+fail/,
+        /`PROVISIONAL`\s*=\s*`true`\s+on\s+\*\*any\*\*\s+kind[\s\S]{0,960}becomes\s+`BLOCKED`\s+\*\*only\*\*\s+when\s+the\s+push\s+or\s+the\s+quality\s+gates\s+fail/,
       mutation: {
         find: 'it becomes `BLOCKED` **only** when the push or the quality gates fail',
         replacement: 'it becomes `BLOCKED` whenever the verdict is provisional',
@@ -10812,7 +10910,7 @@ test('BOS-964: the classify block reads the marker and the route list carries th
     assert.ok(
       precedes(
         routes,
-        '- `capped` with `PROVISIONAL` = `true`',
+        '- `PROVISIONAL` = `true` on **any** kind',
         '- `capped` → otherwise',
         `${dir}/SKILL.md`,
       ),
@@ -10918,17 +11016,25 @@ test('BOS-964: review-stack tells the subagent to write the verdict when it is d
     // a list.
     assert.match(
       contract,
-      /\*\*The\s+review\s+pass\s+reported\s+clean\*\*[\s\S]{0,300}write\s*\n?\s*`sentinel\s+clean`\s+\*\*there\*\*/i,
-      `${dir}: the clean outcome must write the verdict where the report is in hand`,
+      // DERIVED, not hand-picked: the clean bullet may no longer name an evidence-free verb, and
+      // it must state BOTH blockers — the must-fix half alone is the rule that shipped a false
+      // green over unrepaired `invalid` evidence.
+      /\*\*The\s+review\s+pass\s+reported\s+clean\*\*[\s\S]{0,300}write\s*\n?\s*`verdict\s+--in\s+"\$REPORT_JSON"`\s+\*\*there\*\*/i,
+      `${dir}: the clean outcome must write the DERIVED verdict where the report is in hand`,
     )
     assert.match(
       contract,
-      /\*\*The\s+review\s+pass\s+reported\s+clean\*\*[\s\S]{0,200}API-surface\s+check\s+has\s+also\s+run/i,
+      /\*\*The\s+review\s+pass\s+reported\s+clean\*\*[\s\S]{0,200}zero\s+open\s+must-fix\s*\n?\s*\*\*and\*\*\s+zero\s+unrepaired\s+`invalid`/i,
+      `${dir}: the clean condition must name BOTH blockers, matching boss-review's own Phase 5 rule`,
+    )
+    assert.match(
+      contract,
+      /\*\*The\s+review\s+pass\s+reported\s+clean\*\*[\s\S]{0,260}API-surface\s+check\s+has\s+also\s+run/i,
       `${dir}: the clean write must run the required API-surface check first`,
     )
     assert.match(
       contract,
-      /\*\*The\s+review\s+pass\s+capped\*\*[\s\S]{0,300}write\s*\n?\s*`sentinel\s+capped\s+<N>`\s+\*\*there\*\*/i,
+      /\*\*The\s+review\s+pass\s+capped\*\*[\s\S]{0,300}write\s*\n?\s*`verdict\s+--in\s+"\$REPORT_JSON"`\s+\*\*there\*\*/i,
       `${dir}: the capped outcome must write the verdict where the fix loop ends`,
     )
     assert.match(
@@ -11777,7 +11883,7 @@ test('BOS-1020: the drift note has a return channel to the orchestrator', () => 
     const comesBack = region(
       readSkill(RESIDENT_BODIES[mirror]),
       '**What comes back (thin, non-routing).**',
-      '**Classify from the run file only.**',
+      '**Classify from the run file only',
       `${RESIDENT_BODIES[mirror]} Step 6 returned-contract list`,
     )
     assert.match(
@@ -12233,5 +12339,26 @@ test('an allowance is a skip line — the four pinned sentences, and a curated e
         )
       }
     }
+  }
+})
+
+// BOS-1244 row 13. `validatePlanDescription` is config-first, and the two sibling citations
+// (`boss-plan/SKILL.md` and this core's `references/finalize-and-stop.md`) already spell the pair —
+// this was the last bare one, so the first call from the resident body was a coin flip between the
+// named swapped-argument error and the answer. Pinned on the ARGUMENT-ORDER TOKEN, not on the
+// sentence carrying it, so the step can be reworded freely.
+test('BOS-1244: every resident validatePlanDescription citation states its argument order', () => {
+  for (const skillPath of RESIDENT_BODY_SKILLS) {
+    const skill = fs.readFileSync(path.join(rootDir, skillPath), 'utf8')
+    const citations = [...skill.matchAll(/validatePlanDescription/g)]
+    assert.ok(citations.length > 0, `${skillPath} must still cite the validator`)
+    // Every occurrence is immediately followed by the argument list. A test asserting only that the
+    // token appears SOMEWHERE would stay green with a second bare citation added beside it.
+    const bare = [...skill.matchAll(/validatePlanDescription(?!\(config, description)/g)]
+    assert.deepEqual(
+      bare.map((m) => skill.slice(m.index, m.index + 80)),
+      [],
+      `${skillPath}: every validatePlanDescription citation must spell (config, description)`,
+    )
   }
 })

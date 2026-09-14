@@ -1408,6 +1408,12 @@ func TestBossRepairSkillPhase11ReadsExistingWorktreeDiff(t *testing.T) {
 // is what stops a round reusing what it already has); and the remote-ahead branch, which must NOT
 // push — that is the case where a naive "we're behind, force it up" reaction destroys peer work.
 //
+// The four `echo` verdicts this block once carried are deliberately NOT pinned any more: they were a
+// second, paraphrased rendering of the vocabulary bs-repair-derivations.mjs already owns and tests,
+// and the untested copy is the one an agent reads first. What is pinned instead is what only this
+// payload can carry — the two probes, the paste placeholder that makes `withheld` producible, and
+// the routing table's action per state.
+//
 // The cancelled-CI carve-out is pinned here too. Phase 2's stale-SHA cancellation deliberately
 // leaves a built-but-unpushed commit, so the branch IS ahead of origin in that one case and must be
 // reported rather than pushed. A push-owed rule written without that exception contradicts it, and
@@ -1445,22 +1451,31 @@ func TestBossRepairSkillPushOwedIsReDerived(t *testing.T) {
 			assertContains(t, phase3, "only as fresh as the last fetch")
 			assertContains(t, phase3, "may have already pushed the very commits this round produced")
 
-			// The remote-ahead branch does not push.
-			assertContains(t, phase3, "remote is ahead of this worktree — do not push")
-			assertContains(t, phase3, "re-derive the round from the new head")
+			// The remote-ahead branch does not push. The wording now belongs to the helper's own
+			// PUSH_STATE_LINES (tested there); what this payload must still carry is the probe that
+			// produces the state, and the routing table's action for it.
+			assertContains(t, phase3, `elif git merge-base --is-ancestor "$LOCAL" "$REMOTE"; then`)
+			assertContains(t, phase3, "Do not push; re-derive the round from the new head")
 
 			// FOUR arms, because "not equal" is three situations, not one. A two-arm `else` labels
 			// divergence — a peer rewrote the branch, so the two tips share only an older base — as
 			// routine unpushed work, and the round then either fails a rejected push or force-pushes
 			// over the writer the rest of this change exists to protect.
 			assertContains(t, phase3, `elif git merge-base --is-ancestor "$REMOTE" "$LOCAL"; then`)
-			assertContains(t, phase3, "diverged — a concurrent writer rewrote the branch")
+			assertContains(t, phase3, "a concurrent writer rewrote the branch")
 			assertContains(t, phase3, "do not push and do not force-push")
 			assertContains(t, phase3, "Collapsing the last two arms")
 
-			// The cancelled-CI carve-out is carried by the arm it modifies, not only by prose three
-			// lines below it: the fence is copy-pasteable, and its verdict is what gets acted on.
-			assertContains(t, phase3, "push owed — unless this commit was withheld by the stale-SHA cancellation")
+			// The cancelled-CI carve-out is carried by a PRODUCIBLE input, not only by prose below the
+			// fence. `withheld` has a constant, a rendered line, a reason, unit tests and a routing
+			// row, and every one of those stays green while nothing in the payload can ever set it —
+			// so pin the paste placeholder that can, and pin out the shell-variable read that cannot.
+			// `${WITHHELD:-false}` is the fail-OPEN shape: no shell state survives between tool calls,
+			// so it reads `false` on every round and routes a deliberately withheld commit to
+			// `push-owed`, whose row says "Push."
+			assertNotContains(t, phase3, "${WITHHELD:-false}")
+			assertContains(t, phase3, `WITHHELD="<true if the stale-SHA cancellation withheld this round's commit, else false>"`)
+			assertContains(t, phase3, `"$LOCAL" "$REMOTE" "$REMOTE_IS_ANCESTOR_OF_LOCAL" "$LOCAL_IS_ANCESTOR_OF_REMOTE" "$WITHHELD"`)
 
 			// The cancelled-CI carve-out survives: ahead of origin is expected there, and reported.
 			assertContains(t, phase3, "One case legitimately leaves the branch ahead of origin")
@@ -2969,5 +2984,212 @@ func TestBossRepairStrategyCAdjudicatesPerPremise(t *testing.T) {
 			// here would be a path that resolves nowhere at run time.
 			assertNotContains(t, strategyC, "boss-review/references/")
 		})
+	}
+}
+
+// TestBossRepairSkillDerivationsAreHelperOwned pins the four derivations whose answer previously
+// either never reached the Repair Summary or was never taken at all. Each one failed the same way:
+// the omission rendered byte-identically to the benign outcome, so a round that skipped the
+// derivation and a round that ran it and found nothing produced the same report.
+//
+// Pinned separately, because each site can regress without the others:
+//
+//   - The Repair Summary carries a **Push state** field. Without it the Phase 3 derivation has no
+//     report destination at all, which is the original defect — its four arms answered into a void.
+//   - **Problem Identified** is no longer the closed three-value literal. While it was, a must-fix
+//     finding recorded only in a review report matched none of the values, so the round printed
+//     "None", committed nothing, and burned itself — a real finding's fate decided by where it was
+//     written rather than by whether it was real.
+//   - Every site invokes the helper BY PATH out of the installed toolbox, since these sites run in a
+//     consuming repo with no repo-root skills-toolbox/ to reach back into.
+//   - Structured input travels by file path, never spliced into a shell literal. These payloads carry
+//     SHAs, record ids and finding text; an apostrophe in arbitrary prose ends a single-quoted
+//     argument early, and the only repair that looks available is editing the value being classified.
+//   - The routing tables are checked against the SHIPPED module's own frozen verdict sets rather than
+//     against a retyped list, so a sixth push state or a fifth problem source fails here instead of
+//     shipping a table with no row for it — the drift the escalation table pin already closes.
+func TestBossRepairSkillDerivationsAreHelperOwned(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			summary := sectionBetween(t, skill, "## Repair Summary", "## Terminal outcomes")
+			phase1 := sectionBetween(t, skill, "### Phase 1: Assess Current State", "### Phase 2: Execute Repair Strategy")
+			step12 := boldStepWindow(t, phase1, "**1.2 Identify Problem Type**", "**1.3 Identify Project Gate Commands**")
+			phase3 := sectionBetween(t, skill, "### Phase 3: Verify and Monitor", "## Repair Summary")
+			strategyA := sectionBetween(t, skill, "#### Strategy A: Merge Conflicts", "#### Strategy B:")
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			// The report destination the push-owed derivation never had.
+			assertContains(t, summary, "**Push state**")
+			assertContains(t, summary, "`bs-repair-derivations.mjs push-state`")
+			// Reported on EVERY round: a round that landed no commits is exactly the round where
+			// "nothing to push" and "forgot to push" render identically without this field.
+			assertContains(t, summary, "including one that landed no commits")
+
+			// The closed three-value list is gone, not merely supplemented — while it stood, a
+			// report-only finding could not be named in this field at all.
+			assertNotContains(t, skill, "[Merge conflict | Failing tests | Review feedback]")
+			assertContains(t, summary, "`bs-repair-derivations.mjs problem-sources`")
+
+			// The fourth problem source, and the rule that keeps `None` honest.
+			assertContains(t, step12, "**Report-only finding**")
+			assertContains(t, step12, "**`None` is unreportable while any source is open.**")
+			assertContains(t, step12, "counts as **present**")
+			// The three pre-existing categories are an addition, not a swap.
+			assertContains(t, step12, "**Merge Conflict**")
+			assertContains(t, step12, "**Failing Checks**")
+			assertContains(t, step12, "**Review Feedback**")
+
+			// Each site invokes the helper by the installed-toolbox path.
+			assertContains(t, phase3, `node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" push-state --in`)
+			assertContains(t, step12, `node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" problem-sources --in`)
+			assertContains(t, strategyC, `node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" residual-sink`)
+			assertContains(t, strategyC, `node "$BOSS_REPAIR_TOOLBOX/bs-repair-derivations.mjs" decline-reply --in`)
+
+			// Category (c) names the sink it previously left to be inferred at the point of use, and
+			// gates the reply on a record that already exists. Ordering is the whole fix: a reply is
+			// posted once and cannot be un-posted.
+			assertContains(t, strategyC, "**The sink, and the order: record first, reply second.**")
+			assertContains(t, strategyC, "an unbacked claim on a public PR")
+			// The degraded sink is a reported fact, never a silent substitution — this core installs
+			// into repositories that have no boss CLI at all.
+			assertContains(t, strategyC, "residual sink was **degraded**")
+			// And the refusal's remedy is to write the record, never to reword the reply until it
+			// stops claiming one — that loses the finding exactly as an unrecorded decline does.
+			assertContains(t, strategyC, "never edit the reply to stop claiming a record")
+
+			// Strategy A sizes the conflict before the rebase, and says why that is safe here.
+			assertContains(t, strategyA, `git merge-tree --write-tree --name-only "origin/$BASE_BRANCH" HEAD`)
+			assertContains(t, strategyA, "no index entry, no worktree file and no ref")
+			assertContains(t, strategyA, "does not touch the\n   # worktree at all")
+			// Fail-closed: a merge-tree that could not run is not "no conflicts".
+			assertContains(t, strategyA, "do not report it as none")
+			preflightAt := strings.Index(strategyA, "git merge-tree --write-tree --name-only")
+			rebaseAt := strings.Index(strategyA, `git rebase "origin/$BASE_BRANCH"`)
+			if preflightAt < 0 || rebaseAt < 0 || preflightAt > rebaseAt {
+				t.Fatalf("the conflict-sizing preflight must precede the rebase (preflight at %d, rebase at %d)", preflightAt, rebaseAt)
+			}
+
+			assertBossRepairDerivationCallsTakeInputByPath(t, name, skill)
+			assertBossRepairTableRoutesEveryModuleValue(t, name, phase3, "PUSH_STATES")
+			assertBossRepairTableRoutesEveryModuleValue(t, name, step12, "PROBLEM_SOURCES")
+		})
+	}
+}
+
+// assertBossRepairDerivationCallsTakeInputByPath keeps the shell-splicing sink out of the payload.
+// The contract is the POSITIVE form, and so is the check: every derivation invocation that takes
+// input takes it by path, as `--in "<path>"` immediately after the verb. Asserting only the
+// EXCLUSION of one quoting style (a single-quoted `'{`) was strictly weaker than the sentence above
+// it — a double-quoted literal, a heredoc, a command substitution or a bare literal all passed
+// green, and nothing required `--in` to be present at all. `residual-sink` is the one verb with a
+// meaningful no-input form (it detects the boss CLI itself), so it is exempt only when it takes no
+// arguments; given any, it must take them by path like the rest.
+//
+// The window is the invocation's OWN LINE. Bounding it at the next fence scanned arbitrarily far
+// ahead for a call in prose or a call before an unfenced tail, which both false-positives on
+// unrelated text and lets a splice on the following line read as part of this call's arguments.
+//
+// Fails closed — a payload with no invocation at all is an error, not a pass.
+func assertBossRepairDerivationCallsTakeInputByPath(t *testing.T, payload, skill string) {
+	t.Helper()
+
+	const call = `bs-repair-derivations.mjs" `
+	calls := 0
+	for offset := 0; ; {
+		i := strings.Index(skill[offset:], call)
+		if i < 0 {
+			break
+		}
+		calls++
+		args := skill[offset+i+len(call):]
+		if end := strings.IndexByte(args, '\n'); end >= 0 {
+			args = args[:end]
+		}
+		offset += i + len(call)
+
+		verb, rest, _ := strings.Cut(strings.TrimSpace(args), " ")
+		rest = strings.TrimSpace(rest)
+		if verb == "residual-sink" && rest == "" {
+			continue
+		}
+		if !strings.HasPrefix(rest, `--in "`) {
+			t.Errorf("%s: the bs-repair-derivations %q invocation does not take its input by path; arguments after the verb must begin `--in \"`, got %q", payload, verb, rest)
+			continue
+		}
+		// Belt and braces: a path argument cannot open a JSON literal in any quoting style.
+		for _, splice := range []string{"'{", "'[", `"{`, `"[`, "$(", "<<"} {
+			if strings.Contains(rest, splice) {
+				t.Errorf("%s: the bs-repair-derivations %q invocation splices %q into a shell argument instead of naming a path: %q", payload, verb, splice, rest)
+			}
+		}
+	}
+	// Four call sites: push-state, problem-sources, residual-sink, decline-reply.
+	if calls < 4 {
+		t.Errorf("%s: found %d bs-repair-derivations invocations, expected at least 4 (push-state, problem-sources, residual-sink, decline-reply)", payload, calls)
+	}
+}
+
+var bossRepairDerivationLiteralPattern = regexp.MustCompile(`(?m)^export const ([A-Z][A-Z0-9_]*) = '([^']*)'$`)
+
+// assertBossRepairTableRoutesEveryModuleValue checks a routing table against the SHIPPED module's own
+// frozen verdict set rather than against a list retyped here. A verdict the module can return but the
+// body has no row for is a verdict arriving at a body that does not know what to do with it — and
+// every other gate (including the shipped-toolbox check, which only proves the file is present)
+// stays green while that is true.
+func assertBossRepairTableRoutesEveryModuleValue(t *testing.T, payload, section, setName string) {
+	t.Helper()
+
+	module := bossRepairDerivationsModule(t, payload)
+	literals := map[string]string{}
+	for _, m := range bossRepairDerivationLiteralPattern.FindAllStringSubmatch(module, -1) {
+		literals[m[1]] = m[2]
+	}
+
+	list := regexp.MustCompile(`(?s)export const ` + setName + ` = Object\.freeze\(\[(.*?)\]\)`).FindStringSubmatch(module)
+	if list == nil {
+		t.Fatalf("%s: %s not found in the shipped derivations module", payload, setName)
+	}
+
+	values := 0
+	for _, constName := range regexp.MustCompile(`[A-Z][A-Z0-9_]*`).FindAllString(list[1], -1) {
+		token, ok := literals[constName]
+		if !ok {
+			t.Fatalf("%s: cannot resolve %s member %s to a string literal", payload, setName, constName)
+		}
+		values++
+		if !strings.Contains(section, "`"+token+"`") {
+			t.Errorf("%s: the routing table has no row for %s value %q, which the shipped module can return", payload, setName, token)
+		}
+	}
+	if values < 2 {
+		t.Fatalf("%s: parsed %d values from %s; the extraction is not working", payload, values, setName)
+	}
+}
+
+// bossRepairDerivationsModule reads bs-repair-derivations.mjs out of the named payload tree, keyed
+// the way bossRepairSkillPayloads keys the body: a table checked only against the embedded copy would
+// go green on a mirror `make copy-skills` has not refreshed, and the mirror is what the plugin
+// installs.
+func bossRepairDerivationsModule(t *testing.T, payload string) string {
+	t.Helper()
+
+	const rel = "toolbox/bs-repair-derivations.mjs"
+	switch payload {
+	case "embedded":
+		moduleBytes, err := SkillsFS.ReadFile("skills/boss-repair/" + rel)
+		if err != nil {
+			t.Fatalf("read embedded boss-repair %s: %v", rel, err)
+		}
+		return string(moduleBytes)
+	case "mirror":
+		mirrorRoot := filepath.Join(findRepoRoot(t), "plugins", "bossd-plugin-claude", "skilldata", "skills", "boss-repair")
+		moduleBytes, err := fs.ReadFile(os.DirFS(mirrorRoot), rel)
+		if err != nil {
+			t.Fatalf("read bossd-plugin-claude boss-repair %s under %s: %v", rel, mirrorRoot, err)
+		}
+		return string(moduleBytes)
+	default:
+		t.Fatalf("unknown boss-repair payload %q", payload)
+		return ""
 	}
 }

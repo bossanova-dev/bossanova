@@ -125,7 +125,18 @@ echo ""
 # below is unexpanded. Empty commits are intentionally skipped before any amend
 # attempt, so they never write a skip-report row.
 HELPER_SCRIPT="/tmp/add-pr-to-commit-$$.sh"
-PR_TAG_SKIP_REPORT="/tmp/add-pr-skips-$$.tsv"
+# A CALLER may name the skip report, and when it does the file is the caller's to read
+# and to remove. The tag-state re-derivation downstream grades this branch with the same
+# predicate this script uses, and when it finds a work commit untagged the only place the
+# REASON exists is this report — written by the rebase helper, and previously deleted on
+# exit before anything outside this process could read it. An unset variable keeps the
+# previous behaviour exactly: a private temp file, removed on exit.
+if [ -n "${PR_TAG_SKIP_REPORT:-}" ]; then
+  PR_TAG_SKIP_REPORT_OWNED=no
+else
+  PR_TAG_SKIP_REPORT="/tmp/add-pr-skips-$$.tsv"
+  PR_TAG_SKIP_REPORT_OWNED=yes
+fi
 export PR_TAG_SKIP_REPORT
 # Classify the range ONCE, here, and hand the answer to the helper through the
 # environment -- the only channel across the quoted heredoc boundary below. Keyed on
@@ -140,7 +151,11 @@ PR_TAG_EMPTY_SHAS=$(empty_commit_shas "$BASE_COMMIT") || {
 }
 export PR_TAG_EMPTY_SHAS
 cleanup_temp() {
-  rm -f "$PR_TAG_SKIP_REPORT"
+  # Only a report THIS script created is removed; a caller-supplied path is left for the
+  # caller, which is the whole point of letting one be supplied.
+  # An `if`, not `[ … ] && rm`: under `set -e` a false test makes that list non-zero and
+  # aborts the trap before the rest of the cleanup runs.
+  if [ "$PR_TAG_SKIP_REPORT_OWNED" = yes ]; then rm -f "$PR_TAG_SKIP_REPORT"; fi
   # Keep the helper if the rebase stopped part-way (a conflict when the branch carries a
   # merge from the base). `git rebase --continue` re-runs the --exec, and a helper deleted
   # underneath it degrades to a bare `warning: execution failed`, leaving every remaining

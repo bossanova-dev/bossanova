@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,12 +15,20 @@ import {
 
 const scriptPath = fileURLToPath(new URL('./bs-review-triage.mjs', import.meta.url))
 
-/** A well-formed finding, per the repo's reviewer findings contract. */
+/**
+ * A well-formed finding, per the repo's reviewer findings contract.
+ *
+ * The default `file` names a real repo-root-relative path, and the default `line`
+ * is 1, because `validateFinding` now resolves the finding's own coordinate: a
+ * placeholder like `src/foo.js` is precisely the fabricated citation the check
+ * exists to reject. Cases that run against a temporary repo root override `file`
+ * with a path written into that root.
+ */
 function finding(overrides = {}) {
   return {
     severity: 'Suggestion',
-    file: 'src/foo.js',
-    line: 10,
+    file: 'skills-toolbox/bs-review-triage.mjs',
+    line: 1,
     title: 'do the thing',
     detail: 'why it matters + suggested fix',
     lens: 'claude',
@@ -254,8 +262,8 @@ test('line: null and line: 12 are distinct keys', () => {
 
 test('different file or title never collapses into the same group', () => {
   const items = [
-    finding({ file: 'a.js', lens: 'claude' }),
-    finding({ file: 'b.js', lens: 'claude' }),
+    finding({ file: 'skills-toolbox/main-module.mjs', lens: 'claude' }),
+    finding({ file: 'skills-toolbox/gate-outcome.mjs', lens: 'claude' }),
     finding({ title: 'other title', lens: 'claude' }),
   ]
   const { pool } = triageFindings(items)
@@ -307,7 +315,7 @@ test('a group whose every occurrence has a blank detail is invalid, not promoted
     assert.equal(invalid[0].reason, 'blank detail on every occurrence of this finding')
     // The entry must still name the finding, or the ledger cannot route it back
     // to the reviewer that owes the explanation.
-    assert.equal(invalid[0].item.file, 'src/foo.js')
+    assert.equal(invalid[0].item.file, 'skills-toolbox/bs-review-triage.mjs')
     assert.equal(invalid[0].item.title, 'do the thing')
   }
 })
@@ -579,16 +587,19 @@ test('malformed and missing-file patches are invalid without crashing', () => {
   try {
     writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
     const cases = [
-      finding({ patch: { file: '', old_string: 'body', new_string: 'x' } }),
+      finding({ file: 'docs/review.md', patch: { file: '', old_string: 'body', new_string: 'x' } }),
       finding({
+        file: 'docs/review.md',
         title: 'non-string new',
         patch: { file: 'docs/review.md', old_string: 'body', new_string: 42 },
       }),
       finding({
+        file: 'docs/review.md',
         title: 'empty old',
         patch: { file: 'docs/review.md', old_string: '', new_string: 'x' },
       }),
       finding({
+        file: 'docs/review.md',
         title: 'missing file',
         patch: { file: 'docs/missing.md', old_string: 'body', new_string: 'x' },
       }),
@@ -1461,4 +1472,188 @@ test('CLI exits non-zero on an unknown subcommand', () => {
   const r = runCli(['bogus'])
   assert.notEqual(r.status, 0)
   assert.match(r.stderr, /usage/)
+})
+
+// ---------------------------------------------------------------------------
+// The finding's OWN coordinate. `validatePatch` resolves a path only for an
+// object patch, so before this a `patch: null` finding published a wholly
+// unresolved `file`/`line` — a fabricated citation reaching a public artefact
+// with nothing having asked whether it names anything.
+// ---------------------------------------------------------------------------
+
+test('a finding whose own file does not resolve is rejected even when its patch is null', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
+    const result = triageFindings(
+      [
+        finding({
+          severity: 'Critical',
+          file: 'docs/invented/review.md',
+          line: 1,
+          patch: null,
+          patchReason: 'The finding cites generated prose and needs a structural code fix.',
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.equal(result.mustFix.length, 0, 'an unresolvable coordinate must not reach must-fix')
+    assert.equal(result.pool.length, 0)
+    assert.equal(result.invalid.length, 1)
+    assert.match(result.invalid[0].reason, /^file does not resolve: docs\/invented\/review\.md/)
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('a finding with no patch key at all is still held to its own coordinate', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'src/real.js', 'one\ntwo\n')
+    const result = triageFindings(
+      [
+        finding({ severity: 'Warning', file: 'src/real.js', line: 2, title: 'resolves' }),
+        finding({ severity: 'Warning', file: 'src/real.js', line: 99, title: 'past the end' }),
+        finding({ severity: 'Warning', file: 'src/invented.js', line: 1, title: 'no such file' }),
+      ],
+      { repoRoot },
+    )
+    assert.deepEqual(
+      result.mustFix.map((entry) => entry.title),
+      ['resolves'],
+    )
+    assert.deepEqual(
+      result.invalid.map((entry) => entry.item.title),
+      ['past the end', 'no such file'],
+    )
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('a finding whose file escapes the repo root is unverifiable, so it is not published', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'src/real.js', 'one\n')
+    const result = triageFindings(
+      [finding({ severity: 'Critical', file: '../elsewhere/real.js', line: 1 })],
+      { repoRoot },
+    )
+    assert.equal(result.mustFix.length, 0)
+    assert.equal(result.pool.length, 0)
+    assert.match(result.invalid[0].reason, /escapes the repository root/)
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('a patch whose file is a symlink out of the repo is rejected, not silently applied', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  const outside = mkdtempSync(join(tmpdir(), 'bs-review-triage-outside-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
+    writeFileSync(join(outside, 'secret.txt'), 'body\n')
+    symlinkSync(join(outside, 'secret.txt'), join(repoRoot, 'linked.txt'))
+    // The patch branch used to run its OWN containment-and-existence stack: a lexical
+    // `isInside` and an `existsSync`, neither of which sees where the link points. The
+    // patch was accepted and its `old_string` matched against a file outside the tree.
+    // Routing both branches through the one resolver is what closes that.
+    const result = triageFindings(
+      [
+        finding({
+          file: 'docs/review.md',
+          line: 1,
+          patch: { file: 'linked.txt', old_string: 'body', new_string: 'x' },
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.equal(result.mustFix.length, 0)
+    assert.equal(result.invalid.length, 1)
+    assert.equal(result.invalid[0].reason, 'patch.file escapes repo root')
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('a patch whose file is a directory is rejected rather than thrown out of', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
+    // `existsSync` said yes and the read then threw EISDIR out of the validator, which
+    // is a crash rather than a verdict. The shared resolver reports it as unreadable.
+    const result = triageFindings(
+      [
+        finding({
+          file: 'docs/review.md',
+          line: 1,
+          patch: { file: 'docs', old_string: 'body', new_string: 'x' },
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.equal(result.invalid.length, 1)
+    assert.equal(result.invalid[0].reason, 'patch.file not found: docs')
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('BOS-1243: a patch naming the repo root itself is rejected, not thrown out of', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
+    // The boundary where the two old resolvers disagreed, and the one shape neither side
+    // had a test for. The deleted `isInside` returned TRUE for the root (`rel === ''`)
+    // while the shared `containedIn` returns false.
+    //
+    // MEASURED by running the branch-point code: passing `.` was never ACCEPTED there
+    // either. It cleared `isInside` and `existsSync` and then threw EISDIR uncaught out of
+    // `readFileSync` — a crash, not a verdict. So the shared resolver's rejection is a
+    // fail-closed improvement, and what this pins is that a root-naming patch yields a
+    // REASON rather than an exception.
+    const result = triageFindings(
+      [
+        finding({
+          file: 'docs/review.md',
+          line: 1,
+          patch: { file: '.', old_string: 'body', new_string: 'x' },
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.equal(result.mustFix.length, 0)
+    assert.equal(result.invalid.length, 1)
+    // The pinned contract string, byte-for-byte. It reads oddly for a path that IS the
+    // root rather than one outside it, but callers match on it; a more accurate wording
+    // would be a silent break, so the inaccuracy stays recorded here instead.
+    assert.equal(result.invalid[0].reason, 'patch.file escapes repo root')
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// The patch branch's own rejection reason is a CONTRACT: callers match on it, so
+// a reworded string is a silent break. Pinned byte-for-byte, separately from the
+// coordinate check above, which must not shadow or replace it.
+test('the patch-branch rejection reason is unchanged: `patch.file not found: <file>`', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
+    const result = triageFindings(
+      [
+        finding({
+          file: 'docs/review.md',
+          line: 1,
+          patch: { file: 'docs/missing.md', old_string: 'body', new_string: 'x' },
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.equal(result.invalid.length, 1)
+    assert.equal(result.invalid[0].reason, 'patch.file not found: docs/missing.md')
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
 })

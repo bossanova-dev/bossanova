@@ -227,9 +227,10 @@ type mergeErrorEnvelope struct {
 
 type mergeSuccessEnvelope struct {
 	Session struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
-		State string `json:"state"`
+		ID           string `json:"id"`
+		Title        string `json:"title"`
+		State        string `json:"state"`
+		StateSettled bool   `json:"state_settled"`
 	} `json:"session"`
 	PR *struct {
 		Number int32  `json:"number"`
@@ -364,17 +365,18 @@ func TestCLI_Merge_JSONCarriesPR(t *testing.T) {
 	}
 }
 
-// TestCLI_Merge_JSONStateIsDaemonValueVerbatim pins that session.state is the
-// daemon's own value and not a CLI-side assumption that a successful merge must
-// report MERGED.
+// TestCLI_Merge_JSONStateIsSettledNotPreMerge pins the state the envelope
+// reports. It is still not a CLI-side assumption that a successful merge must
+// say MERGED — the value is read back from the daemon — but it is the value
+// read AFTER the merge rather than the one the merge call happened to return.
 //
 // The distinction is load-bearing, not hypothetical: the daemon's MergeSession
 // handler reads the session before its own deferred display refresh applies the
 // Merged transition (services/bossd/internal/server/server.go), so a genuine
-// merge can answer with the pre-merge state. Asserting MERGED against the mock's
-// eager transition would only be agreeing with the fixture; driving the lagging
-// state is what can fail if the CLI ever starts synthesising the field.
-func TestCLI_Merge_JSONStateIsDaemonValueVerbatim(t *testing.T) {
+// merge can answer with the pre-merge state. The fixture drives exactly that —
+// the merge RESPONSE lags at READY_FOR_REVIEW while the stored session is
+// already MERGED — so a CLI that copied the response through would fail here.
+func TestCLI_Merge_JSONStateIsSettledNotPreMerge(t *testing.T) {
 	h := mergeHarness(t)
 	h.Daemon.SetMergeResponseState(pb.SessionState_SESSION_STATE_READY_FOR_REVIEW)
 
@@ -383,8 +385,16 @@ func TestCLI_Merge_JSONStateIsDaemonValueVerbatim(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q — a lagging state is still a successful merge", res.ExitCode, res.Stderr)
 	}
 	env := decodeMergeSuccess(t, res.Stdout)
-	if env.Session.State != "SESSION_STATE_READY_FOR_REVIEW" {
-		t.Errorf("session.state = %q, want the daemon's value SESSION_STATE_READY_FOR_REVIEW verbatim", env.Session.State)
+	if env.Session.State != "SESSION_STATE_MERGED" {
+		t.Errorf("session.state = %q, want the settled SESSION_STATE_MERGED, not the lagging merge response", env.Session.State)
+	}
+	if !env.Session.StateSettled {
+		t.Error("session.state_settled = false, want true — the post-merge re-read succeeded")
+	}
+	// Identity still comes from the merge response, which is authoritative
+	// about the merge it just performed.
+	if env.Session.ID != "sess-aaa-111" {
+		t.Errorf("session.id = %q", env.Session.ID)
 	}
 }
 

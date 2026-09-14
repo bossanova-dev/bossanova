@@ -701,8 +701,32 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
       `bs-repair-escalation.mjs must not leak into ${skill}`,
     )
   }
-  for (const files of Object.values(VENDOR_MAP)) {
-    assert.ok(files.includes('main-module.mjs'), 'every toolbox payload vendors main-module.mjs')
+  // Asserted BY NAME for each consuming core, and exclusively: bs-dispatch-claims.mjs is the
+  // single adjudicator of a dispatch report's checkable claims, invoked by path from boss-repair's
+  // Strategy C and boss-build's core spine and imported by boss-review's findings triage. An
+  // installed tree without it is a check that cannot RUN rather than one that disagrees, and
+  // shipping it to a core that never adjudicates a dispatch claim is payload no run reads.
+  // citation-coordinate.mjs comes with it because it resolves a cited path through the tree's one
+  // citation resolver instead of a second one; the import-closure test below is what keeps that
+  // pairing honest if the helper's imports change. The resolver is a module of its own so that
+  // reuse ships two kilobytes per core rather than plan-contract-guard.mjs's whole closure.
+  const claimAdjudicators = new Set(['boss-review', 'boss-build', 'boss-repair'])
+  for (const [skill, files] of Object.entries(VENDOR_MAP)) {
+    if (claimAdjudicators.has(skill)) {
+      assert.ok(
+        files.includes('bs-dispatch-claims.mjs'),
+        `${skill} must vendor bs-dispatch-claims.mjs`,
+      )
+      assert.ok(
+        files.includes('citation-coordinate.mjs'),
+        `${skill} must vendor the citation resolver bs-dispatch-claims.mjs imports`,
+      )
+    } else {
+      assert.ok(
+        !files.includes('bs-dispatch-claims.mjs'),
+        `bs-dispatch-claims.mjs must not leak into ${skill}`,
+      )
+    }
   }
 })
 

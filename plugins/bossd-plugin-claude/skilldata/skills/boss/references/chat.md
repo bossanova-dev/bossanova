@@ -78,6 +78,7 @@ Blocks until the chat identified by a session id or agent_session_id becomes idl
 
 **Flags:**
 
+- `--json` — Emit the outcome as a stable JSON schema, including the chat's liveness discriminators on a timeout, instead of the plain result text
 - `--timeout` — Maximum time to wait (e.g. 5m, 1h) (default: 30m0s)
 
 ```bash

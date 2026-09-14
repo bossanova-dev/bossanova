@@ -206,9 +206,10 @@ func TestDeliveryDeadline_InjectedOptsStillWin(t *testing.T) {
 		WithCommandFactory(neverReadyFactory().factory),
 		WithSessionStartReadyDeadline(90*time.Second),
 	)
+	const injectedDeadline = 50 * time.Millisecond
 	started := time.Now()
 	err := c.sendPlan(context.Background(), "boss-test-sess", "plan body", sendPlanOpts{
-		deadline:     50 * time.Millisecond,
+		deadline:     injectedDeadline,
 		pollInterval: 5 * time.Millisecond,
 	})
 	elapsed := time.Since(started)
@@ -218,7 +219,8 @@ func TestDeliveryDeadline_InjectedOptsStillWin(t *testing.T) {
 	if !strings.Contains(err.Error(), "within 50ms") {
 		t.Errorf("injected 50ms deadline not honoured: %v", err)
 	}
-	if elapsed > 5*time.Second {
+	// 100x the injected deadline, and far below the 90s client budget whose leak this catches.
+	if elapsed > 100*injectedDeadline {
 		t.Fatalf("injected 50ms deadline took %v — the client budget leaked into an explicit injection", elapsed)
 	}
 }

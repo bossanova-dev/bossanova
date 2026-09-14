@@ -1714,6 +1714,21 @@ how it was reached, and whether it produced a readable envelope. Report confiden
 consume dispatch records so a skipped or timed-out reviewer lowers confidence even when the remaining
 reviewers found no code issue.
 
+### Absent gate
+
+A named check that a comparable earlier run carried and the current run does not, so no verdict for it
+exists at all — distinct from one that ran and passed and from one that ran and failed. Inspecting the
+current run alone cannot tell a gate that vanished from one that is merely queued; only comparing the
+two runs' sets of checks separates them, and waiting resolves the queued case only.
+
+Two causes produce it, and they want opposite responses. Either the trigger event was lost, in which
+case the gate should have run and the remedy is to make it run; or the change genuinely falls outside
+the paths the gate declares an interest in, in which case the gate was right not to run and the earlier
+run's result still covers the change — a conclusion established by showing the change touches nothing
+the gate reads, never by waiting and never by re-running. Getting the cause wrong strands the work:
+treating a routing absence as a lost event sends a run to re-trigger a job that was correct to stay
+quiet, and where the gate offers no manual or request-driven trigger there is nothing to re-trigger.
+
 ### Vacuous gate
 
 A check that passes on the very values it exists to reject, so its verdict carries no information
@@ -1939,6 +1954,15 @@ altered the artifact, established before its exit code is read at all. The hazar
 where the mutation is matched against text, since a pattern can fail to match for reasons that
 have nothing to do with the guard — see **Prose pin**.
 
+A mutation of the wrong **kind** is the remaining gap, and it survives every check above: it alters
+the artifact, the probe reds, and the guard is still not proved. Deleting the guarded claim, or
+neutralising the marker that carries its polarity, only ever shows that the guard notices the claim
+is gone. Neither can show whether the guard would still pass on a claim that is present and says the
+opposite — the failure a matcher too permissive between its anchors actually admits. Where a guard
+matches text with any freedom between fixed points, the mutation that settles it is the
+**inversion**: rewrite the subject to mean the reverse while leaving every anchor the guard keys on
+exactly where it was, and require the probe to red on that.
+
 A guard that discovers its own corpus needs its matching logic extracted as a pure predicate,
 separate from the walk, or it offers no surface a falsification can reach: with the logic inlined,
 the only assertion available is that today's corpus is clean, and a clean corpus is indistinguishable
@@ -1986,6 +2010,18 @@ existed to forbid. A negative assertion inverts the trade, since there the wider
 superset and is the stronger one. A gate enforcing the rule therefore needs a marked, greppable
 exception for the deliberate exact gap, and the audit that reads those markers must match them the
 same way the gate does, or it reports a complete census that is not one.
+
+A gap has a second dimension the whitespace rule does not reach: how much text it will skip. Once a
+pin stops quoting a whole sentence and instead fixes two anchors with free text between them, that
+allowance is part of what the pin claims, not slack in how it is written — it is exactly the room
+available to insert words that reverse the sentence while leaving both anchors untouched. Generosity
+chosen by feel therefore buys retention and sells the claim, and the pin reads green over prose that
+now says the opposite. The allowance is derived rather than picked: wide enough for the phrasing the
+prose actually uses, and narrower than the shortest phrasing that would invert it. Restricting the
+gap so it cannot cross a sentence bounds where the match may reach and settles nothing about what
+may sit inside one sentence, which is where an inversion is written. Best is to need no allowance at
+all — where the rule is a relation between two named things, pinning the two in the order the
+relation imposes carries the direction structurally, and no width can invert it.
 
 Where pins are held to a counted baseline, the unit counted is the assertion **call site**, not the
 claim: several patterns looped through one assertion are credited as a single pin, so a baseline
@@ -2282,7 +2318,31 @@ ordering to whatever consumes it: where a surface truncates, the accounting belo
 multi-line payload, because a field rendered below the cut does not reach the person deciding. The
 same family reaches past a zero value: where the two opposite causes share a _message_ rather than a
 value — see **Transient classification** — the honest discriminator is again something outside the
-value that was rendered.
+value that was rendered. Where the value does distinguish its causes and the fault is which one the
+reader is shown first, see **Remedy ordering**.
+
+### Remedy ordering
+
+The rule that a diagnostic reporting one of several mutually exclusive causes orders its cases by the
+action the reader must then take, not by which condition is cheapest to evaluate or most convenient to
+express. Only the first matching case is reported, so ordering decides what the reader is told; a case
+that names a remedy incapable of resolving the observed state is worse than no diagnostic at all,
+because the reader performs it, observes no change, and re-reads the same instruction — for an
+unattended agent, a loop that looks like progress. It differs from **Diagnostic conflation** in what
+goes wrong: conflation is a value too small to hold its causes, while a misordered diagnostic holds
+them all and volunteers the wrong one.
+
+Two rules make an ordering stable. The case that cannot resolve on its own — where something is
+missing rather than merely unfinished or failing — is named ahead of the general condition it is an
+instance of, because waiting will never satisfy it. And each case is decided from one field's own
+account of itself rather than from a quantity derived across fields: a derived quantity can be
+satisfied by more than one state, so two cases keyed on derived quantities can trade places on
+incidental data and the ordering is then not actually fixed. A condition that is true in the ordinary
+case is disqualified from the first position however cheap it is to test, since it will shadow every
+real fault behind it. Where a named cause is introduced beside an older value it explains, and a
+surface renders both, the two are one judgement reported twice and owe an asserted equivalence — a
+**Relational guard** between them — evaluated over the states the producing code can actually build,
+never over hand-written examples, which can hold contradictions no code path emits.
 
 ### Finding provenance
 

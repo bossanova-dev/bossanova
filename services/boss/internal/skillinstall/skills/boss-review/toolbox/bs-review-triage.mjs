@@ -12,8 +12,10 @@
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve, relative } from 'node:path'
+import { verifyDispatchClaims } from './bs-dispatch-claims.mjs'
+import { resolveCitationCoordinate } from './citation-coordinate.mjs'
 import { isMainModule } from './main-module.mjs'
 import { validateResult } from './skill-extensions.mjs'
 
@@ -30,11 +32,6 @@ const PROSE_CLASS_EXTENSIONS = /\.(adoc|markdown|md|mdx|rst|txt)$/i
 
 function isRepoRelativePath(file) {
   return !isAbsolute(file) && !relative('', file).startsWith('..')
-}
-
-function isInside(root, file) {
-  const rel = relative(root, file)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
 function countOccurrences(text, needle) {
@@ -76,12 +73,22 @@ function validatePatch(item, { repoRoot = process.cwd() } = {}) {
   }
   if (typeof newString !== 'string') return { reason: 'patch.new_string missing or non-string' }
 
-  const root = resolve(repoRoot)
-  const path = resolve(root, file)
-  if (!isInside(root, path)) return { reason: 'patch.file escapes repo root' }
-  if (!existsSync(path)) return { reason: `patch.file not found: ${file}` }
+  // The SAME resolver the finding's own coordinate goes through, rather than a second
+  // containment-and-existence stack beside it — that divergence is the defect R1 names.
+  // The bytes the occurrence count below needs come back ON the result: reaching them
+  // instead through a variable an injected `readBody` assigns would be temporal coupling,
+  // since nothing in the resolver's contract promises that callback runs, runs once, or
+  // runs before an `ok` result. The file is still read exactly once.
+  const resolved = resolveCitationCoordinate(resolve(repoRoot), file, null)
+  // Both reasons are byte-identical to the pre-resolver strings: a caller matching on
+  // either is matching on a contract, and a silent rewording breaks it.
+  if (!resolved.ok) {
+    return resolved.code === 'escapes-root'
+      ? { reason: 'patch.file escapes repo root' }
+      : { reason: `patch.file not found: ${file}` }
+  }
 
-  const bytes = readFileSync(path, 'utf8')
+  const bytes = resolved.body
   const matches = countOccurrences(bytes, oldString)
   if (matches !== 1) return { reason: `patch.old_string matched ${matches} times in ${file}` }
   const start = bytes.indexOf(oldString)
@@ -116,6 +123,31 @@ function validateFinding(item, opts = {}) {
     return { reason: `unknown severity: ${String(severity)}` }
   if (line !== null && !Number.isInteger(line)) return { reason: 'line must be an integer or null' }
   if (typeof lens !== 'string' || lens.trim() === '') return { reason: 'missing or blank lens' }
+  // The finding's OWN coordinate is adjudicated here rather than only inside the
+  // patch branch. `validatePatch` resolves a path only for an OBJECT patch: a
+  // `patch: null` finding returns at the null-with-reason branch, and a finding
+  // with no `patch` key at all returns as narrative, so both used to publish a
+  // wholly unresolved `file`/`line`. One module adjudicates that claim — the same
+  // one a plan citation goes through — so a coordinate a plan body would reject
+  // cannot be accepted from a reviewer.
+  //
+  // The coordinate is handed over STRUCTURED: formatting `file` and `line` into one
+  // string for the adjudicator to re-split is a lossy round trip this caller has no
+  // reason to take, and `validatePatch` below now resolves through that same module.
+  //
+  // `git: null` because a path claim needs no git, and handing triage a runner
+  // would spawn a process per finding for an answer it never reads.
+  const [coordinate] = verifyDispatchClaims([{ kind: 'path', file, line }], {
+    repoRoot: opts.repoRoot ?? process.cwd(),
+    git: null,
+  })
+  // Anything short of `verified` fails closed. `refuted` is a fabricated
+  // coordinate; `unverifiable` (a path escaping the root, an unreadable root) is
+  // a coordinate this check has no authority over — and an unverifiable claim is
+  // never promoted to verified, so neither may be published as a finding.
+  if (coordinate.verdict !== 'verified') {
+    return { reason: `file does not resolve: ${coordinate.reason}` }
+  }
   return validatePatch(item, opts)
 }
 

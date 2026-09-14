@@ -721,14 +721,42 @@ export const PROSE_PIN_BASELINE = {
   // "snapshot-and-check procedure once per **dispatch**" pin, whose behaviour the retargeted test
   // asserts over the same region, and a reference pin whose prose was CORRECTED (it said "recover
   // it the way Step 5 does", which the move made false) and re-pointed at its true location.
-  'scripts/boss-build-skill.test.mjs': 830,
-  'scripts/boss-repair-skill.test.mjs': 13,
+  // 830 -> 835, two raises banked together: they landed on opposite sides of a rebase and the
+  // file now carries BOTH sets of pins, so the count is the sum rather than either raise alone.
+  // +3 with the derived-clean correction: the clean-write bullet now names the DERIVED verb rather
+  // than the evidence-free one, its condition must state BOTH blockers (the must-fix half alone is
+  // the rule that shipped a false green), and the classify block must route through the
+  // disposition helper instead of re-lifting `payload.provisional` into a shell variable it then
+  // consulted on one arm out of four. The counterpart negative — that the raw-payload read is gone
+  // — is asserted as a doesNotMatch, which this gate does not count.
+  // +2 for BOS-1251: the tag-state re-derivation moved onto the injector's own
+  // non-empty-work-commit predicate, and the claim-liveness reference stopped declaring the CLI
+  // transport unavoidably weaker. Both INVERTED prose the existing pins had made permanent, so
+  // those pins were re-aimed at the corrected rule rather than deleted — a net zero. The +2 is the
+  // pair with no helper to ask: the reference must name the three per-chat discriminators the
+  // daemon computes, and it must name BOTH transports that carry them. No function's return value
+  // encodes "this document tells a CLI-transport run to consult the per-chat signal"; the
+  // executable half — that the grader agrees with the injector — is asserted over the real module
+  // in the push-block gate, which is where the behaviour actually lives.
+  'scripts/boss-build-skill.test.mjs': 835,
+  // BOS-1243: 13 -> 14. The claim-adjudication pass gives an action per VERDICT but gave none
+  // for the CLI's fourth outcome, exit 2 — an operator error where nothing was adjudicated at
+  // all and an empty record list reads exactly like "nothing was refuted". The exit CODE itself
+  // is asserted behaviourally in skills-toolbox/bs-dispatch-claims.test.mjs; what only the
+  // document can carry is the ACTION it obliges, so one pin was added rather than two.
+  'scripts/boss-repair-skill.test.mjs': 14,
   // BOS-1213 lowered this from 194: the four regexes quoting §Caller deadline's budget numbers
   // became a numeric comparison against the helper's own constants, plus executable
   // admit-fix-round cases covering every verdict it can return.
   'scripts/boss-review-skill.test.mjs': 193,
   'scripts/boss-skill.test.mjs': 2,
-  'scripts/bs-epic-skill.test.mjs': 149,
+  // 149 -> 150: the wait-recipe pin split in two. It used to assert ONE sentence naming a
+  // "session cron" as the fallback wait mechanism — the sentence that was itself teaching
+  // drivers to register recurring cron jobs to monitor their children. It is now a pin on the
+  // mechanism (`in-session scheduled wake-up`) plus a pin on the prohibition (`never `boss
+  // cron``). The prohibition is the point of the change, so it is pinned separately: folding it
+  // back into the mechanism pin would let a future rewrite drop the rail while staying green.
+  'scripts/bs-epic-skill.test.mjs': 150,
   'scripts/bs-plan-ce-skill.test.mjs': 24,
   // BOS-1214: 308 -> 306. Two pins deleted with the byte mechanics they pinned — the
   // snapshot's trailing-newline shape and `renormalized bullets alone defeat byte-equality`.
@@ -740,16 +768,60 @@ export const PROSE_PIN_BASELINE = {
   // BOS-1214 (brief): 306 -> 305. The `command substitution strips trailing newline bytes`
   // pin went with the warning it pinned; the executable guard that the recipe never assigns
   // `descriptionSummary` through a capture is kept, because it asserts the recipe, not prose.
-  'scripts/bs-plan-skill.test.mjs': 305,
+  // BOS-1254: 305 -> 308. The subject of that change IS the contract prose — the brief required
+  // `descriptionSummary` inline while forbidding the drafter to return plan content — so the
+  // sentences are the artifact under repair and a pin over them is the only available evidence
+  // that the contradiction is gone. What CAN be asserted over a helper was: the by-reference
+  // union, its fail-closed resolution, and the contract check over the resolved bytes are all
+  // pinned in skills-toolbox/plan-run-guards.test.mjs, not here. The three kept here are the two
+  // the guard cannot see — Step 7 instructing the reference and Step 9 documenting the union —
+  // plus Phase 4's `cp` of the declared `description` artifact, which is a shell recipe rather
+  // than prose: it asserts what the orchestrator RUNS, the way the retained command-substitution
+  // guard below it does.
+  // BOS-1245 (review): 317 -> 318. Step 5 mandated `verify <signed-url>` while naming no
+  // operation that issues one, and described the only mode that does — `readPlanAttachment` in
+  // `format="url"` — in terms that steer a reader away from it, so the primary recipe read as
+  // unexecutable. The repaired prose IS the artifact under repair here: the operand's provenance
+  // lives in a skill reference doc, and no helper can assert what that document says, so a pin is
+  // the only available evidence that the source stays named. It pins the rule lead and the mode
+  // it names rather than the sentence around them.
+  // 318 -> 319, rebased onto the entry above: both raises landed independently on this same
+  // count and BOTH stand. One pin added, one retargeted, net +1. The dispatch-failure abort
+  // message was
+  // asserted twice — once at the verifier that emits it and once at a prose restatement above the
+  // fence — so the restatement was cut and its pin retargeted onto the emitter's own `${F}:`
+  // template. The +1 is the new pin that the verifier is HANDED `$DISPATCH_FAILURE` as that
+  // prefix, which is the half a template-only assertion cannot see: without it the emitter could
+  // interpolate anything and still match.
+  'scripts/bs-plan-skill.test.mjs': 319,
   'scripts/bs-record-notes-skill.test.mjs': 2,
   'scripts/bs-sweep-debt-skill.test.mjs': 32,
   'scripts/bs-sweep-mutation-skill.test.mjs': 32,
-  'scripts/bs-sweep-notes-skill.test.mjs': 77,
-  'scripts/bs-sweep-plan-skill.test.mjs': 17,
+  // 82 -> 87 (BOS-1253): the notes sweep's dry run previewed an agent-authored theme partition
+  // while the body invited an operator to review one before scheduling the write run — a promise
+  // the machinery cannot keep, since the partition is re-authored per run. The fix is prose in a
+  // Markdown instruction body with no runtime and therefore no helper to assert against; the five
+  // pins are the structural lead, the three clauses the acceptance criterion names, and the
+  // absence of the prerequisite framing that was removed.
+  'scripts/bs-sweep-notes-skill.test.mjs': 87,
+  // 17 -> 27 (BOS-1253): the plan sweep's all-unprioritized branch named no discriminator and its
+  // edge-case table restated the same unnamed judgement, and Phase 5 had no epic terminal outcome.
+  // All three sites are instruction Markdown an agent loads at execution time — there is no helper
+  // whose output could carry the rule instead. The pins key on the rule NAME
+  // (`durable-corruption-first`), the outcome TOKEN (`planned epic <PARENT-ID>`) and the roster
+  // fields, plus two absence pins that stop the replaced "most impactful" judgement from being
+  // supplemented rather than removed.
+  'scripts/bs-sweep-plan-skill.test.mjs': 27,
   'scripts/bs-sweep-prettify-skill.test.mjs': 7,
   'scripts/bs-sweep-releases-skill.test.mjs': 66,
   'scripts/bs-sweep-security-skill.test.mjs': 28,
-  'scripts/bs-sweep-tests-skill.test.mjs': 39,
+  // 39 -> 45 (BOS-1253): the kill-set gate reference admitted `scripts/` and the docs module on
+  // coverage-neutrality alone while naming an exact command only for Go and services/web, so a run
+  // reaching either area invented its instrument. The six pins are table ROWS and the metric
+  // keyword in references/kill-set-gate.md, asserted against both the source and the generated
+  // codex mirror. The rules had to land in the reference rather than the body because
+  // .claude/skills/bs-sweep-tests/SKILL.md sits exactly at its banked 26600-byte budget.
+  'scripts/bs-sweep-tests-skill.test.mjs': 45,
   'scripts/check-skill-node-fences.test.mjs': 2,
   'scripts/check-skill-shell.test.mjs': 21,
   'scripts/check-skill-symbols.test.mjs': 8,

@@ -80,6 +80,39 @@ const (
 	codeInvalidArgument = "INVALID_ARGUMENT"
 )
 
+// The stable `--json` SUCCESS-outcome vocabulary for `boss daemon restart`.
+//
+// A separate vocabulary from the error codes above, and for the same reason
+// they exist: a lifecycle command can succeed in several materially different
+// ways, and the difference — above all, whether the daemon is still supervised
+// — reached a driver only as prose on stdout. `code` is the discriminator that
+// survives the trip.
+const (
+	// outcomeDaemonRestarted is the ordinary supervised restart.
+	outcomeDaemonRestarted = "RESTARTED"
+	// outcomeDaemonRestartedStandalone / outcomeDaemonStartedStandalone are the
+	// standalone path: a daemon that was already running without a service
+	// manager is restarted in kind, or none was running and one was started.
+	// Both are supervised:false by construction, which is the state the host
+	// was already in — not a degradation.
+	outcomeDaemonRestartedStandalone = "RESTARTED_STANDALONE"
+	outcomeDaemonStartedStandalone   = "STARTED_STANDALONE"
+	// outcomeDaemonRestartedUnsupervised is the DEGRADED announced fallback: the
+	// service manager reported success and produced no socket, so the daemon
+	// was started directly to restore service and is no longer supervised.
+	// Distinct from every other outcome because the host LOST supervision it
+	// previously had, and a driver that cannot see that will believe the
+	// daemon is still managed.
+	outcomeDaemonRestartedUnsupervised = "RESTARTED_UNSUPERVISED"
+	// outcomeDaemonRestartedAfterFallback is the same fallback ending WELL: the
+	// follow-up start landed under the service manager after all, so
+	// supervision was kept. Separate from the plain RESTARTED because the first
+	// attempt still failed, which is worth surfacing, and separate from
+	// RESTARTED_UNSUPERVISED because nothing was lost — the supervision
+	// question is probed, never inferred from the fact that the fallback ran.
+	outcomeDaemonRestartedAfterFallback = "RESTARTED_AFTER_FALLBACK"
+)
+
 // daemonErrorTokens are sentinel tokens the daemon embeds in an error message
 // because the connect code alone cannot carry the distinction. A merge refused
 // for strategy incompatibility and a merge refused by the gate both travel as
@@ -191,6 +224,26 @@ func emitJSONFailure(cmd *cobra.Command, asJSON bool, err error) error {
 		return err
 	}
 	if emitErr := emitJSON(cmd, newJSONErrorEnvelope(err)); emitErr != nil {
+		// The envelope never reached stdout, so this error stays unmarked and
+		// the root path is free to try again.
+		return errors.Join(err, emitErr)
+	}
+	return &jsonReportedError{err: err}
+}
+
+// emitJSONReportedFailure writes v as the command's OWN machine-readable
+// envelope for a failure, then marks err as already reported so the root
+// backstop does not write a second object into a stream a driver parses as a
+// single value.
+//
+// It exists for the one shape the fixed jsonErrorEnvelope cannot express: a
+// failure whose discriminating facts are structured. `boss chat wait --json`'s
+// timeout is exactly that — the point of the envelope is the liveness fields
+// that explain WHY the wait never settled, and folding them into the error
+// message would put them back in prose a caller has to scrape. err is still
+// returned, so the exit status and the human stderr line are unchanged.
+func emitJSONReportedFailure(cmd *cobra.Command, v any, err error) error {
+	if emitErr := emitJSON(cmd, v); emitErr != nil {
 		// The envelope never reached stdout, so this error stays unmarked and
 		// the root path is free to try again.
 		return errors.Join(err, emitErr)

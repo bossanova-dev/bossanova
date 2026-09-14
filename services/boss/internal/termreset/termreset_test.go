@@ -168,9 +168,10 @@ func TestReadFullWithinBoundsAStalledRead(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close() //nolint:errcheck // test cleanup
 
+	const readTimeout = 20 * time.Millisecond
 	buf := make([]byte, 4)
 	start := time.Now()
-	err := readFullWithin(pr, buf, 20*time.Millisecond)
+	err := readFullWithin(pr, buf, readTimeout)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -179,7 +180,9 @@ func TestReadFullWithinBoundsAStalledRead(t *testing.T) {
 	if !strings.Contains(err.Error(), "stalled") {
 		t.Errorf("error %q does not name the stall", err)
 	}
-	if elapsed > 2*time.Second {
+	// 100x the read timeout, and unreachable for a reader that never delivers unless the bound
+	// itself failed to fire.
+	if elapsed > 100*readTimeout {
 		t.Errorf("readFullWithin took %s; want it bounded near 20ms", elapsed)
 	}
 }

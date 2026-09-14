@@ -184,13 +184,15 @@ test('probe: non-existent BOSS_CODEX_BIN → not_installed', async () => {
 test('probe: fake that sleeps past timeoutMs → error', async () => {
   const dir = makeTmpDir()
   try {
+    const timeoutMs = 300
     const bin = writeFakeBin(dir, 'codex', 'sleep 30')
     const t0 = Date.now()
-    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs: 300 })
+    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs })
     const elapsed = Date.now() - t0
     assert.equal(result, 'error')
-    // Should be significantly faster than the 30s sleep
-    assert.ok(elapsed < 5000, `probe took too long: ${elapsed}ms`)
+    // 16x the probe's own timeout, and two orders of magnitude below the 30s sleep the probe
+    // must not wait out, so the bound moves with the budget this test supplies.
+    assert.ok(elapsed < timeoutMs * 16, `probe took too long: ${elapsed}ms`)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -498,18 +500,22 @@ test('run: a slow diff.external driver cannot hang the bounded run', async () =>
     git(dir, ['config', 'diff.external', slowDiff])
 
     const bin = writeEchoArgvBin(dir)
+    const timeoutMs = 4000
     const t0 = Date.now()
     const result = await run({
       env: { BOSS_CODEX_BIN: bin },
       base,
       head,
       repo: dir,
-      timeoutMs: 4000,
+      timeoutMs,
     })
     const elapsed = Date.now() - t0
-    // --no-ext-diff ignores the slow driver entirely, so the real diff embeds
-    // fast and the whole run completes well under its deadline (no hang).
-    assert.ok(elapsed < 4000, `slow external diff hung the run: ${elapsed}ms`)
+    // Exactly the run's own timeout, and the tightness is the whole assertion. The pre-arm diff
+    // budget is `Math.min(effectiveTimeoutMs, DIFF_COLLECTION_BUDGET_MS)`, which at this timeoutMs
+    // IS timeoutMs — so a run that did honour the slow driver would be killed at ~timeoutMs and
+    // land just above this line, while any ceiling at or above 2x could not tell the two apart.
+    // The passing path embeds a fast internal diff and finishes in a fraction of that.
+    assert.ok(elapsed < timeoutMs, `slow external diff hung the run: ${elapsed}ms`)
     assert.equal(result.timedOut, false)
     assert.ok(
       result.output.includes('+SENTINEL-ADDED-LINE'),

@@ -25,6 +25,20 @@ import { TRACKER_STATE_ROLES } from './adapter-core.mjs'
 // the single source of truth later extraction tickets (and generalized skill
 // prose) consume — change the tracker, change this map.
 export function buildLinearOperationMap(mcpServer) {
+  // The single positional argument is the MCP SERVER NAME, a bare string. Anything else — an options
+  // object, above all, because every other helper in this tree takes one — interpolates into all
+  // fifteen template literals below and yields a perfectly well-formed map whose every tool name is
+  // `mcp__[object Object]__*`. Nothing here fails, nothing downstream inspects the names, and the
+  // misuse surfaces only much later as an unknown-tool error against the live tracker. `createLinearAdapter`
+  // already refuses a missing `trackerConfig.linear.mcpServer`; this closes the same hole for every
+  // direct caller of the builder.
+  if (typeof mcpServer !== 'string' || mcpServer.trim() === '') {
+    throw new Error(
+      `tracker/linear: buildLinearOperationMap(mcpServer) — expected the MCP server NAME as a non-empty string, got ${
+        mcpServer === null ? 'null' : typeof mcpServer
+      } ${JSON.stringify(mcpServer)}. A non-string interpolates into every tool name as mcp__[object Object]__*, which fails only at invocation against the tracker.`,
+    )
+  }
   return {
     selectPlanned: {
       tool: `mcp__${mcpServer}__list_issues`,
@@ -88,18 +102,31 @@ export function buildLinearOperationMap(mcpServer) {
         '{id, description} -> replace the issue description wholesale with bytes read from a ' +
         'file, so an already-gated body is never retyped into a tool argument',
     },
+    // `size` carries a UNIT, because the unit is the contract: it is the file's BYTE count,
+    // measured on the exact file about to be PUT. A character count, or a count taken from the
+    // buffer the file was built from, makes the signed upload fail for a reason the rejection
+    // never names.
     preparePlanAttachment: {
       tool: `mcp__${mcpServer}__prepare_attachment_upload`,
+      // The unit note sits AFTER the closing brace on purpose: `declaredOperationArgKeys` parses
+      // the leading `{...}` as the argument list, so a parenthetical inside it becomes a phantom
+      // argument no write plan can satisfy.
       summary:
-        '{issue, filename, contentType="text/markdown", size} -> signed upload request + assetUrl',
+        '{issue, filename, contentType="text/markdown", size} -> signed upload request + ' +
+        'assetUrl. `size` is the BYTE count measured on the exact file about to be PUT -- never ' +
+        'a character count and never a count taken from the buffer the file was built from.',
     },
     finalizePlanAttachment: {
       tool: `mcp__${mcpServer}__create_attachment_from_upload`,
       summary: '{issue, assetUrl, title} -> issue attachment',
     },
+    // The MODE is named, because one of the two returns no content at all: `format="url"` hands
+    // back a URL, so a read-back specified against it is unexecutable rather than merely weak.
     readPlanAttachment: {
       tool: `mcp__${mcpServer}__get_attachment`,
-      summary: '{id} -> attached Markdown text',
+      summary:
+        '{id, format="content"} -> attached Markdown text; format="url" returns a URL and NO ' +
+        "content, and an attachment record's own unsigned url is never a body source",
     },
     deletePlanAttachment: {
       tool: `mcp__${mcpServer}__delete_attachment`,

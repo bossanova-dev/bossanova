@@ -441,7 +441,9 @@ func TestDefaultSleepHonorsContextCancellation(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("attempts = %d, want 1", calls)
 	}
-	if elapsed > 200*time.Millisecond {
+	// Half the nominal first wait: a real timer that ignored the cancellation would sleep the
+	// whole of policy.Base, so this stays strictly below the broken behaviour it must catch.
+	if elapsed > policy.Base/2 {
 		t.Errorf("Do() took %s, want a near-immediate return: the real timer ignored the cancellation", elapsed)
 	}
 }
@@ -465,7 +467,9 @@ func TestDefaultSleepWaitsWithARealTimer(t *testing.T) {
 	if elapsed < time.Millisecond {
 		t.Errorf("Do() took %s, want at least the 1ms base wait", elapsed)
 	}
-	if elapsed > 500*time.Millisecond {
+	// 500x the 1ms base leaves room for a loaded host while still catching the failure this
+	// guards: a timer that waited seconds where it should have waited milliseconds.
+	if elapsed > 500*policy.Base {
 		t.Errorf("Do() took %s, far longer than the 1ms base wait", elapsed)
 	}
 }

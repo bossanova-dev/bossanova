@@ -32,10 +32,15 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import {
+  checkPlanContract,
   DYNAMIC_VIOLATION_CODE_PREFIXES,
   VIOLATION_CODES,
 } from '../skills-toolbox/plan-contract-guard.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
+import {
+  DEFAULT_CONFIG as GUARD_DEFAULT_CONFIG,
+  requiredPlanSections,
+} from '../skills-toolbox/skill-config.mjs'
 import { precedes, regionUntilNext } from './gate-region-lib.mjs'
 import { assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
 
@@ -460,10 +465,19 @@ test('post-sentinel re-verification covers all dispatch artifacts while retainin
       /child-plan/i,
       `${payload.name}: post-sentinel check must name child plan files`,
     )
+    // The abort message is pinned where it is EMITTED, not where it was restated. It lives in the
+    // artifact verifier, which receives `$DISPATCH_FAILURE` as `F` and interpolates it; the prose
+    // copy above the fence was a second spelling of the same string that could drift from it, and
+    // the budget it spent bought nothing a reader of the verifier does not already have.
     assert.match(
       headless,
-      /\$DISPATCH_FAILURE:\s+sentinel\s+ok\s+but\s+artifact\s+missing\/empty\s+or\s+wrong\s+path/,
-      `${payload.name}: widened check must retain the dispatch-failure abort-message shape`,
+      /\$\{F\}:\s+sentinel\s+ok\s+but\s+artifact\s+missing\/empty\s+or\s+wrong\s+path/,
+      `${payload.name}: the artifact verifier must retain the dispatch-failure abort-message shape`,
+    )
+    assert.match(
+      headless,
+      /"\$READ"\s+"\$PLAN_PATH"\s+"\$DISPATCH_FAILURE"/,
+      `${payload.name}: the verifier must be handed $DISPATCH_FAILURE as the prefix it emits`,
     )
     assert.match(
       headless,
@@ -1233,6 +1247,94 @@ test('Phase 4 deletes reporter-source scratch before every failed-gate exit (BOS
       `no failing gate may delete the drafted plan — the secret gate has already cleared it and the next attempt edits it in place: ${removal.trim()}`,
     )
   }
+})
+
+test('BOS-1245: the Step 7 `## Planning` template stamps no mutable estimate or priority', () => {
+  // Both values are resolved in Phase 4, AFTER these bytes are uploaded and byte-verified, so a
+  // stamped value the orchestrator resolves differently costs a delete plus a re-upload. Nothing
+  // parses them out of the body -- asserting their ABSENCE is what keeps the echo from returning.
+  const planning = regionUntilNext(
+    BRIEF,
+    '## Planning\n\n- Contract: v1',
+    '## Original notes',
+    'drafting-brief Step 7 `## Planning` template',
+  )
+  assert.equal(/^- Complexity:/m.test(planning), false, 'the template must not stamp an estimate')
+  assert.equal(/·\s*Priority:/.test(planning), false, 'the template must not stamp a priority')
+  assert.match(
+    planning,
+    /authoritative\s+estimate\s+and\s+priority[\s\S]{0,60}live\s+on\s+the\s+issue/,
+    'the template must say where the authoritative values live',
+  )
+  // Contract notation stays: these are not mutable metadata.
+  assert.match(planning, /- Contract: v1/)
+  assert.match(planning, /- Atomic-5:/)
+
+  // The plan-contract guard still accepts a description composed from the revised template.
+  const substituted = `## Planning\n\n${planning
+    .split('\n')
+    .filter((line) => line.startsWith('- '))
+    .map((line) =>
+      line.startsWith('- Atomic-5:') ? '' : line.replace(/<[^>]*>/g, 'yes').replace(/\s+$/, ''),
+    )
+    .filter((line) => line !== '')
+    .join('\n')}`
+  const description = requiredPlanSections(GUARD_DEFAULT_CONFIG)
+    .map((heading) =>
+      heading === '## Planning'
+        ? substituted
+        : heading === '## Key changes'
+          ? `${heading}\n\n- \`scripts/bs-plan-skill.test.mjs\`: the change area.`
+          : `${heading}\n\nSubstantive body prose for this section, long enough to be a real plan.`,
+    )
+    .join('\n\n')
+  assert.deepEqual(checkPlanContract({ description: `${description}\n` }).violations, [])
+})
+
+test('BOS-1245: plan-storage pins the measured size, the usage/PUT split and the digest read-back', () => {
+  // Behaviour-shaped pins: a rule name and the structural lead of each branch, not a transcribed
+  // sentence. Each one is a step whose absence let a transfer report a value the artifact never
+  // carried -- the size source, the retry scope, and what the read-back actually compares.
+  const flat = PLAN_STORAGE.replace(/\s+/g, ' ')
+  assert.match(
+    flat,
+    /\*\*`size`\s+is\s+a\s+BYTE\s+count\s+measured\s+on\s+the\s+exact\s+file\s+about\s+to\s+be\s+PUT\*\*[\s\S]{0,120}`wc\s+-c\s+/,
+    'step 1 must name a command that measures the byte size of the file being PUT',
+  )
+  assert.match(
+    flat,
+    /A\s+character\s+count\s+is\s+\*\*forbidden\*\*[\s\S]{0,400}buffer\s+used\s+to\s+build\s+the\s+file\*\*\s+is\s+forbidden/,
+    'step 1 must forbid BOTH wrong size sources: a character count and the build buffer',
+  )
+  assert.match(
+    flat,
+    /A\s+usage\s+exit\s+is\s+a\s+caller\s+error\s+to\s+correct,\s+never\s+a\s+PUT\s+failure\s+to\s+retry[\s\S]{0,900}non-2xx\s+PUT\s+only\s+—\s+a\s+PUT\s+that\s+\*\*reached\s+the\s+server\*\*/,
+    'steps 2-3 must separate a usage exit from a rejected PUT AND scope the re-prepare branch to the latter',
+  )
+  assert.match(
+    flat,
+    /in\s+the\s+mode\s+that\s+returns\s+content\*\*\s+\(`format="content"`\)[\s\S]{0,600}An\s+attachment\s+record's\s+own\s+`url`\s+field\s+is\s+never\s+a\s+body\s+source/,
+    'step 5 must name the content-returning mode AND forbid the unsigned attachment url',
+  )
+  assert.match(
+    flat,
+    /\*\*Compare\s+the\s+digest,\s+not\s+the\s+size\.\*\*[\s\S]{0,200}plan-attachment\.mjs"\s+verify/,
+    'step 5 must require the digest comparison against the local plan file',
+  )
+  // The digest command's operand has to come from somewhere. Step 5 mandated `verify <signed-url>`
+  // while naming no operation that issues one, and described the only mode that does in terms that
+  // steer a reader away from it -- so the primary recipe read as unexecutable and the fallback as
+  // the whole step. Pin the rule lead and the mode it names, not the sentence around them.
+  assert.match(
+    flat,
+    /signed\s+URL\s+has\s+exactly\s+one\s+source:\s+`readPlanAttachment`\s+in\s+its\s+`format="url"`\s+mode/,
+    'step 5 must name the operation that issues the signed URL its verify command takes',
+  )
+  assert.match(
+    flat,
+    /`keepJustFinalized: true`\*\*[\s\S]{0,700}\*\*The\s+selector\s+throws\s+rather\s+than\s+returning\s+an\s+empty\s+set\*\*[\s\S]{0,320}takes\s+the\s+SAFE\s+branch/,
+    'step 6 must carry the just-finalized declaration, the loud selector and its SAFE branch',
+  )
 })
 
 test('plan storage supersedes stale duplicate attachments only after verified read-back (BOS-773)', () => {
@@ -2203,16 +2305,45 @@ test('the brief Step 7 template carries a `## Proof harness analysis` block (adv
   )
 })
 
-test('the brief Step 7 recipe returns the assembled file, never a shell capture of it', () => {
+test('the brief Step 7 recipe returns the assembled file BY REFERENCE, never its bytes', () => {
+  // BOS-1254 updates this pin IN PLACE rather than deleting it. It used to require the drafter to
+  // return the assembled file's CONTENTS, which the same contract forbade three steps later and
+  // which the return channel corrupts anyway (it escapes `<`, `>` and `&` — the characters a
+  // stored description routinely carries, and the ones `--require-verbatim` later compares). The
+  // artifact is unchanged; only the channel is. The shell-capture half of the pin still stands,
+  // because a capture of the bytes is no more legal now than an inline copy of them.
   assert.match(
     BRIEF,
-    /Return\s+the\s+contents\s+of `"\$BODY"` as `descriptionSummary`/,
-    'the brief must tell the drafter to return the assembled file bytes',
+    /Return\s+the\s+path\s+of `"\$BODY"` as `descriptionSummary`/,
+    'the brief must tell the drafter to return the assembled file by reference',
+  )
+  assert.match(
+    BRIEF,
+    /descriptionSummary: \{path: "\.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>\.description\.md"\}[\s\S]{0,400}union\s+the\s+guard\s+accepts\s+in\s+two\s+forms[\s\S]{0,240}Send\s+the\s*\n?\s*reference/,
+    "Step 9's shape must show the by-reference form, document the union, and name the reference as the form to send",
   )
   assert.doesNotMatch(
     BRIEF,
     /^DESCRIPTION_SUMMARY="\$\(cat "\$BODY"\)"$/m,
     'the executable recipe must not assign descriptionSummary through command substitution',
+  )
+})
+
+test('BOS-1254: Phase 4 materialises image-guard-new.md from the description artifact', () => {
+  // R4. The defect this pins shut: the drafter composed the description as FILE BYTES, the
+  // orchestrator re-materialised it from a RETURNED STRING, and the gates therefore inspected a
+  // copy that had crossed a channel which escapes `<`, `>` and `&`. Assert the mechanism (a copy
+  // of the declared `description` artifact) and not merely the filename, so prose that still
+  // described re-emitting a returned string could not satisfy it.
+  assert.match(
+    SKILL,
+    /Materialise\s+\S*image-guard-new\.md`?\s+by\s+\*\*copying\s*\n?>?\s*the\s+`description`\s+artifact\s+`descriptionSummary`\s+names\*\*[\s\S]{0,80}never\s+from\s+a\s+returned\s*\n?>?\s*string/,
+    'Phase 4 must copy the description artifact rather than re-emit the returned string',
+  )
+  assert.match(
+    SKILL,
+    /^> BODY="\.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>\.description\.md"[\s\S]{0,200}^> cp "\$BODY" "\$NEW" \|\|/m,
+    'the Phase 4 recipe must copy the declared description artifact into the gated image-guard-new.md',
   )
 })
 
@@ -2814,7 +2945,12 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // for re-derivation — instead of prescribing one cause.
   // On a rebase this constant conflicts too; see the REBASE HAZARD note at RATCHET below for
   // how to resolve BOTH — this one is re-baselined above the new measurement, never set to it.
-  const PRE_SPLIT_BASELINE = 124025
+  // Carried 124463 -> 124493 on the rebase onto main, by exactly the +30 B main's own
+  // subject-area-token raise added -- NOT by anything this branch grew. The epic entry below set
+  // this to keep a 26-byte margin over the pin; main's independent raise landed inside it, so
+  // carrying by main's own delta restores that margin rather than widening it. A bulk regrow in
+  // one edit still reds.
+  const PRE_SPLIT_BASELINE = 124493
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -3136,7 +3272,45 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // skills-toolbox/plan-writeback-verify.mjs, next to the code it governs, because the resident
   // body needs the decision and not the argument for it. Banked rather than left as headroom so
   // the saving cannot be silently spent.
-  const RATCHET = 123047 // measured resident body, 2026-09-13
+  // Re-banked UP 123047 -> 123627 (+580) by BOS-1254, the first RAISE this ledger records, and the
+  // reason is below in `raise.justification` rather than only here. In short: Phase 4 stopped
+  // re-materialising `image-guard-new.md` from the returned `descriptionSummary` string and now
+  // copies the `description` scratch artifact instead, which is a MECHANISM the resident recipe has
+  // to carry — a `BODY=` line, a `cp` with its abort branch, and the one sentence saying why the
+  // source changed. That cannot move to a reference: the reader meets the copy inside this gate
+  // block, and a recipe whose source is documented elsewhere is a recipe that gets run with the old
+  // source. Growth was held to the mechanism by rewording rather than appending at the other four
+  // sites the field's contract is stated (Phase 2 step 3, step 4, and the two gate paragraphs).
+  // Re-banked UP 123627 -> 123657 (+30) by the pre-finalize subject-area gate. The 30 bytes are
+  // ONE token, `subject-areas-unresolved`, added to Phase 4's enumerated violation-code list plus
+  // the line break that keeps the list inside the prose width. That list is machine-checked against
+  // the guard's exported `VIOLATION_CODES`, so the growth is not optional prose: a code the list
+  // does not name reaches an operator as a stderr tag they cannot find, which is the failure the
+  // enumeration exists to prevent. Nothing else in the resident body moved -- the mechanics of the
+  // new check live in `skills-toolbox/plan-contract-guard.mjs` and its remedy is the guard's own
+  // message, which is why the raise is a token and not a paragraph.
+  // Re-banked UP 123657 -> 124029 (+372) by BOS-1246, chained onto the entry above rather than
+  // replacing it: both raises landed independently on this same constant and BOTH reasons stand.
+  // Phase 2 step 4 stopped re-deriving sentinel routing in shell (it never read
+  // `payload.provisional`, so a seeded or mid-flight sentinel routed as a settled verdict), and
+  // both `fix` dispatch-failure branches now probe before they remove. Held to the mechanism: the
+  // salvage ARGUMENT went to references/headless-drafting-brief.md, the probe collapsed from two
+  // inline shell blocks into one `guard-discard` verb whose non-zero exit IS the refusal, and the
+  // verifier error message restated above the fence was cut to a pointer.
+  // Re-banked UP 124029 -> 124467 (+438) by the review round, chained onto the entry above; the reason is below
+  // in `raise.justification`. In short: the read-before-discard probe the entry above bought was
+  // passed only `$PLAN_PATH`, and an epic outcome carries no `planPath` at all — its artifacts are
+  // the `childPlanPaths`/`epicSpecPaths`/`guardScratchPaths` manifests the artifact verifier
+  // twenty lines down already reads out of the same `$READ`. So on the one route with the most to
+  // lose, the probe found nothing, authorised the discard, and the `rm -rf` two lines later
+  // destroyed every completed child plan and the epic spec unread. The bytes are the
+  // manifest-to-argv marshalling (one `set --` seed and one `while IFS= read` over an explicit
+  // newline-delimited `jq` list — zsh does not word-split an unquoted parameter expansion, so the
+  // delimiter has to be explicit) plus its two-line reason. Unlike the two raises above,
+  // PRE_SPLIT_BASELINE IS carried, 124025 -> 124463: the pin now sits above the old baseline, so
+  // carrying it preserves the 26-byte guard margin instead of deleting the bound outright. The
+  // margin stays deliberately thin so a bulk regrow in one edit still reds.
+  const RATCHET = 124467 // measured resident body, 2026-09-14
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -3157,6 +3331,44 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
       // stale sentence parked here would satisfy the next raise without anybody having
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 123354,
+      justification:
+        'The plan-contract gate gained `subject-areas-unresolved`, which raises the arealess / ' +
+        'unresolved `## Key changes` fact BEFORE the attachment finalize instead of after it — ' +
+        'the post-finalize dependency scan raised the same fact, and acting on its remedy meant ' +
+        'rewriting bytes step 1 had already uploaded and byte-verified. Phase 4 enumerates every ' +
+        'exported violation code and that enumeration is machine-checked, so naming the new code ' +
+        'there is mandatory rather than discretionary prose. The growth is exactly the token and ' +
+        'the wrap it forces (+30 B); the check itself, its two faults and their differing ' +
+        'remedies all live in the guard and reach the reader through the guard’s own message. ' +
+        'The read-before-discard probe bought by the previous entry was passed only ' +
+        '`$PLAN_PATH`, and an epic outcome declares no `planPath` — its artifacts are the ' +
+        '`childPlanPaths`/`epicSpecPaths`/`guardScratchPaths` manifests. The probe therefore ' +
+        'found nothing on the epic route, authorised the discard, and the `rm -rf` below it ' +
+        'destroyed completed child plans and the epic spec unread: the exact loss class the ' +
+        'probe exists to close, left open where it costs most. The +438 B is the marshalling ' +
+        'that turns those declared manifests into `guard-discard` arguments, plus the two-line ' +
+        'reason above it. Resident for the same cause as the entry it repairs — the guard runs ' +
+        'inline in the abort path and can only probe paths the shell standing there holds. Held ' +
+        'to +438 by reading the manifests out of the `$READ` the block already has (no second ' +
+        'sentinel read) and by reusing the existing `guard-discard` verb rather than adding a ' +
+        'second probe call. Earlier entry: ' +
+        'Phase 2 step 4 re-derived sentinel routing in shell and never read `payload.provisional`, ' +
+        'so a seeded or mid-flight sentinel routed as a settled verdict; and both dispatch-failure ' +
+        'branches removed the run scratch before anything had read the plan the dead dispatch may ' +
+        'already have finished. The +372 B buys the `disposition` call that owns the first, and ' +
+        'one `guard-discard` line ahead of each of the two removals for the second. Resident by ' +
+        'necessity — an abort path runs the shell it is standing in, and a removal whose guard ' +
+        'lives in a reference is a removal that runs unguarded. Everything that COULD move did: ' +
+        'the salvage argument is in references/headless-drafting-brief.md, the probe is one helper ' +
+        'verb whose non-zero exit is the refusal rather than two inline `if` blocks, and the ' +
+        'verifier error message restated above the fence was cut to a pointer. Earlier entry: ' +
+        'BOS-1254 gave `descriptionSummary` a by-reference channel, and R4 moved Phase 4s ' +
+        '`image-guard-new.md` from the returned string to a copy of the on-disk `description` ' +
+        'artifact. The bytes the image-parity, contract and write-back gates inspect are now ' +
+        'provably the bytes the drafter composed, which costs a `BODY=` line and a guarded `cp` ' +
+        'in the resident gate recipe — the one place a reader decides what those gates read. The ' +
+        'four prose restatements of the field contract were REWORDED in place, not appended to, ' +
+        'so the growth is the mechanism and nothing else.',
     },
     residual:
       'the references/ files the body routes to, and whether the resident prose is worth its ' +

@@ -285,6 +285,10 @@ type MockDaemon struct {
 	chatStatusesErrorCode connect.Code
 	chatStatusesErrorMsg  string
 
+	// chatTranscript, when non-nil, is the response GetChatTranscript serves;
+	// nil keeps the RPC answering Unimplemented.
+	chatTranscript *pb.GetChatTranscriptResponse
+
 	// mergeSessionCalls records the id of every MergeSession request. This is
 	// what lets a test prove a declined confirmation issued NO merge RPC —
 	// asserting only on stdout would pass even if the merge had gone through.
@@ -2100,8 +2104,23 @@ func (m *MockDaemon) WakeChat(context.Context, *connect.Request[pb.WakeChatReque
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+// SetChatTranscript seeds the response GetChatTranscript serves. Until it is
+// called the RPC keeps answering Unimplemented, which is what every test that
+// does not care about transcripts already relies on.
+func (m *MockDaemon) SetChatTranscript(resp *pb.GetChatTranscriptResponse) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chatTranscript = resp
+}
+
 func (m *MockDaemon) GetChatTranscript(context.Context, *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+	m.mu.Lock()
+	resp := m.chatTranscript
+	m.mu.Unlock()
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (m *MockDaemon) DescribeChatLaunch(context.Context, *connect.Request[pb.DescribeChatLaunchRequest]) (*connect.Response[pb.DescribeChatLaunchResponse], error) {

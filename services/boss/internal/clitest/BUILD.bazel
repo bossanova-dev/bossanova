@@ -19,6 +19,7 @@ go_test(
         "broadcast_test.go",
         "callback_test.go",
         "chat_new_test.go",
+        "chat_wait_test.go",
         "chats_test.go",
         "cron_test.go",
         "daemon_install_test.go",

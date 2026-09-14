@@ -277,6 +277,67 @@ export function diffCheckSets({ head = null, prior = null } = {}) {
   }
 }
 
+// assertOptions is the shape guard for the two exports below that take it — `classifyChecks` and
+// `mergeStateVerdict`. It is NOT applied to every destructured-options export in this module:
+// `diffCheckSets` and `runLiveness` are deliberately unguarded, because neither has the sibling
+// affordance described below that makes the wrong call look right. Stated narrowly on purpose — a
+// claim of module-wide coverage would have a future export inherit a guard it never received. A
+// helper handed
+// the wrong argument SHAPE must not answer anyway: a positional array destructures to all-defaults
+// and returns a well-formed `no-checks`/`unknown` verdict for an all-green PR, and the caller acts on
+// it. The sibling `contextNames(norm)` in the same expression DOES accept the bare array, which is
+// exactly what makes the wrong call look right at the call site.
+//
+// `undefined` stays legal: `classifyChecks()` with no argument is the documented all-defaults call
+// and every field is optional. What is refused is a non-object, and an object carrying none of the
+// keys the function reads — which cannot carry the information the function needs.
+//
+// Message form is `<module>: <fn>(<expected shape>) — <what was actually passed>`, matching
+// `skill-config.mjs`'s `assertConfigFirst`. That guard is a hand-synced idiom rather than a shared
+// import on purpose: a new shared file would have to be added to every `VENDOR_MAP` entry whose
+// skill ships an importer, and a missed entry breaks import resolution inside an installed toolbox.
+function describeArgument(value) {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return `an array of ${value.length} item(s)`
+  if (typeof value !== 'object') return `a ${typeof value}`
+  const keys = Object.keys(value)
+  return keys.length === 0 ? 'an empty object' : `an object with keys ${keys.join(', ')}`
+}
+
+function assertOptions(value, fn, expectedKeys) {
+  if (value === undefined) return
+  const shape = `{${expectedKeys.join(', ')}}`
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(
+      `pr-check-state: ${fn}(${shape}) — expected a single options object, got ${describeArgument(value)}`,
+    )
+  }
+  if (!expectedKeys.some((key) => key in value)) {
+    throw new Error(
+      `pr-check-state: ${fn}(${shape}) — the options object carries none of those keys; got ${describeArgument(value)}`,
+    )
+  }
+}
+
+const CLASSIFY_CHECKS_KEYS = Object.freeze([
+  'headSHA',
+  'observedSHA',
+  'rollup',
+  'buckets',
+  'checkRuns',
+  'priorContexts',
+  'readError',
+  'acceptNoGateRan',
+])
+
+const MERGE_STATE_KEYS = Object.freeze([
+  'mergeState',
+  'mergeStateStatus',
+  'checkVerdict',
+  'unresolvedThreads',
+  'readiedThisRun',
+])
+
 // classifyChecks is the aggregate verdict. It mirrors the Go `EvaluateChecks` switch and adds the
 // two discriminators the agent side needs and the daemon does not: the absent-gate arm, and the
 // null-shaped reconcile that happens before `unclassified` can be counted.
@@ -290,16 +351,18 @@ export function diffCheckSets({ head = null, prior = null } = {}) {
 //   priorContexts  the prior SHA's payload, or a bare array of its context names
 //   readError      any non-null value means the read failed; the verdict is `unreadable`
 //   acceptNoGateRan  the caller explicitly accepts a set in which nothing ran
-export function classifyChecks({
-  headSHA = '',
-  observedSHA = '',
-  rollup = null,
-  buckets = null,
-  checkRuns = null,
-  priorContexts = null,
-  readError = null,
-  acceptNoGateRan = false,
-} = {}) {
+export function classifyChecks(options) {
+  assertOptions(options, 'classifyChecks', CLASSIFY_CHECKS_KEYS)
+  const {
+    headSHA = '',
+    observedSHA = '',
+    rollup = null,
+    buckets = null,
+    checkRuns = null,
+    priorContexts = null,
+    readError = null,
+    acceptNoGateRan = false,
+  } = options ?? {}
   const merged = mergeEntries([
     ...normalizeRollup(rollup),
     ...normalizeCheckRuns(checkRuns),
@@ -383,6 +446,60 @@ export function provesGreen(verdict) {
   return isGreen(verdict) && verdict.passed > 0 && verdict.priorKnown === true
 }
 
+// Why `provesGreen` is false, as a named token. The bare boolean collapsed two different situations
+// with two different remedies into one `false`: "no prior SHA was recorded, so completeness was never
+// established" is fixed by recording one, while "the head set is missing a gate the prior SHA
+// carried" never resolves by waiting and needs the absent job re-triggered. A caller reading only the
+// boolean cannot tell them apart and has no way to pick.
+//
+// ADDITIVE ONLY. `provesGreen`'s boolean is deliberately left exactly as it was — this function
+// reports on a verdict, it does not participate in computing one.
+export const PROVES_GREEN_REASONS = Object.freeze({
+  OK: 'ok',
+  NO_PRIOR_SHA: 'no-prior-sha',
+  INCOMPLETE_HEAD_SET: 'incomplete-head-set',
+  NOT_GREEN: 'not-green',
+  NO_GATE_RAN: 'no-gate-ran',
+})
+
+export function provesGreenReason(verdict) {
+  if (verdict == null || typeof verdict !== 'object') return PROVES_GREEN_REASONS.NOT_GREEN
+  // Ordered by the remedy the caller must actually perform, and each rung reads ONE field's own
+  // value rather than reconstructing a state from a pair:
+  //
+  //   1. `reason === 'absent-gate'` — the verdict's own account of why it is not green is a job the
+  //      head set is missing. That is the one cause that never resolves by waiting, so it is named
+  //      ahead of the generic non-greenness it is an instance of.
+  //   2. Not green for any other reason — a failure, a pending gate, an unreadable read. The remedy
+  //      is that failure, and this rung sits ahead of `NO_PRIOR_SHA` deliberately: the shipped
+  //      recipes pass `--prior` into a fresh mktemp dir, so `priorKnown:false` is the ordinary
+  //      first-push shape, and reporting red CI as "record a prior SHA" named a remedy that cannot
+  //      help while the actual failure went unreported.
+  //   3. Only a set with nothing else wrong with it is merely short of a completeness claim.
+  //
+  // Deciding rung 1 on `reason` rather than on `absent.length > 0` is what keeps rungs 1 and 2 from
+  // trading places: a FAILING set can carry a non-empty `absent` too (measured), and reporting that
+  // as an incomplete head set would send the caller to re-trigger a missing job while a gate it
+  // already ran was red.
+  if (verdict.reason === 'absent-gate') return PROVES_GREEN_REASONS.INCOMPLETE_HEAD_SET
+  if (!isGreen(verdict)) return PROVES_GREEN_REASONS.NOT_GREEN
+  if (verdict.priorKnown !== true) return PROVES_GREEN_REASONS.NO_PRIOR_SHA
+  if (!(verdict.passed > 0)) return PROVES_GREEN_REASONS.NO_GATE_RAN
+  return PROVES_GREEN_REASONS.OK
+}
+
+// The boolean and the reason are one predicate reported two ways, and `main()` prints BOTH onto the
+// same JSON line — so `provesGreen(v) === (provesGreenReason(v) === OK)` has to hold, or that line
+// carries `provesGreen:true` beside a named failure reason: this ticket's own misleading-verdict
+// class, arriving inside the helper added to end it. Exported so the suite asserts it over the
+// verdicts `classifyChecks` actually produces, instead of leaving the invariant as a comment nothing
+// checks. Scoped to those: a hand-built object may hold a self-contradictory pair (`state:'green'`
+// with `reason:'absent-gate'`) that no code path here can build, and the two answer it differently
+// by construction.
+export function provesGreenAgrees(verdict) {
+  return provesGreen(verdict) === (provesGreenReason(verdict) === PROVES_GREEN_REASONS.OK)
+}
+
 const DIRTY_MERGE_STATES = new Set(['DIRTY', 'CONFLICTING'])
 const UNSETTLED_MERGE_STATES = new Set(['BLOCKED', 'BEHIND', 'HAS_HOOKS', 'DRAFT'])
 
@@ -392,13 +509,24 @@ const UNSETTLED_MERGE_STATES = new Set(['BLOCKED', 'BEHIND', 'HAS_HOOKS', 'DRAFT
 // identical to real red CI and is not — including the `UNSTABLE` a run induces by calling
 // `gh pr ready` itself, which starts the non-draft-only advisory bot on a branch that has not
 // changed (`readiedThisRun`).
-export function mergeStateVerdict({
-  mergeState = '',
-  checkVerdict = null,
-  unresolvedThreads = 0,
-  readiedThisRun = false,
-} = {}) {
-  const state = upper(mergeState)
+export function mergeStateVerdict(options) {
+  assertOptions(options, 'mergeStateVerdict', MERGE_STATE_KEYS)
+  const {
+    mergeState = '',
+    // `mergeStateStatus` is the field name `gh pr view --json mergeable,mergeStateStatus` actually
+    // returns, and handing that object straight in is the obvious call. It used to destructure to
+    // `mergeState: ''` and report `{state:unknown, reason:unreadable}` — a verdict, not an error, so
+    // only the `merge-state` CLI subcommand was really callable. Accepting the gh spelling as an
+    // alias makes the obvious call CORRECT rather than merely failing better; `assertOptions` above
+    // is what still refuses an object carrying NEITHER key.
+    mergeStateStatus = undefined,
+    checkVerdict = null,
+    unresolvedThreads = 0,
+    readiedThisRun = false,
+  } = options ?? {}
+  const state = upper(
+    mergeState === '' && mergeStateStatus !== undefined ? mergeStateStatus : mergeState,
+  )
   const red = (reason) => ({
     blocking: true,
     state: CHECK_STATES.FAILING,
@@ -536,9 +664,30 @@ function parseFlags(argv) {
   return flags
 }
 
+// The flags are documented as a PATH or `-` for stdin. Handing one inline JSON instead is the
+// natural mistake, and it used to produce two different wrong answers from the same wrong call: a
+// short payload was swallowed as ENOENT → null → `no-checks`/exit 0 (an agent reads that as "the
+// gates are not ready yet"), while a long one threw a raw ENAMETOOLONG straight past the ENOENT
+// guard. Neither named the mistake. Inline JSON is now simply accepted, and every OTHER unreadable
+// value raises naming the path-or-`-` contract.
+const PAYLOAD_SHAPE = '<path>|- (stdin)|inline JSON'
+
 function readPayload(flags, name) {
   const value = flags[name]
   if (value === undefined || value === true || value === '') return null
+  // Inline arm: a value whose first non-space character opens a JSON array or object was never a
+  // path. Decided by the leading character rather than by a failed stat, so it holds for a payload
+  // far past the filesystem's name-length limit too.
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      return JSON.parse(trimmed)
+    } catch (err) {
+      throw new Error(
+        `pr-check-state: --${name} (${PAYLOAD_SHAPE}) — inline JSON payload is malformed: ${err?.message ?? err}`,
+      )
+    }
+  }
   let raw
   try {
     raw = value === '-' ? readFileSync(0, 'utf8') : readFileSync(value, 'utf8')
@@ -547,11 +696,17 @@ function readPayload(flags, name) {
     // all. Degrading to null keeps the documented fail-closed reading — a missing --prior reports
     // priorKnown:false / provesGreen:false, a missing --checks reports no-checks/unknown — and never
     // reports green. The miss goes to stderr so a mistyped path stays visible without corrupting the
-    // single JSON line on stdout.
-    if (err?.code !== 'ENOENT') throw err
-    process.stderr.write(`pr-check-state: --${name} payload not found: ${value}
-`)
-    return null
+    // single JSON line on stdout. This arm is deliberately NARROW: it covers a path that is simply
+    // not there (the shipped recipes pass --prior unconditionally into a fresh mktemp dir), and
+    // nothing else. Every other read failure — ENAMETOOLONG, EISDIR, EACCES — is a value that is not
+    // a usable path at all, and raises by name instead of reaching a verdict.
+    if (err?.code === 'ENOENT') {
+      process.stderr.write(`pr-check-state: --${name} payload not found: ${value}\n`)
+      return null
+    }
+    throw new Error(
+      `pr-check-state: --${name} (${PAYLOAD_SHAPE}) — cannot read payload ${JSON.stringify(value)}: ${err?.code ?? err?.message ?? err}`,
+    )
   }
   if (raw.trim() === '') return null
   return JSON.parse(raw)
@@ -572,7 +727,12 @@ export function main(argv) {
       readError: typeof flags['read-error'] === 'string' ? flags['read-error'] : null,
       acceptNoGateRan: flags['accept-no-gate-ran'] === true,
     })
-    return { ...verdict, green: isGreen(verdict), provesGreen: provesGreen(verdict) }
+    return {
+      ...verdict,
+      green: isGreen(verdict),
+      provesGreen: provesGreen(verdict),
+      provesGreenReason: provesGreenReason(verdict),
+    }
   }
 
   if (cmd === 'merge-state') {

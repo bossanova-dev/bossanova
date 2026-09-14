@@ -150,9 +150,11 @@ Before running `claim-verdict`, gather claim-owner liveness evidence from activi
 
 The worktree lock is per-worktree, so `ACQUIRED` says nothing about a peer in another worktree. A `tracker_id`-filtered session list also is not a detector: it misses a peer that linked itself to a different issue, such as the epic parent instead of this child ticket.
 
-Scan recent sessions in this repository for claim owners with activity inside the staleness window. On the CLI transport, use `boss ls --json` and read `last_agent_activity_at` with `tracker_id` only as context for explaining mismatches, never as the filter that decides whether a peer exists. Where the MCP transport is available, also consult `get_chat_statuses` and its richer `last_output_at` signal.
+Scan recent sessions in this repository for claim owners with activity inside the staleness window. On the CLI transport, use `boss ls --json` and read `last_agent_activity_at` with `tracker_id` only as context for explaining mismatches, never as the filter that decides whether a peer exists.
 
-Transport-preflight consequence: when the run is on the CLI transport, the richer chat-status signal is unavailable. Proceed on the session scan alone rather than skipping the check.
+A session-level timestamp alone cannot separate a working peer from a frozen one: every session working at the moment of the fetch reports the same `last_agent_activity_at`, so one sample is not evidence of progress. The per-chat discriminators are `spinner_present`, `last_substantive_output_at` and `last_output_seeded`. `last_output_at` is NOT one of them — a spinner redraw advances it. A claim owner is provably inactive only when its substantive timestamp falls outside the window; a chat still carrying `last_output_seeded` has never been observed producing output at all, which is unknown, not inactive, and an unknown owner survives arbitration.
+
+Both transports carry those three fields under the same names: `boss chats --json <session-id>` on the CLI transport, `get_chat_statuses` on the MCP transport. Neither transport is the weaker one for this check, so a CLI-transport run consults the per-chat signal rather than proceeding on the session scan alone.
 
 On the CLI transport, build the evidence before the verdict in the same shell as the `claim-verdict` block; a separate shell loses `BOSS_CLAIM_LIVENESS_JSON` and has not run the check. `BOSS_CLAIM_INACTIVE_AFTER_MS` is the staleness window; the default is 20 minutes. Resolve `BOSS` through `toolbox/boss-binary.mjs`, then resolve `REPO_ID` from `BOSS_REPO_ID`, falling back to `"$BOSS" env --json`'s `session.repo_id`, and block if neither is available:
 
@@ -188,7 +190,7 @@ NODE
 )" || { echo "BLOCKED: claim liveness evidence"; exit 1; }
 ```
 
-On the MCP transport, build the same payload shape from `list_sessions`: each known owner row in `sessions` carries `lastAgentActivityAt`. When `get_chat_statuses` returns `last_output_at` for a known claim owner's chat, merge the richer chat timestamp into that owner's session row as `lastAgentActivityAt` when it is newer than `last_agent_activity_at`; keep unknown claim owners absent from `sessions` so they survive arbitration.
+On the MCP transport, build the same payload shape from `list_sessions`: each known owner row in `sessions` carries `lastAgentActivityAt`. Merge the per-chat signal into that row on EITHER transport — `get_chat_statuses`, or `boss chats --json <session-id>` — taking `last_substantive_output_at` when it is newer than `last_agent_activity_at`. Merge `last_substantive_output_at`, never `last_output_at`: the latter moves on a spinner redraw, so merging it would date a frozen pane as live. A chat whose `last_output_seeded` is still true contributes nothing; keep unknown claim owners absent from `sessions` so they survive arbitration.
 
 Feed the gathered evidence to `claim-verdict` in the tracker CLI's documented form:
 

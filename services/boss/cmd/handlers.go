@@ -1616,6 +1616,24 @@ func runNew(cmd *cobra.Command) error {
 		return emitJSONFailure(cmd, asJSON, err)
 	}
 
+	// Disclose a displaced plugin default. resolveClaudeModel (and its siblings)
+	// are request-wins by design, and the plugin-level pin exists BECAUSE an
+	// unpinned run resolves non-deterministically — so an explicit --model does
+	// not merely choose a model, it opts the session out of the host's pin,
+	// which can change the context window it gets. Nothing said so. This only
+	// reports; the resolution order is untouched.
+	if cmd.Flags().Changed("model") && model != "" {
+		settings, _ := loadSettings()
+		if configured := configuredPluginModel(settings, agentName); configured != "" && configured != model {
+			// stderr on BOTH paths: the two-line stdout is a frozen scripting
+			// surface and under --json stdout must stay exactly one JSON object.
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+				"notice: --model %s displaces the configured %s plugin default %s for this session; "+
+					"the host's pinned model does not apply to it\n",
+				model, configuredPluginModelAgent(settings, agentName), configured)
+		}
+	}
+
 	// --quick-chat and --defer-pr are contradictory, so refuse the pair here —
 	// before any RPC — rather than sending a request whose two fields ask the
 	// daemon for incompatible shapes. A quick chat has no worktree, no branch and
@@ -1934,6 +1952,37 @@ const (
 		"the prompt unattended."
 )
 
+// configuredPluginModelAgent names the agent whose plugin default applies —
+// the explicit --agent when given, else the configured default agent. Split out
+// so the notice can name it without re-deriving the fallback.
+func configuredPluginModelAgent(settings config.Settings, agentName string) string {
+	if agentName != "" {
+		return agentName
+	}
+	return settings.DefaultAgent
+}
+
+// configuredPluginModel returns the model this host pins for the agent plugin
+// that will run the session, or "" when none is pinned. The plugin reads it as
+// BOSS_PLUGIN_model; here it is the `model` entry of the matching plugin's
+// config, matched on the plugin's short name (PluginConfig.Name), which is the
+// same token `--agent` takes.
+//
+// A disabled plugin is skipped: it will not run the session, so its pin is not
+// the one an explicit --model would displace.
+func configuredPluginModel(settings config.Settings, agentName string) string {
+	name := configuredPluginModelAgent(settings, agentName)
+	if name == "" {
+		return ""
+	}
+	for _, p := range settings.Plugins {
+		if p.Name == name && p.Enabled {
+			return p.Config["model"]
+		}
+	}
+	return ""
+}
+
 // newSessionEnvelope is the `boss new --json` success envelope. It nests under
 // "session" like `boss merge --json` so a driver reads one shape across the
 // CLI, and it names the chat id `chat_id` — the same field the human two-line
@@ -1946,6 +1995,19 @@ type newSessionBody struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	ChatID string `json:"chat_id"`
+	// Model is the session's EFFECTIVE model — the id the daemon resolved and
+	// persisted for this session, which is the explicit `--model` when one was
+	// given and the agent plugin's configured default otherwise. It is the same
+	// value `boss show --json` reports as `model`, taken from the same
+	// effective_model field, so one vocabulary covers both reads.
+	//
+	// Always emitted, never omitempty: a session whose model the daemon could
+	// not resolve reports "", and that is a fact a caller must be able to see
+	// rather than infer from an absent key. An explicit `--model` that displaces
+	// a configured plugin default is additionally announced on stderr, because
+	// the displacement — not the resulting id — is what a caller could not
+	// otherwise learn.
+	Model string `json:"model"`
 	// NextAction is set only when the create launched no agent (empty chat id).
 	// `omitempty` is load-bearing: it keeps the envelope byte-identical for every
 	// existing caller on the ordinary path, so the key's mere presence is the
@@ -1958,6 +2020,7 @@ func newSessionJSON(session *pb.Session) newSessionEnvelope {
 		ID:     session.GetId(),
 		Title:  session.GetTitle(),
 		ChatID: session.GetAgentSessionId(),
+		Model:  session.GetEffectiveModel(),
 	}
 	if body.ChatID == "" {
 		body.NextAction = nextActionIdleSession
@@ -2425,7 +2488,16 @@ func runMerge(cmd *cobra.Command, sessionID string) error {
 		return emitJSONFailure(cmd, asJSON, fmt.Errorf("merge session: %w", err))
 	}
 	if asJSON {
-		return emitJSON(cmd, newMergeJSON(sess, detail))
+		// Re-read the session before reporting its state. The daemon's handler
+		// reads the session BEFORE its own deferred display refresh applies the
+		// Merged transition, so the session it returns from a genuine merge can
+		// still carry the PRE-merge state — a field that cannot mean what its
+		// name implies. One extra RPC per merge, on the --json path only.
+		settled, readErr := c.GetSession(ctx, sessionID, client.SessionReadOptions{})
+		if readErr != nil || settled == nil {
+			settled = nil
+		}
+		return emitJSON(cmd, newMergeJSON(sess, settled, detail))
 	}
 	fmt.Printf("Session %s merged (%s).\n", sess.GetId(), sess.GetTitle())
 	if detail != "" {
@@ -2455,13 +2527,21 @@ type mergeSessionJSON struct {
 	// vocabulary the wire uses, so it needs no client-side mapping table and
 	// does not drift when a display label changes.
 	//
-	// It is the daemon's value verbatim, which on a successful merge can still
-	// be the PRE-merge state: the daemon's handler reads the session before its
-	// own deferred display refresh applies the Merged transition (see
-	// services/bossd/internal/server/server.go, MergeSession). Treat this as
-	// "the state as of the merge call", not as the merge's outcome — the
-	// outcome is the envelope itself.
+	// It is the SETTLED state: the CLI re-reads the session after the merge
+	// call returns and reports that. The merge response's own session cannot
+	// be used, because the daemon's handler reads it before its own deferred
+	// display refresh applies the Merged transition (see
+	// services/bossd/internal/server/server.go, MergeSession) — so a genuine
+	// merge could answer with the PRE-merge state, a field unable to mean what
+	// its name implies.
 	State string `json:"state"`
+	// StateSettled reports whether State came from that post-merge re-read.
+	// False means the re-read failed and State fell back to the merge
+	// response's own value, which may lag — without this flag that fallback
+	// would silently reintroduce the defect the re-read exists to remove. The
+	// merge itself succeeded either way; a failed re-read is not a failed
+	// merge, so it is reported rather than raised.
+	StateSettled bool `json:"state_settled"`
 }
 
 type mergePRJSON struct {
@@ -2469,24 +2549,33 @@ type mergePRJSON struct {
 	URL    string `json:"url"`
 }
 
-// newMergeJSON builds the success envelope. The pr object is omitted entirely
-// unless the session carries a number or a URL: emitting it full of zero values
-// would make a local-only-branch merge look like it merged PR #0.
+// newMergeJSON builds the success envelope. sess is the merge response's own
+// session; settled is the post-merge re-read, or nil when that read failed.
+// Identity (id, title) and the PR come from sess — the merge response is
+// authoritative about the merge it just performed — while state comes from the
+// re-read, which is the only value that can mean what the field's name implies.
+//
+// The pr object is omitted entirely unless the session carries a number or a
+// URL: emitting it full of zero values would make a local-only-branch merge
+// look like it merged PR #0.
 //
 // There is deliberately no already_merged field. The daemon's short-circuit
 // returns an ordinary success plus a detail string, and MergeSessionResponse
 // carries nothing else a client could key on — deriving the flag from detail
 // text would reintroduce exactly the message matching this envelope removes.
-// session.state is not a substitute: it can still read pre-merge on a genuine
-// merge (see mergeSessionJSON.State), so a caller that branches on it would
-// mistake a successful merge for a failed one. A caller that needs the settled
-// state must re-read the session.
-func newMergeJSON(sess *pb.Session, detail string) mergeJSON {
+// session.state is not a substitute for it either: a session that was already
+// merged settles to MERGED just as a freshly merged one does.
+func newMergeJSON(sess, settled *pb.Session, detail string) mergeJSON {
+	state, stateSettled := sess.GetState().String(), false
+	if settled != nil {
+		state, stateSettled = settled.GetState().String(), true
+	}
 	env := mergeJSON{
 		Session: mergeSessionJSON{
-			ID:    sess.GetId(),
-			Title: sess.GetTitle(),
-			State: sess.GetState().String(),
+			ID:           sess.GetId(),
+			Title:        sess.GetTitle(),
+			State:        state,
+			StateSettled: stateSettled,
 		},
 		Detail: detail,
 	}
@@ -3081,14 +3170,65 @@ func runDaemonStop(cmd *cobra.Command) error {
 	return nil
 }
 
-func runDaemonRestart(_ *cobra.Command) error {
+// daemonRestartJSON is the `boss daemon restart --json` success envelope.
+type daemonRestartJSON struct {
+	Daemon daemonRestartBody `json:"daemon"`
+}
+
+type daemonRestartBody struct {
+	// Outcome is one of the stable outcomeDaemon* codes in clijson.go. A
+	// lifecycle command can succeed in materially different ways, and this is
+	// the discriminator that survives the trip to a driver.
+	Outcome string `json:"outcome"`
+	// Supervised reports whether a service manager is running the daemon now.
+	// It is stated rather than left to be inferred from Outcome, because
+	// "restarted" and "still supervised" are different questions: the
+	// standalone outcomes are unsupervised by construction (the state the host
+	// was already in), while RESTARTED_UNSUPERVISED is supervision LOST.
+	Supervised bool   `json:"supervised"`
+	SocketPath string `json:"socket_path"`
+	// Message is the same sentence the human path prints. Human-only: a driver
+	// branches on Outcome, never on this text.
+	Message string `json:"message"`
+}
+
+// restartFallbackOutcome picks the stable code for the announced fallback. The
+// supervision question is PROBED by the caller (currentServingMode), never
+// inferred from the fact that the fallback ran: a follow-up start can land
+// under the service manager after all, and reporting that as lost supervision
+// would be as wrong as reporting a real loss as an ordinary restart.
+func restartFallbackOutcome(supervised bool) string {
+	if supervised {
+		return outcomeDaemonRestartedAfterFallback
+	}
+	return outcomeDaemonRestartedUnsupervised
+}
+
+// emitDaemonRestart reports one successful restart outcome on whichever channel
+// was asked for. The human line is byte-identical to what it printed before
+// --json existed.
+func emitDaemonRestart(cmd *cobra.Command, asJSON bool, outcome string, supervised bool, socketPath, message string) error {
+	if asJSON {
+		return emitJSON(cmd, daemonRestartJSON{Daemon: daemonRestartBody{
+			Outcome:    outcome,
+			Supervised: supervised,
+			SocketPath: socketPath,
+			Message:    message,
+		}})
+	}
+	fmt.Println(message)
+	return nil
+}
+
+func runDaemonRestart(cmd *cobra.Command) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
 	st, err := daemonGetStatus()
 	if err != nil {
-		return fmt.Errorf("daemon restart: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("daemon restart: %w", err))
 	}
 	profile, err := currentDaemonProfile()
 	if err != nil {
-		return fmt.Errorf("daemon restart: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("daemon restart: %w", err))
 	}
 	socketPath := profile.SocketPath
 
@@ -3102,23 +3242,26 @@ func runDaemonRestart(_ *cobra.Command) error {
 	if restartTakesStandalonePath(st) {
 		n, err := terminateStandaloneCurrentProfile(profile)
 		if err != nil {
-			return fmt.Errorf("restart standalone bossd failed: %w", err)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("restart standalone bossd failed: %w", err))
 		}
 		if n > 0 && !waitForDaemonSocketGone(socketPath) {
-			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout))
 		}
 		if n > 0 && !waitForStandaloneBossdExit(profile.AppDataDir) {
-			return fmt.Errorf("timed out waiting for standalone bossd to exit after %s", daemon.LifecycleShutdownTimeout)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("timed out waiting for standalone bossd to exit after %s", daemon.LifecycleShutdownTimeout))
 		}
 		if err := daemonEnsureRunning(socketPath); err != nil {
-			return fmt.Errorf("restart standalone bossd failed: %w", err)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("restart standalone bossd failed: %w", err))
 		}
+		// Unsupervised by construction on this path: it restarts in kind what
+		// was already running without a service manager, so this is the host's
+		// existing state rather than a degradation.
 		if n > 0 {
-			fmt.Println("Restarted standalone bossd for current profile.")
-		} else {
-			fmt.Println("Started standalone bossd.")
+			return emitDaemonRestart(cmd, asJSON, outcomeDaemonRestartedStandalone, false, socketPath,
+				"Restarted standalone bossd for current profile.")
 		}
-		return nil
+		return emitDaemonRestart(cmd, asJSON, outcomeDaemonStartedStandalone, false, socketPath,
+			"Started standalone bossd.")
 	}
 	// BOS-1184 U2: refuse a rejected supervision mode BEFORE anything is
 	// stopped, not after.
@@ -3143,26 +3286,26 @@ func runDaemonRestart(_ *cobra.Command) error {
 	// behaviour is untouched. platformRestart keeps its own check as defence in
 	// depth for callers that do not come through here.
 	if modeStatus := daemon.LoadSupervisionModeStatus(); modeStatus.Err != nil {
-		return fmt.Errorf("daemon restart refused, daemon left running: daemon supervision mode: %w", modeStatus.Err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("daemon restart refused, daemon left running: daemon supervision mode: %w", modeStatus.Err))
 	}
 	if st.Running {
 		if err := daemonStop(); err != nil {
-			return fmt.Errorf("stop daemon failed: %w", err)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("stop daemon failed: %w", err))
 		}
 		if !waitForDaemonSocketGone(socketPath) {
-			return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout))
 		}
 	} else {
 		n, err := terminateCurrentProfileBossd()
 		if err != nil {
-			return fmt.Errorf("restart standalone bossd failed: %w", err)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("restart standalone bossd failed: %w", err))
 		}
 		if n > 0 && !waitForDaemonSocketGone(socketPath) {
-			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout))
 		}
 	}
 	if err := restartDaemon(); err != nil {
-		return fmt.Errorf("restart daemon failed: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("restart daemon failed: %w", err))
 	}
 	if err := waitForDaemonRestartReady(socketPath); err != nil {
 		// R1: restoring service outranks honouring the requested supervision
@@ -3174,18 +3317,26 @@ func runDaemonRestart(_ *cobra.Command) error {
 			// Announced, not silent: the operator's daemon may no longer be
 			// under the service manager, and they would otherwise believe it
 			// is. What to announce is probed, not assumed — see below.
-			fmt.Println(restartFallbackAnnouncement())
-			return nil
+			//
+			// The announcement is prose, which reached a driver only by being
+			// scraped. The envelope carries the same outcome as a stable code,
+			// and `supervised` is probed the same way the sentence is rather
+			// than assumed from the fact that the fallback ran: a follow-up
+			// start under the service manager also lands here and is still
+			// supervised.
+			mode, ok := currentServingMode()
+			supervised := ok && mode == daemon.ServingModeSupervised
+			return emitDaemonRestart(cmd, asJSON, restartFallbackOutcome(supervised), supervised, socketPath,
+				restartFallbackAnnouncement())
 		}
 		// restoreErr is the only diagnostic the operator gets for why the
 		// fallback failed; discarding it left them with nothing to act on.
 		if restoreErr != nil {
-			return fmt.Errorf("daemon restarted but %w; starting bossd directly also failed: %w; %s", err, restoreErr, restartRecoveryHint())
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("daemon restarted but %w; starting bossd directly also failed: %w; %s", err, restoreErr, restartRecoveryHint()))
 		}
-		return fmt.Errorf("daemon restarted but %w; starting bossd directly reported success but produced no reachable socket; %s", err, restartRecoveryHint())
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("daemon restarted but %w; starting bossd directly reported success but produced no reachable socket; %s", err, restartRecoveryHint()))
 	}
-	fmt.Println("Daemon restarted.")
-	return nil
+	return emitDaemonRestart(cmd, asJSON, outcomeDaemonRestarted, true, socketPath, "Daemon restarted.")
 }
 
 // waitForDaemonRestartReady waits for the replacement daemon to accept
@@ -3898,6 +4049,25 @@ type chatJSON struct {
 	// WaitingReason explains a WAITING chat's block; empty for every other
 	// status.
 	WaitingReason string `json:"waiting_reason"`
+	// The three liveness discriminators the daemon already computes on
+	// ChatStatusEntry. Without them LastOutputAt above cannot be read: a
+	// spinner redraw advances it, so a pane whose only sign of life is the
+	// spinner is indistinguishable from one producing real output. The MCP
+	// chat surface already exposes them and its tool description tells callers
+	// to gate on them; a CLI-transport driver had no way to follow the same
+	// rule.
+	//
+	// SpinnerPresent is true while the pane shows a live agent spinner.
+	SpinnerPresent bool `json:"spinner_present"`
+	// LastSubstantiveOutputAt is the last pane change that was NOT merely a
+	// spinner redraw — the signal to gate on. Empty when nothing is known.
+	LastSubstantiveOutputAt string `json:"last_substantive_output_at"`
+	// LastOutputSeeded is true while either timestamp is still the seed stamped
+	// when the daemon first saw the chat rather than an observation of real
+	// output. Every chat registered in one poll tick shares that instant, so
+	// without this flag a nanosecond-identical value across rows cannot be told
+	// from a real collision of simultaneous observations.
+	LastOutputSeeded bool `json:"last_output_seeded"`
 }
 
 // newChatsJSON left-joins the statuses onto the chats by agent_session_id.
@@ -3912,6 +4082,11 @@ func newChatsJSON(chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntr
 			Status:         chatStatusName(st.GetStatus()),
 			LastOutputAt:   rfc3339OrEmpty(st.GetLastOutputAt()),
 			WaitingReason:  st.GetWaitingReason(),
+			// GetX on a nil entry yields the zero value, which is the honest
+			// reading for a chat the status read did not cover.
+			SpinnerPresent:          st.GetSpinnerPresent(),
+			LastSubstantiveOutputAt: rfc3339OrEmpty(st.GetLastSubstantiveOutputAt()),
+			LastOutputSeeded:        st.GetLastOutputSeeded(),
 		})
 	}
 	return out
@@ -3927,6 +4102,35 @@ const ellipsis = "…"
 // reason widens the table past a terminal for every other row.
 const chatStatusCellMax = 44
 
+// chatLivenessCell renders the three liveness discriminators into one cell.
+// LAST OUTPUT alone cannot be read: a spinner redraw advances it, so a pane
+// whose only sign of life is the spinner looks identical to one producing real
+// output. The cell names the spinner, names a still-seeded (never-observed)
+// timestamp, and ends with the age of the last SUBSTANTIVE output — the signal
+// a reader should actually gate on.
+//
+//	"spinner seeded -"  a spinning pane that has never produced real output
+//	"spinner 12m"       spinning, but nothing substantive for 12 minutes
+//	"3h"                not spinning; last real output 3 hours ago
+//
+// The rendered prose is human-only. `boss chats --json` carries the three
+// fields separately and is the stable surface for a driver.
+func chatLivenessCell(st *pb.ChatStatusEntry) string {
+	parts := make([]string, 0, 3)
+	if st.GetSpinnerPresent() {
+		parts = append(parts, "spinner")
+	}
+	if st.GetLastOutputSeeded() {
+		parts = append(parts, "seeded")
+	}
+	if t := st.GetLastSubstantiveOutputAt(); t != nil {
+		parts = append(parts, views.RelativeTime(t.AsTime()))
+	} else {
+		parts = append(parts, "-")
+	}
+	return strings.Join(parts, " ")
+}
+
 // printChatsTable renders the human table. statusAvailable false means the
 // status read failed: STATUS and LAST OUTPUT render "?" so no cell can be
 // mistaken for a settled chat.
@@ -3936,6 +4140,7 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat, statuses map[st
 	createds := make([]string, len(chats))
 	statusCells := make([]string, len(chats))
 	lastOutputs := make([]string, len(chats))
+	livenessCells := make([]string, len(chats))
 	for i, chat := range chats {
 		ids[i] = chat.AgentSessionId
 		t := chat.Title
@@ -3951,7 +4156,7 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat, statuses map[st
 		}
 
 		if !statusAvailable {
-			statusCells[i], lastOutputs[i] = "?", "?"
+			statusCells[i], lastOutputs[i], livenessCells[i] = "?", "?", "?"
 			continue
 		}
 		st := statuses[chat.GetAgentSessionId()]
@@ -3968,6 +4173,7 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat, statuses map[st
 		} else {
 			lastOutputs[i] = "-"
 		}
+		livenessCells[i] = chatLivenessCell(st)
 	}
 
 	// The new columns are appended rather than inserted: ID / TITLE / CREATED
@@ -3980,11 +4186,12 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat, statuses map[st
 		{Title: "CREATED", Width: views.MaxColWidth("CREATED", createds, 12)},
 		{Title: "STATUS", Width: views.MaxColWidth("STATUS", statusCells, chatStatusCellMax)},
 		{Title: "LAST OUTPUT", Width: views.MaxColWidth("LAST OUTPUT", lastOutputs, 12)},
+		{Title: "LIVENESS", Width: views.MaxColWidth("LIVENESS", livenessCells, 16)},
 	}
 
 	rows := make([]table.Row, len(chats))
 	for i := range chats {
-		rows[i] = table.Row{ids[i], titles[i], createds[i], statusCells[i], lastOutputs[i]}
+		rows[i] = table.Row{ids[i], titles[i], createds[i], statusCells[i], lastOutputs[i], livenessCells[i]}
 	}
 
 	t := table.New(

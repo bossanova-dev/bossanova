@@ -23,6 +23,13 @@ type chatJSON struct {
 	Status         string `json:"status"`
 	LastOutputAt   string `json:"last_output_at"`
 	WaitingReason  string `json:"waiting_reason"`
+	// The three liveness discriminators the daemon computes on
+	// ChatStatusEntry. Declared here rather than shared with the CLI's own
+	// struct: this copy is the wire contract a driver reads, so a rename in the
+	// CLI must break this test rather than travel silently through it.
+	SpinnerPresent          bool   `json:"spinner_present"`
+	LastSubstantiveOutputAt string `json:"last_substantive_output_at"`
+	LastOutputSeeded        bool   `json:"last_output_seeded"`
 }
 
 type chatsEnvelope struct {
@@ -48,6 +55,12 @@ const (
 
 var chatsLastOutput = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 
+// chatsLastSubstantive is deliberately EARLIER than chatsLastOutput: that gap is
+// the whole point of the discriminator. A spinner redraw advances last_output_at
+// while last_substantive_output_at stands still, so a fixture where the two are
+// equal could not tell the fields apart.
+var chatsLastSubstantive = time.Date(2026, 3, 4, 4, 0, 0, 0, time.UTC)
+
 // chatsHarness seeds one session with four chats: three the status fixture
 // covers (IDLE, WORKING, WAITING) and one it deliberately does not, so the
 // no-cached-status row is exercised by every case rather than only its own.
@@ -64,14 +77,20 @@ func chatsHarness(t *testing.T) *clitest.Harness {
 		),
 	)
 	h.Daemon.AddChatStatus(&pb.ChatStatusEntry{
-		AgentSessionId: idleChatID,
-		Status:         pb.ChatStatus_CHAT_STATUS_IDLE,
-		LastOutputAt:   timestamppb.New(chatsLastOutput),
+		AgentSessionId:          idleChatID,
+		Status:                  pb.ChatStatus_CHAT_STATUS_IDLE,
+		LastOutputAt:            timestamppb.New(chatsLastOutput),
+		LastSubstantiveOutputAt: timestamppb.New(chatsLastSubstantive),
 	})
+	// The spinning-but-idle pane: a live spinner keeps last_output_at fresh
+	// while nothing substantive has EVER been observed, so the seed flag is
+	// still set. This is the shape a settled-green driver must not read as work.
 	h.Daemon.AddChatStatus(&pb.ChatStatusEntry{
-		AgentSessionId: workingChatID,
-		Status:         pb.ChatStatus_CHAT_STATUS_WORKING,
-		LastOutputAt:   timestamppb.New(chatsLastOutput),
+		AgentSessionId:   workingChatID,
+		Status:           pb.ChatStatus_CHAT_STATUS_WORKING,
+		LastOutputAt:     timestamppb.New(chatsLastOutput),
+		SpinnerPresent:   true,
+		LastOutputSeeded: true,
 	})
 	h.Daemon.AddChatStatus(&pb.ChatStatusEntry{
 		AgentSessionId: waitingChatID,
@@ -190,8 +209,15 @@ func TestCLI_Chats_JSONShape(t *testing.T) {
 }
 
 // TestCLI_Chats_JSONEmitsNoSettledBoolean pins that the CLI reports state and
-// the caller owns the threshold: no settled/ready/done boolean is emitted, so a
+// the caller owns the threshold: no settled/ready/done verdict is emitted, so a
 // driver cannot inherit a staleness policy that is wrong for it.
+//
+// The invariant is about WHO decided, not about the Go type. spinner_present
+// and last_output_seeded are booleans the DAEMON computes and puts on
+// ChatStatusEntry — observations, like status and last_output_at, not
+// thresholds the CLI applied — so they are named in the allowlist below. What
+// stays forbidden is a CLI-derived verdict: any field the CLI would have to
+// pick a cutoff to answer.
 func TestCLI_Chats_JSONEmitsNoSettledBoolean(t *testing.T) {
 	h := chatsHarness(t)
 	res := h.Run("chats", chatsSessionID, "--json")
@@ -208,14 +234,20 @@ func TestCLI_Chats_JSONEmitsNoSettledBoolean(t *testing.T) {
 	want := map[string]bool{
 		"agent_session_id": true, "title": true, "created_at": true,
 		"status": true, "last_output_at": true, "waiting_reason": true,
+		"spinner_present": true, "last_substantive_output_at": true,
+		"last_output_seeded": true,
 	}
+	// Booleans the daemon computes and the CLI copies through verbatim. A
+	// boolean NOT listed here is a verdict the CLI invented, which is the thing
+	// this test exists to stop.
+	daemonBool := map[string]bool{"spinner_present": true, "last_output_seeded": true}
 	for _, row := range generic.Chats {
 		for k, v := range row {
 			if !want[k] {
 				t.Errorf("unexpected field %q = %v in a chat row", k, v)
 			}
-			if _, isBool := v.(bool); isBool {
-				t.Errorf("field %q is a boolean; the CLI must not bake a settled threshold into the transport", k)
+			if _, isBool := v.(bool); isBool && !daemonBool[k] {
+				t.Errorf("field %q is a boolean the daemon does not compute; the CLI must not bake a settled threshold into the transport", k)
 			}
 		}
 		for k := range want {
@@ -521,5 +553,112 @@ func TestCLI_Show_StatusUnavailableWarns(t *testing.T) {
 	}
 	if got := strings.Count(res.Stderr, "chat status unavailable"); got != 1 {
 		t.Errorf("stderr explains the unavailable status %d times, want exactly 1: %q", got, res.Stderr)
+	}
+}
+
+// TestCLI_Chats_JSONCarriesLivenessDiscriminators pins the central claim: every
+// row carries the three fields the daemon already computes, always emitted, so
+// a CLI-transport driver can follow the same gate the MCP tool description
+// prescribes instead of reading last_output_at and guessing.
+func TestCLI_Chats_JSONCarriesLivenessDiscriminators(t *testing.T) {
+	h := chatsHarness(t)
+	res := h.Run("chats", chatsSessionID, "--json")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	var env chatsEnvelope
+	if err := json.Unmarshal([]byte(res.Stdout), &env); err != nil {
+		t.Fatalf("unmarshal %q: %v", res.Stdout, err)
+	}
+	byID := make(map[string]chatJSON, len(env.Chats))
+	for _, c := range env.Chats {
+		byID[c.AgentSessionID] = c
+	}
+
+	// Every field is always emitted — an absent key is precisely what a driver
+	// must not have to guess about. Checked against the raw object rather than
+	// the typed struct, which cannot tell absent from zero.
+	var raw struct {
+		Chats []map[string]json.RawMessage `json:"chats"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &raw); err != nil {
+		t.Fatalf("unmarshal raw %q: %v", res.Stdout, err)
+	}
+	if len(raw.Chats) != 4 {
+		t.Fatalf("len(chats) = %d, want 4", len(raw.Chats))
+	}
+	for i, row := range raw.Chats {
+		for _, key := range []string{"spinner_present", "last_substantive_output_at", "last_output_seeded"} {
+			if _, ok := row[key]; !ok {
+				t.Errorf("chats[%d] is missing the always-emitted key %q", i, key)
+			}
+		}
+	}
+
+	// The spinning-but-idle pane: last_output_at is fresh, but the spinner is
+	// what advanced it and nothing substantive has been observed.
+	working, ok := byID[workingChatID]
+	if !ok {
+		t.Fatalf("working chat missing from %+v", env.Chats)
+	}
+	if !working.SpinnerPresent {
+		t.Error("spinner_present = false, want true for the spinning chat")
+	}
+	if !working.LastOutputSeeded {
+		t.Error("last_output_seeded = false, want true for a chat with no substantive observation")
+	}
+	if working.LastSubstantiveOutputAt != "" {
+		t.Errorf("last_substantive_output_at = %q, want empty when unset", working.LastSubstantiveOutputAt)
+	}
+	if working.LastOutputAt == "" {
+		t.Error("last_output_at should still be carried — the spinner advanced it")
+	}
+
+	// The genuinely-idle pane is the contrast: no spinner, not seeded, and a
+	// real substantive timestamp that is OLDER than last_output_at.
+	idle, ok := byID[idleChatID]
+	if !ok {
+		t.Fatalf("idle chat missing from %+v", env.Chats)
+	}
+	if idle.SpinnerPresent {
+		t.Error("spinner_present = true, want false for the idle chat")
+	}
+	if idle.LastOutputSeeded {
+		t.Error("last_output_seeded = true, want false once a substantive observation landed")
+	}
+	if want := chatsLastSubstantive.Format(time.RFC3339); idle.LastSubstantiveOutputAt != want {
+		t.Errorf("last_substantive_output_at = %q, want %q", idle.LastSubstantiveOutputAt, want)
+	}
+
+	// A chat with no cached status reports the zero values rather than
+	// inventing a liveness claim.
+	unknown, ok := byID[unknownChatID]
+	if !ok {
+		t.Fatalf("unknown chat missing from %+v", env.Chats)
+	}
+	if unknown.SpinnerPresent || unknown.LastOutputSeeded || unknown.LastSubstantiveOutputAt != "" {
+		t.Errorf("a chat with no cached status must claim nothing, got %+v", unknown)
+	}
+}
+
+// TestCLI_Chats_TableCarriesLiveness proves the human table gained the same
+// discrimination, appended as a new column so an existing field-index reader is
+// widened rather than shifted.
+func TestCLI_Chats_TableCarriesLiveness(t *testing.T) {
+	h := chatsHarness(t)
+	res := h.Run("chats", chatsSessionID)
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "LIVENESS") {
+		t.Errorf("stdout missing the LIVENESS column; got:\n%s", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "spinner") {
+		t.Errorf("the spinning chat should be named as such; got:\n%s", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "seeded") {
+		t.Errorf("a still-seeded timestamp should be named as such; got:\n%s", res.Stdout)
 	}
 }

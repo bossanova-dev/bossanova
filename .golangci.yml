@@ -142,6 +142,34 @@ linters:
         text: "G704"
         linters:
           - gosec
+      # SA1019: x/net 0.59 deprecated the ENTIRE golang.org/x/net/http2 surface —
+      # server (http2.Server, http2.ConfigureServer, and the h2s
+      # ReadIdleTimeout / PingTimeout keepalive fields) and client
+      # (http2.Transport, http2.ConfigureTransports, and the tr AllowHTTP /
+      # DialTLSContext / ReadIdleTimeout / PingTimeout fields) alike — in favour
+      # of net/http's Server.Protocols / Transport.Protocols + HTTP2Config.
+      #
+      # This repo cannot take that migration yet, and already says so in code:
+      # services/bosso/cmd/main.go and services/bosso/internal/testharness/
+      # harness.go carry //nolint:staticcheck recording that the stdlib
+      # http.Server.Protocols replacement BREAKS ConnectRPC bidi streams
+      # (TestE2E_StreamDropsDuringPendingCommand) against the x/net/http2 client
+      # in services/bossd/internal/upstream/httpclient.go. The bosso server half
+      # and the bossd client half therefore have to flip ATOMICALLY in their own
+      # change; doing either alone breaks streaming, and a toolchain bump is the
+      # wrong place for it. Those existing //nolint comments cover only the h2c
+      # IMPORT lines, so they do not reach these usage sites, which 0.59 newly
+      # deprecated.
+      #
+      # Matched on the deprecated SYMBOL rather than on a path list: the
+      # deferral is a property of the x/net/http2 API, not of the ~9 files that
+      # happen to use it today, and a path list would silently miss the next
+      # file added. The cost is that a NEW use of these same symbols is also
+      # excluded — acceptable while the whole package is pending migration, and
+      # any OTHER SA1019 deprecation anywhere still fails the gate.
+      - text: "SA1019: (http2\\.(Server|Transport|ConfigureServer|ConfigureTransports)|[A-Za-z0-9_]+\\.(AllowHTTP|DialTLSContext|ReadIdleTimeout|PingTimeout)) is deprecated"
+        linters:
+          - staticcheck
 
 # No `formatters:` block (BOS-371). gofmt+goimports are redundant here — they only
 # *re-check* formatting that `make format` / `format-affected` / the pre-commit hook

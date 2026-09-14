@@ -255,7 +255,8 @@ func TestFetchWithRefLockRetry_ContextEndedMidBackoffReportsTheContext(t *testin
 	t.Cleanup(func() { refLockRetryBackoff = previous })
 	// Long enough that the cancellation below lands inside the wait rather than
 	// racing the next attempt.
-	refLockRetryBackoff = []time.Duration{30 * time.Second}
+	const backoff = 30 * time.Second
+	refLockRetryBackoff = []time.Duration{backoff}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	run, attempts := scriptedFetch(t, errors.New(refLockCombined))
@@ -267,7 +268,9 @@ func TestFetchWithRefLockRetry_ContextEndedMidBackoffReportsTheContext(t *testin
 
 	started := time.Now()
 	_, err := fetchWithRefLockRetry(ctx, "/repo", run, "fetch", "origin", "main")
-	if elapsed := time.Since(started); elapsed >= 30*time.Second {
+	// Half the single backoff step: a wait the cancellation failed to cut short would run the
+	// whole step, so the bound stays strictly below the behaviour it must catch.
+	if elapsed := time.Since(started); elapsed >= backoff/2 {
 		t.Fatalf("waited %s — the cancellation did not cut the backoff short", elapsed)
 	}
 

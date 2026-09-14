@@ -96,11 +96,24 @@ The JSON envelope goes to **stdout**; the human `boss: ...` line still goes to
 **stderr**, so the two channels never interleave. Every failure exits `1`; the
 `code`, not the exit status, is the discriminator.
 
+`session.state` is the **settled post-merge state**: the CLI re-reads the
+session once the merge call returns and reports that. The merge response's own
+session cannot be used, because the daemon reads it before its deferred display
+refresh applies the Merged transition, so a genuine merge could answer with the
+pre-merge state. `state_settled` is `false` in the one case where the re-read
+itself failed and `state` fell back to the merge response's possibly-lagging
+value; the merge still succeeded, so it is reported rather than raised.
+
 Success:
 
 ```json
 {
-  "session": { "id": "abc123", "title": "add dark mode", "state": "SESSION_STATE_MERGED" },
+  "session": {
+    "id": "abc123",
+    "title": "add dark mode",
+    "state": "SESSION_STATE_MERGED",
+    "state_settled": true
+  },
   "pr": { "number": 42, "url": "https://github.com/acme/app/pull/42" },
   "detail": "merge strategy squash substituted for rebase"
 }
@@ -276,17 +289,25 @@ mcp="list_sessions"
 `sessions` is `[]` when nothing matches; the human `No sessions found.` line is
 never emitted under `--json`, so a driver decodes one shape either way.
 `pr_number` is `null` rather than `0` for a session with no PR.
-`tracker_id` is `null` when the session is not linked to a tracker issue, and
-drivers can use `last_agent_activity_at` to tell whether a peer session is still
-alive.
+`tracker_id` is `null` when the session is not linked to a tracker issue.
+
+`last_agent_activity_at` is a **floor, not liveness**. Any pane change advances
+it (a spinner redraw keeps it fresh), and every session working at the moment
+of the fetch reports it to the nanosecond, so one sample cannot tell a live
+session from a frozen snapshot, and two sessions sharing a value is not a
+collision. To judge whether a peer is actually progressing, read the per-chat
+discriminators with `boss chats --json <session-id>`: `spinner_present`,
+`last_substantive_output_at` and `last_output_seeded`. Those three are also what
+the MCP `get_chat_statuses` tool description tells callers to gate on, so both
+transports follow the same rule.
 
 `state` here is the **short** enum name, with the `SESSION_STATE_` prefix
 trimmed, the same vocabulary `boss ls --state` accepts, so a value read out of
 one can be fed straight back into the other. This deliberately differs from
 `boss merge --json`, whose `session.state` carries the full wire value; that
-envelope reports a daemon response verbatim, while these reads own their
-rendering. Neither emits the numeric value, which would couple callers to
-protobuf field ordering.
+envelope reports the state read back from the daemon after the merge, while
+these reads own their rendering. Neither emits the numeric value, which would
+couple callers to protobuf field ordering.
 
 Show one session:
 
@@ -607,22 +628,44 @@ CHAT=$(boss new --repo <r> --prompt <p> --json | jq -r .session.chat_id)
 boss chat wait "$CHAT"
 ```
 
+The envelope also carries `.session.model`, the **effective** model the daemon
+resolved and persisted for the session: the explicit `--model` when one was
+given, and the agent plugin's configured default otherwise. It is always
+emitted, so `""` means the daemon resolved no model rather than the key being
+absent.
+
+`--model` is request-wins: it displaces the agent plugin's configured default
+for that session. That pin exists because an unpinned run resolves
+non-deterministically, so passing `--model` risks a different context window
+from the one the host pinned. When an explicit `--model` displaces a non-empty configured
+default, `boss new` writes a notice to **stderr** naming both ids. stdout stays
+exactly one JSON object.
+
 A failure under `--json` writes the shared error envelope (`.error.code`,
 `.error.connect_code`, `.error.message`) to stdout and still exits 1. An unknown
 `--tracker-source` is caught locally and reported as `INVALID_ARGUMENT` without a
 session ever being created.
 
-| Subcommand                                              | Description                                                                                   |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `boss chat new <session-id>`                            | Start a new live chat inside an existing session (clean context, same worktree and branch)    |
-| `boss chat rename <session-id\|chat-id> <new-title...>` | Rename a chat; the trailing words are joined into the new title                               |
-| `boss chat send <session-id\|chat-id> <msg>`            | Deliver a follow-up message to a running chat; wakes a sleeping chat by default               |
-| `boss chat show <session-id\|chat-id>`                  | Print the transcript (`--result-only` for just the final result, `--limit N` to cap messages) |
-| `boss chat wait <session-id\|chat-id>`                  | Block until the chat is idle / waiting, then print the final result (`--timeout 30m`)         |
+| Subcommand                                              | Description                                                                                     |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `boss chat new <session-id>`                            | Start a new live chat inside an existing session (clean context, same worktree and branch)      |
+| `boss chat rename <session-id\|chat-id> <new-title...>` | Rename a chat; the trailing words are joined into the new title                                 |
+| `boss chat send <session-id\|chat-id> <msg>`            | Deliver a follow-up message to a running chat; wakes a sleeping chat by default                 |
+| `boss chat show <session-id\|chat-id>`                  | Print the transcript (`--result-only` for just the final result, `--limit N` to cap messages)   |
+| `boss chat wait <session-id\|chat-id>`                  | Block until the chat is idle / waiting, then print the final result (`--timeout 30m`, `--json`) |
 
 A `<session-id>` targets that session's primary chat; a `<chat-id>` (the
 `agent_session_id` printed by `boss new --detach` or `boss chat new --json`)
 targets a specific chat.
+
+`boss chat wait --json` emits one object on both outcomes, carrying `chat_id`,
+`timeout`, `timed_out`, `result`, and a `liveness` object with the same three
+discriminators a `boss chats --json` row carries. A timeout still exits 1, so
+`timed_out`, not the exit status, is what a driver branches on, and the
+liveness fields are what separate a pane with a live spinner that has produced
+nothing substantive from one still working. `liveness.known` is `false` when the
+status read covered no chat, so the other fields' zero values are never read as
+a claim. The prose printed on stderr is human-only and free to change.
 
 `boss chat send` wakes a sleeping chat before delivering. `--wake-if-asleep`
 defaults to `true`, so behaviour is unchanged unless you pass
@@ -653,9 +696,9 @@ boss chat send "$chat_id" "fix the failing checks on this PR" --submit
 #### `boss chats --json`
 
 `boss chats <session-id>` lists a session's chats. The table carries `ID`,
-`TITLE`, `CREATED`, `STATUS` and `LAST OUTPUT`; `--json` emits the same rows as
-a machine contract, for a driver deciding whether a session has gone quiet
-enough to merge.
+`TITLE`, `CREATED`, `STATUS`, `LAST OUTPUT` and `LIVENESS`; `--json` emits the
+same rows as a machine contract, for a driver deciding whether a session has
+gone quiet enough to merge.
 
 `boss show <session-id>` prints the same chat table below the session details,
 including the degraded `?` rendering and its stderr line. It has no `--json`:
@@ -680,7 +723,10 @@ the CLI joins them for you.
       "created_at": "2026-03-04T05:06:07Z",
       "status": "IDLE",
       "last_output_at": "2026-03-04T09:12:44Z",
-      "waiting_reason": ""
+      "waiting_reason": "",
+      "spinner_present": false,
+      "last_substantive_output_at": "2026-03-04T09:12:44Z",
+      "last_output_seeded": false
     }
   ]
 }
@@ -697,25 +743,48 @@ only for a `WAITING` chat, and the table shows it beside the status.
 
 No settled/not-settled boolean is emitted. The CLI reports state; the threshold
 is the caller's, because how long a quiet chat must stay quiet depends on what
-the caller is about to do with the answer.
+the caller is about to do with the answer. `spinner_present` and
+`last_output_seeded` are not exceptions: the daemon computes both as
+observations, exactly as it does `status`, and the CLI copies them through
+without applying a cutoff of its own.
+
+The human table renders the same three as one appended `LIVENESS` cell:
+`spinner seeded -` for a spinning pane that has never produced real output,
+`spinner 12m` for one spinning with nothing substantive for twelve minutes,
+`3h` for a quiet one. The columns before it keep the positions they had, so a
+reader slicing the table by field index is widened rather than shifted. That
+rendering is human-only; `--json` is the stable surface.
 
 :::warning
 `last_output_at` is not a staleness clock while a chat is `WORKING`. For a
 working chat it is the time of the read, so every working chat in one fetch
-shares it to the nanosecond and it advances on every poll. It freezes at the
-genuine last output only once the chat is `IDLE`. A settled-green gate must
-therefore test `status == "IDLE"` **and** a `last_output_at` older than its
-threshold. Staleness alone proves nothing, and a fresh `last_output_at` does not
-mean the agent is doing anything.
+shares it to the nanosecond and it advances on every poll (a spinner redraw is
+enough). It freezes at the genuine last output only once the chat is `IDLE`.
+Staleness alone proves nothing, and a fresh `last_output_at` does not mean the
+agent is doing anything.
+
+Gate on the three discriminators instead, the same three the MCP
+`get_chat_statuses` tool description names:
+
+| Field                        | What it says                                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `spinner_present`            | The pane currently shows a live agent spinner                                                                                 |
+| `last_substantive_output_at` | The last pane change that was **not** merely a spinner redraw: the signal to gate on. Empty when nothing is known             |
+| `last_output_seeded`         | Either timestamp is still the seed stamped when the daemon first saw the chat, so it has never been observed producing output |
+
+A chat with `spinner_present: true` and a `last_substantive_output_at` that has
+not moved is spinning, not working. A chat still carrying
+`last_output_seeded: true` has produced nothing observable at all, which is
+_unknown_, not _idle_.
 :::
 
 When the per-chat status read fails (a daemon too old to implement it), the two
 output modes diverge deliberately:
 
-| Mode     | Behaviour                                                                                         |
-| -------- | ------------------------------------------------------------------------------------------------- |
-| table    | Rows still print with `?` in `STATUS` and `LAST OUTPUT`, one explanatory line on stderr, exit `0` |
-| `--json` | Exit `1`, `{"error":{"code":"CHAT_STATUS_UNAVAILABLE", ...}}`, and **no** `chats` array           |
+| Mode     | Behaviour                                                                                                     |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| table    | Rows still print with `?` in `STATUS`, `LAST OUTPUT` and `LIVENESS`, one explanatory line on stderr, exit `0` |
+| `--json` | Exit `1`, `{"error":{"code":"CHAT_STATUS_UNAVAILABLE", ...}}`, and **no** `chats` array                       |
 
 The JSON path refuses to answer rather than degrade because degraded rows would
 read `"status": "UNSPECIFIED"`, byte-identical to chats that genuinely have not
@@ -733,6 +802,40 @@ return real statuses.
 per-chat status, and a session can read quiet while a chat inside it is still
 producing output.
 :::
+
+### `boss daemon restart`
+
+Restarts the bossd daemon. `--json` emits the outcome as a machine contract, so
+a driver tells a supervised restart apart from one that had to fall back to an
+unsupervised direct start, a difference that previously reached it only as
+prose on stdout.
+
+```json
+{
+  "daemon": {
+    "outcome": "RESTARTED_UNSUPERVISED",
+    "supervised": false,
+    "socket_path": "/Users/me/.local/state/bossanova/bossd.sock",
+    "message": "Daemon restarted by starting bossd directly: the service manager did not produce a reachable socket, so the daemon is no longer under service-manager supervision."
+  }
+}
+```
+
+`outcome` is the discriminator; `message` is the same sentence the human path
+prints and is human-only.
+
+| `outcome`                  | Meaning                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `RESTARTED`                | Ordinary supervised restart                                                                                         |
+| `RESTARTED_STANDALONE`     | A daemon already running without a service manager was restarted in kind                                            |
+| `STARTED_STANDALONE`       | Nothing was running; a standalone daemon was started                                                                |
+| `RESTARTED_AFTER_FALLBACK` | The first attempt produced no reachable socket, a follow-up start did, and the daemon **is** still supervised       |
+| `RESTARTED_UNSUPERVISED`   | The service manager produced no socket, so bossd was started directly: service is restored but supervision was lost |
+
+`supervised` is probed rather than inferred from `outcome`: the fallback path
+sometimes ends under the service manager, and reporting that as a loss would be
+as wrong as reporting a real loss as an ordinary restart. A failure exits `1`
+with the shared `{"error": {...}}` envelope.
 
 ### `boss tail`
 

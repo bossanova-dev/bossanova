@@ -526,6 +526,58 @@ export function validateConfig(config, source) {
       fail('test.manifestPath must be a non-empty string when present')
     }
   }
+  // testSelection: optional, and carrying exactly the posture commands / test carry above —
+  // absent is legal and normal (DEFAULT_CONFIG ships none, and a repo that declares no
+  // changed-file -> test-file mapping is the ordinary case), while a present-but-malformed block
+  // fails HERE with a skill-config: error rather than as a raw TypeError deep inside a headless
+  // consumer. Validation is the whole point of giving this its own block rather than encoding a
+  // mapping into another open-ended `commands.*` string.
+  //
+  // A present block with an absent or empty `rules` is MALFORMED, not empty: a repo that means
+  // "no selection" omits the block entirely, so an empty `rules` is a config that reads as a
+  // declared selection while selecting nothing — the under-selection direction this contract
+  // exists to make impossible. Empty-string patterns are rejected for the same reason commands.*
+  // rejects them: "" is a pattern that silently matches nothing (or everything) rather than a
+  // declared intent.
+  if (config.testSelection !== undefined) {
+    const ts = config.testSelection
+    if (!ts || typeof ts !== 'object' || Array.isArray(ts)) {
+      fail('testSelection must be an object when present')
+    }
+    if (!Array.isArray(ts.rules) || ts.rules.length === 0) {
+      fail('testSelection.rules must be a non-empty array when testSelection is present')
+    }
+    ts.rules.forEach((rule, i) => {
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+        fail(`testSelection.rules[${i}] must be an object`)
+      }
+      if (typeof rule.changed !== 'string' || rule.changed.length === 0) {
+        fail(`testSelection.rules[${i}].changed must be a non-empty string`)
+      }
+      if (!Array.isArray(rule.tests) || rule.tests.length === 0) {
+        fail(`testSelection.rules[${i}].tests must be a non-empty array`)
+      }
+      rule.tests.forEach((pattern, j) => {
+        if (typeof pattern !== 'string' || pattern.length === 0) {
+          fail(`testSelection.rules[${i}].tests[${j}] must be a non-empty string`)
+        }
+      })
+    })
+    // sharedFiles / testRoots are individually optional: a repo may declare rules without
+    // enumerating either. A PRESENT one must still be an array of non-empty strings, because
+    // the accessor hands both to a consumer as arrays it may iterate without re-checking.
+    for (const field of ['sharedFiles', 'testRoots']) {
+      if (ts[field] === undefined) continue
+      if (!Array.isArray(ts[field])) {
+        fail(`testSelection.${field} must be an array of non-empty strings when present`)
+      }
+      ts[field].forEach((pattern, i) => {
+        if (typeof pattern !== 'string' || pattern.length === 0) {
+          fail(`testSelection.${field}[${i}] must be a non-empty string`)
+        }
+      })
+    }
+  }
   if (!Array.isArray(config.env?.headlessSignals)) fail('env.headlessSignals must be an array')
   for (const sig of config.env.headlessSignals) {
     // isHeadless() dereferences sig.var/sig.present/sig.equals; a non-object or
@@ -1183,6 +1235,69 @@ export function moduleTestCommand(config, module) {
 export function manifestPath(config) {
   const value = config.test?.manifestPath
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/**
+ * This repo's declared changed-file -> test-file selection, or null when it declares none.
+ *
+ * `null` carries exactly the meaning `command()` gives it at the accessor above: "no selection is
+ * known here". The consumer's documented response to `null` is to run the FULL suite — absence is
+ * never "nothing to run", which is the one direction this contract must never take. That is why
+ * `null` is structurally distinct from a returned block whose rules happen to select nothing: the
+ * first says the repo declared no mapping, the second says the mapping was consulted and matched
+ * no file.
+ *
+ * AN UNMATCHED CHANGED FILE MEANS "RUN THE FULL SUITE", NEVER "RUN NOTHING". `rules` is an
+ * enumeration, so it can only cover path classes somebody thought of; a changed path matching no
+ * `changed` pattern and no `sharedFiles` entry is UNCLASSIFIED, and unclassified resolves to a full
+ * run. Reading an unmatched path as "this file implies no tests" is the under-selection direction this
+ * whole contract exists to forbid, and it is the reading a consumer inherits by default unless it
+ * is told otherwise here. A consumer therefore narrows ONLY when every changed path matched
+ * something; one unmatched path forces the full suite for the whole diff.
+ *
+ * The block names test FILES, so a repo whose real selection includes a non-file-glob target (a
+ * make target, a lint gate, a task-runner pipeline) cannot express that target here. Declare the
+ * test files that target owns, or list the triggering paths in `sharedFiles`; do not approximate
+ * the target with a glob that matches fewer files than it runs.
+ *
+ * Self-defending, like toleratedDescriptionTransforms(): callers include hand-built configs and
+ * merged objects that never passed through validateConfig, so a block this copy cannot use
+ * resolves to `null` — the fail-safe FULL run — rather than throwing a raw TypeError or handing
+ * back a half-fabricated selection. For a config that DID pass validation the two coincide
+ * exactly, because validation already rejected every shape this predicate refuses.
+ *
+ * The returned block is a copy, two levels deep: a consumer that sorts or splices what it gets
+ * back cannot corrupt the config for the next reader. `sharedFiles` and `testRoots` are always
+ * present as arrays, so a consumer null-checks the BLOCK and never its members.
+ *
+ * @returns {{rules: Array<{changed: string, tests: string[]}>, sharedFiles: string[], testRoots: string[]}|null}
+ */
+export function testSelection(config) {
+  const block = config?.testSelection
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return null
+  const isPatternList = (value) =>
+    Array.isArray(value) && value.every((p) => typeof p === 'string' && p.length > 0)
+  const rules = block.rules
+  if (!Array.isArray(rules) || rules.length === 0) return null
+  const usable = rules.every(
+    (rule) =>
+      rule &&
+      typeof rule === 'object' &&
+      !Array.isArray(rule) &&
+      typeof rule.changed === 'string' &&
+      rule.changed.length > 0 &&
+      isPatternList(rule.tests) &&
+      rule.tests.length > 0,
+  )
+  if (!usable) return null
+  for (const field of ['sharedFiles', 'testRoots']) {
+    if (block[field] !== undefined && !isPatternList(block[field])) return null
+  }
+  return {
+    rules: rules.map((rule) => ({ changed: rule.changed, tests: [...rule.tests] })),
+    sharedFiles: Array.isArray(block.sharedFiles) ? [...block.sharedFiles] : [],
+    testRoots: Array.isArray(block.testRoots) ? [...block.testRoots] : [],
+  }
 }
 
 export function isHeadless(config, env = process.env, { isTTY = process.stdin.isTTY } = {}) {

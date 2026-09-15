@@ -2529,7 +2529,17 @@ test('the SKILL documents every load-bearing epic guard', () => {
   assert.match(
     EPIC_PHASE,
     /\*\*Ambiguous\s+drift\*\*[\s\S]*?ok:false[\s\S]*?SAFE\s+branch[\s\S]*?report\s+`errors`,\s+write\s+nothing,\s+create\s+nothing,\s+never\s+guess[\s\S]*?never\s+be\s+read\s+as\s+"no\s+children\s+exist"/,
-    'ambiguous drift (multiple orphans, an unmarked child, duplicate live keys, or a non-array input) must take the SAFE branch and a refusal must never be read as "no children exist"',
+    'ambiguous drift (multiple orphans, duplicate live keys, a non-array input, or an unmarked child while `missing` is non-empty) must take the SAFE branch and a refusal must never be read as "no children exist"',
+  )
+  // The discriminator BOS-1255 put in place of the old unconditional "an unmarked child refuses",
+  // pinned in ONE site for the same reason as the brief's: the rule and the exception that keeps it
+  // fail-closed are a single fact. The regex above matches the outcome paragraph loosely enough to
+  // stay green if the membership rule were dropped, and the resume step decides whether to CREATE
+  // right here — so it is pinned resident rather than left to the brief.
+  assert.match(
+    EPIC_PHASE,
+    /marker\s+IS\s+the\s+membership\s+test[\s\S]*?with\s+`missing`\s+empty\s+it\s+is\s+ignored\s+rather\s+than\s+refused[\s\S]*?list-truncation\s+sentinel\s+is\s+not\s+proof\s+the\s+marker\s+is\s+absent\s+and\s+still\s+refuses/,
+    'the resume outcome must state the unmarked-child discriminator AND keep the truncated case fail-closed',
   )
   // Pin the RESUME-STEP CALL itself, by its wording, exactly as the brief's mandate is pinned. The
   // symbol loop above is satisfied by the unrelated `reconcileEpicChildren` mention in the phase's
@@ -2620,8 +2630,41 @@ test('both references carry the EPIC triage tier and flow', () => {
   )
   assert.match(
     BRIEF,
-    /\*\*\(3\)\s+ambiguous\s+drift\*\*\s*\(`ok:false`\s*—\s*multiple\s+orphans,\s*an\s+unmarked\s+child,\s*duplicate\s+live\s+marker\s+keys,\s*or\s+a\s+non-array `liveChildren`\)\s*—\s*take\s+the\s+SAFE\s+branch:\s*report `errors`,\s*write\s+nothing,\s*create\s+nothing,\s*never\s+guess/,
+    // Pinned by its structural lead and its RULE, not by the enumeration inside the parenthesis:
+    // that list is the helper's refusal set, which BOS-1255 changed (an unmarked child is a
+    // membership verdict, not drift) and which later work may change again. A sentence-exact pin
+    // here made correcting the prose to match the helper red a gate that has nothing to say about
+    // it, which is how prose and behaviour drift apart in the first place.
+    /\*\*\(3\)\s+ambiguous\s+drift\*\*\s*\(`ok:false`[\s\S]*?\)\s*—\s*take\s+the\s+SAFE\s+branch:\s*report `errors`,\s*write\s+nothing,\s*create\s+nothing,\s*never\s+guess/,
     'the brief must document outcome (3) ambiguous drift taking the SAFE branch refusal',
+  )
+  // The loosened pin above cannot fail if the prose regresses: its `[\s\S]*?` swallows the whole
+  // parenthesised refusal set, so the pre-BOS-1255 wording — `an unmarked child` listed
+  // unconditionally alongside the orphan and duplicate-key cases — matches it byte-for-byte. The
+  // discriminator pin below is anchored in a DIFFERENT paragraph, so a brief that states the
+  // corrected rule there while the enumeration here still refuses unconditionally satisfies both
+  // assertions while contradicting itself — and the enumeration is what the resume agent reads at
+  // the point it decides whether to take the SAFE branch and write nothing. So pin the RULE INSIDE
+  // the list rather than re-pinning the list: capture the refusal set and require that naming an
+  // unmarked child at all carries the `missing` qualifier BOS-1255 made the discriminator.
+  const outcome3RefusalSet = BRIEF.match(/\*\*\(3\)\s+ambiguous\s+drift\*\*\s*\(([\s\S]*?)\)/)
+  assert.ok(outcome3RefusalSet, 'the brief must carry an outcome-(3) ambiguous-drift refusal set')
+  if (/unmarked\s+child/.test(outcome3RefusalSet[1])) {
+    assert.match(
+      outcome3RefusalSet[1],
+      /`missing`/,
+      'outcome (3) may not refuse on an unmarked child unconditionally: BOS-1255 made that a refusal only while `missing` is non-empty',
+    )
+  }
+  // The discriminator that replaced the old unconditional "an unmarked child refuses" rule, pinned
+  // in ONE site: the membership rule and the exception that keeps it fail-closed are a single fact,
+  // and a brief that states either half alone misleads. Without this the brief could drop the rule
+  // entirely and the loosened pin above stays green, leaving the resume agent with no way to tell a
+  // hand-added sub-issue from real drift.
+  assert.match(
+    BRIEF,
+    /marker\s+IS\s+the\s+membership\s+test[\s\S]*?`missing`\s+empty\s+it\s+is\s+ignored\s+rather\s+than\s+refused[\s\S]*?list-truncation\s+sentinel\s+is\s+not\s+proof\s+the\s+marker\s+is\s+absent/,
+    'the brief must state the unmarked-child discriminator AND keep the truncated case fail-closed',
   )
   // Same repair-direction pin as the SKILL phase carries: the rename repair rewrites the CHILD's
   // marker. Re-pointing the spec key at `liveKey` instead would strand every sibling `blockedByKeys`
@@ -2950,7 +2993,9 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // this to keep a 26-byte margin over the pin; main's independent raise landed inside it, so
   // carrying by main's own delta restores that margin rather than widening it. A bulk regrow in
   // one edit still reds.
-  const PRE_SPLIT_BASELINE = 124493
+  // BOS-1255 carries it 124493 -> 125183 alongside the RATCHET raise below, by that raise's own
+  // +690 delta, so the 26-byte margin is preserved rather than widened.
+  const PRE_SPLIT_BASELINE = 125183
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -3310,7 +3355,20 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // PRE_SPLIT_BASELINE IS carried, 124025 -> 124463: the pin now sits above the old baseline, so
   // carrying it preserves the 26-byte guard margin instead of deleting the bound outright. The
   // margin stays deliberately thin so a bulk regrow in one edit still reds.
-  const RATCHET = 124467 // measured resident body, 2026-09-14
+  // Re-banked UP 124467 -> 125157 (+690) for BOS-1255, chained onto the entry above; the reason is
+  // below in `raise.justification`. In short: the resume-outcome paragraph documented the
+  // ambiguous-drift refusal as unconditional on "an unmarked child", and the helper no longer
+  // refuses there — a live child carrying no epic-child marker is a MEMBERSHIP verdict, not drift,
+  // so with `missing` empty it is reported and ignored. Prose that describes a refusal the helper
+  // does not make is worse than no prose: it tells the agent standing in the resume to take the SAFE
+  // branch and write nothing, which is the permanent wedge this ticket removes. Both the corrected
+  // outcome and the discriminator that replaced it are resident because the resume step reads them
+  // where it decides whether to create; only the derivation moved to the brief. The recovery gate's
+  // conjunct set gained the same one-clause correction for the same reason — it is the other site
+  // that judges live children, and its ALL-of set is stated resident. PRE_SPLIT_BASELINE is carried
+  // 124493 -> 125183, preserving the same deliberately thin 26-byte margin so a bulk regrow in one
+  // edit still reds.
+  const RATCHET = 125157 // measured resident body, 2026-09-15
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -3332,6 +3390,26 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 123354,
       justification:
+        'BOS-1255: `reconcileEpicChildren` refused on ANY live child carrying no epic-child ' +
+        'marker, all-or-nothing across the parent’s whole live-children set, so one sub-issue ' +
+        'somebody filed by hand under an epic parent made every later idempotent resume of that ' +
+        'epic return `ok:false`, permanently. The marker IS the membership test — such a child ' +
+        'contributes no live key, so by `liveKeys ⊆ specKeys` it can never collide with a spec ' +
+        'key — and the helper now refuses only where `missing` is non-empty (that child could be ' +
+        'the spec child whose description was overwritten) or where a truncation sentinel makes ' +
+        'the absence unproven. The resident outcome paragraph named the OLD unconditional rule. ' +
+        'Prose describing a refusal the helper no longer makes is worse than none: it tells the ' +
+        'agent standing in the resume to take the SAFE branch and write nothing, which is the ' +
+        'wedge itself. So the +690 B is the corrected outcome plus the discriminator that ' +
+        'replaced it, and a one-clause correction to the recovery gate’s ALL-of conjunct set — ' +
+        'the other site that judges a parent’s live children, and which now excludes an unmarked ' +
+        'child from its two per-child conjuncts. Resident because the resume step and the gate ' +
+        'both decide whether to CREATE at exactly the point they read these two paragraphs, and a ' +
+        'discriminator that lives in a reference is a discriminator the deciding agent does not ' +
+        'have. Held to +690 by moving every derivation — the `liveKeys ⊆ specKeys` argument, the ' +
+        'overwritten-marker case, the hydrate-first diagnostic — into ' +
+        'references/headless-drafting-brief.md, leaving the body with the rule and its two ' +
+        'exceptions only. Earlier entry: ' +
         'The plan-contract gate gained `subject-areas-unresolved`, which raises the arealess / ' +
         'unresolved `## Key changes` fact BEFORE the attachment finalize instead of after it — ' +
         'the post-finalize dependency scan raised the same fact, and acting on its remedy meant ' +

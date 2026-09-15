@@ -210,13 +210,46 @@ const BACKTICK_SPAN_RE = /`([^`]+)`/g
 // failure this scan refuses on the area side.
 const FILE_EXTENSION_RE = /\.[a-z][a-z0-9]{0,9}$/
 const PROSE_DOTTED_ABBREVIATION_RE = /^[a-z]\.[a-z]$/
+// A capitalised trailing member — the half of the selector rule the extension's
+// own case cannot express. See `namesAFile`.
+const SELECTOR_MEMBER_RE = /\.[A-Z][A-Za-z0-9]*$/
+
+// A `file:12`, `file:12-20`, `file:339,344,345` or `file:1218+` citation still
+// names that FILE. Only the first two forms were stripped, so one changed file
+// arrived as three areas that scored `no-overlap` against each other and against
+// a bare citation of the same file — a missed edge minted out of a correct plan.
+const LINE_LOCATOR_RE = /:\d+(?:[-–]\d+)?(?:,\d+(?:[-–]\d+)?)*\+?$/
+
+// A dot-prefixed leading segment (`.codex/skills/x`, `.github/workflows/ci.yml`)
+// is a top-level source root by shape alone — nothing else in a repo is written
+// that way — so it resolves without the caller having declared it in the roots it
+// builds ad hoc. At least one name character after the dot is required, or `..`
+// would read as a root and admit a path pointing OUT of the repository.
+const DOT_ROOT_SEGMENT_RE = /^\.[a-z0-9_-]+$/
 
 // `node.js` still reads as a filename, deliberately: by shape alone it is
 // indistinguishable from one, and the only rules that could separate them — an
 // extension allowlist or a stem allowlist — would hard-code one language
 // ecosystem into a core that ships into every repository.
+//
+// Read the token in its ORIGINAL case, but the discriminator is the member's
+// case SHAPE, not the extension's own case. A selector member is capitalised and
+// carries a lowercase letter (`cfg.Hostname`, `daemonstate.Write`,
+// `settings.DaemonName`); an extension written in ONE case — `.md`, `.MD` — never
+// is. Testing `FILE_EXTENSION_RE` (lowercase-only by construction) on the
+// unfolded token alone reads the same four Go selectors out, whose only
+// documented remedy would have minted `cfg` and `daemonstate` as module roots —
+// but it also drops `README.MD`, a real file, out of `unresolved` and into
+// nothing at all, trading one never-matching class for a silently-missing one.
+// The abbreviation half stays on the folded value, or `E.g` walks straight back
+// in as a filename. A LOWERCASE selector member (`cfg.host`) is still missed: it
+// is indistinguishable from a filename by shape, and the alternative is the stem
+// allowlist this core refuses.
 function namesAFile(value) {
-  return FILE_EXTENSION_RE.test(value) && !PROSE_DOTTED_ABBREVIATION_RE.test(value)
+  const member = value.slice(value.lastIndexOf('.') + 1)
+  if (SELECTOR_MEMBER_RE.test(value) && /[a-z]/.test(member)) return false
+  const folded = value.toLowerCase()
+  return FILE_EXTENSION_RE.test(folded) && !PROSE_DOTTED_ABBREVIATION_RE.test(folded)
 }
 
 // ---------------------------------------------------------------------------
@@ -533,27 +566,63 @@ function braceAreaTokens(token, limit = BRACE_EXPANSION_LIMIT) {
  * rejecting every area at once.
  */
 function classifyAreaToken(token, moduleRoots, marked) {
-  let value = text(token).replace(/\r/g, '').replace(/\*\*/g, '').trim()
+  // `**` adjacent to a slash is a DOUBLESTAR PATH SEGMENT, never bold delimiters.
+  // Stripping it unconditionally rewrote `services/**/testdata` into an empty path
+  // segment (`services//testdata`) — an area no changed-file path can ever equal,
+  // emitted as a confident `area` because the wildcard guard below runs too late
+  // to see a wildcard that is already gone. Left standing, the glob reaches that
+  // guard and is recorded as an areless entry instead.
+  const raw = text(token)
+    .replace(/\r/g, '')
+    .replace(/(?<![/*])\*\*(?![/*])/g, '')
+    .trim()
+  // An angle bracket marks a RUNTIME PLACEHOLDER (`<run-dir>/log`), which names no
+  // file that can ever exist and so has no repo-relative rewrite. Tested on the
+  // RAW token, because the leading-character strip below eats the `<` and leaves
+  // the mangled `run-dir>/log` — the exact token that reached an operator as an
+  // unresolved area with no satisfiable remedy.
+  if (raw.includes('<') || raw.includes('>')) return {}
+  let value = raw
   value = value.replace(/^[`'"(<[]+/, '').replace(/[`'")>\],;.]+$/, '')
-  value = value.replace(/:\d+(?:[-–]\d+)?$/, '') // a `path:12-20` line anchor is still that path
+  value = value.replace(LINE_LOCATOR_RE, '') // a `path:12-20` line anchor is still that path
   value = value.trim()
   if (value === '') return {}
   if (/\s/.test(value)) return {} // a command or a phrase, never an area
   if (value.includes('://')) return {} // a URL
   if (value.startsWith('-')) return {} // a flag
   value = value.replace(/^\.\//, '').replace(/^~\//, '')
-  value = value.replace(/\/?\*+$/, '') // a glob suffix names the directory
+  // A wildcard SEGMENT names the directory holding it. `areasOverlap` compares
+  // path segments and no real file is ever named `*.sql`, so
+  // `services/x/migrations/*.sql` was an area that could never match the very
+  // files it was written to name. Subsumes the older `dir/*` and `dir/**` forms.
+  // Whether that collapse consumed the token's ONLY slash decides the outcome of
+  // the slash-free branch below: `skills-toolbox/*.mjs` is path-shaped surface the
+  // plan genuinely named, and falling through to the prose branch on an undeclared
+  // root dropped it to `{}` while the explicit `skills-toolbox/plan-deps-lib.mjs`
+  // produced an area — the middle outcome collapsed, which this module forbids.
+  const globCollapsedToWord = /^[^/]*\/[^/]*\*[^/]*$/.test(value)
+  value = value.replace(/\/[^/]*\*[^/]*$/, '')
+  value = value.replace(/\/?\*+$/, '') // a bare glob suffix names the directory
   value = value.replace(/\/+$/, '')
   value = value.replace(/[.,;:]+$/, '')
-  value = value.toLowerCase()
   if (value === '') return {}
-  const named = namesAFile(value)
+  const named = namesAFile(value) // on the UNFOLDED value — see `namesAFile`
+  value = value.toLowerCase()
+  // A wildcard surviving the segment collapse sits mid-path (`a*b/c.go`) and names
+  // no single site; an area carrying one can only ever compare false.
+  if (value.includes('*')) return {}
   if (value.includes('/')) {
+    const root = value.split('/')[0]
+    // A parent escape names a site OUTSIDE this repository, so no repo-relative
+    // area can stand for it — yet `../escape/x.go` resolved as an area on the
+    // strength of its extension alone. Reported, never guessed at.
+    if (root === '..') return { unresolved: value }
     if (moduleRoots.size === 0) return { area: value }
     // A leading segment the caller never declared: `origin/main`, a `/route`
     // string, a `vendor/legacy` tree named parenthetically. Path-shaped, but
     // nothing here can say whether it is a change site.
-    if (moduleRoots.has(value.split('/')[0])) return { area: value }
+    if (moduleRoots.has(root)) return { area: value }
+    if (DOT_ROOT_SEGMENT_RE.test(root)) return { area: value }
     return named ? { area: value } : { unresolved: value }
   }
   // A bare module-root name is a change site ONLY where the author marked it as
@@ -562,6 +631,9 @@ function classifyAreaToken(token, moduleRoots, marked) {
   // one shape" contributed `web` and `services` as areas, which `areasOverlap`
   // then containment-matched against every file beneath them.
   if (moduleRoots.has(value)) return marked ? { area: value } : {}
+  // The directory a one-level glob named, under a root the caller never declared.
+  // Reported, never guessed at — see `globCollapsedToWord`.
+  if (globCollapsedToWord) return { unresolved: value }
   // A basename with no directory — `SKILL.md`, `finalize.go`. It names a file
   // and matches dozens of them; resolving it here would trade one recorded
   // missed edge for an unbounded new source of fabricated ones.
@@ -573,23 +645,47 @@ function areasFromLines(lines, moduleRoots) {
   const seenUnresolved = new Set()
   const areas = []
   const unresolved = []
+  const arealessEntries = []
   for (const entry of joinWrappedLines(lines)) {
+    let produced = false
     for (const { value, marked } of entryTokens(entry)) {
       for (const expanded of braceAreaTokens(value)) {
         const outcome = classifyAreaToken(expanded, moduleRoots, marked)
         if (outcome.area !== undefined) {
+          produced = true // BEFORE the dedupe: a repeat is still an outcome
           if (seenAreas.has(outcome.area)) continue
           seenAreas.add(outcome.area)
           areas.push(outcome.area)
         } else if (outcome.unresolved !== undefined) {
+          produced = true
           if (seenUnresolved.has(outcome.unresolved)) continue
           seenUnresolved.add(outcome.unresolved)
           unresolved.push(outcome.unresolved)
         }
       }
     }
+    // A LIST ITEM that produced neither outcome is a change surface this scan
+    // LOST, and the loss was invisible while the return said `unresolved: []` —
+    // a non-empty `areas` then understates the surface and nothing says so.
+    // Only list items are accounted: promoting every prose line into `unresolved`
+    // instead is the alternative this module refuses, because a warning that
+    // fires on nearly every plan is how a real one stops being read.
+    if (!produced && LIST_MARKER_RE.test(entry)) {
+      const item = entry.replace(LIST_MARKER_RE, '').trim()
+      if (item !== '') arealessEntries.push(item)
+    }
   }
-  return { areas, unresolved }
+  // A bare basename beside its own resolved path is not an unplaceable token, it
+  // is one file named twice (`bs-review-caps.mjs` beside
+  // `skills-toolbox/bs-review-caps.mjs`) — reported, it sends a planner looking
+  // for a second change site that does not exist. A POST-pass, because the
+  // qualifying path routinely appears in a LATER bullet than the bare mention.
+  const resolvedBasenames = new Set(areas.map((area) => area.slice(area.lastIndexOf('/') + 1)))
+  return {
+    areas,
+    unresolved: unresolved.filter((value) => value.includes('/') || !resolvedBasenames.has(value)),
+    arealessEntries,
+  }
 }
 
 /**
@@ -605,7 +701,7 @@ function areasFromLines(lines, moduleRoots) {
  * @param {{moduleRoots?: string[], keyChangesHeading?: string}} [options]
  *   `moduleRoots` admits bare, slash-free tokens (a repo's top-level module names)
  *   as areas; `keyChangesHeading` overrides the heading resolved from the contract.
- * @returns {{areas: string[], unresolved: string[], source: 'key-changes'|'fallback-text'|'none'}}
+ * @returns {{areas: string[], unresolved: string[], arealessEntries: string[], source: 'key-changes'|'fallback-text'|'none'}}
  *   `source` distinguishes THREE outcomes that must never be conflated: the
  *   section was parsed (`key-changes`), the section was absent so the whole
  *   description was scanned (`fallback-text`), or there was no body to read at
@@ -619,6 +715,15 @@ function areasFromLines(lines, moduleRoots) {
  *   reading `.areas` keeps working unchanged. Feed it back as
  *   `subjectUnresolvedAreas` to `planDependencyEdges` and an arealess scan stops
  *   looking like a clean one.
+ *
+ *   `arealessEntries` is a second ADDITIVE field, informational rather than
+ *   actionable: each LIST-ITEM entry that produced neither an area nor an
+ *   unresolved token, with its list marker stripped. It makes a silently dropped
+ *   bullet AVAILABLE to a caller that chooses to read it, without growing
+ *   `unresolved`, which every prose bullet would otherwise flood. No shipped
+ *   caller surfaces it yet, so do NOT lean on it as the safety net that makes a
+ *   `{}` outcome operator-visible — it is not one until a caller unrolls it.
+ *   It does not make the dropped bullet resolvable either way.
  */
 export function extractKeyChangeAreas(config, description, options = {}) {
   assertConfigFirst(config, 'extractKeyChangeAreas')
@@ -640,7 +745,7 @@ export function extractKeyChangeAreas(config, description, options = {}) {
 
   const lines = scanFences(section.bodyLines.join('\n')).lines.map((entry) => entry.line)
   if (!lines.some((line) => line.trim() !== '')) {
-    return { areas: [], unresolved: [], source: 'none' }
+    return { areas: [], unresolved: [], arealessEntries: [], source: 'none' }
   }
   return { ...areasFromLines(lines, moduleRoots), source: 'key-changes' }
 }

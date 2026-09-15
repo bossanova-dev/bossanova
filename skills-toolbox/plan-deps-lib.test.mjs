@@ -697,6 +697,269 @@ test('an unresolved-token warning stands down when every token resolved', () => 
 })
 
 // ---------------------------------------------------------------------------
+// BOS-1256 — one row per RECORDED mis-parse of a NON-PATH token.
+//
+// Same two-directional construction as the block above: every row pairs the
+// defective input with a CONTROL the rule must not move, because a classifier
+// change that suppressed every dotted token, every colon and every bracket would
+// pass a one-sided assertion while destroying the extraction it was meant to fix.
+// ---------------------------------------------------------------------------
+
+test('BOS-1187: a line locator is stripped so one changed file is one area', () => {
+  const result = areas(
+    planBody(
+      [
+        '- `services/bosso/cmd/main.go` — the handler',
+        '- `services/bosso/cmd/main.go:1218+` — the append site',
+        '- `services/bosso/cmd/main.go:339,344,345` — the three call sites',
+      ].join('\n') + '\n',
+    ),
+    { moduleRoots: ['services'] },
+  )
+  assert.deepEqual(
+    result.areas,
+    ['services/bosso/cmd/main.go'],
+    'a `+` suffix and a comma list are line LOCATORS, not path segments; retained, one changed file arrived as three areas that scored no-overlap against each other',
+  )
+  assert.equal(
+    areasOverlap(result.areas, ['services/bosso/cmd/main.go']).overlap,
+    true,
+    'and the surviving area must compare true against a bare citation of the same file',
+  )
+
+  // The rule genuinely RUNS: with no bare spelling in the body there is nothing
+  // for a dedupe to collapse onto, so the stripped form can only come from the strip.
+  assert.deepEqual(
+    areas(planBody('- `services/bosso/cmd/main.go:339,344,345` — only the suffixed form\n'), {
+      moduleRoots: ['services'],
+    }).areas,
+    ['services/bosso/cmd/main.go'],
+  )
+
+  // Control: the two forms that already worked must not move.
+  assert.deepEqual(
+    areas(planBody('- `app/api/handlers.ts:120-140` and `app/api/router.ts:12`\n'), {
+      moduleRoots: ['app'],
+    }).areas,
+    ['app/api/handlers.ts', 'app/api/router.ts'],
+  )
+})
+
+test('BOS-1196: an angle-bracketed placeholder is prose, and its bullet-mate still resolves', () => {
+  const result = areas(
+    planBody(
+      '- the verdict line is at `<run-dir>/log`, written by `services/boss/internal/run.go`\n',
+    ),
+    { moduleRoots: ['services'] },
+  )
+  assert.deepEqual(
+    result.areas,
+    ['services/boss/internal/run.go'],
+    'control: the drop must be per TOKEN — rejecting the whole entry would take the real change site with it',
+  )
+  assert.deepEqual(
+    result.unresolved,
+    [],
+    'a runtime placeholder names no file that can ever exist, so no rewrite can satisfy the remedy the warning prescribes',
+  )
+  assert.ok(
+    ![...result.areas, ...result.unresolved].some(
+      (token) => token.includes('<') || token.includes('>'),
+    ),
+    'the leading-character strip ate the `<` and shipped the mangled `run-dir>/log`; no returned token may carry a bracket',
+  )
+})
+
+test('BOS-1226/BOS-1229: a dotted SELECTOR is prose while a dotted FILENAME is still reported', () => {
+  const result = areas(
+    planBody(
+      [
+        '- thread `cfg.Hostname` through `daemonstate.Metadata`, `settings.DaemonName` and `daemonstate.Write`',
+        '- and refresh `CLAUDE.md`',
+      ].join('\n') + '\n',
+    ),
+    { moduleRoots: ['services'] },
+  )
+  assert.deepEqual(result.areas, [], 'a selector expression is not a change site')
+  assert.deepEqual(
+    result.unresolved,
+    ['claude.md'],
+    'control: the extension case is the whole discriminator — suppressing every dotted token would take the genuine basename with it, and the remedy for the selectors would have minted `cfg` and `daemonstate` as module roots',
+  )
+  assert.deepEqual(
+    result.arealessEntries,
+    [
+      'thread `cfg.Hostname` through `daemonstate.Metadata`, `settings.DaemonName` and `daemonstate.Write`',
+    ],
+    'dropping the selectors must not make the loss invisible: the bullet that resolved to nothing is still reported',
+  )
+})
+
+test('BOS-1225: a dot-prefixed root resolves undeclared, while a parent escape does not', () => {
+  const result = areas(
+    planBody('- `.codex/skills/bs-sweep-update/` regenerated from `../escape/x.go`\n'),
+    { moduleRoots: ['services'] },
+  )
+  assert.deepEqual(
+    result.areas,
+    ['.codex/skills/bs-sweep-update'],
+    'nothing but a source root is written `.name/`, so it needs no declaration — the recorded remedy worked but required a root every ad-hoc list forgets',
+  )
+  assert.deepEqual(
+    result.unresolved,
+    ['../escape/x.go'],
+    'control: the rule needs a name character after the dot, or `..` reads as a root and a path pointing OUT of the repository becomes an area on the strength of its extension',
+  )
+})
+
+test('BOS-1197: a bare basename already covered by a resolved area is suppressed', () => {
+  const covered = areas(
+    planBody(
+      [
+        '- the `bs-review-caps.mjs` cap is recomputed',
+        '- in `skills-toolbox/bs-review-caps.mjs`',
+      ].join('\n') + '\n',
+    ),
+    { moduleRoots: ['skills-toolbox'] },
+  )
+  assert.deepEqual(
+    covered.areas,
+    ['skills-toolbox/bs-review-caps.mjs'],
+    'the bare mention and the qualified path are ONE file named twice',
+  )
+  assert.deepEqual(
+    covered.unresolved,
+    [],
+    'and the suppression is order-INDEPENDENT: the qualifying path is in a later bullet than the bare mention',
+  )
+
+  // Control: a basename with no matching area is still reported, or the
+  // suppression has swallowed the BOS-1116 outcome it must leave standing.
+  assert.deepEqual(
+    areas(planBody('- the `bs-review-caps.mjs` cap is recomputed\n'), {
+      moduleRoots: ['skills-toolbox'],
+    }).unresolved,
+    ['bs-review-caps.mjs'],
+  )
+})
+
+test('BOS-1191: a wildcard segment collapses to the directory it names', () => {
+  const result = areas(
+    planBody('- `services/bosso/migrations_postgres/*.sql` — the new migration\n'),
+    { moduleRoots: ['services'] },
+  )
+  assert.deepEqual(
+    result.areas,
+    ['services/bosso/migrations_postgres'],
+    'no real file is ever named `*.sql`, so the retained glob was an area that could never match the files it was written to name',
+  )
+  assert.equal(
+    areasOverlap(result.areas, ['services/bosso/migrations_postgres/0042_add_org.sql']).overlap,
+    true,
+  )
+  assert.ok(
+    !result.areas.some((area) => area.includes('*')),
+    'a wildcard is a way of naming concrete paths, never an area token itself',
+  )
+
+  // Control: the two glob forms that already collapsed must not move.
+  assert.deepEqual(
+    areas(planBody('- `app/web/**` and `app/api/*`\n'), { moduleRoots: ['app'] }).areas,
+    ['app/web', 'app/api'],
+  )
+})
+
+test('BOS-1256: a doublestar path segment is not bold, and never mints an empty-segment area', () => {
+  const globbed = areas(planBody('- `services/**/testdata` regenerated\n'), {
+    moduleRoots: ['services'],
+  })
+  assert.deepEqual(
+    globbed.areas,
+    [],
+    'stripping `**` as bold rewrote the glob into `services//testdata` — an area no changed-file path can ever equal, emitted as a confident area because the wildcard guard never saw a wildcard',
+  )
+  assert.ok(
+    !globbed.areas.some((area) => area.includes('//')),
+    'an empty path segment names no site at all',
+  )
+  assert.deepEqual(
+    globbed.arealessEntries,
+    ['`services/**/testdata` regenerated'],
+    'the mid-path glob is recorded as a loss rather than guessed at',
+  )
+
+  // Control: REAL bold delimiters must still be stripped, or the narrowed rule
+  // has traded a malformed area for a mangled one.
+  assert.deepEqual(
+    areas(planBody('- **`services/boss/main.go`** — the real change\n'), {
+      moduleRoots: ['services'],
+    }).areas,
+    ['services/boss/main.go'],
+  )
+})
+
+test('BOS-1256: an uppercase extension still names a file, while a selector member does not', () => {
+  const shouted = areas(planBody('- `services/boss/main.go` and `README.MD` both change\n'), {
+    moduleRoots: ['services'],
+  })
+  assert.deepEqual(
+    shouted.unresolved,
+    ['readme.md'],
+    'reading the extension in its original case to reject Go selectors also dropped a real file written in caps out of `unresolved` — and beside a resolved area the loss had no accounting at all',
+  )
+  assert.deepEqual(shouted.areas, ['services/boss/main.go'])
+
+  // Control: the selector rule the case read was added for must still hold, or
+  // the uppercase repair has walked `cfg.Hostname` back in as a filename.
+  const selectors = areas(planBody('- thread `cfg.Hostname` through `daemonstate.Write`\n'), {
+    moduleRoots: ['services'],
+  })
+  assert.deepEqual(selectors.unresolved, [], 'a selector expression is not a change site')
+  assert.deepEqual(selectors.areas, [])
+})
+
+test('BOS-1256: a one-level glob under an undeclared root is reported, not dropped to prose', () => {
+  assert.deepEqual(
+    areas(planBody('- `skills-toolbox/*.mjs` are regenerated\n'), { moduleRoots: ['services'] })
+      .unresolved,
+    ['skills-toolbox'],
+    'the collapse consumed the token`s only slash, so the surviving word fell out of the path branch and produced NOTHING — while the explicit spelling of the same change produced an area',
+  )
+
+  // Control: the same shape under a DECLARED root stays an area, or the new
+  // route has promoted every resolvable directory glob into a warning.
+  const declared = areas(planBody('- `docs/plans/*.md` are added\n'), { moduleRoots: ['docs'] })
+  assert.deepEqual(declared.areas, ['docs/plans'])
+  assert.deepEqual(declared.unresolved, [])
+})
+
+test('BOS-1191: a bullet that resolved to nothing is reported, and a resolved body reports none', () => {
+  const lossy = areas(
+    planBody('- Tidy up the wording throughout\n- `services/boss/main.go` — the real change\n'),
+    { moduleRoots: ['services'] },
+  )
+  assert.deepEqual(
+    lossy.arealessEntries,
+    ['Tidy up the wording throughout'],
+    'a non-empty `areas` beside `unresolved: []` understated the change surface with nothing saying so',
+  )
+  assert.deepEqual(
+    lossy.unresolved,
+    [],
+    'and a prose bullet is NOT promoted into the actionable list — a warning raised on nearly every plan is how a real one stops being read',
+  )
+  assert.deepEqual(lossy.areas, ['services/boss/main.go'])
+
+  // Control: the field must be capable of being EMPTY, or its populated case
+  // proves only that every bullet lands in it.
+  assert.deepEqual(
+    areas(planBody('- `services/boss/main.go` — the only change\n'), { moduleRoots: ['services'] })
+      .arealessEntries,
+    [],
+  )
+})
+
+// ---------------------------------------------------------------------------
 // Defect 2 — overlap is a precondition, and the granularity is stated
 // ---------------------------------------------------------------------------
 

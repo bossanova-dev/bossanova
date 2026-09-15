@@ -38,6 +38,7 @@ import {
   command,
   moduleTestCommand,
   manifestPath,
+  testSelection,
   markdownH2Heading,
   isHeadless,
   adapterFor,
@@ -368,6 +369,338 @@ test('validateConfig rejects an empty test.manifestPath', () => {
     () => validateConfig({ ...DEFAULT_CONFIG, test: { manifestPath: '' } }, 'test'),
     /skill-config:.*test\.manifestPath must be a non-empty string when present/,
   )
+})
+
+// BOS-1263: the testSelection block — a repo's declared changed-file -> test-file mapping.
+// Validated beside commands / test and carrying the same posture: absent is legal and normal,
+// present-but-malformed fails loudly at load rather than as a raw TypeError inside a headless run.
+
+test('BOS-1263: an absent testSelection block resolves clean and leaves no key behind', () => {
+  // Absent must stay ABSENT, not normalize to {}: `'testSelection' in cfg` is how a consumer
+  // tells "this repo declares no selection" from "declared, and empty".
+  validateConfig(DEFAULT_CONFIG, 'test')
+  assert.equal('testSelection' in DEFAULT_CONFIG, false)
+})
+
+test('BOS-1263: a minimal valid testSelection block round-trips its values', () => {
+  const config = {
+    ...DEFAULT_CONFIG,
+    testSelection: { rules: [{ changed: 'lib/**', tests: ['lib/**/*_test.go'] }] },
+  }
+  validateConfig(config, 'test')
+  assert.deepEqual(config.testSelection.rules, [{ changed: 'lib/**', tests: ['lib/**/*_test.go'] }])
+})
+
+test('BOS-1263: a full valid block preserves rules, sharedFiles and testRoots in declared order', () => {
+  // Declared ORDER is the assertion, not merely set membership: rules union rather than
+  // short-circuit, and a later consumer reporting "selected N of M" reads them as written.
+  const rules = [
+    { changed: 'services/boss/**', tests: ['services/boss/**/*_test.go'] },
+    { changed: 'services/bossd/**', tests: ['services/bossd/**/*_test.go'] },
+    { changed: 'scripts/**', tests: ['scripts/**/*.test.mjs', 'skills-toolbox/**/*.test.mjs'] },
+  ]
+  const sharedFiles = ['Makefile', 'go.work', 'proto/**']
+  const testRoots = ['**/*_test.go', '**/*.test.mjs']
+  const config = { ...DEFAULT_CONFIG, testSelection: { rules, sharedFiles, testRoots } }
+  validateConfig(config, 'test')
+  assert.deepEqual(
+    config.testSelection.rules.map((r) => r.changed),
+    ['services/boss/**', 'services/bossd/**', 'scripts/**'],
+  )
+  assert.deepEqual(config.testSelection.rules[2].tests, [
+    'scripts/**/*.test.mjs',
+    'skills-toolbox/**/*.test.mjs',
+  ])
+  assert.deepEqual(config.testSelection.sharedFiles, sharedFiles)
+  assert.deepEqual(config.testSelection.testRoots, testRoots)
+})
+
+test('BOS-1263: a non-object testSelection block is rejected', () => {
+  for (const block of [null, 'rules', 42, []]) {
+    assert.throws(
+      () => validateConfig({ ...DEFAULT_CONFIG, testSelection: block }, 'test'),
+      /skill-config:.*testSelection must be an object when present/,
+      `${JSON.stringify(block)} must be rejected as a non-object block`,
+    )
+  }
+})
+
+test('BOS-1263: a present block with absent or empty rules is malformed, not empty', () => {
+  // A repo that means "no selection" omits the BLOCK. A present block declaring no rule reads as
+  // a configured selection that selects nothing, which is the under-selection direction.
+  for (const rules of [undefined, [], {}, 'lib/**']) {
+    assert.throws(
+      () => validateConfig({ ...DEFAULT_CONFIG, testSelection: { rules } }, 'test'),
+      /skill-config:.*testSelection\.rules must be a non-empty array when testSelection is present/,
+      `rules=${JSON.stringify(rules)} must be rejected`,
+    )
+  }
+})
+
+test('BOS-1263: a rule with a missing, empty or non-string changed fails and names its index', () => {
+  const good = { changed: 'a/**', tests: ['a/**/*_test.go'] }
+  for (const changed of [undefined, '', 7, null, ['a/**']]) {
+    assert.throws(
+      () =>
+        validateConfig(
+          { ...DEFAULT_CONFIG, testSelection: { rules: [good, { changed, tests: ['t'] }] } },
+          'test',
+        ),
+      /skill-config:.*testSelection\.rules\[1\]\.changed must be a non-empty string/,
+      `changed=${JSON.stringify(changed)} must be rejected against index 1`,
+    )
+  }
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, testSelection: { rules: [good, null] } }, 'test'),
+    /skill-config:.*testSelection\.rules\[1\] must be an object/,
+  )
+})
+
+test('BOS-1263: a rule whose tests is missing, empty or holds a non-string fails', () => {
+  for (const tests of [undefined, [], {}, 'a/**/*_test.go']) {
+    assert.throws(
+      () =>
+        validateConfig(
+          { ...DEFAULT_CONFIG, testSelection: { rules: [{ changed: 'a/**', tests }] } },
+          'test',
+        ),
+      /skill-config:.*testSelection\.rules\[0\]\.tests must be a non-empty array/,
+      `tests=${JSON.stringify(tests)} must be rejected`,
+    )
+  }
+  for (const entry of ['', 7, null]) {
+    assert.throws(
+      () =>
+        validateConfig(
+          {
+            ...DEFAULT_CONFIG,
+            testSelection: { rules: [{ changed: 'a/**', tests: ['ok', entry] }] },
+          },
+          'test',
+        ),
+      /skill-config:.*testSelection\.rules\[0\]\.tests\[1\] must be a non-empty string/,
+      `tests entry ${JSON.stringify(entry)} must be rejected against index 1`,
+    )
+  }
+})
+
+test('BOS-1263: sharedFiles and testRoots reject non-arrays, non-strings and empty strings', () => {
+  const rules = [{ changed: 'a/**', tests: ['a/**/*_test.go'] }]
+  for (const field of ['sharedFiles', 'testRoots']) {
+    for (const value of ['Makefile', 7, {}]) {
+      assert.throws(
+        () =>
+          validateConfig({ ...DEFAULT_CONFIG, testSelection: { rules, [field]: value } }, 'test'),
+        new RegExp(`skill-config:.*testSelection\\.${field} must be an array of non-empty strings`),
+        `${field}=${JSON.stringify(value)} must be rejected as a non-array`,
+      )
+    }
+    for (const entry of ['', 7, null]) {
+      assert.throws(
+        () =>
+          validateConfig(
+            { ...DEFAULT_CONFIG, testSelection: { rules, [field]: ['Makefile', entry] } },
+            'test',
+          ),
+        new RegExp(`skill-config:.*testSelection\\.${field}\\[1\\] must be a non-empty string`),
+        `${field} entry ${JSON.stringify(entry)} must be rejected against index 1`,
+      )
+    }
+    // Absent is legal for both — a repo may declare rules and enumerate neither.
+    validateConfig({ ...DEFAULT_CONFIG, testSelection: { rules } }, 'test')
+    // Explicitly EMPTY is legal too: "I enumerated these and there are none".
+    validateConfig({ ...DEFAULT_CONFIG, testSelection: { rules, [field]: [] } }, 'test')
+  }
+})
+
+test('BOS-1263: every malformed testSelection shape fails as a skill-config: error, never a raw TypeError', () => {
+  // The whole reason this block is validated rather than smuggled into `commands.*`: the failure
+  // a repo sees is a named config error at load, not a TypeError deep inside a headless consumer.
+  const malformed = [
+    ['null block', null],
+    ['string block', 'rules'],
+    ['array block', []],
+    ['no rules', {}],
+    ['empty rules', { rules: [] }],
+    ['rules object', { rules: {} }],
+    ['null rule', { rules: [null] }],
+    ['rule missing changed', { rules: [{ tests: ['t'] }] }],
+    ['rule empty changed', { rules: [{ changed: '', tests: ['t'] }] }],
+    ['rule non-string changed', { rules: [{ changed: 7, tests: ['t'] }] }],
+    ['rule missing tests', { rules: [{ changed: 'a/**' }] }],
+    ['rule empty tests', { rules: [{ changed: 'a/**', tests: [] }] }],
+    ['rule non-string test', { rules: [{ changed: 'a/**', tests: [7] }] }],
+    ['rule empty-string test', { rules: [{ changed: 'a/**', tests: [''] }] }],
+    ['non-string sharedFiles entry', { rules: [{ changed: 'a', tests: ['t'] }], sharedFiles: [7] }],
+    ['empty sharedFiles entry', { rules: [{ changed: 'a', tests: ['t'] }], sharedFiles: [''] }],
+    ['non-array testRoots', { rules: [{ changed: 'a', tests: ['t'] }], testRoots: 'x' }],
+    ['non-string testRoots entry', { rules: [{ changed: 'a', tests: ['t'] }], testRoots: [null] }],
+  ]
+  for (const [label, block] of malformed) {
+    let caught = null
+    try {
+      validateConfig({ ...DEFAULT_CONFIG, testSelection: block }, 'test')
+    } catch (err) {
+      caught = err
+    }
+    assert.ok(caught, `${label}: must be rejected`)
+    assert.ok(
+      !(caught instanceof TypeError),
+      `${label}: must not surface as a raw TypeError (${caught && caught.message})`,
+    )
+    assert.match(
+      caught.message,
+      /^skill-config: invalid config from test: testSelection/,
+      `${label}: the error must name testSelection`,
+    )
+  }
+})
+
+// BOS-1263: testSelection(config) — the accessor. Mirrors command()'s null-on-absence contract,
+// which is what keeps "this repo declares no selection" distinguishable from "selected nothing".
+
+test('BOS-1263: testSelection returns exactly null when the repo declares no block', () => {
+  // Exactly null — not {} and not undefined. A consumer reads null as "run everything".
+  assert.strictEqual(testSelection(DEFAULT_CONFIG), null)
+  assert.strictEqual(testSelection({}), null)
+  assert.strictEqual(testSelection(undefined), null)
+  assert.strictEqual(testSelection(null), null)
+})
+
+test('BOS-1263: testSelection returns rules in declared order', () => {
+  const config = {
+    testSelection: {
+      rules: [
+        { changed: 'services/boss/**', tests: ['services/boss/**/*_test.go'] },
+        { changed: 'scripts/**', tests: ['scripts/**/*.test.mjs', 'skills-toolbox/**/*.test.mjs'] },
+        { changed: 'services/web/**', tests: ['services/web/**/*.test.tsx'] },
+      ],
+    },
+  }
+  assert.deepEqual(
+    testSelection(config).rules.map((r) => r.changed),
+    ['services/boss/**', 'scripts/**', 'services/web/**'],
+  )
+  assert.deepEqual(testSelection(config).rules[1].tests, [
+    'scripts/**/*.test.mjs',
+    'skills-toolbox/**/*.test.mjs',
+  ])
+})
+
+test('BOS-1263: testSelection defaults omitted sharedFiles and testRoots to empty arrays', () => {
+  // A consumer null-checks the BLOCK and never its members, so both must always be arrays.
+  const block = testSelection({ testSelection: { rules: [{ changed: 'a/**', tests: ['t'] }] } })
+  assert.deepEqual(block.sharedFiles, [])
+  assert.deepEqual(block.testRoots, [])
+  const partial = testSelection({
+    testSelection: { rules: [{ changed: 'a/**', tests: ['t'] }], sharedFiles: ['Makefile'] },
+  })
+  assert.deepEqual(partial.sharedFiles, ['Makefile'])
+  assert.deepEqual(partial.testRoots, [])
+})
+
+test('BOS-1263: the returned block does not alias the config, so a caller cannot corrupt a later read', () => {
+  const config = {
+    testSelection: {
+      rules: [{ changed: 'a/**', tests: ['a/**/*_test.go'] }],
+      sharedFiles: ['Makefile'],
+      testRoots: ['**/*_test.go'],
+    },
+  }
+  const first = testSelection(config)
+  first.rules.push({ changed: 'spliced/**', tests: ['x'] })
+  first.rules[0].tests.push('spliced')
+  first.rules[0].changed = 'mutated/**'
+  first.sharedFiles.push('spliced')
+  first.testRoots.length = 0
+
+  const second = testSelection(config)
+  assert.deepEqual(second.rules, [{ changed: 'a/**', tests: ['a/**/*_test.go'] }])
+  assert.deepEqual(second.sharedFiles, ['Makefile'])
+  assert.deepEqual(second.testRoots, ['**/*_test.go'])
+  // And the config itself is untouched.
+  assert.deepEqual(config.testSelection.rules, [{ changed: 'a/**', tests: ['a/**/*_test.go'] }])
+})
+
+test('BOS-1263: null means absence, and is distinguishable from a block that selects nothing', () => {
+  // R2's whole point. A rule that matches no changed file still yields a BLOCK — the caller sees
+  // a declared selection whose rules simply did not fire — where absence yields null.
+  const declared = testSelection({
+    testSelection: { rules: [{ changed: 'never/matches/**', tests: ['never/**/*_test.go'] }] },
+  })
+  assert.notStrictEqual(declared, null)
+  assert.equal(declared.rules.length, 1)
+  assert.strictEqual(testSelection({ commands: { build: 'make' } }), null)
+})
+
+test('BOS-1263: a structurally unusable block resolves to null rather than throwing', () => {
+  // validateConfig rejects every shape below, so a VALIDATED config never reaches this path —
+  // but hand-built and merged configs do, and for them null is the fail-safe (a FULL run) while
+  // a raw TypeError or a half-fabricated selection is not.
+  const unusable = [
+    { testSelection: 'rules' },
+    { testSelection: [] },
+    { testSelection: {} },
+    { testSelection: { rules: [] } },
+    { testSelection: { rules: {} } },
+    { testSelection: { rules: [null] } },
+    { testSelection: { rules: [{ tests: ['t'] }] } },
+    { testSelection: { rules: [{ changed: '', tests: ['t'] }] } },
+    { testSelection: { rules: [{ changed: 'a', tests: [] }] } },
+    { testSelection: { rules: [{ changed: 'a', tests: 'not-an-array' }] } },
+    { testSelection: { rules: [{ changed: 'a', tests: [''] }] } },
+    { testSelection: { rules: [{ changed: 'a', tests: ['t'] }], sharedFiles: 'Makefile' } },
+    { testSelection: { rules: [{ changed: 'a', tests: ['t'] }], testRoots: [7] } },
+  ]
+  for (const config of unusable) {
+    assert.strictEqual(
+      testSelection(config),
+      null,
+      `${JSON.stringify(config)} must resolve to the fail-safe null`,
+    )
+  }
+})
+
+test('BOS-1263: a block that survives validateConfig also survives the accessor, and vice versa', () => {
+  // The two shape checks are written separately — the validator names the offending index, the
+  // accessor returns a boolean verdict — so pin that they agree. A shape the validator accepts
+  // but the accessor nulls would silently downgrade a configured repo to full runs forever.
+  const shapes = [
+    { rules: [{ changed: 'a/**', tests: ['t'] }] },
+    { rules: [{ changed: 'a/**', tests: ['t'] }], sharedFiles: [] },
+    {
+      rules: [{ changed: 'a/**', tests: ['t'] }],
+      sharedFiles: ['Makefile'],
+      testRoots: ['**/*_test.go'],
+    },
+    {
+      rules: [
+        { changed: 'a/**', tests: ['t', 'u'] },
+        { changed: 'b/**', tests: ['v'] },
+      ],
+    },
+    null,
+    [],
+    {},
+    { rules: [] },
+    { rules: [{ changed: '', tests: ['t'] }] },
+    { rules: [{ changed: 'a', tests: [''] }] },
+    { rules: [{ changed: 'a', tests: ['t'] }], testRoots: [''] },
+  ]
+  for (const block of shapes) {
+    let validates = true
+    try {
+      validateConfig({ ...DEFAULT_CONFIG, testSelection: block }, 'test')
+    } catch {
+      validates = false
+    }
+    const resolves = testSelection({ testSelection: block }) !== null
+    assert.equal(
+      resolves,
+      validates,
+      `${JSON.stringify(block)}: validator says ${validates}, accessor says ${resolves}`,
+    )
+  }
 })
 
 // BOS-856: the opportunistic default-round registry. It is the seam that keeps a concrete
@@ -3371,6 +3704,181 @@ const rawToleratedIds = (raw) =>
 
 const unrecognisedIn = (ids) =>
   ids.filter((id) => !DESCRIPTION_NORMALIZATION_TRANSFORMS.includes(id))
+
+test("BOS-1263: the repo's own .boss-skills.json declares a resolvable testSelection block", () => {
+  // U4's acceptance: this repo's config still resolves after the declaration, and the accessor
+  // returns a POPULATED block rather than the null a repo declaring nothing would get.
+  const config = loadSkillConfig({ cwd: REPO_ROOT })
+  validateConfig(config, 'repo')
+  const block = testSelection(config)
+  assert.notStrictEqual(
+    block,
+    null,
+    "this repo declares a selection, so the accessor must not say 'none'",
+  )
+  assert.ok(block.rules.length > 0, 'the declared rules array must be non-empty')
+  assert.ok(block.sharedFiles.length > 0, 'shared files are what make a lossy pattern safe')
+  assert.ok(
+    block.testRoots.length > 0,
+    'testRoots is the denominator for a selected-of-total report',
+  )
+})
+
+test('BOS-1263: every changed/tests glob this repo declares names a path that exists', () => {
+  // An inert NUMERATOR glob is a real defect: the rule fires and contributes nothing, which is
+  // under-selection. Checked by resolving each glob's literal prefix — the part before the first
+  // wildcard — against the checkout, so a rename or a typo reddens here rather than silently
+  // narrowing a future consumer's selection.
+  //
+  // Deliberately NOT applied to sharedFiles: an inert entry there is a file class that WOULD force
+  // a full run if it appeared, so declaring one ahead of its existence fails safe. The asymmetry
+  // is the whole posture — under-declaring sharedFiles is dangerous, over-declaring costs a run.
+  const block = testSelection(loadSkillConfig({ cwd: REPO_ROOT }))
+  const literalPrefix = (glob) => {
+    const star = glob.indexOf('*')
+    const head = star === -1 ? glob : glob.slice(0, star)
+    return head.replace(/\/[^/]*$/, '').replace(/\/$/, '')
+  }
+  for (const rule of block.rules) {
+    const changedPrefix = literalPrefix(rule.changed)
+    assert.ok(
+      changedPrefix === '' || existsSync(join(REPO_ROOT, changedPrefix)),
+      `rule "${rule.changed}" points at a path that does not exist: ${changedPrefix}`,
+    )
+    for (const pattern of rule.tests) {
+      const testsPrefix = literalPrefix(pattern)
+      assert.ok(
+        testsPrefix === '' || existsSync(join(REPO_ROOT, testsPrefix)),
+        `rule "${rule.changed}" selects "${pattern}", whose root does not exist: ${testsPrefix}`,
+      )
+    }
+  }
+})
+
+test('BOS-1263: every tests glob this repo declares falls inside its own testRoots denominator', () => {
+  // testRoots is the denominator for "selected N of M". A `tests` glob naming a suffix the
+  // denominator does not know would make that ratio nonsense — and would hide a silently-empty
+  // selection, which is the reporting failure R4 exists to prevent. Checked by building a
+  // representative concrete path from each numerator glob and matching it against the roots.
+  const block = testSelection(loadSkillConfig({ cwd: REPO_ROOT }))
+  const rootRegexes = block.testRoots.map((root) => globToRegExp(root))
+  const samplePath = (glob) =>
+    glob.replaceAll('**/', 'sample/').replaceAll('**', 'sample').replaceAll('*', 'sample')
+  for (const rule of block.rules) {
+    for (const pattern of rule.tests) {
+      const sample = samplePath(pattern)
+      assert.ok(
+        rootRegexes.some((re) => re.test(sample)),
+        `"${pattern}" (sample ${sample}) is selected by a rule but lies outside testRoots`,
+      )
+    }
+  }
+})
+
+test('BOS-1263: no path class the local selector gates is left unclaimed by the declaration', async () => {
+  // THE DRIFT GATE. The two preceding repo-level tests check only SELF-consistency, so the
+  // declaration could disagree with its own source of truth and still ship green — which is
+  // exactly what happened: ~12 expressible edges of `scripts/select-affected-tests.mjs` were
+  // dropped in the hand translation and no assertion noticed. This compares the declaration
+  // against the selector itself.
+  //
+  // The comparison is one-directional ON PURPOSE. It asserts only that the declaration is not
+  // WEAKER than the selector for the probed path: over-declaring costs a redundant run, while
+  // under-declaring silently drops an invalidation edge, and only the second is a defect. So a
+  // declaration that selects MORE than the selector passes here.
+  //
+  // Probes are concrete paths, one per distinct selector rule, because the selector's rules are
+  // JavaScript predicates that cannot be enumerated as patterns (KTD2). A new predicate added to
+  // the selector without a probe here is still invisible — that residual is why the vendored
+  // helper's doc comment makes "unmatched means FULL" the consumer's contract.
+  const { selectTargets } = await import(join(REPO_ROOT, 'scripts/select-affected-tests.mjs'))
+  const block = testSelection(loadSkillConfig({ cwd: REPO_ROOT }))
+  const ruleRegexes = block.rules.map((rule) => ({ re: globToRegExp(rule.changed), rule }))
+  const sharedRegexes = block.sharedFiles.map((glob) => globToRegExp(glob))
+
+  // The selector selects make TARGETS; these three are the script-gate targets whose inputs are
+  // the cross-cutting, non-module path classes this gate exists to keep claimed.
+  const SCRIPT_GATE_TARGETS = new Set([
+    'test-scripts',
+    'test-manifest',
+    'test-no-inline-stop-hooks',
+  ])
+  const probes = [
+    'proof/recipes/sample.mjs',
+    'PRODUCT.md',
+    'README.md',
+    'buf.yaml',
+    'buf.gen.yaml',
+    'CLAUDE.md',
+    'AGENTS.md',
+    'docs/build-and-ci.md',
+    'docs/email-course/01-welcome.md',
+    'docs/guidance/sample.md',
+    'docs/skills/authoring.md',
+    'docs/testing/test-command-manifest.md',
+    'scripts/sample.mjs',
+    'skills-toolbox/sample.mjs',
+    '.claude/skills/sample/SKILL.md',
+    '.codex/skills/sample/SKILL.md',
+    '.github/workflows/sample.yml',
+    'services/docs/docs/sample.md',
+    'services/boss/internal/views/sample.go',
+    'services/boss/internal/accountflow/sample.go',
+    'services/boss/internal/auth/sample.go',
+    'services/boss/cmd/sample.go',
+    'services/boss/internal/tuidriver/keybytes.go',
+    'services/boss/internal/skillinstall/skills/boss-build/SKILL.md',
+    'services/boss/internal/skillinstall/skills_manifest_test.go',
+    'services/bossd/internal/tmux/sample.go',
+    'services/bosso/cmd/trial_enrollment.go',
+    'services/bosso/Dockerfile.k8s',
+    'services/web/src/pages/Sample.tsx',
+    'services/marketing/src/pages/sample.astro',
+    'plugins/bossd-plugin-claude/skilldata/skills/boss-build/SKILL.md',
+    'lib/bossalib/bossmcp/sample.go',
+    'lib/bossalib/config/sample.go',
+  ]
+
+  const unclaimed = []
+  for (const probe of probes) {
+    const targets = selectTargets([probe]).map((selection) => selection.target)
+    if (!targets.some((target) => SCRIPT_GATE_TARGETS.has(target))) continue
+    // A sharedFiles hit forces a FULL run, which is never weaker than any narrow selection.
+    if (sharedRegexes.some((re) => re.test(probe))) continue
+    const claimsScriptGate = ruleRegexes
+      .filter(({ re }) => re.test(probe))
+      .some(({ rule }) => rule.tests.some((pattern) => pattern.startsWith('scripts/')))
+    if (!claimsScriptGate) unclaimed.push(`${probe} -> selector runs ${targets.join(',')}`)
+  }
+
+  assert.deepEqual(
+    unclaimed,
+    [],
+    'these paths run a script gate in scripts/select-affected-tests.mjs, but the declared ' +
+      'testSelection claims no scripts/** tests and no sharedFiles entry for them — the ' +
+      'under-selection direction the block exists to forbid',
+  )
+})
+
+test('BOS-1263: the selector-coverage gate REDS when a claimed edge is removed', () => {
+  // Proves the gate above is load-bearing rather than vacuously green. Re-runs its own predicate
+  // against a block with the `proof/**` rule stripped, and requires that to be reported unclaimed.
+  const block = testSelection(loadSkillConfig({ cwd: REPO_ROOT }))
+  const stripped = block.rules.filter((rule) => rule.changed !== 'proof/**')
+  assert.notEqual(
+    stripped.length,
+    block.rules.length,
+    'the proof/** rule must exist to be stripped',
+  )
+  const sharedRegexes = block.sharedFiles.map((glob) => globToRegExp(glob))
+  const probe = 'proof/recipes/sample.mjs'
+  const claimed =
+    sharedRegexes.some((re) => re.test(probe)) ||
+    stripped
+      .filter((rule) => globToRegExp(rule.changed).test(probe))
+      .some((rule) => rule.tests.some((pattern) => pattern.startsWith('scripts/')))
+  assert.equal(claimed, false, 'with proof/** stripped the probe must read as UNCLAIMED')
+})
 
 test("U3: the repo's own .boss-skills.json parses and validates under the new rules", () => {
   // Read the ids as COMMITTED, before validation filters them. The guard used to assert membership

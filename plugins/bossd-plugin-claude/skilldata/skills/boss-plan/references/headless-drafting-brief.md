@@ -129,7 +129,12 @@ trusted and recovered as-is; only a legacy parse _failure_ reaches the gate.
 **Unreadable-spec recovery gate** — when the
 spec cannot be read, or an attachment-sourced spec fails `validateSpecIdentity`, the decision is
 `epicSpecRecoveryGate({parent, children, plannedState, epicLabel})`, which owns the ALL-of conjunct
-set and names every failed conjunct separately for the abort log. Feed it the
+set and names every failed conjunct separately for the abort log. It applies the same marker
+membership test: a child whose non-empty description carries no epic-child marker is excluded from
+the planned-state and plan-artifact conjuncts and named in `reasons` on BOTH verdicts, so a hand-added
+sub-issue cannot wedge the gate; a missing, empty or truncated description proves nothing about the
+marker and is still judged, fail-closed. An enumeration where NO child carries a marker aborts, for
+the same reason zero children does — nothing proves the epic was ever decomposed. Feed it the
 `list_issues parentId=<parentId> limit=250` enumeration below; where that op omits each child's
 attachments, read them per child — the one extra read this gate may make. Its `action` is only ever
 `'noop'` (enumerate + no-op) or `'abort'`; **falling through to
@@ -413,10 +418,19 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    the one every sibling's `blockedByKeys` and `epicWiringPlan` resolve through, so re-pointing the spec
    at `liveKey` would leave those refs dangling and throw mid-wire, AFTER children already exist — the
    half-built state this phase's validate-before-write design exists to prevent. Rewriting the child's
-   marker instead leaves the next resume aligned. Create nothing for it; **(3) ambiguous drift** (`ok:false` — multiple orphans, an unmarked child, duplicate live marker
-   keys, or a non-array `liveChildren`) — take the SAFE branch: report `errors`, write nothing, create
+   marker instead leaves the next resume aligned. Create nothing for it; **(3) ambiguous drift** (`ok:false` — multiple orphans, duplicate live marker
+   keys, a non-array `liveChildren`, or an unmarked child while `missing` is non-empty) — take the SAFE branch: report `errors`, write nothing, create
    nothing, never guess. A refusal must never be read as "no children exist": that degrade would report
-   the entire spec as missing and duplicate the whole epic. Create only the spec keys `missing` names —
+   the entire spec as missing and duplicate the whole epic. The marker IS the membership test, so a
+   live child carrying none was never minted by this path and is not evidence the epic is broken —
+   it contributes no live key, so by `liveKeys ⊆ specKeys` it can never collide with a spec key. It is
+   always reported in `unmarked`, and with `missing` empty it is ignored rather than refused, because
+   nothing is created for it and it therefore provably cannot be duplicated; one sub-issue somebody
+   filed by hand under the parent must not wedge the resume forever. Two cases keep the refusal:
+   with `missing` non-empty that child could BE the spec child whose description was overwritten, so
+   creating its key would duplicate it; and a description carrying the list-truncation sentinel is
+   not proof the marker is absent, so it refuses whatever `missing` holds, with its own
+   hydrate-with-`get_issue` diagnostic rather than the genuinely-unmarked one. Create only the spec keys `missing` names —
    **drafting each missing child from its persisted metadata and wiring it per the persisted
    `blockedByKeys`, never a fresh re-decomposition** — then finish wiring + **deferred exposure** +
    repurpose. For an

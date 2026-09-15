@@ -3,9 +3,11 @@ package views
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
 )
@@ -24,6 +26,11 @@ type (
 	tuiFeature string
 	tuiAction  string
 	tuiStatus  string
+	// tuiEntryPoint bounds the entry_point property of the terminal-side
+	// conversion-funnel events for the same reason and in the same way: it is
+	// the only free-form-looking value they carry, and a named type makes
+	// handing it an email, an account label or a URL a compile error.
+	tuiEntryPoint string
 )
 
 const (
@@ -51,6 +58,19 @@ const (
 
 	tuiStatusSuccess tuiStatus = "success"
 	tuiStatusError   tuiStatus = "error"
+
+	// tuiEntryPointHome is Home's guest cloud offer line; tuiEntryPointLogin is
+	// the TUI login/upgrade subscription flow. The CLI cloud gate's own
+	// "cli_login" lives in services/boss/cmd, which is a different package and
+	// a different distinct-id scheme — it is deliberately NOT mirrored here, so
+	// this type cannot be used to emit a CLI event from a view.
+	tuiEntryPointHome  tuiEntryPoint = "tui_home"
+	tuiEntryPointLogin tuiEntryPoint = "tui_login"
+
+	// cloudConversionProductArea matches the product_area the CLI gate and the
+	// bosso billing handlers already emit, so the terminal steps land in the
+	// same funnel area as the server-side ones rather than beside it.
+	cloudConversionProductArea = "billing"
 )
 
 // tuiActionStatus maps an outcome error to the bounded status enum, so no call
@@ -104,6 +124,36 @@ func captureTUIAction(ctx context.Context, client telemetry.Client, feature tuiF
 	})
 }
 
+// captureCloudConversionStep emits one terminal-side conversion-funnel step:
+// the guest-offer impression, the subscribe hand-off, or the TUI's own
+// checkout return. It is the only place their property map is built, so a call
+// site cannot invent a key or attach an identifier — the same rule
+// captureTUIAction enforces for tui_action.
+//
+// NEVER call it from a View() or render helper. Bubble Tea re-renders on every
+// message, so a capture on a render path is unbounded and would make the
+// funnel denominator meaningless. Every caller is an Update path, and the
+// once-per-session steps latch before calling.
+func captureCloudConversionStep(
+	ctx context.Context,
+	client telemetry.Client,
+	event telemetry.Event,
+	entryPoint tuiEntryPoint,
+) {
+	// Gate BEFORE building the map, for the reason captureTUIAction states:
+	// tracing is opt-in and defaults off, so the common path must not allocate.
+	if client == nil || !viewTelemetryEnabled() {
+		return
+	}
+	captureViewTelemetry(ctx, client, event, map[string]any{
+		"product_area": cloudConversionProductArea,
+		// Widened back to a plain string so the wire payload is a JSON string
+		// regardless of how the enum type is marshalled, as captureTUIAction does.
+		"entry_point": string(entryPoint),
+		"source":      "tui",
+	})
+}
+
 func captureViewTelemetry(ctx context.Context, client telemetry.Client, event telemetry.Event, props map[string]any) {
 	if client == nil {
 		return
@@ -122,6 +172,10 @@ func captureViewTelemetry(ctx context.Context, client telemetry.Client, event te
 // delete-all batch drains one session per message) costs one settings read
 // instead of N, short enough that turning tracing OFF in general settings stops
 // events while the operator is still looking at the screen.
+//
+// It bounds two caches, not one: viewTelemetryIdentity below reuses it, so this
+// value is also how long events may keep carrying a stale identity after a
+// login or logout inside the running TUI.
 const viewTelemetryGateTTL = 3 * time.Second
 
 // viewTelemetryGate caches the opt-in gate. config.Load is os.ReadFile +
@@ -164,10 +218,58 @@ func viewTelemetryEnabledAt(now time.Time) bool {
 	return viewTelemetryGate.enabled
 }
 
+// viewTelemetryIdentity caches the signed-in email behind the same TTL as the
+// opt-in gate above, and for the same reason: resolving it is a keychain read,
+// and every capture runs on Bubble Tea's update goroutine — the one the TUI
+// rubric requires to stay non-blocking. The trash delete-all batch drains one
+// session per message, so an uncached lookup would put N synchronous keychain
+// reads on that path.
+//
+// It expires rather than latching because a human can log in from inside the
+// running TUI; a latched empty email would keep emitting the anonymous local-
+// identity for the rest of the process.
+var viewTelemetryIdentity struct {
+	mu        sync.Mutex
+	checkedAt time.Time
+	email     string
+}
+
+// viewTelemetryEmailLookup is the seam a test replaces; production reads the
+// keychain.
+var viewTelemetryEmailLookup = viewTelemetryEmail
+
+func viewTelemetryEmail() string {
+	store, err := auth.NewKeychainStore(true)
+	if err != nil {
+		return ""
+	}
+	status := auth.NewManager(store, auth.Config{ClientID: ""}).Status()
+	if status == nil || !status.LoggedIn {
+		return ""
+	}
+	return strings.TrimSpace(status.Email)
+}
+
+// viewTelemetrySignedInEmailAt resolves the signed-in email with the clock
+// supplied, so a test can step across the TTL boundary exactly.
+func viewTelemetrySignedInEmailAt(now time.Time) string {
+	viewTelemetryIdentity.mu.Lock()
+	defer viewTelemetryIdentity.mu.Unlock()
+	if viewTelemetryIdentity.checkedAt.IsZero() || now.Sub(viewTelemetryIdentity.checkedAt) >= viewTelemetryGateTTL {
+		viewTelemetryIdentity.email = viewTelemetryEmailLookup()
+		viewTelemetryIdentity.checkedAt = now
+	}
+	return viewTelemetryIdentity.email
+}
+
+// viewDistinctID is the id TUI events are captured on. It resolves through the
+// one shared local-surface definition, so a TUI event and a CLI event for the
+// same logged-in human are the same PostHog person — and the same person the
+// web and bosso funnel events target.
 func viewDistinctID() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return telemetry.LocalDistinctID("")
+		home = ""
 	}
-	return telemetry.LocalDistinctID(home)
+	return telemetry.LocalFunnelDistinctID(home, viewTelemetrySignedInEmailAt(time.Now()))
 }

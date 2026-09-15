@@ -141,17 +141,26 @@ func commandTelemetryEmail() string {
 
 func commandTelemetryUserFromEmail(email string) commandTelemetryUser {
 	email = strings.TrimSpace(email)
+	distinctID := ""
+	if email != "" {
+		// The funnel namespace, not the retired user-<hash> one. The CLI never
+		// holds a WorkOS sub — only the keychain email — so this is the email:
+		// half of the funnel identity, which the bosso JIT user-creation
+		// callback merges into user:<sub>.
+		distinctID = telemetry.FunnelDistinctID("", email)
+	}
 	return commandTelemetryUser{
 		email:      email,
-		distinctID: telemetry.UserDistinctID(email),
+		distinctID: distinctID,
 	}
 }
 
+// distinctIDOrLocal is the id CLI events are captured on. It resolves through
+// the one shared local-surface definition, so a CLI event and a TUI event for
+// the same logged-in human are the same PostHog person by construction rather
+// than by two call sites agreeing.
 func (u commandTelemetryUser) distinctIDOrLocal() string {
-	if u.distinctID != "" {
-		return u.distinctID
-	}
-	return localDistinctID()
+	return telemetry.LocalFunnelDistinctID(userHomeDirOrEmpty(), u.email)
 }
 
 func identifyCommandUser(ctx context.Context, client telemetry.Client) {
@@ -161,6 +170,9 @@ func identifyCommandUser(ctx context.Context, client telemetry.Client) {
 	identifyCommandUserWithIdentity(ctx, client, commandTelemetryUserFromEmail(commandTelemetryEmailLookup()))
 }
 
+// identifyCommandUserWithIdentity writes person properties. It must target the
+// same funnel id the events carry, or the properties land on a person nothing
+// else ever writes to.
 func identifyCommandUserWithIdentity(ctx context.Context, client telemetry.Client, user commandTelemetryUser) {
 	if user.distinctID == "" {
 		return
@@ -168,6 +180,17 @@ func identifyCommandUserWithIdentity(ctx context.Context, client telemetry.Clien
 	client.Identify(ctx, user.distinctID, map[string]any{"email": user.email, "source": "cli"})
 }
 
+// aliasLocalToCommandUserWithIdentity bridges this machine's pre-login identity
+// into the funnel person at login. It is the same alias that already shipped,
+// pointed at the funnel id instead of the retired user-<hash> one — a
+// forward-only bridge, not a migration: no alias is written from a pre-change
+// user-<hash> person, matching the precedent recorded in
+// services/web/src/analytics/AuthAnalytics.tsx.
+//
+// It bridges the CLI login path only. This is the whole boss binary's only
+// Client.Alias call site, so a login performed from inside the running TUI
+// still flips views' distinct id to the funnel id with nothing bridging the
+// pre-login local-<hash> person.
 func aliasLocalToCommandUserWithIdentity(ctx context.Context, client telemetry.Client, user commandTelemetryUser) {
 	if user.distinctID == "" {
 		return
@@ -175,12 +198,20 @@ func aliasLocalToCommandUserWithIdentity(ctx context.Context, client telemetry.C
 	client.Alias(ctx, localDistinctID(), user.distinctID)
 }
 
+// localDistinctID is the pre-login per-machine identity. It survives the move
+// to the funnel namespace because it is what the login-time alias bridges
+// forward: without it, everything a human did before logging in would be
+// stranded on a person no funnel ever reaches.
 func localDistinctID() string {
+	return telemetry.LocalDistinctID(userHomeDirOrEmpty())
+}
+
+func userHomeDirOrEmpty() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return telemetry.LocalDistinctID("")
+		return ""
 	}
-	return telemetry.LocalDistinctID(home)
+	return home
 }
 
 func recordExecutedCommand(cmd *cobra.Command) {

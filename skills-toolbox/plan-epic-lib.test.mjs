@@ -1200,7 +1200,129 @@ test('reconcileEpicChildren: ambiguous drift (2 missing, 2 orphans) refuses and 
   assert.ok(res.errors.some((e) => e.includes('alpha-old') && e.includes('beta-old')))
 })
 
-test('reconcileEpicChildren: an unmarked live child refuses', () => {
+// ---------------------------------------------------------------------------
+// The unmarked-live-child discriminator (BOS-1255). The epic-child marker IS
+// the membership test, so a sub-issue somebody added by hand under an epic
+// parent is NOT an epic child and must not wedge the resume forever. It is
+// only ignorable where nothing will be created, though, and only where its
+// absence is PROVEN — hence the matrix below rather than a single expectation.
+// ---------------------------------------------------------------------------
+
+test('reconcileEpicChildren: an unmarked live child with nothing missing is named, not refused', () => {
+  const spec = { children: [child('alpha')] }
+  const live = [
+    liveChild('id-1', 'alpha'),
+    { id: 'id-hand', title: 'Hand-added sub-issue', description: 'plain body, no marker' },
+  ]
+  const res = reconcileEpicChildren(spec, live)
+
+  // The whole point of the ticket: every spec key is claimed, so nothing will
+  // be created and the unmarked child provably cannot be duplicated. Refusing
+  // here is what wedged the epic permanently.
+  assert.equal(res.ok, true, res.errors.join(' | '))
+  assert.deepEqual(res.missing, [], 'nothing may be created for an unmarked child')
+  assert.deepEqual(res.adopted, [{ key: 'alpha', id: 'id-1' }])
+  assert.deepEqual(res.errors, [])
+  assert.deepEqual(res.repairs, [])
+  assert.deepEqual(
+    res.unmarked,
+    [{ id: 'id-hand', title: 'Hand-added sub-issue' }],
+    'the ignored child must still be reported so a run log names it',
+  )
+})
+
+test('reconcileEpicChildren: an unmarked live child alongside a non-empty missing set still refuses', () => {
+  // `beta` is unclaimed, so the unmarked child COULD be beta with its marker
+  // overwritten; creating beta would duplicate it. Fail closed.
+  const spec = { children: [child('alpha'), child('beta')] }
+  const live = [
+    liveChild('id-1', 'alpha'),
+    { id: 'id-hand', title: 'Maybe beta', description: 'plain body, no marker' },
+  ]
+  const res = reconcileEpicChildren(spec, live)
+
+  assert.deepEqual(res.missing, [])
+  assert.deepEqual(res.repairs, [])
+  assert.equal(res.ok, false)
+  assert.deepEqual(res.unmarked, [{ id: 'id-hand', title: 'Maybe beta' }])
+  assert.ok(
+    res.errors.some((e) => e === 'live child "id-hand" carries no epic-child marker'),
+    'the refusal must name the unmarked child id',
+  )
+})
+
+test('reconcileEpicChildren: a truncated description refuses even when nothing is missing', () => {
+  // The discriminator's other half: with `missing` empty the genuinely
+  // unmarked case proceeds, but a truncated description is not proof the
+  // marker is absent, so this must refuse on the SAME input shape.
+  const spec = { children: [child('alpha')] }
+  const live = [
+    liveChild('id-1', 'alpha'),
+    {
+      id: 'id-2',
+      title: 'Truncated child',
+      description: 'summary only … (truncated, use get_issue for full description)',
+    },
+  ]
+  const res = reconcileEpicChildren(spec, live)
+
+  assert.deepEqual(res.missing, [])
+  assert.deepEqual(res.repairs, [])
+  assert.equal(res.ok, false)
+  assert.ok(
+    res.errors.some((e) => e.includes('id-2') && e.includes('description appears truncated')),
+    'a truncated description keeps its own hydration diagnostic',
+  )
+  assert.ok(
+    !res.errors.some((e) => e.includes('carries no epic-child marker')),
+    'the truncation diagnostic must stay distinct from the genuinely-unmarked one',
+  )
+})
+
+test('reconcileEpicChildren: duplicate marker keys refuse even when nothing is missing', () => {
+  // Duplicate keys are real ambiguity about which child to adopt, so unlike
+  // the genuinely-unmarked case they do NOT become conditional on `missing`.
+  const spec = { children: [child('alpha')] }
+  const live = [
+    liveChild('id-1', 'alpha'),
+    liveChild('id-2', 'alpha'),
+    { id: 'id-hand', title: 'Hand-added', description: 'plain body, no marker' },
+  ]
+  const res = reconcileEpicChildren(spec, live)
+
+  assert.deepEqual(res.missing, [])
+  assert.deepEqual(res.repairs, [])
+  assert.equal(res.ok, false)
+  assert.ok(res.errors.some((e) => e.includes('share epic-child marker key "alpha"')))
+})
+
+test('reconcileEpicChildren: an unmarked child with an orphan refuses NAMING the orphan, not the marker', () => {
+  // With `missing` empty the unmarked child is no longer the cause, so the
+  // refusal must route to the orphan branch and name the real drift. The
+  // previous unconditional marker refusal buried it.
+  const spec = { children: [child('alpha')] }
+  const live = [
+    liveChild('id-1', 'alpha'),
+    liveChild('id-2', 'gamma'),
+    { id: 'id-hand', title: 'Hand-added', description: 'plain body, no marker' },
+  ]
+  const res = reconcileEpicChildren(spec, live)
+
+  assert.deepEqual(res.missing, [])
+  assert.deepEqual(res.repairs, [])
+  assert.equal(res.ok, false)
+  assert.ok(
+    res.errors.some((e) => e.includes('orphaned child marker key') && e.includes('gamma')),
+    'the orphan is the real cause and must be the one named',
+  )
+  assert.deepEqual(
+    res.unmarked,
+    [{ id: 'id-hand', title: 'Hand-added' }],
+    'the unmarked child is still reported in the refusal diagnostics',
+  )
+})
+
+test('reconcileEpicChildren: an unmarked live child refuses alongside a missing spec key', () => {
   const spec = { children: [child('alpha')] }
   const live = [{ id: 'id-1', title: 'No marker child', description: 'plain body, no marker' }]
   const res = reconcileEpicChildren(spec, live)

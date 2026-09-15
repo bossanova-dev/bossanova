@@ -136,6 +136,11 @@ func Capture(ctx context.Context, client libtelemetry.Client, event libtelemetry
 	if err != nil {
 		hostname = ""
 	}
+	// Deliberately NOT the funnel identity, and deliberately not migrated with
+	// the TUI and CLI: a daemon is a machine, not a funnel participant. Folding
+	// a host into a person would inflate every funnel denominator with
+	// automation, and a PostHog merge cannot be undone. Leave this on the
+	// daemon- namespace; there is no job half-done here to finish.
 	client.Capture(ctx, event, libtelemetry.DaemonDistinctID(hostname), withSource)
 }
 

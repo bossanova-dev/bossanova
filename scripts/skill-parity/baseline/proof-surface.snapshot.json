@@ -17,6 +17,10 @@
       "surface": "docs"
     },
     {
+      "id": "marketing-404",
+      "surface": "marketing"
+    },
+    {
       "id": "marketing-agent-coordination",
       "surface": "marketing"
     },
@@ -38,6 +42,10 @@
     },
     {
       "id": "marketing-pricing",
+      "surface": "marketing"
+    },
+    {
+      "id": "marketing-sitemap",
       "surface": "marketing"
     },
     {

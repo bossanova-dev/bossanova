@@ -27,6 +27,8 @@ const (
 	EventRepairCompleted            Event = "repair_completed"
 	EventBugReportSubmitted         Event = "bug_report_submitted"
 	EventCloudAccessDenied          Event = "cloud_access_denied"
+	EventCloudGuestOfferShown       Event = "cloud_guest_offer_shown"
+	EventCloudSubscribePageOpened   Event = "cloud_subscribe_page_opened"
 	EventCloudCheckoutStarted       Event = "cloud_checkout_started"
 	EventCloudCheckoutReturned      Event = "cloud_checkout_returned"
 	EventCloudTrialEnrollmentFailed Event = "cloud_trial_enrollment_failed"
@@ -53,6 +55,26 @@ func FunnelDistinctID(workOSUserID, email string) string {
 		return "email:" + e
 	}
 	return "anonymous"
+}
+
+// LocalFunnelDistinctID is the one definition of the distinct id a local
+// surface — the TUI and the CLI — emits on. It is FunnelDistinctID("", email)
+// when an email is known and LocalDistinctID(home) when it is not, so a
+// logged-in local event lands on the same PostHog person as the web and bosso
+// funnel events for that human, and an anonymous machine still has a stable
+// per-home identity that the login-time alias can bridge forward.
+//
+// It exists so a fourth surface cannot re-invent a fourth namespace: every
+// local caller resolves its id here rather than choosing a helper itself. The
+// local surfaces never hold a WorkOS sub — only the email from the keychain —
+// so the workOSUserID argument of FunnelDistinctID is always empty here, and
+// the resulting email: identity is merged into user:<sub> by the bosso JIT
+// user-creation callback.
+func LocalFunnelDistinctID(home, email string) string {
+	if strings.TrimSpace(email) != "" {
+		return FunnelDistinctID("", email)
+	}
+	return LocalDistinctID(home)
 }
 
 func LocalDistinctID(value string) string {
@@ -132,8 +154,10 @@ var Registry = map[Event]EventSpec{
 	EventRepairCompleted:            {Surface: "cli", Description: "A repair completed", Properties: propertySet("status")},
 	EventBugReportSubmitted:         {Surface: "cloud", Description: "A bug report was submitted", Properties: propertySet("report_id", "authenticated")},
 	EventCloudAccessDenied:          {Surface: "cloud", Description: "Cloud access was denied", Properties: billingProperties()},
+	EventCloudGuestOfferShown:       {Surface: "tui", Description: "The guest cloud offer became visible in a TUI session", Properties: conversionStepProperties()},
+	EventCloudSubscribePageOpened:   {Surface: "cli, tui", Description: "A terminal handed the user to the subscribe or checkout page in a browser", Properties: conversionStepProperties()},
 	EventCloudCheckoutStarted:       {Surface: "cloud", Description: "Cloud checkout started", Properties: billingProperties()},
-	EventCloudCheckoutReturned:      {Surface: "cloud", Description: "Cloud checkout return was processed", Properties: billingProperties()},
+	EventCloudCheckoutReturned:      {Surface: "cloud, tui", Description: "Cloud checkout return was processed", Properties: billingProperties()},
 	EventCloudTrialEnrollmentFailed: {Surface: "cloud", Description: "Stripe trial enrollment failed after checkout return", Properties: billingProperties()},
 	EventSignupUserCreated:          {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
 	EventBillingAccountProvisioned:  {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
@@ -154,6 +178,24 @@ func propertySet(properties ...string) map[string]struct{} {
 		set[property] = struct{}{}
 	}
 	return set
+}
+
+// conversionStepProperties is the property set for the two terminal-side
+// conversion steps that happen before the browser opens. It is deliberately
+// NARROWER than billingProperties: the guest-offer impression and the
+// subscribe hand-off can supply only the funnel area and the entry point, and
+// registering a property no emit site populates would leave
+// TestFilterPropertiesPreservesEveryEmittedEventProperty demanding coverage for
+// a key that is always absent in the real data (BOS-1260).
+//
+// entry_point is the discriminator that keeps the CLI gate hand-off
+// (cli_login) and the TUI login/upgrade hand-off (tui_login) separable in
+// PostHog while both remain one funnel step.
+func conversionStepProperties() map[string]struct{} {
+	return propertySet(
+		"product_area",
+		"entry_point",
+	)
 }
 
 func billingProperties() map[string]struct{} {

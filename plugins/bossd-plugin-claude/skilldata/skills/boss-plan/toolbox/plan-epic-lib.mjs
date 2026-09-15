@@ -525,8 +525,11 @@ export function epicChildMarker(key) {
  * Recover a child's persisted marker key from its own description. Finds the
  * marker embedded anywhere in surrounding description prose. Returns `null`
  * when `description` is not a string or carries no parsable marker (never
- * throws) — the caller (reconcileEpicChildren) treats a null result as an
- * unmarked child and refuses rather than guessing.
+ * throws). A null result is the MEMBERSHIP verdict, not an error: the child
+ * was not minted by the epic path, so no caller may score it against an
+ * epic-child conjunct. Callers must still pair it with
+ * `descriptionAppearsTruncated`, which is the one case where a null result
+ * means "unreadable", not "absent".
  * @param {string} description
  * @returns {string|null}
  */
@@ -536,7 +539,17 @@ export function parseEpicChildMarker(description) {
   return m ? m[1] : null
 }
 
-function descriptionAppearsTruncated(description) {
+/**
+ * True when a description carries the tracker's list-truncation sentinel. The
+ * SINGLE definition of that rule — every site that treats a missing marker as
+ * proof the child is not an epic child must first rule this out, because a
+ * truncated description hides a marker that may exist. Exported so
+ * `epicSpecRecoveryGate` applies the same rule rather than re-deriving the
+ * sentinel string.
+ * @param {string} description
+ * @returns {boolean}
+ */
+export function descriptionAppearsTruncated(description) {
   return (
     typeof description === 'string' &&
     description.includes('(truncated, use get_issue for full description)')
@@ -838,8 +851,18 @@ const refuse = (errors, extra = {}) => ({
  *     caller that passed the raw tool envelope, e.g. `{ nodes: [] }`, or
  *     `undefined` must NOT degrade to "no children exist") — refuse,
  *     `missing: []`.
- *   - any live child carries no parsable epic-child marker (`unmarked`
- *     non-empty).
+ *   - a live child carries no parsable epic-child marker AND `missing` is
+ *     non-empty. The marker IS the membership test: a child the epic path
+ *     never minted contributes no live key, so by `liveKeys ⊆ specKeys` it can
+ *     never collide with a spec key, and a hand-added sub-issue must not wedge
+ *     the resume forever. It is only safe to ignore where nothing will be
+ *     created for it, though — an epic child whose description was overwritten
+ *     also presents as unmarked, so with a non-empty `missing` that child could
+ *     be exactly the spec child whose marker was wiped, and creating its spec
+ *     key would duplicate it. Either way it is reported in `unmarked`.
+ *   - a live child's description carries the list-truncation sentinel —
+ *     absence of the marker is UNPROVEN there, so this refuses whatever
+ *     `missing` holds, with its own hydrate-with-get_issue diagnostic.
  *   - two live children carry the same marker key.
  *   - `orphans` is non-empty and the unambiguous 1:1 repair does not apply
  *     (i.e. NOT (`missing.length === 1 && orphans.length === 1`), evaluated on
@@ -931,25 +954,37 @@ export function reconcileEpicChildren(spec, liveChildren) {
     .map(({ key, id, title }) => ({ key, id, title }))
   const adopted = classified.filter((c) => c.type === 'adopted').map(({ key, id }) => ({ key, id }))
 
+  // `missing` is computed BEFORE the marker refusal because the genuinely
+  // unmarked case is now conditional on it (see the doc comment): a child the
+  // epic path never minted is ignorable only where nothing will be created.
+  const adoptedKeys = new Set(adopted.map((a) => a.key))
+  const missing = specKeys.filter((k) => !adoptedKeys.has(k))
+
+  // Built in one pass so the message ORDER is unchanged from when every entry
+  // refused unconditionally (per-unmarked-child in `liveChildren` order, then
+  // duplicate keys): an operator reading a refusal log still sees the same
+  // list. `unconditional` is what decides whether the list refuses at all —
+  // a truncated description or a duplicate key always does; a genuinely
+  // unmarked child only does alongside a non-empty `missing`.
   const markerErrors = []
+  let unconditional = false
   for (const u of classified.filter((c) => c.type === 'unmarked')) {
     if (u.descriptionTruncated) {
       markerErrors.push(
         `live child "${u.id}" description appears truncated — reconcile against get_issue payloads, not list_issues`,
       )
+      unconditional = true
     } else {
       markerErrors.push(`live child "${u.id}" carries no epic-child marker`)
     }
   }
   for (const key of duplicateKeys) {
     markerErrors.push(`multiple live children share epic-child marker key "${key}"`)
+    unconditional = true
   }
-  if (markerErrors.length > 0) {
+  if (markerErrors.length > 0 && (unconditional || missing.length > 0)) {
     return refuse(markerErrors, { orphans, unmarked })
   }
-
-  const adoptedKeys = new Set(adopted.map((a) => a.key))
-  const missing = specKeys.filter((k) => !adoptedKeys.has(k))
 
   if (orphans.length === 0) {
     return { ok: true, adopted, missing, orphans, unmarked, repairs: [], errors: [] }

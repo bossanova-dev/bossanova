@@ -793,7 +793,28 @@ export const PROSE_PIN_BASELINE = {
   // template. The +1 is the new pin that the verifier is HANDED `$DISPATCH_FAILURE` as that
   // prefix, which is the half a template-only assertion cannot see: without it the emitter could
   // interpolate anything and still match.
-  'scripts/bs-plan-skill.test.mjs': 319,
+  // 319 -> 321 (BOS-1255), chained onto the entry above. `reconcileEpicChildren` no longer refuses
+  // unconditionally on an unmarked live child — the epic-child marker is a MEMBERSHIP verdict, so a
+  // sub-issue somebody filed by hand no longer wedges the epic's resume forever — and the resident
+  // outcome paragraph plus the drafting brief both described the old rule. Correcting them was
+  // mandatory; the +2 is one pin per artifact asserting the discriminator that replaced it. A helper
+  // genuinely cannot do this one: the artifact IS published prose an agent reads to decide whether
+  // to CREATE children, so there is no behaviour to assert instead, and the already-banked
+  // outcome-(3) pin next to each was deliberately LOOSENED (structural lead + rule, no enumeration)
+  // in the same commit rather than re-tightened around the new sentence. Held to +2 by folding the
+  // membership rule and its fail-closed truncation exception into ONE regex per artifact instead of
+  // a pin apiece — they are a single fact, and prose stating either half alone misleads.
+  // 321 -> 322 (BOS-1255 review round), chained onto the entry above. The outcome-(3) pin that the
+  // entry above deliberately LOOSENED could no longer fail: its `[\s\S]*?` swallows the whole
+  // parenthesised refusal set, so the pre-BOS-1255 wording it was loosened to permit still matched
+  // it byte-for-byte, and the compensating discriminator pin sits in a different paragraph — a brief
+  // stating the corrected rule in one place and the old unconditional refusal in the enumeration
+  // satisfied both. The +1 buys a targeted negative that pins the RULE inside the list: capture the
+  // refusal set and require an unmarked child named there to carry the `missing` qualifier. It is
+  // still a prose pin because the subject is published prose an agent reads to decide whether to
+  // CREATE children, so there is no behaviour to assert instead; it is deliberately a rule over a
+  // captured region rather than a sentence, so it survives further edits to the list.
+  'scripts/bs-plan-skill.test.mjs': 322,
   'scripts/bs-record-notes-skill.test.mjs': 2,
   'scripts/bs-sweep-debt-skill.test.mjs': 32,
   'scripts/bs-sweep-mutation-skill.test.mjs': 32,

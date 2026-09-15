@@ -2228,6 +2228,27 @@
       ]
     },
     {
+      "id": "marketing-sitemap",
+      "surface": "marketing",
+      "title": "Marketing \u2014 Sitemap",
+      "description": "Production sitemap served by the built marketing site at the conventional /sitemap.xml name, aliased from the generated sitemap-index.xml.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/sitemap.xml",
+      "selector": "body",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "marketing-404",
+      "surface": "marketing",
+      "title": "Marketing \u2014 Not Found",
+      "description": "Unknown marketing path rendering the 404 page. Without dist/404.html Cloudflare Pages soft-404s every unmatched path with the homepage at HTTP 200.",
+      "privacy": "fixture",
+      "route": "/this-page-does-not-exist",
+      "selector": "main",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "marketing-agent-coordination",
       "surface": "marketing",
       "title": "Marketing — Agent Coordination",
@@ -2727,7 +2748,9 @@
         "marketing-changelog",
         "marketing-home-scroll",
         "marketing-theme-toggle",
-        "marketing-agent-coordination"
+        "marketing-agent-coordination",
+        "marketing-sitemap",
+        "marketing-404"
       ]
     },
     {

@@ -24,4 +24,11 @@ func withTempConfigHome(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
 	}
 	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(tempHome, "settings.json"))
+	// viewDistinctID resolves the signed-in email through the keychain, and on
+	// darwin the system Keychain is per-user rather than per-HOME, so the lines
+	// above do not redirect it. Pin the file backend the way
+	// enableCommandTelemetryForTest does, or these tests read the developer's
+	// real login keychain and can raise an authorization prompt that hangs a
+	// non-interactive run.
+	t.Setenv("BOSS_KEYRING_BACKEND", "file")
 }

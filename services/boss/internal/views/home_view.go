@@ -214,6 +214,34 @@ func (h HomeModel) guestCloudOfferVisible() bool {
 	return cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil)
 }
 
+// guestCloudOfferOnScreen reports whether View would actually draw the guest
+// offer right now: the offer gate passes AND View is on one of the two screens
+// that render it, in a state where that screen actually reaches the offer.
+// Only the empty state and the session-table footer draw it; the daemon-error
+// and loading screens render neither, so an impression counted during them
+// would be an impression the user never saw. The empty state appends the offer
+// unconditionally, but the footer itself is conditional: the populated board
+// reaches renderSessionTableFooter — its only offer site — solely in the arm
+// where no rename editor, confirm prompt or upgrade status has taken the
+// footer's place.
+//
+// It exists for App.Update's once-per-session capture, and it mirrors View's
+// leading guards rather than being called FROM View — a capture on a render
+// path fires on every frame, which is the whole failure this instrumentation
+// is written to avoid (BOS-1260). Keep it in step with View above.
+func (h HomeModel) guestCloudOfferOnScreen() bool {
+	if h.err != nil || h.loading {
+		return false
+	}
+	// Without this arm a modal open at the moment the gate first passes burns
+	// the permanent one-per-session latch on a frame the offer was never on,
+	// and the impression the user does see is never counted.
+	if len(h.sessions) > 0 && (h.rename.Active() || h.confirm.active || h.upgrading || h.restarting) {
+		return false
+	}
+	return h.guestCloudOfferVisible()
+}
+
 // logoutErrorLine renders a failed logout, or "" when the last one succeeded.
 // The populated-session footer reserves this block whenever it is visible, so
 // its second line cannot be clipped below a full table.

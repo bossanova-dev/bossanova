@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 const (
@@ -55,6 +56,14 @@ type subscriptionState struct {
 	// that still report a non-active billing state keep waiting rather than
 	// re-creating checkout or reopening the browser.
 	checkoutStarted bool
+	// returnCaptured latches the TUI-side cloud_checkout_returned event. Two
+	// poll results for the same attempt can both report ACTIVE — the initial
+	// check and an armed poll tick race — and both would take the success
+	// branch, so without the latch one completed checkout reports two returns.
+	//
+	// Deliberately NOT cleared by startSubscriptionAttempt: a retry after a
+	// success is still the same completed checkout (BOS-1260).
+	returnCaptured bool
 }
 
 type subscriptionAccessMsg struct {
@@ -126,6 +135,15 @@ func (m LoginModel) subscriptionCreateCheckout(c CloudAccessClient, attempt int)
 
 func (m LoginModel) subscriptionOpenBrowser(rawURL string, attempt int) tea.Cmd {
 	return func() tea.Msg {
+		// Emit on the ATTEMPT, before the browser call returns. A failed
+		// OpenBrowser falls back to showing the URL on screen
+		// (updateSubscriptionBrowserOpened keeps msg.err for exactly that), and
+		// the user was handed to the subscribe page either way — only the
+		// transport differed. Counting only successful opens would under-report
+		// the hand-off step by precisely the population most likely to drop out.
+		//
+		// This runs inside a tea.Cmd closure, never a render path.
+		captureCloudConversionStep(m.ctx, m.telemetry, telemetry.EventCloudSubscribePageOpened, tuiEntryPointLogin)
 		err := openSubscriptionCheckoutURL(rawURL)
 		return subscriptionBrowserOpenedMsg{url: rawURL, err: err, attempt: attempt}
 	}
@@ -214,6 +232,7 @@ func (m LoginModel) updateSubscriptionAccess(msg subscriptionAccessMsg) (LoginMo
 		return m, nil
 	}
 	if subscriptionIsActive(msg.status) {
+		m.captureCheckoutReturned()
 		m.subscription.phase = subscriptionPhaseSuccess
 		m.subscription.active = true
 		return m, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
@@ -251,6 +270,34 @@ func (m LoginModel) updateSubscriptionAccess(msg subscriptionAccessMsg) (LoginMo
 	m.subscription.phase = subscriptionPhaseUnavailable
 	m.subscription.err = subscriptionUnavailableError(msg.status, msg.err)
 	return m, nil
+}
+
+// captureCheckoutReturned emits the TUI's own cloud_checkout_returned, once.
+//
+// This IS the TUI-side checkout return. The terminal receives no browser
+// redirect: after handing the user to Stripe, updateSubscriptionCheckout arms
+// subscriptionPollTick, and the first poll that comes back ACTIVE is the moment
+// the TUI observes that the checkout completed. (checkoutReturnURL is the
+// destination handed to Stripe — a web address — not a signal the TUI ever
+// receives, so keying on it would instrument nothing.)
+//
+// Gated on checkoutStarted because the very first subscriptionCheck of a flow
+// can report ACTIVE for a user who was already subscribed when they opened it.
+// That is not a checkout return, and counting it would put completions into the
+// funnel that had no hand-off.
+//
+// It reuses the existing cloud_checkout_returned rather than minting a third
+// event: it is the same fact bosso already reports for the web path, reached
+// from a different entry point, and entry_point is the discriminator that keeps
+// one funnel step from becoming two.
+//
+// Pointer receiver so the latch survives into the caller's returned model.
+func (m *LoginModel) captureCheckoutReturned() {
+	if m.subscription.returnCaptured || !m.subscription.checkoutStarted {
+		return
+	}
+	m.subscription.returnCaptured = true
+	captureCloudConversionStep(m.ctx, m.telemetry, telemetry.EventCloudCheckoutReturned, tuiEntryPointLogin)
 }
 
 // subscriptionWaitCmds arms the next poll tick, plus the wait timeout when this

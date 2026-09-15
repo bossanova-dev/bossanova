@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/posthog/posthog-go"
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	"github.com/rs/zerolog/log"
 )
@@ -16,6 +17,11 @@ type Config struct {
 	Host         string
 	App          string
 	Environment  string
+	// AppVersion names the build that emitted the event. Capture stamps it after
+	// allowlist filtering, so a Capture caller cannot supply or override it via
+	// the properties map. Populate it only through FromSettings or FromEnv,
+	// which read buildinfo.Version; a hand-built Config stamps the empty string.
+	AppVersion string
 }
 
 type Client interface {
@@ -44,6 +50,7 @@ func FromSettings(settings config.Settings, app string) Config {
 		Host:         settings.PostHogHost,
 		App:          app,
 		Environment:  "local",
+		AppVersion:   buildinfo.Version,
 	}
 	if cfg.Enabled {
 		if cfg.ProjectToken == "" {
@@ -66,6 +73,7 @@ func FromEnv(app, environment, token, host string) Config {
 		Host:         host,
 		App:          app,
 		Environment:  environment,
+		AppVersion:   buildinfo.Version,
 	}
 }
 
@@ -115,6 +123,7 @@ func (c *postHogClient) Capture(ctx context.Context, event Event, distinctID str
 	props := FilterProperties(event, properties)
 	props["app"] = c.cfg.App
 	props["environment"] = c.cfg.Environment
+	props["app_version"] = c.cfg.AppVersion
 	if err := c.inner.Enqueue(posthog.Capture{
 		DistinctId: distinctID,
 		Event:      string(event),

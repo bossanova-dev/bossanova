@@ -44,6 +44,8 @@ import {
   SPEC_ATTACHMENT_MIME,
   topoOrderChildren,
   epicChildMarker,
+  parseEpicChildMarker,
+  descriptionAppearsTruncated,
 } from './plan-epic-lib.mjs'
 
 // The legacy inline spec marker's PREFIX only — enough to tell "the description
@@ -239,11 +241,22 @@ export function detectEpicParent(issue) {
  * an agent-friendly label, on top of children that already exist.
  *
  * `'noop'` requires ALL of: the parent sits in `plannedState`; the parent
- * carries `epicLabel`; there is at least one child; every child sits in
- * `plannedState`; every child has a plan artifact (an `attachments` OR `links`
- * entry whose title starts with `Implementation plan`). Anything else aborts,
- * and every failed conjunct is named separately — an operator reading the abort
- * log needs the whole picture, not the first thing that tripped.
+ * carries `epicLabel`; there is at least one child; at least one enumerated
+ * child is an epic child; every EPIC child sits in `plannedState`; every EPIC
+ * child has a plan artifact (an `attachments` OR `links` entry whose title
+ * starts with `Implementation plan`). Anything else aborts, and every failed
+ * conjunct is named separately — an operator reading the abort log needs the
+ * whole picture, not the first thing that tripped.
+ *
+ * Epic membership is the `boss-plan-epic-child` marker in the child's own
+ * description, and nothing else. A live child whose non-empty description
+ * carries no marker was never minted by the epic path — a sub-issue somebody
+ * added by hand — so scoring it against the epic-child conjuncts would wedge
+ * the gate on a state that is not drift at all. It is excluded from those two
+ * conjuncts and NAMED in `reasons` on both the abort and the noop path, so a
+ * run log never silently drops it. Absence of the marker must be PROVEN,
+ * though: a missing, empty or list-truncated description proves nothing, so
+ * such a child is still judged, fail-closed.
  *
  * An unresolved `plannedState`/`epicLabel` aborts too: a caller that forgot to
  * resolve the role through its tracker adapter must not silently receive a
@@ -255,43 +268,48 @@ export function detectEpicParent(issue) {
 export function epicSpecRecoveryGate(input) {
   const args = isPlainObject(input) ? input : {}
   const { parent, children, plannedState, epicLabel } = args
-  const reasons = []
+  const blockers = []
 
   const haveState = isNonEmptyString(plannedState)
   const haveLabel = isNonEmptyString(epicLabel)
   if (!haveState) {
-    reasons.push(
+    blockers.push(
       'plannedState was not resolved to a non-empty string — failing closed rather than skipping the epic',
     )
   }
   if (!haveLabel) {
-    reasons.push(
+    blockers.push(
       'epicLabel was not resolved to a non-empty string — failing closed rather than skipping the epic',
     )
   }
 
   if (!isPlainObject(parent)) {
-    reasons.push('the parent issue payload is not an object — its state and labels are unknown')
+    blockers.push('the parent issue payload is not an object — its state and labels are unknown')
   } else {
     // Only compare when the role resolved; otherwise every comparison would
     // fail and bury the real (already-recorded) cause in noise.
     if (haveState && readState(parent) !== plannedState) {
-      reasons.push(
+      blockers.push(
         `the parent is in state "${String(readState(parent))}", not the planned state "${plannedState}"`,
       )
     }
     if (haveLabel && !readLabels(parent).includes(epicLabel)) {
-      reasons.push(`the parent does not carry the "${epicLabel}" label`)
+      blockers.push(`the parent does not carry the "${epicLabel}" label`)
     }
   }
 
   if (!Array.isArray(children)) {
-    reasons.push('the enumerated children collection is not an array')
+    blockers.push('the enumerated children collection is not an array')
   }
   const list = asArray(children)
   if (list.length < 1) {
-    reasons.push('the epic has zero enumerated children — nothing proves it was ever decomposed')
+    blockers.push('the epic has zero enumerated children — nothing proves it was ever decomposed')
   }
+
+  // Diagnostics that are REPORTED on both verdicts without themselves causing
+  // one — the not-an-epic-child notices.
+  const notices = []
+  let judged = 0
 
   list.forEach((childIssue, index) => {
     const label =
@@ -299,28 +317,66 @@ export function epicSpecRecoveryGate(input) {
         ? childIssue.id
         : `child #${index + 1}`
     if (!isPlainObject(childIssue)) {
-      reasons.push(`${label}: the child payload is not an object`)
+      blockers.push(`${label}: the child payload is not an object`)
       return
     }
+    if (isNotAnEpicChild(childIssue)) {
+      notices.push(
+        `${label}: carries no epic-child marker — not an epic child, excluded from the planned-state and plan-artifact conjuncts`,
+      )
+      return
+    }
+    judged += 1
     if (haveState && readState(childIssue) !== plannedState) {
-      reasons.push(
+      blockers.push(
         `${label}: in state "${String(readState(childIssue))}", not the planned state "${plannedState}"`,
       )
     }
     if (!hasPlanArtifact(childIssue)) {
-      reasons.push(
+      blockers.push(
         `${label}: has no "${PLAN_ARTIFACT_TITLE_PREFIX} …" attachment or link — no plan artifact`,
       )
     }
   })
 
-  if (reasons.length > 0) return { action: 'abort', reasons }
+  // The sibling of the zero-enumerated-children conjunct above, and it exists
+  // for the same reason: a parent whose only live children were all added by
+  // hand proves exactly as little about decomposition as a parent with none,
+  // so noop-ing here would declare a never-decomposed epic complete. Guarded
+  // on `list.length` so it cannot double-report the zero case.
+  if (list.length > 0 && judged === 0) {
+    blockers.push(
+      `the epic has ${list.length} enumerated child(ren) but none carries an epic-child marker — nothing proves it was ever decomposed`,
+    )
+  }
+
+  if (blockers.length > 0) return { action: 'abort', reasons: blockers.concat(notices) }
   return {
     action: 'noop',
     reasons: [
-      `the parent is planned, carries "${epicLabel}", and all ${list.length} children are planned with a plan artifact — enumerate and no-op`,
+      `the parent is planned, carries "${epicLabel}", and all ${judged} epic children are planned with a plan artifact — enumerate and no-op`,
+      ...notices,
     ],
   }
+}
+
+/**
+ * The membership test, applied to ONE enumerated child: true only when the
+ * child's description PROVES it was never minted by the epic path. Absence of
+ * evidence is not evidence of absence, so this stays false — and the child
+ * keeps being judged, fail-closed — for a description that is missing, empty,
+ * or list-truncated. Unlike `reconcileEpicChildren`, this gate has no
+ * `missing`-empty conjunct to fall back on (it runs precisely when the spec is
+ * unreadable, so it cannot cross-check keys); requiring a non-empty
+ * description IS the substitute guard, and it keeps a caller that enumerated
+ * children without their descriptions on the loud path rather than silently
+ * excluding every child.
+ */
+function isNotAnEpicChild(childIssue) {
+  const description = childIssue?.description
+  if (!isNonEmptyString(description)) return false
+  if (descriptionAppearsTruncated(description)) return false
+  return parseEpicChildMarker(description) === null
 }
 
 /**

@@ -556,6 +556,127 @@ const goodChild = (id, over = {}) => ({
 
 const goodParent = (over = {}) => ({ id: PARENT_ID, state: PLANNED, labels: [EPIC], ...over })
 
+// A live child the epic path never minted: a real, non-empty description that
+// demonstrably carries no epic-child marker.
+const handAddedChild = (id, over = {}) => ({
+  id,
+  state: 'Backlog',
+  description: 'Somebody filed this by hand under the epic parent.',
+  attachments: [],
+  links: [],
+  ...over,
+})
+
+// ---------------------------------------------------------------------------
+// S4b — the epic-child membership test at the recovery gate (BOS-1255). Same
+// rule as reconcileEpicChildren's: the marker is the membership test, and a
+// child that carries none is excluded from the epic-child conjuncts rather
+// than aborting the gate — but only where its absence is PROVEN.
+// ---------------------------------------------------------------------------
+
+test('S4b: a hand-added sub-issue is excluded from the child conjuncts and named, not aborted', () => {
+  const res = epicSpecRecoveryGate({
+    plannedState: PLANNED,
+    epicLabel: EPIC,
+    parent: goodParent(),
+    // The hand-added child fails BOTH per-child conjuncts (unplanned, no plan
+    // artifact), so before the membership test it contributed two abort
+    // reasons and wedged the gate.
+    children: [
+      goodChild('BOS-1', { description: epicChildMarker('c1') }),
+      handAddedChild('BOS-HAND'),
+    ],
+  })
+
+  assert.equal(res.action, 'noop', res.reasons.join(' | '))
+  assert.ok(
+    res.reasons.some((r) => r.includes('BOS-HAND') && r.includes('no epic-child marker')),
+    'the excluded child must still be named on the noop path',
+  )
+  assert.ok(
+    !res.reasons.some((r) => r.includes('BOS-HAND') && r.includes('Backlog')),
+    'the excluded child must not be scored against the planned-state conjunct',
+  )
+  assert.ok(
+    !res.reasons.some((r) => r.includes('BOS-HAND') && r.includes('no plan artifact')),
+    'the excluded child must not be scored against the plan-artifact conjunct',
+  )
+})
+
+test('S4b: a marker-carrying child that fails a conjunct still aborts', () => {
+  const res = epicSpecRecoveryGate({
+    plannedState: PLANNED,
+    epicLabel: EPIC,
+    parent: goodParent(),
+    children: [
+      goodChild('BOS-1', { description: epicChildMarker('c1'), state: 'Backlog' }),
+      handAddedChild('BOS-HAND'),
+    ],
+  })
+
+  assert.equal(res.action, 'abort')
+  assert.ok(res.reasons.some((r) => r.includes('BOS-1') && r.includes('Backlog')))
+  assert.ok(
+    res.reasons.some((r) => r.includes('BOS-HAND')),
+    'the excluded child is named on the abort path too',
+  )
+})
+
+test('S4b: absence of the marker must be PROVEN — truncated, empty and missing descriptions still judge', () => {
+  // Each of these is a description that proves nothing about the marker, so
+  // the child keeps being judged and the gate stays fail-closed. All three
+  // children are unplanned with no plan artifact, so a wrongly-excluded child
+  // would flip the verdict to noop.
+  const unprovable = {
+    'list-truncated description': 'summary … (truncated, use get_issue for full description)',
+    'empty description': '',
+    'whitespace-only description': '   ',
+    'absent description': undefined,
+  }
+  for (const [name, description] of Object.entries(unprovable)) {
+    const res = epicSpecRecoveryGate({
+      plannedState: PLANNED,
+      epicLabel: EPIC,
+      parent: goodParent(),
+      children: [
+        goodChild('BOS-1', { description: epicChildMarker('c1') }),
+        handAddedChild('BOS-UNPROVEN', { description }),
+      ],
+    })
+    assert.equal(res.action, 'abort', `${name}: ${res.reasons.join(' | ')}`)
+    assert.ok(
+      res.reasons.some((r) => r.includes('BOS-UNPROVEN') && r.includes('Backlog')),
+      `${name}: the child must still be scored against the planned-state conjunct`,
+    )
+  }
+})
+
+test('S4b: children that are ALL unmarked abort — a never-decomposed epic is not complete', () => {
+  // The sibling of the zero-enumerated-children conjunct. A parent whose only
+  // live children were added by hand proves exactly as little about
+  // decomposition as a parent with none, so noop-ing here would declare a
+  // never-decomposed epic complete.
+  const res = epicSpecRecoveryGate({
+    plannedState: PLANNED,
+    epicLabel: EPIC,
+    parent: goodParent(),
+    children: [
+      handAddedChild('BOS-H1', { state: PLANNED }),
+      handAddedChild('BOS-H2', { state: PLANNED }),
+    ],
+  })
+
+  assert.equal(res.action, 'abort')
+  assert.ok(
+    res.reasons.some((r) => r.includes('none carries an epic-child marker')),
+    res.reasons.join(' | '),
+  )
+  assert.ok(
+    res.reasons.some((r) => r.includes('BOS-H1')) && res.reasons.some((r) => r.includes('BOS-H2')),
+    'every excluded child is still named',
+  )
+})
+
 test('S4: the recovery gate noops only when every conjunct holds', () => {
   const cases = [
     {

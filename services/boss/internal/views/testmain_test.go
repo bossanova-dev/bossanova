@@ -39,6 +39,13 @@ func TestMain(m *testing.M) {
 	newRemoteTerminfoProber = func(string) termnorm.Prober {
 		return func(term string) bool { return term != "" }
 	}
+	// Same isolation rule, applied to the OS credential store. Any test that
+	// reaches captureViewTelemetry with tracing enabled resolves the distinct
+	// id, and the real lookup opens the developer's keychain. Defaulting here
+	// rather than in enableViewTelemetryForTest keeps it free of ordering
+	// coupling: withViewTelemetryEmail overrides this one and restores back to
+	// it.
+	viewTelemetryEmailLookup = func() string { return "" }
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)

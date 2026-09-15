@@ -362,6 +362,7 @@ func (a App) handleStartSubscriptionFlow() (tea.Model, tea.Cmd) {
 	a.login = NewLoginModel(a.auth, a.client, a.ctx)
 	a.login.SetAfterAuth(a.afterAuth)
 	a.login.SetAuthChangeQueue(a.authChanges)
+	a.login.SetTelemetry(a.telemetry)
 	if a.cloudAccess != nil {
 		a.login.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
 		a.login.SetSubscriptionURL(a.subscriptionURL)

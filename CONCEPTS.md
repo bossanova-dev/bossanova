@@ -1190,6 +1190,24 @@ Long-lived transports (`DaemonStream`, `TerminalStream`, attach/create/chat stre
 
 ## Cloud billing
 
+### Guest cloud offer
+
+The single-line invitation shown in the terminal UI to a signed-out user, offering Cloud as
+something to try — the top step of the pre-signup conversion funnel, and the only Cloud affordance
+a person without a Cloud account is shown.
+
+The offer is deliberately earned rather than immediate: it stays hidden until the product has
+already delivered value to that user, and stays hidden for anyone signed in, anyone whose install
+has no auth configured, and anyone who has dismissed it. Two windows bound it further — one
+anchored to the moment value was delivered, one limiting how far into a single session it may
+still appear. Those inputs mean its eligibility is not fixed for the lifetime of a session: it can
+begin passing partway through one, as a sign-in state or a timestamp changes. Presentation differs
+by board state — on a populated session board the offer yields to a prompt or in-progress status
+occupying the same footer, whereas on the empty board it is shown regardless. Its impression is
+counted at most once per session and the record of that count is never cleared, so the count may
+only be taken on a frame where the offer was genuinely drawn; taking it on a frame that merely
+looked eligible spends the session's one impression and silently loses the real one.
+
 ### Cloud account
 
 A billing identity that ties a Bossanova user or organization to the external customer record used
@@ -1886,6 +1904,26 @@ runs the other way too — a formatter that rewrites the damaged shape can equal
 new detector, so a lexical gate is only as good as its position in the format-then-lint ordering, and
 whether that ordering is enforced by a gate or merely by convention is worth establishing explicitly.
 
+### Certifying assertion
+
+A check that is true of the correct design and of the defective one alike, because it tests a
+**join** — a point where several distinct inputs are deliberately mapped onto one output — and so
+can observe only which output was produced, never which input arrived there. Its green is evidence
+about the mapping and about nothing else, while reading to a reviewer as coverage of the input.
+
+It is not a **Vacuous gate**: the check is hollow at no layer, it asserts exactly what it claims to,
+and mutating the mapping does kill it. What is wrong is not the assertion but its unstated premise —
+that only the benign producers can supply the input being tested. The tell is an assertion whose
+truth value is unchanged by the defect's presence: correct before, during, and after, so no run of
+it could ever have discriminated. Where a fallback collapses an empty value and an absent one onto a
+single default, the assertion also records the decision to merge those cases without anyone having
+to state or defend it, which is why the merge tends to go unreviewed.
+
+The repair is never a better assertion at the join, because no such assertion exists. Detection has
+to move to the **producer** and assert over the inputs a producer can emit — that the privileged
+path never yields the sentinel — which is the direction a **Falsification** of the merged case would
+have forced anyway.
+
 ### Unsatisfiable criterion
 
 An acceptance criterion no artifact can ever evidence, so ticking it reports something other than
@@ -2297,6 +2335,27 @@ by a test that asserts the refusal — stated in a comment alone it is documenta
 does not fail. Being a real process rather than a mock is no defence: a double that genuinely runs and
 genuinely fails is still silently empty when it never emits the field the code path under test reads.
 
+### Overloaded accumulator
+
+A collection that is at once the payload a check renders and the predicate that decides its verdict —
+its emptiness _is_ the branch — so its name describes what gets printed and says nothing about what it
+decides. Nothing is wrong while every entry is a rejection. The hazard appears the moment the check
+must report something without deciding on it, because the obvious edit, appending to the list the
+check already returns, silently flips the verdict for exactly the case the new entry exists to let
+through, and no existing test observes it because every other case still behaves.
+
+The tells are a second parallel collection introduced beside the first, and a comment explaining which
+of the two is safe to append to — an invariant held in prose at one declaration while the dangerous
+edit happens at a distant append, in code a later author writes. The repair is a rename rather than a
+restructure: name the deciding collection for its decision and derive the rendered payload from it
+where the result is assembled, so the returned field keeps its name and no caller changes. Naming is
+all it settles. Which entries decide and which merely report is a separate question answered on its
+own evidence, and giving advisory and blocking entries separate names is not a licence to move entries
+between them; an exclusion is only safe while some other conjunct still fails closed on what the
+exclusion stops covering. Compare a **Vacuous gate**, which passes on the values it exists to reject:
+here the check is correct as written, and what carries no information is the signal its next editor
+gets about which half they are writing into.
+
 ### Diagnostic conflation
 
 A single rendered value standing for two opposite causes — an observation that was taken and came
@@ -2564,10 +2623,15 @@ is written, so the guard is neither deleted as dead code nor over-claimed as a l
   the daemon may do to a repo; a declaration gate (see **Tracker adapter**) admits an adapter; a
   **Stamp** gates a build step on an input hash; a **Delivery gate** decides whether a pane is safe
   to type into. Only the cron sense has a recorded **Gate outcome**.
-- "Stamp" carries two unrelated senses. A **Stamp** in the build-caching sense is a content hash over
-  a step's inputs that decides whether the step is skipped; a route-receipt stamp (see **Run
-  bookkeeping**) is a token a run emits to attest that it performed an act. The first gates work, the
-  second records it — and only the second is advisory.
+- "Stamp" carries three unrelated senses. A **Stamp** in the build-caching sense is a content hash
+  over a step's inputs that decides whether the step is skipped; a route-receipt stamp (see **Run
+  bookkeeping**) is a token a run emits to attest that it performed an act; a telemetry stamp is a
+  build identifier written onto every event a process emits, so events can be attributed to the
+  build that produced them. The first gates work, the second records an act, the third labels a
+  measurement — and only the second is advisory. The third carries a hazard the others do not: it is
+  written into an external store at the moment of capture, so a wrong value is not correctable
+  afterwards, and its unversioned default is a sentinel that reads as a legitimate answer rather
+  than as a gap.
 - "Rate limited" had been used for both a **Limited** account, which has exhausted its own usage
   cap, and a **Probe throttle**, which is the usage endpoint refusing our polling rate — these are
   distinct, and only the former justifies a **Cooldown**.

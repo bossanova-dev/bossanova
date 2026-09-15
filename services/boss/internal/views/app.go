@@ -56,9 +56,15 @@ type App struct {
 	// rotation decision can be detected across refreshes and surfaced as a
 	// toast. nil until the first session list is observed (seed pass).
 	rotationSeen map[string]string
-	width        int
-	height       int
-	quitting     bool
+	// guestOfferCaptured latches the cloud_guest_offer_shown impression to one
+	// per TUI session. It lives on App, not HomeModel, because Home is rebuilt
+	// by newHomeModel every time the user navigates back to it — a latch there
+	// would re-arm, and a session that visited Settings and returned would
+	// report two impressions of the same offer (BOS-1260).
+	guestOfferCaptured bool
+	width              int
+	height             int
+	quitting           bool
 }
 
 // WithTelemetry installs a telemetry client for action-level view events.
@@ -182,8 +188,46 @@ func (a App) Init() tea.Cmd {
 	return tea.Batch(viewCmd, heartbeatTickCmd())
 }
 
-// Update is the root dispatcher: app-global message handling, then delegation
-// to the active view.
+// Update is the root dispatcher's entry point: it runs updateRouted below and
+// then makes the one App-level *observation* that must not live in a render
+// function — the guest cloud offer impression.
+//
+// The wrapper exists because updateRouted returns from many separate arms. A
+// capture appended to its fall-through tail would silently miss every message
+// an early-returning arm consumes, and the session-list poll — one of exactly
+// the messages that make the offer appear — is such an arm. Wrapping is the
+// only shape that covers every return path without adding a nineteenth place
+// to forget.
+func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := a.updateRouted(msg)
+	next, isApp := model.(App)
+	if !isApp {
+		return model, cmd
+	}
+	next.captureGuestCloudOffer()
+	return next, cmd
+}
+
+// captureGuestCloudOffer emits cloud_guest_offer_shown at most once per TUI
+// session, the first time Home's guest offer is genuinely on screen.
+//
+// The latch is set whether or not the capture reaches PostHog, because it
+// records that the impression HAPPENED, not that it was reported: tracing is
+// opt-in and the client is chosen once at launch, so a gated-off capture is
+// not an impression waiting to be retried.
+func (a *App) captureGuestCloudOffer() {
+	if a.guestOfferCaptured || a.activeView != ViewHome {
+		return
+	}
+	if !a.home.guestCloudOfferOnScreen() {
+		return
+	}
+	a.guestOfferCaptured = true
+	captureCloudConversionStep(a.ctx, a.telemetry, telemetry.EventCloudGuestOfferShown, tuiEntryPointHome)
+}
+
+// updateRouted is the root dispatcher: app-global message handling, then
+// delegation to the active view.
 //
 // The three arm shapes below are load-bearing, and the difference between them
 // is the whole reason this function is easy to break:
@@ -221,7 +265,7 @@ func (a App) Init() tea.Cmd {
 // switchViewMsg and ctrl+g — because each re-routes activeView, which destroys
 // the witness those tests rely on. Flipping one of those three to fall through
 // is currently invisible.
-func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (a App) updateRouted(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Ctrl+X is an alias for Esc wherever the TUI treats Esc as "back one
 	// level" (BOS-660). Rewriting the message here — before the toast, the
 	// global chords and the active view — is what lets every existing Esc

@@ -500,12 +500,61 @@ func checkLoginCloudGateWithTelemetry(
 	}
 	subscribeURL := cloudSubscribeURL(resolveSubscribeOrganizationID(ctx, c, status))
 	if subscribeURL != "" {
+		// Emit on the ATTEMPT, before the browser call returns: the fallback
+		// below still puts the subscribe URL in front of the user, so a failed
+		// open is a hand-off with a different transport, not a hand-off that
+		// did not happen (BOS-1260).
+		captureCLICloudConversionStep(
+			ctx,
+			telemetryClient,
+			telemetry.EventCloudSubscribePageOpened,
+			cliCloudEntryPointLogin,
+		)
 		if err := openCloudCheckoutURL(subscribeURL); err != nil {
 			_, _ = fmt.Fprintf(out, "Open subscription page: %s\n", subscribeURL)
 		}
 	}
 	_, _ = fmt.Fprintln(out, cloudGateMessage)
 	return false
+}
+
+// cliCloudEntryPoint bounds the entry_point value the CLI gate emits for the
+// conversion-funnel steps, mirroring the views package's tuiEntryPoint guard
+// rail: an untyped string constant is the only thing that converts implicitly,
+// so an email, an account label or a URL cannot reach the property by accident.
+type cliCloudEntryPoint string
+
+// cliCloudEntryPointLogin is the CLI cloud gate — the hand-off that happens
+// when `boss login` (or a command behind the gate) finds no subscription. It is
+// the same literal the gate's cloud_access_denied events already carry, so the
+// denial and the hand-off line up on one entry_point in PostHog.
+const cliCloudEntryPointLogin cliCloudEntryPoint = "cli_login"
+
+// captureCLICloudConversionStep emits one terminal-side conversion-funnel step
+// from the CLI. It is the counterpart of the views package's
+// captureCloudConversionStep and builds the same narrow property map, so the
+// CLI and TUI hand-offs are one funnel step separated only by entry_point.
+//
+// Kept separate from captureLoginCloudBillingEvent because that one builds the
+// WIDE billing map (cloud_access_state, denial_reason, workos_org_id), and
+// cloud_subscribe_page_opened registers neither — FilterProperties would drop
+// them silently, leaving call sites paying for properties the event never
+// carries.
+func captureCLICloudConversionStep(
+	ctx context.Context,
+	client telemetry.Client,
+	event telemetry.Event,
+	entryPoint cliCloudEntryPoint,
+) {
+	// Gate before building the map, as captureLoginCloudBillingEvent does.
+	if client == nil || !commandTelemetryEnabled() {
+		return
+	}
+	client.Capture(ctx, event, commandDistinctID(), map[string]any{
+		"product_area": "billing",
+		"entry_point":  string(entryPoint),
+		"source":       "cli",
+	})
 }
 
 func captureLoginCloudBillingEvent(

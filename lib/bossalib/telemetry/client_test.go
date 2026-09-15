@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/posthog/posthog-go"
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -128,6 +129,55 @@ func TestFunnelDistinctID(t *testing.T) {
 	}
 }
 
+// TestLocalFunnelDistinctIDPrefersTheFunnelNamespace pins the one resolver the
+// TUI and CLI share. The email case must be byte-identical to FunnelDistinctID,
+// not merely "contains an @": that equality is what makes a local event and a
+// web/bosso event for the same human one PostHog person.
+func TestLocalFunnelDistinctIDPrefersTheFunnelNamespace(t *testing.T) {
+	cases := []struct {
+		name  string
+		home  string
+		email string
+		want  string
+	}{
+		{
+			name:  "funnel email form when an email is known",
+			home:  "/Users/person",
+			email: "  Person@Example.COM ",
+			want:  FunnelDistinctID("", "person@example.com"),
+		},
+		{
+			name:  "local fallback when no email is available",
+			home:  "/Users/person",
+			email: "",
+			want:  LocalDistinctID("/Users/person"),
+		},
+		{
+			name:  "local fallback when the email is only whitespace",
+			home:  "/Users/person",
+			email: "   ",
+			want:  LocalDistinctID("/Users/person"),
+		},
+		{
+			name:  "never anonymous: an unknown home still yields the local form",
+			home:  "",
+			email: "",
+			want:  LocalDistinctID(""),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LocalFunnelDistinctID(tc.home, tc.email)
+			if got != tc.want {
+				t.Fatalf("LocalFunnelDistinctID(%q, %q) = %q, want %q", tc.home, tc.email, got, tc.want)
+			}
+			if got == UserDistinctID(tc.email) && tc.email != "" {
+				t.Fatalf("LocalFunnelDistinctID(%q, %q) = %q, the retired user-<hash> namespace", tc.home, tc.email, got)
+			}
+		})
+	}
+}
+
 func TestDistinctIDHelpersAreHyphenatedAndStable(t *testing.T) {
 	cases := []struct {
 		name string
@@ -232,6 +282,64 @@ func TestCaptureDropsPropertiesRegisteredForAnotherEvent(t *testing.T) {
 	}
 	if _, ok := capture.Properties["checkout_action"]; ok {
 		t.Fatal("checkout_action should be dropped for cli_command_invoked")
+	}
+}
+
+func TestCaptureStampsAppVersionThatCallersCannotForge(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties map[string]any
+	}{
+		{
+			name:       "caller supplies no version",
+			properties: map[string]any{"command": "boss sessions"},
+		},
+		{
+			name: "caller tries to supply its own version",
+			properties: map[string]any{
+				"command":     "boss sessions",
+				"app_version": "v99.99.99-forged",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &fakePostHogClient{}
+			// Build the config through a real constructor so the assertion below
+			// compares against the version the shipping binaries would carry.
+			client := &postHogClient{inner: inner, cfg: FromEnv("boss", "test", "phc_test", "")}
+
+			client.Capture(context.Background(), EventCLICommandInvoked, "user_1", tt.properties)
+
+			capture, ok := inner.message.(posthog.Capture)
+			if !ok {
+				t.Fatalf("Enqueue message = %T, want posthog.Capture", inner.message)
+			}
+			if got := capture.Properties["app_version"]; got != buildinfo.Version {
+				t.Fatalf("app_version = %v, want %q", got, buildinfo.Version)
+			}
+		})
+	}
+}
+
+func TestConstructorsPopulateAppVersion(t *testing.T) {
+	settings := config.DefaultSettings()
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "FromSettings", cfg: FromSettings(settings, "boss")},
+		{name: "FromEnv", cfg: FromEnv("bosso", "production", "phc_test", "")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.cfg.AppVersion == "" {
+				t.Fatal("AppVersion = \"\", want a non-empty build version")
+			}
+			if tt.cfg.AppVersion != buildinfo.Version {
+				t.Fatalf("AppVersion = %q, want %q", tt.cfg.AppVersion, buildinfo.Version)
+			}
+		})
 	}
 }
 
@@ -702,6 +810,8 @@ func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
 		{EventRepairCompleted, map[string]any{"source": "cli", "status": "success"}},
 		{EventBugReportSubmitted, map[string]any{"authenticated": true, "report_id": "report_123"}},
 		{EventCloudAccessDenied, billingTelemetryProperties()},
+		{EventCloudGuestOfferShown, map[string]any{"product_area": "billing", "entry_point": "tui_home", "source": "tui"}},
+		{EventCloudSubscribePageOpened, map[string]any{"product_area": "billing", "entry_point": "tui_login", "source": "tui"}},
 		{EventCloudCheckoutStarted, billingTelemetryProperties()},
 		{EventCloudCheckoutReturned, billingTelemetryProperties()},
 		{EventCloudTrialEnrollmentFailed, billingTelemetryProperties()},

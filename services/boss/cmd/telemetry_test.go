@@ -155,15 +155,66 @@ func TestLocalDistinctIDUsesHyphenatedSharedHelper(t *testing.T) {
 	}
 }
 
+// TestTelemetryDistinctIDUsesSignedInEmail pins the CLI onto the funnel
+// namespace. It previously asserted the retired telemetry.UserDistinctID form;
+// that person is one no web or bosso event ever writes to, so a funnel spanning
+// the CLI and the web returned zero completions.
 func TestTelemetryDistinctIDUsesSignedInEmail(t *testing.T) {
 	testEnv := enableCommandTelemetryForTest(t)
 	writeAuthTokensForTest(t, "person@example.com")
 	assertAuthTokensStoredInTestHome(t, testEnv)
 
 	got := commandDistinctID()
-	want := telemetry.UserDistinctID("person@example.com")
+	want := telemetry.FunnelDistinctID("", "person@example.com")
 	if got != want {
 		t.Fatalf("commandDistinctID() = %q, want %q", got, want)
+	}
+	if got == telemetry.UserDistinctID("person@example.com") {
+		t.Fatalf("commandDistinctID() = %q, still the retired user-<hash> namespace", got)
+	}
+}
+
+// TestCommandEventsShareTheTUIFunnelDistinctID pins the CLI half of the
+// cross-surface parity claim. The TUI half is pinned against the same
+// telemetry.LocalFunnelDistinctID expression in
+// services/boss/internal/views/telemetry_test.go, so the two surfaces resolve to
+// one PostHog person by construction. Package boundaries make a single test
+// that calls both impossible.
+func TestCommandEventsShareTheTUIFunnelDistinctID(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	rec := &fakeTelemetry{}
+	original := commandTelemetryEmailLookup
+	commandTelemetryEmailLookup = func() string { return "person@example.com" }
+	t.Cleanup(func() { commandTelemetryEmailLookup = original })
+
+	captureRepairStarted(context.Background(), rec)
+
+	// The literal, not telemetry.LocalFunnelDistinctID(home, ...): see the TUI
+	// half in services/boss/internal/views/telemetry_test.go. Deriving the
+	// expectation from the production expression would make both sides move
+	// together on a regression; the shared literal is what actually pins parity
+	// across the package boundary.
+	const want = "email:person@example.com"
+	if len(rec.distinctIDs) != 1 || rec.distinctIDs[0] != want {
+		t.Fatalf("captured distinctIDs = %#v, want [%q]", rec.distinctIDs, want)
+	}
+}
+
+// TestCommandDistinctIDFallsBackToLocalWithoutAnEmail keeps an anonymous
+// machine on a stable per-home identity rather than collapsing every logged-out
+// machine into the shared "anonymous" person FunnelDistinctID would return.
+func TestCommandDistinctIDFallsBackToLocalWithoutAnEmail(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	original := commandTelemetryEmailLookup
+	commandTelemetryEmailLookup = func() string { return "" }
+	t.Cleanup(func() { commandTelemetryEmailLookup = original })
+
+	got := commandDistinctID()
+	if want := localDistinctID(); got != want {
+		t.Fatalf("commandDistinctID() = %q, want %q", got, want)
+	}
+	if got == "anonymous" {
+		t.Fatalf("commandDistinctID() = %q, which merges every anonymous machine into one person", got)
 	}
 }
 
@@ -178,12 +229,37 @@ func TestIdentifySignedInUserSendsEmailProperty(t *testing.T) {
 	if len(rec.identifies) != 1 {
 		t.Fatalf("identifies = %d, want 1", len(rec.identifies))
 	}
-	wantDistinctID := telemetry.UserDistinctID("person@example.com")
+	wantDistinctID := telemetry.FunnelDistinctID("", "person@example.com")
 	if got := rec.identifies[0].distinctID; got != wantDistinctID {
 		t.Fatalf("identify distinctID = %q, want %q", got, wantDistinctID)
 	}
 	if got := rec.identifies[0].props["email"]; got != "person@example.com" {
 		t.Fatalf("identify email = %v, want person@example.com", got)
+	}
+}
+
+// TestIdentifyTargetsTheSamePersonEventsAreCapturedOn compares the two ids
+// against each other rather than each against a literal: person properties
+// written to a person no event touches are worse than none, and only a direct
+// comparison catches the two drifting apart.
+func TestIdentifyTargetsTheSamePersonEventsAreCapturedOn(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	rec := &fakeTelemetry{}
+	original := commandTelemetryEmailLookup
+	commandTelemetryEmailLookup = func() string { return "person@example.com" }
+	t.Cleanup(func() { commandTelemetryEmailLookup = original })
+
+	captureAuthChanged(context.Background(), rec, "login")
+
+	if len(rec.identifies) != 1 || len(rec.distinctIDs) != 1 {
+		t.Fatalf("identifies = %d, captures = %d, want 1 each", len(rec.identifies), len(rec.distinctIDs))
+	}
+	if rec.identifies[0].distinctID != rec.distinctIDs[0] {
+		t.Fatalf("identify distinctID = %q, captured distinctID = %q, want the same person",
+			rec.identifies[0].distinctID, rec.distinctIDs[0])
+	}
+	if want := telemetry.FunnelDistinctID("", "person@example.com"); rec.identifies[0].distinctID != want {
+		t.Fatalf("identify distinctID = %q, want %q", rec.identifies[0].distinctID, want)
 	}
 }
 
@@ -198,9 +274,16 @@ func TestCaptureAuthChangedAliasesLocalUserOnLogin(t *testing.T) {
 	if len(rec.aliases) != 1 {
 		t.Fatalf("aliases = %d, want 1", len(rec.aliases))
 	}
-	want := [2]string{localDistinctID(), telemetry.UserDistinctID("person@example.com")}
+	// The bridge, retargeted: it still starts at this machine's pre-login
+	// identity, but now lands inside the funnel namespace instead of the
+	// retired user-<hash> one. Nothing aliases FROM a pre-change user-<hash>
+	// person — the migration is forward-only.
+	want := [2]string{telemetry.LocalDistinctID(homeDirForTest(t)), telemetry.FunnelDistinctID("", "person@example.com")}
 	if rec.aliases[0] != want {
 		t.Fatalf("alias = %#v, want %#v", rec.aliases[0], want)
+	}
+	if rec.aliases[0][1] == telemetry.UserDistinctID("person@example.com") {
+		t.Fatalf("alias target = %q, still the retired user-<hash> namespace", rec.aliases[0][1])
 	}
 }
 
@@ -220,7 +303,7 @@ func TestCaptureAuthChangedReadsSignedInEmailOnceOnLogin(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("commandTelemetryEmail calls = %d, want 1", calls)
 	}
-	wantDistinctID := telemetry.UserDistinctID("person@example.com")
+	wantDistinctID := telemetry.FunnelDistinctID("", "person@example.com")
 	if len(rec.identifies) != 1 {
 		t.Fatalf("identifies = %d, want 1", len(rec.identifies))
 	}
@@ -238,7 +321,7 @@ func TestCaptureAuthChangedWithEmailPreservesLogoutUserIdentity(t *testing.T) {
 
 	captureAuthChangedWithEmail(context.Background(), rec, "logout", "person@example.com")
 
-	wantDistinctID := telemetry.UserDistinctID("person@example.com")
+	wantDistinctID := telemetry.FunnelDistinctID("", "person@example.com")
 	if len(rec.distinctIDs) != 1 {
 		t.Fatalf("distinctIDs = %d, want 1", len(rec.distinctIDs))
 	}
@@ -316,4 +399,13 @@ func assertCommandTelemetryNoSensitiveProps(t *testing.T, props map[string]any) 
 			t.Fatalf("sensitive prop %q present in %v", key, props)
 		}
 	}
+}
+
+func homeDirForTest(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	return home
 }

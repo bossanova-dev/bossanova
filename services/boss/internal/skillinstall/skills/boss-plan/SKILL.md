@@ -455,7 +455,10 @@ legacy inline specs are accepted by provenance because that read-only store pred
 `schemaVersion`/`parentId`. Only a legacy parse _failure_ reaches the gate below. **Unreadable-spec recovery gate** — when the spec cannot be read, or an
 attachment-sourced spec fails `validateSpecIdentity`, the decision is
 `epicSpecRecoveryGate({parent, children, plannedState, epicLabel})`, which owns the ALL-of conjunct
-set — parent planned + epic-labelled; every child planned + plan artifact — and names every failure.
+set — parent planned + epic-labelled; every EPIC child planned + plan artifact — and names every
+failure. Epic membership is the same marker test: a child whose non-empty description carries none is
+excluded from both child conjuncts and named, never scored; a missing, empty or truncated description
+proves nothing and is still judged.
 Feed it hydrated children: start from `list_issues parentId=<parentId> limit=250`, then `get_issue`
 each child when the list omits attachments or full fields. Its `action` is only ever `'noop'`
 (enumerate + no-op) or `'abort'`:
@@ -790,9 +793,15 @@ save replaces the description and would otherwise wipe the child's gated plan bo
 child, never the spec key, because `specKey` is the namespace `adopted` reports under and the one every
 sibling's `blockedByKeys` and `epicWiringPlan` resolve through, so re-pointing the spec at `liveKey`
 would strand those refs and throw mid-wire, after children already exist — create nothing for it. **Ambiguous
-drift** (`ok:false` — multiple orphans, an unmarked child, duplicate live keys, or a non-array input):
+drift** (`ok:false` — multiple orphans, duplicate live keys, a non-array input, or an unmarked child
+while `missing` is non-empty):
 take the SAFE branch — report `errors`, write nothing, create nothing, never guess; a refusal must never
-be read as "no children exist" (that would duplicate the whole epic). Create only the spec keys
+be read as "no children exist" (that would duplicate the whole epic). The marker IS the membership
+test, so a child carrying none was never minted here and does not make the epic broken: it is always
+reported in `unmarked`, and with `missing` empty it is ignored rather than refused — nothing is
+created for it, so it provably cannot be duplicated. A description carrying the list-truncation
+sentinel is not proof the marker is absent and still refuses, with its own hydrate-first
+diagnostic. Create only the spec keys
 `missing` names —
 **drafting each missing child from its persisted metadata and wiring it per the persisted
 `blockedByKeys`, never a fresh re-decomposition** — then finish wiring + parent repurpose.
@@ -1132,7 +1141,7 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    of it.
    Include `epicParentId` on the subject and every candidate when exposed: the library keeps epic
    parents/siblings on the planning-note path instead of adding external dependency edges. `moduleRoots` is this
-   repo's top-level module/package directory names: area extraction drops every slash-free token
+   repo's top-level module/package/`.dotted` names: area extraction drops every slash-free token
    without it, so a plan whose `## Key changes` names bare module names contributes no areas and its
    overlaps are missed in silence — the missed-prerequisite defect re-entering through the glue.
    `subject` needs the SAME fields as a candidate, including workflow state/status: it is blocked on
@@ -1179,9 +1188,9 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
      Open Question. Never drop it silently.
    - `compared === 0` → nothing was evaluated. Report _could not evaluate_, never _no dependencies_.
    - a `notes[]` `reason` of `no-subject-areas` or `subject-unresolved-areas` → the scan compared
-     candidates it could never have matched. Report _could not evaluate_, never _no dependencies_,
-     and for the unresolved reason rewrite the named tokens as repo-relative paths (or declare their
-     leading directory in `moduleRoots`) and re-run (c) before writing any edge.
+     candidates it could never have matched. Report _could not evaluate_, never _no dependencies_.
+     Per unresolved token: only if its leading segment is a source root, declare it, re-run (c);
+     else (a root file, `origin/main`, `../x`) hand-compare under `## Planning`.
 
    e. **Cycle safety — after (d)'s downgrade, over blocking writes only.** For each surviving
    `write`, op `getIssue` with relations on both ids; skip that write when the opposite relation

@@ -41,7 +41,10 @@
     "maxDispatchedRounds": 6,
     "forceFull": false,
     "rounds": [
-      { "capability": "second-voice", "kind": "cross-agent" },
+      {
+        "capability": "second-voice",
+        "kind": "cross-agent"
+      },
       {
         "capability": "code-review",
         "kind": "skill",
@@ -99,12 +102,296 @@
       "post-rebase-check": "must run after a rebase even when content appears unchanged"
     }
   },
-  "test": { "manifestPath": "docs/testing/test-command-manifest.md" },
+  "test": {
+    "manifestPath": "docs/testing/test-command-manifest.md"
+  },
+  "testSelection": {
+    "rules": [
+      {
+        "changed": "services/boss/**",
+        "tests": ["services/boss/**/*_test.go"]
+      },
+      {
+        "changed": "services/bossd/**",
+        "tests": ["services/bossd/**/*_test.go"]
+      },
+      {
+        "changed": "services/bosso/**",
+        "tests": ["services/bosso/**/*_test.go"]
+      },
+      {
+        "changed": "services/mcp/**",
+        "tests": ["services/mcp/**/*_test.go"]
+      },
+      {
+        "changed": "services/mcp-gateway/**",
+        "tests": ["services/mcp-gateway/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-claude/**",
+        "tests": ["plugins/bossd-plugin-claude/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-codex/**",
+        "tests": ["plugins/bossd-plugin-codex/**/*_test.go", "services/bossd/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-dependabot/**",
+        "tests": ["plugins/bossd-plugin-dependabot/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-linear/**",
+        "tests": ["plugins/bossd-plugin-linear/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-opencode/**",
+        "tests": ["plugins/bossd-plugin-opencode/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-repair/**",
+        "tests": ["plugins/bossd-plugin-repair/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-sentry/**",
+        "tests": ["plugins/bossd-plugin-sentry/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-stub-runner/**",
+        "tests": ["plugins/bossd-plugin-stub-runner/**/*_test.go"]
+      },
+      {
+        "changed": "docs/analytics/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/web/src/analytics/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/web/src/api.ts",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/docs/openapi/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/boss/internal/views/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/bosso/internal/server/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/marketing/src/components/pricing/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/marketing/src/pages/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "services/web/src/pages/**",
+        "tests": ["lib/bossalib/**/*_test.go"]
+      },
+      {
+        "changed": "plugins/bossd-plugin-claude/skilldata/**",
+        "tests": ["services/boss/**/*_test.go", "scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "docs/skills/**",
+        "tests": ["services/boss/**/*_test.go"]
+      },
+      {
+        "changed": "services/docs/docs/skills/**",
+        "tests": ["services/boss/**/*_test.go"]
+      },
+      {
+        "changed": "services/web/**",
+        "tests": [
+          "services/web/**/*.test.ts",
+          "services/web/**/*.test.tsx",
+          "services/web/**/*.spec.ts"
+        ]
+      },
+      {
+        "changed": "services/marketing/**",
+        "tests": ["services/marketing/**/*.test.mjs", "services/marketing/**/*.spec.ts"]
+      },
+      {
+        "changed": "services/docs/**",
+        "tests": [
+          "services/docs/**/*.test.mjs",
+          "services/docs/**/*.test.ts",
+          "services/docs/**/*.test.tsx"
+        ]
+      },
+      {
+        "changed": "lib/ui-tokens/**",
+        "tests": [
+          "services/web/**/*.test.ts",
+          "services/web/**/*.test.tsx",
+          "services/marketing/**/*.test.mjs",
+          "services/docs/**/*.test.mjs"
+        ]
+      },
+      {
+        "changed": "skills-toolbox/**",
+        "tests": ["skills-toolbox/**/*.test.mjs", "scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "scripts/**",
+        "tests": ["scripts/**/*.test.mjs", "skills-toolbox/**/*.test.mjs"]
+      },
+      {
+        "changed": ".claude/skills/**",
+        "tests": ["scripts/**/*.test.mjs", "services/boss/**/*_test.go"]
+      },
+      {
+        "changed": ".codex/skills/**",
+        "tests": ["scripts/**/*.test.mjs", "services/boss/**/*_test.go"]
+      },
+      {
+        "changed": "docs/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "proof/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "PRODUCT.md",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "README.md",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "buf.yaml",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "buf.gen.yaml",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "CLAUDE.md",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "AGENTS.md",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/docs/docs/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/bossd/internal/tmux/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/boss/internal/views/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/boss/internal/accountflow/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/boss/internal/auth/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/boss/cmd/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/boss/internal/tuidriver/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/boss/internal/skillinstall/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/bosso/cmd/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/web/src/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/marketing/src/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "services/*/Dockerfile.k8s",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "docs/email-course/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "lib/bossalib/bossmcp/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      },
+      {
+        "changed": "lib/bossalib/config/**",
+        "tests": ["scripts/**/*.test.mjs"]
+      }
+    ],
+    "sharedFiles": [
+      "lib/bossalib/**",
+      "proto/**",
+      "go.work",
+      "go.work.sum",
+      "MODULE.bazel",
+      "MODULE.bazel.lock",
+      ".bazelrc",
+      ".bazelversion",
+      "**/BUILD.bazel",
+      "**/*.bzl",
+      "Makefile",
+      "**/Makefile",
+      "package.json",
+      "**/package.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "turbo.json",
+      ".github/**",
+      ".boss-skills.json",
+      "**/testdata/**",
+      "scripts/*-lib.mjs",
+      "**/tsconfig*.json",
+      "**/vite.config.*",
+      "**/vitest.config.*",
+      "**/playwright.config.*",
+      ".golangci.yml",
+      ".prettierrc",
+      ".prettierignore",
+      "docs/testing/test-command-manifest.md"
+    ],
+    "testRoots": ["**/*_test.go", "**/*.test.mjs", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts"]
+  },
   "env": {
     "headlessSignals": [
-      { "var": "BOSS_CRON", "equals": "true" },
-      { "var": "BS_HEADLESS", "equals": "1" },
-      { "var": "OPENCLAW_SESSION", "present": true }
+      {
+        "var": "BOSS_CRON",
+        "equals": "true"
+      },
+      {
+        "var": "BS_HEADLESS",
+        "equals": "1"
+      },
+      {
+        "var": "OPENCLAW_SESSION",
+        "present": true
+      }
     ],
     "headlessWhenNoTty": true
   },
@@ -138,7 +425,9 @@
         "epic": "epic",
         "bug": "bug"
       },
-      "githubLabels": { "proofInvalid": "proof-invalid" },
+      "githubLabels": {
+        "proofInvalid": "proof-invalid"
+      },
       "followUpLabels": ["follow-up", "agent-plan"]
     }
   },
@@ -148,24 +437,67 @@
       "baseUrl": "https://proof.bossanova.dev"
     }
   },
-  "planStorage": { "kind": "tracker-attachment" },
-  "reviewLedger": { "dir": ".git/boss-review-ledgers" },
+  "planStorage": {
+    "kind": "tracker-attachment"
+  },
+  "reviewLedger": {
+    "dir": ".git/boss-review-ledgers"
+  },
   "planContract": {
     "version": 1,
     "sections": [
-      { "heading": "## Summary", "required": "always" },
-      { "heading": "## Approach", "required": "always" },
-      { "heading": "## Key changes", "required": "always" },
-      { "heading": "## Testing", "required": "always" },
-      { "heading": "## Risks / unknowns", "required": "always" },
-      { "heading": "## Premises", "required": "optional" },
-      { "heading": "## Acceptance criteria", "required": "always" },
-      { "heading": "## Required proof", "required": "always" },
-      { "heading": "## Proof harness analysis", "required": "optional" },
-      { "heading": "## Why this needs a human", "required": "needs-human" },
-      { "heading": "## Open Questions", "required": "open-questions" },
-      { "heading": "## Planning", "required": "always" },
-      { "heading": "## Original notes", "required": "always" }
+      {
+        "heading": "## Summary",
+        "required": "always"
+      },
+      {
+        "heading": "## Approach",
+        "required": "always"
+      },
+      {
+        "heading": "## Key changes",
+        "required": "always"
+      },
+      {
+        "heading": "## Testing",
+        "required": "always"
+      },
+      {
+        "heading": "## Risks / unknowns",
+        "required": "always"
+      },
+      {
+        "heading": "## Premises",
+        "required": "optional"
+      },
+      {
+        "heading": "## Acceptance criteria",
+        "required": "always"
+      },
+      {
+        "heading": "## Required proof",
+        "required": "always"
+      },
+      {
+        "heading": "## Proof harness analysis",
+        "required": "optional"
+      },
+      {
+        "heading": "## Why this needs a human",
+        "required": "needs-human"
+      },
+      {
+        "heading": "## Open Questions",
+        "required": "open-questions"
+      },
+      {
+        "heading": "## Planning",
+        "required": "always"
+      },
+      {
+        "heading": "## Original notes",
+        "required": "always"
+      }
     ],
     "planFile": {
       "requiredHeadings": ["## Problem Frame", "## Requirements", "## Implementation Units"],

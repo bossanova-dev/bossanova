@@ -200,11 +200,17 @@ func TestLoginCloudGateCapturesBillingTelemetry(t *testing.T) {
 	var out bytes.Buffer
 	checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
 
-	if len(rec.events) != 1 {
-		t.Fatalf("events = %d, want 1", len(rec.events))
+	// The refusal, then the subscribe-page hand-off it triggers (BOS-1260). The
+	// two carry DIFFERENT property maps — the denial is the wide billing one,
+	// the hand-off the narrow conversion-step one — so they are asserted apart.
+	if len(rec.events) != 2 {
+		t.Fatalf("events = %v, want [cloud_access_denied cloud_subscribe_page_opened]", rec.events)
 	}
 	if rec.events[0] != telemetry.EventCloudAccessDenied {
 		t.Fatalf("event[0] = %q, want %q", rec.events[0], telemetry.EventCloudAccessDenied)
+	}
+	if rec.events[1] != telemetry.EventCloudSubscribePageOpened {
+		t.Fatalf("event[1] = %q, want %q", rec.events[1], telemetry.EventCloudSubscribePageOpened)
 	}
 	wantProps := map[string]any{
 		"product_area":       "billing",
@@ -213,16 +219,127 @@ func TestLoginCloudGateCapturesBillingTelemetry(t *testing.T) {
 		"entry_point":        "cli_login",
 		"denial_reason":      "subscription_required",
 	}
-	for _, props := range rec.props {
-		for key, want := range wantProps {
-			if got := props[key]; got != want {
-				t.Fatalf("prop %q = %v, want %v in %v", key, got, want, props)
-			}
+	for key, want := range wantProps {
+		if got := rec.props[0][key]; got != want {
+			t.Fatalf("prop %q = %v, want %v in %v", key, got, want, rec.props[0])
 		}
+	}
+	for _, props := range rec.props {
 		for _, forbidden := range []string{"account_id", "message", "checkout_url", "session_id", "access_token", "refresh_token"} {
 			if _, ok := props[forbidden]; ok {
 				t.Fatalf("forbidden prop %q present in %v", forbidden, props)
 			}
+		}
+	}
+}
+
+// TestLoginCloudGateCapturesSubscribePageHandOff pins the CLI half of the
+// conversion funnel's hand-off step: the moment the gate sends a user to the
+// subscribe page. Both sub-cases assert it, because a failed browser open still
+// puts the URL in front of the user — the hand-off happened, only the transport
+// differed, and counting only the successful opens would under-report the step
+// by precisely the population most likely to drop out.
+func TestLoginCloudGateCapturesSubscribePageHandOff(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		openErr error
+	}{
+		{name: "browser opened", openErr: nil},
+		{name: "browser open failed", openErr: errors.New("no browser")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+			enableCommandTelemetryForTest(t)
+			fake := &fakeCloudAccessClient{
+				status: &pb.CloudAccessStatus{
+					State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+					WorkosOrgId: "org_123",
+					AccountId:   "acct_internal",
+				},
+			}
+			rec := &fakeTelemetry{}
+
+			origOpen := openCloudCheckoutURL
+			opened := false
+			openCloudCheckoutURL = func(string) error {
+				opened = true
+				return tt.openErr
+			}
+			defer func() { openCloudCheckoutURL = origOpen }()
+
+			var out bytes.Buffer
+			checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
+
+			if !opened {
+				t.Fatal("the gate never reached the browser open, so this test proves nothing")
+			}
+
+			var handOffs []map[string]any
+			for i, event := range rec.events {
+				if event == telemetry.EventCloudSubscribePageOpened {
+					handOffs = append(handOffs, rec.props[i])
+				}
+			}
+			if len(handOffs) != 1 {
+				t.Fatalf("cloud_subscribe_page_opened captures = %d, want 1 (%v)", len(handOffs), rec.events)
+			}
+			// The discriminator that keeps the CLI gate separable from the TUI
+			// login/upgrade flow's own hand-off in PostHog.
+			if got := handOffs[0]["entry_point"]; got != "cli_login" {
+				t.Fatalf("entry_point = %v, want cli_login", got)
+			}
+			if got := handOffs[0]["product_area"]; got != "billing" {
+				t.Fatalf("product_area = %v, want billing", got)
+			}
+			if got := handOffs[0]["source"]; got != "cli" {
+				t.Fatalf("source = %v, want cli", got)
+			}
+			// Every property must survive the registry filter; one the Registry
+			// does not list is dropped silently.
+			for key := range handOffs[0] {
+				if !telemetry.IsAllowedProperty(telemetry.EventCloudSubscribePageOpened, key) {
+					t.Errorf("CLI hand-off emits %q, which the registry drops", key)
+				}
+			}
+			for _, forbidden := range []string{"account_id", "message", "checkout_url", "session_id", "subscribe_url"} {
+				if _, ok := handOffs[0][forbidden]; ok {
+					t.Fatalf("forbidden prop %q present in %v", forbidden, handOffs[0])
+				}
+			}
+		})
+	}
+}
+
+// TestLoginCloudGateSkipsHandOffWithoutASubscribeURL pins that the hand-off is
+// counted only when one actually happens: with no subscribe URL resolved the
+// gate shows the user nothing to open, so the funnel must record no hand-off.
+func TestLoginCloudGateSkipsHandOffWithoutASubscribeURL(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", " ")
+	enableCommandTelemetryForTest(t)
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+		},
+	}
+	rec := &fakeTelemetry{}
+
+	origOpen := openCloudCheckoutURL
+	opened := false
+	openCloudCheckoutURL = func(string) error {
+		opened = true
+		return nil
+	}
+	defer func() { openCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
+
+	if opened {
+		t.Fatal("the gate opened a browser, so this is not the no-hand-off path")
+	}
+	for _, event := range rec.events {
+		if event == telemetry.EventCloudSubscribePageOpened {
+			t.Fatalf("cloud_subscribe_page_opened emitted with no hand-off: %v", rec.events)
 		}
 	}
 }

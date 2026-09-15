@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // loginPhase tracks the current state of the login flow.
@@ -74,6 +75,7 @@ type LoginModel struct {
 	checkoutCancelURL string
 	subscriptionURL   string
 	subscription      subscriptionState
+	telemetry         telemetry.Client
 }
 
 // NewLoginModel creates a new login model that will start the device code flow.
@@ -96,6 +98,13 @@ func (m *LoginModel) SetAfterAuth(hook loginCompleteHook) {
 // SetAuthChangeQueue preserves notification order with other App auth flows.
 func (m *LoginModel) SetAuthChangeQueue(q *authChangeQueue) {
 	m.authChanges = q
+}
+
+// SetTelemetry installs a telemetry client for the subscription flow's two
+// conversion-funnel steps: the subscribe-page hand-off and the TUI-side
+// checkout return.
+func (m *LoginModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
 }
 
 // Cancelled returns true if the user cancelled the login flow.

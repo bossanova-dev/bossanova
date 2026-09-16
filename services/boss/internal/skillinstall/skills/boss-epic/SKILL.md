@@ -228,9 +228,9 @@ assumeCleared, assumeClearedAndMerge}`.
    `--assume-cleared*` value that is not a ticket id/URL. On a throw, stop with
    `BLOCKED: <message>` — do not guess.
 
-   **Model.** Fan-out runs on Opus by default — set `MODEL="claude-opus-5"`
-   (or an operator-supplied id) and pass it as `create_session {model: …}` in
-   Phase 3a. No `/model` two-step: the model is a first-class field on the run.
+   **Model.** Fan-out runs on Opus — set `MODEL="opus[1m]"` (quoted; bare
+   `claude-opus-5` is 200K) and pass it as `create_session {model: …}`
+   in Phase 3a. No `/model` two-step: the model is a first-class field on the run.
 
    **`boss` binary.** Resolve it **once** as `BOSS` via the toolbox's
    `resolveBossBinary`, never by hand. Same order as always (`$BOSS_BIN`, else
@@ -537,7 +537,7 @@ survives a `bossd` restart:
 create_session {
   repo_id,
   tmux_unattended: true,        // durable, restart-surviving, attach-safe
-  model:  "claude-opus-5",     // MODEL from Phase 0 — no /model two-step
+  model:  "opus[1m]",         // MODEL from Phase 0 — no /model two-step
   prompt: "/boss-build <TICKET>",   // BARE single-line command — see below
   title:  "[<TICKET>] <ticket title>",
   agent,                       // from Phase 0

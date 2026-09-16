@@ -61,8 +61,14 @@ const requiredFiles = [
 // BOS-1207 review fix (lines unchanged at 193): the "Budgets descend" rule sent re-banking to
 // `scripts/size-ratchet-lib.mjs`, which holds no pin constant at all, instead of to the
 // per-artifact test file — this one — that does.
-const CLAUDE_MD_MAX_LINES = 193
-const CLAUDE_MD_MAX_BYTES = 27209
+// Re-banked 193 -> 180 lines / 27209 -> 27079 bytes by the prompt audit: "Session Completion"
+// was a pre-boss-finalize duplicate (2026-04-20, twelve days older than the skill that owns the
+// workflow) that had drifted into teaching `git pull --rebase` over a force-pushed squash and a
+// blanket stash clear against a worktree-shared stack. Replaced by a pointer at boss-finalize plus
+// the two mechanics generic advice gets wrong here. Budgets descend: this is a shrink, and the
+// numbers are re-measured from disk with `wc -l -c CLAUDE.md`.
+const CLAUDE_MD_MAX_LINES = 180
+const CLAUDE_MD_MAX_BYTES = 27079
 
 // The seven authoring rules, pinned by NAME rather than by the sentence that states them. That is
 // the point of rule 4 applied to this file: a rule name is what a reader cites and what the two

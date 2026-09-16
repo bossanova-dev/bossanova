@@ -1149,8 +1149,6 @@ var knownUnshippedScriptRefs = map[string]map[string]bool{
 	"boss-plan": {
 		// The boss-plan cron gate is owned by its dedicated vendoring ticket.
 		"scripts/cron-gates/boss-plan.mjs": true,
-		// Linear gate selection remains a repo-specific tracker seam.
-		"scripts/linear-gate-lib.mjs": true,
 		// boss-proof is excluded from publication and its recipes and storage are repo-supplied.
 		"scripts/proof.mjs": true,
 	},

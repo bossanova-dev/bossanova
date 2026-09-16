@@ -11,7 +11,7 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 
 ## ⛔ BLOCKING REQUIREMENTS - READ FIRST ⛔
 
-**You MUST satisfy ALL of these before completing. No exceptions.**
+**All eight must hold before this workflow is complete.**
 
 | #   | Requirement                     | How to Verify                                                                                                                                                                                                                                                                                                                                                                                                              |
 | --- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -23,8 +23,6 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 | 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready "$PR_URL"` and verify `gh pr view "$PR_URL" --json isDraft -q .isDraft` returns `false`. Do NOT leave the PR as a draft.                                                                                                                                                                                                                                       |
 | 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                                                                                                                                                                                                                                               |
 | 8   | **History stays linear**        | `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` MUST be `0` before the push in Step 6. A merge commit on the branch structurally breaks a rebase-merge repo, so GitHub refuses the PR however green the checks are. Linearize before pushing.                                                                                                                                                                  |
-
-**If you complete without satisfying ALL EIGHT requirements, you have failed this workflow.**
 
 ---
 
@@ -171,7 +169,7 @@ unavoidable, and keep `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD
 
 ### Step 2: Run Quality Gates
 
-**This step is NON-NEGOTIABLE. You MUST run the repo's quality gates and they MUST pass.**
+**Blocking requirement 1: the repo's quality gates must pass.**
 
 #### Step 2a: Discover the Gate Commands
 
@@ -235,7 +233,7 @@ Use conventional-commit format (see the `git-committing` skill). Always include 
 
 ### Step 4: Fix ALL Commits Missing PR Numbers
 
-**This step is NON-NEGOTIABLE. You MUST fix commits, not just report on them.**
+**Blocking requirement 3: fix the commits, don't just report on them.**
 
 ```bash
 # Get the PR number
@@ -291,7 +289,7 @@ git log origin/$BASE_BRANCH..HEAD --format='%H%x09%s' |
 
 ### Step 5: Squash and Tidy Commits
 
-**This step is NON-NEGOTIABLE. You MUST squash commits into logical groups before pushing.**
+**Blocking requirement 4: squash into logical groups before pushing.**
 
 ```bash
 git log origin/$BASE_BRANCH..HEAD --oneline
@@ -373,7 +371,7 @@ If push fails, resolve and retry until success.
 
 ### Step 6b: Verify GitHub Checks
 
-**This step is NON-NEGOTIABLE. You MUST verify checks are not failing.**
+**Blocking requirement 5: verify no check is failing.**
 
 After pushing, wait a moment for checks to register, then gather the payloads with a `--json` filter
 (keeps the raw check table out of the main thread — see the bulk-output discipline in Step 0) and
@@ -417,7 +415,7 @@ node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify \
 
 ### Step 6c: Mark PR as Ready for Review
 
-**This step is NON-NEGOTIABLE. You MUST mark the PR as ready for review.**
+**Blocking requirement 6: mark the PR ready for review.**
 
 After checks are passing (or pending/in_progress), mark the PR as ready and verify GitHub actually recorded the state change:
 
@@ -446,7 +444,7 @@ This converts the PR from draft to ready-for-review status. Do NOT leave the PR 
 
 ### Step 6d: Check for Merge Conflicts
 
-**This step is NON-NEGOTIABLE. You MUST verify there are no merge conflicts.**
+**Blocking requirement 7: verify there are no merge conflicts.**
 
 ```bash
 gh pr view --json mergeable -q .mergeable

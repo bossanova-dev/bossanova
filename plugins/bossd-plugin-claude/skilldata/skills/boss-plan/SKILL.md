@@ -1502,6 +1502,6 @@ backlog this skill plans from — and non-zero (skip) otherwise. The gate is **f
 a missing `LINEAR_API_KEY` (injected into the gate environment by bossd), network failure,
 or API error exits non-zero with a one-line reason on stderr, captured in the scheduler's
 `gate_output` log, so an unverifiable state skips the run rather than burning tokens. The
-shared query logic lives in `scripts/linear-gate-lib.mjs` (unit-tested); this entry is a
+shared query logic lives in `toolbox/linear-gate-lib.mjs` (unit-tested); this entry is a
 thin I/O wrapper. (Only gate the **unattended/cron** use of this skill — interactive
 `/boss-plan` runs are not gated.)

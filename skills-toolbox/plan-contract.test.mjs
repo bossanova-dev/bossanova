@@ -12,6 +12,7 @@ import {
   requiredPlanSections,
   validatePlanDescription,
   validateVerifyOnlyEvidence,
+  COMMAND_BLOCKING_CODES,
   VERIFY_ONLY_MARKER,
   VERIFY_ONLY_CHECK,
   VERIFY_ONLY_CHECKED,
@@ -171,7 +172,7 @@ describe('plan-contract sync', () => {
       'planned-tense-on-ticked',
       'empty-command',
       'empty-result',
-      'command-unresolvable',
+      ...COMMAND_BLOCKING_CODES,
     ]) {
       assert.ok(FINALIZE.includes(reason), `boss-build Step 9 must document ${reason}`)
     }

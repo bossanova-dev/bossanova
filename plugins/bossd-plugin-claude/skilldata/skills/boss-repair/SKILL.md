@@ -362,7 +362,13 @@ into the [Repair Summary](#repair-summary)'s `**Problem Identified**` field.
 
 **1.3 Identify Project Gate Commands**
 
-Before running local checks, discover this repo's commands from project instructions, CI, and command files (`Makefile`, `justfile`, `Taskfile.yml`, `package.json`, `go.mod`, etc.). Use the smallest non-duplicative command set that covers the failing area.
+Before running local checks, load the resolved skill config. On every repair iteration, after its
+current diff exists, call `decideTestSelection` from `toolbox/test-selection.mjs` with the
+repo-relative changed-file set and test-file universe when available, and log the returned `report`
+verbatim. A usable `narrow` decision runs `commands.testAffected`; `full`, an unavailable helper,
+an error, or an uninterpretable result runs `commands.testFull`. Re-resolve on every iteration:
+never reuse a decision from an earlier diff. Discover non-test commands from project instructions,
+CI, and command files, using the smallest non-duplicative set that covers the failing area.
 
 ### Phase 2: Execute Repair Strategy
 
@@ -787,14 +793,8 @@ newer commit.** Report it as a **residual** naming both SHAs, and do not claim t
 
    Repeat steps 2-4 until the rebase completes. Do not create a merge commit.
 
-5. Test the rebased branch with the repo's formatting and test gates:
-
-   ```bash
-   # Examples only; use the commands discovered for this repo
-   pnpm lint && pnpm test
-   go test ./...
-   cargo test
-   ```
+5. Test the rebased branch with the configured formatting gate and the selection-resolved test gate
+   from step 1.3.
 
    After the whole rebase completes, run the project's configured
    `commands.postRebase` check once. Do this after the final replayed commit,
@@ -850,13 +850,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    - Read test output to identify failing tests
    - Read the test file and implementation
    - Fix the root cause (not just the symptom)
-   - Run the relevant test command locally to verify:
-     ```bash
-     # Examples only; use the command discovered for this repo
-     pnpm test
-     go test ./...
-     cargo test
-     ```
+   - Re-resolve and run the selection-resolved test gate from step 1.3 locally.
    - Commit the fix:
      ```bash
      git add <fixed-files>
@@ -882,13 +876,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 6. For **build failures**:
    - Read build output to identify error
    - Fix compilation/build issues
-   - Verify locally with the repo's build command:
-     ```bash
-     # Examples only; use the command discovered for this repo
-     pnpm build
-     go test ./...
-     cargo build
-     ```
+   - Verify locally with the configured build command and re-resolved test gate from step 1.3.
    - Commit and push the fix
 
 #### Strategy C: Review Feedback
@@ -1201,13 +1189,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      Same class: run the formatter immediately after editing a markdown table cell and confirm the
      churn is padding-only, because an edited cell can re-pad every row around it. The formatter
      cannot be the only markdown check.
-   - Run the repo's formatting and test gates:
-     ```bash
-     # Examples only; use the commands discovered for this repo
-     pnpm lint && pnpm test
-     go test ./...
-     cargo test
-     ```
+   - Run the configured formatting gate and the selection-resolved test gate from step 1.3.
    - **An exit code is not a finding.** Before treating a red gate as a defect in this branch, read the failing output. A lock-contention warning from a tool that permits only one instance at a time, a signing or memory failure raised by a commit hook, and a failure in a file this change does not touch are infrastructure flakes, not findings; a failure already present on the PR's base is an inherited failure, not a finding — each produces a non-zero exit that says nothing about the branch. Re-run the affected target in isolation to confirm, compare the failure against the base when inheritance is plausible, and consult the repo's own agent instructions for the flake signatures it records. Only once the output names something this branch changed and the same cause is not already present on the base is there a failure to repair.
    - Commit with reference to review feedback:
 

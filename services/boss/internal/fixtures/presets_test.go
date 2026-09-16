@@ -20,7 +20,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
+var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -301,6 +301,55 @@ func TestQuestionRowWorldSeedsMixedStatuses(t *testing.T) {
 	}
 	if !question.GetCreatedAt().AsTime().Before(working.GetCreatedAt().AsTime()) {
 		t.Errorf("question chat must be older than the working chat so it sorts below it")
+	}
+}
+
+// TestBoxedApprovalWorldSeedsQuestionStatus pins the BOS-1266 proof preset the
+// way every other proof world in this package is pinned.
+//
+// It exists because BoxedApprovalWorld DERIVES its status: chatStatusForPane
+// runs the shared detector over the captured pane and falls back to
+// CHAT_STATUS_IDLE when it stops recognising the boxed approval menu. That
+// degraded world is still deterministic, still well-formed and still exactly
+// one session with one chat, so TestPresetsExactSet, TestPresetsDeclareSeedAndEnv
+// and TestPresetWorldsDeterministic all pass identically over it. Only the proof
+// scenario reddens, and the proof harness is not in `make test` or CI -- so
+// without this pin the derivation can go vacuous with every gate green.
+//
+// DisplayLabel is asserted alongside the status because BoxedApprovalSessions
+// runs the real displaystatus.Compute cascade rather than hand-writing the
+// triple; pinning the label keeps the whole chain (pane -> statusdetect ->
+// CHAT_STATUS_QUESTION -> displaystatus -> "? question") under a unit gate.
+func TestBoxedApprovalWorldSeedsQuestionStatus(t *testing.T) {
+	// Drift control for the BoxedApprovalPane copy in fixtures.go. The derived
+	// status below stays true even if the capture loses its border chrome,
+	// because statusdetect's Pattern 1 recognises the UNBORDERED shape too --
+	// so the whole world would keep rendering "? question" while no longer
+	// exercising the boxed path BOS-1266 exists to cover. The border rune
+	// immediately before the highlighted selector is the discriminator.
+	if !strings.Contains(BoxedApprovalPane, "│ \x1b[7m❯") {
+		t.Fatal("BoxedApprovalPane lost the border rune before its selector; the boxed path is untested here")
+	}
+	w := Presets()["boxed-approval"].World()
+	if len(w.Sessions) != 1 {
+		t.Fatalf("boxed-approval world has %d sessions, want 1", len(w.Sessions))
+	}
+	if len(w.Chats) != 1 {
+		t.Fatalf("boxed-approval world has %d chats, want 1", len(w.Chats))
+	}
+	if len(w.ChatStatuses) != 1 {
+		t.Fatalf("boxed-approval world has %d chat statuses, want 1", len(w.ChatStatuses))
+	}
+	// Not merely "non-IDLE": the proof asserts the QUESTION label specifically,
+	// and any other status would render a different STATUS column.
+	if got := w.ChatStatuses[0].GetStatus(); got != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Errorf("chat status = %v, want CHAT_STATUS_QUESTION; the shared detector no longer recognises the captured approval menu", got)
+	}
+	// Measured, not assumed: displaystatus.Compute renders the QUESTION status
+	// with its glyph attached, so the reachable value is "? question" -- which is
+	// also the string the proof scenario asserts on.
+	if got := w.Sessions[0].GetDisplayLabel(); got != "? question" {
+		t.Errorf("session DisplayLabel = %q, want \"? question\"; the derived status no longer reaches the STATUS column", got)
 	}
 }
 

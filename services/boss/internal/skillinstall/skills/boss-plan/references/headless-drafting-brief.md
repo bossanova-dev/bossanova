@@ -1025,7 +1025,7 @@ node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$
 It prints one stderr line per violation, tagged `line-spanning-emphasis`, `missing-sections`,
 `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
 `plan-file-structure-exemption`,
-`pr-body-only-evidence`, `section-order`, `self-falsified-literal-search`, `stale-premise-citation`,
+`pr-body-only-evidence`, `premise-reused-as-criterion`, `section-order`, `self-falsified-literal-search`, `stale-premise-citation`,
 `subject-areas-unresolved`,
 `unanchored-premise-citation`, `unknown-section`, `unresolvable-citation`, any `vacuous-*` code
 (the dynamic `vacuous-<kind>-command-<reason>` family), or `unreadable-input`. **A non-zero exit

@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "title": "BOS-1266 home session list — a chat parked on Claude's boxed approval menu reads '? question'",
+  "fixture": { "preset": "boxed-approval" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the blocked session is listed on the home screen",
+      "steps": [
+        {
+          "waitFor": "Clear stale build output",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded (boxed-approval preset)"
+        },
+        {
+          "expect": {
+            "text": "Clear stale build output",
+            "match": "normalized",
+            "label": "the session whose chat is parked on the approval menu is listed"
+          },
+          "caption": "The session hosting the blocked Claude chat is on the home list"
+        },
+        {
+          "expect": {
+            "text": "? question",
+            "match": "normalized",
+            "label": "the session row's STATUS column reads '? question'"
+          },
+          "caption": "BOS-1266: the boxed 'rm' approval now surfaces as a pending question, not silence"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the chat itself carries the question status",
+      "steps": [
+        { "key": "enter", "caption": "Open the session's chat picker" },
+        {
+          "waitFor": {
+            "text": "Rebuild after clearing artifacts",
+            "match": "normalized",
+            "label": "the chat picker listed the blocked chat"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker lists the chat sitting on the approval menu"
+        },
+        {
+          "expect": {
+            "text": "? question",
+            "match": "normalized",
+            "label": "the chat row's STATUS column reads '? question'"
+          },
+          "caption": "The blocked chat is the source of the session-level question label"
+        }
+      ]
+    }
+  ]
+}

@@ -18,12 +18,15 @@ import (
 // consumer can tell real work from a spinner.
 //
 // It lives here, as ONE shared pure function over pane bytes, rather than behind
-// the per-agent HasWorkingIndicator RPC, for two reasons. The codex runner
-// answers that RPC with a hardcoded false, so routing through it would report
-// "no spinner" for every codex chat — a silently wrong signal, which is the
-// exact failure class this exists to fix. And the poller calls that RPC only in
-// the would-be-idle branch (deliberately, to avoid one RPC per chat per 3s
-// tick), so it is not available on the ticks that matter. The daemon already
+// the per-agent HasWorkingIndicator RPC, because the poller calls that RPC only
+// in the would-be-idle branch (deliberately, to avoid one RPC per chat per 3s
+// tick), so it is not available on the ticks that matter. This comment used to
+// give a second reason — that the codex runner answered the RPC with a
+// hardcoded false — which is no longer true: codex owns a real detector now
+// (plugins/bossd-plugin-codex/working.go). The two are not redundant. That RPC
+// answers "is this chat busy", including background work the agent is no longer
+// attending; spinnerPresent answers the narrower "is the agent computing right
+// now", which a background child does not make true. The daemon already
 // imports this package directly for the same kind of pane-shape read
 // (IsLoginRequired, IsTransientAPIError), so both agents' grammars are carried
 // here together.

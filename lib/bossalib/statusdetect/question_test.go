@@ -703,6 +703,15 @@ func TestHasQuestionPrompt(t *testing.T) {
 				"Before I continue, should I open a PR?\n",
 			want: true,
 		},
+		{
+			// BOS-1266. Present in THIS table specifically so the boxed
+			// approval is covered by the modal-subset invariant asserted below
+			// over every fixture here, rather than only by the paired
+			// assertions in TestHasModalPrompt.
+			name: "boxed destructive-command approval menu",
+			data: boxedApprovalPane,
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -778,6 +787,16 @@ func TestHasModalPrompt(t *testing.T) {
 			// Pattern 0: footer fast-path, question text already scrolled off.
 			name:         "AskUserQuestion footer with the question scrolled off",
 			data:         "  1. Option A\n  2. Option B\n  4. Type something.\n  5. Chat about this\n",
+			wantQuestion: true,
+			wantModal:    true,
+		},
+		{
+			// BOS-1266: the destructive-command approval menu. Both predicates
+			// must move together — the user needs telling that the agent is
+			// blocked, AND a delivery gate must refuse the pane, because while
+			// the menu is up a keystroke is consumed as a choice.
+			name:         "boxed destructive-command approval menu",
+			data:         boxedApprovalPane,
 			wantQuestion: true,
 			wantModal:    true,
 		},
@@ -2548,5 +2567,229 @@ func TestHasWorkingIndicator_StaleFooterStillEvictedAboveInputBox(t *testing.T) 
 		"  ⏺ main\n"
 	if HasWorkingIndicator([]byte(pane)) {
 		t.Error("a completion marker above the input box must still evict the footer")
+	}
+}
+
+// --- BOS-1266: Claude Code's boxed destructive-command approval menu --------
+
+// boxedApprovalPane is the captured shape of Claude Code's destructive-command
+// approval menu, reproduced with the CLI's real chrome intact rather than
+// prettified: the cursor-hide/erase preamble the CLI emits when it repaints the
+// box, SGR runs around the highlighted row, and the non-breaking space (U+00A0)
+// it writes after the ❯ selector glyph.
+//
+// The load-bearing detail is the border rune before the selector: the row
+// arrives as "│ ❯ 1. Yes", never "❯ 1. Yes". selectorRe and
+// numberedSelectorOptionRe are both anchored at line start after WHITESPACE
+// only, so neither can see this row. That is why the menu was invisible to
+// every pattern and the user was never told the agent had stopped.
+const boxedApprovalPane = "" +
+	"⏺ I'll clear the stale build output before the rebuild.\n" +
+	"\n" +
+	"\x1b[?25l\x1b[2K╭─────────────────────────────────────────────────────────╮\n" +
+	"│ \x1b[1mBash command\x1b[0m                                            │\n" +
+	"│                                                         │\n" +
+	"│   rm -rf \"$BUILD_DIR\"/                                   │\n" +
+	"│   Remove stale build artifacts                           │\n" +
+	"│                                                         │\n" +
+	"│ \x1b[33mDangerous rm operation on possibly-empty variable path\x1b[0m  │\n" +
+	"│                                                         │\n" +
+	"│ Do you want to proceed?                                  │\n" +
+	"│ \x1b[7m❯ 1. Yes\x1b[0m                                             │\n" +
+	"│   2. No, and tell Claude what to do differently (esc)     │\n" +
+	"╰─────────────────────────────────────────────────────────╯\n" +
+	"  Esc to cancel · Tab to amend\n"
+
+// assertBoxedApprovalKeepsItsBorders pins that the capture above still renders
+// its menu INSIDE the input card.
+//
+// Without this, the capture can rot silently in the one way that matters.
+// Replacing every "│" with a space leaves HasQuestionPrompt and
+// HasModalPrompt both true -- Pattern 1 (selectorRe over the consecutive option
+// run) sees the unbordered shape perfectly well -- so a debordered copy keeps
+// every assertion green while no longer exercising the boxed path BOS-1266
+// exists to cover. selectorRe is the discriminator: measured, it does NOT match
+// the bordered capture and DOES match the debordered one.
+func assertBoxedApprovalKeepsItsBorders(t *testing.T) {
+	t.Helper()
+	if selectorRe.Match(StripANSI([]byte(boxedApprovalPane))) {
+		t.Fatal("the capture lost its border chrome; Pattern 1 can see this row, so the boxed pattern is untested here")
+	}
+}
+
+// withoutLine drops every line of pane containing substr, so a negative case
+// removes exactly one leg of the structural conjunction and changes nothing
+// else about the capture.
+func withoutLine(pane, substr string) string {
+	var kept []string
+	for _, line := range strings.Split(pane, "\n") {
+		if strings.Contains(line, substr) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// TestHasQuestionPrompt_BoxedApprovalMenu is the BOS-1266 regression. A live,
+// structurally complete boxed approval is BOTH a question (tell the user the
+// agent is blocked) and a modal (the menu owns keystrokes, so BOS-600's
+// delivery gate must refuse to type into it).
+func TestHasQuestionPrompt_BoxedApprovalMenu(t *testing.T) {
+	assertBoxedApprovalKeepsItsBorders(t)
+	if !HasQuestionPrompt([]byte(boxedApprovalPane)) {
+		t.Error("HasQuestionPrompt() = false; a live boxed approval menu leaves the agent blocked and the user uninformed")
+	}
+	if !HasModalPrompt([]byte(boxedApprovalPane)) {
+		t.Error("HasModalPrompt() = false; the menu consumes keystrokes as choices, so delivery must be refused")
+	}
+}
+
+// TestHasQuestionPrompt_BoxedApprovalArrowedSelection pins that the menu stays
+// modal once the user arrows off the first row. The cursor moving from "1. Yes"
+// down to the rejecting option does not make the menu any less in control of the
+// keyboard, so a detector keyed to the literal "❯ 1. Yes" would hand the pane
+// back to the delivery gate at exactly the wrong moment.
+func TestHasQuestionPrompt_BoxedApprovalArrowedSelection(t *testing.T) {
+	arrowed := strings.Replace(boxedApprovalPane, "\x1b[7m❯\u00a01. Yes\x1b[0m", "  1. Yes        ", 1)
+	arrowed = strings.Replace(arrowed, "│   2. No,", "│ ❯ 2. No,", 1)
+
+	if !strings.Contains(arrowed, "❯ 2. No,") {
+		t.Fatal("fixture did not move the selection cursor; the assertions below would be vacuous")
+	}
+	if !HasQuestionPrompt([]byte(arrowed)) {
+		t.Error("HasQuestionPrompt() = false; arrowing within a live menu does not answer it")
+	}
+	if !HasModalPrompt([]byte(arrowed)) {
+		t.Error("HasModalPrompt() = false; the menu still owns the keyboard wherever the cursor rests")
+	}
+}
+
+// TestHasQuestionPrompt_BoxedApprovalNegatives pins Requirement 4: only a live,
+// structurally complete menu counts. Every case here removes or relocates one
+// structural leg and must fall back to today's behaviour — a missed question,
+// never a false modal that would refuse message delivery.
+func TestHasQuestionPrompt_BoxedApprovalNegatives(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			// No selector: the menu has been answered and repainted without a
+			// highlighted row, or has not yet taken focus.
+			name: "boxed menu with no selected row",
+			data: strings.Replace(boxedApprovalPane, "\x1b[7m❯ 1. Yes\x1b[0m", "  1. Yes        ", 1),
+		},
+		{
+			name: "boxed menu with no rejecting option",
+			data: withoutLine(boxedApprovalPane, "2. No,"),
+		},
+		{
+			name: "boxed menu with no control footer",
+			data: withoutLine(boxedApprovalPane, "Tab to amend"),
+		},
+		{
+			// limit.go:83 matches an "Enter to confirm · Esc to cancel" shape
+			// for the usage-limit modal. Requiring "Tab to amend" alongside is
+			// what keeps the two from being conflated.
+			name: "usage-limit style footer without the amend affordance",
+			data: strings.Replace(boxedApprovalPane, "Esc to cancel · Tab to amend", "Enter to confirm · Esc to cancel", 1),
+		},
+		{
+			// The menu has scrolled out of the 30-line tail; what is on screen
+			// now is ordinary transcript.
+			name: "answered menu scrolled out of the tail",
+			data: boxedApprovalPane + strings.Repeat("     Removed 412 files from the build directory\n", 35),
+		},
+		{
+			// Claude printing the menu's own shape back as tool output (⎿ block
+			// with 4+ space continuations) is transcript, not live chrome.
+			name: "menu shape quoted inside tool output",
+			data: "⏺ Read(docs/approval-shapes.md)\n" +
+				"  ⎿  The dangerous-rm approval renders as:\n" +
+				"     │ Do you want to proceed?              │\n" +
+				"     │ ❯ 1. Yes                             │\n" +
+				"     │   2. No, and tell Claude differently │\n" +
+				"     Esc to cancel · Tab to amend\n",
+		},
+		{
+			// BOS-1266 review: the draft above only reaches this shape because
+			// it wraps the quote onto ONE line, so "❯ 1. Yes" never lands at a
+			// row start. A user who pastes the WHOLE menu back into the composer
+			// to ask what it means reproduces every row at a row start, and
+			// stripInputBoxBorders then makes each of them byte-identical to a
+			// real menu row. Before approvalFooterClosesCard this was a false
+			// MODAL -- delivery refused into a live composer (BOS-600), at the
+			// exact moment the user was asking for help about the menu.
+			name: "composer draft quoting the whole menu across rows",
+			data: "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n" +
+				"\u2502 \u276f I got this menu, what does it mean:                 \u2502\n" +
+				"\u2502   \u276f 1. Yes                                           \u2502\n" +
+				"\u2502     2. No, and tell Claude what to do differently     \u2502\n" +
+				"\u2502   Esc to cancel \u00b7 Tab to amend                        \u2502\n" +
+				"\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n",
+		},
+		{
+			// BOS-1266 review: the menu was answered and Claude carried on, so
+			// its output scrolls in UNDERNEATH the still-drawn card. The pane is
+			// working, not blocked. The "scrolled out of the tail" case above
+			// only proved the 30-line window eventually hides it; anything
+			// closer than that stayed a false modal until
+			// approvalMenuIsBottomMost required the menu to be the last thing
+			// the CLI drew.
+			name: "answered menu with subsequent output still inside the tail",
+			data: boxedApprovalPane + strings.Repeat("     Removed 412 files from the build directory\n", 6),
+		},
+		{
+			// The user typing about the menu in the composer. The row starts
+			// with the composer's own ❯, not a selected numbered option.
+			name: "composer draft describing the menu",
+			data: "╭──────────────────────────────────────────────────────────────╮\n" +
+				"│ ❯ why did I get ❯ 1. Yes / 2. No with Esc to cancel · Tab to │\n" +
+				"│   amend on that rm?                                          │\n" +
+				"╰──────────────────────────────────────────────────────────────╯\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if HasModalPrompt([]byte(tt.data)) {
+				t.Errorf("HasModalPrompt() = true; an over-broad boxed-approval match refuses message delivery (BOS-600)")
+			}
+			// None of these panes is a question at all — not a modal one and not
+			// a conversational one. Asserting only the modal half would let a
+			// fixture drift into firing a notification nobody can act on.
+			if HasQuestionPrompt([]byte(tt.data)) {
+				t.Errorf("HasQuestionPrompt() = true; this pane is not waiting on the user")
+			}
+		})
+	}
+}
+
+// TestHasQuestionPrompt_BoxedApprovalTokensInIsolation pins the other half of
+// Requirement 4: detection rests on the menu's structure, not on any of the
+// words the captured menu happens to contain. None of these tokens may fire the
+// modal pattern on its own.
+func TestHasQuestionPrompt_BoxedApprovalTokensInIsolation(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"rm in prose", "⏺ I ran rm -rf on the stale build directory and it is clean now.\n"},
+		{"Dangerous in prose", "⏺ That edit is Dangerous on a possibly-empty variable path, so I skipped it.\n"},
+		{"Yes in prose", "⏺ Yes, the rebuild succeeded.\n"},
+		{"No in prose", "⏺ No, nothing was removed.\n"},
+		{"the footer phrase alone", "⏺ The approval footer reads Esc to cancel · Tab to amend.\n"},
+		{"a numbered Yes row alone", "⏺ The menu offered:\n\n  1. Yes\n  2. No\n"},
+		// A bare "?" with a live composer is a conversational question — worth
+		// notifying about, and emphatically safe to type into. It must never
+		// become a modal on its own.
+		{"a trailing question mark with a live composer", "⏺ Should I remove the build directory?\n\n❯ \n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if HasModalPrompt([]byte(tt.data)) {
+				t.Errorf("HasModalPrompt() = true; the boxed-approval pattern must require the whole menu structure, not this token")
+			}
+		})
 	}
 }

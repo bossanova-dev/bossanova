@@ -5,7 +5,7 @@
 // Node builtins ONLY: this module is vendored into the reusable toolbox
 // and runs in dependency-free cron worktrees.
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, isAbsolute, parse as parsePath, posix } from 'node:path'
 
 export const CONFIG_FILENAME = '.boss-skills.json'
@@ -2370,15 +2370,147 @@ function hasUnquotedOptionGlob(tokens) {
   return false
 }
 
+/** Blocking findings emitted by classifyCheckCommand. Keep this closed so prose consumers cannot rot. */
+export const COMMAND_BLOCKING_CODES = Object.freeze([
+  'empty-command',
+  'command-unresolvable',
+  'make-goal-undefined',
+  'path-operand-missing',
+  'selection-matches-no-test',
+  'unanchored-negative-search',
+])
+
+function rawCommandSegments(tokens) {
+  const segments = []
+  let current = []
+  for (const token of tokens) {
+    if (SHELL_COMMAND_SEPARATORS.has(token.value)) {
+      if (current.length > 0) segments.push(current)
+      current = []
+    } else {
+      current.push(token.value)
+    }
+  }
+  if (current.length > 0) segments.push(current)
+  return segments
+}
+
+function searchPatternAndPaths(segment) {
+  if (!['rg', 'grep'].includes(segment[0])) return null
+  const paths = []
+  let pattern = null
+  for (let index = 1; index < segment.length; index += 1) {
+    const token = segment[index]
+    if (token === '--') {
+      paths.push(...segment.slice(index + 1))
+      break
+    }
+    if (token.startsWith('-')) {
+      if (/^(?:-e|--regexp)$/.test(token)) pattern = segment[++index] ?? null
+      else if (token.startsWith('--regexp=')) pattern = token.slice('--regexp='.length)
+      else if (/^(?:--glob|--type|--context|-[ABC])$/.test(token)) index += 1
+      continue
+    }
+    if (pattern === null) pattern = token
+    else paths.push(token)
+  }
+  return { pattern, paths }
+}
+
+function goTestRunPattern(segment) {
+  if (segment[0] !== 'go' || segment[1] !== 'test') return null
+  let pattern = null
+  let packagePath = null
+  const valueFlags = new Set([
+    '-bench',
+    '-benchtime',
+    '-blockprofile',
+    '-blockprofilerate',
+    '-count',
+    '-coverpkg',
+    '-coverprofile',
+    '-cpu',
+    '-cpuprofile',
+    '-failfast',
+    '-fullpath',
+    '-fuzz',
+    '-fuzzcachedir',
+    '-fuzzminimizetime',
+    '-fuzztime',
+    '-json',
+    '-list',
+    '-memprofile',
+    '-memprofilerate',
+    '-mutexprofile',
+    '-mutexprofilefraction',
+    '-outputdir',
+    '-parallel',
+    '-shuffle',
+    '-timeout',
+    '-trace',
+    '-v',
+  ])
+  for (let index = 2; index < segment.length; index += 1) {
+    const token = segment[index]
+    if (token === '-run') {
+      pattern = segment[++index] ?? null
+    } else if (token.startsWith('-run=')) {
+      pattern = token.slice('-run='.length)
+    } else if (valueFlags.has(token)) {
+      index += 1
+    } else if (!token.startsWith('-') && packagePath === null) {
+      packagePath = token
+    }
+  }
+  if (!pattern || !packagePath || packagePath.includes('...')) return null
+  return { pattern, packagePath }
+}
+
+function goTestRunFinding(segment, cwd) {
+  const run = goTestRunPattern(segment)
+  if (!run) return null
+  const directory = isAbsolute(run.packagePath) ? run.packagePath : join(cwd, run.packagePath)
+  let names
+  try {
+    if (!statSync(directory).isDirectory()) return null
+    names = readdirSync(directory).filter((name) => name.endsWith('_test.go'))
+  } catch {
+    return null
+  }
+  let pattern
+  try {
+    pattern = new RegExp(run.pattern.split('/')[0])
+  } catch {
+    return null
+  }
+  try {
+    for (const name of names) {
+      const source = readFileSync(join(directory, name), 'utf8')
+      const tests = source.matchAll(/^func\s+(?:\([^)]*\)\s+)?(Test[A-Za-z0-9_]*)\s*\(/gm)
+      for (const test of tests) if (pattern.test(test[1])) return null
+    }
+  } catch {
+    return null
+  }
+  return {
+    code: 'selection-matches-no-test',
+    message: `the go test -run pattern matches no test function in the concrete package: ${run.packagePath}`,
+  }
+}
+
 /**
  * Classify a recorded check command without executing it.
  *
  * The command is PR-body text, so this function deliberately uses only static checks. Decidable
  * failures land in `blocking`; heuristic proof-quality risks land in `advisory`.
  */
-export function classifyCheckCommand(command, { cwd = process.cwd(), env = process.env } = {}) {
+export function classifyCheckCommand(
+  command,
+  { cwd = process.cwd(), env = process.env, kind = null } = {},
+) {
   const detailedTokens = tokenizeSimpleShellDetailed(command)
   const segments = commandSegments(detailedTokens)
+  const rawSegments = rawCommandSegments(detailedTokens)
   const tokens = commandTokens(command)
   const blocking = []
   const advisoryFindings = []
@@ -2402,6 +2534,8 @@ export function classifyCheckCommand(command, { cwd = process.cwd(), env = proce
     })
   }
   for (const segment of segments) {
+    const goRunFinding = goTestRunFinding(segment, cwd)
+    if (goRunFinding) blocking.push(goRunFinding)
     if (segment[0] === 'make') {
       const invocation = resolveMakeInvocation(segment, cwd)
       const makefile = readMakefileTargets(invocation.makefile)
@@ -2426,6 +2560,35 @@ export function classifyCheckCommand(command, { cwd = process.cwd(), env = proce
       if (!finding) continue
       if (finding.blocking) blocking.push({ code: finding.code, message: finding.message })
       else advisoryFindings.push(advisory(finding.code, finding.message))
+    }
+  }
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const search = searchPatternAndPaths(segments[index])
+    if (!search) continue
+    if (kind === 'premise' && search.paths.length === 0) {
+      advisoryFindings.push(
+        advisory(
+          'unscoped-premise-search',
+          'a premise search without a path operand can inspect the wrong tree',
+        ),
+      )
+    }
+    if (
+      kind === 'criterion' &&
+      rawSegments[index]?.[0] === '!' &&
+      search.pattern &&
+      !/(?:\\b|\\<|\\>|\^|\$)/.test(search.pattern) &&
+      !segments[index].some(
+        (token) => /^-[A-Za-z]*w[A-Za-z]*$/.test(token) || token === '--word-regexp',
+      ) &&
+      /[A-Za-z0-9_]$/.test(search.pattern)
+    ) {
+      blocking.push({
+        code: 'unanchored-negative-search',
+        message:
+          'a negated bare-substring search can reject a correctly named helper that extends the pattern',
+      })
     }
   }
 
@@ -2627,7 +2790,7 @@ function parseCheckboxSection(config, description, heading, fn) {
       // undelimited discharge is `check = null`: the gate BLOCKS and names the requirement, which
       // is the fail-closed direction and a one-keystroke fix for the builder. Both shipped
       // templates already backtick the command, so this rejects nothing they teach.
-      const fenced = /^\s*(`+)([\s\S]*?)\1/.exec(tail)
+      const fenced = /(`+)([\s\S]*?)\1/.exec(tail)
       if (fenced) {
         checkedCommandDelimited = true
         check = fenced[2].trim()
@@ -2747,7 +2910,7 @@ export function validateVerifyOnlyEvidence(config, body) {
       reason = 'empty-result'
       remedy = 'Record the non-empty result after the result separator.'
     } else {
-      const classified = classifyCheckCommand(criterion.check)
+      const classified = classifyCheckCommand(criterion.check, { kind: 'criterion' })
       advisory.push(...classified.advisory.map((finding) => ({ ...finding, criterion })))
       if (classified.blocking.length > 0) {
         reason = classified.blocking[0].code
@@ -2772,12 +2935,18 @@ export function validateVerifyOnlyEvidence(config, body) {
   }
 }
 
-function commandFindingRemedy(code) {
+export function commandFindingRemedy(code) {
   if (code === 'make-goal-undefined') {
     return 'Use a goal defined by the named Makefile, or record the underlying check command.'
   }
   if (code === 'path-operand-missing') {
     return 'Use a path whose parent directory exists in the checkout, or record the correct check command.'
+  }
+  if (code === 'selection-matches-no-test') {
+    return 'Use a -run pattern that matches a test in the named concrete package, or run the package without a filter.'
+  }
+  if (code === 'unanchored-negative-search') {
+    return 'Anchor the negative search with a word or line boundary so helper-name extensions do not trip it.'
   }
   return 'Use a command whose head resolves to an executable PATH binary or executable repo-relative script.'
 }

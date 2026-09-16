@@ -1,0 +1,30 @@
+  │ … +2 lines
+  └ RELEASED
+    {"isDraft":false,"mergeStateStatus":"UNSTABLE","state":"OPEN","url":"https://github.com/recurser/gigantic/pull/273"}
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Implemented GIG-261 and opened a ready PR: #273 (https://github.com/recurser/gigantic/pull/273).
+
+  - Added weekly LLM-mentions runner pass, advancing cursor, budget stops, held daily caps, and failure continuation.
+  - Added injected-client coverage, including shared pending monthly spend.
+  - Focused 30-test suite passed; make lint && make test completed.
+  - Review found and fixed one monthly-budget gap; no unresolved findings.
+  - Linear moved to In Review.
+
+─ Worked for 25m 25s ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 background terminal running · /ps to view · /stop to close
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-terra medium · ~/.bossanova/worktrees/gigantic/dave/gig-261-wire-the-weekly-llm-mentions-pass-into-the-dataforseo-runner · Wire weekly LLM mentions runner · Main [default]
+
+
+
+
+
+
+
+

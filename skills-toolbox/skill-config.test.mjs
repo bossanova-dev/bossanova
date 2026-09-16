@@ -67,6 +67,8 @@ import {
   parsePremises,
   validateVerifyOnlyEvidence,
   classifyCheckCommand,
+  COMMAND_BLOCKING_CODES,
+  commandFindingRemedy,
   tokenizeSimpleShell,
   VERIFY_ONLY_MARKER,
   VERIFY_ONLY_CHECK,
@@ -3174,6 +3176,110 @@ test('classifyCheckCommand reports blocking and advisory shapes without executin
   )
   assert.deepEqual(classifyCheckCommand("node --include='*.md' # pass 2").advisory, [])
   assert.deepEqual(classifyCheckCommand('node --include "*.md" # pass 2').advisory, [])
+})
+
+test('classifyCheckCommand rejects a concrete Go package run filter that matches no test', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'boss-skill-config-go-run-'))
+  try {
+    mkdirSync(join(tmp, 'pkg'))
+    writeFileSync(
+      join(tmp, 'pkg', 'pkg_test.go'),
+      'package pkg\nfunc TestPresent(t *testing.T) {}\n',
+    )
+    const options = { cwd: tmp, env: process.env }
+    const unmatched = classifyCheckCommand('go test -run TestMissing ./pkg', options)
+    assert.equal(unmatched.blocking.at(-1).code, 'selection-matches-no-test')
+    assert.equal(
+      classifyCheckCommand('go test -timeout 1s -run TestMissing ./pkg', options).blocking.at(-1)
+        .code,
+      'selection-matches-no-test',
+    )
+    assert.ok(unmatched.advisory.some((finding) => finding.code === 'zero-selection-filter'))
+    assert.deepEqual(classifyCheckCommand('go test -run TestPresent ./pkg', options).blocking, [])
+    assert.deepEqual(classifyCheckCommand('go test -run "[" ./pkg', options).blocking, [])
+    assert.deepEqual(classifyCheckCommand('go test -run TestMissing ./...', options).blocking, [])
+    assert.deepEqual(
+      classifyCheckCommand('go test -run TestMissing ./unreadable', options).blocking,
+      [],
+    )
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('classifyCheckCommand distinguishes criterion negative searches from premise searches', () => {
+  const criterion = classifyCheckCommand(
+    '! grep -q setupLines services/boss/internal/views/setupoutput.go',
+    {
+      kind: 'criterion',
+    },
+  )
+  assert.ok(criterion.blocking.some((finding) => finding.code === 'unanchored-negative-search'))
+  assert.deepEqual(
+    classifyCheckCommand('! grep -q setupLines services/boss/internal/views/setupoutput.go', {
+      kind: 'premise',
+    }).blocking,
+    [],
+  )
+  for (const command of [
+    '! grep -qw setupLines file',
+    '! grep -q -e "\\bsetupLines\\b" file',
+    '! grep -q --regexp="\\bsetupLines\\b" file',
+    "! grep -q '^setupLines' file",
+    '! grep -q setupLines\\. file',
+  ]) {
+    assert.equal(
+      classifyCheckCommand(command, { kind: 'criterion' }).blocking.some(
+        (finding) => finding.code === 'unanchored-negative-search',
+      ),
+      false,
+      command,
+    )
+  }
+  assert.ok(
+    classifyCheckCommand('rg needle', { kind: 'premise' }).advisory.some(
+      (finding) => finding.code === 'unscoped-premise-search',
+    ),
+  )
+  assert.equal(
+    classifyCheckCommand('rg needle', { kind: 'criterion' }).advisory.some(
+      (finding) => finding.code === 'unscoped-premise-search',
+    ),
+    false,
+  )
+})
+
+test('classifyCheckCommand exports every blocking reason and its remedy', () => {
+  assert.ok(Object.isFrozen(COMMAND_BLOCKING_CODES))
+  for (const code of COMMAND_BLOCKING_CODES) {
+    assert.notEqual(commandFindingRemedy(code), '')
+  }
+  for (const command of [
+    'this-command-does-not-exist-bos1247',
+    'go test -run TestMissing ./skills-toolbox',
+    '! grep -q setupLines skills-toolbox/skill-config.mjs',
+  ]) {
+    for (const finding of classifyCheckCommand(command, { kind: 'criterion' }).blocking) {
+      assert.ok(COMMAND_BLOCKING_CODES.includes(finding.code), finding.code)
+    }
+  }
+})
+
+test('verify-only discharge accepts explanatory prose before the first backticked command', () => {
+  const body = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}after checking the fixture, \`make test-scripts\`${VERIFY_ONLY_RESULT}pass`,
+  )
+  const parsed = parseAcceptanceCriteria(DEFAULT_CONFIG, body)[0]
+  assert.equal(parsed.check, 'make test-scripts')
+  assert.equal(parsed.result, 'pass')
+  assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, body).ok, true)
+  const missing = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}after checking the fixture`,
+  )
+  assert.equal(
+    validateVerifyOnlyEvidence(DEFAULT_CONFIG, missing).missingEvidence[0].reason,
+    'undelimited-command',
+  )
 })
 
 test('classifyCheckCommand resolves make goals and path operands only when absence is decidable', () => {

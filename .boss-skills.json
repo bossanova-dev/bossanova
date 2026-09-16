@@ -65,9 +65,9 @@
   },
   "gateCache": {
     "eligible": {
-      "test-affected": {
+      "test-full": {
         "cacheable": true,
-        "reason": "selector output and delegated targets are covered by the whole-tree hash plus command identity"
+        "reason": "the configured full suite is deterministic over tracked repo content"
       },
       "test-bossalib": {
         "cacheable": true,
@@ -96,6 +96,8 @@
     },
     "ineligible": {
       "test-smoke": "checks installed skill mirrors and toolboxes outside the hashed corpus",
+      "test-affected": "a selection-dependent narrow run cannot satisfy the readiness full-gate receipt",
+      "test-readiness-full": "the final-tree readiness receipt requires an executed full gate, not a cached result",
       "test-race": "race-detector verdicts can differ between runs over identical content",
       "test-web-e2e": "browser and network state are outside the hashed corpus",
       "build-drift-check": "reads generated-artifact and checkout state beyond a declared test gate",

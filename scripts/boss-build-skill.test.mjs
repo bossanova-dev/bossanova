@@ -3529,6 +3529,27 @@ test('BOS-1021: Step 8 documents the portable test-gate cache contract', () => {
   }
 })
 
+test('BOS-1265: iterative verification selects fail-safely and readiness runs the final full gate', () => {
+  const skill = claudeBody()
+  const selection = region(skill, '## Verification selection', '## Cron gate')
+  assert.match(selection, /decideTestSelection/)
+  assert.match(selection, /Log\s+its\s+`report`\s+verbatim/)
+  assert.match(selection, /`narrow`[\s\S]{0,100}`commands\.testAffected`/)
+  assert.match(
+    selection,
+    /`full`,\s+an\s+unavailable\s+helper,\s+an\s+error,\s+or\s+any\s+result\s+that\s+cannot\s+be\s+interpreted[\s\S]{0,100}`commands\.testFull`/,
+  )
+  const step9 = region(finalizeAndStop(), '## Step 9:', '## Step 10:')
+  assert.match(
+    step9,
+    /`commands\.testFull`\s+once\s+against\s+the\s+final\s+tree\s+through\s+the\s+cache-ineligible\s+`test-readiness-full`\s+gate/,
+  )
+  assert.match(
+    step9,
+    /narrow\s+gate,\s+or\s+a\s+full\s+gate\s+over\s+any\s+earlier\s+tree,\s+cannot\s+satisfy\s+it/,
+  )
+})
+
 test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
   const skill = finalizeAndStop() // BOS-674: Step 9 moved out of the resident body
   const step9 = region(skill, '## Step 9:', '## Step 10:')

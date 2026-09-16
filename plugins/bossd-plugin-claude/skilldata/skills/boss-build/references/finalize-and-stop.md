@@ -124,6 +124,11 @@ poll's own reads): those pace a bounded read that is already running, they do no
 Step 9 is an **idempotent** guard: re-inject **only** if `boss-repair` added untagged fix-commits,
 then ready the PR. In the common path there is **no rewrite, no push, no second full CI wait**.
 
+Before the ready transition, run `commands.testFull` once against the final tree through the
+cache-ineligible `test-readiness-full` gate and require its zero-exit result. This is the sole
+unconditional full-suite run: cache evidence from a narrow gate, or a full gate over any earlier
+tree, cannot satisfy it.
+
 ```bash
 PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
 test -n "$PR_NUMBER" || exit 1
@@ -247,13 +252,15 @@ actually ran**:
 template above shows. An undelimited command reads as **no command at all** and the gate blocks
 naming the criterion.
 
-Before readying, run `validateVerifyOnlyEvidence(config, body)` from `toolbox/skill-config.mjs` over
-the **PR body**. It returns `{ ok, verifyOnly, missingEvidence, malformedMarker, advisory }`, and
+Run `validateVerifyOnlyEvidence(config, body)` from `toolbox/skill-config.mjs` over the composed
+**PR body before its first publish**, then repeat it before readying. It returns `{ ok, verifyOnly,
+missingEvidence, malformedMarker, advisory }`, and
 `ok` is true only when every criterion that is both marked and ticked carries a **non-empty** command,
 a **non-empty** result, and no statically decidable command failure. Every `missingEvidence` item carries
 a closed-set `reason` plus a one-line `remedy`: `no-clause`, `undelimited-command`,
 `planned-tense-on-ticked`, `empty-command`, `empty-result`, `command-unresolvable`,
-`make-goal-undefined`, or `path-operand-missing`. An `ok:false`
+`make-goal-undefined`, `path-operand-missing`, `selection-matches-no-test`, or
+`unanchored-negative-search`. An `ok:false`
 result makes each criterion it names a **deferred required item**, of the unsatisfied-in-scope-criterion
 kind: name each reason/remedy in the PR body and route through the `PARTIAL` gate below, not through
 `BLOCKED`. An **unticked** marked criterion is not a failure of this gate — it is already an open
@@ -263,7 +270,7 @@ in-scope criterion under the rule above.
 after markdown emphasis is stripped. It is a warning bucket, not reclassification: the literal marker
 is prefix-only by contract. `advisory` reports static proof-quality risks that do **not** set
 `ok:false` and do **not** block readying: working-tree-scoped git evidence with no committed anchor,
-zero-selection filters with no count assertion, unquoted option globs, pipelines with no pipefail,
+zero-selection filters with no count assertion, unscoped premise searches, unquoted option globs, pipelines with no pipefail,
 `git grep -E` word-boundary usage, and cached Bazel tests without `--nocache_test_results`.
 
 The gate checks **structure, non-emptiness and decidable command resolvability, never truth**; it

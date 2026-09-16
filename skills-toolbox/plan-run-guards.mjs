@@ -275,6 +275,7 @@ export function premiseDrift(premises, liveStates) {
     liveStates && typeof liveStates === 'object' && !Array.isArray(liveStates) ? liveStates : {}
   const drifted = []
   const unresolved = []
+  let verified = 0
 
   for (const premise of list) {
     const id = typeof premise?.id === 'string' ? premise.id : ''
@@ -283,6 +284,7 @@ export function premiseDrift(premises, liveStates) {
       unresolved.push(id)
       continue
     }
+    verified += 1
     const plannedState = premise.state
     const currentState = states[id]
     if (plannedState !== currentState) drifted.push({ id, plannedState, currentState })
@@ -292,6 +294,8 @@ export function premiseDrift(premises, liveStates) {
     ok: drifted.length === 0 && unresolved.length === 0,
     drifted,
     unresolved,
+    verified,
+    declared: list.length,
   }
 }
 
@@ -394,6 +398,7 @@ function runGuardVerb(argv) {
       const liveStates = readJSON(second)
       const result = premiseDrift(premises, liveStates)
       const overLimit = Array.isArray(premises) && premises.length > PREMISE_LIMIT
+      process.stderr.write(`premises: verified ${result.verified} of ${result.declared}\n`)
       if (overLimit) {
         process.stderr.write(
           `premise-limit: plan-run-guards: premises length ${premises.length} exceeds ${PREMISE_LIMIT}\n`,

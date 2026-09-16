@@ -496,13 +496,23 @@ func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuesti
 	}, nil
 }
 
-// HasWorkingIndicator always returns false for codex. Codex's TUI spinner
-// animates, so its pane content keeps changing while it works and the daemon's
-// content-diff path already reports WORKING — there is no static-but-busy pane
-// to rescue. A codex-specific detector (via its codexWorking regex) is a
-// possible follow-up but is intentionally out of scope here.
-func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
-	return &bossanovav1.HasWorkingIndicatorResponse{IsWorking: false}, nil
+// HasWorkingIndicator reports whether the pane shows an affirmative "this chat
+// is busy" marker. Delegates to hasCodexWorkingIndicator, which owns codex's
+// TUI grammar the way statusdetect owns claude's.
+//
+// This used to return a hardcoded false, on the reasoning that codex's spinner
+// animates and so the daemon's content-diff path already reports WORKING with
+// no static-but-busy pane left to rescue. The spinner half of that is true; the
+// conclusion was not. A codex turn that backgrounds a child and then RETURNS
+// leaves a pane that is finished — no spinner, composer available, nothing
+// redrawing — while the child keeps running, and the diff path correctly sees
+// no change and flips the chat to IDLE after IdleThreshold. Claude reports that
+// same state WORKING off its own "N shells still running" footer; codex
+// reported IDLE purely because this RPC declined to look.
+func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.HasWorkingIndicatorResponse{
+		IsWorking: hasCodexWorkingIndicator(req.PaneContent),
+	}, nil
 }
 
 // LastTurnIsUser reports whether the last meaningful entry in the codex

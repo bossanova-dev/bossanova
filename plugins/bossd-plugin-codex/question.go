@@ -13,12 +13,25 @@ import (
 // question detector while this line is present so a slow turn is never
 // mistaken for an approval prompt.
 //
-// Concrete shape per Lane 0 TUI grammar:
+// Concrete shapes seen live:
 //
 //   - Working (3s • esc to interrupt)
+//   - Working (34m 54s • esc to interrupt)
 //
-// Seconds are 1+ digits and the trailing "esc to interrupt" is stable.
-var codexWorking = regexp.MustCompile(`• Working \(\d+s? • esc to interrupt\)`)
+// Only the "esc to interrupt)" terminator is pinned; everything between it and
+// the opening paren is left unread. The elapsed counter was previously matched
+// as `\d+s?`, which silently stopped matching the moment a turn passed sixty
+// seconds and codex switched to the "34m 54s" form — measured against a live
+// pane, that regex found zero matches on a 34-minute turn. Both callers of this
+// regex use it as a "do not fire while the agent is working" guard, so the miss
+// did not fail loudly: it just switched the guard off for every turn longer
+// than a minute, which is exactly the long turn it exists to protect.
+//
+// Matching the counter loosely is the safe direction here. An over-match keeps
+// the question detector quiet on a pane that is working, whereas an under-match
+// lets it fire mid-turn — and QUESTION outranks WORKING in the poller, so that
+// miss does not merely lose the guard, it actively mislabels a busy chat.
+var codexWorking = regexp.MustCompile(`• Working \([^)]*• esc to interrupt\)`)
 
 // codexApproval matches the trailing instruction line of a codex approval
 // menu — the most stable, version-resilient anchor. Two grammars seen so

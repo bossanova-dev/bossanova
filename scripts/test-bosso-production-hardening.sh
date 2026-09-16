@@ -76,7 +76,7 @@ check_terraform_env() {
   for pattern in "${terraform_lines[@]}"; do
     require_grep "infra/environments/main.tf" "$pattern" "missing Terraform output key"
   done
-  require_grep "infra/environments/main.tf" "mv-pgbouncer-service.madverts-\${local.env}.svc.cluster.local:6432/\${module.gcp_sql.database_name}?sslmode=disable" "runtime PgBouncer URL must disable client TLS"
+  require_grep "infra/environments/main.tf" "mv-pgbouncer-service.madverts-production.svc.cluster.local:6432/\${module.gcp_sql.database_name}?sslmode=disable" "runtime PgBouncer URL must use the shared production service without client TLS"
   require_absent "infra/environments/main.tf" "BOSSO_GITHUB_APP_PRIVATE_KEY=\${var.bosso_github_app_private_key}" "Terraform output must escape GitHub App private key newlines"
 
   require_grep "docs/plans/2026-05-28-gke-orchestrator-migration.md" "terraform output -raw kubernetes_secret_bosso" "docs must show complete bosso secret output command"

@@ -133,6 +133,7 @@ check_smoke_script() {
   local required_keys=(
     "BOSSO_DB_DRIVER"
     "BOSSO_DATABASE_URL"
+    "BOSSO_MIGRATIONS_DATABASE_URL"
     "BOSSO_MULTI_INSTANCE"
     "BOSSO_REDIS_URL"
     "BOSSO_INTERNAL_ROUTING_TOKEN"

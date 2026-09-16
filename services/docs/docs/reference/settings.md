@@ -424,13 +424,14 @@ hardcoded default.
 
 ### `bosso` (server)
 
-| Variable               | Notes                                                                                                                                                                                                                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BOSSO_DB_DRIVER`      | **Required — there is no default.** The only accepted value is `postgres`. bosso refuses to start and exits non-zero when it is unset, empty, or whitespace-only, and on any other value — including `sqlite`, which was accepted until the SQLite server-side path was deleted. |
-| `BOSSO_DATABASE_URL`   | Postgres connection string; **required** — it is the only way to give bosso a database                                                                                                                                                                                           |
-| `BOSSO_MULTI_INSTANCE` | `true` runs bosso as more than one replica                                                                                                                                                                                                                                       |
-| `BOSSO_ADDR`           | Listen address (default `:8080`)                                                                                                                                                                                                                                                 |
-| `BOSSO_INSTANCE_ID`    | Distinct stable identity per bosso process; set from the pod name on Kubernetes, must be set manually for local multi-instance runs                                                                                                                                              |
+| Variable                        | Notes                                                                                                                                                                                                                                                                            |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BOSSO_DB_DRIVER`               | **Required — there is no default.** The only accepted value is `postgres`. bosso refuses to start and exits non-zero when it is unset, empty, or whitespace-only, and on any other value — including `sqlite`, which was accepted until the SQLite server-side path was deleted. |
+| `BOSSO_DATABASE_URL`            | Runtime Postgres connection string; **required**. Production uses PgBouncer for this connection.                                                                                                                                                                                 |
+| `BOSSO_MIGRATIONS_DATABASE_URL` | Direct Postgres connection string for Goose migrations; **required**. Production bypasses PgBouncer because migrations can need session-level DDL.                                                                                                                               |
+| `BOSSO_MULTI_INSTANCE`          | `true` runs bosso as more than one replica                                                                                                                                                                                                                                       |
+| `BOSSO_ADDR`                    | Listen address (default `:8080`)                                                                                                                                                                                                                                                 |
+| `BOSSO_INSTANCE_ID`             | Distinct stable identity per bosso process; set from the pod name on Kubernetes, must be set manually for local multi-instance runs                                                                                                                                              |
 
 #### Local development database
 
@@ -444,6 +445,7 @@ docker compose up -d bosso-postgres
 # 2. Point bosso at it. Both variables are required for the postgres driver.
 export BOSSO_DB_DRIVER=postgres
 export BOSSO_DATABASE_URL=postgres://bosso:bosso@localhost:5433/bosso_dev?sslmode=disable
+export BOSSO_MIGRATIONS_DATABASE_URL=postgres://bosso:bosso@localhost:5433/bosso_dev?sslmode=disable
 
 # 3. Build and run bosso; it applies its migrations on startup.
 make bin/bosso
@@ -559,6 +561,7 @@ the Google external ALB. Terraform writes the Kubernetes secret values:
 ```bash
 BOSSO_DB_DRIVER=postgres
 BOSSO_DATABASE_URL=postgres://...
+BOSSO_MIGRATIONS_DATABASE_URL=postgres://...
 BOSSO_MULTI_INSTANCE=true
 BOSSO_REDIS_URL=redis://bs-redis-service.<namespace>.svc.cluster.local:6379/0
 BOSSO_ROUTING_PROVIDER=kubernetes

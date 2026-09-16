@@ -916,3 +916,31 @@ test('vendorToolbox preserves and --check detects executable-mode drift', () => 
   assert.ok(drift.differences.some((d) => d.startsWith('mode mismatch')))
   rmSync(root, { recursive: true, force: true })
 })
+
+// BOS-1264: the affected-test decision helper ships ONLY into the cores that verify, and
+// its import closure is asserted rather than assumed. A vendored module whose
+// `./skill-config.mjs` import cannot resolve fails to load inside an installed core, and a
+// core that cannot load its helper may degrade silently — which, for a fail-safe whose whole
+// job is refusing to under-select, is the one failure mode worth a dedicated pin.
+test('test-selection.mjs ships to the three verifying cores with its import closure', () => {
+  const consumers = ['boss-build', 'boss-review', 'boss-repair']
+  for (const core of consumers) {
+    assert.ok(
+      VENDOR_MAP[core].includes('test-selection.mjs'),
+      `${core} must vendor test-selection.mjs`,
+    )
+    assert.ok(
+      VENDOR_MAP[core].includes('skill-config.mjs'),
+      `${core} must vendor skill-config.mjs so test-selection.mjs can resolve its accessor`,
+    )
+  }
+  // Exclusive: vendoring it into a core that never calls it is dead weight in an artifact
+  // whose size is itself budgeted.
+  for (const [skill, files] of Object.entries(VENDOR_MAP)) {
+    if (consumers.includes(skill)) continue
+    assert.ok(
+      !files.includes('test-selection.mjs'),
+      `${skill} vendors test-selection.mjs but does not consume it`,
+    )
+  }
+})

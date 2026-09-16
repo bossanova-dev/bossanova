@@ -254,6 +254,18 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// boxed-approval: one session whose single Claude chat is parked on the
+		// captured destructive-command approval menu, for the BOS-1266 proof
+		// scenario. The chat's status is NOT seeded — BoxedApprovalChatStatuses
+		// runs the captured pane through the shared detector — so the home row
+		// reads "? question" only while that grammar still recognises the boxed
+		// menu. Carries the same cloud-access e2e pin as demo so boss lands on
+		// the home session list.
+		"boxed-approval": {
+			World:      BoxedApprovalWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// waiting-callback: one session parked on an armed GitHub callback next to
 		// one genuinely working session, for the BOS-668 proof scenario. The home
 		// STATUS column must read "waiting" (INFO, with spinner) with the reason

@@ -1,0 +1,30 @@
+
+  The prerequisite tickets and dependency chain are now planned, but FRE-1611 itself still has a stale plan: it assumes executable source commands already exist. It should be replanned after FRE-1711
+  defines the actual command/report interface.
+
+  Next step: implement FRE-1711 (https://linear.app/freshclaim/issue/FRE-1711/make-the-typescript-directory-collector-executable).
+
+  That establishes the contract everything else needs:
+
+  1. TypeScript/Bun command entrypoint in services/directory
+  2. DI composition root for Postgres, evidence storage, HTTP/proxy transport, config, logging
+  3. bounded inputs, persisted accounting, resume/lease semantics, sanitized terminal reports
+  4. fixture-mode command tests
+
+  Then implement FRE-1712 and FRE-1713 in parallel or sequence, using that runtime. Once their command contracts are stable, replan and resume FRE-1611 to add the Kestra image runtime, YAML flows,
+  secret bindings, schedules, alerts, and staging dry-run.
+
+  One administrative cleanup remains: the blocked FRE-1611 draft PR should be closed or clearly marked blocked, since it contains no implementation.
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-terra medium · ~/.bossanova/worktrees/fresh-claim/dave/fre-1611-orchestrate-bounded-directory-collection-in-kestra · Orchestrate bounded directory flows
+
+
+
+
+
+
+
+

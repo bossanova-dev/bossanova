@@ -3368,7 +3368,7 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // that judges live children, and its ALL-of set is stated resident. PRE_SPLIT_BASELINE is carried
   // 124493 -> 125183, preserving the same deliberately thin 26-byte margin so a bulk regrow in one
   // edit still reds.
-  const RATCHET = 125157 // measured resident body, 2026-09-15
+  const RATCHET = 125179 // measured resident body, 2026-09-15; BOS-1247 closed-code list
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -3390,6 +3390,10 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 123354,
       justification:
+        'BOS-1247: the plan-contract guard now emits `premise-reused-as-criterion`; its ' +
+        'mandatory Phase 4 violation-code list must name that static code, or a drafter sees ' +
+        'a tagged rejection with no resident explanation. The +22 B is the code and the ' +
+        'prose-list grammar tightening that keeps the body under its fixed baseline. ' +
         'BOS-1255: `reconcileEpicChildren` refused on ANY live child carrying no epic-child ' +
         'marker, all-or-nothing across the parent’s whole live-children set, so one sub-issue ' +
         'somebody filed by hand under an epic parent made every later idempotent resume of that ' +

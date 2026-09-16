@@ -858,6 +858,22 @@ func hasQuestionPrompt(data []byte, modalOnly bool) bool {
 	// Splitting them into separate scans would silently break BOS-600's delivery
 	// gate, which refuses a send only for the modal set. TestHasQuestionPrompt
 	// asserts the subset relation over every fixture in this package's table.
+	// Pattern 2b: the boxed destructive-command approval menu (BOS-1266).
+	//
+	// Placed BEFORE the modalOnly split deliberately, not incidentally. While
+	// the menu is up a keystroke is consumed as a choice, so BOS-600's delivery
+	// gate must refuse the pane; placing this below the split would notify the
+	// user while still typing the answer into the menu.
+	//
+	// Matched on its own border-stripped view because the CLI draws the rows
+	// inside the input card: the selector arrives as "│ ❯ 1. Yes", and both
+	// selectorRe and numberedSelectorOptionRe anchor at line start after
+	// WHITESPACE only, so Pattern 1 cannot see it and Pattern 2 cannot either
+	// (an approval menu renders no ☐ card header).
+	if hasBoxedApprovalMenu(tail) {
+		return true
+	}
+
 	if modalOnly {
 		return false
 	}
@@ -965,7 +981,12 @@ var responseMarkerRe = regexp.MustCompile(`(?m)^[^\S\n]*\x{23FA}`)
 // The set is written as literal runes, matching spinnerGlyphs above:
 // space, tab, and the vertical box-drawing rules U+2502 U+2503 U+254E U+2506
 // U+250A plus the ASCII pipe.
-const inputBoxBorderChrome = " \t│┃╎┆┊|"
+// inputBoxBorderVerticals is the border-rune half of that set, split out so
+// approvalFooterClosesCard can ask "does this row carry a border rune?"
+// without also matching the leading indentation every row has.
+const inputBoxBorderVerticals = "│┃╎┆┊|"
+
+const inputBoxBorderChrome = " \t" + inputBoxBorderVerticals
 
 // isInputBoxRow reports whether a pane row is the agent's live input box — the
 // boundary between the transcript above it and the CLI-owned statusline chrome
@@ -979,6 +1000,234 @@ const inputBoxBorderChrome = " \t│┃╎┆┊|"
 // detector.
 func isInputBoxRow(line []byte) bool {
 	return hasPromptMarker(bytes.TrimLeft(line, inputBoxBorderChrome))
+}
+
+// stripInputBoxBorders returns a per-row view of data with the input card's
+// leading AND trailing border chrome removed, so a row the CLI drew inside the
+// card ("│ ❯ 1. Yes                 │") reads as the row it represents
+// ("❯ 1. Yes"). It follows isInputBoxRow's precedent exactly: layer the border
+// treatment into a view rather than widen the anchored regexes, which are
+// load-bearing elsewhere.
+//
+// This view is for boxed-approval matching ONLY and is deliberately not applied
+// globally. Trailing-chrome stripping in particular is lossy for ordinary text —
+// it would eat a trailing "|" from a shell pipeline Claude printed — which is
+// acceptable in a view that then demands a three-part menu structure, and is
+// not acceptable anywhere the raw row still carries meaning.
+func stripInputBoxBorders(data []byte) []byte {
+	rows := bytes.Split(data, []byte("\n"))
+	for i, row := range rows {
+		rows[i] = bytes.Trim(row, inputBoxBorderChrome)
+	}
+	return bytes.Join(rows, []byte("\n"))
+}
+
+// boxedSelectedOptionRe matches the selection cursor sitting on a numbered
+// option, on the border-stripped view. It is numberedSelectorOptionRe's shape
+// with the leading-whitespace allowance dropped, because stripInputBoxBorders
+// has already removed both the indentation and the border rune.
+var boxedSelectedOptionRe = regexp.MustCompile(`^❯ ([0-9]+)\.[ ]+\S`)
+
+// boxedAffirmativeOptionRe and boxedRejectingOptionRe match the two poles of an
+// approval menu on the border-stripped view, with or without the cursor on them
+// (the user may have arrowed onto either). Claude Code renders the affirmative
+// as "1. Yes" / "2. Yes, and don't ask again …" and the rejecting option as
+// "N. No, and tell Claude what to do differently (esc)".
+var (
+	boxedAffirmativeOptionRe = regexp.MustCompile(`^(?:❯ )?([0-9]+)\. Yes\b`)
+	boxedRejectingOptionRe   = regexp.MustCompile(`^(?:❯ )?([0-9]+)\. No\b`)
+)
+
+// approvalFooterAffordances are the two control hints the CLI renders beneath a
+// LIVE approval menu. Both are required on one line, which is how the real
+// footer renders ("Esc to cancel · Tab to amend") and what separates this shape
+// from limit.go's usage-limit modal footer ("Enter to confirm · Esc to cancel"):
+// conflating the two would let a usage cap read as an approval menu.
+var approvalFooterAffordances = [...]*regexp.Regexp{
+	regexp.MustCompile(`(?i)esc to cancel`),
+	regexp.MustCompile(`(?i)tab to amend`),
+}
+
+// isApprovalControlFooter reports whether a border-stripped row is the live
+// approval menu's control footer.
+func isApprovalControlFooter(row []byte) bool {
+	for _, re := range approvalFooterAffordances {
+		if !re.Match(row) {
+			return false
+		}
+	}
+	return true
+}
+
+// leadingOptionNumber parses the integer captured by the option regexes,
+// matching countConsecutiveNumberedOptions' digit accumulation rather than
+// pulling strconv into this package.
+func leadingOptionNumber(digits []byte) int {
+	n := 0
+	for _, c := range digits {
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+// hasBoxedApprovalMenu reports whether the tail shows a LIVE, structurally
+// complete destructive-command approval menu — the shape Claude Code draws when
+// its safety layer stops on something like an rm built from a variable path.
+//
+// It requires a conjunction, in render order, on the border-stripped view:
+//
+//  1. an affirmative numbered option ("1. Yes");
+//  2. a rejecting numbered option below it with a higher number ("2. No, …");
+//  3. the selection cursor resting on one of the rows in that span, which is
+//     what makes the menu the thing currently holding the keyboard; and
+//  4. the live control footer below the menu, carrying BOTH affordances.
+//
+// No single token decides it. "rm", "Dangerous", "Yes", "No" and a bare "?" all
+// occur freely in transcript prose, and each of them alone leaves this false.
+//
+// The conjunction is also why chrome drift degrades safely: if Claude Code
+// changes a border rune or the footer wording, this returns false and detection
+// regresses to the pre-BOS-1266 behaviour (a missed question), never to a false
+// modal that would refuse to deliver a message into a perfectly live composer.
+func hasBoxedApprovalMenu(tail []byte) bool {
+	// raw and rows are index-aligned: stripInputBoxBorders rewrites each row in
+	// place and re-joins on "\n", so raw[i] is the unstripped form of rows[i].
+	// The border-stripped view is what the option/footer grammar matches; the
+	// raw view is what the two containment legs below interrogate, because the
+	// border chrome they need is exactly what stripping throws away.
+	raw := bytes.Split(tail, []byte("\n"))
+	rows := bytes.Split(stripInputBoxBorders(tail), []byte("\n"))
+
+	for affirmative := 0; affirmative < len(rows); affirmative++ {
+		yes := boxedAffirmativeOptionRe.FindSubmatch(rows[affirmative])
+		if yes == nil {
+			continue
+		}
+		yesNum := leadingOptionNumber(yes[1])
+
+		for rejecting := affirmative + 1; rejecting < len(rows); rejecting++ {
+			no := boxedRejectingOptionRe.FindSubmatch(rows[rejecting])
+			if no == nil || leadingOptionNumber(no[1]) <= yesNum {
+				continue
+			}
+			if !selectorRestsInSpan(rows[affirmative : rejecting+1]) {
+				break
+			}
+			for footer := rejecting + 1; footer < len(rows); footer++ {
+				if !isApprovalControlFooter(rows[footer]) {
+					continue
+				}
+				if !approvalFooterClosesCard(raw[rejecting+1 : footer+1]) {
+					break
+				}
+				if !approvalMenuIsBottomMost(rows[footer+1:]) {
+					break
+				}
+				return true
+			}
+			break
+		}
+	}
+	return false
+}
+
+// approvalCardChrome is every rune the CLI uses to DRAW the approval card, as
+// opposed to fill it: inputBoxBorderChrome's verticals plus the horizontals and
+// corners. A row made of nothing but these carries no content.
+const approvalCardChrome = inputBoxBorderChrome + "\u2500\u2501\u254c\u2504\u2508\u256d\u256e\u256f\u2570\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c"
+
+// approvalCardCloseRe matches the card's BOTTOM-LEFT corner, the rune the CLI
+// draws once the menu's box is finished.
+var approvalCardCloseRe = regexp.MustCompile(`[\x{2570}\x{2514}\x{2517}]`)
+
+// approvalFooterClosesCard reports whether the control footer renders BELOW a
+// closed card rather than inside one. span is the RAW (border-bearing) run of
+// rows from just under the rejecting option through the footer row itself.
+//
+// This is the leg that separates a live menu from a composer draft QUOTING one.
+// stripInputBoxBorders trims the border cutset off BOTH ends of every row, so a
+// quoted row ("│   ❯ 1. Yes    │") becomes byte-identical to a real menu row
+// ("❯ 1. Yes") and every other leg of the conjunction — options, ordering, the
+// resting selector, the footer affordances — is satisfied by a user who pasted
+// the whole menu into the composer to ask what it means. That is the single
+// most dangerous false positive this predicate can produce: it refuses message
+// delivery (BOS-600) at the exact moment the pane is a perfectly live composer.
+//
+// The real render is what tells them apart. Claude Code closes the box and THEN
+// draws the footer outside it:
+//
+//	│   2. No, and tell Claude what to do differently (esc)  │
+//	╰───────────────────────────────────────────────────────╯
+//	  Esc to cancel · Tab to amend
+//
+// A composer draft cannot reproduce that, because everything the user typed is
+// inside the one card the composer owns. So: the footer row must carry no
+// border chrome of its own, and a card-closing corner must render between the
+// options and it.
+//
+// Drift degrades to a MISS, never to a false modal — the direction this file's
+// doc comment promises. If Claude Code stops boxing the menu, or moves the
+// footer inside the box, this returns false and BOS-1266 detection regresses to
+// the pre-fix behaviour rather than starting to refuse live composers.
+func approvalFooterClosesCard(span [][]byte) bool {
+	if len(span) < 2 {
+		return false
+	}
+	footer := span[len(span)-1]
+	if bytes.ContainsAny(footer, inputBoxBorderVerticals) {
+		return false
+	}
+	for _, row := range span[:len(span)-1] {
+		if approvalCardCloseRe.Match(row) {
+			return true
+		}
+	}
+	return false
+}
+
+// approvalMenuIsBottomMost reports whether the rows BELOW the control footer are
+// empty or pure card chrome — i.e. the menu is still the last thing the CLI
+// drew, which is what makes it the thing currently holding the keyboard.
+//
+// The footer search above is deliberately unbounded, so without this leg a menu
+// the user ALREADY ANSWERED still satisfies the whole conjunction while Claude's
+// subsequent output scrolls in underneath it. That pane is working, not blocked,
+// and calling it modal refuses delivery into it. The existing negative only
+// pushed the menu past the 30-line tail; anything closer stayed a false modal.
+//
+// Blank rows and the card's own closing border are tolerated because a
+// capture-pane read of a partially-filled screen ends in them. Any actual
+// content below the footer means the CLI has rendered past the menu.
+func approvalMenuIsBottomMost(below [][]byte) bool {
+	for _, row := range below {
+		if len(bytes.Trim(row, approvalCardChrome)) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// selectorRestsInSpan reports whether the selection cursor sits on one of the
+// menu's own option rows. What it rules out is a menu with NO highlighted row --
+// one already answered and repainted, or one not yet in focus. That is the only
+// case it decides: neutering this check to `return true` reddens exactly one
+// test, the "boxed menu with no selected row" negative.
+//
+// It does NOT rule out a quoted menu, and must not be relied on for that. A
+// composer draft that reproduces the WHOLE menu -- a "❯ 1. Yes" row, a
+// "2. No, …" row and the footer -- satisfies this leg too: after
+// stripInputBoxBorders those rows are byte-identical to a real menu's. What
+// rejects that draft is approvalFooterClosesCard, which asks whether the card
+// closed before the footer was drawn. The narrower draft that quotes only
+// "❯ 1. Yes" and the footer text is rejected earlier still, by the
+// rejecting-option leg in hasBoxedApprovalMenu. Neither is decided here.
+func selectorRestsInSpan(span [][]byte) bool {
+	for _, row := range span {
+		if boxedSelectedOptionRe.Match(row) {
+			return true
+		}
+	}
+	return false
 }
 
 // transcriptBelowFooter narrows the region under a footer to the part the agent

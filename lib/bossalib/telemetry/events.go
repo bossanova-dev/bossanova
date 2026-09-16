@@ -31,7 +31,9 @@ const (
 	EventCloudSubscribePageOpened   Event = "cloud_subscribe_page_opened"
 	EventCloudCheckoutStarted       Event = "cloud_checkout_started"
 	EventCloudCheckoutReturned      Event = "cloud_checkout_returned"
+	EventCloudTrialStarted          Event = "cloud_trial_started"
 	EventCloudTrialEnrollmentFailed Event = "cloud_trial_enrollment_failed"
+	EventCloudSubscriptionActivated Event = "cloud_subscription_activated"
 	EventSignupUserCreated          Event = "signup_user_created"
 	EventBillingAccountProvisioned  Event = "billing_account_provisioned"
 	EventCloudActionInvoked         Event = "cloud_action_invoked"
@@ -158,7 +160,9 @@ var Registry = map[Event]EventSpec{
 	EventCloudSubscribePageOpened:   {Surface: "cli, tui", Description: "A terminal handed the user to the subscribe or checkout page in a browser", Properties: conversionStepProperties()},
 	EventCloudCheckoutStarted:       {Surface: "cloud", Description: "Cloud checkout started", Properties: billingProperties()},
 	EventCloudCheckoutReturned:      {Surface: "cloud, tui", Description: "Cloud checkout return was processed", Properties: billingProperties()},
+	EventCloudTrialStarted:          {Surface: "cloud", Description: "Stripe trial enrollment started", Properties: propertySet("product_area", "cloud_access_state", "entry_point", "can_create_checkout", "checkout_started")},
 	EventCloudTrialEnrollmentFailed: {Surface: "cloud", Description: "Stripe trial enrollment failed after checkout return", Properties: billingProperties()},
+	EventCloudSubscriptionActivated: {Surface: "cloud", Description: "Stripe subscription became active", Properties: propertySet("product_area", "cloud_access_state", "entry_point")},
 	EventSignupUserCreated:          {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
 	EventBillingAccountProvisioned:  {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
 	EventCloudActionInvoked:         {Surface: "cloud", Description: "A user-initiated cloud action completed; passive polling reads are excluded", Properties: propertySet("command", "status", "product_area", "error_code")},

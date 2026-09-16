@@ -738,17 +738,26 @@ export const PROSE_PIN_BASELINE = {
   // encodes "this document tells a CLI-transport run to consult the per-chat signal"; the
   // executable half — that the grader agrees with the injector — is asserted over the real module
   // in the push-block gate, which is where the behaviour actually lives.
-  'scripts/boss-build-skill.test.mjs': 835,
+  // BOS-1265: 835 -> 841. The published verifier contract has no executable consumer: the
+  // three cores are prose that an agent reads to select its configured gates. The selection
+  // helper's own suite proves its decision ladder; these pins are the irreducible integration
+  // evidence that boss-build logs and acts on both outcomes and runs the cache-ineligible final
+  // full gate before readiness.
+  'scripts/boss-build-skill.test.mjs': 841,
   // BOS-1243: 13 -> 14. The claim-adjudication pass gives an action per VERDICT but gave none
   // for the CLI's fourth outcome, exit 2 — an operator error where nothing was adjudicated at
   // all and an empty record list reads exactly like "nothing was refuted". The exit CODE itself
   // is asserted behaviourally in skills-toolbox/bs-dispatch-claims.test.mjs; what only the
   // document can carry is the ACTION it obliges, so one pin was added rather than two.
-  'scripts/boss-repair-skill.test.mjs': 14,
+  // BOS-1265: 14 -> 19. Repair's per-iteration re-resolution and fail-safe command routing live
+  // only in the published core's reader contract; no helper can observe an agent's later loop.
+  'scripts/boss-repair-skill.test.mjs': 19,
   // BOS-1213 lowered this from 194: the four regexes quoting §Caller deadline's budget numbers
   // became a numeric comparison against the helper's own constants, plus executable
   // admit-fix-round cases covering every verdict it can return.
-  'scripts/boss-review-skill.test.mjs': 193,
+  // BOS-1265: 193 -> 197. Review's batch-close selection/report/fallback contract is prose-only;
+  // the helper tests cover selection semantics separately.
+  'scripts/boss-review-skill.test.mjs': 197,
   'scripts/boss-skill.test.mjs': 2,
   // 149 -> 150: the wait-recipe pin split in two. It used to assert ONE sentence naming a
   // "session cron" as the fallback wait mechanism — the sentence that was itself teaching

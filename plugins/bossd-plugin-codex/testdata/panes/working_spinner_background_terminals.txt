@@ -1,0 +1,30 @@
+  └ integration    IN_PROGRESS
+    pin-changes    SUCCESS
+    test    IN_PROGRESS
+    GitGuardian Security Checks    SUCCESS
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• CI has begun both the integration and test jobs; no failures have appeared. The PR remains draft until those callback-backed gates settle.
+
+• Ran sleep 25
+  │ gh pr checks 272 --json name,state --jq '.[] | [.name,.state] | @tsv' || true
+  └ integration    IN_PROGRESS
+    pin-changes    SUCCESS
+    test    IN_PROGRESS
+    GitGuardian Security Checks    SUCCESS
+
+• Working (34m 54s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-terra medium · ~/.bossanova/worktrees/gigantic/dave/gig-267-batch-the-per-key-env-file-probes-so-install-stops-spawning · Batch env-file probes · Main [default]
+
+
+
+
+
+
+
+

@@ -458,9 +458,21 @@ test('planIdempotencePrecheck reports every failed conjunct separately', () => {
   )
 })
 
-test('premiseDrift reports drifted, unresolved, and empty inputs', () => {
-  assert.deepEqual(premiseDrift([], {}), { ok: true, drifted: [], unresolved: [] })
-  assert.deepEqual(premiseDrift(undefined, {}), { ok: true, drifted: [], unresolved: [] })
+test('premiseDrift reports drifted, unresolved, and verification coverage', () => {
+  assert.deepEqual(premiseDrift([], {}), {
+    ok: true,
+    drifted: [],
+    unresolved: [],
+    verified: 0,
+    declared: 0,
+  })
+  assert.deepEqual(premiseDrift(undefined, {}), {
+    ok: true,
+    drifted: [],
+    unresolved: [],
+    verified: 0,
+    declared: 0,
+  })
   assert.deepEqual(
     premiseDrift(
       [
@@ -473,8 +485,23 @@ test('premiseDrift reports drifted, unresolved, and empty inputs', () => {
       ok: false,
       drifted: [{ id: 'BOS-1', plannedState: 'Todo', currentState: 'In Review' }],
       unresolved: ['BOS-2'],
+      verified: 1,
+      declared: 2,
     },
   )
+})
+
+test('premises CLI reports zero verification coverage for an empty declared set', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-'))
+  const premisesPath = path.join(dir, 'premises.json')
+  const livePath = path.join(dir, 'live.json')
+  writeFileSync(premisesPath, '[]')
+  writeFileSync(livePath, '{}')
+  const result = spawnSync(process.execPath, [GUARD, 'premises', premisesPath, livePath], {
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stderr, /premises: verified 0 of 0/)
 })
 
 test('premises CLI enforces PREMISE_LIMIT', () => {

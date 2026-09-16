@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/sessionreason"
+	"github.com/recurser/bossalib/statusdetect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -1382,4 +1383,114 @@ func SupersededCredentialWorld() World {
 		},
 	})
 	return w
+}
+
+// BoxedApprovalPane is the captured Claude Code destructive-command approval
+// menu from BOS-1266, reproduced with the CLI's real chrome: the repaint
+// preamble, SGR runs, the U+00A0 after the ❯ selector, and — the detail the
+// whole ticket turns on — the border rune before that selector, so the row
+// arrives as "│ ❯ 1. Yes" rather than "❯ 1. Yes".
+//
+// It is a package-level const rather than a literal inside the world below so
+// the proof fixture and the detector's own table are visibly the same capture.
+const BoxedApprovalPane = "" +
+	"⏺ I'll clear the stale build output before the rebuild.\n" +
+	"\n" +
+	"\x1b[?25l\x1b[2K╭─────────────────────────────────────────────────────────╮\n" +
+	"│ \x1b[1mBash command\x1b[0m                                            │\n" +
+	"│                                                         │\n" +
+	"│   rm -rf \"$BUILD_DIR\"/                                   │\n" +
+	"│   Remove stale build artifacts                           │\n" +
+	"│                                                         │\n" +
+	"│ \x1b[33mDangerous rm operation on possibly-empty variable path\x1b[0m  │\n" +
+	"│                                                         │\n" +
+	"│ Do you want to proceed?                                  │\n" +
+	"│ \x1b[7m❯ 1. Yes\x1b[0m                                             │\n" +
+	"│   2. No, and tell Claude what to do differently (esc)     │\n" +
+	"╰─────────────────────────────────────────────────────────╯\n" +
+	"  Esc to cancel · Tab to amend\n"
+
+// chatStatusForPane maps a captured pane through the SHARED detector — the same
+// grammar the daemon's tmux poller consults — instead of returning a hand-set
+// enum.
+//
+// That indirection is the entire point of the BOS-1266 proof world. A fixture
+// that simply seeded CHAT_STATUS_QUESTION would render an identical screen while
+// proving only that the TUI can draw a label it was handed. Deriving the status
+// here means the captured screen is downstream of the real recognition step: if
+// the detector stops seeing the boxed approval, this world seeds IDLE and the
+// scenario's "? question" expectation fails rather than passing over a stub.
+func chatStatusForPane(pane string) pb.ChatStatus {
+	if statusdetect.HasQuestionPrompt([]byte(pane)) {
+		return pb.ChatStatus_CHAT_STATUS_QUESTION
+	}
+	return pb.ChatStatus_CHAT_STATUS_IDLE
+}
+
+// BoxedApprovalWorld is the BOS-1266 proof world: one session whose single
+// Claude chat is parked on the captured boxed approval menu.
+func BoxedApprovalWorld() World {
+	return World{
+		Repos:        Repos(),
+		Sessions:     BoxedApprovalSessions(),
+		Chats:        BoxedApprovalChats(),
+		ChatStatuses: BoxedApprovalChatStatuses(),
+	}
+}
+
+// BoxedApprovalSessions returns the single session hosting the blocked chat.
+//
+// The mock daemon serves sessions verbatim — it does not run
+// displaystatus.Compute — so the Display* triple has to be present on the
+// message. Every other preset spells that triple out by hand; this one RUNS the
+// real cascade instead, over the chat status the shared detector derived from
+// the captured pane.
+//
+// That matters for what the proof is worth. Hand-writing "? question" here would
+// make the home row render identically while asserting only that the fixture
+// author can type a label. Computing it means the captured screen sits
+// downstream of the whole chain this ticket changed: boxed pane → statusdetect →
+// CHAT_STATUS_QUESTION → displaystatus.Compute → "? question" in the STATUS
+// column. Break any link and the scenario reddens.
+func BoxedApprovalSessions() []*pb.Session {
+	sess := &pb.Session{
+		Id: "sess-1266-approval", RepoId: "repo-1", RepoDisplayName: "my-app",
+		// The title deliberately avoids the words "question", "approval" and
+		// "rm" so the proof assertion binds to the STATUS column rather than to
+		// a row title that happens to contain the word.
+		Title: "Clear stale build output", BranchName: "boss/clear-build-output",
+		State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		PrNumber:     i32(1266),
+		CreatedAt:    ts(-90 * time.Minute),
+		WorktreePath: "/Users/demo/worktrees/my-app/clear-build-output",
+	}
+	display := displaystatus.Compute(displaystatus.Input{
+		Session:    sess,
+		ChatStatus: chatStatusForPane(BoxedApprovalPane),
+	})
+	sess.DisplayLabel = display.Label
+	sess.DisplayIntent = display.Intent
+	sess.DisplaySpinner = display.Spinner
+	return []*pb.Session{sess}
+}
+
+// BoxedApprovalChats returns the single chat sitting on the approval menu.
+func BoxedApprovalChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-1266-approval", AgentSessionId: "claude-1266-approval", SessionId: "sess-1266-approval", Title: "Rebuild after clearing artifacts", CreatedAt: ts(-80 * time.Minute)},
+	}
+}
+
+// BoxedApprovalChatStatuses derives the chat's heartbeat status from
+// BoxedApprovalPane through the shared detector. LastOutputAt is deliberately
+// old: the pane has not changed since Claude drew the menu, which is exactly
+// what being blocked on a human looks like.
+func BoxedApprovalChatStatuses() []*pb.ChatStatusEntry {
+	return []*pb.ChatStatusEntry{
+		{
+			AgentSessionId: "claude-1266-approval",
+			Status:         chatStatusForPane(BoxedApprovalPane),
+			LastOutputAt:   ts(-12 * time.Minute),
+		},
+	}
 }

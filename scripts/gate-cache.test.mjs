@@ -9,11 +9,25 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cli = path.join(repoRoot, 'scripts', 'gate-cache.mjs')
 
+test('BOS-1265: selection and readiness cache eligibility are fail-safe', () => {
+  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, '.boss-skills.json'), 'utf8'))
+  assert.equal(config.gateCache.eligible['test-affected'], undefined)
+  assert.match(config.gateCache.ineligible['test-affected'], /selection-dependent/)
+  assert.equal(config.gateCache.eligible['test-full'].cacheable, true)
+  assert.match(config.gateCache.ineligible['test-readiness-full'], /executed full gate/)
+})
+
 function git(root, args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
 }
 
-function fixture(t, { testUncached = 'BOSS_GATE_FORCE_UNCACHED=1 make test-affected' } = {}) {
+function fixture(
+  t,
+  {
+    testUncached = 'BOSS_GATE_FORCE_UNCACHED=1 make test-affected',
+    eligible = { demo: { cacheable: true, reason: 'test' } },
+  } = {},
+) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-cache-'))
   const stampDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-cache-stamps-'))
   t.after(() => {
@@ -28,7 +42,7 @@ function fixture(t, { testUncached = 'BOSS_GATE_FORCE_UNCACHED=1 make test-affec
     path.join(root, '.boss-skills.json'),
     JSON.stringify({
       commands: testUncached ? { testUncached } : {},
-      gateCache: { eligible: { demo: { cacheable: true, reason: 'test' } } },
+      gateCache: { eligible },
     }),
   )
   fs.writeFileSync(path.join(root, 'file.txt'), 'one\n')
@@ -175,4 +189,32 @@ test('not-eligible gates run and do not stamp', (t) => {
   assert.equal(run(root, stampDir, args).status, 0)
   assert.equal(run(root, stampDir, args).status, 0)
   assert.equal(fs.readFileSync(path.join(root, 'counter'), 'utf8'), 'xx')
+})
+
+test('narrow selections never share a full readiness gate, while full gates still cache', (t) => {
+  const { root, stampDir, base } = fixture(t, {
+    eligible: { 'test-full': { cacheable: true, reason: 'final tree full gate' } },
+  })
+  const counter = path.join(stampDir, 'counter')
+  const command = `${process.execPath} -e "require('fs').appendFileSync(process.env.COUNTER,'x')"`
+  const args = (site) => [
+    'run',
+    '--site',
+    site,
+    '--command',
+    command,
+    '--base-ref',
+    base,
+    '--',
+    process.execPath,
+    '-e',
+    "require('fs').appendFileSync(process.env.COUNTER,'x')",
+  ]
+  // `test-affected` is deliberately unlisted. Two otherwise identical narrow selections must
+  // both execute rather than sharing a tree-hash stamp whose key lacks the selected files.
+  assert.equal(run(root, stampDir, args('test-affected'), { COUNTER: counter }).status, 0)
+  assert.equal(run(root, stampDir, args('test-affected'), { COUNTER: counter }).status, 0)
+  assert.equal(run(root, stampDir, args('test-full'), { COUNTER: counter }).status, 0)
+  assert.equal(run(root, stampDir, args('test-full'), { COUNTER: counter }).status, 0)
+  assert.equal(fs.readFileSync(counter, 'utf8'), 'xxx')
 })

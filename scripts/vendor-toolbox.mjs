@@ -49,6 +49,15 @@ export const VENDOR_MAP = {
     'claude-review.mjs',
     'skill-config.mjs',
     'skill-extensions.mjs',
+    // test-selection.mjs (BOS-1264) is the portable affected-test decision helper: it turns
+    // a changed-file set into a test-file set from the `testSelection` config block, or fails
+    // safe to a full run when it cannot classify the diff with confidence. It ships into the
+    // three cores that VERIFY, and nowhere else — a module vendored into a core that never
+    // calls it is dead weight in an artifact whose size is itself budgeted. Its only import is
+    // the block's accessor from ./skill-config.mjs, which already ships in each of the three,
+    // so the closure is satisfied without a second entry; an installed core has no repo-root
+    // skills-toolbox/ to reach back into, and a helper that cannot load degrades silently.
+    'test-selection.mjs',
   ],
   'boss-build': [
     'main-module.mjs',
@@ -140,6 +149,9 @@ export const VENDOR_MAP = {
     // adapter, so both files ship or neither resolves.
     'session/adapter.mjs',
     'session/boss.mjs',
+    // test-selection.mjs (BOS-1264) — the portable affected-test decision helper; see the
+    // note on boss-review's entry. Its ./skill-config.mjs import already ships in this core.
+    'test-selection.mjs',
   ],
   // dag-scheduler.mjs is the pure scheduling core bs-epic-lib.mjs re-exports
   // (BOS-197); it must ship alongside bs-epic-lib.mjs so the vendored copy's
@@ -347,6 +359,9 @@ export const VENDOR_MAP = {
     'boss-binary.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
+    // test-selection.mjs (BOS-1264) — the portable affected-test decision helper; see the
+    // note on boss-review's entry. Its ./skill-config.mjs import already ships in this core.
+    'test-selection.mjs',
   ],
   'boss-finalize': [
     'main-module.mjs',

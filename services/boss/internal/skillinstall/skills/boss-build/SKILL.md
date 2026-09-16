@@ -1115,6 +1115,17 @@ Each bullet is a summary, never the instruction — follow its link and do the s
   downgrade the outcome to `BLOCKED`; an unsatisfied one only warns and never suppresses the print.
   Always print `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`, chosen from the work state.
 
+## Verification selection
+
+For every implementation verification before readiness, load the resolved skill config and call
+`decideTestSelection` from this core's `toolbox/test-selection.mjs` with the current repo-relative
+changed-file set and the test-file universe when available. Log its `report` verbatim. A usable
+`narrow` decision runs the configured `commands.testAffected`; `full`, an unavailable helper, an
+error, or any result that cannot be interpreted runs `commands.testFull`. Never substitute an empty
+or missing selection for a passing gate. The final readiness transition is different: it runs
+`commands.testFull` exactly once over the final tree and requires that pass before readying; no
+earlier narrow or full result satisfies that receipt.
+
 Ambiguous terminal state ⇒ [`references/troubleshooting.md`](references/troubleshooting.md)
 (status-rollback table + red-flags catalog).
 

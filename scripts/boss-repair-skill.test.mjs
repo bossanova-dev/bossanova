@@ -16,6 +16,22 @@ const REPAIR_CANONICAL = 'services/boss/internal/skillinstall/skills/boss-repair
 
 const skillText = (dir) => fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
+test('BOS-1265: repair re-resolves and reports a fail-safe selection every iteration', () => {
+  const gateDiscovery = region(
+    skillText(REPAIR_CANONICAL),
+    '1.3 Identify Project Gate Commands',
+    '### Phase 2:',
+  )
+  assert.match(gateDiscovery, /decideTestSelection/)
+  assert.match(gateDiscovery, /returned\s+`report`\s+verbatim/)
+  assert.match(gateDiscovery, /`narrow`[\s\S]{0,100}`commands\.testAffected`/)
+  assert.match(
+    gateDiscovery,
+    /`full`,\s+an\s+unavailable\s+helper,\s+an\s+error,\s+or\s+an\s+uninterpretable\s+result[\s\S]{0,100}`commands\.testFull`/,
+  )
+  assert.match(gateDiscovery, /Re-resolve\s+on\s+every\s+iteration/)
+})
+
 test('BOS-771: Strategy A handles generated artifacts and additive registries', () => {
   {
     const dir = REPAIR_CANONICAL

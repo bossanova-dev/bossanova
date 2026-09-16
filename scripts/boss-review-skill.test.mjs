@@ -35,6 +35,21 @@ const REVIEW_CANONICAL = 'services/boss/internal/skillinstall/skills/boss-review
 
 const read = (relPath) => readFileSync(path.join(rootDir, relPath), 'utf8')
 
+test('BOS-1265: Phase 6 selects and reports its test gate fail-safely', () => {
+  const phase6 = sectionRegion(
+    read(`${REVIEW_CANONICAL}/SKILL.md`),
+    '## Phase 6',
+    `${REVIEW_CANONICAL}/SKILL.md`,
+  )
+  assert.match(phase6, /decideTestSelection/)
+  assert.match(phase6, /`report`\s+verbatim/)
+  assert.match(phase6, /`narrow`[\s\S]{0,100}`commands\.testAffected`/)
+  assert.match(
+    phase6,
+    /`full`,\s+an\s+unavailable\s+helper,\s+an\s+error,\s+or\s+an\s+uninterpretable\s+result[\s\S]{0,100}`commands\.testFull`/,
+  )
+})
+
 {
   const mirror = REVIEW_CANONICAL
   const skill = read(`${mirror}/SKILL.md`)

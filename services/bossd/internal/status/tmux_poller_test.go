@@ -3332,12 +3332,18 @@ func TestTmuxStatusPoller_StalledMarkerClearedWhenTmuxSessionGone(t *testing.T) 
 
 // --- BOS-805: spinner-aware liveness ---------------------------------------
 
-// codexNoWorkingIndicatorClient mirrors the REAL codex plugin, whose
-// HasWorkingIndicator returns IsWorking=false unconditionally
-// (plugins/bossd-plugin-codex/server.go). The spinner-aware tests below use it
-// deliberately: if the poller ever routed spinner detection back through that
-// RPC, every codex case here would report "no spinner" and fail — which is the
-// silently-wrong signal this whole ticket exists to remove.
+// codexNoWorkingIndicatorClient answers HasWorkingIndicator with a flat
+// IsWorking=false. It is a WORST-CASE double, not a mirror of the real plugin:
+// codex once did return false unconditionally, and this comment used to cite
+// that as the reason, but the plugin now owns a real detector
+// (plugins/bossd-plugin-codex/working.go).
+//
+// Pinning the pessimistic answer is what gives the spinner-aware tests below
+// their force, and it survived the plugin gaining a detector precisely because
+// it never depended on one. If the poller ever routed spinner detection back
+// through this RPC, every codex case here would report "no spinner" and fail —
+// which is the silently-wrong signal this whole ticket exists to remove. A
+// double that tracked the real plugin's answer would stop catching that.
 type codexNoWorkingIndicatorClient struct {
 	claudeFakeClient
 }
@@ -3624,5 +3630,177 @@ func TestTmuxStatusPoller_BootstrapSeedsAreMarkedSeeded(t *testing.T) {
 	}
 	if !substantiveAt.Equal(entry.LastOutputAt) {
 		t.Errorf("bootstrap substantive stamp %v != seeded LastOutputAt %v", substantiveAt, entry.LastOutputAt)
+	}
+}
+
+// boxedApprovalPane mirrors the canonical capture in
+// lib/bossalib/statusdetect/question_test.go. The module boundary forbids
+// importing another package's test fixtures, so this is a deliberate copy.
+//
+// The QUESTION assertions below catch the shared grammar losing this shape
+// entirely, but NOT the copy drifting: see
+// assertPollerBoxedApprovalKeepsItsBorders, which is what stops it rotting
+// silently.
+// assertPollerBoxedApprovalKeepsItsBorders pins that the mirrored capture
+// still renders its menu INSIDE the input card.
+//
+// The copies used to claim they "cannot rot silently" because the assertions
+// demand a question/modal verdict. Measured, that is false: replacing every
+// "│" in the capture with a space still yields HasQuestionPrompt=true and
+// HasModalPrompt=true, because statusdetect's Pattern 1 sees the UNBORDERED
+// shape perfectly well. A debordered copy keeps every assertion green while no
+// longer exercising the boxed path BOS-1266 exists to cover. The border rune
+// immediately before the highlighted selector is the discriminator, so pin it.
+func assertPollerBoxedApprovalKeepsItsBorders(t *testing.T) {
+	t.Helper()
+	if !strings.Contains(boxedApprovalPane, "│ \x1b[7m❯") {
+		t.Fatal("the mirrored capture lost the border rune before its selector; the boxed path is untested here")
+	}
+}
+
+const boxedApprovalPane = "" +
+	"⏺ I'll clear the stale build output before the rebuild.\n" +
+	"\n" +
+	"\x1b[?25l\x1b[2K╭─────────────────────────────────────────────────────────╮\n" +
+	"│ \x1b[1mBash command\x1b[0m                                            │\n" +
+	"│                                                         │\n" +
+	"│   rm -rf \"$BUILD_DIR\"/                                   │\n" +
+	"│   Remove stale build artifacts                           │\n" +
+	"│                                                         │\n" +
+	"│ \x1b[33mDangerous rm operation on possibly-empty variable path\x1b[0m  │\n" +
+	"│                                                         │\n" +
+	"│ Do you want to proceed?                                  │\n" +
+	"│ \x1b[7m❯ 1. Yes\x1b[0m                                             │\n" +
+	"│   2. No, and tell Claude what to do differently (esc)     │\n" +
+	"╰─────────────────────────────────────────────────────────╯\n" +
+	"  Esc to cancel · Tab to amend\n"
+
+// TestTmuxStatusPoller_BoxedApprovalYieldsQuestion is the BOS-1266 propagation
+// leg: the detector recognising the boxed approval is worth nothing unless the
+// poller turns it into CHAT_STATUS_QUESTION, because that transition is the
+// rising edge every downstream alert hangs off.
+//
+// It drives the REAL grammar, not a hard-coded verdict: claudeFakeClient's
+// HasQuestionPrompt delegates to statusdetect, so this fails if the detector
+// regresses and equally if the poller stops consulting it.
+//
+// Case B then pins the other half — the state must CLEAR. A question that
+// latches is its own bug: the session row would keep claiming the agent is
+// blocked long after the user answered.
+func TestTmuxStatusPoller_BoxedApprovalYieldsQuestion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-test-boxed-approval"
+	agentSessionID := "claude-boxed-approval"
+	sessionID := "sess-boxed-approval"
+	worktreePath := "/tmp/boss-test-boxed-approval-wt"
+
+	// Redirect os.UserHomeDir() so transcriptPath() resolves under t.TempDir().
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectDir := home + "/.claude/projects/" + pathToProjectKey(worktreePath)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	transcript := projectDir + "/" + agentSessionID + ".jsonl"
+	assistantPending := `{"type":"user","message":{"role":"user","content":"clean the build dir"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
+`
+	userAnswered := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
+{"type":"user","message":{"role":"user","content":"1"}}
+`
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{
+			sessionID: {ID: sessionID, WorktreePath: worktreePath},
+		},
+	}
+
+	// ONE factory, ONE Tracker and ONE poller for every case below, with only
+	// the captured pane swapped between polls.
+	//
+	// Rebuilding them per call would give each case a virgin tracker, and Case B
+	// would then show only that an answered transcript does not PRODUCE a
+	// question from scratch. A question that LATCHED -- set on a live entry by
+	// Case A and never cleared -- is invisible to that shape, and latching is
+	// exactly what Case B claims to pin. The cases have to share the entry for
+	// the transition to be observable at all.
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: boxedApprovalPane},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+	tracker := NewTracker()
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+
+	poll := func(pane string) *Entry {
+		t.Helper()
+		factory.mu.Lock()
+		factory.captures[tmuxName] = pane
+		factory.mu.Unlock()
+		poller.pollOnce(context.Background())
+		entry := tracker.Get(agentSessionID)
+		if entry == nil {
+			t.Fatal("expected entry after poll")
+		}
+		return entry
+	}
+
+	// Guard against a vacuous pass: if the shared grammar does not call this
+	// pane a question, Case A below would be asserting nothing about the
+	// poller at all.
+	assertPollerBoxedApprovalKeepsItsBorders(t)
+	if !statusdetect.HasQuestionPrompt([]byte(boxedApprovalPane)) {
+		t.Fatal("the shared detector does not recognise the boxed approval capture; the poller assertions would be vacuous")
+	}
+
+	// Case A: the menu is up and the assistant spoke last. The agent is blocked
+	// on a human, which is exactly what QUESTION means.
+	if err := os.WriteFile(transcript, []byte(assistantPending), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	// Read the status out immediately: tracker.Get hands back the live entry, so
+	// a later poll mutates it in place and the value has to be captured here for
+	// the transition below to mean anything.
+	statusA := poll(boxedApprovalPane).Status
+	if statusA != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		// Fatal, not Error: Case B asserts a transition OUT of QUESTION, which
+		// is vacuous if the entry never entered it.
+		t.Fatalf("menu on screen, assistant last: status = %v, want QUESTION", statusA)
+	}
+
+	// Case B: the user answered. Existing suppression reconciles the still-drawn
+	// menu against the transcript and must clear the question rather than latch.
+	// This runs against the SAME poller and the SAME tracker entry Case A just
+	// drove to QUESTION, so what is asserted is the QUESTION -> not-QUESTION
+	// transition on one entry, not a fresh derivation.
+	if err := os.WriteFile(transcript, []byte(userAnswered), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	if statusB := poll(boxedApprovalPane).Status; statusB == pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Errorf("status stayed %v across the answer; a question that latches keeps the session row claiming the agent is blocked", statusB)
+	}
+
+	// Case C: the menu has been answered AND repainted away. Nothing on screen
+	// is a question any more, whatever the transcript says.
+	if err := os.WriteFile(transcript, []byte(assistantPending), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	answered := "⏺ I'll clear the stale build output before the rebuild.\n" +
+		"\n" +
+		"⏺ Bash(rm -rf \"$BUILD_DIR\"/)\n" +
+		"\n" +
+		"╭─────────────────────────────────────────────────────────╮\n" +
+		"│ \x1b[7m❯ \x1b[0m                                                       │\n" +
+		"╰─────────────────────────────────────────────────────────╯\n"
+	if entry := poll(answered); entry.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Error("menu gone from the pane but status stayed QUESTION")
 	}
 }

@@ -828,7 +828,7 @@ describe('checkPlanContract — each violation code fires', () => {
         '- [ ] (verify-only) criterion has a missing binary — check: `this-command-does-not-exist-bos1015`',
       ].join('\n'),
     )
-    const findings = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description)
+    const { violations: findings } = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description)
     assert.deepEqual(
       findings.map((finding) => finding.code),
       ['vacuous-criterion-command-command-unresolvable'],
@@ -853,7 +853,10 @@ describe('checkPlanContract — each violation code fires', () => {
     // The head must be PATH-guaranteed on a bare CI runner — see the sibling note in
     // `skill-config.test.mjs`; `rg` is not installed on GitHub's ubuntu image.
     assert.deepEqual(
-      checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, withCheck('! grep -rq needle skills-toolbox')),
+      checkVerifyOnlyCommandVacuity(
+        DEFAULT_CONFIG,
+        withCheck('! grep -rq "\\bneedle\\b" skills-toolbox'),
+      ).violations,
       [],
       'a negated absence assertion is a legitimate verify-only check',
     )
@@ -861,7 +864,7 @@ describe('checkPlanContract — each violation code fires', () => {
       checkVerifyOnlyCommandVacuity(
         DEFAULT_CONFIG,
         withCheck('! this-command-does-not-exist-bos1189'),
-      ).map((finding) => finding.code),
+      ).violations.map((finding) => finding.code),
       ['vacuous-criterion-command-command-unresolvable'],
       'negating an unknown head must not make it resolve',
     )
@@ -880,7 +883,7 @@ describe('checkPlanContract — each violation code fires', () => {
         '- [ ] (verify-only) criterion has an advisory pipeline — check: `make test | tee out.log`',
       ].join('\n'),
     )
-    assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description), [])
+    assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description).violations, [])
   })
 
   test('verify-only command vacuity guard keeps new operand findings in its dynamic family', () => {
@@ -893,9 +896,9 @@ describe('checkPlanContract — each violation code fires', () => {
           `## Acceptance criteria\n\n- [ ] (verify-only) criterion — check: \`${command}\``,
         )
       assert.deepEqual(
-        checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, withCheck('make absent'), { cwd: tmp }).map(
-          (finding) => finding.code,
-        ),
+        checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, withCheck('make absent'), {
+          cwd: tmp,
+        }).violations.map((finding) => finding.code),
         ['vacuous-criterion-command-make-goal-undefined'],
       )
       assert.deepEqual(
@@ -903,7 +906,7 @@ describe('checkPlanContract — each violation code fires', () => {
           DEFAULT_CONFIG,
           withCheck('node --test missing-dir/new.test.mjs'),
           { cwd: tmp },
-        ).map((finding) => finding.code),
+        ).violations.map((finding) => finding.code),
         ['vacuous-criterion-command-path-operand-missing'],
       )
     } finally {
@@ -924,7 +927,46 @@ describe('checkPlanContract — each violation code fires', () => {
         '- [ ] (verify-only) criterion — check: `node --test skills-toolbox/skill-config.test.mjs`',
       ].join('\n'),
     )
-    assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description), [])
+    assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description).violations, [])
+  })
+
+  test('verify-only command vacuity guard forwards advisory findings without blocking', () => {
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      [
+        '## Premises',
+        '',
+        '- [ ] (central) premise search needs a scope — check: `grep needle`',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] (verify-only) criterion remains valid — check: `make test-scripts`',
+      ].join('\n'),
+    )
+    const result = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description)
+    assert.deepEqual(result.violations, [])
+    assert.deepEqual(
+      result.advisories.map((finding) => finding.code),
+      ['advisory: unscoped-premise-search'],
+    )
+  })
+
+  test('a criterion cannot reuse a premise check command', () => {
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      [
+        '## Premises',
+        '',
+        '- [ ] (central) source currently has no old helper — check: `! rg -q "oldHelper" skills-toolbox`',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] (verify-only) source retains the premise assertion — check: `! rg -q "oldHelper" skills-toolbox`',
+      ].join('\n'),
+    )
+    const result = checkPlanContract({ description, citationCwd: process.cwd() })
+    assert.ok(result.violations.some((finding) => finding.code === 'premise-reused-as-criterion'))
+    assert.ok(VIOLATION_CODES.includes('premise-reused-as-criterion'))
   })
 
   test('citation could-not-evaluate is separate from clean and violation', () => {

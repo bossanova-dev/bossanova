@@ -1028,9 +1028,9 @@ subagent → validate its envelope → fold or skip), against
 > the reporter's source copies, never the drafted plan — no failing gate in Phase 4 deletes
 > `$PLAN_FILE`.
 >
-> One stderr line per violation, each tagged `line-spanning-emphasis`, `missing-sections`,
+> One stderr line per violation tagged `line-spanning-emphasis`, `missing-sections`,
 > `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
-> `plan-file-structure-exemption`, `pr-body-only-evidence`, `section-order`,
+> `plan-file-structure-exemption`, `pr-body-only-evidence`, `premise-reused-as-criterion`, `section-order`,
 > `self-falsified-literal-search`, `stale-premise-citation`, `subject-areas-unresolved`,
 > `unanchored-premise-citation`,
 > `unknown-section`, `unresolvable-citation`, any `vacuous-*` code, or

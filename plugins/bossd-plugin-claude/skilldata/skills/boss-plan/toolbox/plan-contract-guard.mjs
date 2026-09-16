@@ -165,6 +165,7 @@ export const VIOLATION_CODES = [
   'plan-file-structure',
   'plan-file-structure-exemption',
   'pr-body-only-evidence',
+  'premise-reused-as-criterion',
   'section-order',
   'self-falsified-literal-search',
   'stale-premise-citation',
@@ -811,9 +812,10 @@ export function checkPrBodyOnlyEvidence(config, description) {
 
 export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
   const violations = []
+  const advisories = []
   const checkItem = (kind, item) => {
     if (!item.check) return
-    const classified = classifyCheckCommand(item.check, opts)
+    const classified = classifyCheckCommand(item.check, { ...opts, kind })
     for (const finding of classified.blocking) {
       violations.push(
         violation(
@@ -822,6 +824,12 @@ export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
         ),
       )
     }
+    for (const finding of classified.advisory) {
+      advisories.push({
+        code: `advisory: ${finding.code}`,
+        message: `plan-contract-guard: ${kind} "${item.text}" has an advisory check command risk: ${finding.message}`,
+      })
+    }
   }
   for (const criterion of parseAcceptanceCriteria(config, description)) {
     checkItem('criterion', criterion)
@@ -829,7 +837,23 @@ export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
   for (const premise of parsePremises(config, description)) {
     checkItem('premise', premise)
   }
-  return violations
+  return { violations, advisories }
+}
+
+export function checkPremiseReusedAsCriterion(config, description) {
+  const premiseChecks = new Set(
+    parsePremises(config, description)
+      .map((premise) => premise.check?.trim())
+      .filter(Boolean),
+  )
+  return parseAcceptanceCriteria(config, description)
+    .filter((criterion) => premiseChecks.has(criterion.check?.trim()))
+    .map((criterion) =>
+      violation(
+        'premise-reused-as-criterion',
+        `criterion "${criterion.text}" reuses a premise check command; a premise observes the pre-change tree and cannot certify the post-change constraint`,
+      ),
+    )
 }
 
 /**
@@ -967,7 +991,9 @@ export function checkPlanContract({
   violations.push(...citation.violations)
   couldNotEvaluateResults.push(...citation.couldNotEvaluate)
   violations.push(...checkPrBodyOnlyEvidence(config, description))
-  violations.push(...checkVerifyOnlyCommandVacuity(config, description, { cwd: citationCwd }))
+  const commandVacuity = checkVerifyOnlyCommandVacuity(config, description, { cwd: citationCwd })
+  violations.push(...commandVacuity.violations)
+  violations.push(...checkPremiseReusedAsCriterion(config, description))
   if (!unterminated) {
     violations.push(...checkSubjectAreas(config, description, { mode, moduleRoots }))
   }
@@ -975,6 +1001,7 @@ export function checkPlanContract({
   return {
     ok: violations.length === 0 && couldNotEvaluateResults.length === 0,
     violations,
+    advisories: commandVacuity.advisories,
     couldNotEvaluate: couldNotEvaluateResults,
   }
 }
@@ -1124,7 +1151,7 @@ function main() {
   }
 
   const config = loadSkillConfig({ cwd: process.cwd() })
-  const { ok, violations, couldNotEvaluate } = checkPlanContract({
+  const { ok, violations, advisories, couldNotEvaluate } = checkPlanContract({
     description: descriptionText,
     plan: planText,
     config,
@@ -1134,6 +1161,9 @@ function main() {
     citationCwd: process.env.PLAN_CONTRACT_GUARD_CWD,
   })
   for (const { code, message } of couldNotEvaluate) {
+    console.error(`${message} [${code}]`)
+  }
+  for (const { code, message } of advisories) {
     console.error(`${message} [${code}]`)
   }
   if (ok) return

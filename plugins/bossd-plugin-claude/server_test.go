@@ -620,7 +620,21 @@ func TestHasQuestionPromptSplitsNotifyFromBlocking(t *testing.T) {
 			wantPrompt:   true,
 			wantBlocking: true,
 		},
+		{
+			// BOS-1266: the destructive-command approval menu, drawn INSIDE the
+			// input card so the selected row arrives as "│ ❯ 1. Yes". This
+			// plugin is a transparent adapter over the shared grammar — it
+			// contributes no detection of its own — so what this pins is that
+			// both fields move together for the boxed shape, and that nothing
+			// in the plugin's own request handling flattens the modal verdict
+			// back to a plain notify.
+			name:         "boxed destructive-command approval menu",
+			pane:         []byte(boxedApprovalPane),
+			wantPrompt:   true,
+			wantBlocking: true,
+		},
 	}
+	assertPluginBoxedApprovalKeepsItsBorders(t)
 	s := newServer(nil, zerolog.Nop())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1058,3 +1072,44 @@ func TestGetInfoDeclaresEffortSetting(t *testing.T) {
 	}
 	t.Fatalf("GetInfo user settings %v missing an 'effort' key", resp.GetInfo().GetUserSettings())
 }
+
+// boxedApprovalPane mirrors the canonical capture in
+// lib/bossalib/statusdetect/question_test.go. The module boundary forbids
+// importing another package's test fixtures, so this is a deliberate copy.
+//
+// The verdict assertion above catches the grammar losing this shape entirely,
+// but NOT the copy drifting: see assertPluginBoxedApprovalKeepsItsBorders
+// below, which is what stops it rotting silently.
+// assertPluginBoxedApprovalKeepsItsBorders pins that the mirrored capture
+// still renders its menu INSIDE the input card.
+//
+// The copies used to claim they "cannot rot silently" because the assertions
+// demand a question/modal verdict. Measured, that is false: replacing every
+// "│" in the capture with a space still yields HasQuestionPrompt=true and
+// HasModalPrompt=true, because statusdetect's Pattern 1 sees the UNBORDERED
+// shape perfectly well. A debordered copy keeps every assertion green while no
+// longer exercising the boxed path BOS-1266 exists to cover. The border rune
+// immediately before the highlighted selector is the discriminator, so pin it.
+func assertPluginBoxedApprovalKeepsItsBorders(t *testing.T) {
+	t.Helper()
+	if !strings.Contains(boxedApprovalPane, "│ \x1b[7m❯") {
+		t.Fatal("the mirrored capture lost the border rune before its selector; the boxed path is untested here")
+	}
+}
+
+const boxedApprovalPane = "" +
+	"⏺ I'll clear the stale build output before the rebuild.\n" +
+	"\n" +
+	"\x1b[?25l\x1b[2K╭─────────────────────────────────────────────────────────╮\n" +
+	"│ \x1b[1mBash command\x1b[0m                                            │\n" +
+	"│                                                         │\n" +
+	"│   rm -rf \"$BUILD_DIR\"/                                   │\n" +
+	"│   Remove stale build artifacts                           │\n" +
+	"│                                                         │\n" +
+	"│ \x1b[33mDangerous rm operation on possibly-empty variable path\x1b[0m  │\n" +
+	"│                                                         │\n" +
+	"│ Do you want to proceed?                                  │\n" +
+	"│ \x1b[7m❯\u00a01. Yes\x1b[0m                                             │\n" +
+	"│   2. No, and tell Claude what to do differently (esc)     │\n" +
+	"╰─────────────────────────────────────────────────────────╯\n" +
+	"  Esc to cancel · Tab to amend\n"

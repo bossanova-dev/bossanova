@@ -1478,9 +1478,12 @@ Each round:
    fixed; a `verified` disposition that changes no files records only the ledger entry unless an
    explicit empty-commit protocol is chosen; no gate runs per item or per finding. After every item
    in the fix batch has been adjudicated and any worktree changes have been committed, run the
-   affected module tests/lint (per the repo's test-command manifest at
-   `manifestPath(cfg)`, or the fixer's own discovery prose when that returns `null`) exactly once
-   for the batch. If that batch-close gate fails, fix forward inside the same batch with an
+   affected module tests/lint exactly once for the batch. Resolve its test gate by loading the
+   skill config and calling `decideTestSelection` from `toolbox/test-selection.mjs` with the
+   current repo-relative changed-file set and test-file universe when available; log the returned
+   `report` verbatim. A usable `narrow` decision runs `commands.testAffected`; `full`, an
+   unavailable helper, an error, or an uninterpretable result runs `commands.testFull`. If that
+   batch-close gate fails, fix forward inside the same batch with an
    additional commit that names the item or interaction it repairs, then re-run the same gate
    commands for the batch. The default is one fix batch per pass. The sole interleaved-fix exception
    is an intra-batch ordering dependency: one must-fix item's fix changes the file or bytes cited by

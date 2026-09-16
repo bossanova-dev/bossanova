@@ -66,7 +66,10 @@ test('(c) every stub go.mod written by a release Dockerfile declares the go.work
     // The stubs stand in for workspace modules that are not copied into the build
     // context. They are written as `echo 'module <path>\ngo <version>' > <dir>/go.mod`.
     const stubs = [...source.matchAll(/\\ngo (\d+\.\d+(?:\.\d+)?)'/g)]
-    assert.ok(stubs.length > 0, `${relative} must write stub go.mod files for the uncopied workspace modules`)
+    assert.ok(
+      stubs.length > 0,
+      `${relative} must write stub go.mod files for the uncopied workspace modules`,
+    )
     for (const stub of stubs) {
       assert.equal(
         stub[1],

@@ -653,6 +653,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'bs-run-sentinel.mjs',
     'callback/adapter.mjs',
     'callback/boss.mjs',
+    'callback/ci-watch.mjs',
     'callback/epic-target.mjs',
     'dag-scheduler.mjs',
     'linear-claim.mjs',
@@ -684,6 +685,24 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     assert.ok(
       VENDOR_MAP[core].includes('pr-check-state.mjs'),
       `${core} must vendor pr-check-state.mjs`,
+    )
+  }
+  // Asserted BY NAME for each consuming core, and exclusively: ci-watch.mjs is the verdict the
+  // terminal/exit gate reads before a run may stop observing a PR. An installed tree without it is
+  // a gate that cannot RUN rather than one that decides wrongly — which is the exact shape of the
+  // bug it exists to close, since arming was previously prose nothing ever checked. It stays out of
+  // the cores that never arm a watch, so none of them grows a gate it has no wait to guard.
+  for (const core of ['boss-build', 'boss-repair', 'boss-epic']) {
+    assert.ok(
+      VENDOR_MAP[core].includes('callback/ci-watch.mjs'),
+      `${core} must vendor callback/ci-watch.mjs`,
+    )
+  }
+  for (const [skill, files] of Object.entries(VENDOR_MAP)) {
+    if (['boss-build', 'boss-repair', 'boss-epic'].includes(skill)) continue
+    assert.ok(
+      !files.includes('callback/ci-watch.mjs'),
+      `${skill} must not vendor callback/ci-watch.mjs`,
     )
   }
   // Asserted BY NAME and exclusively: the escalation ladder is the repair core's residual

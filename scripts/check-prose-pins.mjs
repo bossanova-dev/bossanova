@@ -743,7 +743,13 @@ export const PROSE_PIN_BASELINE = {
   // helper's own suite proves its decision ladder; these pins are the irreducible integration
   // evidence that boss-build logs and acts on both outcomes and runs the cache-ineligible final
   // full gate before readiness.
-  'scripts/boss-build-skill.test.mjs': 841,
+  // 841 -> 845: four pins for the CI-observation and re-entry rules. Each guards PLACEMENT,
+  // which no helper can assert — both rules must be RESIDENT in the body, because the same
+  // content already existed correctly in a reference behind a link and runs skipped it. Two pin
+  // the rule names against deletion; two pin that each rule still NAMES its helper, which is the
+  // line between a computed verdict and the recall that failed. The behaviour behind them is
+  // tested in skills-toolbox/callback/ci-watch.test.mjs, so nothing here restates a rule.
+  'scripts/boss-build-skill.test.mjs': 845,
   // BOS-1243: 13 -> 14. The claim-adjudication pass gives an action per VERDICT but gave none
   // for the CLI's fourth outcome, exit 2 — an operator error where nothing was adjudicated at
   // all and an empty record list reads exactly like "nothing was refuted". The exit CODE itself

@@ -102,6 +102,18 @@ body carries the decision skeleton; every moved instruction is still reachable h
   a failed wait. This reflex applies
   everywhere a wait happens (Steps 8/9 are the concrete sites). Mechanics:
   [`references/callback-watches.md`](references/callback-watches.md).
+- **Never stop looking at CI on your own recognisance.** Before printing `REVIEW_READY` or
+  `PARTIAL` for a PR, the decision is `toolbox/callback/ci-watch.mjs classify`, not recall. Trust its
+  `state`/`action` and restate no rule here: `settled`/`watched`/`polled` print; `unwatched` is the
+  only blocking state — arm the `missingTriggers` it names, classify once more (never twice), then
+  print; `unknown` runs the bounded poll first. This is a capability check, not bookkeeping: a pushed
+  PR with moving checks and nothing watching it is a run that cannot know its own outcome.
+- **A prompt arriving before this run printed a terminal state re-enters the workflow.** Compute what
+  is left, do not recall it: `toolbox/finalize/route-contract.mjs assert --outcome <intended>`
+  returns `missing`, the ordered unsatisfied obligations. **That list is a worklist, not a report.**
+  Answer the question you were asked in one line, then execute it in the same turn — finding work
+  with no reason not to do it means doing it. Once a terminal state has been printed the run is over
+  and stays over; answer and stop.
 - **A repair push reopens the CI wait.** A push intended to repair PR checks is a wait even if the
   run will not poll immediately: when callbacks are available, arm `checks_passed` and
   `checks_failed` for that head before handoff, and report neither repaired nor green while checks

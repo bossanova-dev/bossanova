@@ -921,7 +921,7 @@ type RegisterGithubCallbackArgs struct {
 	TargetChatID            string `json:"target_chat_id" jsonschema:"the agent-session (chat) id to deliver the message to when the callback fires"`
 	Message                 string `json:"message" jsonschema:"the prompt delivered to the chat when the callback fires (required; stored verbatim and never echoed back)"`
 	Repo                    string `json:"repo,omitempty" jsonschema:"repository as owner/repo; required to anchor a bare PR number, ignored when pr is a full URL"`
-	ExpiresIn               string `json:"expires_in,omitempty" jsonschema:"expiry as a duration like 30m, 24h, 7d, 2w; default 24h, maximum 30d"`
+	ExpiresIn               string `json:"expires_in,omitempty" jsonschema:"expiry as a duration like 24h, 7d, 2w; default 24h, maximum 30d"`
 	Group                   string `json:"group,omitempty" jsonschema:"optional group id; siblings in a group cancel each other on first fire"`
 	ShouldRequireTransition bool   `json:"should_require_transition,omitempty" jsonschema:"fire only after trigger becomes true"`
 }

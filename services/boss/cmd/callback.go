@@ -431,7 +431,7 @@ func callbackCmd() *cobra.Command {
 	add.Flags().String("chat", "", "Target agent-session (chat) id to notify (default: $BOSS_AGENT_SESSION_ID)")
 	add.Flags().String("repo", "", "Repository as owner/repo (default: the current repository's origin)")
 	add.Flags().String("message", "", "Prompt delivered to the chat when the callback fires (required)")
-	add.Flags().String("expires-in", "", "Expiry as a duration (e.g. 30m, 24h, 7d, 2w); default 24h, max 30d")
+	add.Flags().String("expires-in", "", "Expiry as a duration (e.g. 24h, 7d, 2w); default 24h, max 30d. A watch must outlast the wait it backs")
 	add.Flags().String("group", "", "Optional group id; siblings in a group cancel each other on first fire")
 	add.Flags().Bool("on-transition", false, "Fire only after the trigger transitions from unsatisfied to satisfied")
 	add.Flags().Bool("json", false, "Emit the created callback as a stable JSON schema")

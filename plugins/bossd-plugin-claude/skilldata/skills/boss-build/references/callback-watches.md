@@ -90,14 +90,29 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
        process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join("\n"))
      '
    )"
+   # Read the expiry from the SAME policy the triggers come from. Never hardcode a duration here:
+   # a literal is what gets edited down, and the reported failure was a hand-written `--expires-in
+   # 30m` against a CI run that took longer, which expired mid-wait and delivered no wake at all.
+   WATCH_EXPIRY="$(
+     node --input-type=module -e '
+       import{pathToFileURL as u}from"node:url"
+       const {resolveCallbackAdapter}=await import(u(process.env.BOSS_BUILD_TOOLBOX+"/callback/adapter.mjs").href)
+       process.stdout.write(resolveCallbackAdapter(process.env).policy.defaultExpiresIn)
+     '
+   )"
    # Newline-delimited, read one line at a time. A bare `for T in $WATCH_TRIGGERS` iterates ONCE
    # under zsh — which does not word-split an unquoted parameter expansion — registering a single
    # watch whose trigger name is the whole space-joined string, and no real trigger at all.
    printf '%s\n' "$WATCH_TRIGGERS" | while IFS= read -r T; do
      [ -n "$T" ] || continue
-     boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --message "$MSG" --expires-in 24h --json
+     boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --message "$MSG" --expires-in "$WATCH_EXPIRY" --json
    done
    ```
+
+   **A watch must outlast the wait it backs.** `policy.defaultExpiresIn` is sized for that; the
+   bounded poll's own budget is not. Never harmonise the expiry down to the poll bound — they are
+   independent mechanisms, and matching them means both lapse together and nothing is left
+   holding the wait.
 
    When `callbacksAvailable(env)` is false, **skip registration and fall through to the bounded
    poll** — never fail the wait because callbacks are missing. If a `registerWatch` call nonetheless

@@ -192,9 +192,19 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// RE-PINNED DOWN 2026-08-25 (BOS-998): 70 tools / 58,947 bytes, same
 	// method. The get_session stale-check caveat kept the existing re-poll
 	// warning while trimming duplicated state/provenance wording.
+	//
+	// RE-PINNED DOWN 2026-09-17: 70 tools / 58,862 bytes, same method. The
+	// callback expiry doc dropped `30m` from its example list. That example was
+	// not neutral: it led every list an improvising agent reads, it coincided
+	// exactly with the bounded CI poll's own 30-minute budget, and a hand-written
+	// `--expires-in 30m` against a longer CI run expired mid-wait and delivered
+	// no wake at all. The invariant it was replaced by — a watch must outlast the
+	// wait it backs — lives in the consuming skills' prose, not here: this
+	// surface is re-paid every turn, so it carries the argument's shape and the
+	// skill carries the rule.
 	const (
 		maxToolCount   = 70
-		maxSchemaBytes = 58867
+		maxSchemaBytes = 58862
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

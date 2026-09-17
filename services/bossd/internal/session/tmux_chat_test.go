@@ -404,7 +404,7 @@ func TestInjectTmuxChatInput_DeliveryMatrix(t *testing.T) {
 			t.Run(label, func(t *testing.T) {
 				ctx := context.Background()
 				h := newStartTmuxChatHarness(t)
-				if err := h.lc.injectTmuxChatInput(ctx, "bossd-agent-run-x", input, cmdResp, h.agentFake, "claude"); err != nil {
+				if err := h.lc.injectTmuxChatInput(ctx, "bossd-agent-run-x", "", false, input, cmdResp, h.agentFake, "claude"); err != nil {
 					t.Fatalf("injectTmuxChatInput: %v", err)
 				}
 				got := h.tmuxFake.enterSendKeysCount()
@@ -416,6 +416,57 @@ func TestInjectTmuxChatInput_DeliveryMatrix(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestInjectTmuxChatInput_CodexMultilineWaitsForBracketedPaste(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newStartTmuxChatHarness(t, tmux.WithSendReadyDeadline(10*time.Millisecond))
+	err := h.lc.injectTmuxChatInput(
+		context.Background(),
+		"bossd-agent-run-x",
+		filepath.Join(h.logsDir, "codex.log"),
+		true,
+		ChatInput{Prompt: "line one\nline two", Delivery: DeliverySubmit},
+		&bossanovav1.BuildInteractiveCommandResponse{ReadyMarker: "›"},
+		h.agentFake,
+		"codex",
+	)
+	if err == nil || !strings.Contains(err.Error(), "bracketed paste was not enabled") {
+		t.Fatalf("injectTmuxChatInput() = %v, want Codex multiline delivery withheld until bracketed paste is enabled", err)
+	}
+	if call := h.findCall("load-buffer"); call != nil {
+		t.Fatalf("load-buffer ran before Codex enabled bracketed paste: %+v", call)
+	}
+}
+
+func TestInjectTmuxChatInput_CodexMultilinePastesAfterBracketedPasteEnable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newStartTmuxChatHarness(t)
+	h.tmuxFake.capturePaneOutput = "Codex\n›\n"
+	logPath := filepath.Join(h.logsDir, "codex.log")
+	if err := os.WriteFile(logPath, []byte("\x1b[?2004h"), 0o600); err != nil {
+		t.Fatalf("write Codex pane log: %v", err)
+	}
+
+	if err := h.lc.injectTmuxChatInput(
+		context.Background(),
+		"bossd-agent-run-x",
+		logPath,
+		true,
+		ChatInput{Prompt: "line one\nline two", Delivery: DeliverySubmit},
+		&bossanovav1.BuildInteractiveCommandResponse{ReadyMarker: "›"},
+		h.agentFake,
+		"codex",
+	); err != nil {
+		t.Fatalf("injectTmuxChatInput() = %v, want bracketed-paste delivery after Codex enables it", err)
+	}
+	if call := h.findCall("paste-buffer"); call == nil {
+		t.Fatal("paste-buffer did not run after Codex enabled bracketed paste")
 	}
 }
 

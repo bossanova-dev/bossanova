@@ -937,7 +937,7 @@ func (c *RemoteClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCro
 // which routes to the owning bossd by target_chat_id (FindDaemonForChat) and
 // reuses the caller's own auth — no service credential. The message body is
 // carried verbatim and never logged on either hop.
-func (c *RemoteClient) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+func (c *RemoteClient) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 	resp, err := c.rpc.ProxyCreateGithubCallback(ctx, connect.NewRequest(&pb.ProxyCreateGithubCallbackRequest{
 		GroupId:                 req.GroupId,
 		TargetChatId:            req.GetTargetChatId(),
@@ -948,11 +948,15 @@ func (c *RemoteClient) CreateGithubCallback(ctx context.Context, req *pb.CreateG
 		Message:                 req.GetMessage(),
 		ExpiresAt:               req.GetExpiresAt(),
 		ShouldRequireTransition: req.ShouldRequireTransition,
+		IsIndependentWatch:      req.IsIndependentWatch,
 	}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.GetGithubCallback(), nil
+	return &pb.CreateGithubCallbackResponse{
+		GithubCallback: resp.Msg.GetGithubCallback(),
+		NoticeText:     resp.Msg.GetNoticeText(),
+	}, nil
 }
 
 // ListGithubCallbacks proxies the callback list through the orchestrator. When

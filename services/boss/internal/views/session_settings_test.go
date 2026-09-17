@@ -161,7 +161,7 @@ func (s *stubSessionSettingsClient) UpdateCronJob(context.Context, *pb.UpdateCro
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) DeleteCronJob(context.Context, string) error { panic("unused") }
-func (s *stubSessionSettingsClient) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+func (s *stubSessionSettingsClient) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {

@@ -37,21 +37,87 @@ func validGithubCallbackTrigger(t models.GithubCallbackTrigger) bool {
 	return slices.Contains(githubcallback.ValidTriggers(), t)
 }
 
+// mutuallyExclusiveGithubCallbackTriggers records which trigger pairs cannot be
+// satisfied by one and the same evaluation. It is the *instantaneous* relation,
+// derived from callback.satisfiedTriggers: a pair belongs here only when no
+// single (PRStatus, checks) observation can set both. It is deliberately not a
+// statement about a PR's lifetime — checks that are green now can red later, so
+// a lifetime reading would wrongly pair almost everything.
+//
+// Two consumers read this one table, with opposite polarity on an absent row:
+//
+//   - githubCallbackTriggersCoSatisfiable (grouping validation) treats an
+//     unlisted pair as co-satisfiable and therefore REFUSES the grouping —
+//     fail-closed.
+//   - the cross-group conflict scan treats an unlisted pair as no conflict and
+//     therefore emits NO warning — fail-open.
+//
+// So a trigger added to the vocabulary without rows here silently loses its
+// warning *and* becomes ungroupable. Adding a trigger means adding its rows.
+//
+// Every entry must be symmetric; TestGithubCallbackTriggerTableIsSymmetric
+// pins that.
 var mutuallyExclusiveGithubCallbackTriggers = map[models.GithubCallbackTrigger]map[models.GithubCallbackTrigger]bool{
+	// merged requires PRStateMerged, so it excludes every trigger that
+	// requires the PR to be open or closed.
 	models.GithubCallbackTriggerMerged: {
-		models.GithubCallbackTriggerClosed: true,
+		models.GithubCallbackTriggerClosed:            true,
+		models.GithubCallbackTriggerReadyForReview:    true,
+		models.GithubCallbackTriggerChecksPassedReady: true,
 	},
+	// closed requires PRStateClosed, likewise.
 	models.GithubCallbackTriggerClosed: {
-		models.GithubCallbackTriggerMerged: true,
+		models.GithubCallbackTriggerMerged:            true,
+		models.GithubCallbackTriggerReadyForReview:    true,
+		models.GithubCallbackTriggerChecksPassedReady: true,
 	},
+	// checks_passed is set from the check verdict alone, with no PR-state
+	// gate, so it is exclusive only with the opposite verdict. A closed or
+	// merged PR whose checks are green satisfies checks_passed too — which is
+	// why closed/merged are deliberately absent here.
+	//
+	// That absence is a deliberate departure from the change that introduced
+	// this table, which listed checks_passed x closed and checks_passed x
+	// merged as exclusive. They are not: callback.satisfiedTriggers sets
+	// checks_passed from checkVerdict.IsGreen() alone, so one evaluation of a
+	// closed (or merged) PR with green checks satisfies both. Listing them
+	// would make the conflict scan warn about a pair that really can fire
+	// together, and would permit grouping a pair that can co-fire — the two
+	// failures this table exists to prevent.
 	models.GithubCallbackTriggerChecksPassed: {
 		models.GithubCallbackTriggerChecksFailed: true,
 	},
 	models.GithubCallbackTriggerChecksFailed: {
-		models.GithubCallbackTriggerChecksPassed: true,
+		models.GithubCallbackTriggerChecksPassed:      true,
+		models.GithubCallbackTriggerChecksPassedReady: true,
+	},
+	// ready_for_review requires PRStateOpen && !Draft.
+	models.GithubCallbackTriggerReadyForReview: {
+		models.GithubCallbackTriggerMerged: true,
+		models.GithubCallbackTriggerClosed: true,
+	},
+	// checks_passed_ready requires a green verdict AND PRStateOpen && !Draft,
+	// so it carries both exclusions. It stays co-satisfiable with
+	// ready_for_review and checks_passed, which it implies.
+	models.GithubCallbackTriggerChecksPassedReady: {
+		models.GithubCallbackTriggerChecksFailed: true,
+		models.GithubCallbackTriggerMerged:       true,
+		models.GithubCallbackTriggerClosed:       true,
 	},
 }
 
+// githubCallbackTriggersCoSatisfiable drives the fail-closed grouping check in
+// Create: a group may only hold pairs this reports false for.
+//
+// Growing the exclusion table above therefore RELAXES that check. Pairs that
+// used to be refused with ErrGithubCallbackInvalid and are now accepted into
+// one group: merged x ready_for_review, merged x checks_passed_ready,
+// closed x ready_for_review, closed x checks_passed_ready, and
+// checks_failed x checks_passed_ready. Each really is instantaneously
+// exclusive, so refusing them was the bug; the relaxation is recorded here
+// rather than version-gated because it is strict — no registration that
+// previously succeeded starts failing — and a success-to-error down-convert is
+// not something the response-transform seam can express.
 func githubCallbackTriggersCoSatisfiable(a, b models.GithubCallbackTrigger) bool {
 	if a == b {
 		return true
@@ -59,25 +125,28 @@ func githubCallbackTriggersCoSatisfiable(a, b models.GithubCallbackTrigger) bool
 	return !mutuallyExclusiveGithubCallbackTriggers[a][b]
 }
 
-func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGithubCallbackParams) (*models.GithubCallback, error) {
+// Create inserts an active callback and, unless suppressed, reports whether an
+// instantaneously mutually exclusive callback is already live for the same chat
+// and PR under a different group. See GithubCallbackStore.Create.
+func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGithubCallbackParams) (*models.GithubCallback, *GithubCallbackConflict, error) {
 	owner := strings.ToLower(strings.TrimSpace(params.RepoOwner))
 	name := strings.ToLower(strings.TrimSpace(params.RepoName))
 	chatID := strings.TrimSpace(params.TargetChatID)
 
 	if chatID == "" {
-		return nil, fmt.Errorf("%w: target chat id is required", ErrGithubCallbackInvalid)
+		return nil, nil, fmt.Errorf("%w: target chat id is required", ErrGithubCallbackInvalid)
 	}
 	if owner == "" || name == "" {
-		return nil, fmt.Errorf("%w: repository owner and name are required", ErrGithubCallbackInvalid)
+		return nil, nil, fmt.Errorf("%w: repository owner and name are required", ErrGithubCallbackInvalid)
 	}
 	if params.PRNumber <= 0 {
-		return nil, fmt.Errorf("%w: pr number must be positive, got %d", ErrGithubCallbackInvalid, params.PRNumber)
+		return nil, nil, fmt.Errorf("%w: pr number must be positive, got %d", ErrGithubCallbackInvalid, params.PRNumber)
 	}
 	if !validGithubCallbackTrigger(params.Trigger) {
-		return nil, fmt.Errorf("%w: unknown trigger %q", ErrGithubCallbackInvalid, params.Trigger)
+		return nil, nil, fmt.Errorf("%w: unknown trigger %q", ErrGithubCallbackInvalid, params.Trigger)
 	}
 	if strings.TrimSpace(params.Message) == "" {
-		return nil, fmt.Errorf("%w: message is required", ErrGithubCallbackInvalid)
+		return nil, nil, fmt.Errorf("%w: message is required", ErrGithubCallbackInvalid)
 	}
 
 	now := time.Now().UTC()
@@ -85,16 +154,16 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 	if params.ExpiresAt != nil {
 		expiresAt = params.ExpiresAt.UTC()
 		if !expiresAt.After(now) {
-			return nil, fmt.Errorf("%w: expiry must be in the future", ErrGithubCallbackInvalid)
+			return nil, nil, fmt.Errorf("%w: expiry must be in the future", ErrGithubCallbackInvalid)
 		}
 		if expiresAt.Sub(now) > GithubCallbackMaxExpiry {
-			return nil, fmt.Errorf("%w: expiry must be within %s", ErrGithubCallbackInvalid, GithubCallbackMaxExpiry)
+			return nil, nil, fmt.Errorf("%w: expiry must be within %s", ErrGithubCallbackInvalid, GithubCallbackMaxExpiry)
 		}
 	}
 
 	id, err := sqlutil.NewID()
 	if err != nil {
-		return nil, fmt.Errorf("new github callback id: %w", err)
+		return nil, nil, fmt.Errorf("new github callback id: %w", err)
 	}
 	nowStr := sqlutil.FormatTime(now)
 
@@ -107,7 +176,7 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 
 	conn, err := beginImmediate(ctx, s.db, "github callback create")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
@@ -122,27 +191,32 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 			string(models.GithubCallbackStateLeased),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("validate github callback group: %w", err)
+			return nil, nil, fmt.Errorf("validate github callback group: %w", err)
 		}
 		for rows.Next() {
 			var existing string
 			if err := rows.Scan(&existing); err != nil {
 				_ = rows.Close()
-				return nil, fmt.Errorf("scan github callback group trigger: %w", err)
+				return nil, nil, fmt.Errorf("scan github callback group trigger: %w", err)
 			}
 			existingTrigger := models.GithubCallbackTrigger(existing)
 			if githubCallbackTriggersCoSatisfiable(existingTrigger, params.Trigger) {
 				_ = rows.Close()
-				return nil, fmt.Errorf("%w: group %q already has co-satisfiable trigger %q; cannot add %q", ErrGithubCallbackInvalid, groupID, existingTrigger, params.Trigger)
+				return nil, nil, fmt.Errorf("%w: group %q already has co-satisfiable trigger %q; cannot add %q", ErrGithubCallbackInvalid, groupID, existingTrigger, params.Trigger)
 			}
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
-			return nil, fmt.Errorf("iterate github callback group triggers: %w", err)
+			return nil, nil, fmt.Errorf("iterate github callback group triggers: %w", err)
 		}
 		if err := rows.Close(); err != nil {
-			return nil, fmt.Errorf("close github callback group triggers: %w", err)
+			return nil, nil, fmt.Errorf("close github callback group triggers: %w", err)
 		}
+	}
+
+	conflict, err := findCrossGroupConflict(ctx, conn, params, chatID, owner, name, groupIDVal, nowStr)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	_, err = conn.ExecContext(ctx,
@@ -156,14 +230,112 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 		sqlutil.FormatTime(expiresAt), nowStr, nowStr,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("insert github callback: %w", err)
+		return nil, nil, fmt.Errorf("insert github callback: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return nil, fmt.Errorf("commit github callback create: %w", err)
+		return nil, nil, fmt.Errorf("commit github callback create: %w", err)
 	}
 	committed = true
 	row := conn.QueryRowContext(ctx, githubCallbackSelectSQL+" WHERE id = ?", id)
-	return scanGithubCallback(row)
+	cb, err := scanGithubCallback(row)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cb, conflict, nil
+}
+
+// findCrossGroupConflict reports the first live callback for the same chat and
+// PR, in a *different* group, whose trigger cannot be satisfied by the same
+// evaluation as params.Trigger — the shape where the winner cancels nothing and
+// the loser sits armed until it expires.
+//
+// It must run on the caller's checked-out conn rather than s.List/s.Get: the
+// pool may hold exactly one connection for an in-memory DB, so touching s.db
+// while the write transaction is open deadlocks instead of failing (see
+// beginImmediate in helpers.go).
+//
+// "Different group" is not `group_id != ?`. A NULL group_id is a group of one,
+// so an ungrouped row is in a different group from every other row — including
+// another ungrouped row. SQLite would evaluate `group_id != ?` to NULL (falsy)
+// for those, silently skipping exactly the rows that need reporting, so the
+// group predicate is built explicitly instead:
+//
+//   - new callback is grouped   -> match rows that are ungrouped or in another group
+//   - new callback is ungrouped -> it is its own group of one, so every other
+//     live row for this chat and PR is in a different group; no predicate at all
+func findCrossGroupConflict(
+	ctx context.Context,
+	conn *sql.Conn,
+	params CreateGithubCallbackParams,
+	chatID, owner, name string,
+	groupIDVal any,
+	nowStr string,
+) (*GithubCallbackConflict, error) {
+	if params.IndependentWatch {
+		return nil, nil
+	}
+
+	// The expires_at > now guard matches AcquireLease and MarkDelivered: expiry
+	// is swept lazily (list RPC / ExpireOverdue) and the create path sweeps
+	// nothing, so an overdue-but-unreaped row is still active/leased here.
+	// Without the guard the notice would report a dead row as a live conflict,
+	// printing a *past* expiry while asserting both legs stay armed.
+	// expires_at is stored in the fixed-width UTC layout, so the string compare
+	// is chronological, matching ExpireOverdue's expires_at <= ? predicate.
+	query := `SELECT id, group_id, trigger_event, expires_at
+		 FROM github_callbacks
+		 WHERE target_chat_id = ? AND repo_owner = ? AND repo_name = ? AND pr_number = ?
+		   AND state IN (?, ?)
+		   AND expires_at > ?`
+	args := []any{
+		chatID, owner, name, params.PRNumber,
+		string(models.GithubCallbackStateActive),
+		string(models.GithubCallbackStateLeased),
+		nowStr,
+	}
+	if groupID, ok := groupIDVal.(string); ok {
+		query += ` AND (group_id IS NULL OR group_id != ?)`
+		args = append(args, groupID)
+	}
+	// Deterministic order so the reported conflict is stable when more than one
+	// row qualifies; mirrors the store's List ordering.
+	query += ` ORDER BY created_at, id`
+
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("scan github callback cross-group conflicts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var (
+			existingID      string
+			existingGroup   sql.NullString
+			existingTrigger string
+			existingExpiry  string
+		)
+		if err := rows.Scan(&existingID, &existingGroup, &existingTrigger, &existingExpiry); err != nil {
+			return nil, fmt.Errorf("scan github callback cross-group conflict row: %w", err)
+		}
+		trigger := models.GithubCallbackTrigger(existingTrigger)
+		if githubCallbackTriggersCoSatisfiable(trigger, params.Trigger) {
+			continue
+		}
+		conflict := &GithubCallbackConflict{
+			ID:        existingID,
+			Trigger:   trigger,
+			ExpiresAt: sqlutil.ParseTime(existingExpiry),
+		}
+		if existingGroup.Valid {
+			g := existingGroup.String
+			conflict.GroupID = &g
+		}
+		return conflict, nil
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate github callback cross-group conflicts: %w", err)
+	}
+	return nil, nil
 }
 
 func (s *SQLiteGithubCallbackStore) Get(ctx context.Context, id string) (*models.GithubCallback, error) {

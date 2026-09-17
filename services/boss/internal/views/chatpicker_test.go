@@ -223,7 +223,7 @@ func (s *chatPickerStub) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest
 	panic("unused")
 }
 func (s *chatPickerStub) DeleteCronJob(context.Context, string) error { panic("unused") }
-func (s *chatPickerStub) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+func (s *chatPickerStub) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {

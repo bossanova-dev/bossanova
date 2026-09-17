@@ -635,9 +635,35 @@ type CreateGithubCallbackParams struct {
 	Trigger                 models.GithubCallbackTrigger
 	Message                 string
 	ShouldRequireTransition bool
+	// IndependentWatch marks this callback as a deliberate standing watch that
+	// is meant to outlive any sibling, rather than one leg of a one-shot
+	// pass/fail fork. It suppresses the cross-group conflict scan entirely and
+	// changes nothing else — not firing, not cancellation, not expiry. The
+	// daemon cannot infer intent (a checks_failed armed on a green PR is
+	// indistinguishable from a losing fork leg and a standing red alarm), so
+	// this records it explicitly instead of guessing from timing or counts.
+	IndependentWatch bool
 	// ExpiresAt, when nil, defaults to now + GithubCallbackDefaultExpiry. An
 	// explicit value must be in the future and within GithubCallbackMaxExpiry.
 	ExpiresAt *time.Time
+}
+
+// GithubCallbackConflict describes a live callback that is instantaneously
+// mutually exclusive with a newly created one, for the same chat and PR, under
+// a different group. Because sibling cancellation is group-scoped, neither leg
+// will ever cancel the other: whichever fires leaves the other armed until it
+// expires. This is advisory only — Create still inserts the row.
+type GithubCallbackConflict struct {
+	// ID is the conflicting callback's id.
+	ID string
+	// GroupID is its group, or nil when it is ungrouped (itself a group of one).
+	GroupID *string
+	// Trigger is the trigger that cannot be satisfied in the same evaluation
+	// as the new callback's trigger.
+	Trigger models.GithubCallbackTrigger
+	// ExpiresAt is when the conflicting callback stops being armed — i.e. how
+	// long the unsatisfiable watch will linger if nothing intervenes.
+	ExpiresAt time.Time
 }
 
 type DeleteGithubCallbackOutcome string
@@ -678,7 +704,14 @@ type GithubCallbackStore interface {
 	// Create validates params, applies defaults (24h expiry, lowercase repo
 	// owner/name), and inserts an active callback. Returns ErrGithubCallbackInvalid
 	// (wrapped) on validation failure.
-	Create(ctx context.Context, params CreateGithubCallbackParams) (*models.GithubCallback, error)
+	//
+	// The second return value is a non-nil *GithubCallbackConflict when a live
+	// callback for the same chat and PR, under a *different* group, carries a
+	// trigger that cannot be satisfied by the same evaluation as this one. It
+	// is advisory: the row is still created, nothing is cancelled, and a nil
+	// conflict is the ordinary case. Callers surface it; they must not treat it
+	// as an error. Suppressed entirely by params.IndependentWatch.
+	Create(ctx context.Context, params CreateGithubCallbackParams) (*models.GithubCallback, *GithubCallbackConflict, error)
 	// Get returns a callback by id, or sql.ErrNoRows if absent.
 	Get(ctx context.Context, id string) (*models.GithubCallback, error)
 	// List returns callbacks matching filter, ordered by created_at then id.

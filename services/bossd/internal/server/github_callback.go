@@ -63,12 +63,78 @@ func (s *Server) CreateGithubCallback(ctx context.Context, req *connect.Request[
 		params.ExpiresAt = &t
 	}
 
-	cb, err := store.Create(ctx, params)
+	params.IndependentWatch = msg.GetIsIndependentWatch()
+
+	cb, conflict, err := store.Create(ctx, params)
 	if err != nil {
 		return nil, githubCallbackError("create github callback", err)
 	}
+	notice := githubCallbackConflictNotice(cb, conflict)
+	// Guard the dereferences on the pointer itself, not on the rendered notice
+	// being non-empty — that only happens to imply conflict != nil today.
+	if conflict != nil {
+		s.logger.Warn().
+			Str("callback_id", cb.ID).
+			Str("group_id", derefOrEmpty(cb.GroupID)).
+			Str("trigger", string(cb.Trigger)).
+			Str("conflicting_callback_id", conflict.ID).
+			Str("conflicting_group_id", derefOrEmpty(conflict.GroupID)).
+			Str("conflicting_trigger", string(conflict.Trigger)).
+			Msg("create github callback: mutually exclusive trigger live in another group")
+	}
 	s.recomputeCallbackTarget(ctx, msg.TargetChatId)
-	return connect.NewResponse(&pb.CreateGithubCallbackResponse{GithubCallback: githubCallbackToProto(cb)}), nil
+	return connect.NewResponse(&pb.CreateGithubCallbackResponse{
+		GithubCallback: githubCallbackToProto(cb),
+		NoticeText:     notice,
+	}), nil
+}
+
+// ungroupedCallbackGroupLabel is what the notice prints where a group id would
+// go for an ungrouped callback. An ungrouped row is not "no group" for the
+// purpose of sibling cancellation — it is a group of one, which is exactly why
+// it cannot cancel anything — so the label says so rather than printing an
+// empty string the reader has to interpret.
+const ungroupedCallbackGroupLabel = "<ungrouped>"
+
+// githubCallbackConflictNotice renders the advisory for a callback that was
+// just armed against a live, mutually exclusive sibling in another group.
+// Returns "" when there is no conflict, so the caller can test one value for
+// both "say nothing" and "say this".
+//
+// It names the conflicting callback's id, group, trigger and expiry — the four
+// things an operator needs to find and remove it — and states plainly that both
+// legs stay armed, because the whole defect is that this shape looks like a
+// cancelling pair and is not one.
+func githubCallbackConflictNotice(cb *models.GithubCallback, conflict *db.GithubCallbackConflict) string {
+	if conflict == nil || cb == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"warning: %s in group %q cannot be satisfied at the same time as callback %s (group %q, trigger %s, expires %s), "+
+			"which is still armed for this chat and PR. They are in different groups, so neither will cancel the other: "+
+			"both stay armed until they fire or expire. Put them in one --group to make them cancel each other, "+
+			"or pass --independent-watch if this watch is meant to outlive its sibling.",
+		cb.Trigger,
+		groupLabelOrUngrouped(cb.GroupID),
+		conflict.ID,
+		groupLabelOrUngrouped(conflict.GroupID),
+		conflict.Trigger,
+		conflict.ExpiresAt.UTC().Format(time.RFC3339),
+	)
+}
+
+func groupLabelOrUngrouped(group *string) string {
+	if group == nil || *group == "" {
+		return ungroupedCallbackGroupLabel
+	}
+	return *group
+}
+
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // recomputeCallbackTarget publishes a newly armed callback's waiting state

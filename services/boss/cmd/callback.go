@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,23 @@ type githubCallbackJSON struct {
 	UpdatedAt               string `json:"updated_at"`
 	ShouldRequireTransition bool   `json:"should_require_transition"`
 	HasObservedBaseline     bool   `json:"has_observed_baseline"`
+}
+
+// callbackNoticePrefix is the leading token of the split-pair advisory the
+// daemon composes. Tests assert this identifier rather than duplicating the
+// daemon's sentence, so rewording the notice does not silently un-test it.
+const callbackNoticePrefix = "warning:"
+
+// writeCallbackNotice emits a non-empty daemon advisory on stderr, leaving
+// stdout to carry only the documented result. `boss callback add --json` has a
+// stable machine contract (githubCallbackJSON); an advisory written to stdout
+// would either break that contract or, added as a key, silently widen it. It
+// follows writeDaemonLoginNote for the same reason.
+func writeCallbackNotice(cmd *cobra.Command, notice string) {
+	if strings.TrimSpace(notice) == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), notice)
 }
 
 // githubCallbackToJSON maps a proto GithubCallback to the stable JSON schema.
@@ -126,12 +144,25 @@ func resolveCallbackRepo(cmd *cobra.Command, c client.BossClient) (owner, repo s
 }
 
 func runCallbackAdd(cmd *cobra.Command, prRef, triggerArg string) error {
-	trigger, err := githubcallback.ValidateTrigger(triggerArg)
+	// Validate the trigger before the client is built. newClient may spawn or
+	// contact the daemon, so a typo'd trigger validated after it would surface
+	// as "daemon failed" instead of "unknown trigger".
+	if _, err := githubcallback.ValidateTrigger(triggerArg); err != nil {
+		return err
+	}
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
+	return runCallbackAddWithClient(cmd, c, prRef, triggerArg)
+}
 
-	c, err := newClient(cmd)
+// runCallbackAddWithClient is the client-injected seam `add` is tested through,
+// mirroring runCallbackListWithClient and runCallbackRemoveWithClient. It is
+// what lets a test assert that the daemon's advisory lands on stderr while
+// --json stdout stays byte-clean, without standing up a daemon.
+func runCallbackAddWithClient(cmd *cobra.Command, c client.BossClient, prRef, triggerArg string) error {
+	trigger, err := githubcallback.ValidateTrigger(triggerArg)
 	if err != nil {
 		return err
 	}
@@ -174,11 +205,20 @@ func runCallbackAdd(cmd *cobra.Command, prRef, triggerArg string) error {
 	if onTransition, _ := cmd.Flags().GetBool("on-transition"); onTransition {
 		req.ShouldRequireTransition = &onTransition
 	}
+	if independent, _ := cmd.Flags().GetBool("independent-watch"); independent {
+		req.IsIndependentWatch = &independent
+	}
 
-	cb, err := c.CreateGithubCallback(cmd.Context(), req)
+	resp, err := c.CreateGithubCallback(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("create github callback: %w", err)
 	}
+	cb := resp.GetGithubCallback()
+
+	// Before the --json early return, so the advisory is never lost to a
+	// machine-readable invocation — which is the one most likely to be arming
+	// blind.
+	writeCallbackNotice(cmd, resp.GetNoticeText())
 
 	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
 		return emitJSON(cmd, githubCallbackToJSON(cb))
@@ -293,7 +333,55 @@ func runCallbackListWithClient(cmd *cobra.Command, c client.BossClient) error {
 	)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%d callbacks (complete listing)\n", len(callbacks))
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), callbackGroupSummary(callbacks))
 	return nil
+}
+
+// ungroupedListLabel names the ungrouped bucket in the list footer.
+const ungroupedListLabel = "ungrouped"
+
+// callbackGroupSummary tallies how many of the LISTED callbacks share each
+// group, so a pass/fail pair split across two groups of one is visible on
+// inspection instead of only at registration time.
+//
+// The count is deliberately scoped to the rows shown, and the text says so: the
+// tally is computed client-side from group_id, which is already on the wire, so
+// a filtered listing cannot see a sibling it filtered out. A footer that read
+// as a daemon-wide group size would be wrong under every --chat/--repo/--state
+// filter.
+//
+// Ungrouped rows are NOT summed into one bucket. An ungrouped callback is its
+// own group of one — which is exactly why it cancels nothing — so reporting
+// three of them as a group of three would invert the fact the footer exists to
+// show. They are reported as a count of groups of one.
+func callbackGroupSummary(callbacks []*pb.GithubCallback) string {
+	sizes := map[string]int{}
+	var ungrouped int
+	for _, cb := range callbacks {
+		if g := strings.TrimSpace(cb.GetGroupId()); g != "" {
+			sizes[g]++
+			continue
+		}
+		ungrouped++
+	}
+
+	names := make([]string, 0, len(sizes))
+	for g := range sizes {
+		names = append(names, g)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names)+1)
+	for _, g := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", g, sizes[g]))
+	}
+	if ungrouped > 0 {
+		parts = append(parts, fmt.Sprintf("%s=%d (each its own group of one)", ungroupedListLabel, ungrouped))
+	}
+	if len(parts) == 0 {
+		return "Group sizes among the callbacks shown: none"
+	}
+	return "Group sizes among the callbacks shown: " + strings.Join(parts, ", ")
 }
 
 // triggerColCap is the TRIGGER column cap for `boss callback list`. It is
@@ -434,6 +522,7 @@ func callbackCmd() *cobra.Command {
 	add.Flags().String("expires-in", "", "Expiry as a duration (e.g. 24h, 7d, 2w); default 24h, max 30d. A watch must outlast the wait it backs")
 	add.Flags().String("group", "", "Optional group id; siblings in a group cancel each other on first fire")
 	add.Flags().Bool("on-transition", false, "Fire only after the trigger transitions from unsatisfied to satisfied")
+	add.Flags().Bool("independent-watch", false, "This watch is meant to outlive any sibling, so do not warn that a mutually exclusive callback is armed under another group. Records intent; it changes nothing about when the callback fires")
 	add.Flags().Bool("json", false, "Emit the created callback as a stable JSON schema")
 
 	list := &cobra.Command{
@@ -460,7 +549,7 @@ func callbackCmd() *cobra.Command {
 			return runCallbackRemove(cmd, args[0])
 		},
 	}
-	remove.Flags().String("chat", "", "Owning chat id for remote routing (default: $BOSS_AGENT_SESSION_ID; ignored locally)")
+	remove.Flags().String("chat", "", "Owning chat id (default: $BOSS_AGENT_SESSION_ID). Honoured locally as well as remotely: it is the ownership guard, so removing a callback owned by another chat is refused, and it is the routing key for a remote daemon")
 
 	callback.AddCommand(add, list, remove)
 	return callback

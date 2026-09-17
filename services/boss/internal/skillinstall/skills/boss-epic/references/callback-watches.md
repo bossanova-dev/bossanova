@@ -216,10 +216,12 @@ read are the authoritative filter, and both run again on every wake regardless o
      # single watch whose trigger name is the whole space-joined string, and no real trigger at all.
      printf '%s\n' "$DRAFT_AWARE_TRIGGERS" | while IFS= read -r T; do
        [ -n "$T" ] || continue
-       boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
+       boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
      done
    fi
    ```
+
+   **`--independent-watch` on every leg is deliberate, not decoration.** A per-trigger group means these watches never cancel each other, which is what a non-exclusive fan-out needs — but it is byte-identical, from the daemon's side, to the mistake of splitting a mutually exclusive pass/fail pair across two groups and stranding the losing leg until it expires. The daemon warns on that shape at registration. The flag records the intent so this fan-out stays silent and the warning keeps meaning something when it does fire. It changes nothing about when a watch fires.
 
    When `callbacksAvailable(env)` is false (no daemon behind the `boss callback` interface, or no
    resolvable `boss` executable — see the two conjuncts above), **skip
@@ -304,7 +306,7 @@ read are the authoritative filter, and both run again on every wake regardless o
        '
      )"
      # For each missing trigger T, use the same scoped registration shape:
-     boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
+     boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
    fi
    ```
 

@@ -55,7 +55,7 @@ type fakeBackend struct {
 	updateCronJob        func(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error)
 	deleteCronJob        func(ctx context.Context, id string) error
 	runCronJobNow        func(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
-	createGithubCallback func(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error)
+	createGithubCallback func(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error)
 	listGithubCallbacks  func(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
 	deleteGithubCallback func(ctx context.Context, targetChatID, id string) error
 
@@ -384,7 +384,7 @@ func (f *fakeBackend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+func (f *fakeBackend) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 	if f.createGithubCallback != nil {
 		return f.createGithubCallback(ctx, req)
 	}

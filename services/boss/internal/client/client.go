@@ -161,7 +161,11 @@ type BossClient interface {
 	// GitHub callbacks (durable one-shot PR-event registrations). Routed by
 	// target chat id: local goes straight to the daemon; remote proxies through
 	// the orchestrator to the owning bossd (reusing the caller's own auth).
-	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error)
+	// Returns the full response, not the bare callback: the response also
+	// carries notice_text, the advisory that a mutually exclusive callback is
+	// already live for this chat and PR under a different group. Flattening it
+	// to the callback here is what would make that field unreachable.
+	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error)
 	// ListGithubCallbacks returns callbacks matching the optional filters in req.
 	// Remote: an unset target_chat_id fans out across the caller's Ready daemons.
 	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)

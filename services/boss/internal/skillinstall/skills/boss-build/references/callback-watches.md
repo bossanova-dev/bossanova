@@ -104,9 +104,11 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
    # watch whose trigger name is the whole space-joined string, and no real trigger at all.
    printf '%s\n' "$WATCH_TRIGGERS" | while IFS= read -r T; do
      [ -n "$T" ] || continue
-     boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --message "$MSG" --expires-in "$WATCH_EXPIRY" --json
+     boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --json
    done
    ```
+
+   **`--independent-watch` on every leg is deliberate, not decoration.** A per-trigger group means these watches never cancel each other, which is what a non-exclusive fan-out needs — but it is byte-identical, from the daemon's side, to the mistake of splitting a mutually exclusive pass/fail pair across two groups and stranding the losing leg until it expires. The daemon warns on that shape at registration. The flag records the intent so this fan-out stays silent and the warning keeps meaning something when it does fire. It changes nothing about when a watch fires.
 
    **A watch must outlast the wait it backs.** `policy.defaultExpiresIn` is sized for that; the
    bounded poll's own budget is not. Never harmonise the expiry down to the poll bound — they are

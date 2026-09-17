@@ -16,6 +16,13 @@ export const bossCallbackOperationMap = {
     // triggers, where at most one can ever hold for the PR, such as merged vs closed.
     // Non-exclusive waits such as green / red / merged use a separate group per
     // trigger so one state does not cancel the other still-needed watches.
+    // A per-trigger group is DELIBERATE here, and the daemon cannot tell it apart
+    // from the mistake it also produces: two mutually exclusive triggers armed
+    // under different groups are two groups of one, so neither cancels the other
+    // and the losing leg stays armed until it expires. The daemon warns on that
+    // shape. Pass independentWatch (the CLI's --independent-watch) on a fan-out
+    // that is meant to outlive its siblings, to record the intent and silence a
+    // warning that is correct in general and wrong here.
     // Triggers are state-matched by default. Pass onTransition (the CLI's
     // --on-transition flag) only when the watch must be transition-matched.
     // --message is the wake payload delivered to the target chat; it is a SECRET —
@@ -29,6 +36,7 @@ export const bossCallbackOperationMap = {
       'message',
       'expiresIn',
       'onTransition',
+      'independentWatch',
       'repo',
       'chat',
       'json',

@@ -1437,6 +1437,21 @@ default. Widening the former never widens the latter implicitly. Watches match t
 default; transition matching is an explicit opt-in that suppresses an initially satisfied match and
 makes the watch eligible on a later evaluation. It does not guarantee a false-to-true edge.
 
+### Callback group
+
+A cancellation scope shared by callbacks armed for the same pull request: when one member is selected
+for delivery, every other member still waiting is canceled. It is how a waiting run arms several
+outcomes at once and is woken by whichever happens, without leaving the rest standing.
+
+Grouping is sound only where the members are exclusive _within a single evaluation_. Group conditions
+that can each hold at different points in a pull request's life, and the first to fire silently
+cancels watches the run still needs. The opposite error is quieter: two callbacks that cannot both be
+satisfied, armed under _different_ groups, cancel nothing, so the losing leg stays armed until it
+expires while its waiter appears to be waiting on something that can no longer happen. Neither error
+is visible from the grouping alone, because a deliberate standing fan-out and a mistakenly split
+exclusive pair have the same shape — a watch meant to outlive its sibling is therefore declared
+independent rather than inferred.
+
 ### Broadcast
 
 One message delivered to every agent chat a selector resolves to, durably and with retries, by _waking_ each target chat and handing it the message as a prompt. The sibling primitive to a GitHub PR callback: a callback is a one-shot "notify this chat when that PR does X", a broadcast is "tell this whole audience X now". Two things are easy to get wrong: the audience is resolved **once**, at send time, so chats created afterwards never receive it; and the message body is a **secret** that is delivered verbatim but never echoed back on any list or inspect surface.

@@ -598,7 +598,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "register_github_callback",
-		Description: "Register a durable one-shot GitHub PR callback: when the given PR reaches the trigger state, the message is delivered once as a prompt to the target chat. Delivery is a signal, not proof — the receiving agent must still verify the PR's actual state. The message body is stored verbatim and is a secret: it is never echoed back in this tool's output. Expiry defaults to 24h and may not exceed 30 days.",
+		Description: "Register a durable one-shot GitHub PR callback: when the given PR reaches the trigger state, the message is delivered once as a prompt to the target chat. Delivery is a signal, not proof: verify the PR's actual state. The message body is a secret: stored verbatim, never echoed back. Expiry defaults to 24h, max 30 days.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RegisterGithubCallbackArgs) (*mcp.CallToolResult, any, error) {
 		if strings.TrimSpace(args.Message) == "" {
@@ -641,12 +641,18 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if g := strings.TrimSpace(args.Group); g != "" {
 			req.GroupId = &g
 		}
-		cb, err := backend.CreateGithubCallback(ctx, req)
+		if args.IndependentWatch {
+			req.IsIndependentWatch = &args.IndependentWatch
+		}
+		resp, err := backend.CreateGithubCallback(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
 		// Never surface the message body: scrub it before returning.
-		r, err := jsonResult(redactCallback(cb))
+		r, err := jsonResult(registerGithubCallbackOutput{
+			Callback:   redactCallback(resp.GetGithubCallback()),
+			NoticeText: resp.GetNoticeText(),
+		})
 		return r, nil, err
 	})
 
@@ -916,14 +922,27 @@ func registerSessionStateTool(server *mcp.Server, opts Options, name, desc strin
 // register_github_callback. The message is required and is a secret — it is
 // stored verbatim and never returned by any tool.
 type RegisterGithubCallbackArgs struct {
-	PR                      string `json:"pr" jsonschema:"the PR to watch: a bare number like 123 (requires repo context) or a full https://github.com/owner/repo/pull/123 URL"`
-	Trigger                 string `json:"trigger" jsonschema:"PR event: merged, closed, checks_passed, checks_failed, ready_for_review, or checks_passed_ready. State-based unless should_require_transition is true"`
+	PR                      string `json:"pr" jsonschema:"the PR to watch: a bare number like 123 (needs repo) or a full github.com PR URL"`
+	Trigger                 string `json:"trigger" jsonschema:"PR event: merged, closed, checks_passed, checks_failed, ready_for_review, checks_passed_ready. State-based unless should_require_transition"`
 	TargetChatID            string `json:"target_chat_id" jsonschema:"the agent-session (chat) id to deliver the message to when the callback fires"`
-	Message                 string `json:"message" jsonschema:"the prompt delivered to the chat when the callback fires (required; stored verbatim and never echoed back)"`
+	Message                 string `json:"message" jsonschema:"the prompt delivered to the chat when the callback fires (required)"`
 	Repo                    string `json:"repo,omitempty" jsonschema:"repository as owner/repo; required to anchor a bare PR number, ignored when pr is a full URL"`
-	ExpiresIn               string `json:"expires_in,omitempty" jsonschema:"expiry as a duration like 24h, 7d, 2w; default 24h, maximum 30d"`
-	Group                   string `json:"group,omitempty" jsonschema:"optional group id; siblings in a group cancel each other on first fire"`
+	ExpiresIn               string `json:"expires_in,omitempty" jsonschema:"expiry as a duration: 24h, 7d, 2w"`
+	Group                   string `json:"group,omitempty" jsonschema:"optional group id; siblings in ONE group cancel each other on first fire — two groups of one never do"`
 	ShouldRequireTransition bool   `json:"should_require_transition,omitempty" jsonschema:"fire only after trigger becomes true"`
+	IndependentWatch        bool   `json:"independent_watch,omitempty" jsonschema:"set ONLY when this watch is meant to outlive any sibling; silences notice_text but never changes firing"`
+}
+
+// registerGithubCallbackOutput is register_github_callback's structured result:
+// the created callback with its SECRET body already scrubbed, plus the daemon's
+// non-fatal advisory. notice_text is empty for an ordinary create and set when
+// a mutually exclusive callback is already live for this chat and PR under a
+// different group — a shape where neither leg will cancel the other. Returning
+// the bare callback here would make the field silently dead with every existing
+// test still green.
+type registerGithubCallbackOutput struct {
+	Callback   *pb.GithubCallback `json:"callback"`
+	NoticeText string             `json:"notice_text,omitempty"`
 }
 
 // RegisterRepoArgs is the typed argument struct for register_repo.

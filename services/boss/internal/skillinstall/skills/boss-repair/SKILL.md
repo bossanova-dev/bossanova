@@ -1902,15 +1902,18 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    ```
 
    When the gate is **true**, `registerWatch` one watch per `policy.watchTriggers` entry — read the
-   trigger list from the adapter's policy, never retype it here — each non-exclusive trigger under
-   its own group, resolving the CLI through the adapter rather than a bare binary name. Read the
-   expiry from `policy.defaultExpiresIn` and pass it — never hand-write a duration, and never
-   harmonise it down to the poll bound; a watch must outlast the wait it backs:
+   trigger list from the adapter's policy, never retype it here — each trigger under its own group,
+   including the mutually exclusive pass/fail pair, resolving the CLI through the adapter rather
+   than a bare binary name. Read the expiry from `policy.defaultExpiresIn` and pass it — never
+   hand-write a duration, and never harmonise it down to the poll bound; a watch must outlast the
+   wait it backs:
 
    ```bash
-   boss callback add "$PR_NUMBER" "$T" --group "repairwait-$PR_NUMBER-$T" \
+   boss callback add "$PR_NUMBER" "$T" --group "repairwait-$PR_NUMBER-$T" --independent-watch \
      --message "$MSG" --expires-in "$WATCH_EXPIRY" --json
    ```
+
+   **`--independent-watch` on every leg is deliberate, not decoration.** A per-trigger group means these watches never cancel each other, which is what an independent fan-out needs — but it is byte-identical, from the daemon's side, to the mistake of splitting a mutually exclusive pass/fail pair across two groups and stranding the losing leg until it expires. The daemon warns on that shape at registration. The flag records the intent so this fan-out stays silent and the warning keeps meaning something when it does fire. It changes nothing about when a watch fires.
 
    On every wake
    **reconcile against real state before acting**: re-read checks, review threads, and mergeability

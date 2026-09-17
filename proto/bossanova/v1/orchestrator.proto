@@ -1017,8 +1017,16 @@ message ProxyCreateGithubCallbackRequest {
   string message           = 7;
   optional google.protobuf.Timestamp expires_at = 8;
   optional bool should_require_transition = 9;
+  // Mirrors CreateGithubCallbackRequest.is_independent_watch.
+  optional bool is_independent_watch = 10;
 }
-message ProxyCreateGithubCallbackResponse { GithubCallback github_callback = 1; }
+message ProxyCreateGithubCallbackResponse {
+  GithubCallback github_callback = 1;
+  // Mirrors CreateGithubCallbackResponse.notice_text. Additive and advisory:
+  // empty for an ordinary create, and dropping it here would blind exactly the
+  // remote callers most likely to arm without seeing a daemon log.
+  string notice_text = 2;
+}
 
 message ProxyListGithubCallbacksRequest {
   optional string target_chat_id = 1;

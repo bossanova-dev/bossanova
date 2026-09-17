@@ -5807,6 +5807,15 @@ components:
             - boolean
             - "null"
           title: should_require_transition
+        isIndependentWatch:
+          type:
+            - boolean
+            - "null"
+          title: is_independent_watch
+          description: |-
+            Mirrors CreateGithubCallbackRequest.is_independent_watch. Without it a remote
+             caller could not opt a deliberate standing watch out of the split-pair
+             notice that CreateGithubCallbackResponse.notice_text carries back.
       title: CreateGithubCallbackCommand
       additionalProperties: false
       description: |-
@@ -5861,6 +5870,16 @@ components:
           description: |-
             When true, the first evaluation records the current trigger state as a
              baseline and only a later satisfying observation fires the callback.
+        isIndependentWatch:
+          type:
+            - boolean
+            - "null"
+          title: is_independent_watch
+          description: |-
+            When true, this callback is a deliberate standing watch meant to outlive
+             any sibling, so the daemon does not report it as one leg of a split pair.
+             It suppresses notice_text only; firing, cancellation and expiry are
+             unchanged. Set it to record intent, not to quiet output.
       title: CreateGithubCallbackRequest
       additionalProperties: false
     bossanova.v1.CreateGithubCallbackResponse:
@@ -5869,6 +5888,16 @@ components:
         githubCallback:
           title: github_callback
           $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+        noticeText:
+          type: string
+          title: notice_text
+          description: |-
+            Non-fatal advisory, empty for an ordinary create. Set when a live callback
+             for the same chat and PR, under a DIFFERENT group, carries a trigger that
+             cannot be satisfied by the same evaluation as this one. Sibling
+             cancellation is group-scoped, so neither leg will cancel the other and the
+             loser stays armed until it expires. The callback is still created; this is
+             never an error. Suppressed by is_independent_watch.
       title: CreateGithubCallbackResponse
       additionalProperties: false
     bossanova.v1.CreateNoteCommand:
@@ -11030,6 +11059,12 @@ components:
             - boolean
             - "null"
           title: should_require_transition
+        isIndependentWatch:
+          type:
+            - boolean
+            - "null"
+          title: is_independent_watch
+          description: Mirrors CreateGithubCallbackRequest.is_independent_watch.
       title: ProxyCreateGithubCallbackRequest
       additionalProperties: false
       description: |-
@@ -11042,6 +11077,13 @@ components:
         githubCallback:
           title: github_callback
           $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+        noticeText:
+          type: string
+          title: notice_text
+          description: |-
+            Mirrors CreateGithubCallbackResponse.notice_text. Additive and advisory:
+             empty for an ordinary create, and dropping it here would blind exactly the
+             remote callers most likely to arm without seeing a daemon log.
       title: ProxyCreateGithubCallbackResponse
       additionalProperties: false
     bossanova.v1.ProxyCreateNoteRequest:

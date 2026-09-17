@@ -9,13 +9,53 @@ package tmux
 // buried in the middle of the general tmux client.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
+
+var bracketedPasteEnable = []byte("\x1b[?2004h")
+
+// waitForBracketedPaste waits until an application has enabled bracketed-paste
+// mode in the raw pane log. tmux's paste-buffer -p adds the bracket control
+// codes only after that request, so a visible composer alone is insufficient
+// to guarantee a paste stays a paste.
+func waitForBracketedPaste(ctx context.Context, logPath string, deadline, pollInterval time.Duration) error {
+	if logPath == "" {
+		return errors.New("bracketed-paste log path is required")
+	}
+	if deadline <= 0 {
+		return errors.New("bracketed-paste deadline must be positive")
+	}
+	if pollInterval <= 0 {
+		pollInterval = sendPlanDefaultPollInterval
+	}
+
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	for {
+		contents, err := os.ReadFile(logPath)
+		if err == nil && bytes.Contains(contents, bracketedPasteEnable) {
+			return nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read bracketed-paste pane log %q: %w", logPath, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for bracketed paste in %q: %w", logPath, ctx.Err())
+		case <-timer.C:
+			return fmt.Errorf("bracketed paste was not enabled in pane log %q within %s", logPath, deadline)
+		case <-time.After(pollInterval):
+		}
+	}
+}
 
 // waitForReadyMarker polls CapturePane until a live composer is observed or the
 // deadline elapses. The first poll is immediate so already-ready sessions return

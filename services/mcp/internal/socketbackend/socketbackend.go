@@ -523,12 +523,12 @@ func (b *Backend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobN
 
 // --- GitHub callbacks ---
 
-func (b *Backend) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+func (b *Backend) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 	resp, err := b.rpc.CreateGithubCallback(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.GetGithubCallback(), nil
+	return resp.Msg, nil
 }
 
 func (b *Backend) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {

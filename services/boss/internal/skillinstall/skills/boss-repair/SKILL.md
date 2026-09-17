@@ -9,6 +9,18 @@ This skill is invoked automatically by the repair plugin when a PR enters a fail
 
 ---
 
+## Standing rules
+
+- **Never stop looking at CI on your own recognisance.** Before any exit — `clean` and `parked`
+  alike — the decision is `toolbox/callback/ci-watch.mjs classify`, not recall. Step 8 states the
+  verdict table; this rule exists so the obligation is visible without reaching it.
+- **A prompt arriving before this run reached a terminal state re-enters the workflow.** Compute what
+  is left, do not recall it. **That list is a worklist, not a report.** Answer the question you were
+  asked in one line, then execute it in the same turn — finding work with no reason not to do it
+  means doing it. Once a terminal state has been reported the run is over; answer and stop.
+
+---
+
 ## When This Skill is Invoked
 
 The repair plugin automatically invokes this skill when:
@@ -1892,7 +1904,16 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 
    When the gate is **true**, `registerWatch` one watch per `policy.watchTriggers` entry — read the
    trigger list from the adapter's policy, never retype it here — each non-exclusive trigger under
-   its own group, resolving the CLI through the adapter rather than a bare binary name. On every wake
+   its own group, resolving the CLI through the adapter rather than a bare binary name. Read the
+   expiry from `policy.defaultExpiresIn` and pass it — never hand-write a duration, and never
+   harmonise it down to the poll bound; a watch must outlast the wait it backs:
+
+   ```bash
+   boss callback add "$PR_NUMBER" "$T" --group "repairwait-$PR_NUMBER-$T" \
+     --message "$MSG" --expires-in "$WATCH_EXPIRY" --json
+   ```
+
+   On every wake
    **reconcile against real state before acting**: re-read checks, review threads, and mergeability
    exactly as steps 2 and 3 describe, dedup by callback id, and re-arm any trigger whose reconcile
    still reads false. When the gate is **false**, log `callbacksUnavailableReason(process.env)` — an unavailable gate is a clean
@@ -1907,7 +1928,17 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 
 7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll.
 
-8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. `repair_status=not_evaluated` is terminal only as a non-green unreadable-review state: record it as a residual unless the reason shows the repository or PR itself is unreadable, in which case it is a true stop. Once all four hold, stop and exit zero.
+8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. `repair_status=not_evaluated` is terminal only as a non-green unreadable-review state: record it as a residual unless the reason shows the repository or PR itself is unreadable, in which case it is a true stop. Once all four hold, run the CI observation gate, then stop and exit zero.
+
+   **CI observation gate.** Before exiting — including on `repair_status=parked`, which is exactly
+   the unarmed-exit shape this catches — decide whether anything will still be watching this PR with
+   `$BOSS_REPAIR_TOOLBOX/callback/ci-watch.mjs classify`. Trust its `state`/`action` and restate no
+   rule here: `settled` / `watched` / `polled` exit; `unwatched` is **the only blocking state** — arm
+   the `missingTriggers` it names, classify once more, then exit; `unknown` runs the bounded poll
+   first. Arm at most once per exit: the daemon rejects a co-satisfiable re-arm in the same group, so
+   a second attempt cannot help and the helper degrades `armAttempts >= 1` to `polled` for that
+   reason. This is a capability check, not bookkeeping — an unobserved PR with moving checks is a
+   repair that cannot know its own outcome. Once all four hold, stop and exit zero.
 
    `repair_status=clean` is **head-scoped**: it is clean only for the head it was read against, so a clean probe at the end of one round predicts nothing about the next. A reviewer who re-reviews every push opens fresh threads against this round's own fix, which means **new threads since the previous round's head are an expected steady state** — not a regression, and not a fresh failure.
 

@@ -17,7 +17,7 @@ Register a one-shot callback. `<pr>` is a bare PR number (resolved against the c
 **Flags:**
 
 - `--chat` — Target agent-session (chat) id to notify (default: $BOSS_AGENT_SESSION_ID)
-- `--expires-in` — Expiry as a duration (e.g. 30m, 24h, 7d, 2w); default 24h, max 30d
+- `--expires-in` — Expiry as a duration (e.g. 24h, 7d, 2w); default 24h, max 30d. A watch must outlast the wait it backs
 - `--group` — Optional group id; siblings in a group cancel each other on first fire
 - `--json` — Emit the created callback as a stable JSON schema
 - `--message` — Prompt delivered to the chat when the callback fires (required)

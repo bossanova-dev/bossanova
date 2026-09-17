@@ -202,12 +202,21 @@ read are the authoritative filter, and both run again on every wake regardless o
          process.stdout.write(resolveCallbackAdapter(process.env).policy.draftAwareTriggers.join("\n"))
        '
      )"
+     # Expiry comes from the SAME policy as the triggers. Never hardcode a duration: a literal is
+     # what gets edited down, and a watch that lapses mid-wait delivers no wake at all.
+     WATCH_EXPIRY="$(
+       node --input-type=module -e '
+         import{pathToFileURL as u}from"node:url"
+         const {resolveCallbackAdapter}=await import(u(process.env.BOSS_EPIC_TOOLBOX+"/callback/adapter.mjs").href)
+         process.stdout.write(resolveCallbackAdapter(process.env).policy.defaultExpiresIn)
+       '
+     )"
      # Newline-delimited, read one line at a time. A bare `for T in $DRAFT_AWARE_TRIGGERS` iterates
      # ONCE under zsh — which does not word-split an unquoted parameter expansion — registering a
      # single watch whose trigger name is the whole space-joined string, and no real trigger at all.
      printf '%s\n' "$DRAFT_AWARE_TRIGGERS" | while IFS= read -r T; do
        [ -n "$T" ] || continue
-       boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
+       boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
      done
    fi
    ```
@@ -285,8 +294,17 @@ read are the authoritative filter, and both run again on every wake regardless o
    )"
    if [ -n "$CALLBACK_CHAT" ] && [ -n "$CALLBACK_REPO" ]; then
      LIVE_WATCHES="$(boss callback list --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json)"
+     # Re-arming is a fresh watch, so it needs the policy expiry too — resolve it here rather than
+     # inheriting a variable that step 1 may not have set on this path.
+     WATCH_EXPIRY="$(
+       node --input-type=module -e '
+         import{pathToFileURL as u}from"node:url"
+         const {resolveCallbackAdapter}=await import(u(process.env.BOSS_EPIC_TOOLBOX+"/callback/adapter.mjs").href)
+         process.stdout.write(resolveCallbackAdapter(process.env).policy.defaultExpiresIn)
+       '
+     )"
      # For each missing trigger T, use the same scoped registration shape:
-     boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
+     boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
    fi
    ```
 

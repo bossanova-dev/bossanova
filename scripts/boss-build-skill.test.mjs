@@ -4374,6 +4374,44 @@ test('BOS-914: bootstrap artifacts do not decide claims, and closed PRs are prob
   }
 })
 
+test('the CI-observation gate and the re-entry rule are resident, and both name their helper', () => {
+  // Pinned by RULE NAME and by the helper each rule must CALL, never by the sentence that states
+  // them — the surrounding prose is expected to be rewritten, and a sentence pin would red on a
+  // rewrap while staying green on a rule that quietly lost its teeth.
+  //
+  // Both rules are asserted RESIDENT (in the body, inside Hard rules) rather than in a reference,
+  // and that placement is the fix rather than a formatting preference. Arming was already specified
+  // correctly in a 17.5 KB reference behind a link, and runs skipped it: measured, codex sessions
+  // receive the byte-identical reference tree and a true `callbacksAvailable` gate, so what failed
+  // was the hop, not the plumbing. A reference is where the MECHANICS live; the DECISION has to be
+  // where the agent already is.
+  const skill = fs.readFileSync(path.join(rootDir, CORE, 'SKILL.md'), 'utf8')
+  const hardRules = region(skill, '## Hard rules', '## Trust rules')
+
+  // Rule 1 — a run may not decide on its own recall that CI no longer needs watching.
+  assert.match(
+    hardRules,
+    /Never\s+stop\s+looking\s+at\s+CI\s+on\s+your\s+own\s+recognisance/i,
+    'Hard rules must carry the CI-observation rule by name',
+  )
+  assert.match(
+    hardRules,
+    /callback\/ci-watch\.mjs/,
+    'the CI-observation rule must name the helper that decides it, not restate a rule',
+  )
+  // Rule 2 — discovered work is a worklist, not a report.
+  assert.match(
+    hardRules,
+    /re-enters\s+the\s+workflow/i,
+    'Hard rules must carry the re-entry rule by name',
+  )
+  assert.match(
+    hardRules,
+    /route-contract\.mjs/,
+    're-entry must COMPUTE the remaining obligations, not recall them',
+  )
+})
+
 test('BOS-495: up-front callback reflex + callbacksAvailable gate', () => {
   // The awareness fix: "prefer a callback over blind polling" is an up-front Hard-rules
   // reflex, gated on the single `callbacksAvailable(env)` signal, present byte-identically

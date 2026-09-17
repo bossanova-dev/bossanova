@@ -159,8 +159,17 @@ if [ -n "$UNTAGGED_NONEMPTY" ]; then
   BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"
   git push --force-with-lease origin "$SESSION_BRANCH"
 test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upstream (lease rejected → re-fetch, re-run)
-  # CI wait: callback-watches.md Protocol step 5's bounded poll, never a bare `--watch`. Green
-  # ONLY on CI_WAIT_STATE=settled; timeout/unknown are not green. Red → back to Step 8 (boss-repair)
+  # This push re-opened the CI wait. Arm first (Protocol step 1), then WAIT — the bounded poll
+  # from Protocol step 5, never a bare `--watch`. Green ONLY on CI_WAIT_STATE=settled;
+  # timeout/unknown are not green. Red → back to Step 8 (boss-repair).
+  arm_ci_watches "$PR_NUMBER"   # Protocol step 1; no-op when callbacksAvailable is false
+  ci_wait_bounded "$PR_NUMBER"  # Protocol step 5; sets CI_WAIT_STATE
+  # Not settled is not green. timeout/unknown route identically to red — back to Step 8 — and
+  # never fall through to the readiness path below.
+  if [ "$CI_WAIT_STATE" != settled ]; then
+    echo "CI not settled ($CI_WAIT_STATE) — returning to Step 8" >&2
+    return 1
+  fi
 fi
 # Gate mergeability before readying. GitHub may report UNKNOWN briefly after a push, so poll with
 # a bound; CONFLICTING or any dirty mergeStateStatus means rebase onto the base, run the
@@ -178,7 +187,9 @@ if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_
   test -n "$POST_REBASE_CHECK" || { echo "commands.postRebase is not configured"; exit 1; }
   sh -c "$POST_REBASE_CHECK"
   git push --force-with-lease origin "$SESSION_BRANCH"
-  # CI wait: callback-watches.md Protocol step 5's bounded poll (settled only; never a bare --watch)
+  # Re-armed and waited after the rebase push — same two calls as above, same settled-only rule.
+  arm_ci_watches "$PR_NUMBER"
+  ci_wait_bounded "$PR_NUMBER"
   PR_STATE="$(gh pr view "$PR_NUMBER" --json isDraft,mergeable,mergeStateStatus)"
   MERGEABLE="$(printf '%s' "$PR_STATE" | jq -r .mergeable)"
   MERGE_STATE="$(printf '%s' "$PR_STATE" | jq -r .mergeStateStatus)"
@@ -718,6 +729,39 @@ That advisory rule covers the receipt **as a record**, not the side effects its 
 stamped straight after a real mutation of _shared_ state. A missing cleanup stamp still obliges this
 run to perform (or re-attempt) the cleanup it names before printing; what the missing stamp alone may
 not do is change the terminal state.
+
+### CI observation gate (capability, not recording)
+
+Before the print, when `OUTCOME` is `REVIEW_READY` or `PARTIAL` **and** a PR number exists, decide
+whether this run may stop looking at CI with `$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs classify`.
+`NO_CHANGE`, `BLOCKED` and the Step 2.5 foreign yield have no PR to observe and skip it.
+
+This is the **capability** side of the split above, not the recording side. Whether a watch is armed
+is not history — it is whether anything at all will notice this PR again after the run stops. An
+unobserved pushed PR with moving checks is a run that cannot know its own outcome, so this gate is a
+hard stop in the same sense as a missing toolbox, and it is deliberately **not** a `warning:` line.
+
+Trust its `state`/`action` and restate no rule here:
+
+| `state`     | meaning                                                                                                    | do                                             |
+| ----------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `settled`   | every required trigger's condition already holds                                                           | print                                          |
+| `watched`   | a live watch covers every trigger not already satisfied                                                    | print                                          |
+| `polled`    | the bounded poll is the mechanism (unavailable, unverified target, arm degraded, or unreadable-after-poll) | print                                          |
+| `unwatched` | **the only blocking state** — arm the `missingTriggers` it names, then classify once more                  | re-classify, then print                        |
+| `unknown`   | check state unreadable and the poll has not run                                                            | run Protocol step 5's bounded poll, then print |
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
+  --check-verdict "$CHECK_VERDICT_JSON" --pr-view "$PR_VIEW_JSON" --watches "$WATCH_LIST_JSON" \
+  --target-chat "$BOSS_AGENT_SESSION_ID" --pr "$PR_NUMBER" \
+  --triggers "$(node -e '...policy.watchTriggers.join(",")')" \
+  ${CALLBACKS_AVAILABLE:+--callbacks-available} --arm-attempts "$ARM_ATTEMPTS"
+```
+
+Arm at most **once** per print, then classify once more. A second arm cannot help: the daemon
+rejects a co-satisfiable re-arm in the same group, so a retry is guaranteed to fail, and the helper
+degrades `armAttempts >= 1` to `polled` for exactly that reason. Never loop on it.
 
 Output the terminal state (`REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`) as the first token
 on its own line, then the ticket id, PR URL, blocker or partial summary. Run-cost extraction matches

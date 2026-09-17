@@ -194,7 +194,7 @@ func ParseDuration(expiresIn string) (time.Duration, error) {
 	}
 	d, err := parseExtendedDuration(s)
 	if err != nil {
-		return 0, fmt.Errorf("invalid expiry %q: use a duration like 30m, 24h, 7d, or 2w", expiresIn)
+		return 0, fmt.Errorf("invalid expiry %q: use a duration like 24h, 7d, or 2w", expiresIn)
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("invalid expiry %q: must be a positive duration", expiresIn)

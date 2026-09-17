@@ -122,6 +122,10 @@ export const VENDOR_MAP = {
     // installation, including their transitive helpers.
     'callback/adapter.mjs',
     'callback/boss.mjs',
+    // ci-watch.mjs is the verdict the terminal gate reads: arming a watch used to be a
+    // prose-only obligation nothing ever checked. It imports nothing beyond node builtins
+    // and ../main-module.mjs, both of which already ship here.
+    'callback/ci-watch.mjs',
     'bossd-present.mjs',
     // boss-binary.mjs (BOS-785) backs callbacksAvailable's second conjunct — the
     // `boss` CLI must actually be a resolvable executable, not just implied by
@@ -197,6 +201,10 @@ export const VENDOR_MAP = {
     'callback/adapter.mjs',
     'callback/boss.mjs',
     'callback/epic-target.mjs',
+    // ci-watch.mjs is the verdict the terminal gate reads: arming a watch used to be a
+    // prose-only obligation nothing ever checked. It imports nothing beyond node builtins
+    // and ../main-module.mjs, both of which already ship here.
+    'callback/ci-watch.mjs',
     // See boss-build: the reconcile step in this core's own callback-watches reference cites the
     // check-state verdict by path, so the helper ships in this core's toolbox too — an installed
     // core cannot reach into boss-build's copy, which may not be installed at all.
@@ -355,6 +363,10 @@ export const VENDOR_MAP = {
     // boss.mjs reads bossd presence, so all four ship together or none of them resolve.
     'callback/adapter.mjs',
     'callback/boss.mjs',
+    // ci-watch.mjs is the verdict the terminal gate reads: arming a watch used to be a
+    // prose-only obligation nothing ever checked. It imports nothing beyond node builtins
+    // and ../main-module.mjs, both of which already ship here.
+    'callback/ci-watch.mjs',
     'bossd-present.mjs',
     'boss-binary.mjs',
     'session/adapter.mjs',

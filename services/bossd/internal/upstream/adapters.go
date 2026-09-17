@@ -883,6 +883,7 @@ func (a *CommandHandlerAdapter) CreateGithubCallback(ctx context.Context, cmd *p
 		Message:                 cmd.GetMessage(),
 		ExpiresAt:               cmd.ExpiresAt,
 		ShouldRequireTransition: cmd.ShouldRequireTransition,
+		IsIndependentWatch:      cmd.IsIndependentWatch,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("create github callback: %w", err)

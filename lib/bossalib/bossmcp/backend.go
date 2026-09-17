@@ -87,7 +87,10 @@ type Backend interface {
 	// callback id so the hosted gateway can route the delete to the daemon that
 	// owns the callback; the local socket adapter ignores it (its own daemon owns
 	// every callback in its registry, so the id alone resolves it).
-	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error)
+	// Returns the whole response so notice_text — the advisory that a mutually
+	// exclusive callback is already live under a different group — survives the
+	// hop. Returning the bare callback silently drops it.
+	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error)
 	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
 	DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error)
 

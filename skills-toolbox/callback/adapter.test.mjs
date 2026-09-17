@@ -157,6 +157,15 @@ test('registerWatch exposes transition-only arming', () => {
   assert.ok(operationMap.registerWatch.args.includes('onTransition'))
 })
 
+// A deliberate per-trigger fan-out is indistinguishable, to the daemon, from the
+// split-pair mistake that strands an unsatisfiable watch until it expires. The
+// daemon warns on the shape; without this arg the skills that fan out on purpose
+// have no way to record the intent, and the warning trains them to skim it.
+test('registerWatch exposes the independent-watch opt-out', () => {
+  const { operationMap } = resolveCallbackAdapter({})
+  assert.ok(operationMap.registerWatch.args.includes('independentWatch'))
+})
+
 test('callback operations declare their supported chat and repository scopes', () => {
   const { operationMap } = resolveCallbackAdapter({})
 

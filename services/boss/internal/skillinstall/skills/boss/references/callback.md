@@ -12,13 +12,14 @@ A GitHub callback is a durable, one-shot notification: it fires a prompt into a 
 
 Register a callback for a pull request event
 
-Register a one-shot callback. `<pr>` is a bare PR number (resolved against the current repository) or a full `https://github.com/owner/repo/pull/N` URL. `<trigger>` is one of `merged`, `closed`, `checks_passed`, `checks_failed`, `ready_for_review` (the draft→ready flip), or `checks_passed_ready` (green and not a draft — merge-eligible). Triggers match on PR state, not on transitions, so arming one against a PR that already satisfies it fires on the next evaluation unless `--on-transition` is set. The `--message` prompt is delivered verbatim to the target chat when the callback fires and is treated as a secret — it is never echoed back on any surface. Expiry defaults to 24h and may not exceed 30 days.
+Register a one-shot callback. `<pr>` is a bare PR number (resolved against the current repository) or a full `https://github.com/owner/repo/pull/N` URL. `<trigger>` is one of `merged`, `closed`, `checks_passed`, `checks_failed`, `ready_for_review` (the draft→ready flip), or `checks_passed_ready` (green and not a draft — merge-eligible). Triggers match on PR state, not on transitions, so arming one against a PR that already satisfies it fires on the next evaluation unless `--on-transition` is set. The `--message` prompt is delivered verbatim to the target chat when the callback fires and is treated as a secret — it is never echoed back on any surface. Expiry defaults to 24h and may not exceed 30 days. Arming a trigger that cannot be satisfied at the same time as a callback already armed for the same chat and PR under a DIFFERENT `--group` prints a warning on stderr: sibling cancellation is group-scoped, so two groups of one never cancel each other and the losing leg stays armed until it expires. Put both triggers in one `--group` to fix that, or pass `--independent-watch` when the watch is genuinely meant to outlive its sibling. The create always succeeds either way.
 
 **Flags:**
 
 - `--chat` — Target agent-session (chat) id to notify (default: $BOSS_AGENT_SESSION_ID)
 - `--expires-in` — Expiry as a duration (e.g. 24h, 7d, 2w); default 24h, max 30d. A watch must outlast the wait it backs
 - `--group` — Optional group id; siblings in a group cancel each other on first fire
+- `--independent-watch` — This watch is meant to outlive any sibling, so do not warn that a mutually exclusive callback is armed under another group. Records intent; it changes nothing about when the callback fires
 - `--json` — Emit the created callback as a stable JSON schema
 - `--message` — Prompt delivered to the chat when the callback fires (required)
 - `--on-transition` — Fire only after the trigger transitions from unsatisfied to satisfied
@@ -39,6 +40,10 @@ boss callback add 123 ready_for_review --message "PR #123 left draft — review 
 boss callback add 123 checks_passed_ready --message "PR #123 is green and ready to merge"
 # "tell me if this PR becomes red later, but do not fire for its current red state"
 boss callback add 123 checks_failed --on-transition --message "PR #123 became red"
+# a pass/fail fork done right: ONE group, so whichever fires cancels the other
+boss callback add 123 checks_passed --group pr123-settle --message "PR #123 is green" && boss callback add 123 checks_failed --group pr123-settle --message "PR #123 is red"
+# a standing red alarm meant to outlive any sibling — no split-pair warning
+boss callback add 123 checks_failed --independent-watch --message "PR #123 went red"
 ```
 
 ### `boss callback list [flags]`
@@ -71,7 +76,7 @@ Remove a GitHub callback by id
 
 **Flags:**
 
-- `--chat` — Owning chat id for remote routing (default: $BOSS_AGENT_SESSION_ID; ignored locally)
+- `--chat` — Owning chat id (default: $BOSS_AGENT_SESSION_ID). Honoured locally as well as remotely: it is the ownership guard, so removing a callback owned by another chat is refused, and it is the routing key for a remote daemon
 
 ```bash
 boss callback remove cb_abc123

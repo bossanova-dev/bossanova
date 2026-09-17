@@ -12,6 +12,7 @@ import (
 
 	"github.com/recurser/bossalib/githubcallback"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/dbtest"
 )
 
@@ -46,7 +47,7 @@ func TestGithubCallbackStore_CreateDefaultsAndNormalizes(t *testing.T) {
 	ctx := context.Background()
 
 	before := time.Now().UTC()
-	cb, err := store.Create(ctx, newTestCallbackParams())
+	cb, _, err := store.Create(ctx, newTestCallbackParams())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestGithubCallbackStore_CreateExplicitExpiryAndGroup(t *testing.T) {
 	p := newTestCallbackParams()
 	p.GroupID = &group
 	p.ExpiresAt = &exp
-	cb, err := store.Create(ctx, p)
+	cb, _, err := store.Create(ctx, p)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestGithubCallbackStore_CreateValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newTestCallbackParams()
 			tc.mutMe(&p)
-			_, err := store.Create(ctx, p)
+			_, _, err := store.Create(ctx, p)
 			if !errors.Is(err, ErrGithubCallbackInvalid) {
 				t.Fatalf("err = %v, want ErrGithubCallbackInvalid", err)
 			}
@@ -152,7 +153,7 @@ func TestGithubCallbackStore_AcceptsEveryCanonicalTrigger(t *testing.T) {
 		t.Run(string(tr), func(t *testing.T) {
 			p := newTestCallbackParams()
 			p.Trigger = tr
-			cb, err := store.Create(ctx, p)
+			cb, _, err := store.Create(ctx, p)
 			if err != nil {
 				t.Fatalf("canonical trigger %q rejected by the store: %v", tr, err)
 			}
@@ -167,7 +168,7 @@ func TestGithubCallbackStore_AcceptsEveryCanonicalTrigger(t *testing.T) {
 	for _, bogus := range []models.GithubCallbackTrigger{"", "MERGED", " merged ", "merged\n", "ready-for-review", "checks_passed_readyy"} {
 		p := newTestCallbackParams()
 		p.Trigger = bogus
-		if _, err := store.Create(ctx, p); !errors.Is(err, ErrGithubCallbackInvalid) {
+		if _, _, err := store.Create(ctx, p); !errors.Is(err, ErrGithubCallbackInvalid) {
 			t.Errorf("trigger %q: err = %v, want ErrGithubCallbackInvalid", bogus, err)
 		}
 	}
@@ -181,14 +182,14 @@ func TestGithubCallbackStore_CreateRejectsCoSatisfiableGroup(t *testing.T) {
 	first := newTestCallbackParams()
 	first.GroupID = &group
 	first.Trigger = models.GithubCallbackTriggerChecksPassed
-	if _, err := store.Create(ctx, first); err != nil {
+	if _, _, err := store.Create(ctx, first); err != nil {
 		t.Fatalf("create first: %v", err)
 	}
 
 	second := newTestCallbackParams()
 	second.GroupID = &group
 	second.Trigger = models.GithubCallbackTriggerChecksPassedReady
-	_, err := store.Create(ctx, second)
+	_, _, err := store.Create(ctx, second)
 	if !errors.Is(err, ErrGithubCallbackInvalid) {
 		t.Fatalf("co-satisfiable create err = %v, want ErrGithubCallbackInvalid", err)
 	}
@@ -205,14 +206,14 @@ func TestGithubCallbackStore_CreateAcceptsMutuallyExclusiveGroup(t *testing.T) {
 	merged := newTestCallbackParams()
 	merged.GroupID = &group
 	merged.Trigger = models.GithubCallbackTriggerMerged
-	if _, err := store.Create(ctx, merged); err != nil {
+	if _, _, err := store.Create(ctx, merged); err != nil {
 		t.Fatalf("create merged: %v", err)
 	}
 
 	closed := newTestCallbackParams()
 	closed.GroupID = &group
 	closed.Trigger = models.GithubCallbackTriggerClosed
-	if _, err := store.Create(ctx, closed); err != nil {
+	if _, _, err := store.Create(ctx, closed); err != nil {
 		t.Fatalf("mutually-exclusive create should succeed: %v", err)
 	}
 }
@@ -232,7 +233,7 @@ func TestGithubCallbackStore_ListOrderingAndFilter(t *testing.T) {
 	// Three callbacks; two share a chat, one differs.
 	p1 := newTestCallbackParams()
 	p1.TargetChatID = "chat-A"
-	first, err := store.Create(ctx, p1)
+	first, _, err := store.Create(ctx, p1)
 	if err != nil {
 		t.Fatalf("create1: %v", err)
 	}
@@ -240,13 +241,13 @@ func TestGithubCallbackStore_ListOrderingAndFilter(t *testing.T) {
 	p2 := newTestCallbackParams()
 	p2.TargetChatID = "chat-A"
 	p2.Trigger = models.GithubCallbackTriggerClosed
-	second, err := store.Create(ctx, p2)
+	second, _, err := store.Create(ctx, p2)
 	if err != nil {
 		t.Fatalf("create2: %v", err)
 	}
 	p3 := newTestCallbackParams()
 	p3.TargetChatID = "chat-B"
-	if _, err := store.Create(ctx, p3); err != nil {
+	if _, _, err := store.Create(ctx, p3); err != nil {
 		t.Fatalf("create3: %v", err)
 	}
 
@@ -276,7 +277,7 @@ func TestGithubCallbackStore_ListOrderingAndFilter(t *testing.T) {
 func TestGithubCallbackStore_DeleteOutcomes(t *testing.T) {
 	store := NewGithubCallbackStore(setupTestDB(t))
 	ctx := context.Background()
-	cb, err := store.Create(ctx, newTestCallbackParams())
+	cb, _, err := store.Create(ctx, newTestCallbackParams())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -325,11 +326,11 @@ func TestGithubCallbackStore_ExpireOverdue(t *testing.T) {
 	soon := time.Now().UTC().Add(time.Second)
 	p := newTestCallbackParams()
 	p.ExpiresAt = &soon
-	overdue, err := store.Create(ctx, p)
+	overdue, _, err := store.Create(ctx, p)
 	if err != nil {
 		t.Fatalf("create overdue: %v", err)
 	}
-	fresh, err := store.Create(ctx, newTestCallbackParams()) // 24h default
+	fresh, _, err := store.Create(ctx, newTestCallbackParams()) // 24h default
 	if err != nil {
 		t.Fatalf("create fresh: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestGithubCallbackStore_ExpireOverdue(t *testing.T) {
 func TestGithubCallbackStore_LeaseConcurrentSingleWinner(t *testing.T) {
 	store := NewGithubCallbackStore(setupFileDB(t))
 	ctx := context.Background()
-	cb, err := store.Create(ctx, newTestCallbackParams())
+	cb, _, err := store.Create(ctx, newTestCallbackParams())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -391,7 +392,7 @@ func TestGithubCallbackStore_LeaseConcurrentSingleWinner(t *testing.T) {
 func TestGithubCallbackStore_LeaseRecoveryAfterExpiry(t *testing.T) {
 	store := NewGithubCallbackStore(setupTestDB(t))
 	ctx := context.Background()
-	cb, err := store.Create(ctx, newTestCallbackParams())
+	cb, _, err := store.Create(ctx, newTestCallbackParams())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -422,7 +423,7 @@ func TestGithubCallbackStore_AcquireLeaseRejectsExpired(t *testing.T) {
 	soon := base.Add(time.Second)
 	p := newTestCallbackParams()
 	p.ExpiresAt = &soon
-	cb, err := store.Create(ctx, p)
+	cb, _, err := store.Create(ctx, p)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -458,7 +459,7 @@ func TestGithubCallbackStore_TriggerGroupSingleWinnerCancelsSiblings(t *testing.
 		case 1:
 			p.Trigger = models.GithubCallbackTriggerClosed
 		}
-		cb, err := store.Create(ctx, p)
+		cb, _, err := store.Create(ctx, p)
 		if err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
@@ -515,7 +516,7 @@ func TestGithubCallbackStore_TriggerGroupSingleWinnerCancelsSiblings(t *testing.
 func TestGithubCallbackStore_TriggerUngroupedNoSiblings(t *testing.T) {
 	store := NewGithubCallbackStore(setupTestDB(t))
 	ctx := context.Background()
-	cb, err := store.Create(ctx, newTestCallbackParams()) // no group
+	cb, _, err := store.Create(ctx, newTestCallbackParams()) // no group
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -543,14 +544,14 @@ func TestGithubCallbackStore_TriggerRejectsOverdue(t *testing.T) {
 	target := newTestCallbackParams()
 	target.GroupID = &group
 	target.ExpiresAt = &soon
-	overdue, err := store.Create(ctx, target)
+	overdue, _, err := store.Create(ctx, target)
 	if err != nil {
 		t.Fatalf("create overdue: %v", err)
 	}
 	siblingParams := newTestCallbackParams()
 	siblingParams.GroupID = &group
 	siblingParams.Trigger = models.GithubCallbackTriggerClosed
-	sibling, err := store.Create(ctx, siblingParams)
+	sibling, _, err := store.Create(ctx, siblingParams)
 	if err != nil {
 		t.Fatalf("create sibling: %v", err)
 	}
@@ -578,7 +579,7 @@ func TestGithubCallbackStore_TriggerRejectsOverdue(t *testing.T) {
 func TestGithubCallbackStore_MarkDeliveredRequiresOwner(t *testing.T) {
 	store := NewGithubCallbackStore(setupTestDB(t))
 	ctx := context.Background()
-	cb, err := store.Create(ctx, newTestCallbackParams())
+	cb, _, err := store.Create(ctx, newTestCallbackParams())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -613,7 +614,7 @@ func TestGithubCallbackStore_MarkDeliveredRejectsExpired(t *testing.T) {
 	soon := base.Add(time.Second)
 	p := newTestCallbackParams()
 	p.ExpiresAt = &soon
-	cb, err := store.Create(ctx, p)
+	cb, _, err := store.Create(ctx, p)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -653,7 +654,7 @@ func TestGithubCallbackStore_RetryPersistsAcrossReopen(t *testing.T) {
 	dbtest.Apply(t, db)
 	store := NewGithubCallbackStore(db)
 
-	cb, err := store.Create(ctx, newTestCallbackParams())
+	cb, _, err := store.Create(ctx, newTestCallbackParams())
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -718,5 +719,435 @@ func TestGithubCallbackStore_RetryPersistsAcrossReopen(t *testing.T) {
 	}
 	if _, err := store2.AcquireLease(ctx, cb.ID, "worker-2", nextAt.Add(time.Second), time.Minute); err != nil {
 		t.Fatalf("re-lease after backoff: %v", err)
+	}
+}
+
+// TestGithubCallbackTriggerTableIsSymmetric pins the invariant that the
+// exclusion relation is undirected. An asymmetric row would make grouping
+// validation (and, downstream, cross-group conflict detection) depend on which
+// leg of a pair happened to be armed first.
+func TestGithubCallbackTriggerTableIsSymmetric(t *testing.T) {
+	for a, partners := range mutuallyExclusiveGithubCallbackTriggers {
+		for b, excluded := range partners {
+			if !excluded {
+				t.Fatalf("%s->%s is present but false; drop the row instead", a, b)
+			}
+			if !mutuallyExclusiveGithubCallbackTriggers[b][a] {
+				t.Fatalf("%s excludes %s but not the reverse", a, b)
+			}
+		}
+	}
+}
+
+// TestGithubCallbackTriggersCoSatisfiableRelation pins exactly which pairs the
+// completed table calls mutually exclusive. Each "want exclusive" pair is
+// justified against callback.satisfiedTriggers: merged/closed/ready_for_review
+// and checks_passed_ready are gated on PR state, checks_passed and
+// checks_failed on the check verdict.
+func TestGithubCallbackTriggersCoSatisfiableRelation(t *testing.T) {
+	const (
+		merged    = models.GithubCallbackTriggerMerged
+		closed    = models.GithubCallbackTriggerClosed
+		passed    = models.GithubCallbackTriggerChecksPassed
+		failed    = models.GithubCallbackTriggerChecksFailed
+		ready     = models.GithubCallbackTriggerReadyForReview
+		passedRdy = models.GithubCallbackTriggerChecksPassedReady
+	)
+	exclusive := [][2]models.GithubCallbackTrigger{
+		{merged, closed},
+		{merged, ready},
+		{merged, passedRdy},
+		{closed, ready},
+		{closed, passedRdy},
+		{passed, failed},
+		{failed, passedRdy},
+	}
+	for _, pair := range exclusive {
+		if githubCallbackTriggersCoSatisfiable(pair[0], pair[1]) {
+			t.Errorf("%s + %s should be mutually exclusive", pair[0], pair[1])
+		}
+		if githubCallbackTriggersCoSatisfiable(pair[1], pair[0]) {
+			t.Errorf("%s + %s should be mutually exclusive (reversed)", pair[1], pair[0])
+		}
+	}
+
+	// checks_passed is set from the check verdict alone, with no PR-state
+	// gate, so a closed or merged PR with green checks satisfies both in one
+	// evaluation. These pairs must stay co-satisfiable.
+	coSatisfiable := [][2]models.GithubCallbackTrigger{
+		{passed, closed},
+		{passed, merged},
+		{passed, ready},
+		{passed, passedRdy},
+		{ready, passedRdy},
+		{merged, merged},
+	}
+	for _, pair := range coSatisfiable {
+		if !githubCallbackTriggersCoSatisfiable(pair[0], pair[1]) {
+			t.Errorf("%s + %s should be co-satisfiable", pair[0], pair[1])
+		}
+		if !githubCallbackTriggersCoSatisfiable(pair[1], pair[0]) {
+			t.Errorf("%s + %s should be co-satisfiable (reversed)", pair[1], pair[0])
+		}
+	}
+}
+
+// TestGithubCallbackTriggersCoSatisfiableUnknownTriggerDefaultsOpen pins the
+// fail-closed grouping default: a trigger with no row is treated as
+// co-satisfiable with everything, so its grouping is refused rather than
+// silently allowed.
+func TestGithubCallbackTriggersCoSatisfiableUnknownTriggerDefaultsOpen(t *testing.T) {
+	unknown := models.GithubCallbackTrigger("not_a_trigger")
+	if !githubCallbackTriggersCoSatisfiable(unknown, models.GithubCallbackTriggerMerged) {
+		t.Fatal("an unrowed trigger must default to co-satisfiable")
+	}
+}
+
+// TestGithubCallbackStore_CreateAcceptsChecksPassedReadyWithChecksFailed is the
+// ski11 shape: this grouping is REFUSED before the table was completed and is
+// accepted after. It is the observable behaviour change U1 ships.
+func TestGithubCallbackStore_CreateAcceptsChecksPassedReadyWithChecksFailed(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+	group := "ski11-settle"
+
+	pass := newTestCallbackParams()
+	pass.GroupID = &group
+	pass.Trigger = models.GithubCallbackTriggerChecksPassedReady
+	if _, _, err := store.Create(ctx, pass); err != nil {
+		t.Fatalf("create checks_passed_ready: %v", err)
+	}
+
+	fail := newTestCallbackParams()
+	fail.GroupID = &group
+	fail.Trigger = models.GithubCallbackTriggerChecksFailed
+	if _, _, err := store.Create(ctx, fail); err != nil {
+		t.Fatalf("checks_passed_ready + checks_failed should now group: %v", err)
+	}
+}
+
+// TestGithubCallbackStore_CreateStillRejectsReadyWithChecksPassedReady guards
+// the other direction: completing the table must not make a genuinely
+// co-satisfiable pair groupable.
+func TestGithubCallbackStore_CreateStillRejectsReadyWithChecksPassedReady(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+	group := "still-refused"
+
+	ready := newTestCallbackParams()
+	ready.GroupID = &group
+	ready.Trigger = models.GithubCallbackTriggerReadyForReview
+	if _, _, err := store.Create(ctx, ready); err != nil {
+		t.Fatalf("create ready_for_review: %v", err)
+	}
+
+	passedReady := newTestCallbackParams()
+	passedReady.GroupID = &group
+	passedReady.Trigger = models.GithubCallbackTriggerChecksPassedReady
+	if _, _, err := store.Create(ctx, passedReady); !errors.Is(err, ErrGithubCallbackInvalid) {
+		t.Fatalf("err = %v, want ErrGithubCallbackInvalid", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cross-group conflict scan (BOS-1268)
+//
+// Sibling cancellation is group-scoped, so a pass/fail pair armed under two
+// different group ids is two groups of one: the winner cancels nothing and the
+// loser stays armed until it expires. Create reports that shape; it never
+// refuses it.
+// ---------------------------------------------------------------------------
+
+// newConflictParams returns params for the same chat/repo/PR as
+// newTestCallbackParams, in the named group, with the given trigger. A nil
+// group means ungrouped.
+func newConflictParams(group *string, trigger models.GithubCallbackTrigger) CreateGithubCallbackParams {
+	p := newTestCallbackParams()
+	p.GroupID = group
+	p.Trigger = trigger
+	return p
+}
+
+func strptr(s string) *string { return &s }
+
+func TestGithubCallbackStore_CreateReportsCrossGroupConflict(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+
+	first, _, err := store.Create(ctx, newConflictParams(strptr("ski109-final-pass"), models.GithubCallbackTriggerChecksPassed))
+	if err != nil {
+		t.Fatalf("create checks_passed: %v", err)
+	}
+
+	second, conflict, err := store.Create(ctx, newConflictParams(strptr("ski109-final-fail"), models.GithubCallbackTriggerChecksFailed))
+	if err != nil {
+		t.Fatalf("create checks_failed must still succeed: %v", err)
+	}
+	if second == nil {
+		t.Fatal("create returned no row")
+	}
+	// The create is advisory-only: the row must really exist.
+	if got, err := store.Get(ctx, second.ID); err != nil || got.State != models.GithubCallbackStateActive {
+		t.Fatalf("second row get = %+v, err = %v; want an active row", got, err)
+	}
+
+	if conflict == nil {
+		t.Fatal("want a conflict for the ski109 shape, got none")
+	}
+	if conflict.ID != first.ID {
+		t.Errorf("conflict.ID = %q, want %q", conflict.ID, first.ID)
+	}
+	if conflict.GroupID == nil || *conflict.GroupID != "ski109-final-pass" {
+		t.Errorf("conflict.GroupID = %v, want ski109-final-pass", conflict.GroupID)
+	}
+	if conflict.Trigger != models.GithubCallbackTriggerChecksPassed {
+		t.Errorf("conflict.Trigger = %q, want checks_passed", conflict.Trigger)
+	}
+	if !conflict.ExpiresAt.Equal(first.ExpiresAt) {
+		t.Errorf("conflict.ExpiresAt = %v, want %v", conflict.ExpiresAt, first.ExpiresAt)
+	}
+}
+
+// The ski11 shape depends on the pair U1 added to the table; without that row
+// this create reports nothing.
+func TestGithubCallbackStore_CreateReportsCrossGroupConflictForChecksPassedReady(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+
+	if _, _, err := store.Create(ctx, newConflictParams(strptr("ski11-settle-pass"), models.GithubCallbackTriggerChecksPassedReady)); err != nil {
+		t.Fatalf("create checks_passed_ready: %v", err)
+	}
+	_, conflict, err := store.Create(ctx, newConflictParams(strptr("ski11-settle-fail"), models.GithubCallbackTriggerChecksFailed))
+	if err != nil {
+		t.Fatalf("create checks_failed: %v", err)
+	}
+	if conflict == nil {
+		t.Fatal("want a conflict for the ski11 shape, got none")
+	}
+	if conflict.Trigger != models.GithubCallbackTriggerChecksPassedReady {
+		t.Errorf("conflict.Trigger = %q, want checks_passed_ready", conflict.Trigger)
+	}
+}
+
+// An ungrouped row is itself a group of one, so it conflicts too. SQLite would
+// evaluate `group_id != ?` to NULL for these rows and skip them silently — this
+// is the NULL-arm regression guard.
+func TestGithubCallbackStore_CreateReportsConflictWithUngroupedCallback(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+
+	if _, _, err := store.Create(ctx, newConflictParams(nil, models.GithubCallbackTriggerChecksPassed)); err != nil {
+		t.Fatalf("create ungrouped checks_passed: %v", err)
+	}
+	_, conflict, err := store.Create(ctx, newConflictParams(strptr("grouped-fail"), models.GithubCallbackTriggerChecksFailed))
+	if err != nil {
+		t.Fatalf("create checks_failed: %v", err)
+	}
+	if conflict == nil {
+		t.Fatal("an ungrouped live callback must still be reported")
+	}
+	if conflict.GroupID != nil {
+		t.Errorf("conflict.GroupID = %v, want nil for an ungrouped row", *conflict.GroupID)
+	}
+}
+
+// Two ungrouped callbacks are two groups of one as well; neither can cancel the
+// other, so the shape is reported.
+func TestGithubCallbackStore_CreateReportsConflictBetweenTwoUngroupedCallbacks(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+
+	if _, _, err := store.Create(ctx, newConflictParams(nil, models.GithubCallbackTriggerChecksPassed)); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	_, conflict, err := store.Create(ctx, newConflictParams(nil, models.GithubCallbackTriggerChecksFailed))
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if conflict == nil {
+		t.Fatal("two ungrouped exclusive callbacks must be reported")
+	}
+}
+
+// A row past its expires_at is dead, not a live conflict. Expiry is swept
+// lazily (list RPC / ExpireOverdue) and the create path sweeps nothing, so
+// without the expires_at > now guard the scan reports an overdue row — printing
+// a *past* expiry while asserting both legs are still armed.
+func TestGithubCallbackStore_CreateIgnoresOverdueCrossGroupCallback(t *testing.T) {
+	sqlDB := setupTestDB(t)
+	store := NewGithubCallbackStore(sqlDB)
+	ctx := context.Background()
+
+	first, _, err := store.Create(ctx, newConflictParams(strptr("stale-pass"), models.GithubCallbackTriggerChecksPassed))
+	if err != nil {
+		t.Fatalf("create checks_passed: %v", err)
+	}
+	// Create refuses a past expiry, so backdate the stored row directly. State is
+	// left untouched on purpose: that is exactly the overdue-but-unswept shape.
+	if _, err := sqlDB.ExecContext(ctx, "UPDATE github_callbacks SET expires_at = ? WHERE id = ?",
+		sqlutil.FormatTime(time.Now().UTC().Add(-time.Hour)), first.ID); err != nil {
+		t.Fatalf("backdate expiry: %v", err)
+	}
+	if got, err := store.Get(ctx, first.ID); err != nil || got.State != models.GithubCallbackStateActive {
+		t.Fatalf("backdated row = %+v, err = %v; want it still active", got, err)
+	}
+
+	_, conflict, err := store.Create(ctx, newConflictParams(strptr("stale-fail"), models.GithubCallbackTriggerChecksFailed))
+	if err != nil {
+		t.Fatalf("create checks_failed: %v", err)
+	}
+	if conflict != nil {
+		t.Fatalf("want no conflict for an overdue row, got %+v expiring %s", conflict, conflict.ExpiresAt)
+	}
+}
+
+func TestGithubCallbackStore_CreateNoConflictCases(t *testing.T) {
+	group := "shared-group"
+	cases := []struct {
+		name    string
+		arrange func(p *CreateGithubCallbackParams) // mutates the SECOND create
+		first   CreateGithubCallbackParams
+	}{
+		{
+			// The existing in-group rejection owns this case; a warning here
+			// would be unreachable anyway.
+			name:  "same group",
+			first: newConflictParams(&group, models.GithubCallbackTriggerChecksPassed),
+			arrange: func(p *CreateGithubCallbackParams) {
+				p.GroupID = &group
+				p.Trigger = models.GithubCallbackTriggerChecksFailed
+			},
+		},
+		{
+			name:  "different chat",
+			first: newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksPassed),
+			arrange: func(p *CreateGithubCallbackParams) {
+				p.GroupID = strptr("g2")
+				p.Trigger = models.GithubCallbackTriggerChecksFailed
+				p.TargetChatID = "chat-other"
+			},
+		},
+		{
+			name:  "different pr",
+			first: newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksPassed),
+			arrange: func(p *CreateGithubCallbackParams) {
+				p.GroupID = strptr("g2")
+				p.Trigger = models.GithubCallbackTriggerChecksFailed
+				p.PRNumber = 99
+			},
+		},
+		{
+			name:  "different repo",
+			first: newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksPassed),
+			arrange: func(p *CreateGithubCallbackParams) {
+				p.GroupID = strptr("g2")
+				p.Trigger = models.GithubCallbackTriggerChecksFailed
+				p.RepoName = "other-repo"
+			},
+		},
+		{
+			// A trigger is co-satisfiable with itself, so a duplicate arm is
+			// not the split-pair shape.
+			name:  "identical trigger in another group",
+			first: newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksFailed),
+			arrange: func(p *CreateGithubCallbackParams) {
+				p.GroupID = strptr("g2")
+				p.Trigger = models.GithubCallbackTriggerChecksFailed
+			},
+		},
+		{
+			// checks_passed carries no PR-state gate, so a closed PR with green
+			// checks satisfies both; not exclusive, not reported.
+			name:  "co-satisfiable pair in another group",
+			first: newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksPassed),
+			arrange: func(p *CreateGithubCallbackParams) {
+				p.GroupID = strptr("g2")
+				p.Trigger = models.GithubCallbackTriggerClosed
+			},
+		},
+		{
+			name:  "independent watch opt-out",
+			first: newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksPassed),
+			arrange: func(p *CreateGithubCallbackParams) {
+				p.GroupID = strptr("g2")
+				p.Trigger = models.GithubCallbackTriggerChecksFailed
+				p.IndependentWatch = true
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewGithubCallbackStore(setupTestDB(t))
+			ctx := context.Background()
+			if _, _, err := store.Create(ctx, tc.first); err != nil {
+				t.Fatalf("create first: %v", err)
+			}
+			second := newTestCallbackParams()
+			tc.arrange(&second)
+			_, conflict, err := store.Create(ctx, second)
+			if err != nil {
+				t.Fatalf("create second: %v", err)
+			}
+			if conflict != nil {
+				t.Fatalf("want no conflict, got %+v", conflict)
+			}
+		})
+	}
+}
+
+// Only live callbacks can strand a watch; a terminal row cancels nothing
+// because it is already done.
+func TestGithubCallbackStore_CreateIgnoresTerminalConflicts(t *testing.T) {
+	for _, state := range []models.GithubCallbackState{
+		models.GithubCallbackStateDelivered,
+		models.GithubCallbackStateCanceled,
+		models.GithubCallbackStateExpired,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			store := NewGithubCallbackStore(setupTestDB(t))
+			ctx := context.Background()
+
+			first, _, err := store.Create(ctx, newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksPassed))
+			if err != nil {
+				t.Fatalf("create first: %v", err)
+			}
+			if _, err := store.db.ExecContext(ctx,
+				"UPDATE github_callbacks SET state = ? WHERE id = ?", string(state), first.ID); err != nil {
+				t.Fatalf("force state %s: %v", state, err)
+			}
+
+			_, conflict, err := store.Create(ctx, newConflictParams(strptr("g2"), models.GithubCallbackTriggerChecksFailed))
+			if err != nil {
+				t.Fatalf("create second: %v", err)
+			}
+			if conflict != nil {
+				t.Fatalf("a %s callback must not be reported, got %+v", state, conflict)
+			}
+		})
+	}
+}
+
+// A leased callback is still armed and will still fire, so it counts.
+func TestGithubCallbackStore_CreateReportsLeasedConflict(t *testing.T) {
+	store := NewGithubCallbackStore(setupTestDB(t))
+	ctx := context.Background()
+
+	first, _, err := store.Create(ctx, newConflictParams(strptr("g1"), models.GithubCallbackTriggerChecksPassed))
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx,
+		"UPDATE github_callbacks SET state = ? WHERE id = ?",
+		string(models.GithubCallbackStateLeased), first.ID); err != nil {
+		t.Fatalf("force leased: %v", err)
+	}
+
+	_, conflict, err := store.Create(ctx, newConflictParams(strptr("g2"), models.GithubCallbackTriggerChecksFailed))
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if conflict == nil {
+		t.Fatal("a leased callback is still armed and must be reported")
 	}
 }

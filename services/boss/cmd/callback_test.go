@@ -203,10 +203,33 @@ type fakeCallbackClient struct {
 	deletedID   string
 	deleteResp  *pb.DeleteGithubCallbackResponse
 	deleteErr   error
+	notice      string
+	createReq   *pb.CreateGithubCallbackRequest
 }
 
 func (f *fakeCallbackClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
 	return f.callbacks, nil
+}
+
+func (f *fakeCallbackClient) CreateGithubCallback(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+	f.createReq = req
+	notice := f.notice
+	// Mirror the daemon: independent_watch suppresses the advisory at source.
+	if req.GetIsIndependentWatch() {
+		notice = ""
+	}
+	return &pb.CreateGithubCallbackResponse{
+		GithubCallback: &pb.GithubCallback{
+			Id:           "cb-new",
+			TargetChatId: req.GetTargetChatId(),
+			RepoOwner:    req.GetRepoOwner(),
+			RepoName:     req.GetRepoName(),
+			PrNumber:     req.GetPrNumber(),
+			Trigger:      req.GetTrigger(),
+			State:        "active",
+		},
+		NoticeText: notice,
+	}, nil
 }
 
 func (f *fakeCallbackClient) DeleteGithubCallback(_ context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
@@ -222,14 +245,29 @@ func (f *fakeCallbackClient) DeleteGithubCallback(_ context.Context, targetChatI
 }
 
 func newCallbackTestCmd() (*cobra.Command, *bytes.Buffer) {
+	cmd, out, _ := newCallbackTestCmdSplit()
+	return cmd, out
+}
+
+// newCallbackTestCmdSplit gives stdout and stderr SEPARATE buffers. The shared
+// buffer newCallbackTestCmd hands back cannot tell the two apart, so a test
+// asserting "the notice is on stderr, not stdout" passes vacuously against it.
+// Anything checking the stdout/stderr split must use this.
+func newCallbackTestCmdSplit() (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	cmd := &cobra.Command{Use: "callback-test"}
 	cmd.Flags().String("chat", "", "")
 	cmd.Flags().String("id", "", "")
+	cmd.Flags().String("repo", "", "")
+	cmd.Flags().String("message", "", "")
+	cmd.Flags().String("expires-in", "", "")
+	cmd.Flags().String("group", "", "")
+	cmd.Flags().Bool("on-transition", false, "")
+	cmd.Flags().Bool("independent-watch", false, "")
 	cmd.Flags().Bool("json", false, "")
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	return cmd, &out
+	cmd.SetErr(&errOut)
+	return cmd, &out, &errOut
 }
 
 func TestRunCallbackListWithClient_TableFooterAndIDFilter(t *testing.T) {
@@ -361,5 +399,252 @@ func TestTriggerLabel(t *testing.T) {
 		if got := triggerLabel(string(tr)); got == string(tr) {
 			t.Errorf("trigger %q has no label (fell through to raw string)", tr)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Split-group advisory on `boss callback add` (BOS-1268)
+// ---------------------------------------------------------------------------
+
+// conflictNotice is the shape the daemon composes. The CLI is a pass-through,
+// so the test asserts the CLI put it on the right stream — not that the CLI
+// reworded it.
+const conflictNotice = "warning: checks_failed in group \"ski109-final-fail\" cannot be satisfied at the same time as " +
+	"callback cb-9 (group \"ski109-final-pass\", trigger checks_passed, expires 2026-09-18T06:50:18Z), " +
+	"which is still armed for this chat and PR."
+
+func addCmdWithFlags(t *testing.T, fake *fakeCallbackClient, flags map[string]string) (*bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	cmd, out, errOut := newCallbackTestCmdSplit()
+	if err := cmd.Flags().Set("chat", "chat-1"); err != nil {
+		t.Fatalf("set chat: %v", err)
+	}
+	if err := cmd.Flags().Set("repo", "acme/widgets"); err != nil {
+		t.Fatalf("set repo: %v", err)
+	}
+	if err := cmd.Flags().Set("message", "PR #123 went red"); err != nil {
+		t.Fatalf("set message: %v", err)
+	}
+	for k, v := range flags {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	if err := runCallbackAddWithClient(cmd, fake, "123", "checks_failed"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	return out, errOut
+}
+
+// TestRunCallbackAddWithClient_NoticeGoesToStderr is R4's gate: the advisory
+// must not enter stdout, which carries the human result and (with --json) a
+// documented machine contract.
+func TestRunCallbackAddWithClient_NoticeGoesToStderr(t *testing.T) {
+	fake := &fakeCallbackClient{notice: conflictNotice}
+	out, errOut := addCmdWithFlags(t, fake, nil)
+
+	if !strings.Contains(errOut.String(), conflictNotice) {
+		t.Fatalf("notice missing from stderr:\n%s", errOut.String())
+	}
+	if strings.Contains(out.String(), callbackNoticePrefix) {
+		t.Fatalf("notice leaked into stdout:\n%s", out.String())
+	}
+	// stdout still carries the ordinary confirmation.
+	if !strings.Contains(out.String(), "cb-new") {
+		t.Fatalf("stdout lost the registration line:\n%s", out.String())
+	}
+}
+
+// TestRunCallbackAddWithClient_JSONStdoutStaysClean pins that --json stdout is
+// exactly the documented envelope: parseable, and with no extra top-level key
+// smuggling the advisory in.
+func TestRunCallbackAddWithClient_JSONStdoutStaysClean(t *testing.T) {
+	fake := &fakeCallbackClient{notice: conflictNotice}
+	out, errOut := addCmdWithFlags(t, fake, map[string]string{"json": "true"})
+
+	var envelope map[string]any
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		t.Fatalf("stdout is not the documented JSON envelope: %v\n%s", err, out.String())
+	}
+	var want map[string]any
+	if err := json.Unmarshal(mustJSON(t, githubCallbackToJSON(&pb.GithubCallback{
+		Id: "cb-new", TargetChatId: "chat-1", RepoOwner: "acme", RepoName: "widgets",
+		PrNumber: 123, Trigger: "checks_failed", State: "active",
+	})), &want); err != nil {
+		t.Fatalf("reference envelope: %v", err)
+	}
+	for k := range envelope {
+		if _, ok := want[k]; !ok {
+			t.Errorf("--json stdout grew an undocumented top-level key %q", k)
+		}
+	}
+	if len(envelope) != len(want) {
+		t.Errorf("--json envelope has %d keys, documented schema has %d", len(envelope), len(want))
+	}
+	if !strings.Contains(errOut.String(), conflictNotice) {
+		t.Fatalf("notice must still reach stderr under --json:\n%s", errOut.String())
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+
+// TestRunCallbackAddWithClient_IndependentWatchSuppresses proves the flag both
+// reaches the daemon and results in silence on stderr.
+func TestRunCallbackAddWithClient_IndependentWatchSuppresses(t *testing.T) {
+	fake := &fakeCallbackClient{notice: conflictNotice}
+	_, errOut := addCmdWithFlags(t, fake, map[string]string{"independent-watch": "true"})
+
+	if fake.createReq == nil || !fake.createReq.GetIsIndependentWatch() {
+		t.Fatalf("--independent-watch not forwarded: %+v", fake.createReq)
+	}
+	if strings.TrimSpace(errOut.String()) != "" {
+		t.Fatalf("stderr should be silent under --independent-watch:\n%s", errOut.String())
+	}
+}
+
+// TestRunCallbackAddWithClient_NoNoticeIsSilent guards the ordinary path: the
+// advisory must stay rare, or readers learn to skim it.
+func TestRunCallbackAddWithClient_NoNoticeIsSilent(t *testing.T) {
+	fake := &fakeCallbackClient{}
+	_, errOut := addCmdWithFlags(t, fake, nil)
+	if strings.TrimSpace(errOut.String()) != "" {
+		t.Fatalf("stderr should be empty with no conflict:\n%s", errOut.String())
+	}
+}
+
+// TestCallbackAddIndependentWatchFlagIsRegistered pins the real command's flag
+// set, since the test harness above declares its own.
+func TestCallbackAddIndependentWatchFlagIsRegistered(t *testing.T) {
+	root := callbackCmd()
+	add, _, err := root.Find([]string{"add"})
+	if err != nil {
+		t.Fatalf("find add: %v", err)
+	}
+	f := add.Flags().Lookup("independent-watch")
+	if f == nil {
+		t.Fatal("boss callback add is missing --independent-watch")
+	}
+	if !strings.Contains(f.Usage, "outlive") {
+		t.Errorf("--independent-watch help should say it records intent to outlive a sibling, got %q", f.Usage)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Adjacent fixes: --chat help and the group-size hint (BOS-1268 U6)
+// ---------------------------------------------------------------------------
+
+// TestCallbackRemoveChatHelpDoesNotClaimItIsIgnored pins the RULE, not the
+// sentence: resolveCallbackChat honours --chat locally and
+// runCallbackRemoveWithClient passes it as expect_target_chat_id, an ownership
+// guard that returns PermissionDenied on a mismatch. Documenting it as ignored
+// invites an operator to omit it and delete another chat's callback.
+func TestCallbackRemoveChatHelpDoesNotClaimItIsIgnored(t *testing.T) {
+	root := callbackCmd()
+	remove, _, err := root.Find([]string{"remove"})
+	if err != nil {
+		t.Fatalf("find remove: %v", err)
+	}
+	f := remove.Flags().Lookup("chat")
+	if f == nil {
+		t.Fatal("boss callback remove is missing --chat")
+	}
+	if strings.Contains(strings.ToLower(f.Usage), "ignored") {
+		t.Errorf("--chat help still claims it is ignored: %q", f.Usage)
+	}
+	if !strings.Contains(strings.ToLower(f.Usage), "ownership") {
+		t.Errorf("--chat help should say it is the ownership guard: %q", f.Usage)
+	}
+}
+
+func TestCallbackGroupSummary(t *testing.T) {
+	cb := func(id, group string) *pb.GithubCallback {
+		return &pb.GithubCallback{Id: id, GroupId: group}
+	}
+	cases := []struct {
+		name string
+		in   []*pb.GithubCallback
+		want string
+	}{
+		{
+			name: "empty",
+			in:   nil,
+			want: "Group sizes among the callbacks shown: none",
+		},
+		{
+			// The split-pair shape: two groups of ONE, which is the whole point.
+			name: "split pair reads as two groups of one",
+			in:   []*pb.GithubCallback{cb("a", "ski109-final-pass"), cb("b", "ski109-final-fail")},
+			want: "Group sizes among the callbacks shown: ski109-final-fail=1, ski109-final-pass=1",
+		},
+		{
+			name: "correctly grouped pair reads as one group of two",
+			in:   []*pb.GithubCallback{cb("a", "pr123-settle"), cb("b", "pr123-settle")},
+			want: "Group sizes among the callbacks shown: pr123-settle=2",
+		},
+		{
+			// Ungrouped rows must never be summed into one bucket: each is its
+			// own group of one, which is why it cancels nothing.
+			name: "ungrouped rows are counted as groups of one",
+			in:   []*pb.GithubCallback{cb("a", ""), cb("b", ""), cb("c", "g1")},
+			want: "Group sizes among the callbacks shown: g1=1, ungrouped=2 (each its own group of one)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := callbackGroupSummary(tc.in); got != tc.want {
+				t.Fatalf("callbackGroupSummary =\n%q\nwant\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunCallbackListWithClient_GroupSizeFooter proves a group of one is
+// distinguishable from a group of two in the RENDERED output, and that the
+// footer is honest about being scoped to the rows shown.
+func TestRunCallbackListWithClient_GroupSizeFooter(t *testing.T) {
+	cmd, out := newCallbackTestCmd()
+	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+		{Id: "cb-1", GroupId: "pair", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "checks_passed", State: "active", TargetChatId: "chat-1"},
+		{Id: "cb-2", GroupId: "pair", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "checks_failed", State: "active", TargetChatId: "chat-1"},
+		{Id: "cb-3", GroupId: "lonely", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "merged", State: "active", TargetChatId: "chat-1"},
+	}}
+	if err := runCallbackListWithClient(cmd, fake); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "pair=2") {
+		t.Errorf("footer should report the group of two:\n%s", got)
+	}
+	if !strings.Contains(got, "lonely=1") {
+		t.Errorf("footer should report the group of one:\n%s", got)
+	}
+	if !strings.Contains(got, "among the callbacks shown") {
+		t.Errorf("footer must scope the tally to the listed rows:\n%s", got)
+	}
+	if !strings.Contains(got, "3 callbacks (complete listing)") {
+		t.Errorf("existing footer line lost:\n%s", got)
+	}
+}
+
+// The empty-list branch returns before the table, so it must not grow a group
+// line that reads as a second, contradictory count.
+func TestRunCallbackListWithClient_EmptyListHasNoGroupFooter(t *testing.T) {
+	cmd, out := newCallbackTestCmd()
+	if err := runCallbackListWithClient(cmd, &fakeCallbackClient{}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "0 callbacks (complete listing)") {
+		t.Fatalf("empty footer changed:\n%s", got)
+	}
+	if strings.Contains(got, "Group sizes") {
+		t.Fatalf("empty listing should not print a group tally:\n%s", got)
 	}
 }

@@ -1014,6 +1014,19 @@ func (c *Client) SendPlan(ctx context.Context, sessionName, plan string) error {
 	return c.SendPlanWithReadyMarker(ctx, sessionName, plan, sendPlanReadyMarker)
 }
 
+// WaitForBracketedPaste waits for the pane application to request bracketed
+// paste before a multi-line payload is delivered. This uses the established
+// chat-send budget: after the process has begun rendering, an enable sequence
+// that does not arrive promptly is a broken readiness state, not a second
+// session boot.
+func (c *Client) WaitForBracketedPaste(ctx context.Context, logPath string) error {
+	deadline := c.sendReadyDeadline
+	if deadline <= 0 {
+		deadline = DefaultSendReadyDeadline
+	}
+	return waitForBracketedPaste(ctx, logPath, deadline, sendPlanDefaultPollInterval)
+}
+
 // SendPlanWithReadyMarker is SendPlan with an agent-specific readiness marker.
 // Empty readyMarker preserves the legacy Claude marker for old plugins.
 //

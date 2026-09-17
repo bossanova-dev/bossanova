@@ -2,6 +2,7 @@ package bossmcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -18,9 +19,9 @@ const secretMessage = "SECRET-PROMPT-do-not-leak-42"
 // ever echoing the secret message body.
 func TestRegisterGithubCallbackHappyPath(t *testing.T) {
 	var got *pb.CreateGithubCallbackRequest
-	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 		got = req
-		return &pb.GithubCallback{
+		return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{
 			Id:           "cb1",
 			TargetChatId: req.GetTargetChatId(),
 			RepoOwner:    req.GetRepoOwner(),
@@ -29,7 +30,7 @@ func TestRegisterGithubCallbackHappyPath(t *testing.T) {
 			Trigger:      req.GetTrigger(),
 			State:        "active",
 			Message:      req.GetMessage(), // daemon echoes it; the tool must scrub it
-		}, nil
+		}}, nil
 	}}
 	cs := newConnectedClient(t, backend, Options{})
 
@@ -82,9 +83,9 @@ func TestRegisterGithubCallbackHappyPath(t *testing.T) {
 // accepted without a repo slug and the owner/repo are parsed from it.
 func TestRegisterGithubCallbackFullURL(t *testing.T) {
 	var got *pb.CreateGithubCallbackRequest
-	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 		got = req
-		return &pb.GithubCallback{Id: "cb2"}, nil
+		return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{Id: "cb2"}}, nil
 	}}
 	cs := newConnectedClient(t, backend, Options{})
 
@@ -128,9 +129,9 @@ func TestRegisterGithubCallbackValidationErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			backend := &fakeBackend{createGithubCallback: func(_ context.Context, _ *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
+			backend := &fakeBackend{createGithubCallback: func(_ context.Context, _ *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 				called = true
-				return &pb.GithubCallback{Id: "x"}, nil
+				return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{Id: "x"}}, nil
 			}}
 			cs := newConnectedClient(t, backend, Options{})
 			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "register_github_callback", Arguments: tc.args})
@@ -265,5 +266,113 @@ func TestDeleteGithubCallbackRequiresConfirm(t *testing.T) {
 	}
 	if gotChat != "chat-1" || gotID != "cb1" {
 		t.Errorf("delete forwarded chat=%q id=%q, want chat-1/cb1", gotChat, gotID)
+	}
+}
+
+// TestRegisterGithubCallbackReturnsNoticeText proves the daemon's split-group
+// advisory reaches the MCP caller. redactCallback is the sole population site
+// for this result, so a notice_text threaded through the proto but not wrapped
+// here is silently dead with every other test still green.
+func TestRegisterGithubCallbackReturnsNoticeText(t *testing.T) {
+	const notice = "warning: checks_failed in group \"fail\" cannot be satisfied at the same time as callback cb-9"
+	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+		return &pb.CreateGithubCallbackResponse{
+			GithubCallback: &pb.GithubCallback{
+				Id:      "cb-new",
+				Trigger: req.GetTrigger(),
+				State:   "active",
+				Message: secretMessage, // daemon echoes it; the tool must still scrub it
+			},
+			NoticeText: notice,
+		}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "register_github_callback",
+		Arguments: map[string]any{
+			"pr":             "123",
+			"repo":           "Owner/Repo",
+			"trigger":        "checks_failed",
+			"target_chat_id": "chat-1",
+			"message":        secretMessage,
+			"group":          "fail",
+		},
+	})
+	if err != nil {
+		t.Fatalf("transport error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", textOf(t, res))
+	}
+	out := textOf(t, res)
+	// Parse rather than substring-match: the notice contains quotes, which the
+	// JSON result escapes, so a Contains check on the raw text is a false red.
+	var parsed struct {
+		Callback   map[string]any `json:"callback"`
+		NoticeText string         `json:"notice_text"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("result is not the documented object: %v\n%s", err, out)
+	}
+	if parsed.NoticeText != notice {
+		t.Errorf("notice_text = %q, want %q", parsed.NoticeText, notice)
+	}
+	// The wrapper must not cost the caller the callback itself.
+	if parsed.Callback["id"] != "cb-new" {
+		t.Errorf("result should still include the callback; got: %s", out)
+	}
+	if strings.Contains(out, secretMessage) {
+		t.Errorf("the wrapper must not un-scrub the secret message: %s", out)
+	}
+}
+
+// TestRegisterGithubCallbackForwardsIndependentWatch proves the opt-out is
+// reachable from MCP — the surface boss-epic and boss-build actually arm
+// through — and that an unset arg stays unset rather than sending false.
+func TestRegisterGithubCallbackForwardsIndependentWatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want bool
+	}{
+		{name: "set", args: map[string]any{"independent_watch": true}, want: true},
+		{name: "omitted", args: map[string]any{}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *pb.CreateGithubCallbackRequest
+			backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+				got = req
+				return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{Id: "cb-iw"}}, nil
+			}}
+			cs := newConnectedClient(t, backend, Options{})
+
+			args := map[string]any{
+				"pr":             "123",
+				"repo":           "Owner/Repo",
+				"trigger":        "checks_failed",
+				"target_chat_id": "chat-1",
+				"message":        "wake me",
+			}
+			for k, v := range tc.args {
+				args[k] = v
+			}
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "register_github_callback", Arguments: args})
+			if err != nil {
+				t.Fatalf("transport error: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("unexpected error result: %s", textOf(t, res))
+			}
+			if got.GetIsIndependentWatch() != tc.want {
+				t.Fatalf("independent_watch = %v, want %v", got.GetIsIndependentWatch(), tc.want)
+			}
+			if tc.want && got.IsIndependentWatch == nil {
+				t.Fatal("independent_watch must be set explicitly, not left nil")
+			}
+			if !tc.want && got.IsIndependentWatch != nil {
+				t.Fatal("an omitted independent_watch must stay unset, not send false")
+			}
+		})
 	}
 }

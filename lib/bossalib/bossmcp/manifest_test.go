@@ -202,9 +202,19 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// wait it backs — lives in the consuming skills' prose, not here: this
 	// surface is re-paid every turn, so it carries the argument's shape and the
 	// skill carries the rule.
+	// RE-PINNED DOWN 2026-09-17 (BOS-1268): 70 tools / 58,856 bytes, same
+	// method, schema-share self-check green in the same run. register_github_callback
+	// gained an `independent_watch` argument and PAID for it out of its own
+	// prose rather than out of this ceiling: the `message` and `expires_in`
+	// argument docs were restating the secret rule and the expiry bounds that
+	// the tool description already states, `pr` spelled out a whole example
+	// URL, and the description said in three clauses what it now says in one.
+	// Duplication between a tool description and its own argument docs is rent
+	// charged twice every turn, which is what made room for a new field while
+	// the surface still shrank.
 	const (
 		maxToolCount   = 70
-		maxSchemaBytes = 58862
+		maxSchemaBytes = 58856
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

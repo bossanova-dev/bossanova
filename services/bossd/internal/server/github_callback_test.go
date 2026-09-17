@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -526,5 +529,184 @@ func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
 	}
 	if pb2.LeaseDeadlineAt != nil || pb2.NextAttemptAt != nil || pb2.TriggeredAt != nil || pb2.DeliveredAt != nil {
 		t.Errorf("expected nil nullable timestamps, got %+v", pb2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Split-group advisory, gRPC surface (BOS-1268)
+// ---------------------------------------------------------------------------
+
+// newGithubCallbackServerWithLog is newGithubCallbackServer with a capturing
+// logger, so the warn-level structured line R3 requires can be asserted rather
+// than assumed from the response field that shares its branch.
+func newGithubCallbackServerWithLog(t *testing.T) (*Server, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	srv := &Server{
+		githubCallbacks: db.NewGithubCallbackStore(setupServerTestDB(t)),
+		logger:          zerolog.New(&buf),
+	}
+	return srv, &buf
+}
+
+// TestCreateGithubCallback_EmitsWarnLog pins the daemon-side signal: an agent
+// arming through MCP may never read its own tool result carefully, and the
+// structured line is what makes the shape greppable after the fact.
+func TestCreateGithubCallback_EmitsWarnLog(t *testing.T) {
+	srv, logs := newGithubCallbackServerWithLog(t)
+	first := armGithubCallback(t, srv, "ski109-final-pass", string(models.GithubCallbackTriggerChecksPassed), false)
+	second := armGithubCallback(t, srv, "ski109-final-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+
+	var found map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["message"] == "create github callback: mutually exclusive trigger live in another group" {
+			found = entry
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no warn line for the split pair:\n%s", logs.String())
+	}
+	if found["level"] != "warn" {
+		t.Errorf("level = %v, want warn", found["level"])
+	}
+	for field, want := range map[string]any{
+		"callback_id":             second.GetGithubCallback().GetId(),
+		"group_id":                "ski109-final-fail",
+		"trigger":                 string(models.GithubCallbackTriggerChecksFailed),
+		"conflicting_callback_id": first.GetGithubCallback().GetId(),
+		"conflicting_group_id":    "ski109-final-pass",
+		"conflicting_trigger":     string(models.GithubCallbackTriggerChecksPassed),
+	} {
+		if found[field] != want {
+			t.Errorf("%s = %v, want %v", field, found[field], want)
+		}
+	}
+	// The registered message body must never reach a log line.
+	if strings.Contains(logs.String(), "secret prompt body") {
+		t.Errorf("warn log leaked the message body:\n%s", logs.String())
+	}
+}
+
+// An ordinary arm must log nothing: a warn line on every registration is noise
+// that trains its readers to filter the channel out.
+func TestCreateGithubCallback_NoWarnLogWithoutConflict(t *testing.T) {
+	srv, logs := newGithubCallbackServerWithLog(t)
+	armGithubCallback(t, srv, "solo", string(models.GithubCallbackTriggerChecksFailed), false)
+	if strings.Contains(logs.String(), "mutually exclusive trigger live in another group") {
+		t.Fatalf("unexpected warn line:\n%s", logs.String())
+	}
+}
+
+func armGithubCallback(t *testing.T, srv *Server, group, trigger string, independent bool) *pb.CreateGithubCallbackResponse {
+	t.Helper()
+	req := validCreateGithubCallbackRequest()
+	req.Trigger = trigger
+	if group != "" {
+		req.GroupId = &group
+	}
+	if independent {
+		req.IsIndependentWatch = &independent
+	}
+	resp, err := srv.CreateGithubCallback(context.Background(), connect.NewRequest(req))
+	if err != nil {
+		t.Fatalf("CreateGithubCallback(%s): %v", trigger, err)
+	}
+	return resp.Msg
+}
+
+// TestCreateGithubCallback_NoticeNamesConflict asserts the rendered TEXT, not a
+// boolean: R2 is about what an operator can act on, and a notice that omits the
+// id or the expiry leaves them with nothing to remove.
+func TestCreateGithubCallback_NoticeNamesConflict(t *testing.T) {
+	srv := newGithubCallbackServer(t)
+
+	first := armGithubCallback(t, srv, "ski109-final-pass", string(models.GithubCallbackTriggerChecksPassed), false)
+	if first.GetNoticeText() != "" {
+		t.Fatalf("the first arm has nothing to conflict with: %q", first.GetNoticeText())
+	}
+
+	second := armGithubCallback(t, srv, "ski109-final-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+	notice := second.GetNoticeText()
+	if notice == "" {
+		t.Fatal("the ski109 shape produced no notice")
+	}
+	// The create still succeeds — this is advisory, never a rejection.
+	if second.GetGithubCallback().GetState() != string(models.GithubCallbackStateActive) {
+		t.Fatalf("callback state = %q, want active", second.GetGithubCallback().GetState())
+	}
+	for _, want := range []string{
+		first.GetGithubCallback().GetId(),                // id
+		"ski109-final-pass",                              // group
+		string(models.GithubCallbackTriggerChecksPassed), // trigger
+		"expires",                       // expiry, labelled
+		"neither will cancel the other", // both legs stay armed
+	} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice does not mention %q:\n%s", want, notice)
+		}
+	}
+	// The expiry must be the real one, not a placeholder.
+	if !strings.Contains(notice, first.GetGithubCallback().GetExpiresAt().AsTime().UTC().Format(time.RFC3339)) {
+		t.Errorf("notice does not carry the conflicting callback's expiry:\n%s", notice)
+	}
+	// The registered message body is a secret on every surface.
+	if strings.Contains(notice, "secret prompt body") {
+		t.Errorf("notice leaked the message body:\n%s", notice)
+	}
+}
+
+// The ski11 shape depends on the completed trigger table.
+func TestCreateGithubCallback_NoticeForChecksPassedReadyShape(t *testing.T) {
+	srv := newGithubCallbackServer(t)
+	armGithubCallback(t, srv, "ski11-settle-pass", string(models.GithubCallbackTriggerChecksPassedReady), false)
+	second := armGithubCallback(t, srv, "ski11-settle-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+	if second.GetNoticeText() == "" {
+		t.Fatal("the ski11 shape produced no notice")
+	}
+}
+
+func TestCreateGithubCallback_IndependentWatchSuppressesNotice(t *testing.T) {
+	srv := newGithubCallbackServer(t)
+	armGithubCallback(t, srv, "ski109-final-pass", string(models.GithubCallbackTriggerChecksPassed), false)
+	second := armGithubCallback(t, srv, "ski109-final-fail", string(models.GithubCallbackTriggerChecksFailed), true)
+	if notice := second.GetNoticeText(); notice != "" {
+		t.Fatalf("independent_watch must suppress the notice, got:\n%s", notice)
+	}
+}
+
+// An ordinary arm, and a correctly grouped pair, must both stay silent — the
+// opt-out only works as a rare signal if the common paths do not fire it.
+func TestCreateGithubCallback_NoNoticeForOrdinaryArms(t *testing.T) {
+	t.Run("single callback", func(t *testing.T) {
+		srv := newGithubCallbackServer(t)
+		resp := armGithubCallback(t, srv, "", string(models.GithubCallbackTriggerChecksFailed), false)
+		if resp.GetNoticeText() != "" {
+			t.Fatalf("unexpected notice: %s", resp.GetNoticeText())
+		}
+	})
+	t.Run("correctly grouped pair", func(t *testing.T) {
+		srv := newGithubCallbackServer(t)
+		armGithubCallback(t, srv, "one-group", string(models.GithubCallbackTriggerChecksPassed), false)
+		resp := armGithubCallback(t, srv, "one-group", string(models.GithubCallbackTriggerChecksFailed), false)
+		if resp.GetNoticeText() != "" {
+			t.Fatalf("a correctly grouped pair must not warn: %s", resp.GetNoticeText())
+		}
+	})
+}
+
+// The group label must not render as an empty string for an ungrouped row: an
+// ungrouped callback is a group of one, which is precisely why it cannot cancel
+// anything, and the notice has to say so.
+func TestCreateGithubCallback_NoticeLabelsUngroupedConflict(t *testing.T) {
+	srv := newGithubCallbackServer(t)
+	armGithubCallback(t, srv, "", string(models.GithubCallbackTriggerChecksPassed), false)
+	second := armGithubCallback(t, srv, "grouped-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+	if !strings.Contains(second.GetNoticeText(), ungroupedCallbackGroupLabel) {
+		t.Fatalf("notice should label the ungrouped conflict:\n%s", second.GetNoticeText())
 	}
 }

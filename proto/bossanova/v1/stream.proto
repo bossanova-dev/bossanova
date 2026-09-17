@@ -992,6 +992,10 @@ message CreateGithubCallbackCommand {
   string message           = 7;
   optional google.protobuf.Timestamp expires_at = 8;
   optional bool should_require_transition = 9;
+  // Mirrors CreateGithubCallbackRequest.is_independent_watch. Without it a remote
+  // caller could not opt a deliberate standing watch out of the split-pair
+  // notice that CreateGithubCallbackResponse.notice_text carries back.
+  optional bool is_independent_watch = 10;
 }
 
 // ListGithubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's

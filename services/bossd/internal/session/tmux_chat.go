@@ -866,7 +866,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// preserve the chat row with a start_error rather than deleting it,
 	// so the operator can see exactly what was attempted even when the
 	// agent never came up.
-	if err := l.injectTmuxChatInput(ctx, tmuxName, input, cmdResp, client, spawnAgentName); err != nil {
+	if err := l.injectTmuxChatInput(ctx, tmuxName, logPath, true, input, cmdResp, client, spawnAgentName); err != nil {
 		// An INFORMATIONAL payload never fails a launch that otherwise
 		// succeeded: the pane is up and correctly wired, and stamping
 		// "(failed to start)" on it would mislabel a healthy chat — worse,
@@ -1206,7 +1206,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 
 	// Existing panes cannot consume startup input via argv; always inject the
 	// rendered input into the live prompt.
-	if err := l.injectTmuxChatInput(ctx, tmuxName, input, cmdResp, client, chat.AgentName); err != nil {
+	if err := l.injectTmuxChatInput(ctx, tmuxName, l.agentLogPathFor(agentSessionID), false, input, cmdResp, client, chat.AgentName); err != nil {
 		return "", err
 	}
 	return agentSessionID, nil
@@ -1270,6 +1270,11 @@ func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string)
 // the composer, while DeliveryPrefillOnly (the zero value) delivers into the
 // composer and stops there so the composer owner submits.
 //
+// A new Codex pane with a multi-line prompt also waits for Codex's raw
+// bracketed-paste enable sequence before SendPlan. Existing panes have already
+// completed that startup handshake, so they must not re-read a potentially
+// large historical pane log on every live message.
+//
 // Both halves of the BOS-600 readiness gate apply here. Row-anchored composer
 // resolution lives inside waitForReadyMarker, which every arm below funnels
 // through, so a marker glyph drawn mid-row does not read as ready. The
@@ -1316,10 +1321,15 @@ func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string)
 // poll tick. A nil client (no plugin loaded) yields a nil detector and the
 // pre-BOS-600 behaviour, and a detector that errors is read as "not a modal", so
 // neither becomes a new way for session start to fail.
-func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName string, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse, client agent.AgentRunnerClient, agentName string) error {
+func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName, logPath string, newPane bool, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse, client agent.AgentRunnerClient, agentName string) error {
 	prompt := input.render(cmdResp.GetCommandPrefix())
 	marker := cmdResp.GetReadyMarker()
 	detector := agent.NewModalPaneChecker(client, agentName, l.logger)
+	if newPane && agentName == "codex" && input.Command == "" && strings.ContainsAny(prompt, "\r\n") {
+		if err := l.tmux.WaitForBracketedPaste(ctx, logPath); err != nil {
+			return fmt.Errorf("wait for codex bracketed-paste readiness: %w", err)
+		}
+	}
 	if input.Delivery == DeliverySubmit {
 		if input.Command != "" {
 			if err := l.tmux.SendLineWithModal(ctx, tmuxName, prompt, marker, detector); err != nil {

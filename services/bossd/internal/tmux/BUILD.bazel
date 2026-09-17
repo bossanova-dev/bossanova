@@ -24,6 +24,7 @@ go_test(
     name = "tmux_test",
     srcs = [
         "attach_test.go",
+        "bracketed_paste_test.go",
         "intconv_test.go",
         "list_sessions_test.go",
         "tmux_budget_test.go",

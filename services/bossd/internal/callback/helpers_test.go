@@ -191,7 +191,7 @@ func pendingCheck(id string) vcs.CheckResult {
 // mustCreate inserts an active callback and fails the test on error.
 func mustCreate(t *testing.T, store db.GithubCallbackStore, params db.CreateGithubCallbackParams) *models.GithubCallback {
 	t.Helper()
-	cb, err := store.Create(context.Background(), params)
+	cb, _, err := store.Create(context.Background(), params)
 	if err != nil {
 		t.Fatalf("create callback: %v", err)
 	}

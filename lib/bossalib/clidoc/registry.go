@@ -386,7 +386,14 @@ func newRegistry() map[string]Prose {
 				"it fires on the next evaluation unless `--on-transition` is set. The `--message` " +
 				"prompt is delivered verbatim to the target chat when the callback fires " +
 				"and is treated as a secret — it is never echoed back on any surface. " +
-				"Expiry defaults to 24h and may not exceed 30 days.",
+				"Expiry defaults to 24h and may not exceed 30 days. Arming a trigger " +
+				"that cannot be satisfied at the same time as a callback already armed " +
+				"for the same chat and PR under a DIFFERENT `--group` prints a warning " +
+				"on stderr: sibling cancellation is group-scoped, so two groups of one " +
+				"never cancel each other and the losing leg stays armed until it " +
+				"expires. Put both triggers in one `--group` to fix that, or pass " +
+				"`--independent-watch` when the watch is genuinely meant to outlive its " +
+				"sibling. The create always succeeds either way.",
 			Examples: []Example{
 				{
 					Command:     `boss callback add 123 merged --message "PR #123 merged — pull main and redeploy"`,
@@ -416,6 +423,15 @@ func newRegistry() map[string]Prose {
 				{
 					Command:     `boss callback add 123 checks_failed --on-transition --message "PR #123 became red"`,
 					Explanation: `"tell me if this PR becomes red later, but do not fire for its current red state"`,
+				},
+				{
+					Command: `boss callback add 123 checks_passed --group pr123-settle --message "PR #123 is green" && ` +
+						`boss callback add 123 checks_failed --group pr123-settle --message "PR #123 is red"`,
+					Explanation: `a pass/fail fork done right: ONE group, so whichever fires cancels the other`,
+				},
+				{
+					Command:     `boss callback add 123 checks_failed --independent-watch --message "PR #123 went red"`,
+					Explanation: `a standing red alarm meant to outlive any sibling — no split-pair warning`,
 				},
 			},
 		},

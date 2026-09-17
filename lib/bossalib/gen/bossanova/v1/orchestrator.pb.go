@@ -6212,8 +6212,10 @@ type ProxyCreateGithubCallbackRequest struct {
 	Message                 string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
 	ExpiresAt               *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
 	ShouldRequireTransition *bool                  `protobuf:"varint,9,opt,name=should_require_transition,json=shouldRequireTransition,proto3,oneof" json:"should_require_transition,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Mirrors CreateGithubCallbackRequest.is_independent_watch.
+	IsIndependentWatch *bool `protobuf:"varint,10,opt,name=is_independent_watch,json=isIndependentWatch,proto3,oneof" json:"is_independent_watch,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ProxyCreateGithubCallbackRequest) Reset() {
@@ -6309,11 +6311,22 @@ func (x *ProxyCreateGithubCallbackRequest) GetShouldRequireTransition() bool {
 	return false
 }
 
+func (x *ProxyCreateGithubCallbackRequest) GetIsIndependentWatch() bool {
+	if x != nil && x.IsIndependentWatch != nil {
+		return *x.IsIndependentWatch
+	}
+	return false
+}
+
 type ProxyCreateGithubCallbackResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	GithubCallback *GithubCallback        `protobuf:"bytes,1,opt,name=github_callback,json=githubCallback,proto3" json:"github_callback,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Mirrors CreateGithubCallbackResponse.notice_text. Additive and advisory:
+	// empty for an ordinary create, and dropping it here would blind exactly the
+	// remote callers most likely to arm without seeing a daemon log.
+	NoticeText    string `protobuf:"bytes,2,opt,name=notice_text,json=noticeText,proto3" json:"notice_text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProxyCreateGithubCallbackResponse) Reset() {
@@ -6351,6 +6364,13 @@ func (x *ProxyCreateGithubCallbackResponse) GetGithubCallback() *GithubCallback 
 		return x.GithubCallback
 	}
 	return nil
+}
+
+func (x *ProxyCreateGithubCallbackResponse) GetNoticeText() string {
+	if x != nil {
+		return x.NoticeText
+	}
+	return ""
 }
 
 type ProxyListGithubCallbacksRequest struct {
@@ -12837,7 +12857,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x19ProxyDeleteCronJobRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\"\x1c\n" +
-	"\x1aProxyDeleteCronJobResponse\"\xb0\x03\n" +
+	"\x1aProxyDeleteCronJobResponse\"\x80\x04\n" +
 	" ProxyCreateGithubCallbackRequest\x12\x1e\n" +
 	"\bgroup_id\x18\x01 \x01(\tH\x00R\agroupId\x88\x01\x01\x12$\n" +
 	"\x0etarget_chat_id\x18\x02 \x01(\tR\ftargetChatId\x12\x1d\n" +
@@ -12849,12 +12869,17 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\amessage\x18\a \x01(\tR\amessage\x12>\n" +
 	"\n" +
 	"expires_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampH\x01R\texpiresAt\x88\x01\x01\x12?\n" +
-	"\x19should_require_transition\x18\t \x01(\bH\x02R\x17shouldRequireTransition\x88\x01\x01B\v\n" +
+	"\x19should_require_transition\x18\t \x01(\bH\x02R\x17shouldRequireTransition\x88\x01\x01\x125\n" +
+	"\x14is_independent_watch\x18\n" +
+	" \x01(\bH\x03R\x12isIndependentWatch\x88\x01\x01B\v\n" +
 	"\t_group_idB\r\n" +
 	"\v_expires_atB\x1c\n" +
-	"\x1a_should_require_transition\"j\n" +
+	"\x1a_should_require_transitionB\x17\n" +
+	"\x15_is_independent_watch\"\x8b\x01\n" +
 	"!ProxyCreateGithubCallbackResponse\x12E\n" +
-	"\x0fgithub_callback\x18\x01 \x01(\v2\x1c.bossanova.v1.GithubCallbackR\x0egithubCallback\"\x84\x03\n" +
+	"\x0fgithub_callback\x18\x01 \x01(\v2\x1c.bossanova.v1.GithubCallbackR\x0egithubCallback\x12\x1f\n" +
+	"\vnotice_text\x18\x02 \x01(\tR\n" +
+	"noticeText\"\x84\x03\n" +
 	"\x1fProxyListGithubCallbacksRequest\x12)\n" +
 	"\x0etarget_chat_id\x18\x01 \x01(\tH\x00R\ftargetChatId\x88\x01\x01\x12\"\n" +
 	"\n" +

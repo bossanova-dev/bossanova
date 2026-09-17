@@ -12,8 +12,7 @@ This skill is invoked automatically by the repair plugin when a PR enters a fail
 ## Standing rules
 
 - **Never stop looking at CI on your own recognisance.** Before any exit — `clean` and `parked`
-  alike — the decision is `toolbox/callback/ci-watch.mjs classify`, not recall. Step 8 states the
-  verdict table; this rule exists so the obligation is visible without reaching it.
+  alike — the decision is `toolbox/callback/ci-watch.mjs classify`, not recall. Step 8 states the verdict table.
 - **A prompt arriving before this run reached a terminal state re-enters the workflow.** Compute what
   is left, do not recall it. **That list is a worklist, not a report.** Answer the question you were
   asked in one line, then execute it in the same turn — finding work with no reason not to do it
@@ -1928,7 +1927,7 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 
 7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll.
 
-8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. `repair_status=not_evaluated` is terminal only as a non-green unreadable-review state: record it as a residual unless the reason shows the repository or PR itself is unreadable, in which case it is a true stop. Once all four hold, run the CI observation gate, then stop and exit zero.
+8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. `repair_status=not_evaluated` is terminal only as a non-green unreadable-review state: record it as a residual unless the reason shows the repository or PR itself is unreadable, in which case it is a true stop. Once all four hold, run the CI observation gate below.
 
    **CI observation gate.** Before exiting — including on `repair_status=parked`, which is exactly
    the unarmed-exit shape this catches — decide whether anything will still be watching this PR with

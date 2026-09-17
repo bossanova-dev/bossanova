@@ -90,9 +90,8 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
        process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join("\n"))
      '
    )"
-   # Read the expiry from the SAME policy the triggers come from. Never hardcode a duration here:
-   # a literal is what gets edited down, and the reported failure was a hand-written `--expires-in
-   # 30m` against a CI run that took longer, which expired mid-wait and delivered no wake at all.
+   # Read the expiry from the SAME policy the triggers come from. Never hardcode a duration
+   # here: a literal is what gets edited down.
    WATCH_EXPIRY="$(
      node --input-type=module -e '
        import{pathToFileURL as u}from"node:url"

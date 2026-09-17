@@ -755,7 +755,13 @@ Trust its `state`/`action` and restate no rule here:
 node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
   --check-verdict "$CHECK_VERDICT_JSON" --pr-view "$PR_VIEW_JSON" --watches "$WATCH_LIST_JSON" \
   --target-chat "$BOSS_AGENT_SESSION_ID" --pr "$PR_NUMBER" \
-  --triggers "$(node -e '...policy.watchTriggers.join(",")')" \
+  --triggers "$(
+    node --input-type=module -e '
+      import{pathToFileURL as u}from"node:url"
+      const {resolveCallbackAdapter}=await import(u(process.env.BOSS_BUILD_TOOLBOX+"/callback/adapter.mjs").href)
+      process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join(","))
+    '
+  )" \
   ${CALLBACKS_AVAILABLE:+--callbacks-available} --arm-attempts "$ARM_ATTEMPTS"
 ```
 

@@ -430,7 +430,10 @@ func (m ChatPickerModel) waitingReasonLine() string {
 		if m.daemonStatuses[chat.AgentSessionId] != statusWaiting {
 			continue
 		}
-		if line := waitingHintLine(m.daemonWaitingReasons[chat.AgentSessionId]); line != "" {
+		// demoted=false: the per-chat badge on this very row still reads
+		// "waiting", so the reason keeps its antecedent here whatever the
+		// SESSION row's badge says (BOS-1269 demotes the session row only).
+		if line := waitingHintLine(m.daemonWaitingReasons[chat.AgentSessionId], false); line != "" {
 			return m.fitProseLine(line)
 		}
 	}

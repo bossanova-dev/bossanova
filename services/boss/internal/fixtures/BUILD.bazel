@@ -28,6 +28,7 @@ go_test(
     ],
     embed = [":fixtures"],
     deps = [
+        "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gitremote",
         "//lib/bossalib/sessionreason",

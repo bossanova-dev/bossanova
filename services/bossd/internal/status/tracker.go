@@ -593,6 +593,55 @@ func PromoteWaiting(reported pb.ChatStatus, reason string) (pb.ChatStatus, strin
 	}
 }
 
+// IdleWaitingAggregate accumulates, across one session's chats, the
+// order-independent fact BOS-1269's display rule consumes: whether EVERY chat
+// that PromoteWaiting resolved to CHAT_STATUS_WAITING had reported
+// CHAT_STATUS_IDLE rather than CHAT_STATUS_WORKING.
+//
+// It lives beside PromoteWaiting because that function is "the single
+// definition" every read surface routes through, and this aggregate is derived
+// from exactly the pair of values PromoteWaiting consumes and discards. Both of
+// bossd's chat-status folds build one, so the rule cannot drift between the
+// persisting producer and the ListSessions producer.
+//
+// The zero value is ready to use and reports false — the fail-safe direction,
+// "do not demote".
+type IdleWaitingAggregate struct {
+	sawWaiting bool
+	sawNonIdle bool
+}
+
+// Observe records one chat, given the status it reported and the status
+// PromoteWaiting resolved that report to. Chats that did not resolve to WAITING
+// are ignored: the rule is a conjunction over the waiting-resolved chats only.
+//
+// Observe is order-independent by construction — it accumulates an existence
+// flag and a conjunction, neither of which can depend on the order chats are
+// visited in. That is what keeps the resulting label immune to the lexicographic
+// tie-break on agent session id that the session-level fold uses to pick a
+// winning chat.
+func (a *IdleWaitingAggregate) Observe(reported, resolved pb.ChatStatus) {
+	if resolved != pb.ChatStatus_CHAT_STATUS_WAITING {
+		return
+	}
+	a.sawWaiting = true
+	if reported != pb.ChatStatus_CHAT_STATUS_IDLE {
+		a.sawNonIdle = true
+	}
+}
+
+// AllIdle reports the aggregate for a session whose folded status is
+// sessionStatus, i.e. the value to place on displaystatus.Input.
+//
+// It is false unless the session ACTUALLY folded to WAITING, so a session that
+// holds a parked chat alongside a genuinely working one — which folds to
+// WORKING — never carries a true aggregate into the cascade. It is also false
+// when no chat resolved to waiting at all, so "vacuously true" can never be
+// mistaken for "every waiting chat was idle".
+func (a *IdleWaitingAggregate) AllIdle(sessionStatus pb.ChatStatus) bool {
+	return sessionStatus == pb.ChatStatus_CHAT_STATUS_WAITING && a.sawWaiting && !a.sawNonIdle
+}
+
 // SetOnWaitingChange wires the callback fired when a chat's waiting reason
 // changes. The wiring lives in cmd/main.go and publishes a ChatStatusDelta.
 func (t *Tracker) SetOnWaitingChange(fn func(agentSessionID string)) {

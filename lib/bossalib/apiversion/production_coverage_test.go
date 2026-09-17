@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -223,6 +224,23 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		return refreshChainUnprovenProbes()
 	case SessionListRankOrderChange:
 		return sessionListRankOrderProbes()
+	case WaitingDemotionLabelChange:
+		// A marked row whose PR-derived label replaced "waiting". The probe
+		// asserts the label was RESTORED rather than the mark cleared (KTD-4),
+		// which is the whole point of the transform.
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{
+				DisplayStatus:    pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+				DisplayLabel:     "✓ passing",
+				DisplayIntent:    pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				IsWaitingDemoted: true,
+			}
+		}, func(s *pb.Session) bool {
+			return s.GetDisplayLabel() == displaystatus.WaitingLabel &&
+				s.GetDisplayIntent() == pb.DisplayIntent_DISPLAY_INTENT_INFO &&
+				s.GetDisplaySpinner() &&
+				s.GetIsWaitingDemoted()
+		})
 	case AcceptedInvitationResponseChange:
 		return []responseProbe{{
 			procedure: bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,

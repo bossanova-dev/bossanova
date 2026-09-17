@@ -262,7 +262,7 @@ func sessionBaseBranch(sess *models.Session, fallback string) string {
 // never seen, or last heard from more than status.StaleThreshold ago — reads as
 // NOT busy, matching the repo-wide convention that a missing heartbeat means
 // "not running" (Tracker.GetBatch reports a stale entry as CHAT_STATUS_STOPPED,
-// and chatStatusFromSessionChats/displaystatus rely on that). Inverting it would
+// and chatStatusAndWaitingAggregate/displaystatus rely on that). Inverting it would
 // make the sweep inert for exactly the idle sessions it exists to serve.
 func (s *Server) busyChatStatus(ctx context.Context, sessionID string) string {
 	if s.chatStatus == nil || s.agentChats == nil {

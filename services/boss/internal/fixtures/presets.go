@@ -280,6 +280,20 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// waiting-demoted: two sessions that BOTH hold an armed callback over a
+		// PASSING PR, for the BOS-1269 proof scenario. The only difference
+		// between them is the status their chat reported before the promotion,
+		// which is exactly the discriminator the change introduced. The
+		// idle-derived row's STATUS must read "✓ passing" with its reason still
+		// legible beneath it; the working-derived row must still read "waiting"
+		// with a spinner. The waiting-callback preset cannot show this — it
+		// seeds only a working-derived parked session. Carries the same
+		// cloud-access e2e pin as demo so boss lands on the home session list.
+		"waiting-demoted": {
+			World:      WaitingDemotedWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// errored-status: two errored (orphaned + blocked) sessions whose live
 		// chat is working, for the BOS-430 session-list proof scenario. The home
 		// STATUS column must show the real "working" status recolored red (danger)

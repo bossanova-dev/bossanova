@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "title": "BOS-1269 session list — a run that went idle while a callback stayed armed shows its green PR label, while a run whose chat was working still reads 'waiting'",
+  "fixture": { "preset": "waiting-demoted" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home list STATUS column reads '✓ passing' for the idle-derived parked run — with its callback notice still legible beneath it — while the working-derived parked run still reads 'waiting'",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Tidy the changelog entries",
+            "match": "normalized",
+            "label": "home session list loaded (waiting-demoted preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: both runs hold an armed callback over a green PR, so the only difference between them is what their chat was doing when it was armed"
+        },
+        {
+          "expect": {
+            "text": "Split the importer module",
+            "match": "normalized",
+            "label": "the working-derived parked run is listed, so the contrast is in one still"
+          },
+          "caption": "The contrast run is listed alongside, so the rule can be seen discriminating rather than blanket-demoting"
+        },
+        {
+          "expect": {
+            "text": "✓ passing",
+            "match": "normalized",
+            "label": "the STATUS column shows the PR-derived label for the idle-derived parked run (neither row title contains the word, so this binds to the STATUS column) rather than the 'waiting' that used to mask it"
+          },
+          "caption": "The idle-derived run's STATUS reads '✓ passing' — the one fact the operator wants, no longer hidden behind a stale watch"
+        },
+        {
+          "expect": {
+            "text": "awaiting checks_failed on acme/my-app#1269",
+            "match": "normalized",
+            "label": "the callback notice still renders on its own sub-row beneath the demoted row, naming the trigger and the PR"
+          },
+          "caption": "The wait is not lost, only demoted: the reason sub-row still names WHAT the run is parked on"
+        },
+        {
+          "expect": {
+            "text": "waiting:",
+            "match": "normalized",
+            "label": "the demoted row's reason regains its 'waiting' antecedent, because the badge above it no longer supplies one"
+          },
+          "caption": "With the badge reading '✓ passing', the notice re-declares its own antecedent rather than dangling as a bare 'awaiting …' line"
+        },
+        {
+          "expect": {
+            "text": "Split the importer module[^\\r\\n]*waiting",
+            "match": "regex",
+            "label": "the working-derived parked run still reads 'waiting' IN ITS OWN STATUS CELL, proving the demotion is conditional on the pre-promotion status and not a blanket reversal of BOS-668"
+          },
+          "caption": "The working-derived run is unaffected: 'waiting' is still the more specific truth about a chat that was mid-run"
+        },
+        {
+          "key": "enter",
+          "caption": "Open the demoted session's chat picker"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the chat picker for the demoted session still badges its chat 'waiting', showing the demotion changed the session row and not the chat's own status",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "awaiting checks_failed on acme/my-app#1269",
+            "match": "normalized",
+            "label": "the chat picker renders the same callback reason above the chat table"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker shows the identical reason wording the home list used — one source of truth, two views"
+        },
+        {
+          "expect": {
+            "text": "\\bwaiting\\b",
+            "match": "regex",
+            "label": "the chat row's STATUS column still reads 'waiting' as a word of its own inside a session whose row read '✓ passing' — the word boundaries exclude the 'awaiting …' reason line above the table, which a bare substring would have matched instead"
+          },
+          "caption": "The chat is still parked: BOS-1269 demotes the SESSION summary, never the per-chat badge — a deliberate, recorded disagreement"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat picker action bar is present"
+          },
+          "caption": "The [esc] back action bar renders below the populated chat table"
+        }
+      ]
+    }
+  ]
+}

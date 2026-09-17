@@ -223,6 +223,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	// Server.GetSessionStatuses so the chat picker and the session list agree.
 	chatStatus := pb.ChatStatus_CHAT_STATUS_STOPPED
 	var chatResetAt time.Time
+	var waitingIdle IdleWaitingAggregate
 	if c.chats != nil && c.chat != nil {
 		chatList, listErr := c.chats.ListBySession(ctx, sessionID)
 		if listErr == nil {
@@ -247,8 +248,14 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 				}
 				// An inactive chat parked on an external event reads as WAITING
 				// from here down.
+				status := c.deriveChatStatus(ctx, chat.AgentSessionID, e.Status)
+				// BOS-1269: the REPORTED status is in hand right here and was
+				// previously discarded. Accumulate it before it is lost — the
+				// cascade needs to know whether the wait is refining idle or
+				// working, and nothing downstream can recover it.
+				waitingIdle.Observe(e.Status, status)
 				resolved = append(resolved, resolvedChat{
-					status:  c.deriveChatStatus(ctx, chat.AgentSessionID, e.Status),
+					status:  status,
 					resetAt: e.ResetAt,
 				})
 			}
@@ -290,11 +297,36 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		}
 	}
 
-	out := displaystatus.Compute(displaystatus.Input{
+	in := displaystatus.Input{
 		Session:     pbSess,
 		ChatStatus:  chatStatus,
 		ChatResetAt: chatResetAt,
-	})
+		// BOS-1269. AllIdle is false unless the fold actually landed on
+		// WAITING, so a session holding one parked chat and one genuinely
+		// working chat carries a false aggregate exactly as it should.
+		AllWaitingChatsIdle: waitingIdle.AllIdle(chatStatus),
+	}
+	out := displaystatus.Compute(in)
+	// This producer persists ONLY the (label, intent, spinner) trio. The
+	// BOS-1269 demotion mark has no column on the sessions row, so it is
+	// deliberately not stamped here: pbSess is a local that nothing reads past
+	// the Compute above, and assigning to it would be a dead store dressed up
+	// as producer parity.
+	//
+	// KNOWN GAP, recorded rather than implied. Because the composite IS
+	// persisted while the mark is NOT, every read path that projects a stored
+	// row through server.SessionToProto — GetSession, ProxyGetSession and
+	// bosso's read model, Stop/Retry/Close/Move/LinkSessionPR, UpdateSession's
+	// push — serves a demoted "✓ passing" with the mark false. The mark reaches
+	// the wire from exactly one place: the ListSessions recompute in
+	// services/bossd/internal/server. Downstream,
+	// apiversion.downconvertWaitingDemotedSession early-returns on an unmarked
+	// row, so a client pinned below V20260915 is served the NEW composite from
+	// those procedures, and WaitingChatStatusChange's exact-label guard stops
+	// matching them too. Closing it is a design decision this comment does not
+	// make: persist the mark (a column plus migration, against KTD-2's
+	// transport-only intent), or hydrate it on the single-session read paths
+	// the way ListSessions already does.
 
 	// Skip the UPDATE when nothing changed — keeps recompute idempotent and
 	// avoids spurious updated_at bumps.

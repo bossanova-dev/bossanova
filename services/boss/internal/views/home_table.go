@@ -133,7 +133,7 @@ func (h *HomeModel) buildTableRows() {
 		if sessionHasEndpointRow(sess) {
 			nameWidthLabels = append(nameWidthLabels, sessionEndpointLabels(sess))
 		}
-		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess)); waitingHint != "" {
+		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), sess.GetIsWaitingDemoted()); waitingHint != "" {
 			nameWidthLabels = append(nameWidthLabels, waitingHint)
 		}
 		nameWidthLabels = append(nameWidthLabels, sessionWarningHintTexts(sess)...)
@@ -264,7 +264,7 @@ func (h *HomeModel) buildTableRows() {
 		// danger-styled warning block. Same emit-and-count discipline as the
 		// endpoint row: the predicate here is waitingHintLine != "", which is
 		// exactly what sessionSubRowCount counts.
-		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess)); waitingHint != "" {
+		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), sess.GetIsWaitingDemoted()); waitingHint != "" {
 			rows = append(rows, project(table.Row{"", "", "", styleStatusInfo.Render(waitingHint), "", ""}))
 		}
 		// Warning sub-rows. The style is resolved PER HINT through the shared

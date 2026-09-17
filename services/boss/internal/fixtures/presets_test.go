@@ -15,12 +15,13 @@ import (
 	// SeedKind comment); this is the guard below reading the real probe budget
 	// instead of duplicating the literal.
 	"github.com/recurser/boss/internal/preflight"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/proto"
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
+var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "waiting-demoted", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -568,6 +569,103 @@ func TestRepoOrganizationPresetSeedsOrigins(t *testing.T) {
 	for _, repo := range DemoWorld().Repos {
 		if repo.GetOriginUrl() != "" {
 			t.Errorf("demo repo %q gained an origin URL = %q; that changes every demo capture", repo.GetId(), repo.GetOriginUrl())
+		}
+	}
+}
+
+// TestWaitingDemotedWorldSeedsTheContrast pins the BOS-1269 proof preset the way
+// every other derived proof world in this package is pinned.
+//
+// It exists because WaitingDemotedSessions DERIVES its Display* triple and its
+// demotion mark by running the real displaystatus cascade, so the fixture cannot
+// agree with a broken cascade. But a derivation that silently stops
+// discriminating is still deterministic and still well-formed, so
+// TestPresetsExactSet, TestPresetsDeclareSeedAndEnv and
+// TestPresetWorldsDeterministic all pass identically over it. Only the proof
+// scenario reddens, and the proof harness is not in `make test` or CI — so
+// without this pin the derivation can go vacuous with every gate green.
+//
+// The CONTRAST is the assertion, not either row alone. Both sessions hold an
+// armed callback and a PASSING PR; if they ever render the same label, the still
+// proves a label exists rather than that the rule discriminates.
+func TestWaitingDemotedWorldSeedsTheContrast(t *testing.T) {
+	w := Presets()["waiting-demoted"].World()
+	if len(w.Sessions) != 2 {
+		t.Fatalf("waiting-demoted world has %d sessions, want 2", len(w.Sessions))
+	}
+
+	byID := map[string]*pb.Session{}
+	for _, sess := range w.Sessions {
+		byID[sess.GetId()] = sess
+	}
+	demoted, ok := byID["sess-1269-idle"]
+	if !ok {
+		t.Fatal("waiting-demoted world has no sess-1269-idle")
+	}
+	contrast, ok := byID["sess-1269-working"]
+	if !ok {
+		t.Fatal("waiting-demoted world has no sess-1269-working")
+	}
+
+	// Both rows must be about the SAME PR state, or the contrast proves nothing.
+	for _, sess := range []*pb.Session{demoted, contrast} {
+		if got := sess.GetDisplayStatus(); got != pb.DisplayStatus_DISPLAY_STATUS_PASSING {
+			t.Fatalf("%s display_status = %v, want PASSING — the contrast requires both rows to sit over a green PR", sess.GetId(), got)
+		}
+	}
+
+	if got := demoted.GetDisplayLabel(); got != "✓ passing" {
+		t.Errorf("demoted row display_label = %q, want %q", got, "✓ passing")
+	}
+	if demoted.GetDisplaySpinner() {
+		t.Error("demoted row display_spinner = true, want false — the row is not live")
+	}
+	if !demoted.GetIsWaitingDemoted() {
+		t.Error("demoted row is_waiting_demoted = false, want true")
+	}
+
+	if got := contrast.GetDisplayLabel(); got != displaystatus.WaitingLabel {
+		t.Errorf("contrast row display_label = %q, want %q", got, displaystatus.WaitingLabel)
+	}
+	if !contrast.GetDisplaySpinner() {
+		t.Error("contrast row display_spinner = false, want true")
+	}
+	if contrast.GetIsWaitingDemoted() {
+		t.Error("contrast row is_waiting_demoted = true, want false")
+	}
+	if demoted.GetDisplayLabel() == contrast.GetDisplayLabel() {
+		t.Fatal("both rows render the same label; the still would prove a label exists, not that the rule discriminates")
+	}
+
+	// The reason sub-row renders from SessionStatusEntry, not from the Session.
+	// Omitting these would make the reason vanish from the still with no other
+	// test failing — which is the whole reason this pin exists.
+	if len(w.SessionStatuses) != 2 {
+		t.Fatalf("waiting-demoted world has %d session statuses, want 2", len(w.SessionStatuses))
+	}
+	for _, entry := range w.SessionStatuses {
+		if entry.GetStatus() != pb.ChatStatus_CHAT_STATUS_WAITING {
+			t.Errorf("%s session status = %v, want WAITING", entry.GetSessionId(), entry.GetStatus())
+		}
+		if entry.GetWaitingReason() == "" {
+			t.Errorf("%s carries no waiting reason; the sub-row would vanish from the still", entry.GetSessionId())
+		}
+	}
+	if !strings.Contains(WaitingDemotedReason, WaitingDemotedTrigger) ||
+		!strings.Contains(WaitingDemotedReason, strconv.Itoa(WaitingDemotedPRNumber)) {
+		t.Fatalf("WaitingDemotedReason = %q, want it to name the trigger and the PR", WaitingDemotedReason)
+	}
+
+	// The per-chat badge still reports the parked chat inside the demoted
+	// session. That session-versus-chat disagreement is a deliberate, recorded
+	// consequence (the session summarises children that are individually still
+	// parked), and the chat-picker proof scene depends on it.
+	if len(w.ChatStatuses) != 2 {
+		t.Fatalf("waiting-demoted world has %d chat statuses, want 2", len(w.ChatStatuses))
+	}
+	for _, entry := range w.ChatStatuses {
+		if entry.GetStatus() != pb.ChatStatus_CHAT_STATUS_WAITING {
+			t.Errorf("%s chat status = %v, want WAITING", entry.GetAgentSessionId(), entry.GetStatus())
 		}
 	}
 }

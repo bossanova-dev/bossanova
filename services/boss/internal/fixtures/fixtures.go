@@ -1494,3 +1494,156 @@ func BoxedApprovalChatStatuses() []*pb.ChatStatusEntry {
 		},
 	}
 }
+
+// --- BOS-1269: an idle-derived wait demoted below a verified-positive PR ---
+
+// WaitingDemotedPRNumber is the PR the BOS-1269 demoted session is parked on,
+// and WaitingWorkingPRNumber the one its contrast neighbour is parked on.
+// Exported so scenario assertions bind to the same numbers the reason strings
+// embed rather than re-typing them.
+const (
+	WaitingDemotedPRNumber = 1269
+	WaitingWorkingPRNumber = 1270
+)
+
+// WaitingDemotedTrigger is the armed callback both BOS-1269 sessions carry. It
+// is deliberately a FAILURE trigger: the whole point of the ticket is a stale
+// watch armed against a PR that has since gone green, so a trigger naming
+// success would read as though the wait and the label agreed.
+const WaitingDemotedTrigger = "checks_failed"
+
+// WaitingDemotedReason and WaitingDemotedWorkingReason are the canonical reason
+// strings, composed through the shared displaystatus helper rather than
+// hand-spelled so the fixture cannot drift from the wording the daemon emits.
+var (
+	WaitingDemotedReason = displaystatus.CallbackWaitingReason(
+		WaitingDemotedTrigger, "acme", "my-app", WaitingDemotedPRNumber,
+	)
+	WaitingDemotedWorkingReason = displaystatus.CallbackWaitingReason(
+		WaitingDemotedTrigger, "acme", "my-app", WaitingWorkingPRNumber,
+	)
+)
+
+// WaitingDemotedWorld builds the BOS-1269 dataset: one session whose chat went
+// IDLE while a callback stayed armed, over a PASSING PR — its row must read
+// "✓ passing" with its reason sub-row still legible — beside one whose chat is
+// working-DERIVED, which must still read "waiting" with a spinner.
+//
+// The contrast in one still is the point. A single row would prove a label
+// exists; it would not prove the rule DISCRIMINATES. Both sessions hold an armed
+// callback and a passing PR, so the only difference between them is the status
+// their chat reported before the promotion — exactly the discriminator the
+// change introduced.
+func WaitingDemotedWorld() World {
+	return World{
+		Repos:           Repos(),
+		Sessions:        WaitingDemotedSessions(),
+		Chats:           WaitingDemotedChats(),
+		ChatStatuses:    WaitingDemotedChatStatuses(),
+		SessionStatuses: WaitingDemotedSessionStatuses(),
+	}
+}
+
+// WaitingDemotedSessions returns the demoted session and its contrast
+// neighbour.
+//
+// Unlike WaitingCallbackSessions, which hand-writes its Display* triple, these
+// DERIVE the composite through displaystatus.Compute — the mock daemon serves
+// sessions verbatim without running the cascade, so a hand-written triple could
+// agree with a broken cascade and the still would prove nothing. The demotion
+// mark is stamped through displaystatus.WasWaitingDemoted for the same reason:
+// the fixture asserts the producer's rule rather than restating its conclusion.
+func WaitingDemotedSessions() []*pb.Session {
+	compute := func(sess *pb.Session, allWaitingChatsIdle bool) *pb.Session {
+		in := displaystatus.Input{
+			Session:             sess,
+			ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+			AllWaitingChatsIdle: allWaitingChatsIdle,
+		}
+		out := displaystatus.Compute(in)
+		sess.DisplayLabel = out.Label
+		sess.DisplayIntent = out.Intent
+		sess.DisplaySpinner = out.Spinner
+		sess.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
+		return sess
+	}
+
+	demoted := compute(&pb.Session{
+		Id: "sess-1269-idle", RepoId: "repo-1", RepoDisplayName: "my-app",
+		// The titles deliberately avoid the words "waiting" and "passing" and
+		// the trigger name, so the proof assertions bind to the STATUS column
+		// and the reason sub-row rather than to a row title containing them.
+		Title: "Tidy the changelog entries", BranchName: "boss/tidy-changelog",
+		State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		PrNumber:      i32(WaitingDemotedPRNumber),
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		CreatedAt:     ts(-4 * time.Hour),
+		WorktreePath:  "/Users/demo/worktrees/my-app/tidy-changelog",
+	}, true)
+
+	contrast := compute(&pb.Session{
+		Id: "sess-1269-working", RepoId: "repo-1", RepoDisplayName: "my-app",
+		Title: "Split the importer module", BranchName: "boss/split-importer",
+		State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		PrNumber:      i32(WaitingWorkingPRNumber),
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		CreatedAt:     ts(-2 * time.Hour),
+		WorktreePath:  "/Users/demo/worktrees/my-app/split-importer",
+	}, false)
+
+	return []*pb.Session{demoted, contrast}
+}
+
+// WaitingDemotedChats returns one chat per session, so each session's aggregate
+// is unambiguous and each chat picker shows a single parked row.
+func WaitingDemotedChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-1269-idle", AgentSessionId: "claude-1269-idle", SessionId: "sess-1269-idle", Title: "Tidy the changelog entries", CreatedAt: ts(-4 * time.Hour)},
+		{Id: "chat-1269-working", AgentSessionId: "claude-1269-working", SessionId: "sess-1269-working", Title: "Split the importer module", CreatedAt: ts(-2 * time.Hour)},
+	}
+}
+
+// WaitingDemotedChatStatuses returns the per-chat heartbeats. BOTH chats are
+// served CHAT_STATUS_WAITING — the promotion happened for both — which is why
+// the per-chat badge still reports the parked chat inside the demoted session,
+// and why the session row disagreeing with its own chat row is a deliberate,
+// visible consequence rather than a bug.
+//
+// LastOutputAt is what makes the two rows tell their story: the demoted
+// session's chat fell quiet long before the still was taken, while the contrast
+// session's chat was producing output moments ago.
+func WaitingDemotedChatStatuses() []*pb.ChatStatusEntry {
+	return []*pb.ChatStatusEntry{
+		{
+			AgentSessionId: "claude-1269-idle",
+			Status:         pb.ChatStatus_CHAT_STATUS_WAITING,
+			WaitingReason:  WaitingDemotedReason,
+			LastOutputAt:   ts(-36 * time.Minute),
+		},
+		{
+			AgentSessionId: "claude-1269-working",
+			Status:         pb.ChatStatus_CHAT_STATUS_WAITING,
+			WaitingReason:  WaitingDemotedWorkingReason,
+			LastOutputAt:   ts(-30 * time.Second),
+		},
+	}
+}
+
+// WaitingDemotedSessionStatuses returns the aggregate per-session heartbeats.
+// The home list reads the waiting reason from HERE (SessionStatusEntry), not
+// from the Session, so omitting this would make the reason sub-row vanish from
+// the still without any test failing.
+func WaitingDemotedSessionStatuses() []*pb.SessionStatusEntry {
+	return []*pb.SessionStatusEntry{
+		{
+			SessionId:     "sess-1269-idle",
+			Status:        pb.ChatStatus_CHAT_STATUS_WAITING,
+			WaitingReason: WaitingDemotedReason,
+		},
+		{
+			SessionId:     "sess-1269-working",
+			Status:        pb.ChatStatus_CHAT_STATUS_WAITING,
+			WaitingReason: WaitingDemotedWorkingReason,
+		},
+	}
+}

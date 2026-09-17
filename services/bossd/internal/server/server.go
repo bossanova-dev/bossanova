@@ -2392,20 +2392,30 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 
 	for _, p := range pbSessions {
 		_, hasDisplayEntry := entries[p.Id]
-		chatStatus, _, ok := s.chatStatusFromSessionChats(ctx, chatsBySession[p.Id], chatsLoaded)
+		chatStatus, _, ok, allWaitingIdle := s.chatStatusAndWaitingAggregate(ctx, chatsBySession[p.Id], chatsLoaded)
 		if !ok || (!hasDisplayEntry && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED) {
 			continue
 		}
+		// This bypass leaves whatever the persisting producer last wrote,
+		// including its BOS-1269 demotion decision — it does not clear the
+		// composite, so the two producers stay consistent by not competing.
 		if shouldKeepCheckingCompositeOverReview(p, chatStatus) {
 			continue
 		}
-		out := displaystatus.Compute(displaystatus.Input{
-			Session:    p,
-			ChatStatus: chatStatus,
-		})
+		in := displaystatus.Input{
+			Session:             p,
+			ChatStatus:          chatStatus,
+			AllWaitingChatsIdle: allWaitingIdle,
+		}
+		out := displaystatus.Compute(in)
 		p.DisplayLabel = out.Label
 		p.DisplayIntent = out.Intent
 		p.DisplaySpinner = out.Spinner
+		// BOS-1269: stamp the transport-only mark from the cascade's own result
+		// for this call. It must never be set where the label was not demoted —
+		// the down-convert would then rewrite an ordinary green row into
+		// "waiting", manufacturing a wait that never happened.
+		p.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
 	}
 
 	// BOS-473: hydrate verified machine-local endpoints LAST, and only for an
@@ -4828,7 +4838,8 @@ func (s *Server) chatStatusForSession(ctx context.Context, sessionID string) (pb
 		s.logger.Warn().Err(err).Str("session_id", sessionID).Msg("list chats for session status")
 		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", false
 	}
-	return s.chatStatusFromSessionChats(ctx, chats, true)
+	st, reason, ok, _ := s.chatStatusAndWaitingAggregate(ctx, chats, true)
+	return st, reason, ok
 }
 
 // applyWaitingMarker promotes a chat status entry from WORKING to WAITING when
@@ -4885,20 +4896,29 @@ func sessionChatStatusRank(st pb.ChatStatus) int {
 	}
 }
 
-// chatStatusFromSessionChats reduces a session's chats to the one status the
+// chatStatusAndWaitingAggregate reduces a session's chats to the one status the
 // session list renders, plus the waiting reason to surface when that status is
 // WAITING. The reduction walks the ordered chats slice rather than the GetBatch
 // map so the winning chat — and therefore the reason — is a function of the
 // data, never of Go's randomized map iteration.
-func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models.AgentChat, loaded bool) (pb.ChatStatus, string, bool) {
+// It also returns BOS-1269's order-independent aggregate: whether every chat
+// that resolved to WAITING had reported IDLE rather than WORKING. Only the
+// ListSessions display recompute reads that fourth value; every other caller
+// discards it.
+//
+// The aggregate is deliberately NOT derived from the winning chat. The winner
+// is decided by the lexicographic tie-break below, so a status-shaped carrier
+// would make the session's label depend on how its agent-session uuids happened
+// to sort. status.IdleWaitingAggregate is a conjunction, which cannot.
+func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*models.AgentChat, loaded bool) (pb.ChatStatus, string, bool, bool) {
 	if s.chatStatus == nil || s.agentChats == nil {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true, false
 	}
 	if !loaded {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", false
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", false, false
 	}
 	if len(chats) == 0 {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true, false
 	}
 
 	agentSessionIDs := make([]string, len(chats))
@@ -4914,12 +4934,16 @@ func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models
 	best := pb.ChatStatus_CHAT_STATUS_STOPPED
 	bestReason := ""
 	bestChatID := ""
+	var waitingIdle status.IdleWaitingAggregate
 	for _, c := range chats {
 		e, ok := entries[c.AgentSessionID]
 		if !ok || e == nil {
 			continue
 		}
 		st, reason := status.PromoteWaiting(e.Status, s.chatStatus.Waiting(c.AgentSessionID))
+		// BOS-1269: accumulate the reported status PromoteWaiting is about to
+		// discard, in the same loop that already visits every chat.
+		waitingIdle.Observe(e.Status, st)
 		rank := sessionChatStatusRank(st)
 		bestRank := sessionChatStatusRank(best)
 		// Strictly better wins; an equal-ranked chat only wins the tie when its
@@ -4940,7 +4964,7 @@ func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models
 			}
 		}
 	}
-	return best, bestReason, true
+	return best, bestReason, true, waitingIdle.AllIdle(best)
 }
 
 // agentAuthFailedBlockedReason is the stable, machine-matchable blocked_reason

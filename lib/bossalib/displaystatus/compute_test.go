@@ -2,6 +2,7 @@ package displaystatus
 
 import (
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -913,14 +914,375 @@ func TestBaseStatus_WaitingLosesToQuestionAndLimited(t *testing.T) {
 func TestBaseStatus_WaitingWinsOverPRDerivedLabels(t *testing.T) {
 	// Waiting sits exactly where working sat: above the workflow/PR-derived
 	// labels, so a parked chat does not fall back to a stale "✓ passing".
+	//
+	// BOS-1269 SPLIT this rule rather than reversing it, so the assertion is no
+	// longer unconditional. Waiting still wins over a passing PR for the
+	// working-derived case — a chat that was mid-run when the callback was
+	// armed — and for an aggregate the producer could not determine. Only the
+	// idle-derived case falls through, and that case is covered by
+	// TestBaseStatus_WaitingDemotionMatrix below.
 	sess := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}
-	if got := Compute(Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}); got.Label != WaitingLabel {
-		t.Fatalf("waiting over passing PR = %q, want %q", got.Label, WaitingLabel)
+	working := Compute(Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING})
+	if working.Label != WaitingLabel {
+		t.Fatalf("working-derived waiting over passing PR = %q, want %q", working.Label, WaitingLabel)
 	}
 	// ...but the transient in-flight overrides still win, exactly as for working.
 	setup := &pb.Session{DisplaySettingUp: true}
 	if got := Compute(Input{Session: setup, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}); got.Label != "initializing" {
 		t.Fatalf("initializing over waiting = %q, want initializing", got.Label)
+	}
+}
+
+// waitingOutput is the composite the un-demoted waiting branch emits. Named so
+// the BOS-1269 tables read as "unchanged" rather than repeating a literal.
+var waitingOutput = Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
+
+// everyDisplayStatus returns every DisplayStatus enum value, so the BOS-1269
+// loops sweep the whole axis instead of a hand-picked subset and a future
+// addition cannot slip past them unclassified.
+func everyDisplayStatus() []pb.DisplayStatus {
+	values := make([]pb.DisplayStatus, 0, len(pb.DisplayStatus_value))
+	for _, v := range pb.DisplayStatus_value {
+		values = append(values, pb.DisplayStatus(v))
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return values
+}
+
+// TestBaseStatus_WaitingDemotionMatrix sweeps BOS-1269's three input axes as
+// loops rather than as literal cases: the pre-promotion aggregate {all-idle,
+// any-working/unknown} × every DisplayStatus × the waiting-versus-not chat
+// status. The rule is a conjunction, so the loops are what prove it fires for
+// exactly two of the twelve PR states and for exactly one chat status.
+func TestBaseStatus_WaitingDemotionMatrix(t *testing.T) {
+	positive := map[pb.DisplayStatus]Output{
+		pb.DisplayStatus_DISPLAY_STATUS_PASSING:  {Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		pb.DisplayStatus_DISPLAY_STATUS_APPROVED: {Label: "✓ approved", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+	}
+
+	t.Run("all idle demotes only the two verified-positive states", func(t *testing.T) {
+		for _, ds := range everyDisplayStatus() {
+			in := Input{
+				Session:             &pb.Session{DisplayStatus: ds},
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			}
+			want, demoted := positive[ds]
+			if !demoted {
+				want = waitingOutput
+			}
+			got := Compute(in)
+			if got != want {
+				t.Errorf("all-idle over %v = %+v, want %+v", ds, got, want)
+			}
+			if gotMark := WasWaitingDemoted(in, got); gotMark != demoted {
+				t.Errorf("WasWaitingDemoted(all-idle, %v) = %v, want %v", ds, gotMark, demoted)
+			}
+		}
+	})
+
+	// R2 and R7 as one loop: a false aggregate is BOTH the working-derived case
+	// and the "producer could not determine it" case, because the rule is
+	// written as `== true` rather than as `!= working`. Neither may demote.
+	t.Run("any working or unknown aggregate never demotes", func(t *testing.T) {
+		for _, ds := range everyDisplayStatus() {
+			in := Input{
+				Session:    &pb.Session{DisplayStatus: ds},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING,
+			}
+			if got := Compute(in); got != waitingOutput {
+				t.Errorf("unset aggregate over %v = %+v, want %+v", ds, got, waitingOutput)
+			}
+			if WasWaitingDemoted(in, Compute(in)) {
+				t.Errorf("WasWaitingDemoted(unset aggregate, %v) = true, want false", ds)
+			}
+		}
+	})
+
+	// The aggregate must be INERT outside the waiting branch: it is a
+	// qualifier on that branch, not a switch of its own. Sweeping every other
+	// chat status proves a producer that sets it too eagerly cannot change a
+	// row the rule was never about.
+	t.Run("the aggregate is inert outside the waiting branch", func(t *testing.T) {
+		for name, raw := range pb.ChatStatus_value {
+			cs := pb.ChatStatus(raw)
+			if cs == pb.ChatStatus_CHAT_STATUS_WAITING {
+				continue
+			}
+			for _, ds := range everyDisplayStatus() {
+				sess := &pb.Session{DisplayStatus: ds}
+				want := Compute(Input{Session: sess, ChatStatus: cs})
+				in := Input{Session: sess, ChatStatus: cs, AllWaitingChatsIdle: true}
+				if got := Compute(in); got != want {
+					t.Errorf("%s over %v with aggregate set = %+v, want %+v (unchanged)", name, ds, got, want)
+				}
+				if WasWaitingDemoted(in, Compute(in)) {
+					t.Errorf("WasWaitingDemoted(%s, %v) = true, want false", name, ds)
+				}
+			}
+		}
+	})
+}
+
+// TestBaseStatus_WaitingDemotionDecisions carries one named case per row of the
+// plan's decision matrix — the rows where the outcome is a DECISION rather than
+// a derivation from the rule as stated. Each name records its decision so a
+// future reader sees it was chosen, not inherited.
+func TestBaseStatus_WaitingDemotionDecisions(t *testing.T) {
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+	passing := func(mutate func(*pb.Session)) *pb.Session {
+		s := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}
+		if mutate != nil {
+			mutate(s)
+		}
+		return s
+	}
+
+	tests := []struct {
+		name string
+		in   Input
+		want Output
+	}{
+		{
+			// "✓ review" renders green and carries SUCCESS intent, but it
+			// asserts review REQUESTED, not checks passed. An intent-keyed rule
+			// would wrongly demote it while the checks are still running.
+			name: "review is green but is not verified-positive",
+			in: Input{
+				Session:             &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_REVIEW},
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: waitingOutput,
+		},
+		{
+			name: "checking is not verified-positive",
+			in: Input{
+				Session:             &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING},
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: waitingOutput,
+		},
+		{
+			// Same label as the row above, different intent. A label-keyed
+			// implementation would conflate the two; this pins both.
+			name: "checking with failures is not verified-positive either",
+			in: Input{
+				Session: &pb.Session{
+					DisplayStatus:      pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+					DisplayHasFailures: true,
+				},
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: waitingOutput,
+		},
+		{
+			// The merging branch exists to stop exactly this green label: the
+			// merge is about to invalidate it.
+			name: "merging still outranks a demoted row",
+			in: Input{
+				Session:             passing(func(s *pb.Session) { s.DisplayMerging = true }),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "initializing still outranks a demoted row",
+			in: Input{
+				Session:             passing(func(s *pb.Session) { s.DisplaySettingUp = true }),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "archiving still outranks a demoted row",
+			in: Input{
+				Session:             passing(func(s *pb.Session) { s.ArchivePending = true }),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true},
+		},
+		{
+			// Fall-through, not an inline return: BOS-855 placed this branch
+			// deliberately and an inline prOutput would silently reverse it.
+			name: "fall-through lands on the draft-PR failure, not on the green label",
+			in: Input{
+				Session:             passing(func(s *pb.Session) { s.BlockedReason = &prFailure }),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: draftPRFailedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "fall-through lands on an active workflow, not on the green label",
+			in: Input{
+				Session: passing(func(s *pb.Session) {
+					s.WorkflowDisplayStatus = pb.WorkflowStatus_WORKFLOW_STATUS_FAILED
+					s.WorkflowDisplayLeg = 3
+					s.WorkflowDisplayMaxLegs = 5
+				}),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "failed 3/5", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "fall-through lands on repairing, not on the green label",
+			in: Input{
+				Session:             passing(func(s *pb.Session) { s.DisplayIsRepairing = true }),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "repairing", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true},
+		},
+		{
+			// isMutedTerminalPR exempts only merged/closed, so the honest-green
+			// convention applies: the row keeps its green label recolored red.
+			name: "an errored session keeps the honest green recolored DANGER",
+			in: Input{
+				Session:             passing(func(s *pb.Session) { s.State = pb.SessionState_SESSION_STATE_BLOCKED }),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			// prOutput reports ok=false for a nil Session, so the conjunction
+			// cannot hold and the row keeps its wait.
+			name: "a nil session cannot satisfy the conjunction",
+			in: Input{
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: waitingOutput,
+		},
+		{
+			// R4's two human-action branches, which sit above the gate.
+			name: "a question still outranks a demoted row",
+			in: Input{
+				Session:             passing(nil),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_QUESTION,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: QuestionLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "a usage limit still outranks a demoted row",
+			in: Input{
+				Session:             passing(nil),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_LIMITED,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "usage-limited", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			// Proves the demotion is gated on the WAITING branch, not on the
+			// new field alone.
+			name: "a working chat with the aggregate set still reads working",
+			in: Input{
+				Session:             passing(nil),
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WORKING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
+		},
+		{
+			name: "an approved PR is the second verified-positive state",
+			in: Input{
+				Session:             &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_APPROVED},
+				ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+				AllWaitingChatsIdle: true,
+			},
+			want: Output{Label: "✓ approved", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Compute(tc.in); got != tc.want {
+				t.Fatalf("Compute() = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWasWaitingDemoted_MarksEveryFallThrough pins the decision that the mark
+// follows the GATE, not the green label: a demoted session that falls through
+// onto "repairing", a workflow label or "? PR failed" would also have read
+// "waiting" before BOS-1269, so the inverse owes it the same restoration and
+// the mark must be set. The rows that never demoted must never be marked — a
+// spurious mark is the worst available failure, because it would make the
+// inverse manufacture a wait that never happened.
+func TestWasWaitingDemoted_MarksEveryFallThrough(t *testing.T) {
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+	idleWaiting := func(s *pb.Session) Input {
+		return Input{Session: s, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING, AllWaitingChatsIdle: true}
+	}
+
+	marked := []struct {
+		name string
+		in   Input
+	}{
+		{"green PR", idleWaiting(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING})},
+		{"repairing", idleWaiting(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, DisplayIsRepairing: true})},
+		{"draft PR failure", idleWaiting(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, BlockedReason: &prFailure})},
+		{"workflow", idleWaiting(&pb.Session{
+			DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_APPROVED,
+			WorkflowDisplayStatus:  pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING,
+			WorkflowDisplayLeg:     1,
+			WorkflowDisplayMaxLegs: 4,
+		})},
+	}
+	for _, tc := range marked {
+		t.Run("marked/"+tc.name, func(t *testing.T) {
+			out := Compute(tc.in)
+			if IsWaitingLabel(out.Label) {
+				t.Fatalf("precondition: label is still %q, so this row did not fall through", out.Label)
+			}
+			if !WasWaitingDemoted(tc.in, out) {
+				t.Fatalf("WasWaitingDemoted() = false for a fall-through onto %q, want true", out.Label)
+			}
+		})
+	}
+
+	unmarked := []struct {
+		name string
+		in   Input
+	}{
+		{"merging outranks the gate", idleWaiting(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, DisplayMerging: true})},
+		{"initializing outranks the gate", idleWaiting(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, DisplaySettingUp: true})},
+		{"archiving outranks the gate", idleWaiting(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, ArchivePending: true})},
+		{"a usage limit outranks the gate", Input{
+			Session:             &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+			ChatStatus:          pb.ChatStatus_CHAT_STATUS_LIMITED,
+			AllWaitingChatsIdle: true,
+		}},
+		{"question outranks the gate", Input{
+			Session:             &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+			ChatStatus:          pb.ChatStatus_CHAT_STATUS_QUESTION,
+			AllWaitingChatsIdle: true,
+		}},
+		{"a failing PR is not verified-positive", idleWaiting(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING})},
+		{"an unset aggregate never demotes", Input{
+			Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+			ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING,
+		}},
+		{"an ordinary green row was never waiting", Input{
+			Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+			ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
+		}},
+	}
+	for _, tc := range unmarked {
+		t.Run("unmarked/"+tc.name, func(t *testing.T) {
+			if WasWaitingDemoted(tc.in, Compute(tc.in)) {
+				t.Fatal("WasWaitingDemoted() = true, want false")
+			}
+		})
 	}
 }
 
@@ -1353,5 +1715,83 @@ func TestPreDraftPRFailureOutput_MatchesOldCascade(t *testing.T) {
 		if want := oldCompute(in); got != want {
 			t.Errorf("input %d: PreDraftPRFailureOutput() = %+v, want (old cascade) %+v", i, got, want)
 		}
+	}
+}
+
+// TestInput_WaitingDemotionCarriersAreInertWhenUnset pins BOS-1269's fail-safe
+// at the carrier level: the aggregate the rule reads and the mark the inverse
+// reads both default to false, so a caller that has never heard of either keeps
+// the pre-change behaviour. It is deliberately separate from the cascade matrix
+// — this asserts the DEFAULTS, not the rule.
+func TestInput_WaitingDemotionCarriersAreInertWhenUnset(t *testing.T) {
+	var in Input
+	if in.AllWaitingChatsIdle {
+		t.Fatal("Input.AllWaitingChatsIdle zero value = true, want false (the fail-safe is 'do not demote')")
+	}
+	var sess *pb.Session
+	if sess.GetIsWaitingDemoted() {
+		t.Fatal("(*pb.Session)(nil).GetIsWaitingDemoted() = true, want false")
+	}
+	if (&pb.Session{}).GetIsWaitingDemoted() {
+		t.Fatal("zero Session.GetIsWaitingDemoted() = true, want false")
+	}
+}
+
+// TestBaseStatus_IdleDerivedWaitingFallsThroughToAVerifiedPositivePR is the
+// first evidence of BOS-1269's rule, named for the reported symptom: a chat that
+// went idle while a callback stayed armed rendered "waiting" for 36 minutes over
+// a PR that was green and mergeable. The armed callback described nothing the
+// row needed; "✓ passing" described the one fact the operator wanted.
+func TestBaseStatus_IdleDerivedWaitingFallsThroughToAVerifiedPositivePR(t *testing.T) {
+	sess := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}
+	got := Compute(Input{
+		Session:             sess,
+		ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+		AllWaitingChatsIdle: true,
+	})
+	want := Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}
+	if got != want {
+		t.Fatalf("idle-derived waiting over a passing PR = %+v, want %+v", got, want)
+	}
+}
+
+// TestPreErroredBlockedIntent_DemotedGreenRestoresSuccess re-verifies the
+// PRE-REGISTERED PREDICTION in preErroredBlockedIntent rather than trusting it.
+// That helper carries a defence-in-depth branch written in advance for exactly
+// this class of edit: "if the change ordering ever shifts, the base intent must
+// be INFO, not the served DANGER" for a waiting label.
+//
+// BOS-1269 shifts what a BLOCKED session can be SERVING, not that branch's
+// answer. A demoted row is served "✓ passing" recolored DANGER, and the helper
+// reaches it through the prOutput reuse — which is the whole point of reusing
+// the live producers for the PR-derived half of the mapping — and restores
+// SUCCESS. The waiting branch itself stays correct and stays unreachable in
+// practice: any client old enough to reach ErroredStatusChange (V20260718) is
+// also old enough for WaitingChatStatusChange (V20260804), which has already
+// rewritten the label to "working" by then.
+func TestPreErroredBlockedIntent_DemotedGreenRestoresSuccess(t *testing.T) {
+	sess := &pb.Session{
+		State:            pb.SessionState_SESSION_STATE_BLOCKED,
+		DisplayStatus:    pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		DisplayLabel:     "✓ passing",
+		DisplayIntent:    pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		IsWaitingDemoted: true,
+	}
+	got := PreErroredOutput(sess)
+	if got.Label != "✓ passing" {
+		t.Fatalf("PreErroredOutput(demoted).Label = %q, want %q", got.Label, "✓ passing")
+	}
+	if got.Intent != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS {
+		t.Fatalf("PreErroredOutput(demoted).Intent = %v, want SUCCESS", got.Intent)
+	}
+	// The waiting branch's own answer is unchanged, demotion mark or not.
+	waiting := &pb.Session{
+		State:            pb.SessionState_SESSION_STATE_BLOCKED,
+		DisplayLabel:     WaitingLabel,
+		DisplayIntent:    pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		IsWaitingDemoted: true,
+	}
+	if got := PreErroredOutput(waiting); got.Intent != pb.DisplayIntent_DISPLAY_INTENT_INFO {
+		t.Fatalf("PreErroredOutput(waiting).Intent = %v, want INFO", got.Intent)
 	}
 }

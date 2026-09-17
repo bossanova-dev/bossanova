@@ -501,6 +501,14 @@ type RefMsg struct {
 // id-ascending order for a client that predates the manual session rank. It is
 // the first ORDERING transform here: everything above it changes a value, this
 // one changes the arrangement of a repeated field.
+//
+// WaitingDemotionLabelChange (also introduced at V20260915 — the window batches
+// both changes under one version number, which is what a release window is for),
+// which restores the pre-BOS-1269 "waiting" composite on Session.display_label /
+// display_intent / display_spinner for a session whose PR-derived label replaced
+// it. It is registered LAST on purpose: Changes.Apply iterates in reverse, so it
+// runs FIRST, and only then does WaitingChatStatusChange's exact waiting-label
+// guard still match the rows this change is about.
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -525,7 +533,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{}, CloudAccessOrganizationChange{}, ProxyListSessionsOwnerResolutionChange{}, ProxyListReposHolderResolutionChange{}, PendingInvitationResponseChange{}, AcceptedInvitationResponseChange{}, SupersededCredentialClassChange{}, RefreshChainUnprovenOutcomeChange{}, SessionListRankOrderChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{}, CloudAccessOrganizationChange{}, ProxyListSessionsOwnerResolutionChange{}, ProxyListReposHolderResolutionChange{}, PendingInvitationResponseChange{}, AcceptedInvitationResponseChange{}, SupersededCredentialClassChange{}, RefreshChainUnprovenOutcomeChange{}, SessionListRankOrderChange{}, WaitingDemotionLabelChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -1546,8 +1554,11 @@ func (LimitedChatStatusChange) TransformResponse(method string, msg any) {
 // change) and ErroredStatusChange enumerate, streaming ProxyCreateSession
 // excluded because the Interceptor only transforms unary responses. WAITING also
 // reaches displaystatus.Compute, where it produces its own "waiting"/INFO/
-// no-spinner composite on Session.display_label / display_intent /
-// display_spinner, and that composite is PERSISTED on the sessions row, so every
+// SPINNER composite on Session.display_label / display_intent /
+// display_spinner — this comment claimed "no-spinner", which has been wrong
+// since BOS-710 made the waiting branch return Spinner: true, and BOS-1269
+// corrected it rather than propagating the claim into new prose — and that
+// composite is PERSISTED on the sessions row, so every
 // one of those procedures returns it and an old client would otherwise be handed
 // a label it has never rendered. LimitedChatStatusChange covers only the first
 // eight; that narrower set is a pre-existing gap in an already-released change,
@@ -2090,6 +2101,101 @@ func (SessionListRankOrderChange) TransformResponse(method string, msg any) {
 			downconvertSessionListOrder(m.Sessions)
 		}
 	}
+}
+
+// WaitingDemotionLabelChange is the production VersionChange introduced at
+// V20260915, sharing that already-open release window with
+// SessionListRankOrderChange.
+//
+// At V20260915 the display cascade stopped returning "waiting" for one narrow
+// conjunction (BOS-1269): every chat that resolved to CHAT_STATUS_WAITING had
+// reported CHAT_STATUS_IDLE rather than CHAT_STATUS_WORKING, AND the PR yielded
+// a verified-positive status. Such a session now serves its PR-derived label —
+// "✓ passing" or "✓ approved", or whatever lower branch it falls through onto —
+// where it previously served "waiting"/INFO/spinner. The composite is observable
+// on Session.display_label / display_intent / display_spinner, so the change is
+// behavioural and owes a down-convert.
+//
+// IT RESTORES THE LABEL; IT NEVER MERELY CLEARS THE MARK. Clearing
+// is_waiting_demoted would hide the CAUSE while leaving the response in the
+// new shape — a row that still reads "✓ passing" to a client built for
+// "waiting" — and it reads to a reviewer as discharged compatibility work.
+// The mark stays populated: it is additive and a pinned client that never reads
+// it is unaffected by its presence.
+//
+// ORDERING AGAINST WaitingChatStatusChange IS LOAD-BEARING, not incidental.
+// That change (V20260804) guards downconvertWaitingSession on an EXACT match
+// against displaystatus.WaitingLabel. BOS-1269 makes precisely those sessions
+// stop carrying that label, so V20260804 would silently stop firing for them and
+// a pre-V20260804 client would be handed a composite it has never rendered.
+// Changes.Apply iterates the registered slice in REVERSE, so this change is
+// registered LAST in ProductionChanges in order to run FIRST: it restores
+// "waiting", V20260804's guard matches again, and the chain composes to
+// "working". Every existing test passes when that order is wrong; only
+// TestWaitingDemotion_ComposesWithWaitingChatStatusChangeToWorking catches it.
+//
+// The inverse itself lives in displaystatus.PreWaitingDemotionOutput, keeping
+// this package free of any knowledge of the cascade — the same boundary
+// PreDraftPRFailureOutput and PreErroredOutput observe. It is frozen (it never
+// calls the live cascade) and total (nil session, empty label and unmarked row
+// all return unchanged).
+//
+// It targets the FULL unary session-bearing OrchestratorService set, derived
+// from the Session descriptor rather than hand-listed, because the demoted
+// composite is persisted and every one of those procedures can return it.
+//
+// ITS REACH IS NARROWER THAN THAT SET TODAY, and the difference is a real gap
+// rather than a conservatism. The persisted trio is the COMPOSITE; the
+// DISCRIMINATOR is not persisted — there is no is_waiting_demoted column on the
+// sessions row — and server.SessionToProto copies only the trio. So the mark is
+// hydrated at exactly one producer, the ListSessions recompute in
+// services/bossd/internal/server, and every other procedure in the derived set
+// returns a demoted composite with the mark false. downconvertWaitingDemotedSession
+// early-returns on an unmarked row, so for those procedures a client pinned below
+// V20260915 is served the NEW composite, and WaitingChatStatusChange's exact-label
+// guard no longer matches them either. Every test here seeds the mark by hand, so
+// nothing in this package observes the gap. Closing it means persisting the mark
+// or hydrating it on the single-session read paths; the derived procedure set is
+// already correct for either.
+type WaitingDemotionLabelChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260915, so
+// it is applied to any request resolved to a strictly older version.
+func (WaitingDemotionLabelChange) Version() Version { return V20260915 }
+
+// downconvertWaitingDemotedSession restores the pre-BOS-1269 composite on a
+// session whose PR-derived label replaced a waiting one.
+//
+// Cloning is essential and matches every other session transform here: in
+// bosso's single-instance registry path the response holds the same pointers
+// cached in the in-memory registry, so mutating in place would permanently
+// rewrite the row every other (current) client should still see. Only marked
+// sessions allocate.
+func downconvertWaitingDemotedSession(s *pb.Session) *pb.Session {
+	if s == nil || !s.GetIsWaitingDemoted() {
+		return s
+	}
+	out := displaystatus.PreWaitingDemotionOutput(s)
+	if out.Label == s.GetDisplayLabel() &&
+		out.Intent == s.GetDisplayIntent() &&
+		out.Spinner == s.GetDisplaySpinner() {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores the pre-BOS-1269
+// waiting composite on every session-bearing unary response. It is a no-op for
+// methods and payloads that do not carry Session messages.
+func (WaitingDemotionLabelChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertWaitingDemotedSession)
 }
 
 // NoEligibleAccountChange is the production VersionChange introduced at V20260711.

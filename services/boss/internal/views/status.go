@@ -75,16 +75,27 @@ func chatStatusString(s pb.ChatStatus) string {
 // services/web/src/sessionStatus.ts (waitingHintLine); BOS-668 requires the two
 // surfaces to read the same, so change them together.
 //
-// Returns "" for an empty reason. With the label gone this is the identity
-// function, so that branch changes no output — it is kept as the explicit
-// contract point the two mirrors share, and as the place a future prefix would
-// have to re-declare its empty case. What actually keeps an empty reason off
-// the screen is that every caller gates on the empty result: no empty row, no
-// layout shift, and (on Home) no unselectable sub-row for the cursor to strand
-// on.
-func waitingHintLine(reason string) string {
+// BOS-1269 makes that justification conditional. When the session row's own
+// badge has been DEMOTED — the waiting branch fell through to a
+// verified-positive PR label, so the badge reads "✓ passing" — the nearby
+// antecedent BOS-863 relied on is gone, and a bare "awaiting …" line dangles
+// under a green badge with nothing to attach it to. The demoted case therefore
+// gets its prefix back. Callers pass demoted=true only where the adjacent badge
+// is the SESSION composite (the Home list); the chat picker passes false,
+// because the per-chat badge there still reads "waiting" and is untouched by the
+// demotion.
+//
+// Returns "" for an empty reason, in both cases. What actually keeps an empty
+// reason off the screen is that every caller gates on the empty result: no empty
+// row, no layout shift, and (on Home) no unselectable sub-row for the cursor to
+// strand on. The prefix changes only the TEXT, never whether the line is empty,
+// so the sub-row accounting that keys on `!= ""` is unaffected.
+func waitingHintLine(reason string, demoted bool) string {
 	if reason == "" {
 		return ""
+	}
+	if demoted {
+		return statusWaiting + ": " + reason
 	}
 	return reason
 }
@@ -1204,7 +1215,7 @@ func sessionSubRowCount(sess *pb.Session, waitingReason string) int {
 	if sessionHasEndpointRow(sess) {
 		n++
 	}
-	if waitingHintLine(waitingReason) != "" {
+	if waitingHintLine(waitingReason, sess.GetIsWaitingDemoted()) != "" {
 		n++
 	}
 	return n

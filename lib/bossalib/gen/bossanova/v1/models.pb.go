@@ -2129,9 +2129,30 @@ type Session struct {
 	// down-convert transform, with tests.
 	//
 	// Persisted as sessions.list_rank.
-	ListRank      *int64 `protobuf:"varint,74,opt,name=list_rank,json=listRank,proto3,oneof" json:"list_rank,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ListRank *int64 `protobuf:"varint,74,opt,name=list_rank,json=listRank,proto3,oneof" json:"list_rank,omitempty"`
+	// True when this row's PR-derived display label REPLACED a "waiting" label
+	// (BOS-1269). The cascade demotes the waiting branch for exactly one
+	// conjunction — every chat that resolved to CHAT_STATUS_WAITING reported
+	// CHAT_STATUS_IDLE before the promotion, AND the PR yields a
+	// verified-positive status — and this flag records that it fired.
+	//
+	// Transport-only: hydrated server-side from the cascade's own result for
+	// that same call and never persisted, mirroring display_setting_up
+	// (field 48) and display_is_repairing (field 24). It belongs to that
+	// display_* transport group semantically, but carries the is_ prefix the
+	// repo's bool-naming gate requires of every NEW bool field — the
+	// display_-prefixed siblings predate that rule and are allowlisted, and the
+	// allowlist is explicitly closed to new entries.
+	//
+	// It is carried because the inverse cannot be constructed without it. A
+	// served Session carries no chat status and no waiting reason, so a demoted
+	// "✓ passing" row is indistinguishable on the wire from an ordinary passing
+	// row, and the apiversion down-convert that must restore "waiting" for a
+	// pinned client has nothing else to key on. Compare
+	// last_check_state_observed (field 65), carried for exactly that reason.
+	IsWaitingDemoted bool `protobuf:"varint,75,opt,name=is_waiting_demoted,json=isWaitingDemoted,proto3" json:"is_waiting_demoted,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -2680,6 +2701,13 @@ func (x *Session) GetListRank() int64 {
 		return *x.ListRank
 	}
 	return 0
+}
+
+func (x *Session) GetIsWaitingDemoted() bool {
+	if x != nil {
+		return x.IsWaitingDemoted
+	}
+	return false
 }
 
 // Attempt represents a fix attempt within a session.
@@ -4948,7 +4976,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHttpEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\xbb!\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\xe9!\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -5036,7 +5064,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0farchive_pending\x18> \x01(\bR\x0earchivePending\x12A\n" +
 	"\x0ehttp_endpoints\x18? \x03(\v2\x1a.bossanova.v1.HttpEndpointR\rhttpEndpoints\x12K\n" +
 	"\x11repair_stalled_at\x18@ \x01(\v2\x1a.google.protobuf.TimestampH\x13R\x0frepairStalledAt\x88\x01\x01\x12 \n" +
-	"\tlist_rank\x18J \x01(\x03H\x14R\blistRank\x88\x01\x01B\x13\n" +
+	"\tlist_rank\x18J \x01(\x03H\x14R\blistRank\x88\x01\x01\x12,\n" +
+	"\x12is_waiting_demoted\x18K \x01(\bR\x10isWaitingDemotedB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

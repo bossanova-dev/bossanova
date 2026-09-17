@@ -498,6 +498,28 @@ message Session {
   //
   // Persisted as sessions.list_rank.
   optional int64 list_rank = 74;
+
+  // True when this row's PR-derived display label REPLACED a "waiting" label
+  // (BOS-1269). The cascade demotes the waiting branch for exactly one
+  // conjunction — every chat that resolved to CHAT_STATUS_WAITING reported
+  // CHAT_STATUS_IDLE before the promotion, AND the PR yields a
+  // verified-positive status — and this flag records that it fired.
+  //
+  // Transport-only: hydrated server-side from the cascade's own result for
+  // that same call and never persisted, mirroring display_setting_up
+  // (field 48) and display_is_repairing (field 24). It belongs to that
+  // display_* transport group semantically, but carries the is_ prefix the
+  // repo's bool-naming gate requires of every NEW bool field — the
+  // display_-prefixed siblings predate that rule and are allowlisted, and the
+  // allowlist is explicitly closed to new entries.
+  //
+  // It is carried because the inverse cannot be constructed without it. A
+  // served Session carries no chat status and no waiting reason, so a demoted
+  // "✓ passing" row is indistinguishable on the wire from an ordinary passing
+  // row, and the apiversion down-convert that must restore "waiting" for a
+  // pinned client has nothing else to key on. Compare
+  // last_check_state_observed (field 65), carried for exactly that reason.
+  bool is_waiting_demoted = 75;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

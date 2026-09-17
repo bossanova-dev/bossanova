@@ -34,6 +34,22 @@ type Input struct {
 	// value is available to downstream consumers; the human-readable
 	// "resets ~HH:MM" rendering is BOS-167 and deliberately not done here.
 	ChatResetAt time.Time
+	// AllWaitingChatsIdle is the order-independent aggregate BOS-1269's
+	// demotion rule consumes: true only when EVERY chat that resolved to
+	// CHAT_STATUS_WAITING for this session reported CHAT_STATUS_IDLE before
+	// status.PromoteWaiting refined it — never CHAT_STATUS_WORKING.
+	//
+	// It is an aggregate rather than a chat status on purpose. A session-level
+	// ChatStatus would be whichever chat won a lexicographic tie-break on agent
+	// session id, so the same session could demote or not depending on how its
+	// uuids happened to sort. A conjunction cannot depend on visit order.
+	//
+	// FAIL-SAFE BY CONSTRUCTION: false means "do not demote". Every caller that
+	// has not been taught to populate it — and every down-convert that rebuilds
+	// a synthetic Input — therefore keeps the pre-BOS-1269 behaviour. The
+	// cascade gates on `== true`, never on `!= working`, so an unknown
+	// aggregate can never be mistaken for an idle one.
+	AllWaitingChatsIdle bool
 }
 
 // Output is the rendered result clients consume.
@@ -66,6 +82,81 @@ const WaitingLabel = "waiting"
 // blocked on an external event.
 func IsWaitingLabel(label string) bool {
 	return label == WaitingLabel
+}
+
+// IsVerifiedPositivePR reports whether status is one of the two PR display
+// statuses that assert a VERIFIED-POSITIVE outcome: the checks ran and passed
+// (DISPLAY_STATUS_PASSING), or a human approved the result
+// (DISPLAY_STATUS_APPROVED). It is the second half of BOS-1269's demotion
+// conjunction, and it lives here so the set has one home when a third positive
+// status is added.
+//
+// It is keyed on the ENUM, not on the label prOutput derives from it, for two
+// reasons the decision matrix names:
+//
+//   - DISPLAY_STATUS_CHECKING emits one label ("checking") for two different
+//     states — with and without DisplayHasFailures — so a label-keyed predicate
+//     would conflate them. Neither is positive, so the conjunction happens to
+//     agree either way, but the next editor should not have to re-derive that.
+//   - DISPLAY_STATUS_REVIEW is the tempting third member and is deliberately
+//     excluded. "✓ review" renders green and carries SUCCESS intent, but it
+//     asserts that review was REQUESTED, not that checks passed; an
+//     intent-keyed rule would demote rows whose checks are still running.
+//
+// A nil Session reports UNSPECIFIED through the generated getter, which is not
+// positive — so the conjunction cannot hold for a session the cascade has no PR
+// information about.
+func IsVerifiedPositivePR(status pb.DisplayStatus) bool {
+	switch status {
+	case pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		pb.DisplayStatus_DISPLAY_STATUS_APPROVED:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitingDemoted reports whether BOS-1269's demotion gate fires for in — i.e.
+// whether the CHAT_STATUS_WAITING branch falls through the rest of the cascade
+// instead of returning "waiting".
+//
+// The conjunction is stated positively (AllWaitingChatsIdle == true) rather
+// than as a negation of "working", so an unknown or unset aggregate is a
+// non-demotion rather than a demotion.
+func waitingDemoted(in Input) bool {
+	return in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WAITING &&
+		in.AllWaitingChatsIdle &&
+		IsVerifiedPositivePR(in.Session.GetDisplayStatus())
+}
+
+// WasWaitingDemoted reports whether out is a composite this Input produced by
+// DEMOTING the waiting branch (BOS-1269) rather than by the ordinary cascade.
+// Producers call it immediately after Compute and stamp the result on
+// Session.is_waiting_demoted, so the mark is a function of the cascade's
+// own result for that same call and cannot drift from the label it describes.
+//
+// Setting the mark anywhere the label was NOT demoted is the worst available
+// failure — the inverse would rewrite an ordinary green row into "waiting",
+// manufacturing a wait that never happened. The gate holding is therefore NOT
+// sufficient, because the gate can be UNREACHED: QUESTION, LIMITED and the
+// transient setting-up/merging/archiving overrides all return above it, and
+// such a row was never showing "waiting" to begin with. So the decision is made
+// by recomputing the un-demoted cascade and requiring that it really did emit
+// "waiting" while the live one did not. Deciding this way rather than by
+// enumerating the branches above the gate means the mark cannot drift when a
+// branch is added, removed or reordered up there.
+//
+// Note it is true for EVERY fall-through outcome, not just the PR-derived ones.
+// A demoted session that lands on "repairing", a workflow label or "? PR
+// failed" would also have read "waiting" before this change, so the inverse
+// owes it the same restoration.
+func WasWaitingDemoted(in Input, out Output) bool {
+	if !waitingDemoted(in) {
+		return false
+	}
+	undemoted := in
+	undemoted.AllWaitingChatsIdle = false
+	return IsWaitingLabel(baseStatus(undemoted).Label) && !IsWaitingLabel(out.Label)
 }
 
 // CallbackWaitingReason renders the canonical human-readable reason for a chat
@@ -383,6 +474,53 @@ func PreDraftPRFailureOutput(sess *pb.Session) Output {
 	return out
 }
 
+// PreWaitingDemotionOutput reproduces the display Output Compute produced for a
+// session whose PR-derived label replaced a waiting label, BEFORE BOS-1269
+// demoted the waiting branch for that case. It is the hand-written inverse of
+// that demotion and exists so the OrchestratorService apiversion down-convert
+// (WaitingDemotionLabelChange, V20260915) can restore the prior observable
+// composite for clients pinned to an older version. sess is a served Session
+// whose DisplayLabel/DisplayIntent/DisplaySpinner are the current (post-change)
+// values.
+//
+// The inverse is FROZEN: it reads the mark and returns the pre-change tuple
+// without calling the live cascade, because the live cascade is the thing that
+// changed. Recomputing would make a pinned client silently inherit every LATER
+// cascade edit, which is the trap ComputeBasePreDraftPRFailure exists to
+// document.
+//
+// It is also TOTAL. A nil session, a session whose display was never computed
+// (empty label), and an unmarked row each come back unchanged — matching
+// PreErroredOutput and PreDraftPRFailureOutput, and ensuring an ordinary green
+// row can never be rewritten into a wait that never happened.
+//
+// Every demoted row, whatever it fell through onto, read exactly
+// "waiting"/INFO/spinner before the change, so one fixed tuple is the whole
+// restoration. The spinner is deliberate: the waiting composite has carried one
+// since BOS-710.
+//
+// Like PreDraftPRFailureOutput, this runs FIRST in the newest-first chain, so it
+// emits the full Current-shape composite with the BOS-430 errored recolor
+// applied; ErroredStatusChange strips that afterwards for a client old enough to
+// predate it.
+func PreWaitingDemotionOutput(sess *pb.Session) Output {
+	served := Output{
+		Label:   sess.GetDisplayLabel(),
+		Intent:  sess.GetDisplayIntent(),
+		Spinner: sess.GetDisplaySpinner(),
+	}
+	if served.Label == "" || !sess.GetIsWaitingDemoted() {
+		return served
+	}
+	out := Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
+	// "waiting" is not a muted terminal PR label, so the BOS-430 overlay
+	// recolored it on an errored session both before and after the demotion.
+	if erroredSession(sess) {
+		out.Intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+	}
+	return out
+}
+
 // baseStatus runs the precedence cascade that determines a session's base
 // display status, before the errored-recolor overlay in Compute.
 //
@@ -398,7 +536,11 @@ func PreDraftPRFailureOutput(sess *pb.Session) Output {
 //     2c. ArchivePending  → "archiving" / WARNING / spinner (an archive in
 //     flight; wins over the stale MERGED label so an auto-archiving session
 //     shows "archiving" until the archive completes or errors)
-//  3. ChatStatus WAITING  → "waiting"    / INFO    / spinner
+//  3. ChatStatus WAITING  → "waiting"    / INFO    / spinner, EXCEPT when
+//     BOS-1269's demotion conjunction holds (every waiting-resolved chat was
+//     idle-derived AND the PR is verified-positive), in which case this branch
+//     falls through to the rest of the cascade — it is gated in place, never
+//     relocated, so every branch above AND below it keeps its position.
 //  4. ChatStatus WORKING  → "working"    / SUCCESS / spinner
 //  5. Draft PR failure    → "? PR failed" / WARNING / no spinner (BOS-855: a
 //     PAST outcome, so it sits below every live-activity branch above and above
@@ -453,7 +595,27 @@ func baseStatus(in Input) Output {
 	// transient in-flight overrides — so a parked chat neither claims to be
 	// working nor falls back to a stale PR label. It sits immediately above
 	// WORKING because waiting is the more specific truth about the same chat.
-	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WAITING {
+	//
+	// BOS-1269 qualifies the "stale PR label" half of that rationale. It
+	// assumed parked ⇒ the PR label is stale, which holds when you arm
+	// checks_passed against a red PR and do not want the old red shouting at
+	// you. It INVERTS when the PR label is fresher than the wait: a
+	// checks_failed callback armed hours ago against a PR that has since gone
+	// green describes nothing the row needs, while "✓ passing" describes the
+	// one fact the operator wants. Measured on recurser/ski-japan#125, where a
+	// row read "waiting" for 36 minutes over a CLEAN, 3/3-SUCCESS PR.
+	//
+	// So the branch is GATED IN PLACE and falls through for exactly one
+	// conjunction (waitingDemoted): every chat that resolved to WAITING was
+	// idle-derived, AND the PR is verified-positive. Gating rather than
+	// relocating is load-bearing — moving the branch below prOutput would also
+	// move it below QUESTION, LIMITED, initializing, merging and archiving
+	// (whose own comment above exists precisely so a merge in flight beats a
+	// green label it is about to invalidate). Falling THROUGH rather than
+	// returning prOutput inline is equally load-bearing: a demoted session with
+	// a draft-PR failure, an active workflow or an in-flight repair must still
+	// report those, not a green label over the top of them.
+	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WAITING && !waitingDemoted(in) {
 		return Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {

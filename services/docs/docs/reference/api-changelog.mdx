@@ -536,6 +536,30 @@ which is not the order those clients were built against. `list_rank` stays
 populated, so a pinned client that later learns to read it needs no
 renegotiation.
 
+The same version also changes a session's display status in one narrow case. A
+session whose chats have all gone idle while a callback stays armed used to
+render `waiting`, even when its pull request was green and ready to merge — the
+armed callback described nothing the row needed, while the PR label described
+the one fact an operator wanted. Such a session now serves its PR-derived label
+(`✓ passing` or `✓ approved`) on `Session.display_label`, `display_intent` and
+`display_spinner`.
+
+The rule is a conjunction and nothing wider. A session where any chat that
+resolved to waiting was actually mid-run still reads `waiting`, in every PR
+state, because `waiting` is the more specific truth about a chat that is
+working. So does a session whose PR is anything other than passing or
+approved — including `✓ review`, which means review was requested, not that
+checks passed. And the demotion falls through the rest of the precedence
+cascade rather than jumping to the PR label, so an in-flight merge, archive or
+setup, an active workflow, a repair in progress and a failed draft-PR creation
+all still win.
+
+Clients pinned to 2026-09-14 or older are served the previous `waiting` /
+`INFO` / spinner composite. `Session.is_waiting_demoted` marks a row whose
+PR label replaced a waiting one; the down-convert restores the label rather
+than clearing that mark, for the same reason the list ordering is re-sorted
+rather than stripped.
+
 ## See also
 
 - [API Reference](/reference/api) — the generated OpenAPI reference for the

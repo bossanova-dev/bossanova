@@ -1514,3 +1514,24 @@ func TestAttachTmuxEnv_RemoteHostWithTheEntryKeepsTheRealTERM(t *testing.T) {
 		t.Fatalf("env carries TERM=%q, want TERM=xterm-ghostty", got)
 	}
 }
+
+// A Codex chat in a Claude session must not be reaped by Claude's local
+// transcript reader when Ctrl+C exits the attached process.
+func TestAttach_CodexExitPreservesChatWithoutClaudeTranscript(t *testing.T) {
+	withHostDestination(t, "")
+	spy := withTranscriptSpy(t, "", true)
+	client := &chatMutationSpy{}
+	m := attachModelForTranscriptTest(client)
+	m.session.AgentName = "claude"
+	updated, _ := m.Update(chatRecordedMsg{
+		chat: &pb.ClaudeChat{AgentName: "codex", TmuxSessionName: "boss-test-chat"},
+	})
+	m = updated.(AttachModel)
+	runAttachCmdGraph(t, m.updateChatTitle(), func(tea.Msg) {})
+	if client.deletes != 0 {
+		t.Fatalf("Codex exit deleted %d chats because Claude's transcript was absent", client.deletes)
+	}
+	if spy.titleCalls != 0 || spy.absenceCalls != 0 {
+		t.Fatalf("Codex cleanup read Claude transcripts: title=%d absence=%d", spy.titleCalls, spy.absenceCalls)
+	}
+}

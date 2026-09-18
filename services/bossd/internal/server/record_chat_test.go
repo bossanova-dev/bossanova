@@ -689,3 +689,34 @@ func TestEnsureChatTmuxSession_NonResumeSkipsLegacyBackfill(t *testing.T) {
 		t.Fatalf("provider session id = %q, want nil", *chat.ProviderSessionID)
 	}
 }
+
+func TestEnsureChatTmuxSession_CodexReattachPreservesUnresolvedChat(t *testing.T) {
+	resolver := &fakeInteractiveSessionResolver{legacyAmbiguous: true, legacyReason: "multiple matching codex-tui rollouts found"}
+	srv, chat, chats, tmuxer := newResumeBackfillFixture(t, resolver)
+	tmuxer.hasSession = false
+	err := srv.ensureChatTmuxSession(context.Background(), chat, true)
+	if err == nil || !strings.Contains(err.Error(), "cannot resume Codex") {
+		t.Fatalf("want resume refusal after ambiguous discovery, got %v", err)
+	}
+	if tmuxer.createdN != 0 || chats.updateProviderCall != 0 || chats.updateNameCall != 0 {
+		t.Fatalf("reattach replaced unresolved chat: panes=%d providerWrites=%d paneWrites=%d", tmuxer.createdN, chats.updateProviderCall, chats.updateNameCall)
+	}
+	if len(tmuxer.killedSessions()) != 0 {
+		t.Fatal("failed resume killed a pane")
+	}
+}
+
+func TestEnsureChatTmuxSession_CodexReattachUsesRecoveredHistory(t *testing.T) {
+	resolver := &fakeInteractiveSessionResolver{legacySessionID: "recovered-codex-history"}
+	srv, chat, _, tmuxer := newResumeBackfillFixture(t, resolver)
+	tmuxer.hasSession = false
+	srv.wakeHook.transcripts = &fakeTranscriptOracle{existsFor: map[string]bool{"recovered-codex-history": true}}
+	builder := &fakeArgvBuilder{resume: map[string][]string{"codex": {"codex", "resume"}}}
+	srv.wakeHook.argv = builder
+	if err := srv.ensureChatTmuxSession(context.Background(), chat, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(builder.calls) != 1 || !builder.calls[0].resume || builder.calls[0].agentSessionID != "recovered-codex-history" {
+		t.Fatalf("did not resume recovered conversation: %+v", builder.calls)
+	}
+}

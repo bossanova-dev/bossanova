@@ -189,6 +189,8 @@ type spawnInput struct {
 	WorktreePath string
 	TmuxName     string
 	ForceFresh   bool
+	// RequireResume refuses fresh fallback when reattaching an existing chat.
+	RequireResume bool
 	// AppendSystemPrompt is the boss session-context suffix appended to the
 	// agent's system prompt so record/wake-spawned chats carry the same boss
 	// identifiers StartTmuxChat injects. Empty when no session context applies.
@@ -366,6 +368,12 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 
 	resumeID, hasProviderSessionID := chatResumeSessionID(in.Chat)
 	resume := !in.ForceFresh && deps.Transcripts.TranscriptExists(ctx, in.Chat.AgentName, in.WorktreePath, resumeID)
+	// Codex chooses its own conversation ID. Missing or unresolved history
+	// must not turn a requested resume into a new, empty conversation under
+	// the old chat row. An explicitly fresh launch remains available.
+	if in.RequireResume && !in.ForceFresh && !resume {
+		return spawnResult{}, fmt.Errorf("cannot resume Codex chat %s: saved conversation could not be found; the chat has been preserved", in.Chat.AgentSessionID)
+	}
 	fallbackReason := freshFallbackReason(in.Chat, in.ForceFresh, hasProviderSessionID)
 
 	if deps.Argv == nil {

@@ -4170,9 +4170,9 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		backfillCtx, cancelBackfill := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDLegacyBackfillTimeout)
 		_, reason, backfillErr := s.backfillCodexProviderSessionID(backfillCtx, chat, sess.WorktreePath, deps.Resolver)
 		cancelBackfill()
-		// Warn and continue rather than fail the attach: a missed backfill costs a
-		// correct resume id, a returned error costs the whole chat record. Matches
-		// the ambiguous-result branch immediately below.
+		// Keep an already-live pane attachable even if discovery fails. If a
+		// Codex pane needs respawning, RequireResume below preserves the chat
+		// and refuses to replace unavailable history with an empty conversation.
 		if backfillErr != nil {
 			s.logger.Warn().Err(backfillErr).
 				Str("agent_session_id", chat.AgentSessionID).
@@ -4218,6 +4218,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		WorktreePath:              sess.WorktreePath,
 		TmuxName:                  tmuxName,
 		ForceFresh:                !resume,
+		RequireResume:             resume && chat.AgentName == "codex",
 		AppendSystemPrompt:        appendPrompt,
 		AppendSystemPromptClasses: promptClasses,
 		SessionEnvFunc: func() (map[string]string, error) {

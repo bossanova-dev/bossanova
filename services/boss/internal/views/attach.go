@@ -239,6 +239,8 @@ type AttachModel struct {
 	// creation time. Empty inherits the parent session's AgentName. Set
 	// by the chat picker before pushing onto the attach view.
 	overrideAgent string
+	// recordedAgent is authoritative for existing chats in mixed-agent sessions.
+	recordedAgent string
 
 	// launchStartedAt is captured in NewAttachModel so the minimum-display
 	// budget covers the entire launch path, not just the post-RPC tail.
@@ -380,6 +382,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("record chat: %w", msg.err)
 			return m, nil
 		}
+		m.recordedAgent = msg.chat.GetAgentName()
 		tmuxName := msg.chat.GetTmuxSessionName()
 		if tmuxName == "" {
 			m.err = fmt.Errorf("daemon did not return a tmux session name; check that tmux is installed")
@@ -643,6 +646,12 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 	if isRemoteHost() {
 		return nil
 	}
+	// These readers only understand Claude's transcript layout. A missing
+	// Claude file says nothing about whether another provider's chat was used.
+	// Provider plugins own title discovery for those chats in the daemon.
+	if name := m.displayAgentName(); name != "" && name != "claude" {
+		return nil
+	}
 	agentSessionID := m.agentSessionID
 	worktreePath := m.session.GetWorktreePath()
 	return func() tea.Msg {
@@ -820,6 +829,9 @@ func agentDisplayName(name string) string {
 }
 
 func (m AttachModel) displayAgentName() string {
+	if m.recordedAgent != "" {
+		return m.recordedAgent
+	}
 	if m.overrideAgent != "" {
 		return m.overrideAgent
 	}

@@ -1390,3 +1390,26 @@ func TestSpawnChatTmux_SilentWhenNoInstructionsBuilt(t *testing.T) {
 		t.Fatalf("no classes built must emit nothing, got %s", line)
 	}
 }
+
+func TestSpawnChatTmux_CodexResumeNeverStartsEmptyConversation(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprintf("provider_bound_%t", bound), func(t *testing.T) {
+			tmuxer := &fakeTmuxClient{available: true}
+			chat := newTestChat(t)
+			chat.AgentName = "codex"
+			if bound {
+				id := "saved-codex-conversation"
+				chat.ProviderSessionID = &id
+			}
+			_, err := spawnChatTmux(context.Background(), spawnDeps{
+				Tmux: tmuxer, Transcripts: &fakeTranscriptOracle{exists: false}, Argv: &fakeArgvBuilder{fresh: map[string][]string{"codex": {"codex"}}},
+			}, spawnInput{Chat: chat, WorktreePath: t.TempDir(), TmuxName: "boss-test-chat", RequireResume: true})
+			if err == nil || !strings.Contains(err.Error(), "cannot resume Codex") {
+				t.Fatalf("want explicit Codex resume refusal, got %v", err)
+			}
+			if tmuxer.createdN != 0 {
+				t.Fatalf("created %d panes on failed resume", tmuxer.createdN)
+			}
+		})
+	}
+}

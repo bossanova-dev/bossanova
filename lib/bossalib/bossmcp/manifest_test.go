@@ -212,9 +212,21 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// Duplication between a tool description and its own argument docs is rent
 	// charged twice every turn, which is what made room for a new field while
 	// the surface still shrank.
+	// RE-PINNED DOWN 2026-09-19 (BOS-1270): 70 tools / 58,831 bytes, same
+	// method, schema-share self-check green in the same run. send_chat_message
+	// changed its submit default from prefill to send, and stating the new
+	// contract cost 336 bytes on the first pass. It was paid back out of the
+	// tool's own duplication rather than out of this ceiling: the `submit`
+	// argument doc had been saying "instead of only prefilling the composer"
+	// and "pass false to stage a message instead of sending it" — the same
+	// opposition twice in one sentence — and carried a single-vs-multi-line
+	// caveat that BOS-488 had already made a non-distinction, so it was
+	// spending bytes to say there is no difference. The description now states
+	// the default in one clause and the argument doc states the action, the
+	// default and the opt-out with no clause repeated between them.
 	const (
 		maxToolCount   = 70
-		maxSchemaBytes = 58856
+		maxSchemaBytes = 58831
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

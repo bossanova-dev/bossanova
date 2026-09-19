@@ -146,6 +146,40 @@ func TestChatSendWakeIfAsleepFlag(t *testing.T) {
 	})
 }
 
+// TestChatSendSubmitFlag pins the BOS-1270 CLI half of the submit contract:
+// `boss chat send TARGET MESSAGE` sends the message, and --submit=false is the
+// deliberate opt-out that only stages it in the composer.
+//
+// The CLI already registered a true default, so the omitted arm is a
+// regression guard rather than a behavior change — it is here because the
+// contract is now stated identically across MCP and CLI, and a silent flip of
+// either default is the exact failure BOS-1270 was filed for. Flags are parsed
+// by the real subcommand (via runChatSendArgs), so the registered default is
+// what the assertion sees; hand-building a flag set would assert the test's own
+// default instead.
+func TestChatSendSubmitFlag(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantSubmit bool
+	}{
+		{name: "omitted submits", args: nil, wantSubmit: true},
+		{name: "explicit true submits", args: []string{"--submit=true"}, wantSubmit: true},
+		{name: "explicit false only prefills", args: []string{"--submit=false"}, wantSubmit: false},
+		{name: "bare flag submits", args: []string{"--submit"}, wantSubmit: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &chatSendRecorder{}
+			runChatSendArgs(t, c, tc.args...)
+			if got := c.req.GetSubmit(); got != tc.wantSubmit {
+				t.Errorf("submit = %v, want %v (args %v)", got, tc.wantSubmit, tc.args)
+			}
+		})
+	}
+}
+
 // chatRenameRecorder captures the (chat id, title) pair UpdateChatTitle
 // received. That pair is the only observable output of a rename:
 // UpdateChatTitleResponse is an empty message, so nothing comes back to assert

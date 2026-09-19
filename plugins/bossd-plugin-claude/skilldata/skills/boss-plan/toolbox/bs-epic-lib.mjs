@@ -12,7 +12,13 @@
 // dag-scheduler.mjs owns the pure scheduling functions; re-export them so the
 // skill's `bs-epic-lib.mjs` import surface is preserved. `mergeBlockedExternalBlockers`
 // is re-exported below via a tracker wrapper that injects BLOCKER_CLEARED_STATE_TYPES.
-export { buildGraph, transitiveDependents, readyTickets, nextToMerge } from './dag-scheduler.mjs'
+export {
+  buildGraph,
+  transitiveDependents,
+  transitiveDependentCounts,
+  readyTickets,
+  nextToMerge,
+} from './dag-scheduler.mjs'
 import { mergeBlockedExternalBlockers as mergeBlockedExternalBlockersPure } from './dag-scheduler.mjs'
 
 // Inlined from the former linear-deps-lib.mjs so this toolbox module is
@@ -236,24 +242,45 @@ export function parseTicketRef(arg) {
 }
 
 /**
- * Parses `/bs-epic` CLI args. A single positional ticket ref is treated as
- * the epic PARENT (`{parentId: id, ids: []}`) — its sub-issues are the work
- * items. Two or more positional refs are an explicit list of work items
- * (`{parentId: null, ids: [...]}`) with no separate parent. Each positional may
- * be a bare ticket id (`<issue-id>`) OR a pasted Linear issue URL.
+ * Parses `/bs-epic` CLI args into a DISCRIMINATED `mode`, with the two legacy
+ * positional forms carrying exactly the keys and values they always did:
+ *
+ *   - one positional        → `{mode: 'parent', parentId: id, ids: []}` — the
+ *     epic PARENT, whose sub-issues are the work items.
+ *   - two or more positional → `{mode: 'list', parentId: null, ids: [...]}` — an
+ *     explicit list of work items with no separate parent.
+ *   - one or more `--epic`   → `{mode: 'parents', parentId: null, parentIds: [...]}`
+ *     — the additive MULTI-ROOT selector: several epic parents driven by ONE
+ *     coordinator over one deduplicated child universe.
+ *
+ * `parentIds` is additive and present in every mode (`[id]` in `parent` mode,
+ * `[]` in `list` mode) so a combined-run caller reads one key. `parentId` stays
+ * `null` in `parents` mode on purpose: a legacy single-parent consumer must fail
+ * to find a root rather than silently run only the first of several requested.
+ *
+ * Positional refs are NOT deduplicated — the mode is decided on the positional
+ * COUNT, so collapsing a repeated id would silently flip an explicit two-ticket
+ * list into parent mode. `--epic` refs ARE deduplicated, in first-seen order:
+ * there the count carries no meaning.
+ *
+ * Every ref (positional, `--epic`, `--assume-cleared*`) may be a bare ticket id
+ * (`<issue-id>`) OR a pasted Linear issue URL.
  *
  * Flags: `--parallel N` (integer 1..8, default 4), `--agent <name>` (default
- * 'claude'), and two repeatable operator overrides that treat a named external
- * blocker as cleared — `--assume-cleared <ref>` unblocks a parked dependent for
- * LAUNCH only, while `--assume-cleared-and-merge <ref>` additionally lets the
- * serialized merge step merge past that blocker's own still-open gate. Both
- * accept a bare id or a Linear URL. Throws on zero positional refs, on
- * `--parallel` outside [1, 8] or non-integer, on `--agent` / `--assume-cleared`
- * / `--assume-cleared-and-merge` missing or malformed value, or on a positional
+ * 'claude'), the repeatable `--epic <ref>` root selector, and two repeatable
+ * operator overrides that treat a named external blocker as cleared —
+ * `--assume-cleared <ref>` unblocks a parked dependent for LAUNCH only, while
+ * `--assume-cleared-and-merge <ref>` additionally lets the serialized merge step
+ * merge past that blocker's own still-open gate. Throws when neither a
+ * positional nor an `--epic` was given, when `--epic` is MIXED with positional
+ * refs (ambiguous: are those roots or work items?), on `--parallel` outside
+ * [1, 8] or non-integer, on `--agent` / `--epic` / `--assume-cleared` /
+ * `--assume-cleared-and-merge` missing or malformed value, or on a positional
  * that is neither a ticket id nor a Linear URL (catches typo'd flags).
  */
 export function parseEpicArgs(argv) {
   const ids = []
+  const epicRefs = []
   const assumeCleared = []
   const assumeClearedAndMerge = []
   let parallel = 4
@@ -280,6 +307,8 @@ export function parseEpicArgs(argv) {
         throw new Error(`parseEpicArgs: --agent requires a runner name, got ${raw}`)
       }
       agent = raw
+    } else if (arg === '--epic') {
+      epicRefs.push(takeClearedRef(argv[(i += 1)], '--epic'))
     } else if (arg === '--assume-cleared') {
       assumeCleared.push(takeClearedRef(argv[(i += 1)], '--assume-cleared'))
     } else if (arg === '--assume-cleared-and-merge') {
@@ -294,13 +323,145 @@ export function parseEpicArgs(argv) {
       ids.push(ref)
     }
   }
+  const rest = { parallel, agent, assumeCleared, assumeClearedAndMerge }
+  if (epicRefs.length > 0) {
+    if (ids.length > 0) {
+      throw new Error(
+        'parseEpicArgs: --epic cannot be combined with positional ticket refs — a positional ' +
+          'means a work item (or, alone, a single parent), so the mix is ambiguous. Pass every ' +
+          `root as its own --epic, got positionals: ${ids.join(', ')}`,
+      )
+    }
+    return {
+      mode: 'parents',
+      parentId: null,
+      parentIds: dedupeFirstSeen(epicRefs),
+      ids: [],
+      ...rest,
+    }
+  }
   if (ids.length === 0) {
     throw new Error('parseEpicArgs: at least one ticket id is required')
   }
   if (ids.length === 1) {
-    return { parentId: ids[0], ids: [], parallel, agent, assumeCleared, assumeClearedAndMerge }
+    return { mode: 'parent', parentId: ids[0], parentIds: [ids[0]], ids: [], ...rest }
   }
-  return { parentId: null, ids, parallel, agent, assumeCleared, assumeClearedAndMerge }
+  return { mode: 'list', parentId: null, parentIds: [], ids, ...rest }
+}
+
+// First-seen-order deduplication over a list of already-canonical ids. The one
+// helper both parseEpicArgs (roots) and buildCombinedRun (roots + children) use,
+// so "ordered unique" means the same thing across the combined-run contract.
+function dedupeFirstSeen(values) {
+  const seen = new Set()
+  const out = []
+  for (const value of values) {
+    if (seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out
+}
+
+// A child entry may be a bare id, a normalized ticket (`{id}`), or a raw tracker
+// payload (`{identifier}`) — the driver should not have to re-shape what it
+// already holds. Anything else is a wiring error, not a ticket.
+//
+// Precedence is `identifier` FIRST, matching `normalizeTicket`. A raw tracker
+// payload carries BOTH fields (`id` a UUID, `identifier` the human ticket ref),
+// and the driver feeds those raw per-root lists to `buildCombinedRun` BEFORE
+// normalizing them. Preferring `id` here would key `childIds`/`parentsByChild`
+// by UUID while every normalized row, graph node and progress projection keys by
+// identifier — so per-parent progress would silently omit those children and
+// child-keyed reconciliation would diverge. The two resolvers must agree.
+function childIdOf(entry, parentId) {
+  const raw = typeof entry === 'string' ? entry : (entry?.identifier ?? entry?.id)
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new Error(
+      `buildCombinedRun: childrenByParent[${parentId}] contains an entry with no usable child ` +
+        `id (got ${JSON.stringify(entry) ?? String(entry)}). Pass an id string, a normalized ` +
+        'ticket, or a raw issue payload.',
+    )
+  }
+  return raw.trim()
+}
+
+/**
+ * The plain-data COMBINED-RUN model: one coordinator's view of several epic
+ * roots. Pure — no tracker I/O, no Map/Set — so it round-trips through
+ * `JSON.stringify` and can be persisted for restart/reconciliation exactly as
+ * returned.
+ *
+ * Given the requested `parentIds` (first-seen deduplicated here too, so a
+ * caller that did not go through `parseEpicArgs` gets the same guarantee) and a
+ * `childrenByParent` membership map, returns:
+ *
+ *   - `parentIds`        — ordered unique roots.
+ *   - `childIds`         — the ORDERED UNIQUE child universe: every child once,
+ *     in root order then per-root order. This is the set that is hydrated,
+ *     classified, graphed, launched, reconciled and merged — once each, however
+ *     many roots contain it.
+ *   - `childrenByParent` — per-root ordered unique membership, one entry for
+ *     EVERY requested root (a root with no enumerated children gets `[]`, which
+ *     is a legitimate empty epic rather than an error).
+ *   - `parentsByChild`   — the deterministic reverse index, in root order: which
+ *     roots must show this child in their progress projection. A child under two
+ *     roots appears under both, which is membership, NOT a dependency edge.
+ *
+ * Membership naming a root that was not requested throws: it is a driver wiring
+ * error, and silently dropping it would quietly under-report a whole epic.
+ *
+ * @param {{parentIds: string[], childrenByParent: Record<string, (string|{id?: string, identifier?: string})[]>}} args
+ * @returns {{parentIds: string[], childIds: string[], childrenByParent: Record<string, string[]>, parentsByChild: Record<string, string[]>}}
+ */
+export function buildCombinedRun({ parentIds, childrenByParent } = {}) {
+  if (!Array.isArray(parentIds) || parentIds.length === 0) {
+    throw new Error('buildCombinedRun: parentIds must be a non-empty array of root ticket ids')
+  }
+  for (const parentId of parentIds) {
+    if (typeof parentId !== 'string' || parentId.trim() === '') {
+      throw new Error(
+        `buildCombinedRun: parentIds contains a blank/non-string root id (${String(parentId)})`,
+      )
+    }
+  }
+  const roots = dedupeFirstSeen(parentIds.map((id) => id.trim()))
+  const membership = childrenByParent ?? {}
+  if (typeof membership !== 'object' || Array.isArray(membership)) {
+    throw new Error('buildCombinedRun: childrenByParent must be an object keyed by root ticket id')
+  }
+  const rootSet = new Set(roots)
+  for (const key of Object.keys(membership)) {
+    if (!rootSet.has(key)) {
+      throw new Error(
+        `buildCombinedRun: childrenByParent names ${key}, which is not among the requested ` +
+          `roots (${roots.join(', ')}). Dropping it would silently under-report an epic.`,
+      )
+    }
+  }
+
+  const resolved = {}
+  const parentsByChild = {}
+  const childIds = []
+  const seenChild = new Set()
+  for (const parentId of roots) {
+    const entries = membership[parentId] ?? []
+    if (!Array.isArray(entries)) {
+      throw new Error(`buildCombinedRun: childrenByParent[${parentId}] must be an array`)
+    }
+    const perParent = dedupeFirstSeen(entries.map((entry) => childIdOf(entry, parentId)))
+    resolved[parentId] = perParent
+    for (const childId of perParent) {
+      if (!seenChild.has(childId)) {
+        seenChild.add(childId)
+        childIds.push(childId)
+        parentsByChild[childId] = []
+      }
+      parentsByChild[childId].push(parentId)
+    }
+  }
+
+  return { parentIds: roots, childIds, childrenByParent: resolved, parentsByChild }
 }
 
 /**

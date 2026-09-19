@@ -1407,6 +1407,12 @@ func (c *StreamClient) Run(ctx context.Context) {
 	}
 }
 
+// outboundBufferSize is the depth of openStream's shared outbound channel.
+// The teardown regression tests in stream_teardown_test.go derive their own
+// constants from this, so that growing the buffer cannot silently make them
+// stop exercising a parked producer.
+const outboundBufferSize = 64
+
 // openStream runs a single stream attempt end-to-end: build snapshot,
 // open the bidi stream, send snapshot, fan out forwarders, block on
 // Receive() for commands. Returns when the stream dies for any reason.
@@ -1450,7 +1456,7 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	// 2. Spin up the outbound writer. A single goroutine owns the
 	//    stream.Send side so snapshots/deltas/results don't race one
 	//    another inside ConnectRPC's framer.
-	outbound := make(chan *pb.DaemonEvent, 64)
+	outbound := make(chan *pb.DaemonEvent, outboundBufferSize)
 	writerDone := safego.Go(c.logger, func() {
 		c.runWriter(streamCtx, stream, outbound)
 	})
@@ -1478,16 +1484,44 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	readErr := c.runCommandReader(streamCtx, stream, outbound)
 	readCtxErr := streamCtx.Err()
 
-	// Tear down in the reverse order we started. Close the outbound
-	// channel so the writer exits, then wait for all children so a
-	// subsequent reconnect attempt sees a clean slate.
+	// Tear down in the reverse order we started. The ordering here is
+	// load-bearing: outbound may only be closed once every goroutine that
+	// can send on it has been joined, and the writer — its sole consumer —
+	// is joined after the close. Closing first does not merely risk losing
+	// an event; it leaves each producer free to reach its own
+	// `case outbound <- ev` on a closed channel, which panics on sight
+	// however that select's `<-ctx.Done()` case happens to be ordered
+	// (BOS-1274). So: cancel, then join the producers that are joinable —
+	// the cancelable async command dispatchers via cancelAndWaitAsyncCommands,
+	// then the delta forwarder and the token refresher — and only then close.
+	//
+	// Known gap: cancelAndWaitAsyncCommands joins only what
+	// runCancelableAsyncCommand registered in asyncDone, which today is just
+	// dispatchSwitchAccount. runAsyncCommand and the dispatchAttach /
+	// dispatchCreate chunk pumps discard their safego done channels, so an
+	// async command still in flight here is NOT joined and can still reach
+	// its own `case outbound <- ev` after this close. Registering those
+	// goroutines is the remaining half of this fix.
+	//
+	// The trade this makes explicit: every producer's send sits in a select
+	// that also takes <-ctx.Done(), and cancel() runs first, so each has a
+	// ready case and the joins cannot wedge behind a stalled writer. A
+	// producer added later without that case would hang this teardown
+	// instead of panicking past it.
 	cancel()
 	c.cancelAndWaitAsyncCommands()
+	<-forwarderDone
+	<-refresherDone
 
 	// Drain the refresh error channel so its error takes precedence
 	// over the generic EOF from Receive when a refresh forced the
 	// close. Matches decision #2's "close stream so outer loop
-	// reconnects" semantics.
+	// reconnects" semantics. Read after the refresher is joined, which
+	// is what makes the drain total: reading it earlier let a refresh
+	// failure racing an unrelated reader EOF lose to the default arm and
+	// be reported as a bare EOF. The default arm is now only reached if
+	// the refresher died without closing the channel, so it stays as the
+	// guard against wedging the teardown rather than as the common path.
 	var refreshErr error
 	select {
 	case refreshErr = <-refreshErrCh:
@@ -1496,8 +1530,6 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 
 	close(outbound)
 	<-writerDone
-	<-forwarderDone
-	<-refresherDone
 
 	if refreshErr != nil {
 		return refreshErr

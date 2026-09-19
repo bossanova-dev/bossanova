@@ -176,6 +176,14 @@ export const VENDOR_MAP = {
     'bs-epic-lib.mjs',
     'dag-scheduler.mjs',
     'progress-comment.mjs',
+    // epic-driver.mjs (BOS-1271) is the executable lifecycle authority the SKILL body now calls
+    // instead of re-deriving the loop from prose: the persisted JSON state, the non-terminal
+    // invariant (`assertEpicCanTerminate`), the sole DONE transition, and the one reconciliation
+    // cycle every wake enters. It must ship wherever boss-epic is installed or the skill cites a
+    // module that is not there. Its `./dag-scheduler.mjs`, `./bs-epic-lib.mjs`,
+    // `./callback/boss.mjs` and `./main-module.mjs` imports all already ship in this entry. Its
+    // test file stays in skills-toolbox/ only (test files are never vendored).
+    'epic-driver.mjs',
     // The tracker seam is executable in a consuming repo, so ship its
     // descriptor, helpers, and config dependency beside the epic driver.
     // adapter-core.mjs is the tracker-agnostic contract adapter.mjs and linear.mjs

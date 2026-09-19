@@ -1212,6 +1212,68 @@ func TestSendChatMessageObservesTurnStartForEverySubmitMode(t *testing.T) {
 	}
 }
 
+// TestSendChatMessageSubmitDefaultsToTrue pins the BOS-1270 contract at the
+// local MCP adapter: an omitted submit resolves to true (Enter + verify), not
+// to the prefill it used to mean. The two explicit arms guard the flip from
+// swallowing caller intent — a driver that deliberately stages a composer
+// message by passing submit:false must still get a prefill.
+//
+// The assertion is on the resolved pb.SendChatMessageRequest the adapter hands
+// the backend, because that request is where omission stops being
+// representable: the daemon sees a plain bool and cannot tell "omitted" from
+// "false". The default therefore has to be applied here or nowhere.
+func TestSendChatMessageSubmitDefaultsToTrue(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       map[string]any
+		wantSubmit bool
+	}{
+		{
+			name:       "omitted submits and verifies",
+			args:       map[string]any{"agent_session_id": "agent-1", "message": "do the thing"},
+			wantSubmit: true,
+		},
+		{
+			name:       "explicit true submits and verifies",
+			args:       map[string]any{"agent_session_id": "agent-1", "message": "do the thing", "submit": true},
+			wantSubmit: true,
+		},
+		{
+			name:       "explicit false only prefills",
+			args:       map[string]any{"agent_session_id": "agent-1", "message": "stage for later", "submit": false},
+			wantSubmit: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *pb.SendChatMessageRequest
+			backend := &fakeBackend{sendChatMessage: func(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+				got = req
+				return &pb.SendChatMessageResponse{TmuxSessionName: "tmux-1", Delivered: true}, nil
+			}}
+			cs := newConnectedClient(t, backend, Options{})
+
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "send_chat_message",
+				Arguments: tc.args,
+			})
+			if err != nil {
+				t.Fatalf("call send_chat_message: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("send_chat_message error: %s", textOf(t, res))
+			}
+			if got == nil {
+				t.Fatal("backend.SendChatMessage was never called")
+			}
+			if got.GetSubmit() != tc.wantSubmit {
+				t.Errorf("resolved Submit = %v, want %v (args %+v)", got.GetSubmit(), tc.wantSubmit, tc.args)
+			}
+		})
+	}
+}
+
 func TestSendChatMessageResultNamesTurnStartAndDeliveryStates(t *testing.T) {
 	cases := []struct {
 		name      string

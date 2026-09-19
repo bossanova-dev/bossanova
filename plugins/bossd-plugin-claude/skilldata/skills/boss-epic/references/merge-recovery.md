@@ -163,3 +163,59 @@ finished. The daemon may also auto-resume a transient API death on its own; the
 driver's single wake is the belt-and-braces path when it has not. A usage cap is
 the same kind of environmental interruption for routing purposes: one wake to
 resume committed state, then fail-isolate if it does not take.
+
+## 5. The settled-chat status vocabulary
+
+A green is trustworthy only once the tracked chat has **settled**: `IDLE` or `STOPPED` on **two
+consecutive polls** with the spinner absent. STOPPED + missing `last_agent_activity_at` counts as
+settled once the second poll agrees.
+
+**Never gate settled on timestamp staleness.** `last_output_at` is a floor that any pane change
+advances — a spinner's elapsed counter alone keeps it fresh — and chats seeded in one tick can share
+it to the nanosecond, so a staleness test can never pass.
+
+| Tracked chat status                       | Reading                                                     |
+| ----------------------------------------- | ----------------------------------------------------------- |
+| `IDLE` / `STOPPED` (×2 polls, no spinner) | settled — the only merge-eligible reading                   |
+| `WORKING` / `QUESTION` / `WAITING`        | alive and running, or parked; hold                          |
+| `LIMITED`                                 | usage-limit resume lane; never merge-settled                |
+| `UNSPECIFIED` or unreadable               | **unknown** — not settled and not dead; investigate/re-poll |
+
+`get_session_statuses` is a session-level aggregate across all chats: display/diagnostic only.
+Never gate green/settled on it — an older implementation chat can sit at QUESTION/LIMITED while the
+tracked repair chat is IDLE/STOPPED and passing.
+
+## 6. Serialized-merge drift is expected, and absorbed elsewhere
+
+Because merges are serialized and builds are long, a late-finishing child WILL sit many merges
+behind the base by the time its turn comes. Two mechanisms absorb that, neither of them the epic
+skill's to enable:
+
+- the daemon's **opt-in proactive rebase** (a per-repo setting) keeps in-flight branches current
+  with no driver action;
+- the **linear-history invariant** — every child rebases onto the base and never merges the base
+  back in — keeps whatever conflict does surface a single-branch replay rather than a tangled merge
+  graph.
+
+Treat a late drift conflict as a normal repair round, not as a child failure.
+
+## 7. Diagnosing a frozen repair lease
+
+`classifyRepairLease` (bs-epic-lib) is fed from `get_session` (`repair_active`, `repair_stalled_at`,
+`last_repair_head_sha`), the driver's `prevLastRepairHeadSha`, and the tracked repair chat's last
+output time.
+
+The `'stalled'` signature: `repair_active: true` with `last_repair_head_sha` unchanged and
+repair-chat output stale across **two or more** polls — a dead lease. Daemons that expose
+`repair_stalled_at` report it directly.
+
+Why it must not re-poll: Phase 3c may never dispatch a second repairer while a live lease is held
+(two repairers on one worktree collide), so with a stuck lease plus a dead repair chat that rule
+alone has no terminating condition and the driver re-polls forever. Counting a `stalled` round
+against the cap immediately is what ends the loop — either a fresh round is dispatched (the lease is
+stalled, so a second dispatch no longer collides) or the cap is reached and the ticket is
+fail-isolated with a `frozen repair lease` note.
+
+Snapshot `last_repair_head_sha` into `prevLastRepairHeadSha` after every poll and stamp
+`repairStallSince` on the first `stalled`; drop both when a fresh round is dispatched, so that round
+is judged on its own evidence.

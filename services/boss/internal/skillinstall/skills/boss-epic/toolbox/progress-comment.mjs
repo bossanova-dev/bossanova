@@ -55,8 +55,20 @@
  *           or `-->`.
  * @property {string} updatedAt  Caller-supplied timestamp string, rendered
  *           verbatim — never generated here (byte-stability contract).
+ * @property {ProgressRun} [run]  OPTIONAL driver-owned run metadata. Absent ⇒
+ *           the rendered body is byte-identical to what it was before this block
+ *           existed, so every pre-existing caller is unaffected.
  * @property {ProgressTicket[]} tickets  Rendered in this exact array order;
  *           the driver owns ordering, this module never sorts them.
+ */
+
+/**
+ * @typedef {Object} ProgressRun
+ * @property {string} runId   The run this comment belongs to.
+ * @property {string} phase   Current driver phase.
+ * @property {string} status  RUNNING / RUNNING_BUT_UNWATCHED / BLOCKED / DONE.
+ * @property {string} [lastReconciledAt] Last authoritative reconciliation.
+ * @property {string} [nextWake] Next durable wake mechanism/time, when non-terminal.
  */
 
 // The only ticket.status values validateProgressState accepts. This order is
@@ -91,6 +103,24 @@ export const PROGRESS_STATUS_ICONS = Object.freeze({
   failed: '❌',
   skipped: '⏭️',
 })
+
+// The run-metadata block's fields, in render order. The first three are required whenever `run` is
+// present; the last two render as an em dash when blank. This ordered list is the single source of
+// truth for BOTH the renderer and parseProgressRunMetadata, so the write and the read-back cannot
+// drift — which is what makes the block a resume join rather than decoration.
+export const PROGRESS_RUN_FIELDS = Object.freeze([
+  'runId',
+  'phase',
+  'status',
+  'lastReconciledAt',
+  'nextWake',
+])
+
+const PROGRESS_RUN_REQUIRED = Object.freeze(['runId', 'phase', 'status'])
+
+// The block's lead line. Matched by parseProgressRunMetadata, so it is a structural token rather
+// than prose: rewording it is a schema change.
+export const PROGRESS_RUN_HEADING = 'Run state:'
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
@@ -188,6 +218,29 @@ export function validateProgressState(state) {
     pushNoCommentDelimiters(errors, field, state[field])
   }
 
+  // `run` is optional, but a PRESENT run block is validated to the same standard as the three raw
+  // top-level strings: every value is interpolated raw into the block, so a line break or an
+  // unterminated `<!--` in any of them wrecks the body while the line-1 anchor still matches — the
+  // driver would then keep updating a comment that renders blank and carries no resume data.
+  if (state.run !== undefined && state.run !== null) {
+    if (typeof state.run !== 'object' || Array.isArray(state.run)) {
+      errors.push('run: required object when present')
+    } else {
+      for (const field of PROGRESS_RUN_FIELDS) {
+        const value = state.run[field]
+        const path = `run.${field}`
+        if (PROGRESS_RUN_REQUIRED.includes(field)) {
+          pushRequiredString(errors, path, value)
+        } else if (value !== undefined && value !== null && typeof value !== 'string') {
+          errors.push(`${path}: must be a string`)
+          continue
+        }
+        pushSingleLine(errors, path, value)
+        pushNoCommentDelimiters(errors, path, value)
+      }
+    }
+  }
+
   if (!Array.isArray(state.tickets)) {
     errors.push('tickets: required array')
   } else {
@@ -278,7 +331,7 @@ const LEGEND = PROGRESS_STATUSES.map((status) => `${PROGRESS_STATUS_ICONS[status
  * @returns {string} markdown, ending in exactly one trailing "\n"
  */
 export function renderProgressComment(state) {
-  const { epicId, marker, updatedAt, tickets } = state
+  const { epicId, marker, updatedAt, tickets, run } = state
   const lines = [progressMarkerAnchor(marker), `### Epic progress: ${epicId}`, '']
 
   if (tickets.length === 0) {
@@ -289,8 +342,46 @@ export function renderProgressComment(state) {
     for (const ticket of tickets) lines.push(renderTicketRow(ticket))
   }
 
-  lines.push('', `Legend: ${LEGEND}`, '', `Updated: ${updatedAt}`)
+  lines.push('', `Legend: ${LEGEND}`)
+  if (run !== undefined && run !== null) {
+    lines.push('', PROGRESS_RUN_HEADING, '')
+    for (const field of PROGRESS_RUN_FIELDS) {
+      lines.push(`- ${field}: ${isNonEmptyString(run[field]) ? run[field] : '—'}`)
+    }
+  }
+  lines.push('', `Updated: ${updatedAt}`)
   return lines.join('\n') + '\n'
+}
+
+/**
+ * Read the run-metadata block back out of a rendered comment body — the resume JOIN. A fresh
+ * driver process finds the progress comment by its marker, reads `runId` from here, and can then
+ * locate its own persisted state file without any turn history. That is the only reason the block
+ * is machine-readable rather than prose.
+ *
+ * Returns `null` when the body carries no block (a pre-block comment, or a caller that never passed
+ * `run`), which is a clean "no join available", not an error. An em dash reads back as `''`, so a
+ * render/parse round trip is lossless for every value the renderer accepts.
+ * @param {unknown} body A comment body as `renderProgressComment` wrote it.
+ * @returns {{runId: string, phase: string, status: string, lastReconciledAt: string, nextWake: string} | null}
+ */
+export function parseProgressRunMetadata(body) {
+  if (typeof body !== 'string' || !body.includes(PROGRESS_RUN_HEADING)) return null
+  const out = {}
+  let found = false
+  for (const field of PROGRESS_RUN_FIELDS) {
+    // Anchored at line start so a field name quoted inside a ticket `note` cell cannot be read as
+    // the block's own value.
+    const match = new RegExp(`^- ${field}: (.*)$`, 'm').exec(body)
+    if (!match) {
+      out[field] = ''
+      continue
+    }
+    found = true
+    const value = match[1].trim()
+    out[field] = value === '—' ? '' : value
+  }
+  return found ? out : null
 }
 
 // The comment the upsert resolved to must carry a usable id or the `update`
@@ -419,4 +510,77 @@ export function planProgressCommentUpsert({ comments, marker, body } = {}) {
     `${matches.length} comments match the progress marker; updating the newest (${winnerId}) ` +
     `and ignoring ${matches.length - 1} older duplicates`
   return { op: 'update', commentId: winnerId, body, warning }
+}
+
+/**
+ * Project ONE coordinator ProgressState into one per-parent ProgressState — the
+ * multi-root reporting contract: a combined run keeps a single state covering the
+ * deduplicated child universe, and each selected epic parent gets its own comment
+ * showing only the children that parent contains.
+ *
+ * Returns `[{parentId, state}, ...]` in `parentIds` order. Each `state` is a full
+ * ProgressState the driver feeds straight to `renderProgressComment` +
+ * `planProgressCommentUpsert`, so every parent keeps the unchanged single-comment
+ * marker/upsert contract — the driver only varies the issue it writes to.
+ *
+ * What is projected, and why each way round:
+ *   - `epicId` becomes the PARENT's id, because that comment's heading names the
+ *     epic a reader is looking at, not the combined run.
+ *   - `marker` and `updatedAt` are carried through VERBATIM. The marker is the
+ *     per-comment resume anchor and the comments live on different issues, so one
+ *     shared token cannot collide; varying it per parent would instead strand the
+ *     comment a previous run created. `updatedAt` stays byte-stable, as ever.
+ *   - `tickets` are filtered to that parent's membership and kept in the
+ *     COORDINATOR's row order, never the membership array's. One ordering
+ *     authority is what makes a child shared by two parents render identical
+ *     bytes in both projections — the row objects are the very same objects.
+ *
+ * A membership id with no row in `state.tickets` is simply absent from the
+ * projection: the coordinator's table is the single authority on what is
+ * reportable, and inventing a row here would report a ticket nobody classified.
+ * A parent with no membership at all projects an empty — still valid — table.
+ *
+ * Pure: no tracker access, no clock, and the input state is never mutated.
+ * Throws (rather than returning `{ok:false}`) on a state that would not validate
+ * or a blank parent id, matching `planProgressCommentUpsert`: both are driver
+ * wiring errors whose silent forms are destructive — an unvalidated state
+ * renders a broken comment on EVERY parent at once.
+ *
+ * @param {{state: ProgressState, parentIds: string[], childrenByParent?: Record<string, string[]>}} args
+ * @returns {{parentId: string, state: ProgressState}[]}
+ */
+export function projectProgressByParent({ state, parentIds, childrenByParent } = {}) {
+  const validity = validateProgressState(state)
+  if (!validity.ok) {
+    throw new TypeError(
+      'projectProgressByParent: the coordinator state is invalid, so it cannot be projected — ' +
+        `it would render a broken comment on every selected parent at once: ${validity.errors.join('; ')}`,
+    )
+  }
+  if (!Array.isArray(parentIds) || parentIds.length === 0) {
+    throw new TypeError(
+      'projectProgressByParent: parentIds must be a non-empty array of selected parent ids',
+    )
+  }
+  for (const parentId of parentIds) {
+    if (!isNonEmptyString(parentId)) {
+      throw new TypeError(
+        `projectProgressByParent: parentIds contains a blank/non-string parent id (${String(parentId)})`,
+      )
+    }
+  }
+
+  const membership = childrenByParent ?? {}
+  return parentIds.map((parentId) => {
+    const members = new Set(membership[parentId] ?? [])
+    return {
+      parentId,
+      state: {
+        epicId: parentId,
+        marker: state.marker,
+        updatedAt: state.updatedAt,
+        tickets: state.tickets.filter((ticket) => members.has(ticket.id)),
+      },
+    }
+  })
 }

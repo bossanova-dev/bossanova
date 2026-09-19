@@ -949,7 +949,7 @@ message SendChatMessageRequest {
   string agent_session_id = 1;  // target chat
   string message = 2;           // text to deliver to the agent
   bool wake_if_asleep = 3;      // when true, wake an asleep chat before pasting
-  bool submit = 4;               // when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
+  bool submit = 4;               // when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, docs/mcp.md); this bool cannot, so an unset bit prefills.
   // should_observe_turn_start asks bossd to wait briefly after a submit and report
   // whether the agent began a substantive turn for this message. It is
   // downstream of delivery and never authorizes a resend.

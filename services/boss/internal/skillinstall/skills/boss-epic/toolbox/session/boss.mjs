@@ -345,6 +345,111 @@ export const bossSessionOperationMap = {
   },
 }
 
+// The DURABLE SESSION-OUTCOME transport, as its own map.
+//
+// Why separate from bossSessionOperationMap rather than three more entries in it: that map is the
+// MCP choreography, and every derivation over it (requiredBossToolsForEpic,
+// requiredBossCliCommandsForEpic, the degraded/partial reports) is keyed on an entry naming a
+// `tool`. These three capabilities have NO MCP tool — the durable outcome wake exists only as the
+// `boss broadcast subscribe|subscriptions|unsubscribe` CLI — so folding them in would either
+// fabricate tool names or silently skew the transport preflight that decides MCP vs CLI for the
+// whole run. A distinct map states the honest shape: one transport, CLI only, preflighted on its
+// own (sessionOutcomeTransportPreflight) so a runtime without it is detected BEFORE a driver
+// promises a child is being watched.
+//
+// The response field lists are the CLI's own documented stable schema
+// (`broadcastSubscriptionJSON`): renames there are breaking changes, which is what makes
+// ownership (`owner_session_id` + `origin_chat_id`), liveness (`state`, `fired_at`) and removal
+// (`id`) durably verifiable rather than assumed. The registered `--message` body is a SECRET and is
+// deliberately absent from every response below — `list` never echoes it back.
+export const bossSessionOutcomeOperationMap = {
+  subscribeSessionOutcome: {
+    // `--on` is the outcome class: completed | errored | settled. An epic child uses `settled`.
+    // `--to` is the selector resolving the audience AT FIRE TIME; `--session` is the session whose
+    // outcome fires it (defaults to the ambient BOSS_SESSION_ID, which for a child watch is the
+    // WRONG default — pass the child's id explicitly). `--from` is provenance only.
+    command: 'boss broadcast subscribe',
+    args: ['on', 'to', 'message', 'session', 'from', 'expiresIn', 'json'],
+    response: [
+      'id',
+      'owner_session_id',
+      'origin_chat_id',
+      'trigger_event',
+      'selector',
+      'state',
+      'fired_broadcast_id',
+      'fired_at',
+      'expires_at',
+      'created_at',
+      'updated_at',
+    ],
+  },
+  listSessionSubscriptions: {
+    // The VERIFICATION read. A registration that returned without error but does not appear here
+    // did not take, and is indistinguishable from one that did unless the driver looks.
+    // `--state` filters on the daemon's own vocabulary: active | fired | canceled | expired.
+    command: 'boss broadcast subscriptions',
+    args: ['session', 'state', 'on', 'limit', 'json'],
+    response: [
+      'id',
+      'owner_session_id',
+      'origin_chat_id',
+      'trigger_event',
+      'selector',
+      'state',
+      'fired_broadcast_id',
+      'fired_at',
+      'expires_at',
+      'created_at',
+      'updated_at',
+    ],
+  },
+  removeSessionSubscription: {
+    // Idempotent by contract: removing an unknown id succeeds quietly, so terminal cleanup needs no
+    // exists-check first.
+    command: 'boss broadcast unsubscribe',
+    args: ['subscriptionId'],
+    response: [],
+  },
+}
+
+/** The outcome classes a subscription may await, in the order the daemon documents them. An epic
+ *  child watch uses `settled`; the other two are the narrower completion/error classes. */
+export const SESSION_OUTCOME_TRIGGERS = Object.freeze(['completed', 'errored', 'settled'])
+
+/** The subscription lifecycle states the list read can report. Only `active` is coverage — a
+ *  `fired` subscription is a CONSUMED one-shot wake and must be re-armed while the child is still
+ *  in flight, which is the trap a settled subscription firing mid-flight walks into. */
+export const SESSION_OUTCOME_SUBSCRIPTION_STATES = Object.freeze([
+  'active',
+  'fired',
+  'canceled',
+  'expired',
+])
+
+/** The distinct `boss` CLI commands the durable session-outcome transport needs, derived from
+ *  bossSessionOutcomeOperationMap rather than hand-kept. */
+export function requiredSessionOutcomeCliCommands() {
+  return [...new Set(Object.values(bossSessionOutcomeOperationMap).map((op) => op.command))].sort()
+}
+
+/**
+ * Preflight the durable session-outcome transport against the CLI commands a runtime exposes.
+ *
+ * `ok: false` is NOT fatal — it is the signal that a driver must record a bounded fallback wake or
+ * report a non-terminal unwatched status instead of promising a child is durably watched. Detecting
+ * that here, before the first launch, is the whole point: the failure this replaces was a run that
+ * armed nothing and reported the child as monitored.
+ * @param {{availableCliCommands?: Iterable<string>}} runtime
+ * @returns {{ok: boolean, missing: string[], required: string[]}}
+ */
+export function sessionOutcomeTransportPreflight({ availableCliCommands = [] } = {}) {
+  const available = new Set(normalizeBossCliCommands([...availableCliCommands]))
+  const required = requiredSessionOutcomeCliCommands()
+  const missing = required.filter((cmd) => !available.has(cmd))
+  return { ok: missing.length === 0, missing, required }
+}
+
 /**
  * The distinct boss MCP tool names an epic run can invoke, derived from
  * bossSessionOperationMap (the single source of truth) instead of a hand-kept
@@ -592,6 +697,10 @@ export function createBossSessionRunnerAdapter() {
   return {
     runner: 'boss',
     operationMap: bossSessionOperationMap,
+    // The durable session-outcome transport, declared separately because it is CLI-only and
+    // OPTIONAL — see sessionOutcomeCapability in ./adapter.mjs for why absence degrades rather
+    // than blocks.
+    sessionOutcomeMap: bossSessionOutcomeOperationMap,
     subSkills: {
       implement: bossSessionOperationMap.dispatchImplement.subSkill,
       repair: bossSessionOperationMap.dispatchRepair.subSkill,

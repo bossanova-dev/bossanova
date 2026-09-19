@@ -10,6 +10,10 @@ import {
   validateProgressState,
   renderProgressComment,
   planProgressCommentUpsert,
+  PROGRESS_RUN_FIELDS,
+  PROGRESS_RUN_HEADING,
+  parseProgressRunMetadata,
+  projectProgressByParent,
 } from './progress-comment.mjs'
 
 // Fixture factories — a full valid state and a ticket builder, mirroring the
@@ -621,5 +625,288 @@ test('planProgressCommentUpsert: a winning duplicate with no usable id throws to
   assert.throws(
     () => planProgressCommentUpsert({ comments, marker: MARKER, body: 'BODY' }),
     /no usable `id`/,
+  )
+})
+
+// --- the optional driver-owned run-metadata block ---------------------------
+//
+// The block is what makes the single progress comment a RESUME JOIN rather than decoration: a
+// fresh driver finds the comment by its marker, reads `runId` back out, and can then locate its
+// own persisted state file with no turn history at all.
+
+const runBlock = (over = {}) => ({
+  runId: 'run-7',
+  phase: 'polling',
+  status: 'RUNNING',
+  lastReconciledAt: '2026-01-01T00:00:00Z',
+  nextWake: 'callback (verified)',
+  ...over,
+})
+
+test('a state with no run block renders byte-identically to one that never had the field', () => {
+  const withoutField = state()
+  const withUndefined = { ...state(), run: undefined }
+  assert.equal(renderProgressComment(withUndefined), renderProgressComment(withoutField))
+  assert.ok(!renderProgressComment(withoutField).includes(PROGRESS_RUN_HEADING))
+  assert.equal(parseProgressRunMetadata(renderProgressComment(withoutField)), null)
+})
+
+test('a present run block validates its three required fields', () => {
+  assert.deepEqual(validateProgressState({ ...state(), run: runBlock() }), { ok: true, errors: [] })
+  for (const field of ['runId', 'phase', 'status']) {
+    const verdict = validateProgressState({ ...state(), run: runBlock({ [field]: '' }) })
+    assert.equal(verdict.ok, false)
+    assert.ok(
+      verdict.errors.some((e) => e.startsWith(`run.${field}:`)),
+      verdict.errors.join('; '),
+    )
+  }
+  // The two optional fields may be blank but must still be strings.
+  assert.deepEqual(
+    validateProgressState({ ...state(), run: runBlock({ lastReconciledAt: '', nextWake: '' }) }),
+    { ok: true, errors: [] },
+  )
+  const badType = validateProgressState({ ...state(), run: runBlock({ nextWake: 5 }) })
+  assert.equal(badType.ok, false)
+  assert.ok(badType.errors.some((e) => e === 'run.nextWake: must be a string'))
+  const notObject = validateProgressState({ ...state(), run: [] })
+  assert.equal(notObject.ok, false)
+  assert.ok(notObject.errors.includes('run: required object when present'))
+})
+
+test('run-block values are render-safe: no line breaks, no HTML comment delimiters', () => {
+  // Every value is interpolated RAW into the block. A line break injects arbitrary markdown lines;
+  // an unterminated `<!--` opens a comment that swallows the rest of the body while the line-1
+  // anchor still matches — so the driver keeps updating a comment that renders blank.
+  const broken = validateProgressState({ ...state(), run: runBlock({ phase: 'poll\ning' }) })
+  assert.equal(broken.ok, false)
+  assert.ok(broken.errors.includes('run.phase: must not contain a line break'))
+  const commented = validateProgressState({ ...state(), run: runBlock({ runId: 'r <!-- x' }) })
+  assert.equal(commented.ok, false)
+  assert.ok(
+    commented.errors.some((e) => e.startsWith('run.runId:') && e.includes('HTML comment')),
+    commented.errors.join('; '),
+  )
+})
+
+test('the run block round-trips through render and parse, em dash included', () => {
+  const body = renderProgressComment({ ...state(), run: runBlock() })
+  assert.ok(body.includes(PROGRESS_RUN_HEADING))
+  assert.deepEqual(parseProgressRunMetadata(body), runBlock())
+  // A blank optional value renders as an em dash and reads back as ''.
+  const blank = renderProgressComment({ ...state(), run: runBlock({ nextWake: '' }) })
+  assert.ok(blank.includes('- nextWake: \u2014'))
+  assert.equal(parseProgressRunMetadata(blank).nextWake, '')
+  // Every declared field is written, so the ordered list IS the schema.
+  for (const field of PROGRESS_RUN_FIELDS) assert.ok(body.includes(`- ${field}: `), field)
+})
+
+test('parseProgressRunMetadata is anchored, so a ticket note cannot impersonate the block', () => {
+  const impersonating = renderProgressComment({
+    ...state(),
+    tickets: [ticket({ note: 'runId: not-the-run' })],
+    run: runBlock(),
+  })
+  assert.equal(parseProgressRunMetadata(impersonating).runId, 'run-7')
+  assert.equal(parseProgressRunMetadata('no block here'), null)
+  assert.equal(parseProgressRunMetadata(null), null)
+})
+
+test('the run block does not disturb the marker anchor the upsert matches on', () => {
+  const body = renderProgressComment({ ...state(), run: runBlock() })
+  assert.ok(body.startsWith(progressMarkerAnchor(state().marker)))
+  const plan = planProgressCommentUpsert({
+    comments: [{ id: 'c1', body, createdAt: '2026-01-01T00:00:00Z' }],
+    marker: state().marker,
+    body,
+  })
+  assert.equal(plan.op, 'update')
+  assert.equal(plan.commentId, 'c1')
+})
+
+// ---------------------------------------------------------------------------
+// projectProgressByParent — one coordinator state, one comment per parent
+// ---------------------------------------------------------------------------
+
+const combined = () =>
+  state({
+    epicId: 'combined',
+    marker: 'boss-epic-progress',
+    tickets: [
+      ticket({ id: 'BOS-1', title: 'only under 100', status: 'merged', pr: '11' }),
+      ticket({ id: 'BOS-2', title: 'shared', status: 'building', pr: '22', note: 'round 2' }),
+      ticket({ id: 'BOS-3', title: 'only under 200', status: 'failed', note: 'red CI' }),
+    ],
+  })
+
+const MEMBERSHIP = {
+  'BOS-100': ['BOS-1', 'BOS-2'],
+  'BOS-200': ['BOS-2', 'BOS-3'],
+}
+
+test('projectProgressByParent: one projection per requested parent, in parent order', () => {
+  const projections = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: MEMBERSHIP,
+  })
+  assert.deepEqual(
+    projections.map((p) => p.parentId),
+    ['BOS-100', 'BOS-200'],
+  )
+})
+
+test("projectProgressByParent: rows are filtered to that parent's membership", () => {
+  const [first, second] = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: MEMBERSHIP,
+  })
+  assert.deepEqual(
+    first.state.tickets.map((t) => t.id),
+    ['BOS-1', 'BOS-2'],
+  )
+  assert.deepEqual(
+    second.state.tickets.map((t) => t.id),
+    ['BOS-2', 'BOS-3'],
+  )
+})
+
+test('projectProgressByParent: a shared child renders IDENTICALLY on every owning parent', () => {
+  const [first, second] = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: MEMBERSHIP,
+  })
+  // Anchored on the row prefix: the heading `### Epic progress: BOS-200` also
+  // contains the substring `BOS-2`.
+  const rowOf = (body) => body.split('\n').find((line) => line.startsWith('| BOS-2 '))
+  assert.equal(
+    rowOf(renderProgressComment(first.state)),
+    rowOf(renderProgressComment(second.state)),
+  )
+  assert.deepEqual(
+    first.state.tickets.find((t) => t.id === 'BOS-2'),
+    second.state.tickets.find((t) => t.id === 'BOS-2'),
+  )
+})
+
+test('projectProgressByParent: each projection heads with its own parent id', () => {
+  const [first, second] = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: MEMBERSHIP,
+  })
+  assert.equal(first.state.epicId, 'BOS-100')
+  assert.equal(second.state.epicId, 'BOS-200')
+  assert.ok(renderProgressComment(first.state).includes('### Epic progress: BOS-100'))
+  assert.ok(renderProgressComment(second.state).includes('### Epic progress: BOS-200'))
+})
+
+test('projectProgressByParent: the marker and updatedAt are carried through verbatim', () => {
+  const shared = combined()
+  const projections = projectProgressByParent({
+    state: shared,
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: MEMBERSHIP,
+  })
+  for (const { state: projected } of projections) {
+    assert.equal(projected.marker, shared.marker)
+    assert.equal(projected.updatedAt, shared.updatedAt)
+  }
+})
+
+test('projectProgressByParent: each projection keeps the marker/upsert contract', () => {
+  const projections = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: MEMBERSHIP,
+  })
+  for (const { parentId, state: projected } of projections) {
+    assert.deepEqual(validateProgressState(projected), { ok: true, errors: [] })
+    const body = renderProgressComment(projected)
+    assert.equal(body.split('\n')[0], progressMarkerAnchor(projected.marker))
+    // First write on that parent creates; the next one updates in place.
+    assert.deepEqual(planProgressCommentUpsert({ comments: [], marker: projected.marker, body }), {
+      op: 'create',
+      body,
+    })
+    assert.deepEqual(
+      planProgressCommentUpsert({
+        comments: [{ id: `c-${parentId}`, body }],
+        marker: projected.marker,
+        body,
+      }),
+      { op: 'update', commentId: `c-${parentId}`, body },
+    )
+  }
+})
+
+test('projectProgressByParent: row order follows the coordinator state, not the membership array', () => {
+  const projections = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-100'],
+    childrenByParent: { 'BOS-100': ['BOS-2', 'BOS-1'] },
+  })
+  assert.deepEqual(
+    projections[0].state.tickets.map((t) => t.id),
+    ['BOS-1', 'BOS-2'],
+  )
+})
+
+test('projectProgressByParent: a parent with no membership projects an empty (valid) table', () => {
+  const [only] = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-300'],
+    childrenByParent: {},
+  })
+  assert.deepEqual(only.state.tickets, [])
+  assert.deepEqual(validateProgressState(only.state), { ok: true, errors: [] })
+  assert.ok(renderProgressComment(only.state).includes('_No tickets yet._'))
+})
+
+test('projectProgressByParent: a membership id with no coordinator row is simply absent', () => {
+  const [only] = projectProgressByParent({
+    state: combined(),
+    parentIds: ['BOS-100'],
+    childrenByParent: { 'BOS-100': ['BOS-1', 'BOS-404'] },
+  })
+  assert.deepEqual(
+    only.state.tickets.map((t) => t.id),
+    ['BOS-1'],
+  )
+})
+
+test('projectProgressByParent: does not mutate the coordinator state it projects', () => {
+  const shared = combined()
+  const before = JSON.parse(JSON.stringify(shared))
+  projectProgressByParent({
+    state: shared,
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: MEMBERSHIP,
+  })
+  assert.deepEqual(shared, before)
+})
+
+test('projectProgressByParent: an invalid coordinator state throws rather than projecting it', () => {
+  assert.throws(
+    () =>
+      projectProgressByParent({
+        state: state({ marker: '<!-- boss-epic-progress -->' }),
+        parentIds: ['BOS-100'],
+        childrenByParent: {},
+      }),
+    /projectProgressByParent/,
+  )
+})
+
+test('projectProgressByParent: a missing/blank parentIds list is a wiring error', () => {
+  assert.throws(
+    () => projectProgressByParent({ state: combined(), parentIds: [], childrenByParent: {} }),
+    /parentIds/,
+  )
+  assert.throws(
+    () => projectProgressByParent({ state: combined(), parentIds: ['  '], childrenByParent: {} }),
+    /parentIds/,
   )
 })

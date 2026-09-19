@@ -153,6 +153,31 @@ func TestBossEpicSkillFailIsolateDoesNotCascadeToSiblings(t *testing.T) {
 	assertContains(t, flat, "keeps launching every other ready child")
 }
 
+func TestBossEpicSkillDocumentsMultiRootCombinedRun(t *testing.T) {
+	// BOS-1272: the embedded payload — not just the working-tree source — must carry the
+	// multi-root contract, because the installed tree is what a driver actually reads.
+	skill := readEmbeddedBossEpicSkill(t)
+	flat := strings.Join(strings.Fields(skill), " ")
+
+	assertContains(t, skill, "`--epic <REF>`")
+	assertContains(t, skill, "`mode: 'parents'`")
+	assertContains(t, flat, "may **not** be mixed with positional refs")
+	assertContains(t, flat, "One coordinator, however many roots")
+	assertContains(t, flat, "never a coordinator per root")
+	assertContains(t, flat, "ONE deduplicated child universe through ONE graph, ONE concurrency budget and ONE serialized merge queue")
+	assertContains(t, flat, "Membership is not dependency")
+	assertContains(t, flat, "must never receive a second session")
+	assertContains(t, flat, "descending transitive unlock count")
+	assertContains(t, flat, "Exactly **one** comment **per selected parent issue**")
+	assertContains(t, flat, "projectProgressByParent")
+	assertContains(t, flat, "terminal only over the **whole** deduplicated child universe")
+
+	// The situational detail is extracted, so the reference must ship with the payload.
+	if _, err := SkillsFS.ReadFile("skills/boss-epic/references/multi-root.md"); err != nil {
+		t.Fatalf("embedded boss-epic payload is missing references/multi-root.md: %v", err)
+	}
+}
+
 func TestBossEpicEmbeddedSkillCopiesStayIdentical(t *testing.T) {
 	serviceSkill := readEmbeddedBossEpicSkill(t)
 

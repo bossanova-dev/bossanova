@@ -34,10 +34,23 @@ schedules and merges.
 - **Headless and unattended.** After Phase 0, make **zero** `AskUserQuestion`
   calls — a boss-epic run is fire-and-forget. Every decision has a coded default.
   Under `BOSS_CRON=true`, never ask at any phase. See Safety rails.
-- **Idempotent start / resumable.** The exact same invocation can be re-run
-  after a killed driver: Phase 2 reconstructs live state from Linear + open
-  sessions and the progress comment marker, adopting in-flight work rather than
-  duplicating it.
+- **Non-terminal invariant — mechanically enforced.** The lifecycle is owned by
+  `toolbox/epic-driver.mjs`, not by this prose. No final response, success result, "monitoring
+  stopped", or terminal notes outcome while **any** of these holds: a ready eligible ticket; an
+  in-flight ticket; a green queued for merge; an adopted session not reconciled to merged or
+  fail-isolated; a failed ticket whose dependents' cascade is unrecorded; a wake pending
+  reconciliation; external-blocker state not evaluated this cycle. The final-report path **must**
+  call `assertEpicCanTerminate(state)`, which throws naming every blocker; `transitionToDone` is the
+  only DONE path. **A model turn ending is never evidence the run is complete** — launching or
+  adopting work is an intermediate checkpoint. Read "monitor this session" as durable continued
+  orchestration, never as one read and stop.
+- **Status vocabulary — intermediate responses must be machine-distinguishable.** `RUNNING` (work
+  remains, continuation armed) · `RUNNING_BUT_UNWATCHED` (work remains, a required wake mechanism is
+  missing — retry or fail closed) · `BLOCKED` (capability unavailable, no safe fallback) · `DONE`
+  (invariant false, final reconciliation complete). Never "success" for `RUNNING`; never describe a
+  child launch as completion of the epic.
+- **Idempotent start / resumable.** The same invocation re-run after a killed driver rehydrates the
+  persisted state, adopting in-flight work rather than duplicating it (Phase 2).
 - **Serialized merges.** At most one merge in flight, ever — the base branch is
   advanced one PR at a time, in `nextToMerge` order.
 - **Prefer a callback over blind polling.** Whenever you are about to wait on a
@@ -53,8 +66,17 @@ schedules and merges.
   arming and let `policy.fallbackPoll` alone drive Phase 3 — an explicit no-op,
   never a failed wait. Protocol:
   [`references/callback-watches.md`](references/callback-watches.md).
+- **One coordinator, however many roots.** A combined run (repeatable
+  `--epic <REF>`) drives every selected root's children as ONE deduplicated child
+  universe through ONE graph, ONE concurrency budget and ONE serialized merge
+  queue — never a coordinator per root. Hydration, classification, launch,
+  reconciliation and merge key on the **child id**, so a child under several
+  roots is handled **once**; only REPORTING fans back out, one comment per root.
+  Membership is not dependency: sharing a child creates no edge. Detail:
+  [`references/multi-root.md`](references/multi-root.md).
 - **The parent issue is never mutated.** boss-epic moves only the explicitly
-  enumerated child tickets to `Done`; it never closes or restates the parent.
+  enumerated child tickets to `Done`; it never closes or restates the parent —
+  for every selected root.
 - **Empty eligible set is success.** A parent whose children are all already
   done / not yet planned is a clean no-op, not an error.
 - **Planning-only work is not implementation fan-out.** Route by intent; never send `/boss-plan`, plan-review, or recon through the implementation path:
@@ -191,9 +213,11 @@ echo "$TICKETS_JSON" | node --input-type=module -e '
 ```
 
 Exports available: `normalizeTicket`, `classifyTickets`, `buildGraph`,
-`readyTickets`, `transitiveDependents`, `nextToMerge`, `parseEpicArgs`,
-`parseTicketRef`, `mergeBlockedExternalBlockers`, `resolveStateRole`,
-`resolvePlannedState`, `BLOCKER_CLEARED_STATE_TYPES`.
+`readyTickets`, `transitiveDependents`, `transitiveDependentCounts`,
+`nextToMerge`, `parseEpicArgs`, `parseTicketRef`, `buildCombinedRun`,
+`mergeBlockedExternalBlockers`, `resolveStateRole`, `resolvePlannedState`,
+`BLOCKER_CLEARED_STATE_TYPES`. Progress projection lives in
+`toolbox/progress-comment.mjs` (`projectProgressByParent`).
 Because
 `buildGraph`/`readyTickets`/`nextToMerge` return `Map`/`Set` values that do not
 round-trip through `JSON.stringify`, keep the multi-step scheduling logic
@@ -204,8 +228,15 @@ persist a `Map`/`Set` across processes — persist the ticket JSON + the id list
 
 ## Phase 0 — Preflight
 
-1. **Parse args** via `parseEpicArgs`. A single positional is the epic
-   **parent**; two or more are an **explicit list**. Each positional may be a
+1. **Parse args** via `parseEpicArgs`, which returns a discriminated `mode`:
+   a single positional is the epic **parent** (`mode: 'parent'`); two or more are
+   an **explicit list** of work items (`mode: 'list'`); one or more repeatable
+   `--epic <REF>` select **several epic roots** for one combined run
+   (`mode: 'parents'`). `parentIds` carries the roots in every mode (`[id]`,
+   `[]`, and the first-seen-deduplicated root list); `parentId` is non-null only
+   in `parent` mode. `--epic` may **not** be mixed with positional refs — that
+   mix is ambiguous and is rejected, never guessed.
+   Each positional or `--epic` value may be a
    bare ticket id (`<TICKET>`) **or a pasted Linear issue URL**
    (`https://linear.app/<workspace>/issue/<TICKET>/<slug>`) — both resolve to the
    id. `--parallel N` is an integer 1..8 (default 4); `--agent <name>` defaults
@@ -213,8 +244,8 @@ persist a `Map`/`Set` across processes — persist the ticket JSON + the id list
    `--assume-cleared <ref>` unblocks a parked dependent for **launch only**, and
    `--assume-cleared-and-merge <ref>` additionally lets the serialized merge step
    (Phase 3d) merge past that blocker's own still-open gate. Both accept a bare
-   id or a Linear URL. The parse returns `{parentId, ids, parallel, agent,
-assumeCleared, assumeClearedAndMerge}`.
+   id or a Linear URL. The parse returns `{mode, parentId, parentIds, ids,
+parallel, agent, assumeCleared, assumeClearedAndMerge}`.
 
    ```bash
    node --input-type=module -e '
@@ -223,10 +254,11 @@ assumeCleared, assumeClearedAndMerge}`.
    ' -- <TICKET> --parallel 4 --agent claude
    ```
 
-   `parseEpicArgs` throws on zero ids, a positional that is neither a ticket id
-   nor a Linear URL (catches a typo'd flag), `--parallel` out of range, or an
-   `--assume-cleared*` value that is not a ticket id/URL. On a throw, stop with
-   `BLOCKED: <message>` — do not guess.
+   `parseEpicArgs` throws when neither a positional nor an `--epic` was given,
+   when `--epic` is mixed with positionals, on a positional that is neither a
+   ticket id nor a Linear URL (catches a typo'd flag), `--parallel` out of range,
+   or an `--epic` / `--assume-cleared*` value that is not a ticket id/URL. On a
+   throw, stop with `BLOCKED: <message>` — do not guess.
 
    **Model.** Fan-out runs on Opus — set `MODEL="opus[1m]"` (quoted; bare
    `claude-opus-5` is 200K) and pass it as `create_session {model: …}`
@@ -401,8 +433,17 @@ assumeCleared, assumeClearedAndMerge}`.
    - Parent mode: `get_issue <parentId>`, then
      `list_issues parentId=<parentId> limit=250` for the children.
    - List mode: `get_issue` for each explicitly listed id (no parent).
-   - For every child, `get_issue includeRelations=true` so `blockedBy` relations
-     are present, then `normalizeTicket` each payload.
+   - **Parents mode:** `get_issue` **every** id in `parentIds` and enumerate each
+     root's children as parent mode does — **before** anything is classified,
+     adopted or launched, failing closed on an unreadable root rather than
+     silently shrinking the run. Feed the per-root lists to
+     `buildCombinedRun({parentIds, childrenByParent})` and schedule from its
+     plain, JSON-serializable result: ordered unique `childIds` (the child
+     universe), `childrenByParent` (what each root reports), `parentsByChild`
+     (which roots must show a child).
+   - For every child in the unique child set — **once**, however many roots
+     contain it — `get_issue includeRelations=true` so `blockedBy` relations are
+     present, then `normalizeTicket` each payload.
 
 2. **Classify** via `classifyTickets` → `{eligible, done, skipped}`:
    - `eligible`: planned + `agent-friendly` + native `Implementation plan (<ISSUE-ID>)`
@@ -411,9 +452,12 @@ assumeCleared, assumeClearedAndMerge}`.
    - `skipped`: everything else, each with a `{ticket, reason}` (not-yet-planned,
      In Progress, In Review, missing plan, `needs-human`, …).
 
+   Classify the **unique** child set only. A skip reason is reported to every
+   root that contains that child; `needs-human` never launches, on any root.
+
    Immediately print the classification table in the driver chat. **When the
    eligible set is non-empty** (sessions will spawn), also post the initial
-   progress comment on the parent issue (see Reporting) before any session spawns,
+   progress comment on each selected parent issue (see Reporting) before any session spawns,
    so a human watching sees the plan up front. When it is empty, skip the initial
    post — the zero-launch branch (step 3) owns the single comment so the run never
    create-then-edits.
@@ -430,7 +474,10 @@ assumeCleared, assumeClearedAndMerge}`.
    skipping Phases 3–4. A resume that adopts an in-flight session is **not**
    zero-launch — it continues to Phase 3.
 
-4. **Build the dependency graph.** _Critical wiring contract:_ feed `buildGraph`
+4. **Build the dependency graph.** ONE graph for the whole run: its nodes are
+   the **unique** eligible children, so a `blockedBy` edge between two roots'
+   children is an ordinary in-set edge once both endpoints are selected, while a
+   blocker outside that set stays external. _Critical wiring contract:_ feed `buildGraph`
    the **`classifyTickets(...).eligible`** list **plus** fold every `done`
    ticket's id into the `externallyCleared` Set — **never** the raw full ticket
    list. `readyTickets` trusts every graph node to be eligible; handing it
@@ -469,40 +516,39 @@ assumeCleared, assumeClearedAndMerge}`.
    owned by a session outside this epic is reported as `cannot-evaluate-here`,
    distinct from both cleared and blocked, and is never counted as mergeable.
 
-## Phase 2 — Resume reconstruction (idempotent start)
+## Phase 2 — Resume reconstruction (driver-owned)
 
-Rebuild live state so a killed driver relaunched with the identical command
-adopts rather than duplicates:
+Rehydrate, never restart. `loadEpicState({epicId, runId, dir})` returns `null` only for a genuinely
+fresh run and **throws** on a corrupt file — starting fresh there relaunches live children. Recover
+the `runId` from the progress comment's own `run` block (`parseProgressRunMetadata`): that is the
+resume join. `reconcileEpic` does the rest, adopting each live session by `tracker_id` or the
+`[<TICKET>] <ticket title>` convention, at most **one** per child. A Done/Canceled child is already
+in `externallyCleared` from Phase 1; an already-`MERGED` session whose ticket still sits in review
+has its bookkeeping completed by the same cycle's merge step. State shape and the join:
+[`references/epic-driver.md`](references/epic-driver.md).
 
-1. **Already-terminal children.** A child now Done/Canceled was routed into the
-   `done` bucket by Phase 1 classification, so its id is already in
-   `externallyCleared` and its dependents are unblocked — verify nothing
-   further is owed.
-
-2. **Adopt open sessions.** `list_sessions {repo_id}` and match sessions to epic
-   tickets by the title convention `[<TICKET>] <ticket title>` or by `tracker_id`. A live
-   session for a ticket is **adopted** into the in-flight table with its recorded
-   `session_id` + `chat_id` — never a second session for the same ticket.
-
-3. **Finish stranded merges.** A session already in `MERGED` state whose ticket
-   is still `In Review` → complete the bookkeeping: `save_issue {id, state:
-"Done"}`, fold its id into `externallyCleared` (an In-Review child is not a
-   graph node, so dependents see it as external), and record it as merged in
-   the progress table.
-
-4. Reload the progress comment by its `<!-- boss-epic-progress -->` marker so
-   Phase 3 edits it in place instead of creating a duplicate.
+For a combined run, persist selected-root membership and resolved per-root progress-comment ids
+alongside the ticket JSON. Reload each selected root by its marker so the driver resumes the same
+coordinator and edits existing root comments rather than creating duplicates.
 
 ## Phase 3 — Scheduling loop
 
-Repeat until the ready set is empty **and** the in-flight table is empty. State
-carried across cycles as plain data: the ticket JSON, and the id lists `merged`,
-`failed`, `inFlight`, `externallyCleared`, `greens`, plus the run-wide resolved
-`$BOSS_EPIC_CHILD_WALL_CLOCK_MIN` budget, plus per-ticket
-`session_id` / `chat_id`, wall-clock start, repair-round counters, and — for the
-3c frozen-lease escape — `prevLastRepairHeadSha` (the previous poll's
-`last_repair_head_sha`) and `repairStallSince` (when the lease first classified
-`stalled`).
+Every wake — callback, subscription, bounded fallback, retry, manual resume, or the initial
+invocation — runs **one** `reconcileEpic` cycle; the driver never cares _why_ it woke, and a trigger
+name selects no mutation path. Run it until `assertEpicCanTerminate(state)` stops throwing:
+
+```bash
+# inside the scheduling process:
+#   const { state, status, blockers } = await reconcileEpic({ state, wake, io, now, save })
+#   // blockers = epicTerminalBlockers(state); non-empty ⇒ arm the next wake and yield RUNNING
+```
+
+The driver owns the state: the ticket JSON, the id lists `merged`/`failed`/`inFlight`/`greens`/
+`cascadeSkipped`/`externallyCleared`, the run-wide resolved `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`
+budget, per-ticket `sessionId`/`chatId`/PR identity, wall-clock start, repair-round counters, and
+3c's `prevLastRepairHeadSha`/`repairStallSince` — persisted after **every** transition, never only
+at a turn's end, and never as a `Map`/`Set` (a persisted Set reloads empty, so the resume relaunches
+every child).
 A ticket enters `inFlight` at launch (3a) and leaves only when folded into
 `merged` (3d) or `failed` (3e); `greens` is a **subset**
 of `inFlight` — a green keeps its concurrency slot until merged, so
@@ -526,7 +572,16 @@ implementation tickets classified in Phase 1, so this `createSession` block is f
 implementation fan-out **only** — never for planning/recon/plan-review subtasks
 (route those per the Operating Contract: subagent, or `createPlanningChat`).
 
-For each ready id, up to the concurrency headroom (highest-priority first — the
+`readyTickets` returns LAUNCH order: descending transitive unlock count
+(`transitiveDependentCounts` over the combined graph — work that frees another
+root's children outranks a terminal leaf), then priority, oldest `createdAt`,
+then the stable identifier. Ranking only ORDERS; it never admits a ticket past an
+uncleared blocker, a cascade-skip or an in-flight slot. Before creating a
+session, re-check the deduplicated in-flight set **and** Phase 2's live session
+reconciliation: a child shared by several roots, or one already active, must
+never receive a second session.
+
+For each ready id, up to the concurrency headroom (best-unlock first — the
 array is already sorted), dispatch **one tmux-hosted unattended run** (the
 session-runner `createSession` capability, prompt = `subSkills.implement`): the
 prompt is auto-injected and submitted into a dedicated tmux pane (cron-style
@@ -556,19 +611,17 @@ anyway: `tmux_unattended` sessions run with `BOSS_CRON=true`, so
 Repair (3c) follows the same bare-command rule.
 
 The `create_session` **response carries the primary `chat_id` (agent_session_id)
-directly** — record `session_id` + `chat_id` from it (no sqlite read, no
-`list_chats` round-trip needed). Add the id to `inFlight` and start its
-per-ticket wall clock, whose budget is `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`, never a
-fixed number. Each block is a fresh shell, so that export is not live here:
-carry it in the Phase 3 state above, or re-resolve it with the guarded snippet in
-3c — never by re-running the whole canonical invocation block.
+directly** — feed `session_id` + `chat_id` straight to `recordLaunch` (no sqlite read, no
+`list_chats` round-trip), which adds the id to `inFlight` and forces the status back to `RUNNING`.
+Start its per-ticket wall clock, budget `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`, never a fixed number —
+this is a fresh shell, so carry the integer in the driver state or re-resolve it with the guarded
+snippet in 3c, never by re-running the whole canonical invocation block.
 
 ### 3b. Poll
 
-A callback wake (armed per child that enters flight **only when
-`callbacksAvailable(env)` and `selectEpicCallbackTarget` returns a verified target**)
-trims the poll cadence but never replaces this
-reconciliation — a wake means _re-read the state below_, never _act on the trigger
+Watches are armed per child entering flight **only when `callbacksAvailable(env)` and
+`selectEpicCallbackTarget` returns a verified target**. A callback wake trims the cadence but never
+replaces this reconciliation — it means _re-read the state below_, never _act on the trigger
 name_; dedup by callback id, and re-arm the child's consumed watches while it is still in flight.
 
 **Never arm bare `checks_passed` on a child PR.** boss-build opens its PR as a **draft**
@@ -576,61 +629,61 @@ and CI runs on drafts, so bare `checks_passed` fires on the first green draft co
 each premature fire consumes the one-shot watch at a moment that can never be
 merge-eligible. Arm `policy.draftAwareTriggers`: its green member is
 **`checks_passed_ready`** (green **and** not a draft — the merge-eligibility moment),
-plus optionally **`ready_for_review`** for the un-draft flip itself. This policy-owned
-draft-aware set replaces generic `policy.watchTriggers` for boss-epic's in-flight watch. The daemon merge
+plus optionally **`ready_for_review`** for the un-draft flip itself. An epic takes that set plus
+`merged` and `closed` as `policy.epicChildTriggers`; `policy.forbiddenDraftTriggers` names what must
+never be armed. The daemon merge
 gate stays authoritative — a wake is a signal, not proof. Re-arm consumed or expired watches,
 keeping one `group` per trigger so re-arm cancels only same-trigger siblings.
 
-**How the driver waits.** Callbacks are primary; an **in-session scheduled wake-up**
-(never `boss cron` — it starts a new session per fire and outlives the epic) re-entering
-this poll cycle every 2–5 minutes is the bounded fallback. **Never** rely on
-backgrounded shell watchers or sleep loops to hold the wait — session hosts may kill them
-within the turn, and a driver that assumes them stalls silently. When
-`callbacksAvailable` is false, skip arming and let the wake-up/poll alone drive Phase 3 — a
-clean no-op, never a failed wait. Every wake runs the same idempotent cycle below; the
-driver never cares _why_ it woke. Trigger policy, cadence caveats, and the full
-arm/reconcile/re-arm/cleanup protocol:
+**How the driver waits.** Callbacks are primary; an **in-session scheduled wake-up** (never
+`boss cron` — it starts a new session per fire and outlives the epic) is the bounded fallback.
+**Never** rely on backgrounded shell watchers or sleep loops to hold the wait — session hosts may
+kill them within the turn, and a driver that assumes them stalls silently.
+
+**Arm AND list-verify before yielding, plus a durable child-session `settled` subscription**
+(`sessionOutcomeMap`; pass the child's `--session` explicitly — it defaults to the orchestrator's
+own). An arm that returns clean but is absent from the list read did not take. A `settled`
+subscription can fire **mid-flight** and burn the wake, so `needsRearm` treats
+`fired`/`expired`/`canceled` as a hole while the child stays in flight. Registration or
+verification failure is a **transition**, never a silent continue: record the bounded fallback wake
+(mechanism, next time, reason, retry count) and stay `RUNNING`, else report
+`RUNNING_BUT_UNWATCHED`/`BLOCKED`.
+[`references/epic-driver.md`](references/epic-driver.md) ·
 [`references/callback-watches.md`](references/callback-watches.md).
 
-Every 2–5 minutes (or on a callback wake), for each in-flight ticket read
-`get_session` (state, `last_agent_activity_at`, `AGENT_AUTH_FAILED`),
-`list_check_snapshots` (DisplayStatus), and `get_chat_statuses {session_id}` for the entry whose
-`agent_session_id` equals the ticket's recorded `chat_id`.
-Feed only these already-read facts to `classifyChildLiveness` (bs-epic-lib):
-tracked chat status/readability, aggregate session `state`, caller-classified
-last-message kind (`agent-conclusion`, `usage-limit`, `transient-api-error`, or
-absent), `headShaMoved`, activity staleness, `attention_status` reasons, and the
-wall-clock-expired bit. The classifier returns `{verdict, action, reasons}`;
-route on `action`, never on a liveness proxy directly.
+Each cycle re-reads, per in-flight ticket, `get_session` (state,
+`last_agent_activity_at`, `AGENT_AUTH_FAILED`), `list_check_snapshots` (DisplayStatus), the real
+provider PR state, and `get_chat_statuses {session_id}` for the entry whose `agent_session_id`
+equals the ticket's recorded `chat_id`. Feed only these already-read facts to
+`classifyChildLiveness` (bs-epic-lib) — chat status/readability, aggregate session `state`,
+caller-classified last-message kind (`agent-conclusion`, `usage-limit`, `transient-api-error`, or
+absent), `headShaMoved`, activity staleness, `attention_status` reasons, the wall-clock bit. It
+returns `{verdict, action, reasons}`; route on `action`, never on a liveness proxy.
 
 **Session state carries no push information.** A `state` transition, and a
 `last_check_state` appearing where there was none, both fire when the daemon
 re-polls checks that already exist — they move while the remote branch is
-unchanged. Reading one as a push puts the driver on merge rails against a branch
-still holding only its bootstrap commit. The push oracle is the remote itself:
-`git fetch --quiet origin && git rev-list --count origin/<base>..origin/<branch> 2>/dev/null || echo 0`
-— zero means nothing was pushed, whatever the session state says. Keep the
-guard: before the first push `origin/<branch>` does not exist and `rev-list`
-errors with empty output instead of printing `0`. An unmoving remote head means
-either the child produced no commit or it has local commits that never pushed;
-establish whether a push happened before reading the head, and record which
-cause was observed. An unmoving remote head is never admissible as evidence of
-child death; it is only a `classifyChildLiveness` reason annotation.
+unchanged, so reading one as a push puts the driver on merge rails against a branch still holding
+only its bootstrap commit. The push oracle is the remote itself (`git rev-list --count
+origin/<base>..origin/<branch>`). An unmoving remote head means
+either the child produced no commit or it has local commits that never pushed; establish whether a
+push happened before reading the head, and record which cause was observed. An unmoving remote head
+is never admissible as evidence of child death — only a `classifyChildLiveness` reason annotation.
+The command and its empty-output-before-first-push guard:
+[`references/epic-driver.md`](references/epic-driver.md).
 
-A green is trustworthy only once that tracked chat has **settled**: `IDLE` or
-`STOPPED` on **two consecutive polls** with the spinner absent. STOPPED +
-missing `last_agent_activity_at` = settled once the second poll agrees. Never
-gate settled on timestamp staleness: `last_output_at` is a floor that any pane
-change advances (a spinner's elapsed counter alone keeps it fresh), and chats
-seeded in one tick can share it to the nanosecond, so a staleness test can never
-pass. `WORKING`/`QUESTION`/`WAITING` = still alive and running or parked, and
-`LIMITED` = usage-limit resume lane, never merge-settled. `UNSPECIFIED` or an
+A green is trustworthy only once that tracked chat has **settled**: `IDLE` or `STOPPED` on **two
+consecutive polls** with the spinner absent. STOPPED +
+missing `last_agent_activity_at` = settled once the second poll agrees. Never gate settled on
+timestamp staleness — a
+spinner's elapsed counter alone advances `last_output_at`, so the test can never pass.
+`WORKING`/`QUESTION`/`WAITING` = still alive, running or parked, and `LIMITED` is the
+usage-limit resume lane, never merge-settled. `UNSPECIFIED` or an
 unreadable status is **unknown**, not settled and not dead; investigate/re-poll.
-
-`get_session_statuses` is a session-level `get_session_statuses` aggregate across
-all chats; display/diagnostic only. Never gate green/settled on it: an older
-implementation chat can stay QUESTION/LIMITED while tracked repair chat is
-IDLE/STOPPED + passing.
+`get_session_statuses` is a session-level `get_session_statuses` aggregate across all chats,
+display/diagnostic only — never gate green/settled on it: an older implementation chat can stay
+QUESTION/LIMITED while the tracked repair chat is IDLE/STOPPED + passing. Full vocabulary:
+[`references/merge-recovery.md`](references/merge-recovery.md).
 
 ### 3c. Transitions
 
@@ -674,20 +727,13 @@ IDLE/STOPPED + passing.
   - `'active'` — a repairer holds the lease (the auto-repair plugin is engaged).
     Do **not** dispatch a second chat — two repairers on one worktree collide;
     count it as a round and re-poll.
-  - `'stalled'` — a **frozen repair lease**. Diagnosis cheat: `repair_active:true`
-    with `last_repair_head_sha` unchanged and repair-chat output stale across ≥2
-    polls ⇒ dead lease (also reported directly by `repair_stalled_at` on daemons
-    that expose it). The round is **exhausted**: count it against the cap
-    immediately, then — rounds remaining → dispatch a fresh repair round now (the
-    lease is stalled, so a second dispatch no longer collides); cap reached →
-    fail-isolate the ticket with a `frozen repair lease` note. Never re-poll a
-    lease already classified `stalled`: this is what makes the loop **terminate**,
-    so "re-poll forever" is unreachable from a dead lease.
+  - `'stalled'` — a **frozen repair lease**: `repair_active:true` with
+    `last_repair_head_sha` unchanged and repair-chat output stale across ≥2 polls. The round is
+    **exhausted**: count it against the cap immediately, then — rounds remaining → dispatch a fresh
+    round now; cap reached → fail-isolate with a `frozen repair lease` note. Never re-poll a lease
+    already classified `stalled`: that is what makes the loop **terminate**. The head-SHA snapshot
+    bookkeeping: [`references/merge-recovery.md`](references/merge-recovery.md).
   - `'none'` — no lease held; dispatch below.
-
-  Snapshot `last_repair_head_sha` into `prevLastRepairHeadSha` after every poll,
-  and stamp `repairStallSince` on the first `stalled`; drop both when a fresh
-  round is dispatched, so that round is judged on its own evidence.
 
   To dispatch, run `subSkills.repair` (`/boss-repair watch`) in a **new
   chat in the ticket's own session** (the session-runner `recordChat` +
@@ -822,9 +868,6 @@ state: "Done"}`, fold the id into `merged` (plus `externallyCleared` for a
    red PR. Both recipes:
    [`references/merge-recovery.md`](references/merge-recovery.md).
 
-Only one `merge_session` may be outstanding per cycle; compute `nextToMerge`,
-re-check its external blockers, merge it, verify, and only then consider the next.
-
 **Expect drift, and budget for it.** Because merges are serialized and builds are long, a
 late-finishing child WILL sit many merges behind the base by the time its turn comes.
 Two mechanisms absorb that, neither of them this skill's to enable: the daemon's **opt-in
@@ -853,13 +896,27 @@ association.
 ### 3f. Report every transition
 
 After **every** state change (launch, green, merged, repair kickoff, failed,
-skipped, external-unpark) update the single parent-issue progress comment (see
-Reporting). Never post a per-event comment.
+skipped, external-unpark) update the single progress comment on **every selected
+root that contains the changed ticket** (see Reporting) — a shared child must
+show the same state on each. Never post a per-event comment. A failed upsert on
+one root is reported against that root and retried on the next transition; it
+never creates a second coordinator, session, or comment.
 
 ## Phase 4 — Final report
 
-When the loop exits, post the **final summary** as the last edit of the progress
-comment and print the same in the driver chat:
+**Call `assertEpicCanTerminate(state)` first, and let it throw** — a non-empty
+`epicTerminalBlockers` means continue, whatever the last wake appeared to say. Never decide the run
+is over because the turn has no more tool calls. Then `transitionToDone`, which additionally demands
+a final authoritative reconciliation, every eligible ticket merged / fail-isolated /
+cascade-skipped, a successful final progress upsert, and settled-child watch cleanup (a live
+fail-isolated child keeps its watches as evidence). Only then may this phase emit `DONE`.
+
+The loop is terminal only over the **whole** deduplicated child universe: every eligible child
+terminal/settled, no ready candidates, no in-flight work, no unresolved reconciliation state. One
+root finishing is not a terminal result; unknown liveness parks rather than resolving to success.
+
+Post the **final summary** as the last edit of the progress comment on **each** selected root and
+print the same in the driver chat:
 
 - **merged** — ticket → PR link, in merge order.
 - **failed-isolated** — ticket → session id + last DisplayStatus + a one-line
@@ -871,7 +928,7 @@ comment and print the same in the driver chat:
 
 If every eligible ticket merged, note that the epic is complete — but **the
 parent issue is left for the human to close**; boss-epic never mutates the
-parent's state.
+parent's state, on any selected root.
 
 ### Post-terminal notes extensions (repo opt-in)
 
@@ -962,30 +1019,41 @@ then remove `NOTES_RUN_TMP`.
 
 ## Reporting contract (single-comment protocol)
 
-Exactly **one** comment on the parent issue, created on the first report and
-**edited in place** thereafter. Find it on resume by the marker line, which is
-the literal first line of the comment body:
+Exactly **one** comment **per selected parent issue**, created on the first
+report and **edited in place** thereafter. Find each on resume by the marker
+line, which is the literal first line of the comment body:
 
 ```
 <!-- boss-epic-progress -->
 ```
 
-Body below the marker: a `| ticket | state | session | note |` table (one row
-per epic ticket) plus a one-line legend explaining the state vocabulary
-(queued / in-flight / green / merged / repairing / failed / skipped). In list
-mode (no parent issue), post the progress comment on the first ticket in the
-list and note that anchor in the driver chat.
+In list mode (no parent issue), post it on the first ticket and note that anchor in the driver chat.
+
+Across several roots this is a **projection of one coordinator state**, never
+several states: keep one `ProgressState` over the whole child universe and call
+`projectProgressByParent({state, parentIds, childrenByParent})`
+(`toolbox/progress-comment.mjs`). It returns one `{parentId, state}` per root —
+rows filtered to that root's membership, heading renamed to that root, marker and
+`updatedAt` verbatim — and a shared child is the same row object in each, so it
+renders identical bytes on every parent. Each projection then goes through the
+unchanged `renderProgressComment` + `planProgressCommentUpsert` pair, one write
+per root.
 
 **Do not hand-roll the renderer or the create-vs-update decision** —
-`toolbox/progress-comment.mjs` is the reference implementation: `validateProgressState`
-pins the state-file schema (`epicId`, the **bare** `marker` token, a caller-supplied
-`updatedAt`, and an ordered `tickets[]` whose `status` is one of the six
-`PROGRESS_STATUSES` — map the driver vocabulary above onto them, queued → `pending` and
-in-flight or repairing → `building`, carrying any round count in `rounds` / `note`),
-`renderProgressComment(state)` builds the body, and
-`planProgressCommentUpsert({comments, marker, body})` returns the `create` or `update` op
-the driver executes verbatim through the tracker adapter's `writeComment` /
-`updateComment`. The helpers are pure — they never call a tracker themselves.
+`toolbox/progress-comment.mjs` is the specification and its tests are the contract:
+`buildEpicProgressState(state)` projects the run state onto the schema `validateProgressState` pins
+(an ordered `tickets[]` whose `status` is one of the six `PROGRESS_STATUSES` — map the driver
+vocabulary onto them, queued → `pending` and in-flight or repairing → `building`, carrying any
+round count in `rounds` / `note`), `renderProgressComment` builds the body, and
+`planProgressCommentUpsert({comments, marker, body})` returns the `create`/`update` op the driver
+executes verbatim through the tracker adapter's `writeComment` / `updateComment`. The helpers are
+pure — they never call a tracker.
+
+**Every transition must leave the comment resumable without the previous turn.** The rendered `run`
+block carries `runId`, `phase`, `status`, `lastReconciledAt` and the next wake; each row carries
+session id, tracked chat id, PR, liveness and watch state. A comment saying only "building" is
+insufficient — `parseProgressRunMetadata` is how a fresh driver finds its state file
+([`references/epic-driver.md`](references/epic-driver.md)).
 
 **Never** post per-event comments —
 the single edited comment is the whole audit trail, and its marker is what makes

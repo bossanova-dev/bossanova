@@ -12,6 +12,11 @@ import {
   normalizeBossCliCommands,
   bossEpicTransportPreflight,
   bossEpicToolPreflight,
+  bossSessionOutcomeOperationMap,
+  SESSION_OUTCOME_TRIGGERS,
+  SESSION_OUTCOME_SUBSCRIPTION_STATES,
+  requiredSessionOutcomeCliCommands,
+  sessionOutcomeTransportPreflight,
 } from './boss.mjs'
 import { assertConforms, SESSION_RUNNER_CAPABILITIES } from './adapter.mjs'
 
@@ -526,4 +531,90 @@ test('bossEpicToolPreflight does not leak `partial` into its return', () => {
     const result = bossEpicToolPreflight(input)
     assert.deepEqual(Object.keys(result).sort(), ['missing', 'ok'])
   }
+})
+
+// --- the durable session-outcome transport ---------------------------------
+
+test('the session-outcome map names the broadcast subscribe/list/unsubscribe commands', () => {
+  assert.equal(
+    bossSessionOutcomeOperationMap.subscribeSessionOutcome.command,
+    'boss broadcast subscribe',
+  )
+  assert.equal(
+    bossSessionOutcomeOperationMap.listSessionSubscriptions.command,
+    'boss broadcast subscriptions',
+  )
+  assert.equal(
+    bossSessionOutcomeOperationMap.removeSessionSubscription.command,
+    'boss broadcast unsubscribe',
+  )
+  // The flags the driver actually needs: the outcome class, the audience selector, the wake
+  // payload, and the CHILD session whose outcome fires it (the ambient default is the
+  // orchestrator's own session, which would watch the wrong session entirely).
+  for (const arg of ['on', 'to', 'message', 'session', 'json']) {
+    assert.ok(bossSessionOutcomeOperationMap.subscribeSessionOutcome.args.includes(arg), arg)
+  }
+  assert.ok(
+    bossSessionOutcomeOperationMap.removeSessionSubscription.args.includes('subscriptionId'),
+  )
+})
+
+test('the subscription response carries the ownership, liveness and removal fields', () => {
+  for (const cap of ['subscribeSessionOutcome', 'listSessionSubscriptions']) {
+    const response = bossSessionOutcomeOperationMap[cap].response
+    // Ownership is what makes a listed row attributable to OUR child; liveness is what tells a
+    // consumed one-shot wake from live coverage; `id` is what removal targets.
+    for (const field of [
+      'id',
+      'owner_session_id',
+      'origin_chat_id',
+      'trigger_event',
+      'state',
+      'fired_at',
+    ]) {
+      assert.ok(response.includes(field), `${cap} response is missing ${field}`)
+    }
+    // The registered --message body is a SECRET and is never echoed back by the CLI.
+    assert.ok(
+      !response.some((field) => field.includes('message')),
+      `${cap} must not claim a message field`,
+    )
+  }
+})
+
+test('the outcome trigger and subscription-state vocabularies match the CLI', () => {
+  assert.deepEqual(SESSION_OUTCOME_TRIGGERS, ['completed', 'errored', 'settled'])
+  assert.deepEqual(SESSION_OUTCOME_SUBSCRIPTION_STATES, ['active', 'fired', 'canceled', 'expired'])
+})
+
+test('sessionOutcomeTransportPreflight detects a missing durable transport before it is promised', () => {
+  const required = requiredSessionOutcomeCliCommands()
+  assert.deepEqual(required, [...required].sort())
+  assert.deepEqual(sessionOutcomeTransportPreflight({ availableCliCommands: required }), {
+    ok: true,
+    missing: [],
+    required,
+  })
+  const partial = sessionOutcomeTransportPreflight({
+    availableCliCommands: ['boss broadcast subscribe'],
+  })
+  assert.equal(partial.ok, false)
+  // An unlistable subscription cannot be verified, so a partial command set is not a transport.
+  assert.ok(partial.missing.includes('boss broadcast subscriptions'))
+  assert.equal(sessionOutcomeTransportPreflight().ok, false)
+})
+
+test('the outcome map does not skew the MCP-vs-CLI transport preflight', () => {
+  // It declares no MCP tool (there is none), so it must contribute nothing to either required set
+  // or a runtime with a complete choreography would be told it is missing commands it never needs.
+  for (const op of Object.values(bossSessionOutcomeOperationMap)) {
+    assert.equal(op.tool, undefined)
+  }
+  for (const cmd of requiredSessionOutcomeCliCommands()) {
+    assert.ok(
+      !requiredBossCliCommandsForEpic().includes(cmd),
+      `${cmd} leaked into the choreography set`,
+    )
+  }
+  assert.ok(!requiredBossToolsForEpic().some((tool) => tool.includes('broadcast')))
 })

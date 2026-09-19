@@ -24,7 +24,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
@@ -249,7 +250,24 @@ test('size ratchet', () => {
   // prohibition it does not have when it decides. Only the rail itself is resident — the failure
   // mode, the replacement mechanisms and the setup-time caveats all live in the unratcheted
   // references/callback-watches.md.
-  const RATCHET = 66945 // measured resident body, 2026-09-14
+  // Raised 66945 -> 71585 (+4640) for the BOS-1272 multi-root combined run. The growth is
+  // BEHAVIOURAL: a driver handed several roots must decide, at the point it decides, that there
+  // is ONE coordinator over ONE deduplicated child universe, that launch/merge/reconciliation
+  // key on the child id while only reporting fans back out per root, and that ready order is now
+  // unlock-ranked. A rail discovered by opening a reference is a rail the driver did not have
+  // when it launched the duplicate session. Only those rules are resident; the rejected
+  // alternatives, the membership-is-not-dependency reasoning, the cross-root edge semantics and
+  // the per-root upsert failure modes all live in the unratcheted references/multi-root.md.
+  // Re-baselined 71585 -> 73137 (+1552) when this branch rebased onto a main that had itself
+  // raised the same budget 66945 -> 68622 (+1677 B) for BOS-1271's driver-owned lifecycle
+  // (assertEpicCanTerminate, reconcileEpic, the epic-driver state shape). 71585 was measured
+  // against the PRE-rebase body, so it priced the multi-root contract on top of a 66945-byte base
+  // that no longer exists. Reconciled onto main's 68622-byte body the multi-root delta is +4515 —
+  // 125 B SMALLER than the +4640 recorded above, not the same number: the reconciliation kept
+  // main's Phase 2 paragraph, which already carries part of this branch's combined-run
+  // persistence wording, so that much is no longer added twice. Net +1552 = main's +1677 less
+  // that 125 B. No new prose was added to clear this red.
+  const RATCHET = 73137 // measured resident body, 2026-09-19
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
 
@@ -274,12 +292,21 @@ test('size ratchet', () => {
       // No `justification` is pre-supplied either: this commit raised nothing, and a
       // stale sentence parked here would satisfy the next raise without anybody having
       // to write a fresh reason for it, which is the same arm dead a second way.
-      from: 66872,
+      from: 66945,
       justification:
-        'the resident wait paragraph gained the `boss cron` prohibition (+73 B). Agents were ' +
-        'registering recurring cron jobs to monitor in-flight children — each fire a NEW session, ' +
-        'overlapping, outliving the epic. The rail has to be readable at the point the driver ' +
-        'picks a wait mechanism; everything explaining it went to references/callback-watches.md.',
+        'the resident body gained the multi-root combined-run contract (+4640 B): the --epic ' +
+        'selector and its parse shape, one-coordinator/one-graph/one-merge-queue assembly over a ' +
+        'deduplicated child universe, child-id-keyed adoption and the no-second-session ' +
+        're-check, unlock-ranked launch order, per-root progress projection, and a terminal ' +
+        'decision taken over the combined set. Every one of those is read at the moment the ' +
+        'driver acts on it — a duplicate session or a lost progress row cannot be undone by ' +
+        'opening a reference afterwards. The reasoning, the rejected alternatives and the ' +
+        'failure modes went to references/multi-root.md, which is not ratcheted. Reconciling ' +
+        'that contract back onto a rebased main — whose own driver-owned lifecycle prose had ' +
+        'already been banked at 68622 B — carries that growth under this constant too. On that ' +
+        'base the multi-root delta measures +4515 rather than the +4640 above, because the ' +
+        'reconciliation kept the main-side Phase 2 paragraph that already carries part of the ' +
+        'combined-run persistence wording; no prose was added to clear the red.',
     },
     residual:
       'the references/ files the body routes to, and the plugin mirror — this budget measures ' +
@@ -1577,5 +1604,143 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe', () => {
       /\*\*The\s+wait\s+survives\s+the\s+turn\.\*\*/,
       `${dir}/references/callback-watches.md must list the wait-survives-the-turn invariant`,
     )
+  }
+})
+
+// BOS-1271: the epic lifecycle is owned by an executable driver rather than by this prose.
+//
+// The defect these two tests exist for: a run could launch a child, report it, and end its model
+// turn with work still in flight — reaching a final report byte-identically to a run that drove
+// the whole epic, because nothing ever read a verdict. So the gates below are deliberately NOT
+// prose pins. The first checks that the payload ships and that the body names the symbols an agent
+// has to call; the second RUNS the vendored module and reads its verdicts, which is the only shape
+// that fails when the driver is wrong rather than when a sentence was rewrapped.
+
+test('BOS-1271: the driver payload ships and the body names what to call', () => {
+  const driver = abs(`${EPIC_CANONICAL}/toolbox/epic-driver.mjs`)
+  assert.ok(
+    statSync(driver).isFile(),
+    'epic-driver.mjs must ship in the canonical boss-epic toolbox',
+  )
+
+  // Symbols, not sentences: an agent cannot call a helper the body never names, and a rename that
+  // leaves the prose behind is exactly the drift scripts/check-skill-symbols.mjs also guards.
+  for (const symbol of [
+    'toolbox/epic-driver.mjs',
+    'assertEpicCanTerminate',
+    'epicTerminalBlockers',
+    'transitionToDone',
+    'reconcileEpic',
+    'loadEpicState',
+    'recordLaunch',
+    'needsRearm',
+    'sessionOutcomeMap',
+    'buildEpicProgressState',
+    'parseProgressRunMetadata',
+    'policy.forbiddenDraftTriggers',
+    'policy.epicChildTriggers',
+  ]) {
+    assert.ok(CLAUDE.includes(symbol), `boss-epic SKILL.md must name driver symbol: ${symbol}`)
+  }
+
+  // The four-value status vocabulary is what makes an intermediate response machine-distinguishable
+  // from a terminal one. A missing value is a status an agent will not emit.
+  for (const status of ['RUNNING', 'RUNNING_BUT_UNWATCHED', 'BLOCKED', 'DONE']) {
+    assert.ok(CLAUDE.includes(status), `boss-epic SKILL.md must carry status vocabulary: ${status}`)
+  }
+
+  // The situational detail lives in its own unratcheted reference, and the body routes to it.
+  assert.ok(
+    statSync(abs(`${EPIC_CANONICAL}/references/epic-driver.md`)).isFile(),
+    'boss-epic must carry its own epic-driver reference',
+  )
+  assert.ok(
+    CLAUDE.includes('references/epic-driver.md'),
+    'boss-epic SKILL.md must route to references/epic-driver.md',
+  )
+
+  // Project-agnostic: a published core must not carry an example ticket id from any backlog — the
+  // continuation prompt interpolates the epic id instead. Technical tokens of the same shape
+  // (UTF-8, SHA-256) are stripped first, because a gate that reds on those gets switched off.
+  const driverSource = readFileSync(driver, 'utf8').replace(
+    /\b(?:UTF|SHA|HTTP|ISO|RFC|MD)-\d+\b/g,
+    '',
+  )
+  assert.doesNotMatch(
+    driverSource,
+    /\b[A-Z]{2,}-\d+\b/,
+    'the vendored epic driver must hard-code no example ticket id',
+  )
+})
+
+test('BOS-1271: the vendored driver answers the terminal question executably', () => {
+  const driver = abs(`${EPIC_CANONICAL}/toolbox/epic-driver.mjs`)
+  const run = (args, stdin) =>
+    JSON.parse(
+      execFileSync('node', [driver, ...args], { input: stdin ?? '', encoding: 'utf8' }).trim(),
+    )
+
+  const base = {
+    version: 1,
+    runId: 'run-1',
+    epicId: 'E-1',
+    progressMarker: 'boss-epic-progress',
+    phase: 'polling',
+    status: 'RUNNING',
+    tickets: [
+      { id: 'T-1', title: 't', priority: 2, createdAt: '2026-01-01T00:00:00Z', blockedBy: [] },
+    ],
+  }
+
+  // A launched child is NON-TERMINAL. This is the assertion the premature final report failed.
+  const launched = run(
+    ['blockers', '--state', '-'],
+    JSON.stringify({
+      ...base,
+      inFlight: ['T-1'],
+      sessions: { 'T-1': { sessionId: 's-1', chatId: 'c-1' } },
+      cycle: 1,
+      externalBlockersEvaluatedCycle: 1,
+      lastReconciledAt: '2026-01-01T00:00:00Z',
+    }),
+  )
+  assert.equal(launched.canTerminate, false)
+  assert.ok(
+    launched.blockers.some((blocker) => blocker.startsWith('inFlight:')),
+    `an in-flight child must block termination, got ${JSON.stringify(launched.blockers)}`,
+  )
+
+  // A stale external-blocker evaluation is not an evaluation of THIS cycle, so it blocks too.
+  const staleCycle = run(
+    ['blockers', '--state', '-'],
+    JSON.stringify({ ...base, cycle: 2, externalBlockersEvaluatedCycle: 1 }),
+  )
+  assert.equal(staleCycle.canTerminate, false)
+
+  // And a fully reconciled, fully terminal run is permitted — the gate is not vacuously closed.
+  const terminal = run(
+    ['blockers', '--state', '-'],
+    JSON.stringify({
+      ...base,
+      merged: ['T-1'],
+      cycle: 1,
+      externalBlockersEvaluatedCycle: 1,
+      lastReconciledAt: '2026-01-01T00:00:00Z',
+    }),
+  )
+  assert.deepEqual(terminal.blockers, [])
+  assert.equal(terminal.canTerminate, true)
+
+  // The continuation payload is a resume COMMAND naming the epic, not a notification.
+  const { message } = run(['prompt', '--epic', 'E-1', '--kind', 'subscription'])
+  assert.ok(message.includes('E-1'), 'the continuation prompt must interpolate the epic id')
+  for (const directive of [
+    'do not summarize and stop',
+    'rehydrate the persisted run state',
+    're-read authoritative state before acting',
+    'execute one full reconciliation and scheduling cycle',
+    'do not return a final answer until the terminal invariant is false',
+  ]) {
+    assert.ok(message.includes(directive), `the continuation prompt must carry: ${directive}`)
   }
 })

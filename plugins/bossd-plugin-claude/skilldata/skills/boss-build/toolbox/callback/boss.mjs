@@ -88,6 +88,26 @@ export const bossCallbackPolicy = Object.freeze({
   watchTriggers: Object.freeze(['checks_passed', 'checks_failed', 'merged']),
   // Draft-aware waits replace bare checks_passed with the merge-eligibility trigger.
   draftAwareTriggers: Object.freeze(['checks_passed_ready', 'checks_failed', 'merged']),
+  // The draft-aware set an EPIC arms per in-flight child. It is draftAwareTriggers plus
+  // `ready_for_review` (the un-draft flip itself, so the epic hears about the transition and not
+  // only about the green that follows it) and `closed`, which an epic must treat as a terminal
+  // failure path: a child PR closed without merging leaves a ticket that will never go green, and
+  // a run without this trigger waits on it until the wall clock expires.
+  epicChildTriggers: Object.freeze([
+    'checks_passed_ready',
+    'ready_for_review',
+    'checks_failed',
+    'merged',
+    'closed',
+  ]),
+  // Bare `checks_passed` is NEVER the merge-ready signal for a draft-producing child. CI runs on
+  // drafts, so it fires on the first green draft commit and burns the one-shot watch at a moment
+  // that can never be merge-eligible. Named here so a caller asserts the prohibition rather than
+  // re-deriving it from prose.
+  forbiddenDraftTriggers: Object.freeze(['checks_passed']),
+  // Closed-without-merge is a required failure path for an epic child (see epicChildTriggers), so
+  // the policy says so explicitly rather than leaving each caller to decide.
+  closedIsFailure: true,
   // Durable-watch lifetime; bounded so an abandoned run's watch self-expires rather
   // than lingering for the 30d hard cap.
   defaultExpiresIn: '24h',

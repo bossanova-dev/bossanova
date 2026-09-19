@@ -379,3 +379,31 @@ test('assertConforms throws when the dedup/fallback policy the prose depends on 
     /missing dedup\/fallback policy/,
   )
 })
+
+// --- the epic child draft-aware trigger set --------------------------------
+
+test('policy.epicChildTriggers is draft-aware and excludes bare checks_passed', async () => {
+  const { policy } = resolveCallbackAdapter({})
+  // checks_passed_ready is green AND no longer a draft — the merge-eligibility moment. Bare
+  // checks_passed fires on the first green DRAFT commit, burning the one-shot watch at a moment
+  // that can never be merge-eligible.
+  for (const trigger of [
+    'checks_passed_ready',
+    'ready_for_review',
+    'checks_failed',
+    'merged',
+    'closed',
+  ]) {
+    assert.ok(policy.epicChildTriggers.includes(trigger), `epicChildTriggers is missing ${trigger}`)
+  }
+  assert.deepEqual([...policy.forbiddenDraftTriggers], ['checks_passed'])
+  for (const forbidden of policy.forbiddenDraftTriggers) {
+    assert.ok(!policy.epicChildTriggers.includes(forbidden), `${forbidden} must never be armed`)
+  }
+  // Every epic trigger is a real CLI trigger, so none of them can silently never fire.
+  for (const trigger of policy.epicChildTriggers) {
+    assert.ok(policy.availableTriggers.includes(trigger), `${trigger} is not a CLI trigger`)
+  }
+  // Closed-without-merge is a required failure path, stated rather than left to each caller.
+  assert.equal(policy.closedIsFailure, true)
+})

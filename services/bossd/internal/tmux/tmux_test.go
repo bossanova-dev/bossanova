@@ -3057,6 +3057,92 @@ func TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter(t *testing.T) {
 	})
 }
 
+// TestSendMessage_CodexTarget_SubmitPressesEnterPrefillDoesNot is the BOS-1270
+// acceptance proof for the Codex Enter path. Codex is the agent whose composer
+// the old prefill-by-default actually stranded messages in, so the ticket asks
+// for the Enter to be proven against a codex target specifically rather than
+// inferred from the claude-marker tests.
+//
+// Both arms are asserted together because the Enter count is only meaningful as
+// a split: a test that only checked "submit presses Enter" would still pass if
+// delivery pressed Enter unconditionally, which would silently submit every
+// deliberate prefill. Counting zero on the opt-out arm is what makes the
+// passing arm evidence of a decision rather than of a constant.
+//
+// This is the observable end of the contract. The public MCP adapter resolves
+// an omitted submit to true (TestSendChatMessageSubmitDefaultsToTrue in
+// lib/bossalib/bossmcp) and the daemon carries that bool here, where it becomes
+// a real tmux send-keys Enter against codex's "›" composer-ready marker.
+func TestSendMessage_CodexTarget_SubmitPressesEnterPrefillDoesNot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	const codexMarker = "›" // chatReadyMarker("codex"), spawn_chat_tmux.go
+
+	cases := []struct {
+		name      string
+		submit    bool
+		message   string
+		wantEnter int
+	}{
+		{
+			name:      "default submit presses enter",
+			submit:    true,
+			message:   "continue from the committed work",
+			wantEnter: 1,
+		},
+		{
+			name:      "explicit prefill presses no enter",
+			submit:    false,
+			message:   "staged context, do not start yet",
+			wantEnter: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Marker present for the readiness gate, and again for the
+			// post-Enter submit verifier on the submitting arm. The prefill arm
+			// consumes only the first: it runs no verifier at all.
+			fake := &sendPlanRecordingFactory{
+				capturePaneOutputs: []string{
+					"codex ready\n" + codexMarker + "\n",
+					"codex ready\n" + codexMarker + "\n",
+				},
+			}
+			c := NewClient(WithCommandFactory(fake.factory))
+
+			if err := c.SendMessage(context.Background(), "boss-test-sess", tc.message, tc.submit, codexMarker); err != nil {
+				t.Fatalf("SendMessage(submit=%v): unexpected error: %v", tc.submit, err)
+			}
+
+			calls := fake.callsCopy()
+			if got := countEnterSendKeys(calls); got != tc.wantEnter {
+				t.Errorf("codex delivery with submit=%v pressed Enter %d times, want %d; calls = %+v",
+					tc.submit, got, tc.wantEnter, calls)
+			}
+
+			// The payload must reach the composer on both arms — a prefill that
+			// sent nothing would also report zero Enters and look correct here.
+			var sawDelivery bool
+			for _, call := range calls {
+				switch call.subcommand {
+				case "paste-buffer":
+					sawDelivery = true
+				case "send-keys":
+					if len(call.args) >= 3 && call.args[2] == "-l" {
+						sawDelivery = true
+					}
+				}
+			}
+			if !sawDelivery {
+				t.Errorf("codex delivery with submit=%v never typed or pasted the message; calls = %+v",
+					tc.submit, calls)
+			}
+		})
+	}
+}
+
 // TestSendMessage_OpenCodeSubmit verifies the OpenCode rail glyph reaches both
 // the readiness gate and the post-Enter submit verifier. The rail is also a
 // possible box-border rune, so a constant-only host test would miss a send path

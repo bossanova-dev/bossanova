@@ -14627,7 +14627,7 @@ components:
         submit:
           type: boolean
           title: submit
-          description: when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
+          description: when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, docs/mcp.md); this bool cannot, so an unset bit prefills.
       title: SendChatMessageCommand
       additionalProperties: false
       description: |-
@@ -14651,7 +14651,7 @@ components:
         submit:
           type: boolean
           title: submit
-          description: when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
+          description: when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, docs/mcp.md); this bool cannot, so an unset bit prefills.
         shouldObserveTurnStart:
           type: boolean
           title: should_observe_turn_start

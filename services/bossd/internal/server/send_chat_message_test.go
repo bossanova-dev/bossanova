@@ -248,8 +248,19 @@ func TestSendChatMessage_Submit_ThreadsSubmitAndClaudeMarker(t *testing.T) {
 	}
 }
 
-// TestSendChatMessage_DefaultsToPrefill verifies that an omitted submit field
-// defaults to false (prefill) — the behavior change the caller audit guards.
+// TestSendChatMessage_DefaultsToPrefill verifies that a SendChatMessageRequest
+// carrying no submit bit prefills rather than submits.
+//
+// This is deliberately NOT contradicted by BOS-1270, which made an omitted
+// submit mean "send it". That default belongs to the public adapters (local
+// MCP, the CLI flag, the remote proxy's optional field), because they can see
+// the difference between an argument the caller omitted and one it set to
+// false. This RPC cannot: submit is a plain proto3 bool, so "omitted" and
+// "explicitly false" arrive identically as false. Defaulting it to true here
+// would therefore not add an ergonomic default — it would delete the opt-out,
+// silently submitting every deliberate prefill that reaches the daemon.
+//
+// So the wire contract stays literal and the ergonomics stay at the edge.
 func TestSendChatMessage_DefaultsToPrefill(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}

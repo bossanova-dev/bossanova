@@ -4959,7 +4959,7 @@ type SendChatMessageRequest struct {
 	AgentSessionId string                 `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"` // target chat
 	Message        string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`                                       // text to deliver to the agent
 	WakeIfAsleep   bool                   `protobuf:"varint,3,opt,name=wake_if_asleep,json=wakeIfAsleep,proto3" json:"wake_if_asleep,omitempty"`      // when true, wake an asleep chat before pasting
-	Submit         bool                   `protobuf:"varint,4,opt,name=submit,proto3" json:"submit,omitempty"`                                        // when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
+	Submit         bool                   `protobuf:"varint,4,opt,name=submit,proto3" json:"submit,omitempty"`                                        // when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, docs/mcp.md); this bool cannot, so an unset bit prefills.
 	// should_observe_turn_start asks bossd to wait briefly after a submit and report
 	// whether the agent began a substantive turn for this message. It is
 	// downstream of delivery and never authorizes a resend.

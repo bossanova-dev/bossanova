@@ -120,6 +120,19 @@ func TestStatusToolDescriptionCaveats(t *testing.T) {
 			phrase: "UNOBSERVABLE",
 		},
 		{
+			// BOS-1270: the default is the whole point of the tool. A caller
+			// that reads the description must not have to guess whether
+			// omitting submit sends the message or silently parks it.
+			tool:   "send_chat_message",
+			claim:  "omitting submit sends the message rather than prefilling it",
+			phrase: "Omit submit to send it",
+		},
+		{
+			tool:   "send_chat_message",
+			claim:  "staging a composer message is the explicit opt-out",
+			phrase: "submit:false",
+		},
+		{
 			tool:   "create_session",
 			claim:  "agent_launched is not proof the prompt was consumed",
 			phrase: "not proof the prompt was consumed",

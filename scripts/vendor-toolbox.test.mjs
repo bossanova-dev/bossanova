@@ -656,6 +656,11 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'callback/ci-watch.mjs',
     'callback/epic-target.mjs',
     'dag-scheduler.mjs',
+    // epic-driver.mjs (BOS-1271) is the executable lifecycle authority the SKILL body calls by
+    // path. An installed tree without it is a terminal guard that cannot RUN rather than one that
+    // decides wrongly — the exact shape of the bug it closes, since the invariant was previously
+    // prose nothing ever read.
+    'epic-driver.mjs',
     'linear-claim.mjs',
     'linear-deps-lib.mjs',
     'linear-gate-lib.mjs',
@@ -696,6 +701,27 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     assert.ok(
       VENDOR_MAP[core].includes('callback/ci-watch.mjs'),
       `${core} must vendor callback/ci-watch.mjs`,
+    )
+  }
+  // Asserted BY NAME, and only for boss-epic: the epic driver is that core's lifecycle authority
+  // and nothing else invokes it, so it stays out of every other core rather than being carried as
+  // dead payload. Its whole import closure must ship with it or the vendored copy cannot resolve.
+  assert.ok(VENDOR_MAP['boss-epic'].includes('epic-driver.mjs'))
+  for (const dependency of [
+    'dag-scheduler.mjs',
+    'bs-epic-lib.mjs',
+    'callback/boss.mjs',
+    'main-module.mjs',
+  ]) {
+    assert.ok(
+      VENDOR_MAP['boss-epic'].includes(dependency),
+      `boss-epic must vendor ${dependency} — epic-driver.mjs imports it`,
+    )
+  }
+  for (const core of ['boss-build', 'boss-plan', 'boss-repair', 'boss-finalize']) {
+    assert.ok(
+      !VENDOR_MAP[core].includes('epic-driver.mjs'),
+      `${core} has no epic lifecycle to drive and must not carry epic-driver.mjs`,
     )
   }
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {

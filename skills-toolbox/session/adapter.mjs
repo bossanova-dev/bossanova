@@ -48,6 +48,65 @@ export const SESSION_RUNNER_CAPABILITIES = [
   'dispatchRepair',
 ]
 
+/**
+ * The DURABLE SESSION-OUTCOME capabilities: register / list-verify / remove a standing subscription
+ * that wakes the orchestrator when a child session reaches an outcome.
+ *
+ * Deliberately NOT part of SESSION_RUNNER_CAPABILITIES, so `assertConforms` still passes for a
+ * runner that cannot carry a durable outcome wake. That is not laxity — it is the distinction the
+ * driver needs: a REQUIRED capability that is absent means "misconfigured host, fail fast", whereas
+ * an absent durable outcome transport means "record the bounded fallback wake, or report
+ * RUNNING_BUT_UNWATCHED". Making it required would turn the second case into the first and BLOCK
+ * runs that can legitimately proceed on the fallback.
+ */
+export const SESSION_OUTCOME_CAPABILITIES = [
+  'subscribeSessionOutcome',
+  'listSessionSubscriptions',
+  'removeSessionSubscription',
+]
+
+/**
+ * Does this adapter declare a durable session-outcome transport? Returns `{available, missing}` —
+ * a VERDICT, never a throw, because absence is a documented degradation rather than a wiring error.
+ * The driver reads this before it promises a child is watched.
+ * @param {SessionRunnerAdapter} adapter
+ * @returns {{available: boolean, missing: string[]}}
+ */
+export function sessionOutcomeCapability(adapter) {
+  const map = adapter?.sessionOutcomeMap ?? {}
+  const missing = SESSION_OUTCOME_CAPABILITIES.filter((cap) => !(cap in map))
+  return { available: missing.length === 0, missing }
+}
+
+/**
+ * Throw if an adapter CLAIMS a durable session-outcome transport but declares it incompletely — a
+ * partial claim is worse than none, because the driver would arm a subscription it can never list
+ * back and so can never verify. An adapter with no `sessionOutcomeMap` at all is fine here; use
+ * `sessionOutcomeCapability` to detect that.
+ * @param {SessionRunnerAdapter} adapter
+ */
+export function assertSessionOutcomeConforms(adapter) {
+  if (!adapter?.sessionOutcomeMap) return
+  const { missing } = sessionOutcomeCapability(adapter)
+  if (missing.length > 0) {
+    throw new Error(
+      `session-runner adapter '${adapter.runner}': claims a session-outcome transport but is ` +
+        `missing ${missing.join(', ')} — an unlistable subscription can never be verified`,
+    )
+  }
+  for (const cap of SESSION_OUTCOME_CAPABILITIES) {
+    const op = adapter.sessionOutcomeMap[cap]
+    if (typeof op?.command !== 'string' || op.command.length === 0) {
+      throw new Error(`session-runner adapter '${adapter.runner}': ${cap} declares no command`)
+    }
+    if (!Array.isArray(op.args) || !Array.isArray(op.response)) {
+      throw new Error(
+        `session-runner adapter '${adapter.runner}': ${cap} declares no args/response`,
+      )
+    }
+  }
+}
+
 const REGISTRY = {
   boss: createBossSessionRunnerAdapter,
 }

@@ -499,17 +499,25 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "send_chat_message",
-		Description: "Deliver a user message into one chat's live agent (targeted by its agent_session_id, e.g. one returned by start_chat or create_session), optionally waking it if asleep. delivered is a handoff receipt, not proof the agent took the work; read `turn_start_state_name` for the observed turn-start verdict. NOT_OBSERVED does not mean not delivered, and re-sending double-posts the prompt; poll `get_chat_statuses` instead. Prefill-only sends return UNOBSERVABLE.",
+		Description: "Deliver a user message into one chat's live agent (targeted by its agent_session_id, e.g. one returned by start_chat or create_session), optionally waking it if asleep. Omit submit to send it; submit:false only stages it. delivered is a handoff receipt, not proof the agent took the work; read `turn_start_state_name` for the observed turn-start verdict. NOT_OBSERVED does not mean not delivered, and re-sending double-posts the prompt; poll `get_chat_statuses` instead. Prefill-only sends return UNOBSERVABLE.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SendChatMessageArgs) (*mcp.CallToolResult, any, error) {
 		wakeIfAsleep := true
 		if args.WakeIfAsleep != nil {
 			wakeIfAsleep = *args.WakeIfAsleep
 		}
-		// Default (omitted) => false: a driver prefills the composer without
-		// submitting. Set submit=true to reliably submit a single-line message
-		// (Enter + verifier); a multi-line message is paste-only regardless.
-		submit := false
+		// Default (omitted) => true (BOS-1270). A driver that says "send this"
+		// means it: the message is Enter-submitted and the submission verified,
+		// for single- and multi-line payloads alike. The old prefill default
+		// silently stalled orchestration — messages sat unactioned in the
+		// target's composer until a human opened the chat and pressed Enter.
+		// Staging a composer message is still available, but it is now the
+		// deliberate opt-out (submit=false) rather than what omission buys.
+		// This resolution is the public adapter's, not the daemon's: the raw
+		// SendChatMessageRequest bool cannot distinguish omitted from false, so
+		// an explicit wire-level false keeps prefilling (see
+		// services/bossd/internal/server/send_chat_message_test.go).
+		submit := true
 		if args.Submit != nil {
 			submit = *args.Submit
 		}
@@ -1116,7 +1124,7 @@ type SendChatMessageArgs struct {
 	AgentSessionID string `json:"agent_session_id" jsonschema:"the agent session UUID"`
 	Message        string `json:"message" jsonschema:"the user message to deliver"`
 	WakeIfAsleep   *bool  `json:"wake_if_asleep,omitempty" jsonschema:"wake the agent if it is currently asleep; defaults to true when omitted"`
-	Submit         *bool  `json:"submit,omitempty" jsonschema:"submit the message (press Enter and verify) instead of only prefilling the composer; works for single- and multi-line messages alike; defaults to false (prefill) when omitted"`
+	Submit         *bool  `json:"submit,omitempty" jsonschema:"press Enter and verify the submission; defaults to true; pass false to only prefill the composer"`
 }
 
 // SwitchAccountArgs is the typed argument struct for switch_account.

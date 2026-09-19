@@ -32,8 +32,14 @@ func chatCmd() *cobra.Command {
 		},
 	}
 	// Default true: `boss chat send` is a human/script sending a message and
-	// expecting the agent to act on it, so a single-line message is submitted
-	// (Enter + verified). --submit=false prefills the composer without submitting.
+	// expecting the agent to act on it, so the message is submitted (Enter +
+	// verified) — single- and multi-line payloads alike since BOS-488.
+	// --submit=false is the deliberate opt-out that only stages the message in
+	// the composer, leaving the target idle until someone presses Enter.
+	//
+	// This is the same contract the MCP send_chat_message tool states for an
+	// omitted submit (BOS-1270). The two surfaces are kept aligned on purpose:
+	// a caller that learns the rule on one must not be surprised by the other.
 	send.Flags().Bool("submit", true, "Submit the message (press Enter and verify); false prefills the composer without submitting")
 	// Default true: this is what `boss chat send` has always done, and it matches
 	// the MCP send_chat_message default. The flag exists so a caller can opt OUT

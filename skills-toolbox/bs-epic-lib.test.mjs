@@ -10,9 +10,11 @@ import {
   buildGraph,
   readyTickets,
   transitiveDependents,
+  transitiveDependentCounts,
   nextToMerge,
   parseEpicArgs,
   parseTicketRef,
+  buildCombinedRun,
   mergeBlockedExternalBlockers,
   classifyChildLiveness,
   CHILD_LIVENESS_VERDICTS,
@@ -22,6 +24,10 @@ import {
   resolvePlannedState,
   REPAIR_STALL_WINDOW_MS,
 } from './bs-epic-lib.mjs'
+// The REAL per-owner reporting subject. AC5's "reported for each owner" half is a
+// claim about this function, so the test has to call it rather than re-derive the
+// fan-out locally from parentsByChild (which production does not even read).
+import { projectProgressByParent } from './progress-comment.mjs'
 
 const t = (id, over = {}) => ({
   id,
@@ -410,7 +416,9 @@ test('nextToMerge: ties break on priority then oldest createdAt', () => {
 
 test('parseEpicArgs: parent, list, parallel override, agent override, bounds', () => {
   assert.deepEqual(parseEpicArgs(['BOS-100']), {
+    mode: 'parent',
     parentId: 'BOS-100',
+    parentIds: ['BOS-100'],
     ids: [],
     parallel: 4,
     agent: 'claude',
@@ -487,6 +495,208 @@ test('parseEpicArgs: --assume-cleared* validate their value', () => {
   assert.throws(() => parseEpicArgs(['BOS-1', '--assume-cleared', 'notaticket']))
   assert.throws(() => parseEpicArgs(['BOS-1', '--assume-cleared-and-merge']))
   assert.throws(() => parseEpicArgs(['BOS-1', '--assume-cleared-and-merge', 'notaticket']))
+})
+
+test('transitiveDependentCounts: re-exported here and ranks ready launches (BOS-1272)', () => {
+  const g = buildGraph([
+    t('BOS-1', { priority: 4 }),
+    t('BOS-2', { blockedBy: ['BOS-1'] }),
+    t('BOS-3', { blockedBy: ['BOS-2'] }),
+    t('BOS-9', { priority: 1 }),
+  ])
+  assert.equal(transitiveDependentCounts(g).get('BOS-1'), 2)
+  assert.deepEqual(
+    readyTickets(g, {
+      merged: new Set(),
+      failed: new Set(),
+      inFlight: new Set(),
+      externallyCleared: new Set(),
+    }).map((x) => x.id),
+    ['BOS-1', 'BOS-9'],
+  )
+})
+
+// --- --epic multi-root selector (BOS-1272) ---------------------------------------
+
+test('parseEpicArgs: one positional stays parent mode with its legacy keys intact', () => {
+  const parsed = parseEpicArgs(['BOS-100'])
+  assert.equal(parsed.mode, 'parent')
+  assert.equal(parsed.parentId, 'BOS-100')
+  assert.deepEqual(parsed.ids, [])
+  assert.deepEqual(parsed.parentIds, ['BOS-100'])
+})
+
+test('parseEpicArgs: two or more positionals stay list mode with its legacy keys intact', () => {
+  const parsed = parseEpicArgs(['BOS-1', 'BOS-2', 'BOS-3'])
+  assert.equal(parsed.mode, 'list')
+  assert.equal(parsed.parentId, null)
+  assert.deepEqual(parsed.ids, ['BOS-1', 'BOS-2', 'BOS-3'])
+  assert.deepEqual(parsed.parentIds, [])
+})
+
+test('parseEpicArgs: a repeated positional is NOT deduplicated (count decides the mode)', () => {
+  // Deduplicating here would collapse two positionals to one and silently flip
+  // an explicit-list invocation into parent mode.
+  const parsed = parseEpicArgs(['BOS-1', 'BOS-1'])
+  assert.equal(parsed.mode, 'list')
+  assert.deepEqual(parsed.ids, ['BOS-1', 'BOS-1'])
+})
+
+test('parseEpicArgs: a single --epic is parents mode, not parent mode', () => {
+  const parsed = parseEpicArgs(['--epic', 'BOS-100'])
+  assert.equal(parsed.mode, 'parents')
+  assert.deepEqual(parsed.parentIds, ['BOS-100'])
+  assert.deepEqual(parsed.ids, [])
+  // parentId stays null so a legacy single-parent consumer cannot silently run
+  // only the first of several requested roots.
+  assert.equal(parsed.parentId, null)
+})
+
+test('parseEpicArgs: --epic is repeatable and accepts ids and Linear URLs', () => {
+  const parsed = parseEpicArgs([
+    '--epic',
+    'BOS-100',
+    '--epic',
+    'https://linear.app/bossanova-dev/issue/BOS-200/some-epic-slug',
+  ])
+  assert.equal(parsed.mode, 'parents')
+  assert.deepEqual(parsed.parentIds, ['BOS-100', 'BOS-200'])
+})
+
+test('parseEpicArgs: duplicate --epic roots deduplicate in first-seen order', () => {
+  const parsed = parseEpicArgs([
+    '--epic',
+    'BOS-200',
+    '--epic',
+    'BOS-100',
+    '--epic',
+    'https://linear.app/acme/issue/BOS-200/slug',
+    '--epic',
+    'BOS-100',
+  ])
+  assert.deepEqual(parsed.parentIds, ['BOS-200', 'BOS-100'])
+})
+
+test('parseEpicArgs: --epic composes with the other flags in arbitrary order', () => {
+  const parsed = parseEpicArgs([
+    '--parallel',
+    '2',
+    '--epic',
+    'BOS-100',
+    '--assume-cleared',
+    'BOS-9',
+    '--agent',
+    'codex',
+    '--epic',
+    'BOS-200',
+    '--assume-cleared-and-merge',
+    'BOS-10',
+  ])
+  assert.equal(parsed.mode, 'parents')
+  assert.deepEqual(parsed.parentIds, ['BOS-100', 'BOS-200'])
+  assert.equal(parsed.parallel, 2)
+  assert.equal(parsed.agent, 'codex')
+  assert.deepEqual(parsed.assumeCleared, ['BOS-9'])
+  assert.deepEqual(parsed.assumeClearedAndMerge, ['BOS-10'])
+})
+
+test('parseEpicArgs: --epic mixed with a positional ticket ref is rejected', () => {
+  assert.throws(() => parseEpicArgs(['BOS-1', '--epic', 'BOS-100']), /--epic/)
+  assert.throws(() => parseEpicArgs(['--epic', 'BOS-100', 'BOS-1']), /--epic/)
+  assert.throws(() => parseEpicArgs(['--epic', 'BOS-100', 'BOS-1', 'BOS-2']), /--epic/)
+})
+
+test('parseEpicArgs: --epic with a missing or malformed value is rejected', () => {
+  assert.throws(() => parseEpicArgs(['--epic']), /--epic/)
+  assert.throws(() => parseEpicArgs(['--epic', '--parallel', '2']), /--epic/)
+  assert.throws(() => parseEpicArgs(['--epic', 'notaticket']), /--epic/)
+  assert.throws(() => parseEpicArgs(['--epic', 'https://example.com/issue/BOS-1']), /--epic/)
+})
+
+test('parseEpicArgs: an unknown flag is still rejected alongside --epic', () => {
+  assert.throws(() => parseEpicArgs(['--epic', 'BOS-100', '--epics', 'BOS-200']), /unknown flag/)
+})
+
+test('parseEpicArgs: neither a positional nor an --epic is still an error', () => {
+  assert.throws(() => parseEpicArgs(['--parallel', '2']), /at least one/)
+})
+
+// --- buildCombinedRun (combined-run model) ---------------------------------------
+
+test('buildCombinedRun: deduplicates the child universe while preserving membership', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: {
+      'BOS-100': ['BOS-1', 'BOS-2'],
+      'BOS-200': ['BOS-2', 'BOS-3'],
+    },
+  })
+  assert.deepEqual(run.parentIds, ['BOS-100', 'BOS-200'])
+  assert.deepEqual(run.childIds, ['BOS-1', 'BOS-2', 'BOS-3'])
+  assert.deepEqual(run.childrenByParent, {
+    'BOS-100': ['BOS-1', 'BOS-2'],
+    'BOS-200': ['BOS-2', 'BOS-3'],
+  })
+  assert.deepEqual(run.parentsByChild, {
+    'BOS-1': ['BOS-100'],
+    'BOS-2': ['BOS-100', 'BOS-200'],
+    'BOS-3': ['BOS-200'],
+  })
+})
+
+test('buildCombinedRun: is plain serializable data (no Map/Set survives JSON)', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-100'],
+    childrenByParent: { 'BOS-100': ['BOS-1'] },
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(run)), run)
+})
+
+test('buildCombinedRun: accepts normalized ticket objects as children, not just ids', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-100'],
+    childrenByParent: { 'BOS-100': [t('BOS-1'), { identifier: 'BOS-2' }, 'BOS-1'] },
+  })
+  assert.deepEqual(run.childIds, ['BOS-1', 'BOS-2'])
+  assert.deepEqual(run.childrenByParent['BOS-100'], ['BOS-1', 'BOS-2'])
+})
+
+test('buildCombinedRun: duplicate roots collapse first-seen and membership follows', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-100', 'BOS-100'],
+    childrenByParent: { 'BOS-100': ['BOS-1'] },
+  })
+  assert.deepEqual(run.parentIds, ['BOS-100'])
+  assert.deepEqual(run.parentsByChild, { 'BOS-1': ['BOS-100'] })
+})
+
+test('buildCombinedRun: a parent with no enumerated children is an empty membership, not an error', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-100', 'BOS-200'],
+    childrenByParent: { 'BOS-100': ['BOS-1'] },
+  })
+  assert.deepEqual(run.childrenByParent, { 'BOS-100': ['BOS-1'], 'BOS-200': [] })
+  assert.deepEqual(run.childIds, ['BOS-1'])
+})
+
+test('buildCombinedRun: membership for an unrequested parent is a wiring error', () => {
+  assert.throws(
+    () =>
+      buildCombinedRun({
+        parentIds: ['BOS-100'],
+        childrenByParent: { 'BOS-100': ['BOS-1'], 'BOS-999': ['BOS-2'] },
+      }),
+    /BOS-999/,
+  )
+})
+
+test('buildCombinedRun: rejects a missing/blank parent id or child id', () => {
+  assert.throws(() => buildCombinedRun({ parentIds: [], childrenByParent: {} }), /parentIds/)
+  assert.throws(() => buildCombinedRun({ parentIds: ['  '], childrenByParent: {} }), /parentIds/)
+  assert.throws(
+    () => buildCombinedRun({ parentIds: ['BOS-100'], childrenByParent: { 'BOS-100': [null] } }),
+    /child/,
+  )
 })
 
 // --- mergeBlockedExternalBlockers (merge-time external re-check) ------------------
@@ -967,5 +1177,308 @@ test('a resolved planned state feeds classifyTickets, whose empty-state throw st
   assert.throws(
     () => classifyTickets([t('BOS-1')], resolvePlannedState({})),
     /plannedState .* is required/,
+  )
+})
+
+// --- combined-run keying agreement ----------------------------------------
+
+test('buildCombinedRun: a raw payload carrying BOTH id and identifier keys by identifier', () => {
+  // A raw tracker payload carries both: `id` a UUID, `identifier` the human ref.
+  // The driver feeds those raw per-root lists to buildCombinedRun BEFORE
+  // normalizeTicket runs, so childIdOf must resolve to the same field
+  // normalizeTicket does — otherwise the child universe is UUID-keyed while
+  // every normalized row and graph node is identifier-keyed.
+  const raw = {
+    id: '6f0f2b4a-0000-4000-8000-000000000001',
+    identifier: 'BOS-11',
+    title: 'raw payload',
+  }
+  const run = buildCombinedRun({ parentIds: ['BOS-1'], childrenByParent: { 'BOS-1': [raw] } })
+  assert.deepEqual(run.childIds, ['BOS-11'])
+  assert.deepEqual(run.childrenByParent['BOS-1'], ['BOS-11'])
+  assert.deepEqual(run.parentsByChild, { 'BOS-11': ['BOS-1'] })
+  // The exact agreement that matters: the two resolvers pick the same key.
+  assert.equal(run.childIds[0], normalizeTicket(raw).id)
+})
+
+test('buildCombinedRun: both-fields payloads dedupe against their normalized twins', () => {
+  // Same child reported raw under one root and normalized under another. If the
+  // resolvers disagreed this would yield two entries in the child universe and
+  // the child would be hydrated, launched and merged twice.
+  const raw = { id: '6f0f2b4a-0000-4000-8000-000000000002', identifier: 'BOS-12' }
+  const run = buildCombinedRun({
+    parentIds: ['BOS-1', 'BOS-2'],
+    childrenByParent: { 'BOS-1': [raw], 'BOS-2': [t('BOS-12')] },
+  })
+  assert.deepEqual(run.childIds, ['BOS-12'])
+  assert.deepEqual(run.parentsByChild, { 'BOS-12': ['BOS-1', 'BOS-2'] })
+})
+
+test('buildCombinedRun: an entry with only id (already-normalized) still resolves', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-1'],
+    childrenByParent: { 'BOS-1': [{ id: 'BOS-13' }, { identifier: 'BOS-14' }] },
+  })
+  assert.deepEqual(run.childIds, ['BOS-13', 'BOS-14'])
+})
+
+// --- AC4/AC5 multi-root fixtures ------------------------------------------
+
+test('AC4: a cross-epic blocker is EXTERNAL under one root and IN-SET once both are selected', () => {
+  // BOS-21 (under root BOS-1) is blocked by BOS-31 (under root BOS-2).
+  const a1 = t('BOS-21', { blockedBy: ['BOS-31'] })
+  const b1 = t('BOS-31')
+
+  // Single-root run: only root BOS-1 selected, so BOS-31 is not in the node set.
+  const soloRun = buildCombinedRun({
+    parentIds: ['BOS-1'],
+    childrenByParent: { 'BOS-1': ['BOS-21'] },
+  })
+  const soloGraph = buildGraph(soloRun.childIds.map((id) => ({ ...a1, id })))
+  assert.deepEqual(soloGraph.externalBlockers.get('BOS-21'), ['BOS-31'])
+  assert.deepEqual(soloGraph.inEpicBlockers.get('BOS-21'), [])
+  // ... and it parks the work: uncleared external blocker → not ready.
+  assert.deepEqual(
+    readyTickets(soloGraph, {
+      merged: new Set(),
+      failed: new Set(),
+      inFlight: new Set(),
+      externallyCleared: new Set(),
+    }).map((node) => node.id),
+    [],
+  )
+
+  // Combined run: both roots selected, so the same relation is an in-set edge.
+  const combined = buildCombinedRun({
+    parentIds: ['BOS-1', 'BOS-2'],
+    childrenByParent: { 'BOS-1': ['BOS-21'], 'BOS-2': ['BOS-31'] },
+  })
+  assert.deepEqual(combined.childIds, ['BOS-21', 'BOS-31'])
+  const byId = new Map([
+    ['BOS-21', a1],
+    ['BOS-31', b1],
+  ])
+  const graph = buildGraph(combined.childIds.map((id) => byId.get(id)))
+  assert.deepEqual(graph.inEpicBlockers.get('BOS-21'), ['BOS-31'])
+  assert.deepEqual(graph.externalBlockers.get('BOS-21'), [])
+
+  // The constraint is now scheduled, not parked: BOS-31 launches first with no
+  // external clearance at all, and BOS-21 becomes ready only once it merges.
+  const empty = {
+    merged: new Set(),
+    failed: new Set(),
+    inFlight: new Set(),
+    externallyCleared: new Set(),
+  }
+  assert.deepEqual(
+    readyTickets(graph, empty).map((node) => node.id),
+    ['BOS-31'],
+  )
+  assert.deepEqual(
+    readyTickets(graph, { ...empty, merged: new Set(['BOS-31']) }).map((node) => node.id),
+    ['BOS-21'],
+  )
+})
+
+test('AC4: the cross-epic edge is re-evaluated at MERGE time, not only at launch', () => {
+  // Launch-time clearance must not leak into the merge gate: an external blocker
+  // cleared for launch is still open for merge unless cleared FOR MERGE.
+  const solo = buildGraph([t('BOS-21', { blockedBy: ['BOS-31'] })])
+  assert.deepEqual(
+    mergeBlockedExternalBlockers(solo.nodes.get('BOS-21'), solo, { clearedBlockers: new Set() }),
+    ['BOS-31'],
+  )
+  assert.deepEqual(
+    mergeBlockedExternalBlockers(solo.nodes.get('BOS-21'), solo, {
+      clearedForMerge: new Set(['BOS-31']),
+      clearedBlockers: new Set(),
+    }),
+    [],
+  )
+  // Once both roots are selected the same relation is in-set, so it is no
+  // longer an external merge gate at all — nextToMerge serializes it instead.
+  const combined = buildGraph([t('BOS-21', { blockedBy: ['BOS-31'] }), t('BOS-31')])
+  assert.deepEqual(
+    mergeBlockedExternalBlockers(combined.nodes.get('BOS-21'), combined, {
+      clearedBlockers: new Set(),
+    }),
+    [],
+  )
+})
+
+test('AC5: a needs-human child under TWO roots is excluded once, reported for each owner', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-1', 'BOS-2'],
+    childrenByParent: { 'BOS-1': ['BOS-41', 'BOS-42'], 'BOS-2': ['BOS-42'] },
+  })
+  // Deduplicated child universe: BOS-42 is classified ONCE, not once per root.
+  assert.deepEqual(run.childIds, ['BOS-41', 'BOS-42'])
+  const tickets = [t('BOS-41'), t('BOS-42', { labels: ['agent-friendly', 'needs-human'] })]
+  const { eligible, skipped } = classifyTickets(tickets, 'Todo')
+  assert.deepEqual(
+    eligible.map((ticket) => ticket.id),
+    ['BOS-41'],
+  )
+  assert.equal(skipped.length, 1)
+  assert.equal(skipped[0].ticket.id, 'BOS-42')
+  assert.match(skipped[0].reason, /needs-human/)
+
+  // The one exclusion is reported to EVERY owning root. Asserted over the REAL
+  // reporting path: projectProgressByParent is what actually writes a row onto each
+  // owner's comment. A `.map` over run.parentsByChild re-derives the fan-out inside
+  // the test, so it stays green even if the projection drops the excluded child from
+  // every comment — which is precisely the half this AC owns.
+  assert.deepEqual(run.parentsByChild['BOS-42'], ['BOS-1', 'BOS-2'])
+  const projections = projectProgressByParent({
+    state: {
+      epicId: 'combined',
+      marker: 'boss-epic:progress:combined',
+      updatedAt: '2026-01-01T00:00:00Z',
+      tickets: [
+        { id: 'BOS-41', title: 'BOS-41', status: 'pending' },
+        { id: 'BOS-42', title: 'BOS-42', status: 'skipped', note: skipped[0].reason },
+      ],
+    },
+    parentIds: run.parentIds,
+    childrenByParent: run.childrenByParent,
+  })
+  assert.deepEqual(
+    projections.map((projection) => projection.parentId),
+    ['BOS-1', 'BOS-2'],
+  )
+  for (const projection of projections) {
+    const row = projection.state.tickets.find((entry) => entry.id === 'BOS-42')
+    assert.ok(row, `BOS-42 is absent from the ${projection.parentId} projection`)
+    assert.equal(row.status, 'skipped')
+    assert.match(row.note, /needs-human/)
+  }
+
+  // And it never receives an implementation session, on any root: it is absent
+  // from the scheduled graph because only eligible tickets are graphed.
+  const graph = buildGraph(eligible)
+  assert.equal(graph.nodes.has('BOS-42'), false)
+  assert.deepEqual(
+    readyTickets(graph, {
+      merged: new Set(),
+      failed: new Set(),
+      inFlight: new Set(),
+      externallyCleared: new Set(),
+    }).map((node) => node.id),
+    ['BOS-41'],
+  )
+})
+
+// --- AC3 dedup: launch/reconcile/merge once over the combined child set ----
+
+test('AC3: a child under two roots is scheduled, launched and merged exactly once', () => {
+  const run = buildCombinedRun({
+    parentIds: ['BOS-1', 'BOS-2'],
+    childrenByParent: { 'BOS-1': ['BOS-51', 'BOS-52'], 'BOS-2': ['BOS-52', 'BOS-53'] },
+  })
+  assert.deepEqual(run.childIds, ['BOS-51', 'BOS-52', 'BOS-53'])
+
+  const graph = buildGraph(run.childIds.map((id) => t(id)))
+  const launched = readyTickets(graph, {
+    merged: new Set(),
+    failed: new Set(),
+    inFlight: new Set(),
+    externallyCleared: new Set(),
+  }).map((node) => node.id)
+  // One launch slot per unique child — the shared BOS-52 appears once.
+  assert.deepEqual(launched, ['BOS-51', 'BOS-52', 'BOS-53'])
+  assert.equal(new Set(launched).size, launched.length)
+
+  // Reconciliation is child-keyed, so an in-flight shared child is not
+  // re-launched on behalf of its second root.
+  assert.deepEqual(
+    readyTickets(graph, {
+      merged: new Set(),
+      failed: new Set(),
+      inFlight: new Set(['BOS-52']),
+      externallyCleared: new Set(),
+    }).map((node) => node.id),
+    ['BOS-51', 'BOS-53'],
+  )
+  // Already merged for one root is already merged for both.
+  assert.deepEqual(
+    readyTickets(graph, {
+      merged: new Set(['BOS-52']),
+      failed: new Set(),
+      inFlight: new Set(),
+      externallyCleared: new Set(),
+    }).map((node) => node.id),
+    ['BOS-51', 'BOS-53'],
+  )
+
+  // ... and it still appears in BOTH roots' progress projections.
+  assert.deepEqual(run.parentsByChild['BOS-52'], ['BOS-1', 'BOS-2'])
+})
+
+test('AC3/AC7: merges serialize to ONE child at a time across the combined set', () => {
+  // Greens drawn from two different roots: nextToMerge names exactly one, and
+  // the shared child cannot be named twice because the universe is unique.
+  const run = buildCombinedRun({
+    parentIds: ['BOS-1', 'BOS-2'],
+    childrenByParent: { 'BOS-1': ['BOS-61', 'BOS-62'], 'BOS-2': ['BOS-62', 'BOS-63'] },
+  })
+  const graph = buildGraph([
+    t('BOS-61', { priority: 3 }),
+    t('BOS-62', { priority: 1 }),
+    t('BOS-63', { priority: 2 }),
+  ])
+  const greens = run.childIds.map((id) => ({ id }))
+
+  const first = nextToMerge(greens, graph, new Set())
+  assert.equal(first, 'BOS-62') // highest tracker priority wins the single slot
+  const merged = new Set([first])
+  const second = nextToMerge(
+    greens.filter((green) => !merged.has(green.id)),
+    graph,
+    merged,
+  )
+  assert.equal(second, 'BOS-63')
+  merged.add(second)
+  const third = nextToMerge(
+    greens.filter((green) => !merged.has(green.id)),
+    graph,
+    merged,
+  )
+  assert.equal(third, 'BOS-61')
+  merged.add(third)
+  // Drained: no fourth merge, so the shared child merged once, not once per root.
+  assert.equal(
+    nextToMerge(
+      greens.filter((green) => !merged.has(green.id)),
+      graph,
+      merged,
+    ),
+    null,
+  )
+  assert.deepEqual([...merged].sort(), ['BOS-61', 'BOS-62', 'BOS-63'])
+})
+
+test('AC7 restart: adopting in-flight work re-derives the same unique child set', () => {
+  // A restart rebuilds the combined run from the same requested roots. The model
+  // is plain data, so the adopted set is byte-identical through JSON — no
+  // duplicate child can appear on the second derivation.
+  const args = {
+    parentIds: ['BOS-1', 'BOS-2'],
+    childrenByParent: { 'BOS-1': ['BOS-71', 'BOS-72'], 'BOS-2': ['BOS-72'] },
+  }
+  const before = buildCombinedRun(args)
+  const after = buildCombinedRun(JSON.parse(JSON.stringify(args)))
+  assert.deepEqual(after, before)
+  assert.deepEqual(JSON.parse(JSON.stringify(before)), before)
+
+  // Work already in flight before the restart is adopted, not relaunched.
+  const graph = buildGraph(after.childIds.map((id) => t(id)))
+  assert.deepEqual(
+    readyTickets(graph, {
+      merged: new Set(['BOS-71']),
+      failed: new Set(),
+      inFlight: new Set(['BOS-72']),
+      externallyCleared: new Set(),
+    }).map((node) => node.id),
+    [],
   )
 })

@@ -44,6 +44,77 @@ test('parseFrontmatter splits frontmatter from body', () => {
   assert.equal(body.trim(), 'hello')
 })
 
+test('parseFrontmatter preserves literal block scalar newlines and blank lines', () => {
+  const { data } = parseFrontmatter(
+    '---\ndescription: |\n  first line\n  second line\n\n  fourth line\n---\n',
+  )
+  assert.equal(data.description, 'first line\nsecond line\n\nfourth line\n')
+})
+
+test('parseFrontmatter folds ordinary lines but preserves paragraph breaks', () => {
+  const { data } = parseFrontmatter(
+    '---\ndescription: >\n  first line\n  second line\n\n  fourth line\n---\n',
+  )
+  assert.equal(data.description, 'first line second line\nfourth line\n')
+})
+
+test('parseFrontmatter applies block scalar chomping and explicit indentation modifiers', () => {
+  const { data } = parseFrontmatter(
+    [
+      '---',
+      'strip-indent-first: |2-',
+      '  alpha',
+      '  beta',
+      '',
+      'strip-chomp-first: |-2',
+      '  gamma',
+      '  delta',
+      '',
+      'keep: >2+',
+      '  one',
+      '  two',
+      '',
+      '',
+      '---',
+      '',
+    ].join('\n'),
+  )
+  assert.equal(data['strip-indent-first'], 'alpha\nbeta')
+  assert.equal(data['strip-chomp-first'], 'gamma\ndelta')
+  assert.equal(data.keep, 'one two\n\n\n')
+})
+
+test('parseFrontmatter returns an empty string for empty block scalars', () => {
+  const { data } = parseFrontmatter('---\nliteral: |\nfolded: >-\nkept: |+\nname: next\n---\n')
+  assert.equal(data.literal, '')
+  assert.equal(data.folded, '')
+  assert.equal(data.kept, '')
+  assert.equal(data.name, 'next')
+})
+
+test('parseFrontmatter ends a block scalar on dedent and resumes extension mapping parsing', () => {
+  const { data } = parseFrontmatter(
+    [
+      '---',
+      'instructions: |-',
+      '  Run the focused tests.',
+      '  Then vendor the toolbox.',
+      'x-boss-extension:',
+      '  extends: boss-build',
+      '  role: review',
+      '  order: 25',
+      '---',
+      '',
+    ].join('\n'),
+  )
+  assert.equal(data.instructions, 'Run the focused tests.\nThen vendor the toolbox.')
+  assert.deepEqual(data['x-boss-extension'], {
+    extends: 'boss-build',
+    role: 'review',
+    order: 25,
+  })
+})
+
 test('extensionMarker reads the x-boss-extension block', () => {
   const { data } = parseFrontmatter(
     '---\nname: bs-review-security\nx-boss-extension:\n  extends: bs-review\n  role: lens\n  order: 20\n---\n',

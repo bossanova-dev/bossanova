@@ -92,6 +92,24 @@ test('parseFrontmatter returns an empty string for empty block scalars', () => {
   assert.equal(data.name, 'next')
 })
 
+test('parseFrontmatter accepts trailing comments on block scalar headers', () => {
+  const { data } = parseFrontmatter(
+    [
+      '---',
+      'empty: |- # intentionally empty',
+      'description: > # explain the skill',
+      '  folded',
+      '  words',
+      'name: next',
+      '---',
+      '',
+    ].join('\n'),
+  )
+  assert.equal(data.empty, '')
+  assert.equal(data.description, 'folded words\n')
+  assert.equal(data.name, 'next')
+})
+
 test('parseFrontmatter ends a block scalar on dedent and resumes extension mapping parsing', () => {
   const { data } = parseFrontmatter(
     [

@@ -107,8 +107,8 @@ function skipEntry(name, code, reason) {
   return { name, reason, code, deliberate: classification ? classification.deliberate : false }
 }
 
-// Minimal YAML-frontmatter reader. Supports the flat scalar keys and the single
-// nested `x-boss-extension:` block this contract needs — no external YAML dep
+// Minimal YAML-frontmatter reader. Supports flat scalars, top-level literal/folded block scalars,
+// and the single nested `x-boss-extension:` block this contract needs — no external YAML dep
 // (matches the no-new-deps constraint of the scripts/ helpers).
 //
 // `hasFrontmatter` reports whether a delimited block was found at all. It matters because a file
@@ -120,7 +120,9 @@ export function parseFrontmatter(text) {
   if (!match) return { data: {}, body: text, hasFrontmatter: false }
   const data = {}
   let current = null // name of the block we are collecting nested keys into
-  for (const raw of match[1].split('\n')) {
+  const lines = match[1].split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index]
     if (!raw.trim() || raw.trim().startsWith('#')) continue
     const nested = /^ {2,}([\w-]+):\s*(.*)$/.exec(raw)
     if (nested && current) {
@@ -133,11 +135,97 @@ export function parseFrontmatter(text) {
       data[top[1]] = {}
       current = top[1]
     } else {
-      data[top[1]] = coerce(top[2])
+      const block = parseBlockHeader(top[2])
+      if (block) {
+        const parsed = readBlockScalar(lines, index + 1, block)
+        data[top[1]] = parsed.value
+        index = parsed.end - 1
+      } else {
+        data[top[1]] = coerce(top[2])
+      }
       current = null
     }
   }
   return { data, body: match[2], hasFrontmatter: true }
+}
+
+function parseBlockHeader(value) {
+  const match = /^([|>])([1-9+-]{0,2})$/.exec(value.trim())
+  if (!match) return null
+  const modifiers = match[2]
+  const indentation = /[1-9]/.exec(modifiers)?.[0]
+  const chomping = /[+-]/.exec(modifiers)?.[0] ?? ''
+  if (modifiers.replace(/[1-9]/, '').replace(/[+-]/, '') !== '') return null
+  if ((modifiers.match(/[1-9]/g)?.length ?? 0) > 1) return null
+  if ((modifiers.match(/[+-]/g)?.length ?? 0) > 1) return null
+  return {
+    style: match[1],
+    indentation: indentation ? Number(indentation) : null,
+    chomping,
+  }
+}
+
+function readBlockScalar(lines, start, block) {
+  let indentation = block.indentation
+  let firstContent = start
+  while (firstContent < lines.length && lines[firstContent].trim() === '') firstContent += 1
+  if (indentation === null && firstContent < lines.length) {
+    const leading = /^ */.exec(lines[firstContent])[0].length
+    if (leading > 0) indentation = leading
+  }
+
+  let end = start
+  while (end < lines.length) {
+    const raw = lines[end]
+    if (raw.trim() === '') {
+      end += 1
+      continue
+    }
+    const leading = /^ */.exec(raw)[0].length
+    if (indentation === null || leading < indentation) break
+    end += 1
+  }
+
+  const contentIndentation = indentation ?? 0
+  const content = lines
+    .slice(start, end)
+    .map((raw) =>
+      raw.trim() === ''
+        ? raw.slice(Math.min(contentIndentation, raw.length))
+        : raw.slice(contentIndentation),
+    )
+  const rendered =
+    block.style === '|'
+      ? content.length === 0
+        ? ''
+        : `${content.join('\n')}\n`
+      : foldBlockLines(content)
+  return { value: chompBlockScalar(rendered, block.chomping), end }
+}
+
+function foldBlockLines(lines) {
+  if (lines.length === 0) return ''
+  let rendered = ''
+  let sawNonEmpty = false
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const current = lines[index]
+    const next = lines[index + 1]
+    rendered += current
+    if (current === '') {
+      if (next === '' || !sawNonEmpty) rendered += '\n'
+    } else {
+      sawNonEmpty = true
+      rendered += next !== '' && !/^\s/.test(current) && !/^\s/.test(next) ? ' ' : '\n'
+    }
+  }
+  return `${rendered}${lines.at(-1)}\n`
+}
+
+function chompBlockScalar(value, chomping) {
+  if (chomping === '+') return value
+  const stripped = value.replace(/\n+$/, '')
+  if (chomping === '-' || stripped === '') return stripped
+  return `${stripped}\n`
 }
 
 // A quoted YAML scalar is a string by construction, so the quotes must be honoured

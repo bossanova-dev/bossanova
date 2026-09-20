@@ -150,7 +150,7 @@ export function parseFrontmatter(text) {
 }
 
 function parseBlockHeader(value) {
-  const match = /^([|>])([1-9+-]{0,2})$/.exec(value.trim())
+  const match = /^([|>])([1-9+-]{0,2})(?:[ \t]+#.*)?$/.exec(value.trim())
   if (!match) return null
   const modifiers = match[2]
   const indentation = /[1-9]/.exec(modifiers)?.[0]

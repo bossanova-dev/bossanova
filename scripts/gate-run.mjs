@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
 import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './env-failure-lib.mjs'
+import { gateEvidenceLine } from './gate-log-lib.mjs'
 
 export const VERDICTS = Object.freeze({
   passed: 'GATE PASSED',
@@ -50,6 +51,10 @@ function logPath(runDir) {
 // Every terminal outcome is emitted through here so it survives the poller's stdout: the first line
 // is written to `<run-dir>/verdict` atomically before anything is printed, which is the only thing a
 // reader can hold against a backgrounded notification that reports the launcher's exit code.
+//
+// The evidence line is appended LAST and never touches the first line or the durable `verdict`
+// bytes, so every documented consumer contract — `VERDICTS`, `cat <run-dir>/verdict` — is byte-for
+// -byte what it was before BOS-1276.
 function emitVerdict(runDir, firstLine, exitCode, extraLines = []) {
   if (runDir) {
     try {
@@ -59,7 +64,7 @@ function emitVerdict(runDir, firstLine, exitCode, extraLines = []) {
       // copy is a bonus, never a precondition for reporting the outcome.
     }
   }
-  process.stdout.write([firstLine, ...extraLines, ''].join('\n'))
+  process.stdout.write([firstLine, ...extraLines, evidenceLine(runDir), ''].join('\n'))
   process.exit(exitCode)
 }
 
@@ -80,6 +85,31 @@ function readLogTail(runDir) {
     return { text: buffer.toString('utf8'), mtimeMs: stat.mtimeMs, size: stat.size }
   } catch {
     return null
+  }
+}
+
+// Every verdict names the evidence behind it, on the PASSING path as well as the failing ones: the
+// single most-cited misreading in this class is a green that proves nothing about whether anything
+// re-ran. Rendered by scripts/gate-log-lib.mjs from the same bounded 256 KB tail this file already
+// reads, so there is no new I/O and no new process.
+//
+// It can never throw. A defect in the reader must degrade to a line that says so, not swallow the
+// verdict the caller is waiting on.
+function evidenceLine(runDir) {
+  try {
+    const tail = runDir ? readLogTail(runDir) : null
+    const line = gateEvidenceLine(tail?.text ?? '')
+    // Name the window when the log outran it. The counts are read from a bounded tail, so on a
+    // longer log `post-summary failures: 0` means "none in the last 256 KB", not "checked the whole
+    // run and found none" - and reporting a tail-scoped count in whole-run shape is the same
+    // under-determination this line exists to remove.
+    if (tail && tail.size > LOG_TAIL_LIMIT_BYTES) {
+      const kb = (bytes) => Math.round(bytes / 1024)
+      return `${line} - counts read from the last ${kb(LOG_TAIL_LIMIT_BYTES)} KB of a ${kb(tail.size)} KB log, not the whole run`
+    }
+    return line
+  } catch {
+    return 'evidence: unavailable - the gate log could not be read'
   }
 }
 
@@ -338,8 +368,9 @@ async function stop(args) {
 
   const existing = readStatus(runDir)
   if (existing !== null) {
-    // Already terminal: change no file (not even `verdict`), report what is there, exit 0.
-    process.stdout.write(`${verdictLineForStatus(existing)}\n`)
+    // Already terminal: change no file (not even `verdict`), report what is there, exit 0. The
+    // evidence line is a read of the log, so it stays inside that no-write guarantee.
+    process.stdout.write(`${verdictLineForStatus(existing)}\n${evidenceLine(runDir)}\n`)
     process.exit(0)
   }
 

@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -16,10 +15,24 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rs/zerolog"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/jsonlscan"
 )
 
 const maxScanLines = 200
+
+// maxTitleScanPhysicalLines bounds the PHYSICAL lines a title scan may consume,
+// including ones jsonlscan skipped. maxScanLines alone bounds only records the
+// reader RETURNED, and Scan drains any number of over-budget records before
+// returning one — so on a rollout whose head is all over-budget records, a
+// returned-record window reads to EOF (the reported subject file is 421.5 MiB).
+// 10x maxScanLines cannot cost title recall on an ordinary rollout: the first
+// over-long record in the reported file sits at line 398, and a title is found
+// in the first handful of lines when one exists at all.
+const maxTitleScanPhysicalLines = maxScanLines * 10
+
 const maxSummaryLen = 80
 
 // ellipsis is the house truncation marker (U+2026). It is 3 bytes in UTF-8,
@@ -511,11 +524,20 @@ func readSessionMeta(path string) (codexSessionMetaPayload, bool) {
 	}
 	defer func() { _ = f.Close() }()
 
-	line, err := bufio.NewReader(f).ReadBytes('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+	// bufio.Reader.ReadBytes used to read this line. It allocates the whole
+	// line whatever its size, so it converted a failed read into a 13 MiB
+	// allocation rather than bounding it — the same defect as the scanner
+	// ceiling, one function along. jsonlscan bounds it.
+	r := jsonlscan.New(f)
+	// Line() counts skipped records too, so a value other than 1 means the real
+	// first record was over budget and this is a later one. session_meta is
+	// line 1 by contract, so a skip here is a miss, not a fallback: the old
+	// ReadBytes returned the first PHYSICAL line, while Scan returns the first
+	// line that FITS THE BUDGET.
+	if !r.Scan() || r.Line() != 1 {
 		return codexSessionMetaPayload{}, false
 	}
-	line = bytes.TrimSpace(line)
+	line := bytes.TrimSpace(r.Bytes())
 	if len(line) == 0 {
 		return codexSessionMetaPayload{}, false
 	}
@@ -751,8 +773,7 @@ func sessionIndexThreadName(agentSessionID string) string {
 	defer func() { _ = f.Close() }()
 
 	var title string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, rolloutScanInitialBytes), rolloutScanMaxBytes)
+	scanner := jsonlscan.New(f)
 	for scanner.Scan() {
 		var entry codexSessionIndexEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
@@ -779,6 +800,14 @@ func sessionIndexThreadName(agentSessionID string) string {
 // first response_item message role:"user" input_text). Synthetic
 // `<environment_context>` messages are filtered out by the XML-tag stripper.
 func chatTitleAtPath(path string) string {
+	return chatTitleAtPathWithLimits(path, jsonlscan.ChunkBytes, jsonlscan.MaxLineBytes)
+}
+
+// chatTitleAtPathWithLimits is chatTitleAtPath with the reader's limits made
+// injectable, so a test can drive the skip path — and the physical-line bound
+// that depends on it — without writing multi-megabyte fixtures. Production
+// callers use chatTitleAtPath so no call site carries a private ceiling.
+func chatTitleAtPathWithLimits(path string, chunkBytes, maxLineBytes int) string {
 	cleaned := filepath.Clean(path)
 	f, err := os.Open(cleaned)
 	if err != nil {
@@ -786,15 +815,32 @@ func chatTitleAtPath(path string) string {
 	}
 	defer func() { _ = f.Close() }()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, rolloutScanInitialBytes), rolloutScanMaxBytes)
+	scanner := jsonlscan.NewWithLimits(f, chunkBytes, maxLineBytes)
 
 	// Two passes via a single walk: prefer event_msg/user_message because that
 	// is the post-hello, real-user-typed entry. Fall back to the first
 	// response_item message:user input_text if no event_msg appears in the
 	// scan window.
+	//
+	// maxScanLines counts records the reader RETURNED, not physical lines, so
+	// an over-long tool-output envelope no longer spends part of the title
+	// window. Under the old scanner this function survived only because the
+	// first over-long record in the reported rollout fell at line 398, outside
+	// a 200-line window — luck, not a bound.
+	//
+	// On its own, though, a returned-record window bounds memory and not work:
+	// Scan drains every over-budget record it passes without advancing i, so a
+	// rollout whose records are mostly over budget would be read to EOF.
+	// maxTitleScanPhysicalLines is the second, physical bound that makes the
+	// window a bound again. Line() counts skipped records too, so it is the
+	// figure to test it against. (One Scan call can still drain to EOF on a
+	// file with no in-budget record left at all; nothing the Reader exposes
+	// can cut that short, and it materialises nothing.)
 	var fallback string
 	for i := 0; i < maxScanLines && scanner.Scan(); i++ {
+		if scanner.Line() > maxTitleScanPhysicalLines {
+			break
+		}
 		var env codexEnvelope
 		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
 			continue
@@ -879,48 +925,48 @@ func truncate(s string) string {
 	return s[:cut] + ellipsis
 }
 
-// Codex rollout JSONL line limits.
+// Codex rollout JSONL line limits — the decision record, superseded in place.
 //
-// rolloutScanInitialBytes is what bufio allocates up front; rolloutScanMaxBytes
-// is the ceiling it may GROW to. Splitting them matters: the previous code
-// passed 256 KiB for both, so every scan paid the ceiling eagerly and a line
-// one byte over it failed. bufio only grows to what a line actually needs, so
-// raising the ceiling raises a bound, not a steady-state cost.
+// What used to live here: a split pair, rolloutScanInitialBytes (what bufio
+// allocated up front) and rolloutScanMaxBytes (the ceiling it could GROW to),
+// shared by all three scanners in this file so that no call site could drift.
+// 256 KiB was the value this path REJECTED — a single rollout event carrying
+// an inlined tool result was observed at roughly 742 KiB and made
+// `boss chat wait` fail with a bare `bufio.Scanner: token too long`. 8 MiB was
+// the value it ACCEPTED, ~11x that observed maximum, chosen against the
+// measurement rather than picked round, with the standard stated outright:
+// "a ceiling raised without a named reason is the same defect one order of
+// magnitude later."
 //
-// 256 KiB was too small in practice, not in theory: a single codex rollout
-// event carrying an inlined tool result was observed at roughly 742 KiB, which
-// made `boss chat wait` fail on the transcript with a bare
-// `bufio.Scanner: token too long`. 8 MiB is ~11x that observed maximum — chosen
-// against the measurement rather than picked round, since a ceiling raised
-// without a named reason is the same defect one order of magnitude later.
+// That prediction landed. Six days on, the same rollout carried a 12.83 MiB
+// record — 1.6x the accepted ceiling, with 11 records over it — and
+// `boss chat show` failed on exactly the same message. Raising the ceiling a
+// third time is the treadmill the comment already named, and it would mean
+// buffering 13 MiB in order to `continue` past a record this file discards:
+// every over-long record measured was a function_call_output or
+// custom_tool_call_output envelope, and parseRolloutMessages keeps only
+// event_msg.
 //
-// Shared by all three scanners in this file on purpose. They read the same
-// family of codex JSONL, and a divergent cap is precisely this defect
-// reappearing at a different call site.
-const (
-	rolloutScanInitialBytes = 64 * 1024
-	rolloutScanMaxBytes     = 8 * 1024 * 1024
-)
+// So the ceiling is gone, not raised. All three scanners now read through
+// jsonlscan, which skips and counts an over-budget record instead of failing
+// the read, so line length is no longer a correctness cliff. jsonlscan keeps
+// 8 MiB — the value this path already accepted — but the obligation attached
+// to it is much weaker now: it is the point at which a record is skipped, not
+// the point at which the transcript becomes unreadable.
+//
+// The "shared by all three on purpose" rule survives the change and is why
+// none of them keeps a private budget: they read the same family of codex
+// JSONL, and a divergent cap is precisely this defect reappearing at a
+// different call site.
 
-// errRolloutLineTooLong classifies bufio.ErrTooLong. Without it the failure
-// reached a caller as `get transcript: bufio.Scanner: token too long` — a
-// message that names neither the file, nor the limit, nor the fact that this is
-// a readable transcript the reader refused rather than a missing one.
-var errRolloutLineTooLong = errors.New("codex rollout line exceeds the scanner limit")
-
-// classifyRolloutScanErr names an over-long line and leaves every other scanner
-// error untouched. line is the 1-based index of the last line the scanner
-// completed, so the offending line is the one after it.
-func classifyRolloutScanErr(err error, path string, line int) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, bufio.ErrTooLong) {
-		return fmt.Errorf("%w of %d bytes at %s line %d: the transcript exists but cannot be parsed",
-			errRolloutLineTooLong, rolloutScanMaxBytes, path, line+1)
-	}
-	return err
-}
+// The errRolloutLineTooLong sentinel and the classifyRolloutScanErr wrapper
+// that named it used to live here. They classified bufio.ErrTooLong so the
+// failure did not reach a caller as a bare `bufio.Scanner: token too long`.
+// jsonlscan.Err() is documented and tested never to return that error — an
+// over-budget record is a counted skip there, not a failure — and every reader
+// on this path now goes through it, so the branch had no production caller
+// left and only a hand-fed test kept it covered. Reporting an over-long record
+// is Skipped()'s job now; the read error passes through as itself.
 
 // parseRolloutMessages reads all chat turns from the codex rollout JSONL at
 // path and returns them as ordered []*bossanovav1.ChatMessage. Only
@@ -930,23 +976,23 @@ func classifyRolloutScanErr(err error, path string, line int) error {
 //
 // The second return value is the flattened text of the last assistant turn
 // seen across the full file (used as FinalAssistantText in
-// ReadTranscriptResponse, independent of any MaxMessages tail-cut).
-func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, error) {
+// ReadTranscriptResponse, independent of any MaxMessages tail-cut). The third
+// is how many records exceeded the parse budget and were skipped: zero is the
+// clean case, and anything else is what readTranscriptAt surfaces to the log,
+// because a silent skip is a quieter version of the failure this replaced.
+func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int, error) {
 	cleaned := filepath.Clean(path)
 	f, err := os.Open(cleaned)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 	defer func() { _ = f.Close() }()
 
 	var msgs []*bossanovav1.ChatMessage
 	var lastAssistant string
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, rolloutScanInitialBytes), rolloutScanMaxBytes)
-	line := 0
+	scanner := jsonlscan.New(f)
 	for scanner.Scan() {
-		line++
 		var env codexEnvelope
 		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
 			continue
@@ -978,10 +1024,10 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, erro
 			lastAssistant = text
 		}
 	}
-	if err := classifyRolloutScanErr(scanner.Err(), cleaned, line); err != nil {
-		return nil, "", err
+	if err := scanner.Err(); err != nil {
+		return nil, "", scanner.Skipped(), err
 	}
-	return msgs, lastAssistant, nil
+	return msgs, lastAssistant, scanner.Skipped(), nil
 }
 
 // readTranscriptAt resolves the rollout JSONL for agentSessionID under root
@@ -989,14 +1035,28 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, erro
 // {Exists:false} with nil error — callers treat that as transcript-not-yet-
 // written rather than a hard failure. Exposed for tests so the sessions root
 // can be redirected to a temp dir (mirrors findRolloutPath).
-func readTranscriptAt(root, _, agentSessionID string, maxMessages int32) (*bossanovav1.ReadTranscriptResponse, error) {
+//
+// logger carries the skip report. Nothing reaches the CLI: `boss chat show`
+// renders chat messages, and a skipped record is a function_call_output
+// envelope that was never one — so nothing the user asked for is missing and
+// a warning there would be noise. The operator-facing surface is this log,
+// which is where "the transcript you are reading dropped N records" belongs.
+func readTranscriptAt(root, _, agentSessionID string, maxMessages int32, logger zerolog.Logger) (*bossanovav1.ReadTranscriptResponse, error) {
 	path, err := findRolloutPath(root, agentSessionID)
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 	}
-	msgs, finalAssistant, err := parseRolloutMessages(path)
+	msgs, finalAssistant, skipped, err := parseRolloutMessages(path)
 	if err != nil {
 		return nil, err
+	}
+	if skipped > 0 {
+		logger.Warn().
+			Str("path", path).
+			Str("agent_session_id", agentSessionID).
+			Int("skipped_records", skipped).
+			Int("max_line_bytes", jsonlscan.MaxLineBytes).
+			Msg("codex rollout: skipped records over the parse budget")
 	}
 	if maxMessages > 0 && int(maxMessages) < len(msgs) {
 		msgs = msgs[len(msgs)-int(maxMessages):]

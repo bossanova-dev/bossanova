@@ -53,10 +53,10 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
-	github.com/modelcontextprotocol/go-sdk v1.7.0 // indirect
+	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/posthog/posthog-go v1.25.1 // indirect
+	github.com/posthog/posthog-go v1.25.2 // indirect
 	github.com/qmuntal/stateless v1.8.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect

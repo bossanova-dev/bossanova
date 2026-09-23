@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,14 +58,14 @@ const waitAgentRunPollInterval = 500 * time.Millisecond
 const defaultWaitChatRunDeadline = 30 * time.Minute
 
 // legacyBackfillProviderIDDiscoveryTimeout bounds the pre-response codex
-// provider-session-id discovery in providerSessionIDForAgentSession. That call
-// is never the fast process-fd path: it always sends AllowLegacyBackfill: true
-// and never sets PanePid, and the codex plugin gates its fd branch on
-// !AllowLegacyBackfill && PanePid > 0, so 100% of these calls take the
-// whole-corpus legacy rollout scan. Budgeted for that scan (30s), not for the
-// 2s the fd path gets in
-// services/bossd/internal/server/spawn_chat_tmux.go. Package-level var (not
-// const) so tests can shrink it to milliseconds.
+// provider-session-id discovery in providerSessionIDForAgentSession. It sends
+// AllowLegacyBackfill: true, which since BOS-1298 selects the whole-corpus
+// rollout scan as the FALLBACK rather than disabling fd resolution outright: a
+// chat with a live pane now also carries its pane pid, and the codex plugin
+// gates its fd branch on PanePid > 0 alone. Budgeted for the scan (30s) because
+// that is what still runs when no pane pid resolves, not for the 2s the fd path
+// gets in services/bossd/internal/server/spawn_chat_tmux.go. Package-level var
+// (not const) so tests can shrink it to milliseconds.
 var legacyBackfillProviderIDDiscoveryTimeout = 30 * time.Second
 
 // providerSessionIDPersistTimeout bounds the UpdateProviderSessionID write that
@@ -133,6 +134,16 @@ type HostServiceServer struct {
 	// map means no AgentRunner plugins are loaded; per-handler nil guards
 	// surface that as FailedPrecondition.
 	agentClients map[string]agent.AgentRunnerClient
+	// panePIDResolver reports the live pane pid of a tmux session, wired to
+	// tmux.Client.PanePID at daemon start. It lets the pre-response codex
+	// provider-id discovery pass the chat's real pane so the plugin can run
+	// AUTHORITATIVE fd resolution instead of being confined to the time-window
+	// scan (BOS-1298). Nil (the value tests and partially-wired hosts leave)
+	// degrades to pane pid 0, which is the scan-only behaviour this path had
+	// before — so nothing here is load-bearing for correctness, only for
+	// whether a bindable chat actually gets bound.
+	panePIDResolver func(ctx context.Context, tmuxSessionName string) (int, error)
+
 	// agentLogsDir is the bossd-owned directory where the agent plugin
 	// writes per-session NDJSON log files. Forwarded into StartRun.LogPath.
 	agentLogsDir string
@@ -353,6 +364,28 @@ func mergeAccountOverProof(proof, account map[string]string) map[string]string {
 		m[k] = v
 	}
 	return m
+}
+
+// SetPanePIDResolver injects the live pane-pid lookup used by the pre-response
+// codex provider-id discovery. Leaving it unset keeps that discovery on the
+// time-window scan alone.
+func (s *HostServiceServer) SetPanePIDResolver(fn func(ctx context.Context, tmuxSessionName string) (int, error)) {
+	s.panePIDResolver = fn
+}
+
+// chatPanePID reports the chat's live pane pid for the resolve request, or 0
+// when there is no pane to ask about. Best-effort: pane pid 0 is precisely the
+// signal that fd resolution is unavailable and the time-window scan should run,
+// which is the right answer for a chat whose process is gone.
+func (s *HostServiceServer) chatPanePID(ctx context.Context, chat *models.AgentChat) int32 {
+	if s.panePIDResolver == nil || chat == nil || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+		return 0
+	}
+	pid, err := s.panePIDResolver(ctx, *chat.TmuxSessionName)
+	if err != nil || pid <= 0 || pid > math.MaxInt32 {
+		return 0
+	}
+	return int32(pid)
 }
 
 func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
@@ -2385,6 +2418,13 @@ func (s *HostServiceServer) effectiveChatSessionForAgentSession(ctx context.Cont
 	if chat.Model != "" {
 		eff.Model = chat.Model
 		eff.EffectiveModel = chat.Model
+	} else {
+		// A chat that bound no model of its own does NOT inherit the session's
+		// across an agent boundary: model ids are provider-scoped, so this view
+		// would otherwise hand a claude model id to a codex chat's runner
+		// (BOS-1281). Mirrors the EffectiveEffort reset two lines down.
+		eff.Model = session.EffectiveModelForAgent(sess.AgentName, sess.Model, chat.AgentName)
+		eff.EffectiveModel = session.EffectiveModelForAgent(sess.AgentName, sess.EffectiveModel, chat.AgentName)
 	}
 	if chat.AgentName != "" {
 		eff.EffectiveEffort = session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
@@ -2429,6 +2469,7 @@ func (s *HostServiceServer) providerSessionIDForAgentSession(ctx context.Context
 		RequestedSessionId:  chat.AgentSessionID,
 		ChatCreatedAt:       timestamppb.New(chat.CreatedAt),
 		AllowLegacyBackfill: true,
+		PanePid:             s.chatPanePID(discoveryCtx, chat),
 	})
 	if err != nil {
 		log.Warn().Err(err).

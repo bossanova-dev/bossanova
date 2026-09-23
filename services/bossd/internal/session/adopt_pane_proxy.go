@@ -61,8 +61,17 @@ func (l *Lifecycle) paneBakedProxyURL(ctx context.Context, tmuxName string) (str
 	if l.tmux == nil {
 		return "", false
 	}
-	baked, ok := l.tmux.ShowEnv(ctx, tmuxName, anthropicBaseURLEnv)
-	if !ok || baked == "" {
+	baked, status := l.tmux.ShowEnv(ctx, tmuxName, anthropicBaseURLEnv)
+	// Collapsing ShowEnvUnset and ShowEnvError into one decline is deliberate
+	// here, and it is NOT an oversight mirroring the reaper's ownership gate
+	// (BOS-1281). This read decides whether to RE-REGISTER a proxy capability:
+	// declining is the safe outcome for both answers and destroys nothing, so a
+	// failed read costs at most a re-registration this sweep did not perform and
+	// the next sweep will. The reaper's gate reads the same client to decide
+	// whether to KILL a pane, where "unreadable" must route to the
+	// unattributable bucket instead of falling through to the reapable
+	// "unstamped" one — the asymmetry is in the consequence, not in the read.
+	if status != tmux.ShowEnvSet || baked == "" {
 		return "", false
 	}
 	return baked, true

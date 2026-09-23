@@ -120,7 +120,12 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			// context of its own so a late-but-successful scan still records what
 			// it found.
 			backfillCtx, cancelBackfill := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDLegacyBackfillTimeout)
-			_, reason, backfillErr := s.backfillCodexProviderSessionID(backfillCtx, chat, sess.WorktreePath, deps.Resolver)
+			// The chat's live pane, where it has one, so the backfill can reach
+			// the plugin's authoritative fd resolution instead of being confined
+			// to the time-window scan (BOS-1298). A chat with no pane resolves 0
+			// and takes the scan exactly as before.
+			_, reason, backfillErr := s.backfillCodexProviderSessionID(backfillCtx, chat, sess.WorktreePath,
+				panePIDForChat(ctx, deps.Tmux, tmuxName), deps.Resolver)
 			cancelBackfill()
 			// Warn and continue rather than fail the wake: a missed backfill costs
 			// a correct resume id, a returned error costs the whole wake. Mirrors

@@ -38,6 +38,32 @@ esac
 
 echo "PR number: #$PR_NUM"
 
+# Refuse a dirty TRACKED worktree HERE, before anything is fetched or rewritten, and name every
+# offending path. The rebase below cannot start over an uncommitted change to a tracked path --
+# git refuses with "cannot rebase: You have unstaged changes", a generic message the caller has
+# to work backwards from, and which names nothing. This check exists to name it instead.
+#
+# `--untracked-files=no` deliberately. An untracked file is not the hazard: the rebase runs
+# straight past it, and a message-only rewrite of commits already in this history checks out no
+# path that could clobber one. Counting `??` as dirty would disable the injection on exactly the
+# routes most likely to carry leftover scratch, and publish untagged commits instead. (The same
+# reasoning is written down in boss-build's review-stack pre-check; this is the second reader of
+# one rule, not a second rule.)
+#
+# Its OWN statement, not the head of a pipeline or of an `if` condition: a pipeline reports the
+# LAST stage's status, so `git status ... | grep -q .` would read an unreadable worktree exactly
+# as it reads a clean one. Keep the ask's status apart from its answer.
+DIRTY_TRACKED=$(git status --porcelain --untracked-files=no) || {
+  echo "Error: could not read the worktree state; refusing to rebase." >&2
+  exit 1
+}
+if [ -n "$DIRTY_TRACKED" ]; then
+  echo "Error: tracked files carry uncommitted changes; the rebase would refuse to start." >&2
+  echo "Commit, stash or discard these paths and re-run:" >&2
+  printf '%s\n' "$DIRTY_TRACKED" | sed 's/^/  /' >&2
+  exit 1
+fi
+
 # The one definition of "is this commit empty" lives in the shared predicate module,
 # vendored beside this script. Both places that used to answer the question by hand --
 # the rebase --exec helper and the post-condition below -- now read one classification
@@ -150,6 +176,33 @@ PR_TAG_EMPTY_SHAS=$(empty_commit_shas "$BASE_COMMIT") || {
   exit 1
 }
 export PR_TAG_EMPTY_SHAS
+
+# Project each to-be-amended subject's TAGGED length before the rebase starts. A repo's
+# commit-message policy caps the header, and today an over-long projection is discovered by the
+# amend -- mid-rewrite, with part of the branch already rewritten. One `git log` pass buys the
+# caller the cause up front.
+#
+# No cap is compared against on purpose. The limit is repo policy and this script ships to
+# arbitrary repositories, so printing the projection is what lets the caller and the reader see
+# the cause without this script having to know the number.
+TAG_WIDTH=$((${#PR_NUM} + 4)) # "[#" + the digits + "] "
+PROJECTION_LOG=$(git log --reverse --format='%h%x09%H%x09%s' "$BASE_COMMIT"..HEAD) || {
+  echo "ERROR: could not read $BASE_COMMIT..HEAD to project the tagged subject lengths." >&2
+  exit 1
+}
+echo "Projected tagged subject lengths (the tag adds $TAG_WIDTH characters):"
+while IFS=$'\t' read -r proj_short proj_sha proj_subject; do
+  [ -n "$proj_sha" ] || continue
+  # The two commits the helper will NOT amend, for the two reasons it will not: already tagged,
+  # and classified empty. Listing either would project a rewrite that is never attempted.
+  case "$proj_subject" in
+  *"[#$PR_NUM]"*) continue ;;
+  esac
+  if printf '%s\n' "$PR_TAG_EMPTY_SHAS" | grep -qxF "$proj_sha"; then continue; fi
+  echo "  $proj_short  subject ${#proj_subject} -> $((${#proj_subject} + TAG_WIDTH))  $proj_subject"
+done <<< "$PROJECTION_LOG"
+echo ""
+
 cleanup_temp() {
   # Only a report THIS script created is removed; a caller-supplied path is left for the
   # caller, which is the whole point of letting one be supplied.
@@ -342,7 +395,16 @@ done <<< "$COMMIT_LOG"
 if [ "$SKIPPED_COUNT" -gt 0 ]; then
   echo "" >&2
   echo "$SKIPPED_COUNT of $COMMIT_COUNT commits do not carry [#$PR_NUM]." >&2
-  echo "Fix those commit messages (e.g. with git rebase -i) and re-run." >&2
+  # Point at the recipe; do not restate it. An interactive rewrite is not the remedy here --
+  # it opens an editor no unattended harness can drive -- so the sanctioned non-interactive
+  # recipe is written once, in the boss-build finalize reference, and named from here.
+  # Name the OWNING core and the section title, never a bare `references/<file>` path: a
+  # reference path is resolved against the core of the file that names it, so a bare one here
+  # would claim boss-finalize ships a reference it does not.
+  echo "Rewrite those commit messages and re-run. The non-interactive recipe lives in the" >&2
+  echo "boss-build core's finalize reference, under 'The non-interactive message-rewrite" >&2
+  echo "recipe': a filter-branch --msg-filter keyed on \$GIT_COMMIT, verified message-only" >&2
+  echo "by an empty diff against a backup ref with the commit count unchanged." >&2
   exit 1
 fi
 

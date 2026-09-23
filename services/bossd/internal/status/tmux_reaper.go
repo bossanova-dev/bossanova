@@ -32,6 +32,7 @@ const (
 	reasonEmptyWhitelist      = "emptyWhitelist"
 	reasonWithinGrace         = "withinGrace"
 	reasonUnstamped           = "unstamped"
+	reasonStampUnreadable     = "stampUnreadable"
 	reasonForeignDaemon       = "foreignDaemon"
 	reasonFirstStrike         = "firstStrike"
 	reasonAwaitingConfirm     = "awaitingConfirmation"
@@ -505,14 +506,34 @@ func (r *TmuxReaper) classify(
 	// Ownership must be proven, not assumed (D7). Two bossd instances on one
 	// host have separate databases, so daemon A's whitelist cannot contain
 	// daemon B's panes.
-	stamp, stamped := r.tmux.ShowEnv(ctx, s.Name, tmux.DaemonIDEnvKey)
-	switch {
-	case !stamped:
+	stamp, stampStatus := r.tmux.ShowEnv(ctx, s.Name, tmux.DaemonIDEnvKey)
+	switch stampStatus {
+	case tmux.ShowEnvError:
+		// The read FAILED — tmux said nothing about this pane's stamp. Before
+		// BOS-1281 this arrived indistinguishable from "unset", so a transient
+		// tmux failure was classified as an unstamped pane and, with
+		// reap_unstamped on, became reapable. A read that cannot answer is the
+		// textbook unattributable case: this sweep's stated contract is that
+		// every read fails closed, and this was the one that did not.
+		return sweepDecision{bucket: bucketUnattributable, reason: reasonStampUnreadable}
+	case tmux.ShowEnvUnset:
 		if !r.cfg.ReapsUnstamped() {
 			return sweepDecision{bucket: bucketUnattributable, reason: reasonUnstamped}
 		}
-	case stamp == "" || stamp != r.daemonID:
-		return sweepDecision{bucket: bucketUnattributable, reason: reasonForeignDaemon}
+	case tmux.ShowEnvSet:
+		// An empty stamp is explicitly checked rather than left to the
+		// inequality: a daemon that could not identify itself has an empty
+		// daemonID, and "" == "" would otherwise read as a match.
+		if stamp == "" || stamp != r.daemonID {
+			return sweepDecision{bucket: bucketUnattributable, reason: reasonForeignDaemon}
+		}
+	default:
+		// A status this gate does not recognise is a read it cannot interpret,
+		// which is the same thing as a read that failed. Without this arm a
+		// future ShowEnvStatus value would match no case, fall through to the
+		// confirmation strike below, and end at bucketReap — reintroducing the
+		// BOS-1281 defect at the level of the enum instead of the exit status.
+		return sweepDecision{bucket: bucketUnattributable, reason: reasonStampUnreadable}
 	}
 
 	// Confirmation strike (D5). Age answers "was the pane young?"; it does not

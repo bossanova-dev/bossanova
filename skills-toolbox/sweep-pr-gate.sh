@@ -61,10 +61,18 @@ fi
 
 PR_NUMBER="$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')"
 if [ -z "$PR_NUMBER" ]; then
+  # --draft, always. Everything below this line RETAGS every commit in the range and force-pushes,
+  # so a PR created ready would have fired the review workflows' `opened` trigger against a head
+  # that no longer exists by the time the gate finishes — reviewed, then replaced. Creating a draft
+  # makes the draft -> ready tail at the bottom load-bearing rather than a rarely-taken branch: it
+  # runs AFTER the injection, the [#N] re-check and the force-push, so `ready_for_review` fires on
+  # the final head. `set -euo pipefail` above means any failure before that tail leaves the PR a
+  # draft, which is the correct terminal state for a head no workflow has reviewed.
   gh pr create \
     --base "$BASE_BRANCH" \
     --head "$SESSION_BRANCH" \
     --title "$(git log -1 --pretty=%s)" \
+    --draft \
     --body-file "$PR_BODY" >&2
   PR_NUMBER="$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')"
 fi

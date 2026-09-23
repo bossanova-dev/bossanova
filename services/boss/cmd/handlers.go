@@ -3640,13 +3640,7 @@ func commandLineStartsWithBossdPluginExecutable(commandLine string) bool {
 	if strings.ContainsAny(prefix, " \t\r\n") && !strings.HasSuffix(prefix, "/plugins/") {
 		return false
 	}
-	end := len(commandLine)
-	for i := marker + 1; i < len(commandLine); i++ {
-		if commandLine[i] == ' ' || commandLine[i] == '\t' || commandLine[i] == '\r' || commandLine[i] == '\n' {
-			end = i
-			break
-		}
-	}
+	end := marker + 1 + len(commandLineFirstToken(commandLine[marker+1:]))
 	return strings.HasPrefix(filepath.Base(filepath.Clean(commandLine[:end])), "bossd-plugin-")
 }
 

@@ -649,7 +649,7 @@ type attachLaunchOrderStub struct {
 	deleted bool
 }
 
-func (s *attachLaunchOrderStub) DeleteChat(context.Context, string) error {
+func (s *attachLaunchOrderStub) DeleteChat(context.Context, string, pb.DeleteChatRequest_DeletionReason) error {
 	s.calls = append(s.calls, "delete")
 	s.deleted = true
 	return nil

@@ -54,7 +54,17 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	// this path emits no undelivered-instruction record whatever the runner
 	// declares.
 	effort := session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
-	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, effort, nil)
+	// The preview must resolve the model the way the spawn does, or it shows a
+	// command that is not the one bossd would run (BOS-1281). Passing chat.Model
+	// raw was wrong in BOTH directions: a same-agent chat with no model of its
+	// own previewed as the plugin default while StartTmuxChat seeds it from the
+	// session, and a cross-agent chat would inherit a provider-scoped id it must
+	// not carry. One helper call fixes both.
+	model := chat.Model
+	if model == "" {
+		model = session.EffectiveModelForAgent(sess.AgentName, sess.Model, chat.AgentName)
+	}
+	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", model, effort, nil)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build launch command: %w", err))
 	}

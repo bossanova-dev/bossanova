@@ -569,9 +569,20 @@ func (a *CommandHandlerAdapter) DeleteChat(ctx context.Context, sessionID, agent
 	if a.Commands == nil {
 		return errors.New("delete_chat: command server not wired")
 	}
+	// Stamp the reason explicitly rather than letting the zero value through.
+	// DeleteChatCommand (and ProxyDeleteChatRequest upstream of it) carry no
+	// reason field -- widening them would owe a dated bump on bosso's versioned
+	// surface -- and every request that reaches this adapter came from a human
+	// acting in the web UI or the remote TUI, which is exactly USER_REQUESTED.
+	//
+	// Do NOT "simplify" this to a pass-through of a widened command field
+	// without also giving the proxy converter one: a reason that silently
+	// downgrades to UNSPECIFIED across a converter reads as "caller predates the
+	// field" and disables the daemon's cleanup gate.
 	_, err := a.Commands.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
 		AgentSessionId: agentSessionID,
 		SessionId:      sessionID,
+		Reason:         pb.DeleteChatRequest_DELETION_REASON_USER_REQUESTED,
 	}))
 	if err != nil {
 		return fmt.Errorf("delete chat: %w", err)

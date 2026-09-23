@@ -92,9 +92,11 @@ export function classifySurfaceOutcomes(surfaceRuns) {
  * Exit-code contribution of a single per-surface outcome. Encodes the epic
  * exit policy (BOS-226 fail-loud):
  *   - a passed surface, and every neutral deferral (no-media, no-ui-surface,
- *     budget-exceeded, env-unavailable, agent-unavailable, and the BOS-354
+ *     budget-exceeded, env-unavailable, agent-unavailable, the BOS-354
  *     `tui-truncated` — a TUI capture cut off mid-flight by the per-run wall
- *     clock before any verdict) → 0;
+ *     clock before any verdict — and the BOS-1285 `forced-no-surface`, a
+ *     surface a required-proof bullet forced onto a diff with nothing to
+ *     demonstrate) → 0;
  *   - `agent-incomplete` on either surface — web or tui (the agent ran and its
  *     captured evidence failed the judge) → 1;
  *   - `scenario-missing` (a TUI change shipped without a committed

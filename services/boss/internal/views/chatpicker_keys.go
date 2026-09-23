@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // handleKey dispatches a key press to whichever mode currently owns input.
@@ -382,7 +384,9 @@ func (m ChatPickerModel) startDelete() (tea.Model, tea.Cmd) {
 	m.deletingAgentSessionID = agentSessionID
 	m.buildTableRows()
 	return m, func() tea.Msg {
-		err := m.client.DeleteChat(m.ctx, agentSessionID)
+		// The user pressed delete on a chat they selected: never gated, and
+		// never the cleanup reason, whatever the chat's agent is.
+		err := m.client.DeleteChat(m.ctx, agentSessionID, pb.DeleteChatRequest_DELETION_REASON_USER_REQUESTED)
 		return chatDeletedMsg{agentSessionID: agentSessionID, err: err}
 	}
 }

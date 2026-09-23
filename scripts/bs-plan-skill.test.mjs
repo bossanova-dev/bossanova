@@ -36,11 +36,13 @@ import {
   DYNAMIC_VIOLATION_CODE_PREFIXES,
   VIOLATION_CODES,
 } from '../skills-toolbox/plan-contract-guard.mjs'
+import { planScratchToken } from '../skills-toolbox/plan-scratch-paths.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
 import {
   DEFAULT_CONFIG as GUARD_DEFAULT_CONFIG,
   requiredPlanSections,
 } from '../skills-toolbox/skill-config.mjs'
+import { scratchTokensIn } from './plan-scratch-token-scan.mjs'
 import { precedes, regionUntilNext } from './gate-region-lib.mjs'
 import { assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
 
@@ -879,6 +881,49 @@ test('BOS-1199: Phase 4 runs the write-back verification once, after the final s
   }
 })
 
+test('BOS-1282: Phase 4 routes an indeterminate write through a read-back, not a second write', () => {
+  {
+    const payload = CANONICAL_PAYLOAD
+    const phase4 = sectionBetween(payload.skill, '## Phase 4 \u2014', '\n## Phase 5')
+    // Pinned by the RULE NAME, not by the sentences under it: the name is the stable handle a
+    // reader and a reviewer both address the rule by, and the prose beneath it stays free to
+    // shrink. The helper half of this rule is asserted over classifyTrackerOutcome in
+    // skills-toolbox/tracker/outcome.test.mjs, which is where the behaviour actually lives.
+    assert.match(
+      phase4,
+      /\*\*Indeterminate\s+write\s+\u2014\s+verify,\s+then\s+decide\.\*\*/,
+      `${payload.name}: Phase 4 must carry the indeterminate-write rule by name`,
+    )
+    // Both forbidden responses must be NAMED. A rule that forbids only one of them routes the run
+    // into the other, and the two fail in opposite directions — duplicate write, lost write.
+    assert.match(
+      phase4,
+      /blind\s+retry\*\*[\s\S]{0,240}silent\s*\n?\s*abandon\*\*[\s\S]{0,120}forbidden/,
+      `${payload.name}: both blind retry and silent abandon must be named forbidden`,
+    )
+  }
+})
+
+test('BOS-1282: Phase 4 step 5 confirms a relation write landed, reading both sides', () => {
+  {
+    const payload = CANONICAL_PAYLOAD
+    const phase4 = sectionBetween(payload.skill, '## Phase 4 \u2014', '\n## Phase 5')
+    // Structural lead — the step letter plus the rule name — for the same reason as above.
+    assert.match(
+      phase4,
+      /e3\.\s+\*\*Landed\s+relation\s+check\s+\u2014\s+read\s+both\s+sides\.\*\*/,
+      `${payload.name}: step 5 must carry the landed-relation rule by name`,
+    )
+    // The two halves that make it a check rather than a gesture: it reads BOTH ids, and a miss is
+    // recorded rather than re-written, because an append that already landed would duplicate.
+    assert.match(
+      phase4,
+      /\*\*both\s+ids\*\*[\s\S]{0,420}\*\*recorded\*\*[\s\S]{0,80}never\s+re-written/,
+      `${payload.name}: the landed check must read both sides and record rather than re-write`,
+    )
+  }
+})
+
 test('BOS-1199: the patch-anchor guidance names the stored normalized text', () => {
   {
     const payload = CANONICAL_PAYLOAD
@@ -1106,16 +1151,20 @@ test('BOS-769: headless Phase 2 validates bounded metadata before Phase 3.5', ()
       '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
       '\n## Phase 2.5',
     )
-    const metadataAt = headless.indexOf('plan-run-guards.mjs" metadata "$METADATA"')
+    // BOS-1278: the verb is `adopt-metadata`, and the SECOND argument is load-bearing — it is
+    // the object the dispatch RETURNED. `metadata "$METADATA"` alone reads whatever sits at that
+    // declared scratch path, which the drafting worker is free to write.
+    const GUARD_CALL = 'plan-run-guards.mjs" adopt-metadata "$METADATA" "$RETURNED_METADATA"'
+    const metadataAt = headless.indexOf(GUARD_CALL)
     const phase35At = payload.skill.indexOf('## Phase 3.5')
     assert.ok(metadataAt > 0, `${payload.name}: metadata guard must be present`)
     assert.ok(
-      payload.skill.indexOf('plan-run-guards.mjs" metadata "$METADATA"') < phase35At,
+      payload.skill.indexOf(GUARD_CALL) < phase35At,
       `${payload.name}: metadata guard must precede Phase 3.5`,
     )
     assert.match(
       headless,
-      new RegExp(`\\$DISPATCH_FAILURE: draft metadata failed plan-run-guards\\.mjs metadata`),
+      new RegExp(`\\$DISPATCH_FAILURE: draft metadata failed plan-run-guards\\.mjs adopt-metadata`),
       `${payload.name}: metadata failure must route through DISPATCH_FAILURE`,
     )
   }
@@ -2043,10 +2092,15 @@ test('BOS-813: the CE draft extension stages CE output and cleans it up', () => 
     /docs\/plans\/YYYY-MM-DD/,
     `${DRAFT_NAME} must name the CE staging path it is responsible for removing`,
   )
+  // BOS-1290 moved this boundary. "Delete everything outside runTmp" could not tell CE's own
+  // untracked artifact from a concurrent peer's, and a deleted untracked file has no git object to
+  // restore from. The extension now deletes only the per-dispatch directory it owns and REPORTS
+  // anything else, so what must be pinned is that nothing CE wrote goes unaccounted for — by
+  // removal inside the owned directory, or by a residue line outside it.
   assert.match(
     DRAFT,
-    /Nothing\s+CE\s+wrote\s+\*\*outside\*\*\s+`runTmp`\s+may\s+survive/i,
-    `${DRAFT_NAME} must forbid CE artifacts surviving outside the core-supplied scratch`,
+    /owned\s+staging\s+directory/i,
+    `${DRAFT_NAME} must scope its removals to a per-dispatch staging directory it owns`,
   )
   assert.match(
     DRAFT,
@@ -2838,6 +2892,75 @@ test('BOS-1193: the body records the scratch-concurrency hazards the notes paid 
   }
 })
 
+// ---------------------------------------------------------------------------
+// BOS-1290 — the two Phase 4 artifacts have declared homes, and the class is gated.
+// ---------------------------------------------------------------------------
+
+test('BOS-1290: Phase 4 steps 4 and 5(a) cite their artifacts by declared path token', () => {
+  // Both steps require a file on disk and neither named one, so Phase 0's "Never invent a scratch
+  // filename" was unfollowable exactly there. Pin the CITATION, not just the family's existence: a
+  // family nothing cites is a declaration the drafter never reaches.
+  const cited = [
+    ['- `description`:', '\n   - no plan link:', 'write-description-descriptor'],
+    ['   a. **Fetch.**', '\n   b. ', 'candidates'],
+  ]
+  for (const [start, end, family] of cited) {
+    const region = regionUntilNext(SKILL, start, end)
+    assert.ok(region, `the region starting ${start} must exist`)
+    // Resolve what the step actually cites rather than matching a sentence: every token in the
+    // region goes through planScratchToken, and one of them must land on this family.
+    const families = scratchTokensIn(region).flatMap(
+      ({ token }) => planScratchToken(token).families ?? [],
+    )
+    assert.ok(
+      families.includes(family),
+      `${start} must cite the ${family} artifact by declared path token, saw ${JSON.stringify(families)}`,
+    )
+  }
+})
+
+test('BOS-1290: every .linear-plans token in the payload and the CE extension is declared', () => {
+  // The gate the helper's own header claimed and the repo did not have on THIS surface. It
+  // replaces reliance on the placeholder blocklist below, which is a fixed list of four known-bad
+  // spellings and so by construction cannot see an artifact the payload never names at all — which
+  // is why both of BOS-1290's gaps survived two separate reports. The scan covers the repo-local CE
+  // draft extension too: it is the other document in this tree that tells an agent where to write.
+  const surfaces = [...PAYLOAD_REFERENCES, [`.claude/skills/${DRAFT_NAME}/SKILL.md`, DRAFT]]
+  const tokens = surfaces.flatMap(([name, body]) => scratchTokensIn(body, name))
+  assert.ok(
+    tokens.length > 20,
+    `expected these surfaces to cite many scratch paths, found ${tokens.length} — an empty scan would make this gate vacuous`,
+  )
+  const violations = tokens
+    .filter(({ token }) => !planScratchToken(token).ok)
+    .map(({ token, file, line }) => `${file}:${line}: ${planScratchToken(token).reason}`)
+  assert.deepEqual(
+    violations,
+    [],
+    `undeclared scratch paths:\n${violations.join('\n')}\n` +
+      'Declare the artifact in skills-toolbox/plan-scratch-paths.mjs rather than inventing a name.',
+  )
+})
+
+test('BOS-1290: the token gate reds on an undeclared token injected into payload text', () => {
+  // Non-vacuity, in-process: the same scan over prose carrying an invented name must fail. If this
+  // passes, the assertion above proves nothing about the next missing family.
+  const injected = scratchTokensIn(
+    'Cache the raw payload to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates-raw.json` first.\n',
+    'SKILL.md',
+  )
+  assert.equal(injected.length, 1)
+  assert.equal(planScratchToken(injected[0].token).ok, false)
+
+  // …and an issue-scoped token that skips the run directory fails on the other axis, so the gate
+  // is not merely a basename allow-list.
+  const flat = scratchTokensIn(
+    'Write it to `.linear-plans/<ISSUE-ID>.candidates.json`.\n',
+    'SKILL.md',
+  )
+  assert.equal(planScratchToken(flat[0].token).ok, false)
+})
+
 test('BOS-1193: the payload never instructs an agent to invent a scratch filename', () => {
   for (const placeholder of [
     '<safe-orig.md>',
@@ -2940,6 +3063,30 @@ test('BOS-1198: step 5(f) states the post-append description/attachment divergen
   )
 })
 
+test('BOS-1286: step 5(f) composes the whole-description save from the STORED bytes', () => {
+  // The whole-description path used to re-send Step 4's draft. The tracker may renormalize a
+  // description on write, so re-sending the drafted bytes silently reverts that normalization and
+  // step 6's read-back reports the reversion as a difference the run never introduced. The
+  // incremental patch path already anchored on the stored bytes; this is the other half. Asserted
+  // here and not over a helper because the subject IS the markdown body: no function returns it.
+  assert.match(
+    PHASE_4_SECTION,
+    /\*\*fresh\s+read\s+of\s+the\s+stored\s+description\*\*[\s\S]{0,80}never\s+by\s+re-sending\s+Step\s+4's\s+bytes/,
+    'step 5(f) must compose from a fresh read of the stored description, not the step-4 draft',
+  )
+})
+
+test('BOS-1286: step 5(f) states where an appended bullet goes and what stays put', () => {
+  // The placement rule is what stops the skill provoking the reshaping in the first place: a bullet
+  // inserted with a blank line above it, or one that relocates the blank line before the next
+  // heading, is byte-count-identical and still reads as a difference at the read-back.
+  assert.match(
+    PHASE_4_SECTION,
+    /\*\*directly\s+after\s+the\s+last\s+existing\s+bullet\*\*[\s\S]{0,120}no\s+blank\s+line\s+introduced[\s\S]{0,60}blank\s+line\s+before\s+the\s+next\s+heading\s+left\s+in\s+place/,
+    'step 5(f) must place the bullet after the last one, adding no blank line and moving none',
+  )
+})
+
 test('BOS-1198: plan-storage.md carries the file-based write mechanics', () => {
   // The resident body keeps the decision and the one call; the mechanics live here. A pin on
   // each so a later trim cannot quietly drop the half that makes the verb usable.
@@ -2995,7 +3142,12 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // one edit still reds.
   // BOS-1255 carries it 124493 -> 125183 alongside the RATCHET raise below, by that raise's own
   // +690 delta, so the 26-byte margin is preserved rather than widened.
-  const PRE_SPLIT_BASELINE = 125183
+  // BOS-1282 carries it 125183 -> 126510 alongside the RATCHET raise below. It is set to
+  // RATCHET + 4, the margin this pair actually held before this commit, so the bound keeps the
+  // same thinness rather than gaining slack a later edit could spend unnoticed.
+  // BOS-1290 carries it 126510 -> 126637 alongside the RATCHET re-bank below, again at
+  // RATCHET + 4, so the rebase restores the margin rather than widening it.
+  const PRE_SPLIT_BASELINE = 126637
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -3368,7 +3520,16 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // that judges live children, and its ALL-of set is stated resident. PRE_SPLIT_BASELINE is carried
   // 124493 -> 125183, preserving the same deliberately thin 26-byte margin so a bulk regrow in one
   // edit still reds.
-  const RATCHET = 125179 // measured resident body, 2026-09-15; BOS-1247 closed-code list
+  // Re-banked UP 126633 -> 126636 (+3 B) for BOS-1278 — the smallest raise this ledger records, and
+  // pinned at the largest value PRE_SPLIT_BASELINE still admits, so the bound is not slid with it.
+  // The change is net +3 B against ~1.1 KB of new contract: the orchestrator now validates the
+  // metadata object it RECEIVED (`adopt-metadata`) instead of whatever sits at that declared
+  // scratch path, and the three rules that only decide a run when something goes wrong — Phase 2.5
+  // tracker-write authority, transport-death retry, and that adoption rule — moved into the new
+  // references/headless-dispatch.md, leaving the body a pointer shorter than the blanket
+  // dispatch-failure paragraph it replaced. Situational by the reference test: each is read on a
+  // transport death, an EPIC triage or a metadata refusal, never on the happy path.
+  const RATCHET = 126636 // re-measured for BOS-1278; see raise.justification
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -3390,6 +3551,24 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 123354,
       justification:
+        'BOS-1278: the Phase 2 metadata guard validated a FILE at the declared draft-metadata ' +
+        'path, and the drafting worker is told to write its local files under declared basenames ' +
+        '— so the worker could write the very path the orchestrator was specified to write from ' +
+        'the returned object, and every guarantee the guard gave was about a file the worker ' +
+        'chose. The body now runs `adopt-metadata`, which adopts the returned object and refuses ' +
+        'a diverged file without overwriting the evidence. +3 B net, because the same commit ' +
+        'moved three situational rules (Phase 2.5 tracker-write authority, transport-death retry ' +
+        'before tier 3, and the adoption rule itself) out to references/headless-dispatch.md and ' +
+        'replaced the blanket "treat a tool error as a dispatch failure" paragraph with a shorter ' +
+        'pointer. Each of the three decides a run only on a transport death, an EPIC triage or a ' +
+        'metadata refusal, so none of them is hot-path prose. Earlier entry: ' +
+        'BOS-1290: the rebase onto main re-measured this body. Main independently grew ' +
+        'the resident boss-plan body by 153 B (126336 -> 126489), spending the headroom ' +
+        'this branch was sized against, while this branch adds 144 B routing two Phase-3 ' +
+        'scratch writes through run-scoped paths so PLAN_SCRATCH_FAMILIES can declare them ' +
+        'and the new token gate can cover them. Neither side alone exceeded the pin. ' +
+        'Re-banked to the post-rebase measurement per the REBASE HAZARD note above, rather ' +
+        'than picking a side of a number nothing measured. Earlier entry: ' +
         'BOS-1247: the plan-contract guard now emits `premise-reused-as-criterion`; its ' +
         'mandatory Phase 4 violation-code list must name that static code, or a drafter sees ' +
         'a tagged rejection with no resident explanation. The +22 B is the code and the ' +
@@ -3450,7 +3629,19 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
         'provably the bytes the drafter composed, which costs a `BODY=` line and a guarded `cp` ' +
         'in the resident gate recipe — the one place a reader decides what those gates read. The ' +
         'four prose restatements of the field contract were REWORDED in place, not appended to, ' +
-        'so the growth is the mechanism and nothing else.',
+        'so the growth is the mechanism and nothing else. ' +
+        'BOS-1282 adds +1328 B for two Phase 4 rules that are resident by necessity, because both ' +
+        'run in the step that is already executing and a reader who reaches a reference has ' +
+        'already taken the branch. (1) An indeterminate write — one whose failure says it MAY have ' +
+        'applied — had no branch at all, so the run either duplicated a write that landed or lost ' +
+        'one that did not; the rule names the classifier call, the read-back that decides, and ' +
+        'both forbidden responses, which is the minimum a reader can act on. (2) A relation write ' +
+        'returns the full issue payload with no confirmation the edge exists, and a relations read ' +
+        'on one side alone has been observed empty for an edge that really exists; step 5 gains a ' +
+        'post-write both-sides check whose miss is RECORDED, never re-written. Everything that ' +
+        'could move did: the verdict vocabulary, the action per verdict and every signature live ' +
+        'in toolbox/tracker/outcome.mjs behind one CLI verb, so the prose names the call and the ' +
+        'decision and restates no algorithm.',
     },
     residual:
       'the references/ files the body routes to, and whether the resident prose is worth its ' +
@@ -3528,15 +3719,24 @@ test('BOS-1002: installed-skill gate degrades for an old boss CLI', () => {
       /case "\$O" in[\s\S]{0,120}\*--gate\*\) node "\$BOSS_PLAN_TOOLBOX\/toolbox-drift\.mjs"/,
       copy.name,
     )
-    // BOS-1105 flipped skills drift from BLOCKING to advisory: drift is bookkeeping, so the gate
-    // reports it and the run continues. A totally missing install still blocks (asserted
-    // separately); only the drift arm warns.
+    // BOS-1105 flipped skills drift from BLOCKING to advisory; BOS-1280 split that one flat
+    // advisory along the kind and direction the gate already reports. The body delegates the
+    // severity decision instead of re-deriving it in prose...
     assert.match(
       copy.skill,
-      /warning:\s+installed\s+boss\s+skills\s+drift\s+from\s+checkout\s+source/,
+      // prose-pin: literal-space ok — a shell invocation in a fenced block, not rewrappable prose
+      /\*\)[\s\S]{0,200}node "\$BOSS_PLAN_TOOLBOX\/skill-drift-verdict\.mjs" classify --status 1/,
       copy.name,
     )
-    assert.match(copy.skill, /bookkeeping\s+only,\s+work\s+state\s+unaffected/, copy.name)
+    // ...and the hand-rolled remedy extraction it replaced is gone.
+    assert.doesNotMatch(copy.skill, /sed -n 's\/\^  run/, copy.name)
+    // The advisory wording moved WITH the decision: assert it in the copy an installed run loads.
+    const verdict = readFileSync(
+      `${REPO_ROOT}services/boss/internal/skillinstall/skills/boss-plan/toolbox/skill-drift-verdict.mjs`,
+      'utf8',
+    )
+    assert.match(verdict, /warning:\s+installed\s+boss\s+skills\s+drift\s+from\s+checkout\s+source/)
+    assert.match(verdict, /bookkeeping\s+only,\s+work\s+state\s+unaffected/)
     assert.doesNotMatch(
       copy.skill,
       /BLOCKED:\s+installed\s+boss\s+skills\s+differ\s+from\s+checkout\s+source/,

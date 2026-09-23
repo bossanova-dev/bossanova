@@ -481,9 +481,15 @@ type mockTmuxFactory struct {
 	created map[string]time.Time
 	// env is the session-environment `show-environment` reads back:
 	// session name -> key -> value. A missing key answers like real tmux does
-	// for an unset variable (non-zero exit), which is how an unstamped pane is
-	// expressed.
+	// for an unset variable (non-zero exit AND "unknown variable" on stderr),
+	// which is how an unstamped pane is expressed.
 	env map[string]map[string]string
+	// envUnreadable makes `show-environment` FAIL for a session rather than
+	// answer: non-zero exit with a stderr that is not "unknown variable", the
+	// shape of a transient tmux failure. It is the only way to express the
+	// third ShowEnv outcome (BOS-1281), which an absent `env` entry cannot —
+	// that is a settled "unset", and conflating the two is the defect.
+	envUnreadable map[string]bool
 	// attached is the tmux `session_attached` count reported by list-sessions.
 	// A missing entry reports 0, matching an unattached pane.
 	attached map[string]int
@@ -582,14 +588,23 @@ func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...stri
 			// args = ["show-environment", "-t", sessName, key]. Real tmux
 			// prints "KEY=value" for a set variable and exits non-zero with
 			// "unknown variable: KEY" otherwise; an unset key is how this fake
-			// expresses an unstamped pane.
+			// expresses an unstamped pane. The stderr matters, not just the exit
+			// status: ShowEnv classifies unset vs failed on it (BOS-1281), so a
+			// bare `false` here would model an unreadable pane, not an unstamped
+			// one — which is what envUnreadable is for.
 			if len(args) >= 4 {
 				sessName, key := args[2], args[3]
+				if f.envUnreadable[sessName] {
+					return exec.CommandContext(ctx, "sh", "-c",
+						`printf '%s\n' "no server running on /tmp/tmux-501/default" >&2; exit 1`)
+				}
 				if value, ok := f.env[sessName][key]; ok {
 					cmd := exec.CommandContext(ctx, "cat")
 					cmd.Stdin = strings.NewReader(key + "=" + value + "\n")
 					return cmd
 				}
+				return exec.CommandContext(ctx, "sh", "-c",
+					`printf '%s\n' "unknown variable: $1" >&2; exit 1`, "sh", key)
 			}
 			return exec.CommandContext(ctx, "false")
 		case "-V":

@@ -267,7 +267,18 @@ test('size ratchet', () => {
   // main's Phase 2 paragraph, which already carries part of this branch's combined-run
   // persistence wording, so that much is no longer added twice. Net +1552 = main's +1677 less
   // that 125 B. No new prose was added to clear this red.
-  const RATCHET = 73137 // measured resident body, 2026-09-19
+  // BOS-1284: 73137 -> 73191 (+54 B). The driver's post-merge base refresh prescribed a rebasing
+  // pull, which computes its own fork point from the stale `origin/<branch>` reflog, concludes the
+  // run's commits are already upstream and drops them — the push then reports success for a branch
+  // the work has left. The replacement (`git fetch origin <base>` + `git rebase --no-fork-point
+  // FETCH_HEAD`) is intrinsically 54 B longer than the command it replaces, and that delta
+  // IS the whole raise: no surrounding prose was trimmed to offset it, so this body still carries
+  // its full pre-BOS-1284 weight and the next raise here should pay before it asks. The rationale
+  // is not restated here — it lives in
+  // boss-repair's Linear-History Invariant and boss-epic's own references/merge-recovery.md, which
+  // this step already routes to. The cross-core gate is
+  // TestPublishedCoresDoNotPrescribeRebasingPull.
+  const RATCHET = 73191 // measured resident body, 2026-09-21 (BOS-1284)
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
 

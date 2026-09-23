@@ -8,13 +8,22 @@ go_library(
     ],
     importpath = "github.com/recurser/bossalib/agenttelemetry",
     visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/jsonlscan",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
 )
 
 go_test(
     name = "agenttelemetry_test",
     srcs = [
         "reviewtelemetry_test.go",
+        "telemetry_jsonlscan_test.go",
         "telemetry_test.go",
     ],
     embed = [":agenttelemetry"],
+    deps = [
+        "//lib/bossalib/jsonlscan",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
 )

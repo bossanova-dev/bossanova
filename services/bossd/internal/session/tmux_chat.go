@@ -1179,8 +1179,10 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 		LogPath:        l.agentLogPathFor(agentSessionID),
 		InitialPrompt:  input.Prompt,
 		InitialCommand: input.Command,
-		Model:          sess.Model,
-		Effort:         EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName),
+		// Provider-scoped, so it must not cross an agent boundary raw — the same
+		// discipline the Effort line below already has (BOS-1281).
+		Model:  EffectiveModelForAgent(sess.AgentName, sess.Model, chat.AgentName),
+		Effort: EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sess.ID, err)

@@ -695,7 +695,13 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 			// row: a mis-encoded project key once made rich chats look
 			// title-less here and this branch destroyed them. See
 			// agent.TranscriptAbsentOrEmpty.
-			_ = m.client.DeleteChat(m.ctx, agentSessionID)
+			// State the reap's actual basis: no local CLAUDE transcript was
+			// found. That is a provider-specific, absence-based inference, and
+			// the daemon refuses it against a chat whose recorded agent is not
+			// claude -- the server-side backstop for the mixed-agent bug the
+			// recordedAgent guard above fixes client-side.
+			_ = m.client.DeleteChat(m.ctx, agentSessionID,
+				pb.DeleteChatRequest_DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT)
 		}
 		return chatTitleUpdatedMsg{}
 	}

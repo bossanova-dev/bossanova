@@ -720,3 +720,44 @@ func TestEnsureChatTmuxSession_CodexReattachUsesRecoveredHistory(t *testing.T) {
 		t.Fatalf("did not resume recovered conversation: %+v", builder.calls)
 	}
 }
+
+// TestRecordInteractiveAgentRunStartResetsModelAcrossAgents is the run-record
+// half of BOS-1281. Both session fallbacks (EffectiveModel, then Model) were
+// taken raw, so a codex chat with no model of its own was recorded against the
+// claude session's model id — wrong in the telemetry and in the cost join that
+// reads it.
+func TestRecordInteractiveAgentRunStartResetsModelAcrossAgents(t *testing.T) {
+	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
+	sess := &models.Session{ID: "s1", AgentName: "claude", Model: "claude-opus-4", EffectiveModel: "claude-opus-4"}
+
+	t.Run("a cross-agent chat records no model", func(t *testing.T) {
+		runs := &fakeAgentRunStore{}
+		srv := &Server{agentRuns: runs, logger: zerolog.Nop()}
+		chat := &models.AgentChat{SessionID: sess.ID, AgentSessionID: "agent-cross", AgentName: "codex"}
+
+		srv.recordInteractiveAgentRunStart(context.Background(), sess, chat, started)
+
+		if len(runs.started) != 1 {
+			t.Fatalf("agent run starts = %d, want 1", len(runs.started))
+		}
+		if got := runs.started[0].Model; got != "" {
+			t.Fatalf("recorded model = %q, want empty: a codex run must not be credited a claude model id", got)
+		}
+	})
+
+	// The other direction, so the reset cannot become "always empty".
+	t.Run("a same-agent chat still inherits the session model", func(t *testing.T) {
+		runs := &fakeAgentRunStore{}
+		srv := &Server{agentRuns: runs, logger: zerolog.Nop()}
+		chat := &models.AgentChat{SessionID: sess.ID, AgentSessionID: "agent-same", AgentName: "claude"}
+
+		srv.recordInteractiveAgentRunStart(context.Background(), sess, chat, started)
+
+		if len(runs.started) != 1 {
+			t.Fatalf("agent run starts = %d, want 1", len(runs.started))
+		}
+		if got := runs.started[0].Model; got != "claude-opus-4" {
+			t.Fatalf("recorded model = %q, want the session's claude-opus-4", got)
+		}
+	})
+}

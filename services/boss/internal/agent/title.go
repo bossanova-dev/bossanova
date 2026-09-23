@@ -16,6 +16,34 @@ import (
 const maxScanLines = 50
 const maxSummaryLen = 80
 
+// Claude transcript JSONL line limits (BOS-1281).
+//
+// titleScanInitialBytes is what bufio allocates up front; titleScanMaxBytes is
+// the ceiling it may GROW to. Splitting them matters: the previous code passed
+// 256 KiB for both, so every scan paid the ceiling eagerly and a line one byte
+// over it failed. bufio only grows to what a line actually needs, so raising
+// the ceiling raises a bound, not a steady-state cost.
+//
+// Scanning only the first maxScanLines is no protection here — it is the
+// opposite. An oversized FIRST line kills the read before any title can be
+// found, and a Claude session that opens with a large pasted prompt or an
+// inlined tool result does exactly that.
+//
+// 256 KiB was too small in practice, not in theory: a single entry carrying an
+// inlined tool result was observed at roughly 742 KiB. 8 MiB is ~11x that
+// observed maximum — chosen against the measurement rather than picked round,
+// since a ceiling raised without a named reason is the same defect one order of
+// magnitude later. The same budget the claude runner's transcript ceiling and
+// lib/bossalib/jsonlscan — which the codex runner reads through since
+// BOS-1297 — are sized against: same family of JSONL, and a divergent cap is
+// this defect reappearing at a different call site. That path now SKIPS and
+// counts a record past the budget instead of failing the read; this one still
+// fails, so adopting jsonlscan here is follow-up work.
+const (
+	titleScanInitialBytes = 64 * 1024
+	titleScanMaxBytes     = 8 * 1024 * 1024
+)
+
 // ellipsis is the house truncation marker (U+2026). It is 3 bytes in UTF-8,
 // which is why the byte budget above still reserves 3 for it.
 const ellipsis = "…"
@@ -130,7 +158,7 @@ func parseSessionMeta(path string) (slug, summary string) {
 	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, titleScanInitialBytes), titleScanMaxBytes)
 
 	for i := 0; i < maxScanLines && scanner.Scan(); i++ {
 		var line jsonlLine

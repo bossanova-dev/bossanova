@@ -718,7 +718,9 @@ func (s *stubRepoClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, e
 	panic("unused")
 }
 func (s *stubRepoClient) UpdateChatTitle(context.Context, string, string) error { panic("unused") }
-func (s *stubRepoClient) DeleteChat(context.Context, string) error              { panic("unused") }
+func (s *stubRepoClient) DeleteChat(context.Context, string, pb.DeleteChatRequest_DeletionReason) error {
+	panic("unused")
+}
 func (s *stubRepoClient) WakeChat(context.Context, string, string, bool) (*pb.WakeChatResponse, error) {
 	panic("unused")
 }

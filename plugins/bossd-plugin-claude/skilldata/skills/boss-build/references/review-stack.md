@@ -869,7 +869,34 @@ if [ -z "$PR_NUMBER" ]; then                     # fresh — Step 7's create arm
     --title "[<ISSUE-ID>] <issue title>" --draft --label agent-made --body-file "$PR_BODY"
   PR_NUMBER="$(gh pr view "$SESSION_BRANCH" --json number -q .number)"
 fi
+# Tag BETWEEN the arms, while the PR is still a draft. On the fresh-workspace path the push
+# procedure above skipped the injection with `no open PR maps to $SESSION_BRANCH` — there was no
+# number to inject — so the commits it published carry none, and this is the last moment adding one
+# is free: after the ready below, review workflows are keyed to this head.
+if [ "$TAGGED" != all ]; then
+  # §BLOCKED-route publication's injection block, RE-ENTERED here — a citation does not execute,
+  # and the push below must not run on an unrewritten branch. ONE substitution: that block's
+  # containment guard reads `PUBLISHED_TIP` from the tip origin advertised BEFORE this run's own
+  # push, which the push procedure above captured as `REMOTE_SHA`. Keyed that way the guard still
+  # refuses to rewrite a commit this run did not author while permitting the ones it just pushed.
+  PUBLISHED_TIP="$REMOTE_SHA"
+  PRE_INJECT_SHA=$(git rev-parse HEAD) || exit 1
+  BASE_BRANCH="$TAG_BASE" node "$BOSS_SKILLS_HOME/boss-build/toolbox/finalize/cli.mjs" \
+    inject-pr-tag "$PR_NUMBER" || TAG_INJECT_NOTE="injector exited non-zero"
+  if [ -n "$PUBLISHED_TIP" ] && ! git merge-base --is-ancestor "$PUBLISHED_TIP" HEAD; then
+    git reset --hard "$PRE_INJECT_SHA" || exit 1
+    TAGGED=skipped
+  elif [ "$(git rev-parse HEAD)" != "$PRE_INJECT_SHA" ]; then
+    # Publish ONLY a rewrite that happened, read from the branch and never from the injector's exit
+    # status. An unrewritten HEAD already equals `@{u}`, so a no-op push satisfies the assertion
+    # below and readies untagged commits with every signal green — this route's own defect class,
+    # re-entering as a false receipt.
+    git push --force-with-lease origin "$SESSION_BRANCH" || exit 1
+    test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1
+  fi
+fi
 # Ready it: the green reading is unreadable on a draft, and the state list promises a ready PR.
+# It runs LAST, after the rewrite is on origin, so `ready_for_review` fires on the final head.
 if [ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
 test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false" || exit 1
 ```
@@ -1199,7 +1226,13 @@ else
   # not cost this run its commits. Back off so the window is minutes, not milliseconds.
   while [ "$attempts" -lt 8 ]; do
     attempts=$((attempts + 1))
-    if git push -u origin "$SESSION_BRANCH"; then PUSHED=yes; break; fi
+    # The push runs ALONE on its line; `PUSHED` is set from the status captured beside it, never
+    # from a pipeline's, which is the LAST stage's — `git push … | tee` records `PUSHED=yes` for a
+    # push that failed. Piped, the head's status is `$pipestatus[1]` (zsh; bash's
+    # `${PIPESTATUS[0]}` is unset here), never `$?`. A gate reports the masking edit.
+    PUSH_STATUS=0
+    git push -u origin "$SESSION_BRANCH" || PUSH_STATUS=$?
+    if [ "$PUSH_STATUS" -eq 0 ]; then PUSHED=yes; break; fi
     # Rejected means the remote moved under this run. Reconcile and retry; NEVER a merge.
     # NOT `git pull --rebase`: its fork-point heuristic reads the OLD origin/<branch> reflog entry,
     # so after a server-side force-push it concludes this run's commits are already upstream and
@@ -1511,10 +1544,15 @@ to PR, so when the project runs no commit-message check in CI, an untagged commi
 link — not a red check. Where the project does run such a check, it is that too. Never assert a red
 build this run has not observed.
 
-**Not a goal: retro-tagging commits origin already holds.** Those stay untagged, and the containment
-check above exists to keep them that way. Tagging them means rewriting published history, whose only
-delivery is a force-push over commits this run may not have authored — forbidden here in every form.
-An already-published untagged commit is a closed loss to record, not an open task for this route.
+**Not a goal: retro-tagging commits _this run did not author_.** Those stay untagged, and the
+containment check above exists to keep them that way — which is why it is keyed on the tip origin
+advertised **before** this run's own push, not on whatever origin holds now. Tagging them means
+rewriting somebody else's published history, whose only delivery is a force-push over commits this
+run may not have authored — forbidden here in every form. A commit this run pushed itself is a
+different case and not this non-goal's: §REVIEW_READY-with-findings publication rewrites exactly
+those, between its create arm and its ready arm, while the PR is still a draft and no review
+workflow has been pointed at the head. Someone else's already-published untagged commit is a closed
+loss to record, not an open task for this route.
 The rollback that enforces this is **all-or-nothing** by choice: when the injector would rewrite a
 published commit, the whole injection is reset, so this run's own unpublished commits lose their tag
 too. Tagging just the unpublished suffix would keep them, and is the obvious refinement — but it is

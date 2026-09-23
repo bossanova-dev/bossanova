@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "revisiondrift",
+    srcs = ["revisiondrift.go"],
+    importpath = "github.com/recurser/bossalib/revisiondrift",
+    visibility = ["//visibility:public"],
+    deps = ["//lib/bossalib/skillinstall"],
+)
+
+go_test(
+    name = "revisiondrift_test",
+    srcs = ["revisiondrift_test.go"],
+    embed = [":revisiondrift"],
+    deps = ["//lib/bossalib/buildinfo"],
+)

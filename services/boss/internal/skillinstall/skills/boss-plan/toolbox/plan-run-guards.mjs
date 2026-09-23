@@ -4,7 +4,7 @@
 // untrusted drafting output and tracker writeback, so they return structured
 // violations and keep the CLI shape small enough for skill bash blocks.
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 
 import { checkPlanContract } from './plan-contract-guard.mjs'
 import { selectImplementationPlanAttachment } from './plan-attachment.mjs'
@@ -234,9 +234,45 @@ export function validateDraftMetadata(
   }
 }
 
-export function planIdempotencePrecheck({ issue, config = DEFAULT_CONFIG } = {}) {
+/**
+ * Is the fetched payload the issue the run actually selected?
+ *
+ * The precheck's other three conjuncts all interrogate the payload it was handed; none of them asks
+ * whether that payload is the right ticket. A mispicked id therefore plans a *different* ticket
+ * while every guard reports a clean run. `selectedID` closes that: it is compared against both the
+ * UUID (`issue.id`) and the human identifier (`issue.identifier`), because callers legitimately
+ * hold either one.
+ *
+ * Case-insensitive by design. A UUID is lower-case hex and an identifier is upper-case (`ABC-123`),
+ * so folding case can never make two genuinely different ids compare equal — it only removes a
+ * spurious mismatch from a caller that normalised the selector differently.
+ *
+ * Absent (or blank) `selectedID` returns false and the conjunct never fires, so every pre-existing
+ * caller keeps a byte-identical result.
+ */
+function fetchedIssueIdentityMismatch(issue, selectedID) {
+  const selected = typeof selectedID === 'string' ? selectedID.trim().toLowerCase() : ''
+  if (!selected) return false
+  const candidates = [issue?.id, issue?.identifier]
+    .filter((value) => typeof value === 'string' && value.trim() !== '')
+    .map((value) => value.trim().toLowerCase())
+  // No usable id on the payload at all is not a *match* either: a fetch that returned nothing
+  // identifiable is exactly the case this conjunct exists to refuse to call clean.
+  return !candidates.includes(selected)
+}
+
+export function planIdempotencePrecheck({
+  issue,
+  selectedID = null,
+  config = DEFAULT_CONFIG,
+} = {}) {
   const reasons = []
   const attachments = Array.isArray(issue?.attachments) ? issue.attachments : []
+
+  // Pushed FIRST because it subsumes the rest: if this is the wrong ticket, every verdict the other
+  // three conjuncts reach is about a ticket nobody asked to plan. It can only ever add a reason, so
+  // it can only ever push the run toward `plan` — never toward `noop`.
+  if (fetchedIssueIdentityMismatch(issue, selectedID)) reasons.push('fetched-issue-id-mismatch')
 
   let planned = null
   try {
@@ -303,6 +339,71 @@ function readJSON(file) {
   return JSON.parse(readFileSync(file, 'utf8'))
 }
 
+/** Key-sorted JSON, so two objects compare on content rather than on write order. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+  const keys = Object.keys(value).sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}`
+}
+
+/**
+ * Decide whether the metadata the orchestrator is about to VALIDATE is the metadata the dispatch
+ * RETURNED (R3).
+ *
+ * The defect this exists for: the drafting worker is told to write every local file under a
+ * basename declared in `plan-scratch-paths.mjs`, and `draft-metadata` is one of those declared
+ * names — the very path the orchestrator is specified to write FROM THE RETURNED OBJECT before
+ * running the metadata guard. An orchestrator that validates without writing first therefore
+ * validates the worker's file instead of the worker's message, and every guarantee the guard is
+ * supposed to give about the returned object is given about a file the worker chose.
+ *
+ * The answer is not "overwrite and move on". Overwriting unconditionally makes the divergence
+ * invisible, and a worker that wrote that path violated its contract — an orchestrator that
+ * silently repairs it learns nothing and keeps dispatching workers that do it. So: absent is
+ * adopted, identical is adopted (a resumed pass re-running this step is not a violation), and
+ * DIFFERENT refuses without writing, leaving the worker's file on disk as the evidence.
+ *
+ * @param {{returned: unknown, onDisk?: unknown}} input
+ * @returns {{ok: boolean, adopted: unknown, state: 'absent'|'identical'|'diverged', violations: {code: string, message: string}[]}}
+ */
+export function adoptReturnedMetadata({ returned, onDisk } = {}) {
+  if (returned === undefined || returned === null || typeof returned !== 'object') {
+    return {
+      ok: false,
+      adopted: returned,
+      state: 'absent',
+      violations: [
+        entry(
+          'metadata-not-returned',
+          'returned',
+          'the dispatch returned no metadata object — artifact readiness is not message ' +
+            'readiness, so there is nothing here to validate',
+        ),
+      ],
+    }
+  }
+  if (onDisk === undefined) return { ok: true, adopted: returned, state: 'absent', violations: [] }
+  if (canonical(onDisk) === canonical(returned)) {
+    return { ok: true, adopted: returned, state: 'identical', violations: [] }
+  }
+  return {
+    ok: false,
+    adopted: returned,
+    state: 'diverged',
+    violations: [
+      entry(
+        'metadata-not-from-message',
+        'draft-metadata',
+        'the draft-metadata scratch already holds bytes that are NOT the returned object — the ' +
+          'worker wrote that declared basename itself, so validating the file would validate ' +
+          'the worker’s file rather than the worker’s message. Refusing without ' +
+          'overwriting: the file is the evidence, and the dispatch broke its contract',
+      ),
+    ],
+  }
+}
+
 // The `idempotence` verb reads its file as the BARE issue object. A `{issue:{…}}` wrapper — the
 // natural mistake, because the function it feeds takes `{issue}` — leaves every field it reads
 // undefined, so all three reasons fire at once and the verb prints `action:"plan"` with a full reason
@@ -341,6 +442,16 @@ function printViolations(result) {
 // The dependency scan's repo module roots, as a comma-separated `--module-roots` value. Optional
 // and positional-agnostic: every verb here takes positional inputs, so the flag is read out of the
 // whole argv rather than from a fixed slot. Absent, the contract check keeps its old empty list.
+// `--selected-id <id>` is OPTIONAL by contract: omitting it leaves the idempotence verdict exactly
+// as it was before the flag existed. It is not defaulted to anything — a guessed selector would
+// manufacture the very mismatch the conjunct exists to detect.
+function parseSelectedIDFlag(argv) {
+  const index = argv.indexOf('--selected-id')
+  if (index === -1) return null
+  const value = String(argv[index + 1] ?? '').trim()
+  return value === '' ? null : value
+}
+
 function parseModuleRootsFlag(argv) {
   const index = argv.indexOf('--module-roots')
   if (index === -1) return []
@@ -379,13 +490,40 @@ function runGuardVerb(argv) {
         reason: result.ok ? 'ok' : 'invalid-metadata',
       }
     }
+    if (command === 'adopt-metadata' && first && second !== undefined) {
+      verb = 'adopt-metadata'
+      // `second` is the RETURNED object, handed over as argv text because that is the only form
+      // the orchestrator has it in — it arrived as a message, not as a file. Writing it to disk
+      // first and then pointing this verb at the file would reintroduce the very gap being
+      // closed: the thing validated has to be the thing received.
+      const decided = adoptReturnedMetadata({
+        returned: JSON.parse(second),
+        onDisk: existsSync(first) ? readJSON(first) : undefined,
+      })
+      printViolations(decided)
+      if (!decided.ok) {
+        return { verb, code: 1, reason: decided.violations[0]?.code ?? 'not-adopted' }
+      }
+      writeFileSync(first, `${JSON.stringify(decided.adopted)}\n`)
+      const result = validateDraftMetadata(readJSON(first), {
+        config: loadSkillConfig(),
+        resolveDescription: (file) => readFileSync(file, 'utf8'),
+        moduleRoots: parseModuleRootsFlag(argv),
+      })
+      printViolations(result)
+      return { verb, code: result.ok ? 0 : 1, reason: result.ok ? 'ok' : 'invalid-metadata' }
+    }
     if (command === 'idempotence' && first) {
       verb = 'idempotence'
       const payload = readJSON(first)
       // Raised through the existing `unreadable-input` catch below, so the CLI exits non-zero with a
       // named reason rather than printing a plausible verdict it never computed.
       assertBareIssuePayload(payload, first)
-      const result = planIdempotencePrecheck({ issue: payload, config: loadSkillConfig() })
+      const result = planIdempotencePrecheck({
+        issue: payload,
+        selectedID: parseSelectedIDFlag(argv),
+        config: loadSkillConfig(),
+      })
       process.stdout.write(`${JSON.stringify(result)}\n`)
       // This verb never refuses — it reports whether planning is still needed. Both answers are a
       // `pass`; the reason carries which one, so the record stays informative without inventing a
@@ -428,7 +566,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | idempotence <issue.json> | premises <premises.json> <live-states.json>\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json>\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

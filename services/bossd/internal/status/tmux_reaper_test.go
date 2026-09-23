@@ -287,6 +287,20 @@ func (fx *reaperFixture) addLivePane(name string, age time.Duration, stamp *stri
 	}
 }
 
+// setEnvUnreadable makes `tmux show-environment` FAIL for a pane rather than
+// answer "unset" — the transient-failure shape BOS-1281 fixed. It is
+// deliberately not expressible by leaving the stamp off in addLivePane: an
+// absent stamp is a settled answer, and treating a failed read as one is the
+// whole defect.
+func (fx *reaperFixture) setEnvUnreadable(name string) {
+	fx.tmuxFake.mu.Lock()
+	defer fx.tmuxFake.mu.Unlock()
+	if fx.tmuxFake.envUnreadable == nil {
+		fx.tmuxFake.envUnreadable = map[string]bool{}
+	}
+	fx.tmuxFake.envUnreadable[name] = true
+}
+
 func (fx *reaperFixture) setAttached(name string, clients int) {
 	fx.tmuxFake.mu.Lock()
 	defer fx.tmuxFake.mu.Unlock()
@@ -829,6 +843,34 @@ func TestTmuxReaper_OwnershipBuckets(t *testing.T) {
 		if n := fx.sweep(); n != 1 {
 			t.Fatalf("reaped %d, want 1 with reap_unstamped set", n)
 		}
+	})
+
+	// BOS-1281. This is the ONLY arrangement in which the defect bites, which
+	// is why all three opt-ins are armed rather than inherited: orphan reaping
+	// enabled AND dry-run off AND reap_unstamped on. armedFixture(t, true)
+	// supplies exactly that — reaperConfig(enabled=true, dryRun=false,
+	// reapUnstamped=true) — so the subtest above is its own control: the same
+	// three opt-ins reap an unstamped pane on the second sweep. Before the fix
+	// this pane was byte-identical to that one at the gate and died with it.
+	t.Run("an unreadable stamp is unattributable even with reap_unstamped", func(t *testing.T) {
+		fx := armedFixture(t, true)
+		const pane = "boss-aaaaaaaa-88888888"
+		fx.addLivePane(pane, time.Hour, ptr(reaperDaemonID))
+		fx.setEnvUnreadable(pane)
+
+		// Two consecutive sweeps, the second past the confirmation window —
+		// the point at which a merely-unstamped pane is reaped.
+		if n := fx.sweep(); n != 0 {
+			t.Fatalf("first sweep reaped %d, want 0", n)
+		}
+		fx.now = fx.now.Add(2 * time.Minute)
+		if n := fx.sweep(); n != 0 {
+			t.Fatalf("second sweep reaped %d, want 0: a failed stamp read is not evidence the pane is ours to kill", n)
+		}
+		if len(fx.killed) != 0 {
+			t.Fatalf("killed %v, want nothing on two consecutive failed stamp reads", fx.killed)
+		}
+		assertLogged(t, fx.logs, `"reason":"stampUnreadable"`)
 	})
 }
 

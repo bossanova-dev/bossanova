@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,18 +12,29 @@ import {
   DEFAULT_DISPATCH_LEG_TIMEOUT_MS,
   DEFAULT_OPEN_DISPATCH_STALE_MS,
   DISPATCH_AWAIT_RESULTS,
+  HEARTBEAT_ABSENT,
+  HEARTBEAT_LIVE,
+  HEARTBEAT_LIVENESS,
+  HEARTBEAT_STALE,
   MAX_BATCH_WIDTH,
+  MESSAGE_NOT_RETURNED,
+  MESSAGE_RETURNED,
   STILL_RUNNING,
   TIMED_OUT,
   awaitAll,
   awaitDeadlineMs,
   classifyDispatch,
   dispatchDisposition,
+  dispatchReadiness,
+  heartbeatLiveness,
   legTimeoutMsFromEnv,
+  messageReadiness,
   probeArtifacts,
   openDispatches,
   planBatches,
+  readHeartbeat,
   toSentinelRouting,
+  touchHeartbeat,
 } from './bs-dispatch-await.mjs'
 import { DISPATCH_FAILURE, makeRunContext, writeSentinel } from './bs-run-sentinel.mjs'
 
@@ -436,4 +447,454 @@ test('CLI `guard-discard` authorises an empty probe and refuses a surviving one'
     2,
     'a path-less call is a wiring error, not a pass',
   )
+})
+
+// ---------------------------------------------------------------------------
+// Liveness — settled on the heartbeat artifact, never on the sentinel seed's
+// frozen mtime and never on transcript silence.
+// ---------------------------------------------------------------------------
+
+function heartbeatPath() {
+  return join(mkdtempSync(join(tmpdir(), 'bda-hb-')), 'BOS-1.dispatch-heartbeat.json')
+}
+
+/** A sentinel context whose seed is already `ageMs` old — the 34-minute drafter. */
+function agedSeed(ageMs) {
+  const ctx = context()
+  writeSentinel(ctx, 'draft', 'pending', { provisional: true })
+  const old = new Date(Date.now() - ageMs)
+  utimesSync(ctx.sentinelPath('draft'), old, old)
+  return ctx
+}
+
+test('the heartbeat vocabulary is owned here and absent is not stale', () => {
+  assert.deepEqual(HEARTBEAT_LIVENESS, ['live', 'stale', 'absent'])
+  // Absent must be its OWN status, never folded into stale: a worker that has not
+  // touched the heartbeat yet would otherwise be killed for the omission.
+  assert.notEqual(HEARTBEAT_ABSENT, HEARTBEAT_STALE)
+})
+
+test('touchHeartbeat records an epoch a later read recovers, and bounds its note', () => {
+  const path = heartbeatPath()
+  assert.equal(readHeartbeat(path), null, 'nothing written yet')
+  const written = touchHeartbeat(path, { now: 5_000, note: 'x'.repeat(500) })
+  assert.equal(written.at, 5_000)
+  const read = readHeartbeat(path)
+  assert.equal(read.at, 5_000)
+  assert.equal(read.source, 'recorded')
+  assert.equal(read.note.length, 200, 'the note is a bounded liveness disclosure, not a transport')
+})
+
+test('a heartbeat with no recorded epoch falls back to its own mtime, never to death', () => {
+  // The worktree-lock.sh precedent: `eff_heartbeat` reads the recorded value when
+  // present and the artifact's mtime when not. A hand-touched or half-written
+  // heartbeat still PROVES something was here.
+  const path = heartbeatPath()
+  writeFileSync(path, 'not json at all')
+  const read = readHeartbeat(path)
+  assert.equal(read.source, 'mtime')
+  assert.equal(heartbeatLiveness(path, { now: Date.now() }).status, HEARTBEAT_LIVE)
+})
+
+test('heartbeat liveness is a STRICT age < stale boundary', () => {
+  const path = heartbeatPath()
+  touchHeartbeat(path, { now: 0 })
+  assert.equal(heartbeatLiveness(path, { now: 999, staleAfterMs: 1_000 }).status, HEARTBEAT_LIVE)
+  // Exactly at the threshold is decisively STALE — the same boundary
+  // worktree-lock.sh uses, so two readers at the boundary cannot both back off.
+  assert.equal(heartbeatLiveness(path, { now: 1_000, staleAfterMs: 1_000 }).status, HEARTBEAT_STALE)
+})
+
+test('a fresh heartbeat keeps a long-running dispatch live past the stale window', () => {
+  // The measured BOS-1269 failure: a drafter alive at minute 34 classified
+  // `abandoned` because the age came from the SEED's mtime, which never moves.
+  const ctx = agedSeed(DEFAULT_OPEN_DISPATCH_STALE_MS + 4 * 60_000)
+  const now = Date.now()
+
+  const withoutHeartbeat = classifyDispatch(ctx, 'draft', { now, deadlineAt: now + 60_000 })
+  assert.equal(withoutHeartbeat.status, ABANDONED, 'the seed clock alone still reports death')
+
+  const path = heartbeatPath()
+  touchHeartbeat(path, { now: now - 1_000 })
+  const withHeartbeat = classifyDispatch(ctx, 'draft', {
+    now,
+    deadlineAt: now + 60_000,
+    heartbeatPath: path,
+  })
+  assert.equal(withHeartbeat.status, STILL_RUNNING, 'the dispatch itself says it is working')
+  assert.equal(withHeartbeat.heartbeat.status, HEARTBEAT_LIVE)
+  assert.equal(
+    withHeartbeat.ageMs,
+    1_000,
+    'the reported age is the heartbeat age, not the seed age',
+  )
+})
+
+test('a stale heartbeat is abandoned, and a live one still times out on the caller budget', () => {
+  const now = Date.now()
+  const ctx = agedSeed(DEFAULT_OPEN_DISPATCH_STALE_MS + 60_000)
+
+  const stale = heartbeatPath()
+  touchHeartbeat(stale, { now: now - DEFAULT_OPEN_DISPATCH_STALE_MS - 1 })
+  const dead = classifyDispatch(ctx, 'draft', {
+    now,
+    deadlineAt: now + 60_000,
+    heartbeatPath: stale,
+  })
+  assert.equal(dead.status, ABANDONED)
+  assert.equal(dead.heartbeat.status, HEARTBEAT_STALE)
+  assert.equal(toSentinelRouting(dead), DISPATCH_FAILURE)
+
+  // A live heartbeat suppresses `abandoned` but NOT `timed-out`: the two answer
+  // different questions, and a live worker can still blow the caller's budget.
+  const live = heartbeatPath()
+  touchHeartbeat(live, { now })
+  const expired = classifyDispatch(ctx, 'draft', { now, deadlineAt: now - 1, heartbeatPath: live })
+  assert.equal(expired.status, TIMED_OUT)
+  assert.equal(expired.heartbeat.status, HEARTBEAT_LIVE)
+})
+
+test('a stale or foreign heartbeat over a FRESH seed can never kill the dispatch', () => {
+  // The header states "it can only ever EXTEND liveness" as a CONSTRUCTION, so it has to hold for a
+  // beat this dispatch did not write. `readHeartbeat` cannot attribute a beat to anyone, and
+  // `heartbeatPath` is caller-supplied, so a leftover or foreign artifact at that path reads `stale`
+  // over a seed of age ~0. Gating death on the beat alone would abandon a brand-new dispatch.
+  const now = Date.now()
+  const ctx = agedSeed(1_000)
+  const foreign = heartbeatPath()
+  touchHeartbeat(foreign, { now: now - DEFAULT_OPEN_DISPATCH_STALE_MS - 1 })
+
+  const classified = classifyDispatch(ctx, 'draft', {
+    now,
+    deadlineAt: now + 60_000,
+    heartbeatPath: foreign,
+  })
+  assert.equal(classified.status, STILL_RUNNING, 'a fresh seed outranks a stale beat')
+  assert.equal(classified.heartbeat.status, HEARTBEAT_STALE, 'the stale reading is still REPORTED')
+
+  // Same property under the one knob that could break it: `heartbeatStaleAfterMs` is free to be
+  // TIGHTER than `staleAfterMs`, which makes a beat read stale while the seed is still young.
+  const tight = classifyDispatch(ctx, 'draft', {
+    now,
+    deadlineAt: now + 60_000,
+    heartbeatPath: foreign,
+    heartbeatStaleAfterMs: 1,
+  })
+  assert.equal(tight.status, STILL_RUNNING, 'no value of the knob may introduce a death')
+})
+
+test('classifyDispatch reports the seed age beside the liveness age, never instead of it', () => {
+  // `ageMs` changes SUBJECT with the presence of a heartbeat — beat age when one is consulted, seed
+  // age otherwise — so "how long has this dispatch been open" must stay separately readable, here
+  // and through `dispatchDisposition`, which copies both into its recovery verdicts.
+  const now = Date.now()
+  const ctx = agedSeed(DEFAULT_OPEN_DISPATCH_STALE_MS + 4 * 60_000)
+  const path = heartbeatPath()
+  touchHeartbeat(path, { now: now - 1_000 })
+
+  const classified = classifyDispatch(ctx, 'draft', {
+    now,
+    deadlineAt: now + 60_000,
+    heartbeatPath: path,
+  })
+  assert.equal(classified.ageMs, 1_000, 'the liveness age is the beat age')
+  assert.ok(
+    classified.seedAgeMs >= DEFAULT_OPEN_DISPATCH_STALE_MS,
+    'the seed age survives on the result rather than being discarded',
+  )
+  // With no heartbeat consulted the two are the same number, so a caller reading `seedAgeMs`
+  // unconditionally never has to branch on whether a beat was supplied.
+  const blind = classifyDispatch(ctx, 'draft', { now, deadlineAt: now + 60_000 })
+  assert.equal(blind.ageMs, blind.seedAgeMs)
+})
+
+test('an absent heartbeat falls back to the seed clock and can never be MORE aggressive', () => {
+  const now = Date.now()
+  // Young dispatch that has not beaten yet: still-running, never killed for the
+  // omission. This is the TOCTOU window worktree-lock.sh's mtime fallback closes.
+  const young = agedSeed(1_000)
+  const absent = join(tmpdir(), 'bda-hb-never-written.json')
+  const fresh = classifyDispatch(young, 'draft', {
+    now,
+    deadlineAt: now + 60_000,
+    heartbeatPath: absent,
+  })
+  assert.equal(fresh.status, STILL_RUNNING)
+  assert.equal(
+    Object.hasOwn(fresh, 'heartbeat'),
+    false,
+    'no heartbeat was consulted, so none is reported',
+  )
+
+  // The safety property that makes adoption free: the heartbeat is written no
+  // earlier than the seed, so at the same window a live-today dispatch can never
+  // be newly killed by consulting it. Every seed age is classified identically
+  // with an absent heartbeat and without one.
+  for (const ageMs of [
+    0,
+    1_000,
+    DEFAULT_OPEN_DISPATCH_STALE_MS - 1,
+    DEFAULT_OPEN_DISPATCH_STALE_MS,
+  ]) {
+    const ctx = agedSeed(ageMs)
+    const opts = { now, deadlineAt: now + 60_000 }
+    assert.equal(
+      classifyDispatch(ctx, 'draft', { ...opts, heartbeatPath: absent }).status,
+      classifyDispatch(ctx, 'draft', opts).status,
+      `seed age ${ageMs} classified differently with an absent heartbeat`,
+    )
+  }
+})
+
+test('the await side never writes the heartbeat it reads', () => {
+  // A reader that touched the artifact it measures would manufacture the liveness
+  // it claims to observe — the defect, moved into a new file.
+  const path = heartbeatPath()
+  touchHeartbeat(path, { now: 1_000 })
+  const before = readFileSync(path, 'utf8')
+  const ctx = agedSeed(1_000)
+  classifyDispatch(ctx, 'draft', {
+    now: Date.now(),
+    deadlineAt: Date.now() + 1,
+    heartbeatPath: path,
+  })
+  heartbeatLiveness(path, { now: Date.now() })
+  assert.equal(readFileSync(path, 'utf8'), before, 'classification must not beat')
+})
+
+test('`beat` keeps beating through one long command and exits with the CHILD status', async () => {
+  // The risk this closes: a worker blocked inside one long gate call writes
+  // nothing between tool calls, so a heartbeat only the worker could touch would
+  // reproduce the false oracle it replaces. The wrapper beats from the call.
+  const path = heartbeatPath()
+  const wrapped = runCli([
+    'beat',
+    path,
+    '--interval',
+    '15',
+    '--',
+    process.execPath,
+    '-e',
+    'setTimeout(()=>process.exit(3),220)',
+  ])
+  assert.equal(wrapped.status, 3, 'the wrapped command status, never the launcher 0')
+  const after = readHeartbeat(path)
+  assert.ok(after.at >= Date.now() - 5_000, 'the final beat lands at the end of the long command')
+  assert.match(after.note, /-e/, 'the beat names the command it is reporting on')
+
+  // A beat DURING the command, not merely at its ends: the file is younger than
+  // the command's own start by construction only if the interval fired.
+  const beats = runCli([
+    'beat',
+    path,
+    '--interval',
+    '15',
+    '--',
+    process.execPath,
+    '-e',
+    'setTimeout(()=>process.exit(0),200)',
+  ])
+  assert.equal(beats.status, 0)
+
+  assert.equal(runCli(['beat', path, '--', process.execPath, '-e', 'process.exit(7)']).status, 7)
+  assert.equal(runCli(['beat', path]).status, 2, 'no `--` separator is a wiring error')
+  assert.equal(runCli(['beat', path, '--interval', 'abc', '--', 'true']).status, 2)
+})
+
+test('CLI heartbeat + liveness expose the same oracle to shell callers', () => {
+  const path = heartbeatPath()
+  assert.equal(runCli(['heartbeat', path, 'make test']).status, 0)
+  const live = JSON.parse(runCli(['liveness', path]).stdout)
+  assert.equal(live.status, HEARTBEAT_LIVE)
+  assert.equal(live.source, 'recorded')
+
+  const stale = JSON.parse(runCli(['liveness', path, String(Date.now() + 10_000), '1000']).stdout)
+  assert.equal(stale.status, HEARTBEAT_STALE)
+
+  const absent = JSON.parse(runCli(['liveness', join(tmpdir(), 'bda-hb-absent.json')]).stdout)
+  assert.equal(absent.status, HEARTBEAT_ABSENT)
+
+  // A non-numeric clock FAILS rather than defaulting — NaN loses every comparison
+  // and would report a dead dispatch as live.
+  assert.equal(runCli(['liveness', path, '3O0']).status, 2)
+  assert.equal(runCli(['heartbeat']).status, 2)
+})
+
+test('CLI `classify` and `disposition` accept the heartbeat and route from it', () => {
+  // A leftover sentinel from a prior run: `stale`, so both verbs fall through to
+  // the age path this heartbeat governs rather than short-circuiting on a seed.
+  const seeded = agedSeed(DEFAULT_OPEN_DISPATCH_STALE_MS + 60_000)
+  const { dir } = seeded
+  const runId = `${seeded.runId}-OTHER`
+  const now = Date.now()
+  const path = heartbeatPath()
+  touchHeartbeat(path, { now })
+
+  const classified = JSON.parse(
+    runCli(['classify', dir, runId, 'draft', String(now + 60_000), String(now), path]).stdout,
+  )
+  assert.equal(classified.status, STILL_RUNNING)
+
+  // Without the heartbeat the same state discards; with a live one it waits.
+  const blind = JSON.parse(
+    runCli(['disposition', dir, runId, 'draft', '--now', String(now)]).stdout,
+  )
+  assert.equal(blind.disposition, 'discard')
+  assert.equal(blind.reason, 'abandoned')
+  const seeing = JSON.parse(
+    runCli([
+      'disposition',
+      dir,
+      runId,
+      'draft',
+      '--now',
+      String(now),
+      '--deadline',
+      String(now + 60_000),
+      '--heartbeat',
+      path,
+    ]).stdout,
+  )
+  assert.equal(seeing.disposition, 'wait')
+  assert.equal(seeing.reason, 'still-running')
+  // `ageMs` here is the BEAT's age, so the recovery caller's own question — how long has this
+  // dispatch been open — has to survive under its own name rather than be inferred from it.
+  assert.ok(seeing.ageMs < 1_000)
+  assert.ok(seeing.seedAgeMs >= DEFAULT_OPEN_DISPATCH_STALE_MS)
+})
+
+test('every verb that reads a number from argv rejects a non-numeric one', () => {
+  // The rule is one helper, not three restatements: `Number('3O0')` is NaN, NaN survives `??`, and
+  // every NaN comparison is false — so an unrejected typo falls past both death tests and reports a
+  // dead dispatch as `still-running`, the one answer this helper exists to never give. `classify` is
+  // the verb skills invoke from a bash block, so it is the one that must not be the exception.
+  const ctx = context()
+  const now = String(Date.now())
+  const cases = [
+    ['classify', [ctx.dir, ctx.runId, 'draft', '3O0']],
+    ['classify', [ctx.dir, ctx.runId, 'draft', now, '3O0']],
+    ['disposition', [ctx.dir, ctx.runId, 'draft', '--deadline', '3O0']],
+    ['disposition', [ctx.dir, ctx.runId, 'draft', '--now', '3O0']],
+    ['liveness', [join(tmpdir(), 'bda-hb-none.json'), '3O0']],
+  ]
+  for (const [verb, args] of cases) {
+    const typo = runCli([verb, ...args])
+    assert.equal(typo.status, 2, `${verb} ${args.join(' ')} must fail, never default`)
+    assert.match(typo.stderr, /requires a finite number/)
+    assert.equal(typo.stdout, '', 'a rejected verb must emit no verdict at all')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Completion — artifact readiness and returned-message readiness are separately
+// decidable, and no single token stands for both.
+// ---------------------------------------------------------------------------
+
+test('every classification states the scope it settles, and that scope is the artifact', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'leg-a', 'clean', { provisional: false })
+  assert.equal(classifyDispatch(ctx, 'leg-a', { now: 1, deadlineAt: 2 }).settles, 'artifact')
+  const open = context()
+  assert.equal(classifyDispatch(open, 'leg-a', { now: 1, deadlineAt: 2 }).settles, 'artifact')
+})
+
+test('messageReadiness settles ARRIVAL only, and absence is never arrival', () => {
+  for (const missing of [undefined, null, '', '   ']) {
+    assert.equal(
+      messageReadiness(missing).status,
+      MESSAGE_NOT_RETURNED,
+      `${JSON.stringify(missing)}`,
+    )
+  }
+  for (const arrived of [{}, { planPath: 'p.md' }, 'ok', 0, false]) {
+    assert.equal(messageReadiness(arrived).status, MESSAGE_RETURNED, `${JSON.stringify(arrived)}`)
+  }
+})
+
+test('an artifact that landed while the message has not is NEVER one "done" verdict', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'draft', 'ok', { provisional: false, planPath: 'plan.md' })
+  const classified = classifyDispatch(ctx, 'draft', { now: 1_000, deadlineAt: 2_000 })
+  assert.equal(classified.status, COMPLETED, 'the artifact verdict is unchanged')
+
+  const landedOnly = dispatchReadiness(classified, undefined)
+  assert.equal(landedOnly.artifactReady, true)
+  assert.equal(landedOnly.messageReady, false)
+  assert.equal(landedOnly.done, false, 'COMPLETED alone must never read as finished')
+  assert.equal(landedOnly.reason, 'message-no-message')
+
+  // Able to fire: the SAME artifact verdict with the message in hand IS done, so
+  // the refusal above is the missing message's doing and not a blanket false.
+  const both = dispatchReadiness(classified, { planPath: 'plan.md' })
+  assert.equal(both.done, true)
+  assert.equal(both.reason, 'artifact-and-message')
+})
+
+test('a returned message never promotes a dispatch whose artifact has not landed', () => {
+  const ctx = context()
+  const open = classifyDispatch(ctx, 'draft', { now: 1_000, deadlineAt: 2_000 })
+  const readiness = dispatchReadiness(open, { planPath: 'plan.md' })
+  assert.equal(readiness.messageReady, true)
+  assert.equal(readiness.artifactReady, false)
+  assert.equal(readiness.done, false)
+  assert.equal(readiness.reason, `artifact-${STILL_RUNNING}`)
+})
+
+test('scoping COMPLETED left every existing consumer answering exactly as before', () => {
+  // `toSentinelRouting` and `dispatchDisposition` read the artifact verdict, which
+  // is the one they were always asking for. Adding the second question must not
+  // have moved either answer.
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', { provisional: false })
+  const classified = classifyDispatch(ctx, 'review', { now: 1_000, deadlineAt: 2_000 })
+  assert.equal(toSentinelRouting(classified), 'clean')
+  assert.equal(
+    dispatchDisposition(ctx, 'review', { now: 1_000, deadlineAt: 2_000 }).publishable,
+    true,
+  )
+  assert.equal(dispatchReadiness(classified, undefined).done, false)
+})
+
+test('BOS-1278: CLI `open` rejects a non-finite nowMs rather than reporting every dispatch fresh', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'kind', { provisional: true })
+
+  // Without the guard, `Number('3O0')` is NaN, every `now - mtime` is NaN, and `NaN >= stale` is
+  // false — so a typo'd clock reported every open dispatch as not-stale. That is the same
+  // silent-false-liveness class the `disposition` deadline guard already closes, so `open` is held
+  // to the same rule rather than being the one numeric verb that defaults.
+  const typo = runCli(['open', ctx.dir, ctx.runId, '3O0'])
+  assert.equal(typo.status, 2, 'a non-numeric nowMs must fail, never default')
+  assert.match(typo.stderr, /requires a finite number/)
+
+  const ok = runCli(['open', ctx.dir, ctx.runId, `${Date.now()}`])
+  assert.equal(ok.status, 0)
+  assert.equal(JSON.parse(ok.stdout)[0].name, 'review')
+})
+
+test('BOS-1278: openDispatches shares `seedAgeMs` with classifyDispatch, and `ageMs` is not shared', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'kind', { provisional: true })
+  const now = Date.now()
+
+  // `openDispatches` consults no heartbeat, so its open-age and its liveness-age are the same
+  // number — it publishes `seedAgeMs` so the shared quantity has ONE name across both verbs.
+  const [opened] = openDispatches(ctx, { now })
+  assert.equal(typeof opened.seedAgeMs, 'number')
+  assert.equal(opened.seedAgeMs, opened.ageMs, 'no heartbeat here, so the two ages coincide')
+
+  // In `classifyDispatch` they do NOT coincide once a heartbeat is consulted: `ageMs` becomes the
+  // beat's age while `seedAgeMs` stays the open-age. Reconciling on `ageMs` would compare a
+  // liveness age against a seed age, which is what the old comment wrongly licensed.
+  const hb = join(ctx.dir, 'hb.json')
+  touchHeartbeat(hb, { now: now - 1_000 })
+  const classified = classifyDispatch(ctx, 'review', {
+    now,
+    openedAt: now - 10 * 60 * 1000,
+    deadlineAt: now + 60_000,
+    heartbeatPath: hb,
+  })
+  assert.equal(classified.seedAgeMs, 10 * 60 * 1000)
+  assert.equal(classified.ageMs, 1_000, '`ageMs` follows the beat once one is consulted')
+  assert.notEqual(classified.ageMs, classified.seedAgeMs)
 })

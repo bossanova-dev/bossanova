@@ -40,6 +40,15 @@ export const VENDOR_MAP = {
     // than plan-contract-guard.mjs's whole import closure.
     'bs-dispatch-claims.mjs',
     'citation-coordinate.mjs',
+    // bs-mutation-obligations.mjs (BOS-1288) owns the fix-shape → obliged-mutant-set
+    // enumeration that references/falsification.md's shared checklist classifies against,
+    // and adjudicates the recorded proof. That checklist is the NORMATIVE non-vacuity
+    // contract for this tree, so the core carrying it must be able to RUN the adjudicator
+    // it names: an installed boss-review has no repo-root skills-toolbox/ to reach back
+    // into, and a named-but-unreachable helper degrades straight back to the unqualified
+    // one-mutant prose obligation it replaced. Its only import is main-module.mjs, already
+    // vendored here.
+    'bs-mutation-obligations.mjs',
     'bs-review-ledger.mjs',
     'bs-review-triage.mjs',
     'bs-review-report.mjs',
@@ -107,6 +116,13 @@ export const VENDOR_MAP = {
     'tracker/adapter.mjs',
     'tracker/linear.mjs',
     'tracker/cli.mjs',
+    // outcome.mjs (BOS-1282) names how a tracker attempt TURNED OUT — the frozen verdict set, the
+    // bounded-retry driver `linear-gate-lib.mjs` now routes its one fetch through, and the
+    // read-evidence answer that keeps an unreadable payload from reporting "no work". It imports
+    // nothing, but `linear-gate-lib.mjs` imports IT, so wherever that ships this must ship too or
+    // the installed gate cannot LOAD — a helper an installed toolbox cannot resolve degrades
+    // silently, which is the exact failure class this module exists to remove.
+    'tracker/outcome.mjs',
     // Preflight classifies a failed tracker read as "the repo never declared this MCP server for
     // this harness" vs "declared but not answering". The session runner does not configure MCP
     // servers, so that distinction is the difference between fixing the repo and fixing
@@ -147,6 +163,14 @@ export const VENDOR_MAP = {
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
     // (the install is a copy, not a link), so the skill compares the two at startup.
     'toolbox-drift.mjs',
+    // skill-drift-verdict.mjs (BOS-1280) is the consumer half of that same preflight. The gate
+    // reports a kind and a direction per drifted path; this is the one module that decides which
+    // of those are a stale record (warn) and which are an absent capability (stop), so the rule
+    // has one implementation instead of one `case` block per consuming core. The preflight
+    // invokes it by path, so it must resolve inside an INSTALLED toolbox — a consuming repo has
+    // no repo-root skills-toolbox/ to reach back into. Its only import is main-module.mjs,
+    // already vendored here.
+    'skill-drift-verdict.mjs',
     // Preflight names bossEpicTransportPreflight to choose the MCP or CLI carrier, so the
     // module must ship in boss-build's own toolbox — an installed core cannot reach into
     // boss-epic's copy, which may not be installed at all. It imports the session seam's
@@ -192,6 +216,13 @@ export const VENDOR_MAP = {
     'tracker/adapter.mjs',
     'tracker/linear.mjs',
     'tracker/cli.mjs',
+    // outcome.mjs (BOS-1282) names how a tracker attempt TURNED OUT — the frozen verdict set, the
+    // bounded-retry driver `linear-gate-lib.mjs` now routes its one fetch through, and the
+    // read-evidence answer that keeps an unreadable payload from reporting "no work". It imports
+    // nothing, but `linear-gate-lib.mjs` imports IT, so wherever that ships this must ship too or
+    // the installed gate cannot LOAD — a helper an installed toolbox cannot resolve degrades
+    // silently, which is the exact failure class this module exists to remove.
+    'tracker/outcome.mjs',
     // boss-epic reaches the tracker through the same MCP-backed operation map as
     // boss-build, so it inherits the same failure: a repo that has not declared the
     // configured server for the harness it is running gets a mid-run "tool not found".
@@ -289,6 +320,13 @@ export const VENDOR_MAP = {
     'tracker/adapter.mjs',
     'tracker/linear.mjs',
     'tracker/cli.mjs',
+    // outcome.mjs (BOS-1282) names how a tracker attempt TURNED OUT — the frozen verdict set, the
+    // bounded-retry driver `linear-gate-lib.mjs` now routes its one fetch through, and the
+    // read-evidence answer that keeps an unreadable payload from reporting "no work". It imports
+    // nothing, but `linear-gate-lib.mjs` imports IT, so wherever that ships this must ship too or
+    // the installed gate cannot LOAD — a helper an installed toolbox cannot resolve degrades
+    // silently, which is the exact failure class this module exists to remove.
+    'tracker/outcome.mjs',
     'linear-gate-lib.mjs',
     'linear-deps-lib.mjs',
     'linear-claim.mjs',
@@ -306,6 +344,14 @@ export const VENDOR_MAP = {
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
     // (the install is a copy, not a link), so the skill compares the two at startup.
     'toolbox-drift.mjs',
+    // skill-drift-verdict.mjs (BOS-1280) is the consumer half of that same preflight. The gate
+    // reports a kind and a direction per drifted path; this is the one module that decides which
+    // of those are a stale record (warn) and which are an absent capability (stop), so the rule
+    // has one implementation instead of one `case` block per consuming core. The preflight
+    // invokes it by path, so it must resolve inside an INSTALLED toolbox — a consuming repo has
+    // no repo-root skills-toolbox/ to reach back into. Its only import is main-module.mjs,
+    // already vendored here.
+    'skill-drift-verdict.mjs',
     // boss-plan-env.sh (BOS-1102) is the toolbox preamble itself: every Bash block in the
     // skill sources it to resolve BOSS_SKILLS_HOME/BOSS_PLAN_TOOLBOX instead of repeating an
     // eight-line probe. It is sourced rather than executed, so it stays 0644, and it must
@@ -348,6 +394,14 @@ export const VENDOR_MAP = {
     // than plan-contract-guard.mjs's whole import closure.
     'bs-dispatch-claims.mjs',
     'citation-coordinate.mjs',
+    // bs-mutation-obligations.mjs (BOS-1288) is the adjudicator Strategy C step 3 calls
+    // before committing a fix that adds or changes a guard: it maps the fix's shape to the
+    // mutant set that shape owes and refuses a one-mutant record for a multi-mutant shape.
+    // boss-repair runs in a CONSUMING repo with no repo-root skills-toolbox/ to reach back
+    // into, and cannot reach boss-review's copy — that core may not be installed at all —
+    // so the module ships in its own toolbox. Its only import is main-module.mjs, already
+    // vendored here.
+    'bs-mutation-obligations.mjs',
     'skill-extensions.mjs',
     // skill-config.mjs exposes notesSampleRate, which the post-terminal notes phase reads to
     // take its per-run sampling roll. boss-repair installs into user repos that have no
@@ -358,6 +412,14 @@ export const VENDOR_MAP = {
     // Preflight drift probe used only when no boss CLI is available for the
     // fail-closed `boss skills check --gate` path.
     'toolbox-drift.mjs',
+    // skill-drift-verdict.mjs (BOS-1280) is the consumer half of that same preflight. The gate
+    // reports a kind and a direction per drifted path; this is the one module that decides which
+    // of those are a stale record (warn) and which are an absent capability (stop), so the rule
+    // has one implementation instead of one `case` block per consuming core. The preflight
+    // invokes it by path, so it must resolve inside an INSTALLED toolbox — a consuming repo has
+    // no repo-root skills-toolbox/ to reach back into. Its only import is main-module.mjs,
+    // already vendored here.
+    'skill-drift-verdict.mjs',
     // pr-check-state.mjs decides both of this core's check reads — the post-push poll and the
     // Watch Mode interpretation step — which previously restated their own bucket-only rule in
     // prose. Both run in a user repo with no repo-root skills-toolbox/, so the verdict ships here.

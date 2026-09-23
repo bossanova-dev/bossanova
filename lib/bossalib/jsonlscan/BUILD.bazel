@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "jsonlscan",
+    srcs = ["jsonlscan.go"],
+    importpath = "github.com/recurser/bossalib/jsonlscan",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "jsonlscan_test",
+    srcs = ["jsonlscan_test.go"],
+    embed = [":jsonlscan"],
+)

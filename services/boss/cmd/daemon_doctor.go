@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -19,10 +22,13 @@ import (
 
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/revisiondrift"
+	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/spf13/cobra"
 )
 
@@ -210,12 +216,152 @@ var daemonStalenessWarningRemedyCommands = []string{
 // daemonStalenessWarningApplies reports whether a command path should carry the
 // warning, using the cmd.CommandPath() prefix idiom rootCmd already uses.
 func daemonStalenessWarningApplies(commandPath string) bool {
-	for _, remedy := range daemonStalenessWarningRemedyCommands {
-		if commandPath == remedy || strings.HasPrefix(commandPath, remedy+" ") {
-			return false
+	return !commandPathIsOneOf(commandPath, daemonStalenessWarningRemedyCommands)
+}
+
+// commandPathIsOneOf matches a cmd.CommandPath() against a list of command
+// paths by SUBTREE, not by substring: "boss daemon doctor" matches itself and
+// anything below it, while "boss daemon status" does not match "boss daemon"
+// entries it merely shares a prefix of.
+//
+// One definition, because there are now two passive warnings that each skip
+// their own remedy commands, and two copies of a prefix test is how one of them
+// quietly becomes a substring test.
+func commandPathIsOneOf(commandPath string, paths []string) bool {
+	for _, candidate := range paths {
+		if commandPath == candidate || strings.HasPrefix(commandPath, candidate+" ") {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// skipBossRevisionDriftWarningEnv suppresses the revision-drift warning for
+// scripted use, following the BOSS_DAEMON_SKIP_STALE_WARNING precedent.
+const skipBossRevisionDriftWarningEnv = "BOSS_SKIP_REVISION_DRIFT_WARNING"
+
+// bossRevisionDriftWarningText is the single line every `boss` subcommand may
+// emit when the executing binary provably predates the checkout it runs in.
+const bossRevisionDriftWarningText = "boss: this boss binary predates the checkout it is running in — " +
+	"rebuild and reinstall it (details: boss daemon doctor)"
+
+// bossRevisionDriftWarningRemedyCommands are the commands that already report
+// this fact in full, or that are themselves the remedy. Warning on them is
+// noise at best and misleading at worst.
+var bossRevisionDriftWarningRemedyCommands = []string{
+	"boss daemon doctor",
+	"boss env",
+	"boss upgrade",
+}
+
+// bossExecutablePath is a seam over os.Executable so the checkout-build guard
+// below is testable: a test binary lives in a temp directory of the toolchain's
+// choosing, which is never inside the fixture's checkout.
+var bossExecutablePath = os.Executable
+
+// warnIfBossBinaryBehindCheckout writes at most one stderr line when the
+// executing boss binary provably predates the checkout it is being run in.
+//
+// This surface exists because of BOS-864's finding, which the incident behind
+// this check then repeated one binary over: "the detection was never the
+// problem. The surface was." Four mitigations existed for the daemon case and
+// all four failed, doctor included, because diagnostic commands are run after
+// you already suspect a problem — and the whole failure mode is not suspecting
+// it.
+//
+// Only the `behind` outcome warns. Every unknown stays silent here: an unknown
+// earns a line in a diagnostic an operator asked for, not on every invocation.
+//
+// It can never fail a command. Every error inside is swallowed, nothing is
+// written to stdout — a --json consumer would be corrupted by a warning there —
+// and the exit code is untouched.
+func warnIfBossBinaryBehindCheckout(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	if os.Getenv(skipBossRevisionDriftWarningEnv) != "" {
+		return
+	}
+	if commandPathIsOneOf(cmd.CommandPath(), bossRevisionDriftWarningRemedyCommands) {
+		return
+	}
+	// Ordered BEFORE the probe, and that ordering is the point. Everything
+	// above this line reads only the process's own environment, its command
+	// path, and the filesystem; the probe below spawns up to FIVE git
+	// subprocesses — two unbounded ones inside the trust check, plus
+	// rev-parse HEAD, rev-parse --git-common-dir and merge-base
+	// --is-ancestor — and this runs on EVERY ordinary `boss` invocation. A
+	// suppression guard that runs after the work it suppresses is a filter on
+	// the output, not a guard on the cost.
+	//
+	// The root is resolved locally through the same FindCheckoutRoot the
+	// classifier itself defaults to, so this compares against the directory
+	// the probe would have named, without paying for the probe.
+	if bossExecutableIsCheckoutBuild(bossRevisionDriftCheckoutRoot()) {
+		return
+	}
+	drift := bossRevisionDriftProbe(cmd.Context())
+	if !drift.BehindKnown || !drift.Behind {
+		return
+	}
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s [checkout: %s]\n", bossRevisionDriftWarningText, drift.CheckoutRoot)
+}
+
+// bossRevisionDriftCheckoutRoot resolves the checkout root WITHOUT spawning a
+// subprocess, so the per-invocation warning's checkout-build guard can run
+// before the probe rather than after it. FindCheckoutRoot is a structural
+// upward walk, which is also the classifier's own default resolution — so the
+// hoisted guard and the probe agree on which directory they mean.
+//
+// A package var for the reason the probes are: left unstubbed it reads the
+// DEVELOPER's real checkout and the suite's verdicts become machine-dependent.
+var bossRevisionDriftCheckoutRoot = func() string {
+	startDir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	root, ok := revisiondrift.FindCheckoutRoot(startDir)
+	if !ok {
+		return ""
+	}
+	return root
+}
+
+// bossExecutableIsCheckoutBuild reports whether the executing binary is the
+// checkout's own build output, <checkout>/bin/boss.
+//
+// A developer who just ran `make build` is legitimately running a binary that
+// may lag their working tree by a commit, and nagging them on every invocation
+// is how a warning gets trained away — the same reasoning the daemon staleness
+// warning's Cellar guard applies, one binary over.
+//
+// Symlinks are evaluated on BOTH sides. On macOS the temp and per-user
+// directories these paths commonly sit under are symlinks (/var -> /private/var
+// being the usual one), so comparing one resolved path against one unresolved
+// path reports two spellings of the same directory as different.
+func bossExecutableIsCheckoutBuild(checkoutRoot string) bool {
+	if checkoutRoot == "" {
+		return false
+	}
+	executable, err := bossExecutablePath()
+	if err != nil {
+		// Unresolvable: fail closed toward SILENCE. A warning that cannot
+		// establish it is not nagging a developer is the one that gets
+		// suppressed wholesale, and this warning can never be worth a command.
+		return true
+	}
+	return sameDirectory(filepath.Dir(executable), filepath.Join(checkoutRoot, daemonbin.BinDirName))
+}
+
+func sameDirectory(left, right string) bool {
+	return resolvedPath(left) == resolvedPath(right)
+}
+
+func resolvedPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }
 
 // warnIfDaemonBinaryStale writes at most one line to stderr when the running
@@ -1399,13 +1545,33 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	// 'boss daemon restart'", which cannot fix a value in settings.json, and
 	// printing it would send an operator to restart a daemon over a typo.
 	modeUnhealthy, modeRemediation := reportDaemonSupervisionMode(out, supervisionSubstrate)
+	// Deliberately ABOVE the darwin early return, and argued rather than
+	// mirrored by reflex. Staging genuinely IS a macOS concept — the TCC-stable
+	// path exists because launchd needs one — and adding a symmetric
+	// counterpart for it elsewhere would be cargo cult. Git ancestry is not: a
+	// Linux operator runs an equally stale binary, and on that platform this is
+	// the only check that would ever say so.
+	//
+	// Kept OUT of unhealthyNonAuth for the same reason the supervision-mode
+	// check is: that flag's ladder ends in "run 'boss daemon restart'", and a
+	// restart cannot replace an executing binary. It would send an operator to
+	// restart a daemon over a build that needs rebuilding.
+	bossRevisionUnhealthy, revisionRemediation := reportDaemonRevisionDrift(
+		out, "boss binary", bossRevisionDriftProbe(cmd.Context()))
+	bossdRevisionUnhealthy, bossdRevisionRemediation := reportDaemonRevisionDrift(
+		out, "bossd binary", bossdFileRevisionDriftProbe(cmd.Context()))
+	_, _ = fmt.Fprintln(out, daemonRunningProcessRevisionLine)
+	revisionUnhealthy := bossRevisionUnhealthy || bossdRevisionUnhealthy
+	if revisionRemediation == "" {
+		revisionRemediation = bossdRevisionRemediation
+	}
 	if daemonDoctorGOOS != "darwin" {
 		_, _ = fmt.Fprintf(out, "macOS daemon install and protected-folder checks: not applicable on %s\n", daemonDoctorGOOS)
 		// The service-PATH and upstream-auth checks are NOT macOS-specific —
 		// the systemd unit carries an explicit PATH too — so their verdicts
 		// have to survive this early return. Returning nil here regardless
 		// would make both a no-op on exactly the platform they matter most on.
-		if servicePathStale || authUnhealthy || supervisionUnhealthy || modeUnhealthy {
+		if servicePathStale || authUnhealthy || supervisionUnhealthy || modeUnhealthy || revisionUnhealthy {
 			_, _ = fmt.Fprintln(out, "\nRemediation:")
 			if servicePathStale || supervisionRemediation == daemonSupervisionRemediationRestart {
 				_, _ = fmt.Fprintln(out, "  run 'boss daemon restart'")
@@ -1418,6 +1584,9 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 			}
 			if modeUnhealthy {
 				_, _ = fmt.Fprintln(out, modeRemediation)
+			}
+			if revisionUnhealthy {
+				_, _ = fmt.Fprintln(out, revisionRemediation)
 			}
 			return errDaemonDoctorUnhealthy
 		}
@@ -1620,7 +1789,7 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 
 	reportDaemonStartupFailureDirective(out, stagedPath, notServing)
 
-	if unhealthyNonAuth || authUnhealthy || modeUnhealthy {
+	if unhealthyNonAuth || authUnhealthy || modeUnhealthy || revisionUnhealthy {
 		_, _ = fmt.Fprintln(out, "\nRemediation:")
 		if unhealthyNonAuth {
 			switch {
@@ -1698,9 +1867,17 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 		if modeUnhealthy {
 			_, _ = fmt.Fprintln(out, modeRemediation)
 		}
+		if revisionUnhealthy {
+			_, _ = fmt.Fprintln(out, revisionRemediation)
+		}
 	}
 
-	if unhealthyNonAuth || authUnhealthy || modeUnhealthy {
+	// A DISTINCT condition from the remediation gate above, not a duplicate:
+	// this darwin path evaluates the unhealthy set twice, once to print the
+	// remedy and once to decide the exit status. A verdict threaded into only
+	// the first prints the remedy and still exits 0 — a doctor run that
+	// instructs recovery while asserting health.
+	if unhealthyNonAuth || authUnhealthy || modeUnhealthy || revisionUnhealthy {
 		return errDaemonDoctorUnhealthy
 	}
 	return nil
@@ -1762,6 +1939,202 @@ func reportDaemonSupervisionMode(out io.Writer, status daemon.SupervisionModeSta
 		_, _ = fmt.Fprintf(out, "daemon supervision substrate: %s\n", description)
 	}
 	return unhealthy, daemonSupervisionModeRemediation(status)
+}
+
+// daemonRevisionDriftRemediation is the remedy for a binary that does not
+// contain the checkout's commits.
+//
+// It is a rebuild, which is why the verdict rides its own flag rather than
+// unhealthyNonAuth: that ladder ends in "run 'boss daemon restart'", and a
+// restart re-executes the same stale bytes and then reports success. That is
+// the exact misdirection the incident behind this check produced, where a
+// source-level inspection concluded the failure was impossible while the
+// machine that suffered it was still running the old build.
+const daemonRevisionDriftRemediation = "  rebuild and reinstall the boss binaries from this checkout " +
+	"('make build', then install the rebuilt binaries) — restarting re-executes the same bytes"
+
+// daemonRunningProcessRevisionLine states, explicitly, that the LIVE daemon
+// process's revision is not obtainable.
+//
+// daemonstate.Metadata records the PID, the executable path and the start time
+// but carries no build stamp, and DaemonService exposes no build-info RPC, so
+// there is nothing to read. Closing that gap means stamping the metadata at
+// daemon startup, which is deliberately out of scope here.
+//
+// Printed rather than omitted. This file's trichotomy tests already pin that
+// doctor must not fabricate a line about a thing it never observed; the inverse
+// holds too, because silently dropping a fact the operator came here for reads
+// as "checked, fine".
+//
+// The phrasing avoids the literal "running bossd" deliberately.
+// TestRunDaemonDoctorReportsMacOSChecksNotApplicable asserts that the
+// non-darwin path emits no such token, guarding the darwin-only staging and
+// liveness lines from leaking onto Linux. This line is cross-platform — no
+// daemonstate record on any platform carries a build stamp — so it belongs
+// above the early return, and the right fix was to word it distinctly rather
+// than to loosen that guard.
+const daemonRunningProcessRevisionLine = "live daemon process revision: unknown — " +
+	"the daemon records no build stamp, so only the bossd file above was compared"
+
+// daemonDoctorBossdRevisionTimeout bounds the `bossd --version` probe. Short
+// for the same reason daemonAuthProbeTimeout is: an unbounded advisory
+// subprocess inside a diagnostic has already caused a multi-minute silent
+// stall in this codebase.
+const daemonDoctorBossdRevisionTimeout = 5 * time.Second
+
+// daemonDoctorBossdRevisionWaitDelay bounds the output pipe's close after the
+// deadline above has already killed the child, so the two bounds are one bound.
+const daemonDoctorBossdRevisionWaitDelay = 2 * time.Second
+
+// bossdVersionRevisionRE extracts the version and revision from bossd's
+// --version line, which is `"bossd " + buildinfo.String()` —
+// `bossd <version> (<commit>) built <date>`.
+var bossdVersionRevisionRE = regexp.MustCompile(`^bossd\s+(\S+)\s+\(([^)]*)\)`)
+
+// daemonDoctorRevisionGit is the git seam the revision-drift probe runs
+// through. A package var for the same reason skillDriftHistoryGit is: left
+// unstubbed, every doctor test shells out to the DEVELOPER's real repository
+// and the suite's verdicts become machine-dependent.
+var daemonDoctorRevisionGit revisiondrift.GitRunner = revisiondrift.ExecGit
+
+// daemonDoctorBossRevision reads the EXECUTING boss binary's build stamp.
+//
+// A function var over buildinfo's package globals, following
+// upgradeCurrentVersion in handlers.go: the seam is the read rather than the
+// global, so a test never mutates build metadata another test may be reading.
+var daemonDoctorBossRevision = func() (revision, version string) {
+	return buildinfo.Commit, buildinfo.Version
+}
+
+// daemonDoctorBossdRevision reads the installed bossd FILE's build stamp by
+// running it. bossd accepts --version through the stdlib flag package; `boss`
+// sets no Version field on its root command and rejects the flag outright,
+// which is why this direction is the only one available.
+var daemonDoctorBossdRevision = readBossdFileRevision
+
+// daemonDoctorTrustCheckout authenticates a resolved checkout before its
+// history becomes the reference, so a look-alike directory above the working
+// directory cannot supply the comparison. It delegates to the predicate this
+// package already owns rather than restating the canonical-repository identity.
+var daemonDoctorTrustCheckout = func(root string) (bool, error) {
+	return trustedSkillSourceRoot(filepath.Join(root, libskillinstall.SourceRelPath))
+}
+
+// bossRevisionDriftProbe and bossdFileRevisionDriftProbe are the two probes,
+// seamed as whole units rather than as their four inputs. A fixture that pins a
+// probe cannot accidentally leave one machine read live, which is exactly what
+// pinning three of four seams would do.
+//
+// They are separate because their costs are separate. The `boss` verdict is
+// wanted by three surfaces; the `bossd` file verdict costs a subprocess and is
+// wanted only by the diagnostic that can also act on it, so `boss env` and the
+// per-invocation warning must not pay for it.
+var (
+	bossRevisionDriftProbe      = inspectBossRevisionDrift
+	bossdFileRevisionDriftProbe = inspectBossdFileRevisionDrift
+)
+
+// readBossdFileRevision runs `bossd --version` and parses its build stamp.
+//
+// Bounded and with stderr discarded: this is a diagnostic reading a sibling
+// binary, and a bossd that prints a diagnostic of its own must not become this
+// command's output.
+func readBossdFileRevision(ctx context.Context, path string) (revision, version string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, daemonDoctorBossdRevisionTimeout)
+	defer cancel()
+
+	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.Stdout = &stdout
+	// Bounds the pipe-close wait, not the process, for the reason
+	// revisiondrift.ExecGit sets it: capturing output makes os/exec copy
+	// through a pipe, and Run blocks until every writer closes it, so a bossd
+	// that forks before printing would hang this diagnostic past the deadline
+	// that already killed it.
+	cmd.WaitDelay = daemonDoctorBossdRevisionWaitDelay
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("run %s --version: %w", path, err)
+	}
+	match := bossdVersionRevisionRE.FindStringSubmatch(strings.TrimSpace(stdout.String()))
+	if match == nil {
+		return "", "", fmt.Errorf("%s --version did not report a build stamp", path)
+	}
+	return match[2], match[1], nil
+}
+
+// revisionDriftOptions builds the inputs both probes share, so the `boss` and
+// `bossd` verdicts are decided against the same checkout, resolved once the
+// same way. Two resolutions are two chances to report one machine against two
+// references.
+func revisionDriftOptions() revisiondrift.Options {
+	startDir, err := os.Getwd()
+	if err != nil {
+		startDir = "."
+	}
+	return revisiondrift.Options{
+		StartDir:      startDir,
+		Git:           daemonDoctorRevisionGit,
+		TrustCheckout: daemonDoctorTrustCheckout,
+	}
+}
+
+// inspectBossRevisionDrift classifies the EXECUTING boss binary against the
+// checkout the command is being run from.
+func inspectBossRevisionDrift(ctx context.Context) revisiondrift.Drift {
+	options := revisionDriftOptions()
+	options.BinaryRevision, options.BinaryVersion = daemonDoctorBossRevision()
+	return revisiondrift.Inspect(ctx, options)
+}
+
+// inspectBossdFileRevisionDrift classifies the installed bossd FILE — not the
+// running daemon process, whose revision is not obtainable today (see
+// daemonRunningProcessRevisionLine).
+func inspectBossdFileRevisionDrift(ctx context.Context) revisiondrift.Drift {
+	bossdPath, err := daemon.ResolveBossdPath()
+	if err != nil {
+		return revisiondrift.Unknown(revisiondrift.ReasonRevisionUnreadable, err.Error())
+	}
+	revision, version, err := daemonDoctorBossdRevision(ctx, bossdPath)
+	if err != nil {
+		// An unreadable stamp is its OWN outcome, not the unstamped one: that
+		// would assert how the binary was built, which nothing here observed.
+		//
+		// Through revisiondrift.Unknown rather than a Drift literal, because
+		// Inspect is the only other place the fact flags are established and a
+		// literal sets them by omission — which is how RevisionStamped came to
+		// read false here for no reason but that nothing was read.
+		return revisiondrift.Unknown(revisiondrift.ReasonRevisionUnreadable, err.Error())
+	}
+	options := revisionDriftOptions()
+	options.BinaryRevision, options.BinaryVersion = revision, version
+	return revisiondrift.Inspect(ctx, options)
+}
+
+// reportDaemonRevisionDrift prints whether one binary contains the commits this
+// checkout has, and returns the remedy that matches.
+//
+// Mirrors reportDaemonSupervisionMode: the classifier owns the verdict and the
+// wording, and this surface owns only the FAIL marker — status labels the fact,
+// doctor grades it. An unknown outcome prints its own distinct cause and leaves
+// the verdict alone, because an undeterminable input is neither healthy nor
+// unhealthy and rendering it as either is the conflation the classifier exists
+// to prevent.
+func reportDaemonRevisionDrift(out io.Writer, binaryLabel string, drift revisiondrift.Drift) (unhealthy bool, remediation string) {
+	line := drift.Describe(binaryLabel)
+	switch {
+	case drift.BehindKnown && drift.Behind:
+		_, _ = fmt.Fprintf(out, "FAIL %s\n", line)
+		return true, daemonRevisionDriftRemediation
+	case drift.Unknown():
+		_, _ = fmt.Fprintf(out, "%s — unknown, so neither healthy nor stale\n", line)
+		return false, ""
+	default:
+		_, _ = fmt.Fprintln(out, line)
+		return false, ""
+	}
 }
 
 // reportDaemonLaunchAgentPlist is the per-user LaunchAgent block, lifted out of

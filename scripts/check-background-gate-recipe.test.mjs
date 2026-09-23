@@ -10,6 +10,7 @@ import test, { after } from 'node:test'
 
 import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './env-failure-lib.mjs'
 import { VERDICTS } from './gate-run.mjs'
+import { CACHE_STATES } from './gate-log-lib.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const GATE_RUN = path.join(REPO_ROOT, 'scripts/gate-run.mjs')
@@ -124,7 +125,7 @@ test('passing and failing gates report the child status', () => {
   const passing = startGate([process.execPath, '-e', 'process.exit(0)'])
   const passed = waitGate(passing.runDir)
   assert.equal(statusOf(passing.runDir), '0')
-  assert.equal(passed.stdout.trim(), VERDICTS.passed)
+  assert.equal(firstLine(passed.stdout), VERDICTS.passed)
   assert.equal(passed.code, 0)
 
   const failing = startGate([process.execPath, '-e', 'process.exit(3)'])
@@ -392,7 +393,7 @@ test('stop on an already-terminal run dir changes no file and prints the existin
   const before = runDirSnapshot(runDir)
   const stopped = nodeGate(['stop', runDir])
   assert.equal(stopped.code, 0, stopped.stderr)
-  assert.equal(stopped.stdout.trim(), `${VERDICTS.failedPrefix}4)`)
+  assert.equal(firstLine(stopped.stdout), `${VERDICTS.failedPrefix}4)`)
   assert.deepEqual(runDirSnapshot(runDir), before)
 })
 
@@ -406,6 +407,10 @@ test('self-relaunch works from a helper path containing spaces', () => {
   fs.copyFileSync(
     path.join(REPO_ROOT, 'scripts/env-failure-lib.mjs'),
     path.join(scriptsDir, 'env-failure-lib.mjs'),
+  )
+  fs.copyFileSync(
+    path.join(REPO_ROOT, 'scripts/gate-log-lib.mjs'),
+    path.join(scriptsDir, 'gate-log-lib.mjs'),
   )
   fs.copyFileSync(
     path.join(REPO_ROOT, 'skills-toolbox/main-module.mjs'),
@@ -429,7 +434,7 @@ test('self-relaunch works from a helper path containing spaces', () => {
     cwd: root,
     encoding: 'utf8',
   })
-  assert.equal(waited.stdout.trim(), VERDICTS.passed)
+  assert.equal(firstLine(waited.stdout), VERDICTS.passed)
   assert.equal(waited.status, 0)
 })
 
@@ -445,7 +450,7 @@ test('start survives the launching shell exiting', () => {
   const [runDir] = output.trim().split('\n')
   tempDirs.push(runDir)
   const result = waitGate(runDir)
-  assert.equal(result.stdout.trim(), VERDICTS.passed)
+  assert.equal(firstLine(result.stdout), VERDICTS.passed)
 })
 
 test('documented invocation is dialect-free', () => {
@@ -508,4 +513,120 @@ test('the backgrounded-gate doc carries the verdicts, stop, and the live hazards
 
 test('old recipe matcher catches an inline retired fixture', () => {
   assert.match('R=$(mktemp -d) && (make test >"$R/log" 2>&1; echo $? >"$R/status") &', OLD_RECIPE)
+})
+
+// --- BOS-1276: every verdict names its evidence, and nothing else about the verdict moves -------
+
+function evidenceLinesOf(stdout) {
+  return stdout.split('\n').filter((line) => line.startsWith('evidence: '))
+}
+
+function assertVerdictShape(label, stdout, runDir, expectedFirstLine) {
+  assert.equal(firstLine(stdout), expectedFirstLine, `${label}: first line must not move`)
+  const evidence = evidenceLinesOf(stdout)
+  assert.equal(evidence.length, 1, `${label}: exactly one evidence line, got ${evidence.length}`)
+  assert.match(evidence[0], /cache: /, `${label}: evidence must name a cache state`)
+  assert.match(evidence[0], /failure lines: \d+/, `${label}: evidence must count failure lines`)
+  assert.match(evidence[0], /post-summary failures: \d+/, `${label}: post-summary count`)
+  assert.match(evidence[0], /shard-denominated failures: \d+/, `${label}: shard count`)
+  if (runDir && fs.existsSync(path.join(runDir, 'verdict'))) {
+    // The durable copy is the first line and NOTHING else: no evidence, byte-for-byte as before.
+    assert.equal(
+      fs.readFileSync(path.join(runDir, 'verdict'), 'utf8'),
+      `${expectedFirstLine}\n`,
+      `${label}: durable verdict bytes must be unchanged`,
+    )
+  }
+}
+
+test('every wait verdict carries an evidence line without moving the first line or verdict file', () => {
+  const passing = startGate([process.execPath, '-e', 'process.exit(0)'])
+  assertVerdictShape('passed', waitGate(passing.runDir).stdout, passing.runDir, VERDICTS.passed)
+
+  const failing = startGate([process.execPath, '-e', 'process.exit(3)'])
+  assertVerdictShape(
+    'failed',
+    waitGate(failing.runDir).stdout,
+    failing.runDir,
+    `${VERDICTS.failedPrefix}3)`,
+  )
+
+  const envScript = fixtureScript(
+    'console.log(\'Post "https://api.github.com/graphql": operation timed out\')\nprocess.exit(1)\n',
+  )
+  const env = startGate([process.execPath, envScript])
+  const envResult = waitGate(env.runDir)
+  assertVerdictShape(
+    'environment failure',
+    envResult.stdout,
+    env.runDir,
+    `${VERDICTS.environmentPrefix}1)`,
+  )
+  assert.equal(envResult.code, ENV_FAILURE_EXIT_CODE)
+
+  const vanishedDir = mkTemp('gate-run-evidence-vanished-')
+  fs.writeFileSync(path.join(vanishedDir, 'pid'), '99999999\n')
+  assertVerdictShape('vanished', waitGate(vanishedDir, 100).stdout, vanishedDir, VERDICTS.vanished)
+
+  const runningScript = fixtureScript('setTimeout(() => {}, 30000)\n')
+  const running = startGate([process.execPath, runningScript])
+  try {
+    waitForFile(path.join(running.runDir, 'child-pid'))
+    assertVerdictShape(
+      'still running',
+      waitGate(running.runDir, 100).stdout,
+      running.runDir,
+      VERDICTS.stillRunning,
+    )
+  } finally {
+    nodeGate(['stop', running.runDir])
+  }
+})
+
+test('every verdict stop writes carries an evidence line too', () => {
+  // The path where `stop` forces the status itself, after escalating past a TERM-ignoring child.
+  const { runDir, pid } = startGate(['/bin/sh', '-c', 'trap "" TERM; sleep 60'])
+  waitForFile(path.join(runDir, 'child-pid'))
+  const childPid = Number.parseInt(
+    fs.readFileSync(path.join(runDir, 'child-pid'), 'utf8').trim(),
+    10,
+  )
+  process.kill(pid, 'SIGKILL')
+  waitForDeadPid(pid)
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  waitForDeadPid(childPid)
+  assertVerdictShape('stop forced status', stopped.stdout, runDir, firstLine(stopped.stdout))
+  assert.notEqual(firstLine(stopped.stdout), VERDICTS.passed)
+
+  // And the already-terminal path, which must still change no file in the run dir.
+  const terminal = startGate([process.execPath, '-e', 'process.exit(4)'])
+  waitGate(terminal.runDir)
+  const before = runDirSnapshot(terminal.runDir)
+  const again = nodeGate(['stop', terminal.runDir])
+  assertVerdictShape(
+    'stop already terminal',
+    again.stdout,
+    terminal.runDir,
+    `${VERDICTS.failedPrefix}4)`,
+  )
+  assert.deepEqual(runDirSnapshot(terminal.runDir), before)
+})
+
+test('a passing gate whose log shows nothing re-ran says so in its evidence', () => {
+  // The dominant misreading this line exists to remove: GATE PASSED over a fully cached run.
+  const cached = fixtureScript(
+    "console.log('Executed 0 out of 60 tests: 60 tests pass.')\nprocess.exit(0)\n",
+  )
+  const { runDir } = startGate([process.execPath, cached])
+  const result = waitGate(runDir)
+  assert.equal(firstLine(result.stdout), VERDICTS.passed)
+  assert.match(result.stdout, /evidence: cache: fully cached \(executed 0 of 60 tests/)
+  assert.equal(result.code, 0)
+
+  // And a passing gate with no bazel leg reports unknown, never anything pass-equivalent.
+  const bare = startGate([process.execPath, '-e', 'process.exit(0)'])
+  const bareResult = waitGate(bare.runDir)
+  assert.match(bareResult.stdout, /evidence: cache: unknown \(no Bazel executed-count line/)
+  assert.equal(CACHE_STATES.unknown, 'unknown')
 })

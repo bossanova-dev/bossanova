@@ -1201,3 +1201,102 @@ func TestAgentChatStore_RebindResumedChat(t *testing.T) {
 		}
 	})
 }
+
+// errRowsAffectedResult is a sql.Result whose RowsAffected fails, the driver
+// fault that must not be reported as a missing row.
+type errRowsAffectedResult struct{ err error }
+
+func (r errRowsAffectedResult) LastInsertId() (int64, error) { return 0, r.err }
+func (r errRowsAffectedResult) RowsAffected() (int64, error) { return 0, r.err }
+
+// countingResult is a sql.Result reporting a fixed matched-row count.
+type countingResult int64
+
+func (c countingResult) LastInsertId() (int64, error) { return 0, nil }
+func (c countingResult) RowsAffected() (int64, error) { return int64(c), nil }
+
+// TestAgentChatStore_UpdateProviderSessionIDFailsOnZeroRows is BOS-1298's U5:
+// the update is addressed by agent_session_id, a non-primary column, so a
+// mis-keyed caller used to report success while writing nothing. A binding that
+// never landed then looks exactly like one that was never attempted, which would
+// make every timing conclusion about discovery unsound.
+func TestAgentChatStore_UpdateProviderSessionIDFailsOnZeroRows(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess := createTestSession(t, NewSessionStore(database), repo.ID)
+	chatStore := NewAgentChatStore(database)
+
+	chat, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-provider-write",
+		AgentName:      "codex",
+		Title:          "provider write",
+	})
+	if err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+
+	// The classic mis-key: the row's primary id passed where the
+	// agent_session_id belongs. It matches nothing and must say so.
+	provider := "codex-rollout-abc"
+	err = chatStore.UpdateProviderSessionID(ctx, chat.ID, &provider)
+	if err == nil {
+		t.Fatal("UpdateProviderSessionID on a non-matching key returned nil; a write that matched no row must not report success")
+	}
+	if !errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("err = %v, want it to wrap ErrAgentChatNotFound", err)
+	}
+	// ...and it really did write nothing, so the assertion above is about a
+	// silent no-op rather than a mislabelled success.
+	got, err := chatStore.GetByAgentSessionID(ctx, "agent-provider-write")
+	if err != nil {
+		t.Fatalf("get after failed update: %v", err)
+	}
+	if got.ProviderSessionID != nil {
+		t.Fatalf("provider_session_id = %q, want nil: the mis-keyed update must not have written", *got.ProviderSessionID)
+	}
+
+	// The correctly-keyed update still succeeds and writes.
+	if err := chatStore.UpdateProviderSessionID(ctx, "agent-provider-write", &provider); err != nil {
+		t.Fatalf("UpdateProviderSessionID on a real agent_session_id: %v", err)
+	}
+	got, err = chatStore.GetByAgentSessionID(ctx, "agent-provider-write")
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if got.ProviderSessionID == nil || *got.ProviderSessionID != provider {
+		t.Fatalf("provider_session_id = %v, want %q", got.ProviderSessionID, provider)
+	}
+
+	// Clearing an id (what repair_duplicate_provider_session does) still
+	// matches a row, so it stays a success.
+	if err := chatStore.UpdateProviderSessionID(ctx, "agent-provider-write", nil); err != nil {
+		t.Fatalf("clearing a bound provider_session_id: %v", err)
+	}
+}
+
+// TestRequireRowAffectedSurfacesDriverError pins the third detail from the prior
+// incident: RowsAffected's OWN error must not collapse into the zero-row branch.
+// Reporting a driver fault as "no such chat" sends the reader to audit a row
+// that is sitting right there.
+func TestRequireRowAffectedSurfacesDriverError(t *testing.T) {
+	driverErr := errors.New("sqlite: connection reset")
+	err := requireRowAffected(errRowsAffectedResult{err: driverErr}, "update agent_chat provider_session_id", "agent-1")
+	if err == nil {
+		t.Fatal("requireRowAffected returned nil for a failing RowsAffected")
+	}
+	if !errors.Is(err, driverErr) {
+		t.Fatalf("err = %v, want it to wrap the driver error", err)
+	}
+	if errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("err = %v, want the driver error, NOT the zero-row error", err)
+	}
+
+	if err := requireRowAffected(countingResult(0), "op", "agent-1"); !errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("zero rows err = %v, want ErrAgentChatNotFound", err)
+	}
+	if err := requireRowAffected(countingResult(1), "op", "agent-1"); err != nil {
+		t.Fatalf("one row err = %v, want nil", err)
+	}
+}

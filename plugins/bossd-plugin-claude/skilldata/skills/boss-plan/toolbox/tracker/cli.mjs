@@ -33,6 +33,27 @@
 //     writeDescription is an OPTIONAL operation: an adapter that does not declare it exits 2
 //     with a diagnostic naming the missing capability and NOTHING on stdout, so the caller
 //     falls back to sending the description inline on its existing save.
+//   node tracker/cli.mjs list-planned [--state <name>] [--label <name>[,<name>...]]... [--assignee-or-creator <me|id>] [--limit <1-250>]
+//     -> stdout: a JSON array of planned candidates (identifier, title, priority, estimate,
+//        createdAt, state, label names, attachments as a plain array), then a newline.
+//     The worker's NARROWED candidate read, executed through the adapter's OPTIONAL executable
+//     `selectPlanned` capability. Omitted flags default from the repo config through
+//     `plannedSelectionQuery` — the same derivation the cron gate filters on — so the worker and
+//     the gate cannot narrow differently; explicit flags override only when no
+//     `trackerConfig.<tracker>.selection` block is present — under one, --state/--label/
+//     --assignee-or-creator exit 2 (only --limit is allowed). An adapter without the
+//     capability exits 2 with a diagnostic naming it and NOTHING on stdout, and so does every
+//     other failure (config, flags, tracker, a non-array result): a caller that configured a
+//     selection filter must stop, never fall back to the unfiltered descriptor.
+//   node tracker/cli.mjs classify-outcome (--observed <text> | --result <json>) [--operation read|write] [--status <code>]
+//     -> stdout: one machine-readable `tracker-outcome verdict=... reason=... retry=... operation=...`
+//        line, then one human line naming the action that verdict requires.
+//     The AGENT-DRIVEN half of the tracker seam. Those sites execute the MCP tool themselves, so
+//     no code wrapper can intercept the outcome and no retry can be injected for them. This verb
+//     hands them the SAME classifier the executable paths run on, from the same source of truth,
+//     which is what stops a second outcome vocabulary growing in skill prose. It is a capability
+//     of this CLI and NOT a tracker operation: classification is not something a tracker performs,
+//     and putting it in an operationMap would make every vendored adapter non-conforming.
 //
 // Verdict delegates to the resolved adapter's resolveClaim capability; the
 // Linear reference impl computes first-writer-wins over the claim comments, optionally after
@@ -43,6 +64,26 @@ import { readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { resolveTrackerAdapter } from './adapter.mjs'
+import { loadSkillConfig, plannedSelectionQuery, trackerConfigFor } from '../skill-config.mjs'
+import { TRACKER_VERDICTS, classifyTrackerOutcome, formatOutcomeLine } from './outcome.mjs'
+
+// The action each verdict requires, as one line. This is the whole point of exposing the
+// classifier to sites no wrapper can reach: a verdict a reader cannot act on is a label, not a
+// decision. Keyed by the frozen verdict set, so a sixth verdict would surface as a missing entry.
+const TRACKER_OPERATIONS = new Set(['read', 'write'])
+
+const VERDICT_ACTIONS = Object.freeze({
+  [TRACKER_VERDICTS.OK]: 'proceed — the attempt produced a readable result.',
+  [TRACKER_VERDICTS.RETRYABLE]:
+    'retry, bounded — at most the configured attempts, then fail with this error.',
+  [TRACKER_VERDICTS.PERMANENT]:
+    'do not retry — another attempt changes nothing; fix the credential, permission or query.',
+  [TRACKER_VERDICTS.INDETERMINATE]:
+    'READ THE TARGET BACK before any second attempt, and let the read decide — landed means ' +
+    'proceed, not-landed means retry once. A blind retry and a silent abandon are both forbidden.',
+  [TRACKER_VERDICTS.FALSE_EMPTY]:
+    'could not evaluate — report that, never "no work"; an empty answer is not evidence of empty.',
+})
 
 // Tracker-agnostic run token: 16 random bytes as lowercase hex (32 chars) — the same
 // shape the claim marker captures. Duplicated here rather than imported from the
@@ -97,20 +138,156 @@ capabilities:
       Print the MCP tool descriptor for a file-sourced description write.
       OPTIONAL: an adapter without it exits 2 and the caller sends inline instead.
 
+  list-planned [--state <name>] [--label <name>[,<name>...]]... [--assignee-or-creator <me|id>] [--limit <1-250>]
+      Print the planned candidates as a JSON array, filtered by the same selection
+      the cron gate applies (omitted flags default from the repo config). Under a
+      configured selection block only --limit is accepted; other flags exit 2.
+      OPTIONAL: an adapter without selectPlanned exits 2 with a diagnostic and no stdout.
+
+  classify-outcome (--observed <text> | --result <json>) [--operation read|write] [--status <code>]
+      Classify how a tracker attempt turned out. Prints one machine-readable
+      "tracker-outcome verdict=... reason=... retry=... operation=..." line and one
+      human line naming the action that verdict requires. For the agent-driven MCP
+      sites, which execute the tool themselves and so cannot inherit a code wrapper.
+
   --help, -h, help
       Print this message and exit 0.
 `
 
+const LIST_PLANNED_MAX_LIMIT = 250
+const LIST_PLANNED_FLAGS = new Set(['state', 'label', 'assignee-or-creator', 'limit'])
+
+// list-planned's own flag parser. The shared `parseFlags` pairs tokens blindly and keeps the LAST
+// value of a repeated flag, which would silently drop every `--label` but one — a narrower scan
+// than the caller asked for. This one accepts `--label` repeated and/or comma-separated, refuses an
+// unknown or valueless flag and an empty value, and parses `--limit` as a bounded integer, so a
+// malformed invocation is an error rather than a different filter.
+function parseListPlannedFlags(rest) {
+  const flags = {}
+  const labels = []
+  for (let i = 0; i < rest.length; i += 2) {
+    const token = rest[i]
+    const name = typeof token === 'string' && token.startsWith('--') ? token.slice(2) : null
+    if (!name || !LIST_PLANNED_FLAGS.has(name)) {
+      return { error: `unknown flag ${JSON.stringify(token)}` }
+    }
+    const value = rest[i + 1]
+    if (typeof value !== 'string' || value.trim() === '') {
+      return { error: `--${name} requires a non-empty value` }
+    }
+    if (name === 'label') {
+      const names = value.split(',').map((entry) => entry.trim())
+      if (names.some((entry) => entry === '')) {
+        return { error: `--label ${JSON.stringify(value)} carries an empty label name` }
+      }
+      labels.push(...names)
+    } else if (name === 'limit') {
+      if (!/^\d+$/.test(value.trim())) {
+        return {
+          error: `--limit must be an integer from 1 to ${LIST_PLANNED_MAX_LIMIT}; got ${value}`,
+        }
+      }
+      const limit = Number(value.trim())
+      if (limit < 1 || limit > LIST_PLANNED_MAX_LIMIT) {
+        return {
+          error: `--limit must be an integer from 1 to ${LIST_PLANNED_MAX_LIMIT}; got ${value}`,
+        }
+      }
+      flags.limit = limit
+    } else {
+      flags[name] = value
+    }
+  }
+  // A single name stays a single name, so a one-label invocation emits the `eq` clause the gate
+  // emits for the same input; two or more are a disjunctive set.
+  if (labels.length === 1) flags.label = labels[0]
+  else if (labels.length > 1) flags.label = labels
+  return { flags }
+}
+
+// One line, always: the worker quotes this diagnostic verbatim in its NO_CHANGE reason.
+function oneLine(message) {
+  return String(message)
+    .replace(/\s*\n\s*/g, ' ')
+    .trim()
+}
+
+async function runListPlanned(rest, { write, errWrite, env, resolveAdapter, loadConfig }) {
+  const fail = (message) => {
+    errWrite(`list-planned: ${oneLine(message)}\n`)
+    return 2
+  }
+  const parsed = parseListPlannedFlags(rest)
+  if (parsed.error) return fail(parsed.error)
+  let adapter
+  try {
+    adapter = resolveAdapter({ env })
+  } catch (err) {
+    return fail(`could not resolve the tracker adapter: ${err?.message ?? err}`)
+  }
+  // Checked BEFORE any config or network work. Absence is the one outcome the worker must turn
+  // into a stop: the only other path to a candidate list is the unfiltered descriptor, whose
+  // result set is a strict superset of what a narrowed gate saw.
+  if (typeof adapter?.selectPlanned !== 'function') {
+    return fail(
+      'resolved tracker adapter has no selectPlanned capability, so a configured selection filter cannot be applied',
+    )
+  }
+  let query
+  let selectionConfigured
+  try {
+    const config = loadConfig()
+    query = plannedSelectionQuery(config)
+    // Presence decides, as it decides the worker's route: a present block is the narrowing the
+    // gate scanned, and an override flag would replace it with a different (often wider) set.
+    const tc = trackerConfigFor(config)
+    selectionConfigured = tc !== null && 'selection' in tc
+  } catch (err) {
+    return fail(`could not derive the selection from the repo config: ${err?.message ?? err}`)
+  }
+  const { flags } = parsed
+  if (selectionConfigured) {
+    const overrides = ['state', 'label', 'assignee-or-creator'].filter(
+      (name) => flags[name] !== undefined,
+    )
+    if (overrides.length > 0) {
+      return fail(
+        `${overrides.map((name) => `--${name}`).join(', ')} cannot override a configured trackerConfig selection: the worker must scan exactly what the narrowed cron gate scanned (only --limit is allowed)`,
+      )
+    }
+  }
+  if (flags.state !== undefined) query.state = flags.state
+  if (flags.label !== undefined) query.label = flags.label
+  if (flags['assignee-or-creator'] !== undefined) {
+    query.assigneeOrCreator = flags['assignee-or-creator']
+  }
+  query.limit = flags.limit ?? LIST_PLANNED_MAX_LIMIT
+  let nodes
+  try {
+    nodes = await adapter.selectPlanned(query)
+  } catch (err) {
+    return fail(`selectPlanned failed: ${err?.message ?? err}`)
+  }
+  if (!Array.isArray(nodes)) {
+    return fail('selectPlanned returned a non-array result, so the candidate list cannot be read')
+  }
+  write(JSON.stringify(nodes) + '\n')
+  return 0
+}
+
 /**
  * Dispatch one tracker capability. Returns the process exit code; never calls
- * process.exit directly so it is unit-testable.
+ * process.exit directly so it is unit-testable. Every verb is synchronous except
+ * `list-planned`, which reads the tracker and so returns a Promise of the exit code;
+ * the entrypoint awaits the result, which is harmless for a plain number.
  * @param {string[]} argv
  * @param {{write?: (s: string) => void, errWrite?: (s: string) => void, env?: object,
- *   resolveAdapter?: typeof resolveTrackerAdapter}} [io]
+ *   resolveAdapter?: typeof resolveTrackerAdapter, loadConfig?: () => object}} [io]
  *   `resolveAdapter` defaults to the real `resolveTrackerAdapter` import; tests inject a stub
  *   here to reach adapter shapes (e.g. one missing an operationMap entry) that the real,
- *   always-Linear-today registry can't produce.
- * @returns {number}
+ *   always-Linear-today registry can't produce. `loadConfig` defaults to reading the repo's
+ *   `.boss-skills.json` from the working directory; tests inject a synthetic config.
+ * @returns {number | Promise<number>}
  */
 export function runCli(
   argv,
@@ -119,6 +296,7 @@ export function runCli(
     errWrite = (s) => process.stderr.write(s),
     env = process.env,
     resolveAdapter = resolveTrackerAdapter,
+    loadConfig = () => loadSkillConfig(),
   } = {},
 ) {
   const [cmd, ...rest] = argv
@@ -356,6 +534,51 @@ export function runCli(
     )
     return 0
   }
+  if (cmd === 'list-planned') {
+    return runListPlanned(rest, { write, errWrite, env, resolveAdapter, loadConfig })
+  }
+  if (cmd === 'classify-outcome') {
+    const { observed, result, operation = 'read', status } = parseFlags(rest)
+    // Exactly one source of the observation. Requiring one is what keeps an invocation that
+    // supplied neither from classifying "nothing observed" as an answer; refusing both is what
+    // keeps a caller from silently learning which one this verb happens to prefer.
+    if (observed === undefined && result === undefined) {
+      errWrite('classify-outcome: one of --observed <text> or --result <json> is required\n')
+      return 2
+    }
+    if (observed !== undefined && result !== undefined) {
+      errWrite('classify-outcome: --observed and --result are mutually exclusive\n')
+      return 2
+    }
+    if (!TRACKER_OPERATIONS.has(operation)) {
+      errWrite(
+        `classify-outcome: --operation must be one of ${[...TRACKER_OPERATIONS].join(', ')}; got ${operation}\n`,
+      )
+      return 2
+    }
+    let observation
+    if (result !== undefined) {
+      const parsed = parseJsonFlag(result, 'classify-outcome: --result', errWrite)
+      // `undefined` is this helper's parse-failure signal, and JSON can never produce it, so a
+      // failed parse is unambiguous here.
+      if (parsed === undefined) return 2
+      observation = { result: parsed }
+    } else {
+      observation = { error: observed }
+      if (status !== undefined) {
+        const code = Number(status)
+        if (!Number.isInteger(code)) {
+          errWrite(`classify-outcome: --status must be an integer HTTP status; got ${status}\n`)
+          return 2
+        }
+        observation.status = code
+      }
+    }
+    const verdict = classifyTrackerOutcome(observation, { operation })
+    write(formatOutcomeLine(verdict, { operation }) + '\n')
+    write(`${VERDICT_ACTIONS[verdict.verdict]}\n`)
+    return 0
+  }
   errWrite(`unknown tracker capability: ${cmd ?? '(none)'}\n`)
   // The capability list goes out on the rejection too: a caller who guessed wrong
   // learns the real set here rather than having to read this file.
@@ -367,5 +590,5 @@ import { isMainModule } from '../main-module.mjs'
 
 const invokedDirectly = isMainModule(import.meta.url)
 if (invokedDirectly) {
-  process.exit(runCli(process.argv.slice(2)))
+  process.exit(await runCli(process.argv.slice(2)))
 }

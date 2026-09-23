@@ -520,12 +520,14 @@ func TestTruncate_OneOverMaxLength(t *testing.T) {
 
 func TestParseSessionMeta_LargeJSONLine(t *testing.T) {
 	// Tests that scanner buffer handles large lines correctly.
-	// Catches mutation: 256*1024 changed to 256+1024 or 256-1024 or 256/1024.
+	// Catches mutation: titleScanMaxBytes arithmetic changed so the effective
+	// ceiling drops below this line's size (8*1024*1024 -> 8+1024*1024, etc).
 	dir := t.TempDir()
 	id := "large-line-session"
 
-	// Create a JSONL line larger than default scanner buffer (64KB)
-	// but within our configured buffer (256KB).
+	// Create a JSONL line larger than the default scanner buffer (64KB) and
+	// larger than titleScanInitialBytes, so bufio has to GROW to read it —
+	// which is the half of the split contract this test exercises.
 	largeContent := strings.Repeat("x", 128*1024)
 	writeJSONL(t, filepath.Join(dir, id+".jsonl"),
 		map[string]any{
@@ -545,33 +547,38 @@ func TestParseSessionMeta_LargeJSONLine(t *testing.T) {
 }
 
 func TestParseSessionMeta_BufferCapacityBoundary(t *testing.T) {
-	// Pins the scanner buffer capacity contract on title.go:65:
-	//   scanner.Buffer(make([]byte, 256*1024), 256*1024)
-	// The effective max token size must be 256*1024 = 262144 bytes.
+	// Pins the scanner buffer capacity contract in parseSessionMeta:
+	//   scanner.Buffer(make([]byte, titleScanInitialBytes), titleScanMaxBytes)
+	// The effective max token size must be titleScanMaxBytes.
 	//
-	// A JSONL line whose total length sits just under that cap must scan
-	// successfully; one at/over the cap must be dropped. This asserts the
-	// EXACT 262144 product so any arithmetic swap that lowers the effective
-	// cap (e.g. 256*1024 -> 256+1024 = 1280, or -> 256/1024 = 0) would cause
-	// the just-under-cap line to be dropped and the title to come back empty.
+	// BOS-1281 moved this contract. It used to assert the EXACT 262144 product
+	// of a single 256*1024 passed for BOTH the initial buffer and the ceiling —
+	// and pinning that was what made the defect a contract: a Claude session
+	// whose first line carried an inlined tool result (~742 KiB observed) came
+	// back title-less. The two values are now separate constants, so the test
+	// asserts against the CEILING and no longer against the allocation.
+	//
+	// A JSONL line whose total length sits just under the ceiling must scan
+	// successfully; one over it must be dropped. Asserting both directions is
+	// what keeps this a bound rather than an absent limit: an arithmetic swap
+	// that lowers the effective ceiling (8*1024*1024 -> 8+1024*1024, say) drops
+	// the just-under line and the title comes back empty.
 	//
 	// NOTE: Go's bufio.Scanner uses max(len(initialBuffer), maxArg) as the
-	// effective cap, so swapping a single one of the two operators while the
-	// other operand stays at 262144 leaves behavior unchanged. Those single
-	// mutants are therefore equivalent and not killable by a black-box test;
-	// this test guards the overall 262144 contract against regressions that
-	// reduce both the buffer and the cap.
-	const cap = 256 * 1024 // 262144
+	// effective cap, so a mutant that only shrinks the ceiling BELOW
+	// titleScanInitialBytes is masked by the allocation. That is unchanged from
+	// the pre-BOS-1281 version of this note and is not killable by a black-box
+	// test; the split is precisely why the allocation is now the small number.
+	const ceiling = titleScanMaxBytes
 
-	// JSON framing overhead for the line below, measured so the encoded line
-	// lands just under the 262144-byte cap.
-	t.Run("just under cap scans", func(t *testing.T) {
+	t.Run("just under the ceiling scans", func(t *testing.T) {
 		dir := t.TempDir()
-		id := "under-cap"
+		id := "under-ceiling"
 		// Encoded line = {"type":"user","message":{"role":"user","content":"<xs>"}}\n
-		// Keep total well under cap while still far above the 64KB default
-		// buffer and above any reduced-cap mutant (1280 / 0).
-		content := strings.Repeat("x", cap-1024)
+		// Keep the total under the ceiling while still far above BOTH the 64KB
+		// bufio default AND the old 262144 cap this test used to pin — so this
+		// arm alone fails against the pre-BOS-1281 shape.
+		content := strings.Repeat("x", ceiling-1024)
 		writeJSONL(t, filepath.Join(dir, id+".jsonl"),
 			map[string]any{
 				"type":    "user",
@@ -580,20 +587,22 @@ func TestParseSessionMeta_BufferCapacityBoundary(t *testing.T) {
 		)
 		got := chatTitleInDir(dir, id)
 		if len(got) != maxSummaryLen {
-			t.Errorf("len=%d, want %d (line ~%d bytes must scan within %d cap)",
-				len(got), maxSummaryLen, len(content), cap)
+			t.Errorf("len=%d, want %d (line ~%d bytes must scan within the %d ceiling)",
+				len(got), maxSummaryLen, len(content), ceiling)
 		}
 		if !strings.HasSuffix(got, ellipsis) {
 			t.Errorf("got %q, want truncated content with '…'", got)
 		}
 	})
 
-	t.Run("over cap dropped", func(t *testing.T) {
+	t.Run("over the ceiling dropped", func(t *testing.T) {
 		dir := t.TempDir()
-		id := "over-cap"
-		// Encoded line exceeds 262144 bytes -> scanner returns token-too-long,
-		// the line is skipped, and no title is produced.
-		content := strings.Repeat("x", cap+1024)
+		id := "over-ceiling"
+		// Encoded line exceeds the ceiling -> scanner returns token-too-long,
+		// the line is skipped, and no title is produced. parseSessionMeta has no
+		// error channel to classify into, unlike the runner plugin's
+		// readTranscript; an empty title is the whole observable answer here.
+		content := strings.Repeat("x", ceiling+1024)
 		writeJSONL(t, filepath.Join(dir, id+".jsonl"),
 			map[string]any{
 				"type":    "user",
@@ -602,7 +611,7 @@ func TestParseSessionMeta_BufferCapacityBoundary(t *testing.T) {
 		)
 		got := chatTitleInDir(dir, id)
 		if got != "" {
-			t.Errorf("got %q, want empty (line over %d-byte cap must be dropped)", got, cap)
+			t.Errorf("got %q, want empty (line over the %d-byte ceiling must be dropped)", got, ceiling)
 		}
 	})
 }
@@ -759,5 +768,48 @@ func TestTruncate_CutFallsInsideMultiByteRune(t *testing.T) {
 	}
 	if want := strings.Repeat("a", 76) + ellipsis; got != want {
 		t.Errorf("truncate(...) = %q, want %q", got, want)
+	}
+}
+
+// TestChatTitleInDir_OversizedFirstLine pins the split initial/ceiling shape in
+// the session-title parser (BOS-1281). Scanning only the first maxScanLines is
+// not protection: an oversized FIRST line kills the read before any title can
+// be found, which is what the old 256 KiB cap did to a session opening with a
+// large pasted prompt.
+func TestChatTitleInDir_OversizedFirstLine(t *testing.T) {
+	const oldCap = 256 * 1024
+	dir := t.TempDir()
+
+	// A first line well over the old cap, carrying the title the parser must
+	// still reach, followed by an ordinary second line.
+	padded := "Fix the parser " + strings.Repeat("x", 742*1024)
+	first, err := json.Marshal(map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": padded},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) <= oldCap {
+		t.Fatalf("fixture first line is %d bytes, which does not exceed the old %d-byte cap", len(first), oldCap)
+	}
+	second, err := json.Marshal(map[string]any{
+		"type":    "assistant",
+		"message": map[string]any{"role": "assistant", "content": "ok"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "sess.jsonl")
+	if err := os.WriteFile(path, append(append(first, '\n'), append(second, '\n')...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := chatTitleInDir(dir, "sess")
+	if got == "" {
+		t.Fatal("chatTitleInDir = \"\" on an oversized first line; the scanner refused the transcript")
+	}
+	if !strings.HasPrefix(got, "Fix the parser") {
+		t.Fatalf("chatTitleInDir = %q, want it to start with the first user message", got)
 	}
 }

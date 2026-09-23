@@ -4504,3 +4504,81 @@ func TestStartTmuxChat_BackgroundRetryNeverOverwritesBoundProviderSessionID(t *t
 		}
 	}
 }
+
+// TestEffectiveSpawnSession_ResetsModelAcrossAgents is the effective-spawn-target
+// half of BOS-1281. A codex chat that bound no model of its own used to inherit
+// the claude session's model id, so a restart/rotation spawn built
+// `codex --model <claude model id>`. The chat here is deliberately model-less:
+// TestEffectiveSpawnSession_ReSourcesFromPrimaryChat already covers the case
+// where the chat HAS one, and that case never exercised the inheritance branch.
+func TestEffectiveSpawnSession_ResetsModelAcrossAgents(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	if err := config.SaveTo(settingsPath, config.Settings{}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "agent-cross"
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			SessionID:      "sess-1",
+			AgentSessionID: agentSessionID,
+			AgentName:      "codex",
+			// No Model: this is the chat shape that used to inherit.
+		}},
+	}
+	sess := &models.Session{ID: "sess-1", AgentName: "claude", Model: "claude-opus-4", EffectiveEffort: "high", AgentSessionID: &agentSessionID}
+
+	eff := h.lc.effectiveSpawnSession(context.Background(), sess)
+	if eff.Model != "" {
+		t.Errorf("eff.Model = %q, want \"\": a codex chat must not inherit the session's claude model id", eff.Model)
+	}
+
+	// The same-agent direction must be untouched, or the fix would have turned
+	// an inheritance bug into a lost-model bug.
+	sameAgent := &models.Session{ID: "sess-1", AgentName: "codex", Model: "gpt-5", AgentSessionID: &agentSessionID}
+	if eff := h.lc.effectiveSpawnSession(context.Background(), sameAgent); eff.Model != "gpt-5" {
+		t.Errorf("same-agent eff.Model = %q, want gpt-5 (the session seed still governs)", eff.Model)
+	}
+}
+
+// TestSendInputToLiveTmuxChat_ResetsModelAcrossAgents is the interactive-command
+// half of BOS-1281. Resuming into a LIVE pane builds its command through
+// BuildInteractiveCommand, which passed sess.Model raw while the Effort field
+// beside it already reset across agents.
+func TestSendInputToLiveTmuxChat_ResetsModelAcrossAgents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	sess := h.sessions.sessions["sess-1"]
+	sess.AgentName = "claude"
+	sess.Model = "claude-opus-4"
+
+	const agentSessionID = "agent-session-prior"
+	tmuxName := tmux.ChatSessionName("repo-abcdef12", agentSessionID)
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-prior",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+
+	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: agentSessionID, Delivery: DeliverySubmit},
+		"T", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat resume into live pane: %v", err)
+	}
+	last := h.agentFake.LastBuildInteractiveCommand
+	if last == nil {
+		t.Fatal("no BuildInteractiveCommand recorded; the resume did not reach the live-pane path")
+	}
+	if got := last.GetModel(); got != "" {
+		t.Errorf("BuildInteractiveCommand Model = %q, want \"\": a codex chat must not carry the session's claude model id", got)
+	}
+}

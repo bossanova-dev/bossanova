@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,15 +13,27 @@ import (
 type fakeProcessInspector struct {
 	descendants map[int][]int
 	openFiles   map[int][]string
+	// openFilesErr programs a per-pid probe failure, the `lsof` error that used
+	// to collapse into an empty file list (BOS-1298). A pid present here fails
+	// even when openFiles also names it.
+	openFilesErr map[int]error
 }
 
-func (f fakeProcessInspector) Descendants(pid int) []int  { return f.descendants[pid] }
-func (f fakeProcessInspector) OpenFiles(pid int) []string { return f.openFiles[pid] }
+func (f fakeProcessInspector) Descendants(pid int) []int { return f.descendants[pid] }
+func (f fakeProcessInspector) OpenFiles(pid int) ([]string, error) {
+	if err, ok := f.openFilesErr[pid]; ok {
+		return nil, err
+	}
+	return f.openFiles[pid], nil
+}
 
 const (
 	uuidA = "019f3a91-3083-7abc-8def-0123456789ab"
 	uuidB = "019f3a91-a6bb-7abc-8def-0123456789cd"
 )
+
+// errProbeFailed stands in for the `lsof` failure the real inspector reports.
+var errProbeFailed = errors.New("lsof -p 200: exit status 1")
 
 func TestRolloutUUIDFromPath(t *testing.T) {
 	// The ISO timestamp segment and the UUID both contain dashes, so a naive
@@ -48,12 +61,9 @@ func TestResolveByPIDSingleOpenRollout(t *testing.T) {
 		descendants: map[int][]int{100: {100, 200}},
 		openFiles:   map[int][]string{200: {p}},
 	}
-	id, path, ok, treeVisible := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
-	if !ok {
-		t.Fatal("ok = false, want true")
-	}
-	if !treeVisible {
-		t.Error("treeVisible = false, want true (descendants enumerated)")
+	id, path, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+	if outcome != fdOutcomeBound {
+		t.Fatalf("outcome = %v, want fdOutcomeBound", outcome)
 	}
 	if id != uuidA {
 		t.Errorf("id = %q, want %q", id, uuidA)
@@ -79,9 +89,9 @@ func TestResolveByPIDPrefersCWDMatchOverNewer(t *testing.T) {
 		descendants: map[int][]int{100: {100, 200}},
 		openFiles:   map[int][]string{200: {stray, matching}},
 	}
-	id, _, ok, _ := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
-	if !ok {
-		t.Fatal("ok = false, want true")
+	id, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+	if outcome != fdOutcomeBound {
+		t.Fatalf("outcome = %v, want fdOutcomeBound", outcome)
 	}
 	if id != uuidA {
 		t.Errorf("id = %q, want cwd-matching %q", id, uuidA)
@@ -99,9 +109,9 @@ func TestResolveByPIDPrefersNewestAmongCWDMatches(t *testing.T) {
 		descendants: map[int][]int{100: {100, 200}},
 		openFiles:   map[int][]string{200: {older, newer}},
 	}
-	id, _, ok, _ := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
-	if !ok {
-		t.Fatal("ok = false, want true")
+	id, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+	if outcome != fdOutcomeBound {
+		t.Fatalf("outcome = %v, want fdOutcomeBound", outcome)
 	}
 	if id != uuidB {
 		t.Errorf("id = %q, want newest %q", id, uuidB)
@@ -117,11 +127,11 @@ func TestResolveByPIDNoRolloutOpen(t *testing.T) {
 		descendants: map[int][]int{100: {100, 200}},
 		openFiles:   map[int][]string{200: {"/var/log/system.log", filepath.Join(workDir, "main.go")}},
 	}
-	// treeVisible must be true (the tree WAS enumerated) so the caller keeps
-	// waiting for this chat's own fd instead of falling back to the time-window
-	// scan (BOS-290).
-	if _, _, ok, treeVisible := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100); ok || !treeVisible {
-		t.Fatalf("ok=%v treeVisible=%v, want false/true (tree visible, no rollout held open yet)", ok, treeVisible)
+	// The outcome must be the genuine keep-waiting one (the tree WAS enumerated
+	// and every probe succeeded) so the caller keeps waiting for this chat's own
+	// fd instead of falling back to the time-window scan (BOS-290).
+	if _, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100); outcome != fdOutcomeNoRolloutFDOpen {
+		t.Fatalf("outcome = %v, want fdOutcomeNoRolloutFDOpen (tree visible, probes fine, no rollout held open yet)", outcome)
 	}
 }
 
@@ -129,10 +139,10 @@ func TestResolveByPIDNoDescendants(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	workDir := t.TempDir()
 	insp := fakeProcessInspector{descendants: map[int][]int{}}
-	// No descendants ⇒ tree not enumerable ⇒ treeVisible false, so the caller
-	// falls back to the time-window scan (fd inspection unavailable).
-	if _, _, ok, treeVisible := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100); ok || treeVisible {
-		t.Fatalf("ok=%v treeVisible=%v, want false/false (no descendants)", ok, treeVisible)
+	// No descendants ⇒ tree not enumerable, so the caller falls back to the
+	// time-window scan (fd inspection unavailable).
+	if _, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100); outcome != fdOutcomeTreeNotVisible {
+		t.Fatalf("outcome = %v, want fdOutcomeTreeNotVisible (no descendants)", outcome)
 	}
 }
 
@@ -148,9 +158,9 @@ func TestResolveByPIDNonCodexFilesIgnoredButRolloutFound(t *testing.T) {
 		descendants: map[int][]int{100: {100, 200}},
 		openFiles:   map[int][]string{200: {"/dev/null", strayNamed, p}},
 	}
-	id, _, ok, _ := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
-	if !ok {
-		t.Fatal("ok = false, want true")
+	id, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+	if outcome != fdOutcomeBound {
+		t.Fatalf("outcome = %v, want fdOutcomeBound", outcome)
 	}
 	if id != uuidA {
 		t.Errorf("id = %q, want %q (rollout under root)", id, uuidA)
@@ -170,9 +180,9 @@ func TestResolveByPIDIgnoresNonTUIRollout(t *testing.T) {
 		descendants: map[int][]int{100: {100, 200}},
 		openFiles:   map[int][]string{200: {execRollout, tuiRollout}},
 	}
-	id, _, ok, _ := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
-	if !ok {
-		t.Fatal("ok = false, want true")
+	id, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+	if outcome != fdOutcomeBound {
+		t.Fatalf("outcome = %v, want fdOutcomeBound", outcome)
 	}
 	if id != uuidA {
 		t.Errorf("id = %q, want codex-tui rollout %q (codex-exec must be ignored)", id, uuidA)
@@ -181,7 +191,78 @@ func TestResolveByPIDIgnoresNonTUIRollout(t *testing.T) {
 
 func TestResolveByPIDGuardsInvalidPID(t *testing.T) {
 	insp := fakeProcessInspector{}
-	if _, _, ok, treeVisible := resolveInteractiveSessionIDByPIDAt(insp, "/root", "/work", 0); ok || treeVisible {
-		t.Fatalf("ok=%v treeVisible=%v for pid 0, want false/false", ok, treeVisible)
+	if _, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, "/root", "/work", 0); outcome != fdOutcomeTreeNotVisible {
+		t.Fatalf("outcome = %v for pid 0, want fdOutcomeTreeNotVisible", outcome)
+	}
+}
+
+// TestResolveByPIDProbeFailureIsNotNoRolloutOpen is the BOS-1298 regression:
+// an `lsof` failure used to collapse into an empty file list, which is
+// byte-identical to "this process holds no rollout open". The daemon then logged
+// the wait-and-it-fixes-itself reason for a fault that never resolves by
+// waiting, for the whole discovery budget. Asserted on the returned outcome, not
+// on a log line.
+func TestResolveByPIDProbeFailureIsNotNoRolloutOpen(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	workDir := t.TempDir()
+	// A rollout exists on disk; the probe simply cannot be run to see it. That
+	// is what makes this fixture able to produce the failure at all — a fixture
+	// whose probe succeeds proves nothing about this branch.
+	_ = writeSessionMetaRollout(t, root, uuidA, workDir, "codex-tui", time.Now())
+
+	insp := fakeProcessInspector{
+		descendants:  map[int][]int{100: {100, 200}},
+		openFilesErr: map[int]error{100: errProbeFailed, 200: errProbeFailed},
+	}
+	id, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+	if id != "" {
+		t.Fatalf("id = %q, want empty: nothing was observed", id)
+	}
+	if outcome == fdOutcomeNoRolloutFDOpen {
+		t.Fatal("outcome = fdOutcomeNoRolloutFDOpen for a tree whose every probe FAILED; a broken probe must not read as a negative observation")
+	}
+	if outcome != fdOutcomeProbeFailed {
+		t.Fatalf("outcome = %v, want fdOutcomeProbeFailed", outcome)
+	}
+}
+
+// TestResolveByPIDPartialProbeFailureStillBinds pins that a wide tree does not
+// lose a real answer to one unreadable process: the act of observing is tracked
+// per process, and a rollout found by a process we COULD read still binds.
+func TestResolveByPIDPartialProbeFailureStillBinds(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	workDir := t.TempDir()
+	p := writeSessionMetaRollout(t, root, uuidA, workDir, "codex-tui", time.Now())
+
+	insp := fakeProcessInspector{
+		descendants:  map[int][]int{100: {100, 200, 300}},
+		openFilesErr: map[int]error{200: errProbeFailed},
+		openFiles:    map[int][]string{300: {p}},
+	}
+	id, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+	if outcome != fdOutcomeBound {
+		t.Fatalf("outcome = %v, want fdOutcomeBound: one failed probe must not mask a rollout another process holds open", outcome)
+	}
+	if id != uuidA {
+		t.Errorf("id = %q, want %q", id, uuidA)
+	}
+}
+
+// TestResolveByPIDPartialProbeFailureWithNoRolloutIsInconclusive pins this
+// plan's recorded position: a tree that was only partly observable and turned up
+// no rollout is inconclusive, not negative. A negative is what authorises the
+// "keep waiting" remedy, and the rollout may sit behind the process we could not
+// read.
+func TestResolveByPIDPartialProbeFailureWithNoRolloutIsInconclusive(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	workDir := t.TempDir()
+
+	insp := fakeProcessInspector{
+		descendants:  map[int][]int{100: {100, 200}},
+		openFilesErr: map[int]error{200: errProbeFailed},
+		openFiles:    map[int][]string{100: {"/var/log/system.log"}},
+	}
+	if _, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100); outcome != fdOutcomeProbeFailed {
+		t.Fatalf("outcome = %v, want fdOutcomeProbeFailed for a partially-observed tree with no rollout", outcome)
 	}
 }

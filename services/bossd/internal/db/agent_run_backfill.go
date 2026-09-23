@@ -1,7 +1,6 @@
 package db
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/jsonlscan"
 	"github.com/recurser/bossalib/sqlutil"
 )
 
@@ -453,7 +453,12 @@ func readCodexMeta(path string) (codexMeta, bool) {
 	}
 	defer func() { _ = f.Close() }()
 	scanner := newBackfillScanner(f)
-	if !scanner.Scan() {
+	// Line() counts skipped records too, so a value other than 1 means the real
+	// first record was over budget and this is a later one. The meta header is
+	// line 1 by contract, so a skip here is a miss rather than a fallback —
+	// otherwise line 2 is unmarshalled as the header and yields a wrong
+	// id/cwd/timestamp instead of a clean "not found".
+	if !scanner.Scan() || scanner.Line() != 1 {
 		return codexMeta{}, false
 	}
 	var line struct {
@@ -509,10 +514,12 @@ func transcriptBounds(path string) (time.Time, time.Time, bool) {
 	return first, last, !first.IsZero() && !last.IsZero()
 }
 
-func newBackfillScanner(f *os.File) *bufio.Scanner {
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
-	return scanner
+// newBackfillScanner is the one place this package names its JSONL reader, so
+// its two callers cannot drift apart or reintroduce the private 10 MiB ceiling
+// this used to carry. Which budget that is, and why, now lives in jsonlscan's
+// package doc rather than here.
+func newBackfillScanner(f *os.File) *jsonlscan.Reader {
+	return jsonlscan.New(f)
 }
 
 func inBackfillWindow(start time.Time, params AgentRunBackfillParams) bool {

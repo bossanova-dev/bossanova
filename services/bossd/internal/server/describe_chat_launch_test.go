@@ -156,3 +156,75 @@ func TestDescribeChatLaunch_RequestsNoInstructionsSoNothingIsReported(t *testing
 		t.Fatalf("preview must request no instruction suffix, got %q", calls[0].appendSystemPrompt)
 	}
 }
+
+// TestDescribeChatLaunch_ResolvesModelLikeTheSpawn is the preview half of
+// BOS-1281. The handler passed chat.Model raw, which was wrong in BOTH
+// directions: a same-agent chat with no model of its own previewed as the
+// plugin default while StartTmuxChat seeds it from the session, and a
+// cross-agent chat would inherit a provider-scoped id it must never carry.
+// Both arms are asserted, because a preview that is always empty would satisfy
+// the cross-agent one alone.
+func TestDescribeChatLaunch_ResolvesModelLikeTheSpawn(t *testing.T) {
+	sess := &models.Session{ID: "s1", AgentName: "claude", Model: "claude-opus-4", WorktreePath: "/work/tree"}
+
+	t.Run("a cross-agent chat previews with no model", func(t *testing.T) {
+		chat := &models.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-cross", AgentName: "codex"}
+		builder := codexArgvBuilderForPreview()
+		srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+		if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+			AgentSessionId: "agent-cross",
+		})); err != nil {
+			t.Fatalf("DescribeChatLaunch: %v", err)
+		}
+		if len(builder.calls) != 1 {
+			t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+		}
+		if got := builder.calls[0].model; got != "" {
+			t.Fatalf("preview model = %q, want empty for a codex chat under a claude session", got)
+		}
+	})
+
+	t.Run("a same-agent chat previews the session model", func(t *testing.T) {
+		chat := &models.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-same", AgentName: "claude"}
+		builder := claudeArgvBuilder()
+		srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+		if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+			AgentSessionId: "agent-same",
+		})); err != nil {
+			t.Fatalf("DescribeChatLaunch: %v", err)
+		}
+		if len(builder.calls) != 1 {
+			t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+		}
+		if got := builder.calls[0].model; got != "claude-opus-4" {
+			t.Fatalf("preview model = %q, want the session's claude-opus-4 — the value StartTmuxChat spawns with", got)
+		}
+	})
+
+	t.Run("a chat that bound its own model keeps it", func(t *testing.T) {
+		chat := &models.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-own", AgentName: "codex", Model: "gpt-5"}
+		builder := codexArgvBuilderForPreview()
+		srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+		if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+			AgentSessionId: "agent-own",
+		})); err != nil {
+			t.Fatalf("DescribeChatLaunch: %v", err)
+		}
+		if got := builder.calls[0].model; got != "gpt-5" {
+			t.Fatalf("preview model = %q, want the chat's own gpt-5", got)
+		}
+	})
+}
+
+// codexArgvBuilderForPreview answers for a codex chat the way claudeArgvBuilder
+// answers for a claude one, so the preview handler reaches BuildInteractive
+// instead of failing on an unrouted agent name.
+func codexArgvBuilderForPreview() *fakeArgvBuilder {
+	return &fakeArgvBuilder{
+		fresh:  map[string][]string{"codex": {"codex"}},
+		resume: map[string][]string{"codex": {"codex", "resume"}},
+	}
+}

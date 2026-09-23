@@ -27,6 +27,7 @@ import (
 	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestBossdPgrepArgsRestrictsToEffectiveUser(t *testing.T) {
@@ -2884,4 +2885,107 @@ func TestDaemonRestartRegistersJSONFlag(t *testing.T) {
 	if restart.Flags().Lookup(jsonFlagName) == nil {
 		t.Error("boss daemon restart registers no --json flag")
 	}
+}
+
+// TestPrintChatsTable_PinnedFromBothCommands is BOS-1281's fence for the shared
+// chat-table renderer. `boss show` (handlers.go runShow) and `boss chats`
+// (handlers.go runChats) are the renderer's only two non-test call sites, and
+// until now neither pinned the other's output — so editing the table for one
+// command silently changed the other's stdout, its stderr behaviour and its
+// generated CLI docs, with nothing to notice.
+//
+// Both subtests call printChatsTable directly, once per command's own
+// *cobra.Command from the real showCmd()/chatsCmd() constructors. Note the
+// limit this leaves: neither runShow nor runChats is executed here, so the
+// test does NOT catch one command being forked onto a private renderer. It
+// pins the single shared renderer's output, twice.
+//
+// The assertion is shared on purpose: an edit to printChatsTable itself fails
+// both arms. Forking one command onto a renderer of its own is the case this
+// does not reach — closing that needs the commands driven for real.
+func TestPrintChatsTable_PinnedFromBothCommands(t *testing.T) {
+	const agentID = "550e8400-e29b-41d4-a716-446655440000"
+	created := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	lastOutput := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
+
+	chats := []*pb.ClaudeChat{{
+		AgentSessionId: agentID,
+		Title:          "Fix the renderer",
+		CreatedAt:      timestamppb.New(created),
+	}}
+	statuses := map[string]*pb.ChatStatusEntry{
+		agentID: {
+			AgentSessionId:          agentID,
+			Status:                  pb.ChatStatus_CHAT_STATUS_WAITING,
+			WaitingReason:           "review",
+			LastOutputAt:            timestamppb.New(lastOutput),
+			SpinnerPresent:          true,
+			LastSubstantiveOutputAt: timestamppb.New(lastOutput),
+		},
+	}
+
+	// assertSharedTable is the pin. Every expectation below is a property of
+	// printChatsTable, not of either command, which is precisely why both
+	// commands assert it.
+	assertSharedTable := func(t *testing.T, out string) {
+		t.Helper()
+		// Columns, in order. Appended-not-inserted is a stated contract of the
+		// renderer (a reader slicing by field index must be widened, never
+		// shifted), so the ORDER is asserted rather than mere presence.
+		wantHeaders := []string{"ID", "TITLE", "CREATED", "STATUS", "LAST OUTPUT", "LIVENESS"}
+		at := -1
+		for _, h := range wantHeaders {
+			i := strings.Index(out, h)
+			if i < 0 {
+				t.Fatalf("header %q missing from the rendered table:\n%s", h, out)
+			}
+			if i <= at {
+				t.Fatalf("header %q is out of order in the rendered table:\n%s", h, out)
+			}
+			at = i
+		}
+		// Cells. The full id must survive untruncated so it round-trips back
+		// into the exact-match commands; the waiting reason must be inline, or
+		// a reader has to run a second command to learn what the chat is
+		// blocked on; the liveness cell must carry its spinner marker.
+		for _, want := range []string{agentID, "Fix the renderer", "WAITING (review)", "spinner"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("rendered table is missing %q:\n%s", want, out)
+			}
+		}
+	}
+
+	t.Run("boss show", func(t *testing.T) {
+		cmd := showCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		printChatsTable(cmd, chats, statuses, true)
+		assertSharedTable(t, buf.String())
+	})
+
+	t.Run("boss chats", func(t *testing.T) {
+		cmd := chatsCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		printChatsTable(cmd, chats, statuses, true)
+		assertSharedTable(t, buf.String())
+	})
+
+	// The status-unavailable shape is shared too, and it is the one a reader
+	// most needs to be unambiguous: "?" rather than a cell that could be
+	// mistaken for a settled chat.
+	t.Run("status unavailable renders ? from both commands", func(t *testing.T) {
+		for name, cmd := range map[string]*cobra.Command{"show": showCmd(), "chats": chatsCmd()} {
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			printChatsTable(cmd, chats, nil, false)
+			out := buf.String()
+			if !strings.Contains(out, "?") {
+				t.Fatalf("%s: unavailable status must render \"?\":\n%s", name, out)
+			}
+			if strings.Contains(out, "WAITING") {
+				t.Fatalf("%s: unavailable status must not render a settled cell:\n%s", name, out)
+			}
+		}
+	})
 }

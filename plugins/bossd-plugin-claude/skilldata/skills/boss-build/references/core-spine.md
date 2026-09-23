@@ -78,7 +78,13 @@ body, a contract doc, or any other prose the repo gates on, the brief carries th
   reds the first time the paragraph rewraps. That is for prose only: `\s+` also matches a newline,
   so a pin over a command or a code shape keeps the literal space rather than widening to spellings
   that would not run. Then falsify it: mutate the sentence with an equally whitespace-tolerant
-  substitution, see the gate go red, restore, see it go green.
+  substitution, see the gate go red, restore, see it go green. That is **one** mutant, and a pin
+  over text owes **two**. Restoring the pre-fix sentence proves only that the pin catches the OLD
+  defect, so perturb the NEW pin itself the same whitespace-tolerant way, require that red too, and
+  adjudicate the pair rather than stopping at the first red. This core carries no shape enumeration
+  in its own toolbox, so treat the rule above as stated in full here rather than as a summary of a
+  call you can make; a round that runs the machine-readable enumeration and its adjudicator does so
+  from the review and repair cores, which vendor it.
 
 Discovery itself reports before any dispatch. Record every `skipped` entry whose `deliberate` is
 `false` as `extension <name>: skipped (<reason>)` in the ledger, before dispatching — at **every**

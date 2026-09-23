@@ -12,6 +12,10 @@ import {
   isModuleCached,
   gcStamps,
   runGolangci,
+  cachedLintBanner,
+  readLintStamp,
+  renderLintStamp,
+  summarizeLintFindings,
   LOCK_CONTENTION_EXHAUSTED_MESSAGE,
 } from './lint-affected.mjs'
 
@@ -503,5 +507,77 @@ test('CLAUDE.md documents the exhausted-contention literal verbatim', () => {
   assert.ok(
     claudeMd.includes(LOCK_CONTENTION_EXHAUSTED_MESSAGE),
     `CLAUDE.md no longer contains the literal agents are told to grep for:\n  ${LOCK_CONTENTION_EXHAUSTED_MESSAGE}`,
+  )
+})
+
+// --- BOS-1276: a cached green must name what it is replaying -----------------------------------
+
+test('summarizeLintFindings counts golangci finding lines and nothing else', () => {
+  assert.equal(summarizeLintFindings(''), '0 issues')
+  assert.equal(summarizeLintFindings(null), '0 issues')
+  assert.equal(
+    summarizeLintFindings('internal/foo/bar.go:12:3: ineffectual assignment to err (ineffassign)'),
+    '1 issue',
+  )
+  assert.equal(
+    summarizeLintFindings(
+      [
+        'internal/foo/bar.go:12:3: ineffectual assignment to err (ineffassign)',
+        'internal/foo/baz.go:4:1: exported func Foo should have comment (revive)',
+      ].join('\n'),
+    ),
+    '2 issues',
+  )
+  // Prose that merely mentions the shape mid-line is not a finding: the pattern is line-anchored.
+  assert.equal(
+    summarizeLintFindings('level=info msg="see internal/foo/bar.go:12:3: for details"'),
+    '0 issues',
+  )
+})
+
+test('a stamp round-trips its summary and timestamp', () => {
+  const text = renderLintStamp({ summary: '0 issues', at: '2026-09-20T12:00:00.000Z' })
+  assert.match(text, /^2026-09-20T12:00:00\.000Z\nsummary=0 issues\n$/)
+  assert.deepEqual(readLintStamp(text), { at: '2026-09-20T12:00:00.000Z', summary: '0 issues' })
+})
+
+test('the cached branch replays the stored per-module summary', () => {
+  const stampText = renderLintStamp({ summary: '0 issues', at: '2026-09-20T12:00:00.000Z' })
+  const banner = cachedLintBanner({ module: 'services/boss', stampText })
+  assert.equal(
+    banner,
+    '==> Linting services/boss (cached: 0 issues, linted 2026-09-20T12:00:00.000Z)',
+  )
+  // The distinguishing property: a cached green no longer reads the same as never-linted.
+  assert.notEqual(banner, '==> Linting services/boss (cached)')
+})
+
+// The on-disk stamp format is machine-wide and shared across worktrees, so a stamp written before
+// this change MUST degrade rather than crash every checkout that shares the stamp dir.
+test('a stamp written without a summary degrades to the existing banner instead of throwing', () => {
+  for (const stampText of [
+    '2026-09-06T02:56:17.000Z\n',
+    '',
+    null,
+    undefined,
+    'not-a-timestamp-at-all\n',
+    'summary=\n',
+  ]) {
+    assert.equal(
+      cachedLintBanner({ module: 'services/boss', stampText }),
+      '==> Linting services/boss (cached)',
+      `stamp: ${JSON.stringify(stampText)}`,
+    )
+  }
+  assert.deepEqual(readLintStamp('2026-09-06T02:56:17.000Z\n'), {
+    at: '2026-09-06T02:56:17.000Z',
+    summary: null,
+  })
+})
+
+test('a summary with no parseable timestamp still replays the summary', () => {
+  assert.equal(
+    cachedLintBanner({ module: 'lib/bossalib', stampText: 'summary=3 issues\n' }),
+    '==> Linting lib/bossalib (cached: 3 issues)',
   )
 })

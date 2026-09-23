@@ -42,9 +42,15 @@ export function buildSurfaceSections({ runs, perSurface }) {
       outcome: 'deferred',
       reasonCode: p.reasonCode,
       // No recapture hint for a no-surface skip: there is nothing to re-run.
+      // BOS-1285 `forced-no-surface` gets its OWN hint rather than the generic
+      // re-run: re-running captures nothing either (the diff has no product
+      // source), so the actionable command is the one that shows WHY the surface
+      // was selected, which is what the author has to change.
       recaptureHint: isNoSurface
         ? undefined
-        : `BOSS_PROOF_AGENT_SURFACE=${run.surface} node scripts/proof.mjs run`,
+        : p.reasonCode === 'forced-no-surface'
+          ? 'node scripts/proof.mjs plan'
+          : `BOSS_PROOF_AGENT_SURFACE=${run.surface} node scripts/proof.mjs run`,
       stage: pe?.stage,
       stderrTail: pe?.stderrTail,
       missing: run.missing,

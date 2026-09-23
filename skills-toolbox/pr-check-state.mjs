@@ -203,7 +203,15 @@ function mergeEntries(sources) {
     const kind = classifyEntry(entry)
     const prior = merged.get(entry.name)
     if (prior === undefined || SEVERITY.indexOf(kind) < SEVERITY.indexOf(prior.kind)) {
-      merged.set(entry.name, { kind, name: entry.name })
+      // `conclusion`/`bucket` ride along because `kind` alone cannot answer whether a gate RAN:
+      // NEUTRAL, STALE and SKIPPED all classify as `skipped`, and only the last means it did not
+      // run. `diffCheckSets` needs that distinction to tell a lost gate from a skipped one.
+      merged.set(entry.name, {
+        kind,
+        name: entry.name,
+        conclusion: entry.conclusion ?? '',
+        bucket: entry.bucket ?? '',
+      })
     }
   }
   return merged
@@ -245,6 +253,17 @@ function normalizeDiffSide(side) {
   ]
 }
 
+// Did this prior-SHA entry attach WITHOUT running? Only a conclusion that says so may be
+// discounted from `absent`. Deliberately narrower than `kind === 'skipped'`, which also swallows
+// NEUTRAL and STALE — two conclusions a check only reaches by running.
+function didNotRun(entry) {
+  const cc = String(entry?.conclusion ?? '').toUpperCase()
+  if (cc === 'SKIPPED') return true
+  // Any other non-empty conclusion means it reported; never discount it.
+  if (cc !== '') return false
+  return String(entry?.bucket ?? '').toUpperCase() === 'SKIPPING'
+}
+
 // diffCheckSets is the two-SHA comparison that closes the absent-versus-pending gap. A path-filtered
 // follow-up push shrinks the check set, and the jobs that vanish look identical to queued ones;
 // comparing the head SHA's contexts against the prior SHA's is what tells them apart — a longer
@@ -257,7 +276,26 @@ export function diffCheckSets({ head = null, prior = null } = {}) {
   const headEntries = normalizeDiffSide(head)
 
   const priorKnown = prior != null
-  const priorNames = priorKnown ? contextNames(prior) : []
+  // The prior side is CLASSIFIED, not reduced to names. A context that attached to the prior SHA
+  // and deliberately did not run proved nothing about that SHA, so its disappearance from the head
+  // is not a lost gate — counting it turned an all-green branch into an `absent-gate` verdict,
+  // which is the one non-green reason that never resolves by waiting.
+  //
+  // What this deliberately makes INVISIBLE: a gate that was disabled on the prior SHA and then
+  // genuinely removed from the head. That is accepted, because the prior SHA carries no evidence
+  // that such a gate ever ran, and the alternative — reporting it — is the false `absent-gate` this
+  // narrowing exists to end.
+  //
+  // That rationale is about a gate that DID NOT RUN, so the discount is scoped to exactly that and
+  // read off the entry's own conclusion rather than its `kind`. `classifyKind` folds NEUTRAL and
+  // STALE into the same `skipped` kind, but both describe a check that attached AND REPORTED — so
+  // discounting by `kind` would hide a gate that ran, concluded, and then vanished from the head,
+  // which is the genuine lost gate this comparison exists to find and wider than the risk above.
+  //
+  // `normalizeDiffSide` is what keeps the fail-closed direction intact: a bare array of context
+  // names, which is what the shipped recipes pass as `--prior`, carries no conclusion to discount
+  // by and normalizes to `unclassified`, so every unmatched name keeps contributing.
+  const priorEntries = priorKnown ? normalizeDiffSide(prior) : []
   const headNames = new Set(headEntries.map((e) => e.name))
 
   const ran = []
@@ -267,7 +305,10 @@ export function diffCheckSets({ head = null, prior = null } = {}) {
     else ran.push(entry.name)
   }
 
-  const absent = priorNames.filter((name) => !headNames.has(name))
+  const absent = priorEntries
+    .filter((entry) => !didNotRun(entry))
+    .map((entry) => entry.name)
+    .filter((name) => !headNames.has(name))
 
   return {
     ran: [...new Set(ran)].sort(),
@@ -328,6 +369,7 @@ const CLASSIFY_CHECKS_KEYS = Object.freeze([
   'priorContexts',
   'readError',
   'acceptNoGateRan',
+  'structurallyAbsentContexts',
 ])
 
 const MERGE_STATE_KEYS = Object.freeze([
@@ -351,6 +393,11 @@ const MERGE_STATE_KEYS = Object.freeze([
 //   priorContexts  the prior SHA's payload, or a bare array of its context names
 //   readError      any non-null value means the read failed; the verdict is `unreadable`
 //   acceptNoGateRan  the caller explicitly accepts a set in which nothing ran
+//   structurallyAbsentContexts  context names the CALLER asserts cannot attach to this head at all.
+//                  Read only by `absentGateRemedy`; it changes no state, no reason and no
+//                  predicate. Caller-supplied rather than derived, because deriving it would mean
+//                  reading a workflow file and this module is offline by contract — and the module
+//                  cannot verify the claim it is handed either way.
 export function classifyChecks(options) {
   assertOptions(options, 'classifyChecks', CLASSIFY_CHECKS_KEYS)
   const {
@@ -362,6 +409,7 @@ export function classifyChecks(options) {
     priorContexts = null,
     readError = null,
     acceptNoGateRan = false,
+    structurallyAbsentContexts = [],
   } = options ?? {}
   const merged = mergeEntries([
     ...normalizeRollup(rollup),
@@ -373,6 +421,12 @@ export function classifyChecks(options) {
   for (const { kind } of merged.values()) counts[kind] += 1
 
   const diff = diffCheckSets({ head: [...merged.values()], prior: priorContexts })
+  const declaredStructural = new Set(
+    (Array.isArray(structurallyAbsentContexts) ? structurallyAbsentContexts : [])
+      .filter((name) => typeof name === 'string')
+      .map((name) => name.trim())
+      .filter((name) => name !== ''),
+  )
 
   const verdict = {
     state: CHECK_STATES.UNKNOWN,
@@ -382,6 +436,9 @@ export function classifyChecks(options) {
     total: merged.size,
     ...counts,
     absent: diff.absent,
+    // The declared subset of `absent`, never a substitute for it. `absent` keeps every name, so no
+    // existing field or predicate moves; only `absentGateRemedy` reads this.
+    structurallyAbsent: diff.absent.filter((name) => declaredStructural.has(name)),
     priorKnown: diff.priorKnown,
   }
 
@@ -486,6 +543,46 @@ export function provesGreenReason(verdict) {
   if (verdict.priorKnown !== true) return PROVES_GREEN_REASONS.NO_PRIOR_SHA
   if (!(verdict.passed > 0)) return PROVES_GREEN_REASONS.NO_GATE_RAN
   return PROVES_GREEN_REASONS.OK
+}
+
+// Why an `absent-gate` verdict is not green, as a named remedy. `absent-gate` already says a gate
+// the prior head carried is missing from this one and that waiting never resolves it — but two
+// different situations wear that shape and only one is worth re-triggering:
+//
+//   structurally-unreachable — the context CANNOT attach to this head. A workflow whose triggers a
+//                              push cannot produce is the recorded case: it fires on the pull
+//                              request being opened, reopened or readied, so a draft PR's pushes
+//                              never produce it and no amount of re-running will.
+//   re-trigger-absent-gate   — a job that genuinely went missing, which a fresh head can restore.
+//
+// ADDITIVE ONLY, in the same shape as `provesGreenReason` above: this reports on a verdict, it does
+// not participate in computing one. The structural set is the caller's assertion and this module
+// cannot check it, so it is confined to the remedy — a caller can mis-declare its way to a
+// misleading REMEDY, never to a green verdict or an emptied `absent` set.
+export const ABSENT_GATE_REMEDIES = Object.freeze({
+  NONE: 'none',
+  STRUCTURAL: 'structurally-unreachable',
+  RETRIGGER: 're-trigger-absent-gate',
+  MIXED: 'mixed-absent-gates',
+})
+
+export function absentGateRemedy(verdict) {
+  if (verdict == null || typeof verdict !== 'object') return ABSENT_GATE_REMEDIES.NONE
+  // Keyed on the verdict's own account of why it is not green, exactly as rung 1 of
+  // `provesGreenReason` is, rather than on `absent.length > 0`: a FAILING set can carry a non-empty
+  // `absent` too, and naming a re-trigger remedy there would point at a missing job while a gate
+  // that already ran was red.
+  if (verdict.reason !== CHECK_REASONS.ABSENT_GATE) return ABSENT_GATE_REMEDIES.NONE
+  const absent = Array.isArray(verdict.absent) ? verdict.absent : []
+  const structural = new Set(
+    Array.isArray(verdict.structurallyAbsent) ? verdict.structurallyAbsent : [],
+  )
+  const lost = absent.filter((name) => !structural.has(name))
+  // Fail-closed on both edges: nothing declared, or anything left undeclared, still names the
+  // re-trigger the caller can actually perform.
+  if (structural.size === 0) return ABSENT_GATE_REMEDIES.RETRIGGER
+  if (lost.length > 0) return ABSENT_GATE_REMEDIES.MIXED
+  return ABSENT_GATE_REMEDIES.STRUCTURAL
 }
 
 // The boolean and the reason are one predicate reported two ways, and `main()` prints BOTH onto the
@@ -712,11 +809,71 @@ function readPayload(flags, name) {
   return JSON.parse(raw)
 }
 
+// Every flag each verb reads, and nothing else. `parseFlags` accepts any `--name value` pair and
+// each branch below read only the keys it knew, so an unrecognised name landed in the bag and was
+// never looked at — a typo was byte-indistinguishable from omitting the flag. On `classify` that is
+// a false GREEN and not merely a lost input: the stale-SHA arm requires BOTH SHA fields non-empty,
+// so a dropped `--observed-sha` skips it entirely and a check set read against a superseded head
+// reports `green`/`ok`.
+//
+// Kept as literal lists rather than derived from the reads below: a derived set would grow silently
+// with a new read, which is the same unchecked widening in the other direction.
+const CLI_FLAGS = Object.freeze({
+  classify: Object.freeze([
+    'head-sha',
+    'observed-sha',
+    'rollup',
+    'checks',
+    'check-runs',
+    'prior',
+    'read-error',
+    'accept-no-gate-ran',
+    'structurally-absent',
+  ]),
+  'merge-state': Object.freeze([
+    'merge-state',
+    'check-state',
+    'check-reason',
+    'unresolved-threads',
+    'readied-this-run',
+  ]),
+  liveness: Object.freeze(['started-at', 'updated-at', 'now', 'stalled-after-ms']),
+})
+
+// Same message form as `assertOptions` above — `<module>: <fn>(<expected shape>) — <what was
+// actually passed>`. The top-level catch turns the raised error into a non-zero exit with the
+// message on stderr and no verdict on stdout.
+// The flags that carry no value. Everything else in `CLI_FLAGS` takes one, and `parseFlags`
+// renders a value-less flag as boolean `true` — which every read below type-tests away to `''`,
+// making a LOST VALUE byte-indistinguishable from an omitted flag exactly as a misspelt NAME once
+// was. On `classify` that is the same false GREEN: `--observed-sha --head-sha <sha>` swallows the
+// SHA as a flag, leaves `observedSHA` empty, and skips the stale-SHA arm entirely.
+const CLI_BOOLEAN_FLAGS = Object.freeze({
+  classify: Object.freeze(['accept-no-gate-ran']),
+  'merge-state': Object.freeze(['readied-this-run']),
+  liveness: Object.freeze([]),
+})
+
+function assertKnownFlags(verb, flags) {
+  const accepted = CLI_FLAGS[verb]
+  const valueless = CLI_BOOLEAN_FLAGS[verb]
+  const shape = accepted.map((name) => `--${name}`).join(', ')
+  for (const [name, value] of Object.entries(flags)) {
+    if (!accepted.includes(name)) {
+      throw new Error(`pr-check-state: ${verb}(${shape}) — unrecognised flag --${name}`)
+    }
+    if (value === true && !valueless.includes(name)) {
+      throw new Error(`pr-check-state: ${verb}(${shape}) — --${name} needs a value`)
+    }
+  }
+}
+
 export function main(argv) {
   const [cmd, ...rest] = argv
   const flags = parseFlags(rest)
 
   if (cmd === 'classify') {
+    assertKnownFlags('classify', flags)
     const verdict = classifyChecks({
       headSHA: typeof flags['head-sha'] === 'string' ? flags['head-sha'] : '',
       observedSHA: typeof flags['observed-sha'] === 'string' ? flags['observed-sha'] : '',
@@ -726,16 +883,25 @@ export function main(argv) {
       priorContexts: readPayload(flags, 'prior'),
       readError: typeof flags['read-error'] === 'string' ? flags['read-error'] : null,
       acceptNoGateRan: flags['accept-no-gate-ran'] === true,
+      // Comma-separated names, not a payload path: this is the caller's own assertion about its
+      // repository, not bytes it fetched, and reading it from a file would be a filesystem read
+      // outside the documented payload flags.
+      structurallyAbsentContexts:
+        typeof flags['structurally-absent'] === 'string'
+          ? flags['structurally-absent'].split(',')
+          : [],
     })
     return {
       ...verdict,
       green: isGreen(verdict),
       provesGreen: provesGreen(verdict),
       provesGreenReason: provesGreenReason(verdict),
+      absentGateRemedy: absentGateRemedy(verdict),
     }
   }
 
   if (cmd === 'merge-state') {
+    assertKnownFlags('merge-state', flags)
     const checkVerdict =
       typeof flags['check-state'] === 'string'
         ? { state: flags['check-state'], reason: flags['check-reason'] ?? CHECK_REASONS.UNREADABLE }
@@ -749,6 +915,7 @@ export function main(argv) {
   }
 
   if (cmd === 'liveness') {
+    assertKnownFlags('liveness', flags)
     return runLiveness({
       startedAt: typeof flags['started-at'] === 'string' ? flags['started-at'] : null,
       updatedAt: typeof flags['updated-at'] === 'string' ? flags['updated-at'] : null,

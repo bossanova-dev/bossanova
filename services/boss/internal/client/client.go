@@ -117,7 +117,20 @@ type BossClient interface {
 	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
 	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
 	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
-	DeleteChat(ctx context.Context, agentSessionID string) error
+	// DeleteChat removes a chat by agent_session_id. reason states why, because
+	// the daemon cannot discover it (no peer, no headers, no identity in the
+	// context) and it gates one path: the daemon refuses
+	// DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT against a chat
+	// whose recorded agent is not claude. Callers state their own origin rather
+	// than relying on the zero value, which is reserved for callers predating
+	// the field.
+	//
+	// The gate is LOCAL-ONLY. ProxyDeleteChatRequest has no reason field, so
+	// RemoteClient drops reason and bossd stamps USER_REQUESTED at the
+	// reverse-stream boundary: against a remote session every reason -- the
+	// cleanup reason included -- arrives ungated. Do not treat this argument as
+	// a substitute for a client-side check (see remote.go).
+	DeleteChat(ctx context.Context, agentSessionID string, reason pb.DeleteChatRequest_DeletionReason) error
 	// WakeChat asks the daemon to bring a stopped chat back online. sessionID
 	// is required for the remote-orchestrator authz check; LocalClient ignores
 	// it. The returned outcome lets the UI distinguish ALREADY_LIVE / RESUMED /

@@ -1073,3 +1073,250 @@ test('both repaired normalizers stay idempotent', () => {
     assert.equal(canon(once), once, `\`${text}\` must reach a fixpoint in one application`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// BOS-1286 U1 — blank-line normalization at a list block boundary.
+//
+// The transform the planning skill's own append provokes, and the one the vocabulary had no name
+// for: the tracker pushes a blank line between a list and the heading that followed it flush, and
+// it removes the blank line between an appended bullet and the list above it. Two spellings of one
+// reshaping, so ONE canonicalizer handles both and neither side has to know which reshaped.
+//
+// Unlike every other declared transform this one is NOT purely cosmetic — a blank line inside a
+// list makes the list loose, which changes the rendered markup — so the near-misses below are not
+// decoration. They are the only thing bounding the widening, and they say what the canonicalizer
+// must never buy: a dropped list item, a paragraph absorbed between two lists, or a heading gone.
+// ---------------------------------------------------------------------------
+
+const BLANK_TRANSFORM = 'block-boundary-blank-line-normalization'
+const blankOnly = new Set([BLANK_TRANSFORM])
+const canonBlank = (text) => normalizeDescription(text, blankOnly)
+
+test('block-boundary-blank-line: a list flush against the following heading agrees with the spaced form', () => {
+  // The measured insertion direction: the run wrote the list flush, the tracker spaced it.
+  assert.equal(canonBlank('* one\n* two\n## Next'), canonBlank('* one\n* two\n\n## Next'))
+})
+
+test('block-boundary-blank-line: a blank line between two list items agrees with the tight form', () => {
+  // The measured removal direction: the appender left a blank line, the tracker reattached.
+  assert.equal(canonBlank('* a\n\n* b'), canonBlank('* a\n* b'))
+  assert.equal(canonBlank('1. a\n\n2. b'), canonBlank('1. a\n2. b'), 'ordered lists reshape too')
+  assert.equal(canonBlank('* a\n\n\n* b'), canonBlank('* a\n* b'), 'a multi-line run collapses too')
+})
+
+test('block-boundary-blank-line near-miss: a PARAGRAPH between list items is never absorbed', () => {
+  // The blank lines flanking a paragraph do not qualify at the paragraph end, so nothing is
+  // dropped and the paragraph's own bytes survive: two lists split by prose cannot become one.
+  const split = '* a\n\nA paragraph between them.\n\n* b'
+  assert.equal(canonBlank(split), split, 'neither flanking blank line qualifies')
+  assert.notEqual(
+    canonBlank(split),
+    canonBlank('* a\n* b'),
+    'merging the two lists is NOT tolerated',
+  )
+})
+
+test('block-boundary-blank-line near-miss: a DROPPED list item is NOT canonicalized away', () => {
+  assert.notEqual(canonBlank('* a\n* b\n* c'), canonBlank('* a\n* c'))
+  assert.notEqual(canonBlank('* a\n\n* b'), canonBlank('* a'))
+})
+
+test('block-boundary-blank-line near-miss: a DROPPED heading is NOT canonicalized away', () => {
+  // The rule may delete the blank line before a heading; it may never delete the heading.
+  assert.notEqual(canonBlank('* a\n\n## Next\n\ntext'), canonBlank('* a\n\ntext'))
+})
+
+test('block-boundary-blank-line: blank lines outside the recognised boundary are left alone', () => {
+  for (const text of [
+    'A paragraph.\n\n## Heading\n',
+    '## Heading\n\n* a\n',
+    '* a\n\nA trailing paragraph.\n',
+    '* a\n\n| h |\n| - |\n',
+    '* a long item\n  lazily continued\n\n## Heading\n',
+    '* a\n\n',
+    '\n\n* a\n',
+  ]) {
+    assert.equal(canonBlank(text), text, `\`${JSON.stringify(text)}\` is not a recognised boundary`)
+  }
+})
+
+test('block-boundary-blank-line: a list boundary inside a fenced code block is not reshaped', () => {
+  // Fenced content is literal; reshaping it would change what the block SHOWS. The fence must also
+  // close, so a real boundary after it is still canonicalized.
+  const fenced = ['```', '* a', '', '* b', '```', '', '* c', '', '## Next', ''].join('\n')
+  const out = canonBlank(fenced)
+  assert.ok(out.includes('```\n* a\n\n* b\n```'), 'the fenced boundary survives verbatim')
+  assert.ok(out.endsWith('* c\n## Next\n'), 'the boundary after the fence is canonicalized')
+})
+
+test('block-boundary-blank-line near-miss: an INDENTED code block is literal and is not reshaped', () => {
+  // Four spaces opens an indented code block, whose content is literal for the same reason a
+  // fence's is. `    * a` there is DISPLAYED text, not a list item, so a blank line between two
+  // such lines is part of what the block shows. Dropping it would certify two genuinely different
+  // documents as equivalent — a false PASS, not the conservative false drift this rule settles for
+  // everywhere else. Both marker families are pinned: the bound is on the indentation, not the
+  // marker.
+  const indented = 'text\n\n    * a\n\n    * b\n'
+  assert.equal(canonBlank(indented), indented, 'the indented block is returned verbatim')
+  assert.notEqual(canonBlank(indented), canonBlank('text\n\n    * a\n    * b\n'))
+  assert.notEqual(
+    canonBlank('text\n\n    1. a\n\n    2. b\n'),
+    canonBlank('text\n\n    1. a\n    2. b\n'),
+    'ordered markers are bounded by indentation too',
+  )
+  // The bound costs nothing a real boundary needs: three spaces is still a list item.
+  assert.equal(canonBlank('   * a\n\n   * b\n'), canonBlank('   * a\n   * b\n'))
+})
+
+test('block-boundary-blank-line is idempotent', () => {
+  for (const text of [
+    '* a\n\n* b\n\n## Next\n',
+    '* a\n\nprose\n\n* b\n',
+    '```\n* a\n\n* b\n```\n\n* c\n\n## Next\n',
+  ]) {
+    const once = canonBlank(text)
+    assert.equal(canonBlank(once), once, `\`${JSON.stringify(text)}\` must reach a fixpoint`)
+  }
+})
+
+test('tier 2: a blank line INSERTED before the following heading reaches normalized-equivalent', () => {
+  // AC2. The intended bytes put the list flush against the next heading; the stored copy has the
+  // blank line the tracker pushed in. Only the new id is declared, so it alone carries the verdict.
+  const spaced = description({ sections: { '## Summary': '- one\n- two' } })
+  const intended = spaced.replace('- two\n\n## Approach', '- two\n## Approach')
+  assert.notEqual(intended, spaced, 'the fixture must actually differ')
+  const result = verify(intended, spaced, [BLANK_TRANSFORM])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  assert.equal(result.exitCode, 0)
+})
+
+test('tier 2: a blank line REMOVED above an appended bullet reaches normalized-equivalent', () => {
+  // AC3, the complementary direction: the step-5(f) append left a blank line above its bullet and
+  // the tracker reattached it to the list.
+  const planning = (body) => description({ sections: { '## Planning': body } })
+  const intended = planning('- Contract: v1\n\n- Dependencies: blocks DEMO-2')
+  const stored = planning('- Contract: v1\n- Dependencies: blocks DEMO-2')
+  assert.notEqual(intended, stored, 'the fixture must actually differ')
+  const result = verify(intended, stored, [BLANK_TRANSFORM])
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  assert.equal(result.exitCode, 0)
+})
+
+test('tier 3: the same blank-line reshaping is NOT certified when the id is not declared', () => {
+  // Proves the new id is load-bearing rather than decorative: the same bytes, one declaration apart.
+  const spaced = description({ sections: { '## Summary': '- one\n- two' } })
+  const intended = spaced.replace('- two\n\n## Approach', '- two\n## Approach')
+  assertNotCertifiedEquivalent(verify(intended, spaced, ['terminal-newline-trimming']))
+})
+
+test('tier 3: a dropped list item stays non-equivalent with EVERY transform declared', () => {
+  // AC4 at the verdict level rather than the canonicalizer level — the bound has to hold through
+  // the whole conjunction, not just in the normalizer's own unit test.
+  const intended = description({
+    sections: { '## Testing': '- unit coverage\n- integration coverage' },
+  })
+  const stored = description({ sections: { '## Testing': '- unit coverage' } })
+  assertNotCertifiedEquivalent(verify(intended, stored))
+})
+
+test('tier 3: two lists merged across the paragraph that split them stay non-equivalent', () => {
+  const intended = description({
+    sections: { '## Testing': '- unit coverage\n\nThen, separately:\n\n- integration coverage' },
+  })
+  const stored = description({
+    sections: { '## Testing': '- unit coverage\n- integration coverage' },
+  })
+  assertNotCertifiedEquivalent(verify(intended, stored))
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1286 U2 — the `unattributed` verdict locates its difference in the texts
+// it actually compared.
+//
+// The coordinate used to be computed once, from the RAW texts, and reused by every branch. That is
+// right for the three content-loss branches — the loss IS at the first raw difference — and wrong
+// for this one, which only fires after normalization has already excused every declared transform.
+// Measured on one run: 26 differing lines, 24 of them declared marker substitution, and the verdict
+// named line 7, one of the 24. The reason then told the reader to open that location, where nothing
+// was wrong. The fixture below reproduces that shape in miniature: the first RAW difference is a
+// declared substitution several lines ABOVE the first unattributable one.
+// ---------------------------------------------------------------------------
+
+/** The 1-based line and column of the first differing byte — the helper's own rule, restated. */
+function firstDifferenceAt(a, b) {
+  let index = 0
+  while (index < Math.max(a.length, b.length) && a.charAt(index) === b.charAt(index)) index += 1
+  const before = a.slice(0, index)
+  return { line: before.split('\n').length, column: index - (before.lastIndexOf('\n') + 1) + 1 }
+}
+
+/** Intended bytes whose first raw difference from `stored` is a DECLARED marker substitution. */
+function substitutionAboveUnattributable() {
+  const intended = description({ sections: { '## Summary': '- one\n- two' } })
+  const stored = intended
+    .replace('- one\n- two', '* one\n* two')
+    .replace('Read the stored description back and compare.', 'Read the stored description.')
+  return { intended, stored }
+}
+
+test('the unattributed verdict reports the first NORMALIZED difference, not the first raw one', () => {
+  const { intended, stored } = substitutionAboveUnattributable()
+  const result = verify(intended, stored)
+  assertNotCertifiedEquivalent(result)
+
+  const raw = firstDifferenceAt(intended, stored)
+  const normalized = firstDifferenceAt(
+    normalizeDescription(intended, ALL_TRANSFORMS),
+    normalizeDescription(stored, ALL_TRANSFORMS),
+  )
+  assert.ok(
+    raw.line < normalized.line,
+    `the fixture must put the declared substitution ABOVE the unattributable difference ` +
+      `(raw line ${raw.line}, normalized line ${normalized.line})`,
+  )
+  assert.deepEqual(
+    { line: result.line, column: result.column },
+    normalized,
+    'the reported coordinate must index the normalized comparison this branch made',
+  )
+  assert.notEqual(result.line, raw.line, 'the excused raw difference must not be what is reported')
+})
+
+test('the unattributed reason states which comparison its coordinate indexes', () => {
+  // Without this the fix trades one misleading pointer for another: a declared transform may change
+  // line counts, so a normalized coordinate need not index the stored document either.
+  const { intended, stored } = substitutionAboveUnattributable()
+  const result = verify(intended, stored)
+  assert.ok(
+    result.reason.includes(`line ${result.line}, column ${result.column}`),
+    'the reason must carry the same coordinate the result field reports',
+  )
+  assert.match(
+    result.reason,
+    /NORMALIZED/,
+    'the reason must name the comparison as the normalized one',
+  )
+  assert.match(
+    result.reason,
+    /NOT\s+a\s+position\s+in\s+the\s+stored\s+document/,
+    'the reason must deny that the coordinate indexes the stored document',
+  )
+})
+
+test('a drift cause still reports the RAW first-difference coordinate', () => {
+  // The other half of the split. The same fixture shape, plus a lost contract section: a content
+  // loss IS at the first raw difference, so that branch must be untouched by the change above.
+  const intended = description({ sections: { '## Summary': '- one\n- two' } })
+  const stored = intended
+    .replace('- one\n- two', '* one\n* two')
+    .replace(/## Required proof\n\n[^\n]*\n\n/, '')
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.equal(result.cause, WRITEBACK_CAUSES.CONTRACT)
+  assert.deepEqual(
+    { line: result.line, column: result.column },
+    firstDifferenceAt(intended, stored),
+    'a content-loss verdict keeps the raw coordinate',
+  )
+  assert.ok(result.reason.includes(`first difference at line ${result.line}`))
+})

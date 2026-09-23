@@ -855,6 +855,46 @@ message DeleteChatRequest {
   // (NotFound) if the chat does not belong to this session. Empty skips the
   // check for backward-compatible callers.
   string session_id = 2;
+
+  // DeletionReason states WHY a caller is deleting the chat, because the daemon
+  // cannot discover it: the reverse-stream path synthesises the request
+  // in-process and socketauth validates one shared bearer token without storing
+  // an identity, so there is no peer, no header and no interceptor to read a
+  // caller from. The values therefore name their own origin — a cleanup reap and
+  // a user-requested delete are different reasons, not one reason from different
+  // callers.
+  //
+  // This is an enum rather than the free string WakeChatResponse.reason uses
+  // because this reason GATES behaviour instead of annotating an outcome: an
+  // unrecognised value must be inert (it falls into the legacy delete path)
+  // rather than permissive, which a closed enum gives and a free string does not.
+  enum DeletionReason {
+    // Unset: the caller predates this field, or states no reason. Deletes
+    // exactly as the daemon did before the field existed — no gate applies.
+    DELETION_REASON_UNSPECIFIED = 0;
+    // A human asked for this chat to be deleted (chat picker, web UI). Never
+    // gated.
+    //
+    // It is ALSO what the reverse-stream/proxy paths stamp, but there it is an
+    // assumption rather than a fact: ProxyDeleteChatRequest carries no reason,
+    // so CommandHandlerAdapter stamps this value unconditionally. An agent's
+    // delete_chat MCP tool call is AGENT_REQUESTED over the local socket and
+    // arrives here as USER_REQUESTED over the gateway. Treat a proxied
+    // USER_REQUESTED as "origin not carried", not as a proven human.
+    DELETION_REASON_USER_REQUESTED = 1;
+    // An agent asked, through an MCP tool call. Never gated.
+    DELETION_REASON_AGENT_REQUESTED = 2;
+    // Cleanup of a chat judged unused because no local CLAUDE transcript was
+    // found for it. That is a provider-specific, absence-based inference, so
+    // the daemon refuses it (FailedPrecondition, row preserved) unless the
+    // chat's recorded agent resolves to claude. An empty recorded agent
+    // resolves to claude by the same legacy default the rest of bossd uses.
+    DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT = 3;
+  }
+  // reason is UNSPECIFIED for any caller that predates the field, which deletes
+  // exactly as before. Only CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT can be
+  // refused; every other value (including unset) deletes.
+  DeletionReason reason = 3;
 }
 
 message DeleteChatResponse {}

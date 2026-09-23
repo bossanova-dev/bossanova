@@ -180,6 +180,11 @@ func (f *fakeTranscriptOracle) TranscriptExists(_ context.Context, agentName, wo
 }
 
 type fakeInteractiveSessionResolver struct {
+	// mu guards calls, which a discovery goroutine appends to while the test
+	// goroutine reads it through snapshotResolverCalls. The copy alone is not a
+	// guard — an unsynchronised copy of a slice a concurrent writer is appending
+	// to is the race, not the defence against it.
+	mu                sync.Mutex
 	sessionID         string
 	legacySessionID   string
 	ambiguous         bool
@@ -193,7 +198,9 @@ type fakeInteractiveSessionResolver struct {
 	calls      []resolverCall
 	// byPanePID maps a pane pid to the session id fd resolution returns for it,
 	// modeling each sibling chat's process holding its OWN rollout open
-	// (BOS-290). When a call's panePID matches, it wins over sessionID.
+	// (BOS-290). When a call's panePID matches, it wins over sessionID — and
+	// over the legacy arm, which is what makes an fd bind distinguishable from a
+	// time-window bind in a fixture whose time-window scan is ambiguous.
 	byPanePID map[int]string
 	// legacyResolveErr fails only the legacy-backfill arm, so a test can drive
 	// the attach-path backfill into DeadlineExceeded while leaving the fd arm
@@ -218,6 +225,7 @@ type resolverCall struct {
 }
 
 func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool, panePID int) (interactiveSessionResolution, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, resolverCall{
 		agentName:           agentName,
 		workDir:             workDir,
@@ -227,6 +235,7 @@ func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context
 		allowLegacyBackfill: allowLegacyBackfill,
 		panePID:             panePID,
 	})
+	f.mu.Unlock()
 	if allowLegacyBackfill {
 		// Sample the backfill's own context: cancelling the caller's request
 		// context here must leave this one live (BOS-844). CancelFunc propagates
@@ -243,7 +252,10 @@ func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context
 	if f.resolveErr != nil {
 		return interactiveSessionResolution{}, f.resolveErr
 	}
-	if !allowLegacyBackfill && panePID > 0 {
+	// fd resolution is gated on a live pane pid ALONE, mirroring the codex
+	// plugin: a recovery path that knows which pane a chat owns gets the
+	// authoritative answer too, not just the launch path (BOS-1298).
+	if panePID > 0 {
 		if id, ok := f.byPanePID[panePID]; ok {
 			if f.cancelOnFreshCall != nil {
 				f.cancelOnFreshCall()
@@ -269,6 +281,16 @@ func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context
 		Ambiguous: ambiguous,
 		Reason:    reason,
 	}, nil
+}
+
+// snapshotResolverCalls copies the recorded calls under f.mu so a test can read
+// them without racing a discovery goroutine that may still be polling. The lock
+// is the whole point: copying an unsynchronised slice a concurrent writer is
+// appending to races exactly as hard as reading it in place.
+func (f *fakeInteractiveSessionResolver) snapshotResolverCalls() []resolverCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]resolverCall(nil), f.calls...)
 }
 
 // fakeArgvBuilder is a programmable argvBuilder. fresh/resume hold per-agent

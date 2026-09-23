@@ -1025,9 +1025,9 @@ func TestShowEnv(t *testing.T) {
 			return exec.CommandContext(ctx, "sh", "-c",
 				"printf '%s\\n' 'ANTHROPIC_BASE_URL=http://127.0.0.1:44127/s/tok'")
 		}))
-		got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL")
-		if !ok {
-			t.Fatal("ShowEnv ok = false, want true for a set key")
+		got, status := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL")
+		if status != ShowEnvSet {
+			t.Fatalf("ShowEnv status = %v, want ShowEnvSet for a set key", status)
 		}
 		if got != "http://127.0.0.1:44127/s/tok" {
 			t.Fatalf("ShowEnv value = %q, want the baked URL", got)
@@ -1047,34 +1047,60 @@ func TestShowEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("absent key returns false", func(t *testing.T) {
-		// tmux errors (exit 1, stderr) on an unknown variable.
+	t.Run("absent key is unset, not an error", func(t *testing.T) {
+		// tmux errors (exit 1, stderr) on an unknown variable — the exit status
+		// is identical to a genuine failure, so the classification is the stderr.
 		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 			return exec.CommandContext(ctx, "sh", "-c",
 				"printf '%s' 'unknown variable: ANTHROPIC_BASE_URL' >&2; exit 1")
 		}))
-		if got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); ok || got != "" {
-			t.Fatalf("ShowEnv(absent) = %q,%v, want \"\",false", got, ok)
+		if got, status := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); status != ShowEnvUnset || got != "" {
+			t.Fatalf("ShowEnv(absent) = %q,%v, want \"\",ShowEnvUnset", got, status)
 		}
 	})
 
-	t.Run("removal marker returns false", func(t *testing.T) {
+	t.Run("removal marker is unset", func(t *testing.T) {
 		// A var flagged for removal in the session env prints "-KEY", no value.
+		// tmux answered, so this is a settled "no value", not a failed read.
 		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 			return exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' '-ANTHROPIC_BASE_URL'")
 		}))
-		if got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); ok || got != "" {
-			t.Fatalf("ShowEnv(removal) = %q,%v, want \"\",false", got, ok)
+		if got, status := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); status != ShowEnvUnset || got != "" {
+			t.Fatalf("ShowEnv(removal) = %q,%v, want \"\",ShowEnvUnset", got, status)
 		}
 	})
 
-	t.Run("empty value returns empty string ok", func(t *testing.T) {
+	t.Run("empty value returns empty string set", func(t *testing.T) {
 		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 			return exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' 'ANTHROPIC_BASE_URL='")
 		}))
-		got, ok := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL")
-		if !ok || got != "" {
-			t.Fatalf("ShowEnv(empty) = %q,%v, want \"\",true", got, ok)
+		got, status := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL")
+		if status != ShowEnvSet || got != "" {
+			t.Fatalf("ShowEnv(empty) = %q,%v, want \"\",ShowEnvSet", got, status)
+		}
+	})
+
+	// The case BOS-1281 exists for. Before the three-way result these two
+	// subtests were byte-identical to the unset case above, so a transient tmux
+	// failure reached the reaper's ownership gate as "this pane is unstamped".
+	t.Run("a failed tmux command is an error, not an unset variable", func(t *testing.T) {
+		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c",
+				"printf '%s' 'no server running on /tmp/tmux-501/default' >&2; exit 1")
+		}))
+		if got, status := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); status != ShowEnvError || got != "" {
+			t.Fatalf("ShowEnv(no server) = %q,%v, want \"\",ShowEnvError", got, status)
+		}
+	})
+
+	t.Run("a silent non-zero exit is an error", func(t *testing.T) {
+		// Empty stderr says nothing about the variable, so it cannot be read as
+		// evidence the variable is unset.
+		c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "false")
+		}))
+		if got, status := c.ShowEnv(ctx, "boss-sess", "ANTHROPIC_BASE_URL"); status != ShowEnvError || got != "" {
+			t.Fatalf("ShowEnv(silent failure) = %q,%v, want \"\",ShowEnvError", got, status)
 		}
 	})
 }

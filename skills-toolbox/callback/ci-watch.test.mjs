@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
   BLOCKING_STATES,
@@ -9,6 +14,8 @@ import {
   classifyCiObservation,
   mayStopObserving,
 } from './ci-watch.mjs'
+
+const SCRIPT_PATH = fileURLToPath(new URL('./ci-watch.mjs', import.meta.url))
 
 const NOW = '2026-09-17T12:00:00Z'
 const CHAT = 'chat-abc'
@@ -306,11 +313,51 @@ test('arming once and succeeding reaches watched, not the degrade', () => {
 
 // --- Shape ---------------------------------------------------------------------------------------
 
-test('an empty required-trigger list never blocks', () => {
-  // NO_CHANGE and the pre-PR yields reach the gate with nothing to observe.
+test('an empty required-trigger list is unknown, never a pass', () => {
+  // This used to report `watched` — the `watched` arm's test is `missingTriggers.length === 0`,
+  // which is trivially true over an empty required set, so "live watches cover every required
+  // trigger" held over nothing and the empty `liveTriggers` beside it was the proof no watch had
+  // ever been read. A verdict may report a permissive state only from inputs it received.
+  const v = classify({ requiredTriggers: [] })
+  assert.equal(v.state, CI_WATCH_STATES.UNKNOWN)
+  assert.equal(v.reason, CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS)
+  assert.deepEqual(v.liveTriggers, [])
+  // Still non-blocking: the module's blocking surface is exactly `unwatched`, and widening it
+  // would hang a headless run. The refusal lands on `mayStopObserving` and the CLI exit instead.
+  assert.equal(v.blocking, false)
+  assert.deepEqual(BLOCKING_STATES, [CI_WATCH_STATES.UNWATCHED])
+})
+
+test('an absent required-trigger list reaches the same unknown verdict as an empty one', () => {
+  for (const requiredTriggers of [undefined, null, 'checks_passed', [null, '', false]]) {
+    const v = classify({ requiredTriggers })
+    assert.equal(v.state, CI_WATCH_STATES.UNKNOWN, JSON.stringify(requiredTriggers ?? null))
+    assert.equal(v.reason, CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS)
+  }
+})
+
+test('mayStopObserving refuses the no-required-triggers verdict despite it not blocking', () => {
+  // The predicate is the in-process caller's gate, and `blocking` alone would hand it a pass: an
+  // unevaluated trigger set is not permission to stop looking at CI.
   const v = classify({ requiredTriggers: [] })
   assert.equal(v.blocking, false)
-  assert.equal(v.state, CI_WATCH_STATES.WATCHED)
+  assert.equal(mayStopObserving(v), false)
+})
+
+test('the no-required-triggers arm wins over every degrade, which cannot answer either', () => {
+  // Callbacks being unavailable is a statement about the MECHANISM; with no required triggers there
+  // is still no question for the poll to settle, so `polled`/`proceed` would be the same invented
+  // permission in a different costume.
+  for (const overrides of [
+    { callbacksAvailable: false },
+    { targetVerified: false },
+    { checkVerdict: { state: 'unknown' } },
+    { armAttempts: 1 },
+  ]) {
+    const v = classify({ requiredTriggers: [], ...overrides })
+    assert.equal(v.state, CI_WATCH_STATES.UNKNOWN, JSON.stringify(overrides))
+    assert.equal(v.reason, CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS)
+  }
 })
 
 test('malformed watch rows are ignored rather than throwing', () => {
@@ -329,6 +376,7 @@ test('every verdict carries the full reporting shape', () => {
     classify({ watches: TRIGGERS.map((t) => row({ trigger: t })) }),
     classify({ callbacksAvailable: false }),
     classify({ checkVerdict: { state: 'unknown' } }),
+    classify({ requiredTriggers: [] }),
   ]) {
     assert.ok(Object.values(CI_WATCH_STATES).includes(v.state), `state: ${v.state}`)
     assert.equal(typeof v.reason, 'string')
@@ -337,5 +385,98 @@ test('every verdict carries the full reporting shape', () => {
     assert.ok(Array.isArray(v.skippedTriggers))
     assert.ok(Array.isArray(v.liveTriggers))
     assert.equal(v.blocking, BLOCKING_STATES.includes(v.state))
+  }
+})
+
+// ---------------------------------------------------------------------------
+// CLI. The flag bag used to be read for known keys only, so a misnamed argument was silently
+// equivalent to omitting it — and omitting `--triggers` routed straight into the permissive
+// verdict the unit cases above now refuse.
+
+function runCli(args) {
+  return spawnSync(process.execPath, [SCRIPT_PATH, ...args], { encoding: 'utf8' })
+}
+
+test('CLI classify — a real trigger list prints one JSON line and exits 0', () => {
+  const result = runCli(['classify', '--triggers', 'checks_passed,checks_failed'])
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout.trimEnd().split('\n').length, 1, 'exactly one JSON line')
+  const parsed = JSON.parse(result.stdout)
+  assert.deepEqual(parsed.missingTriggers, ['checks_passed', 'checks_failed'])
+})
+
+test('CLI classify — every flag the verb reads is accepted', () => {
+  // The guard is only as good as its accepted set: a name left out of it turns a working shipped
+  // invocation into a hard failure. Each flag is probed on top of a known-good baseline.
+  const dir = mkdtempSync(path.join(tmpdir(), 'ci-watch-'))
+  const payload = (name, body) => {
+    const file = path.join(dir, name)
+    writeFileSync(file, JSON.stringify(body))
+    return file
+  }
+  const probes = [
+    ['--check-verdict', payload('verdict.json', { state: 'pending' })],
+    ['--pr-view', payload('pr.json', { state: 'OPEN', isDraft: false, mergedAt: null })],
+    ['--watches', payload('watches.json', [])],
+    ['--callbacks-available'],
+    ['--unavailable-reason', 'daemon unreachable'],
+    ['--target-chat', CHAT],
+    ['--pr', String(PR)],
+    ['--target-unverified'],
+    ['--now', NOW],
+    ['--min-remaining', '30m'],
+    ['--poll-completed'],
+    ['--arm-attempts', '1'],
+    ['--arm-error', 'group already holds checks_passed'],
+  ]
+  for (const probe of probes) {
+    const result = runCli(['classify', '--triggers', 'checks_passed', ...probe])
+    assert.equal(result.status, 0, `${probe[0]}: ${result.stderr}`)
+    assert.ok(Object.values(CI_WATCH_STATES).includes(JSON.parse(result.stdout).state), probe[0])
+  }
+})
+
+test('CLI classify — an unrecognised flag exits non-zero and names the offending flag', () => {
+  // `--requiredTriggers` is the in-process option spelling, and it is the exact mistake this
+  // closes: it used to land in the bag, go unread, and print a permissive verdict at exit 0.
+  const result = runCli(['classify', '--requiredTriggers', 'checks_passed'])
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /--requiredTriggers/)
+  assert.match(result.stderr, /unrecognised flag/)
+  assert.equal(result.stdout, '', 'no verdict is printed for a rejected invocation')
+})
+
+test('CLI classify — a recognised flag that lost its value is refused, not silently emptied', () => {
+  // `parseFlags` renders a value-less flag as boolean `true`, which the reads type-test away to an
+  // empty default — so `--triggers --now <t>` swallowed the trigger list and left it empty.
+  const result = runCli(['classify', '--triggers', '--now', '2026-01-01T00:00:00Z'])
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /--triggers needs a value/)
+  assert.equal(result.stdout, '', 'no verdict is printed for a rejected invocation')
+  // The genuinely value-less flags are unaffected.
+  const ok = runCli([
+    'classify',
+    '--triggers',
+    'checks_passed',
+    '--callbacks-available',
+    '--target-chat',
+    'c1',
+    '--pr',
+    '1',
+  ])
+  assert.equal(ok.status, 0, ok.stderr)
+})
+
+test('CLI classify — an absent or empty trigger list exits non-zero naming --triggers', () => {
+  for (const args of [
+    ['classify'],
+    ['classify', '--triggers'],
+    ['classify', '--triggers', ' , , '],
+    ['classify', '--triggers', '', '--pr', '278'],
+  ]) {
+    const result = runCli(args)
+    assert.notEqual(result.status, 0, args.join(' '))
+    assert.match(result.stderr, /--triggers/, args.join(' '))
+    assert.equal(result.stdout, '', args.join(' '))
   }
 })

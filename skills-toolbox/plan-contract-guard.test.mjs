@@ -880,10 +880,34 @@ describe('checkPlanContract — each violation code fires', () => {
         '',
         '## Acceptance criteria',
         '',
-        '- [ ] (verify-only) criterion has an advisory pipeline — check: `make test | tee out.log`',
+        // BOS-1289: a pipeline is no longer advisory HERE — a criterion's check is its discharge
+        // evidence, and `| tee` reports the tail's unconditional status. Use a risk that stays
+        // advisory for a criterion: an over-counting bare-substring count fails loud, not vacuously.
+        "- [ ] (verify-only) criterion has an advisory count — check: `grep -c '<th' skills-toolbox/skill-config.mjs`",
       ].join('\n'),
     )
     assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description).violations, [])
+  })
+
+  test('a criterion pipeline IS blocked, while the same risk on a premise is not', () => {
+    // The kind-scoped half of the promotion, asserted through the guard rather than through
+    // classifyCheckCommand, so the guard's own wiring carries the `kind` it claims to.
+    const criterion = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      '## Acceptance criteria\n\n- [ ] (verify-only) criterion — check: `make test | tee out.log`',
+    )
+    assert.deepEqual(
+      checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, criterion).violations.map((v) => v.code),
+      ['vacuous-criterion-command-pipe-without-pipefail'],
+    )
+
+    const premise = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      '## Premises\n\n- [ ] (central) premise — check: `make test | tee out.log`\n\n## Acceptance criteria\n\nBody prose.',
+    )
+    const result = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, premise)
+    assert.deepEqual(result.violations, [])
+    assert.ok(result.advisories.some((a) => a.code === 'advisory: pipe-without-pipefail'))
   })
 
   test('verify-only command vacuity guard keeps new operand findings in its dynamic family', () => {
@@ -967,6 +991,105 @@ describe('checkPlanContract — each violation code fires', () => {
     const result = checkPlanContract({ description, citationCwd: process.cwd() })
     assert.ok(result.violations.some((finding) => finding.code === 'premise-reused-as-criterion'))
     assert.ok(VIOLATION_CODES.includes('premise-reused-as-criterion'))
+  })
+
+  // BOS-1289 — a number the plan states that nothing re-measures. Plan prose is read downstream as
+  // fact, so a count nobody measured becomes a regression test encoding the wrong number.
+  const withSections = (...lines) =>
+    conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      ['## Acceptance criteria', '', ...lines].join('\n'),
+    )
+
+  test('unmeasured-count-claim fires on a counted claim with a non-counting check', () => {
+    const result = checkPlanContract({
+      description: withSections(
+        '- [ ] the frozen list carries 9 entries — check: `rg -n "COMMAND_BLOCKING_CODES" skills-toolbox/skill-config.mjs`',
+      ),
+      citationCwd: process.cwd(),
+    })
+    const finding = result.violations.find((v) => v.code === 'unmeasured-count-claim')
+    assert.ok(finding, JSON.stringify(result.violations))
+    assert.match(finding.message, /9 entries/)
+    assert.ok(VIOLATION_CODES.includes('unmeasured-count-claim'))
+  })
+
+  test('unmeasured-count-claim is silent when the check re-measures the number', () => {
+    for (const check of [
+      // `-c` is the idiomatic counting flag and must be recognised ON ITS OWN. These two cases
+      // carry NO trailing `# count` comment deliberately: with one, the comment satisfies
+      // `hasCountAssertion` and the case proves nothing about `-c` at all.
+      'rg -c "COMMAND_BLOCKING_CODES" skills-toolbox/skill-config.mjs',
+      'grep -rc "setupTestDB" skills-toolbox',
+      'rg -c "^  \'" skills-toolbox/skill-config.mjs # count',
+      'rg -q "COMMAND_BLOCKING_CODES" skills-toolbox/skill-config.mjs',
+      'wc -l skills-toolbox/skill-config.mjs',
+      // `wc -c` is the measurement every descending-budget premise in this repo actually runs.
+      'wc -c skills-toolbox/skill-config.mjs',
+    ]) {
+      const result = checkPlanContract({
+        description: withSections(`- [ ] the frozen list carries 9 entries — check: \`${check}\``),
+        citationCwd: process.cwd(),
+      })
+      assert.equal(
+        result.violations.some((v) => v.code === 'unmeasured-count-claim'),
+        false,
+        check,
+      )
+    }
+  })
+
+  test('unmeasured-count-claim leaves claims that assert no quantity alone', () => {
+    // Each of these is a shape the first falsification pass over docs/plans/ raised as a false
+    // positive, or a shape it would have raised without a narrowing. All must stay silent.
+    for (const claim of [
+      'the helper is exported rather than module-private',
+      // A structural locator followed by a verb — ten of the original twenty-seven flags.
+      'Step 4 decides plan staleness and Phase 3 documents the outcome',
+      'finding 8 needs no code change',
+      // A coordinate, a version and an identifier, all inside code spans.
+      'the strip sits at `skills-toolbox/skill-config.mjs:2067` under `Contract: v1` for `BOS-1289`',
+    ]) {
+      const result = checkPlanContract({
+        description: withSections(
+          `- [ ] ${claim} — check: \`rg -n "needle" skills-toolbox/skill-config.mjs\``,
+        ),
+        citationCwd: process.cwd(),
+      })
+      assert.equal(
+        result.violations.some((v) => v.code === 'unmeasured-count-claim'),
+        false,
+        claim,
+      )
+    }
+  })
+
+  test('unmeasured-count-claim covers premises as well as criteria', () => {
+    const description = withSections(
+      '',
+      '## Premises',
+      '',
+      '- [ ] (central) the body measures 78926 bytes today — check: `rg -n "RATCHET" scripts/boss-build-skill.test.mjs`',
+    )
+    const result = checkPlanContract({ description, citationCwd: process.cwd() })
+    const finding = result.violations.find((v) => v.code === 'unmeasured-count-claim')
+    assert.ok(finding, JSON.stringify(result.violations))
+    assert.match(finding.message, /^plan-contract-guard: premise /)
+    assert.match(finding.message, /78926 bytes/)
+  })
+
+  test('unmeasured-count-claim stays quiet when there is no check command to judge', () => {
+    // A claim with no check at all is checkPlanCitations' subject; one defect must not trip two
+    // codes.
+    const result = checkPlanContract({
+      description: withSections('- [ ] the frozen list carries 9 entries'),
+      citationCwd: process.cwd(),
+    })
+    assert.equal(
+      result.violations.some((v) => v.code === 'unmeasured-count-claim'),
+      false,
+      JSON.stringify(result.violations),
+    )
   })
 
   test('citation could-not-evaluate is separate from clean and violation', () => {

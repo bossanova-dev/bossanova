@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { markdownFilesUnder, scratchTokensInFiles } from '../scripts/plan-scratch-token-scan.mjs'
 import {
   PLAN_SCRATCH_FAMILIES,
   PLAN_SCRATCH_ROOT,
@@ -180,6 +181,41 @@ test('planScratchToken distinguishes child artifacts from their parent forms', (
   assert.deepEqual(plan.families, ['plan'])
 })
 
+test('BOS-1290: the two Phase 4 artifacts resolve in templated AND concrete form', () => {
+  // Both steps need a file on disk and neither had a declared family, so the payload's own
+  // "never invent a scratch filename" rule was unfollowable at exactly those two steps — which is
+  // how a peer run came to write `BOS-1280.candidates-raw.json`, a name no cleanup can match.
+  // Templated is how the payload cites a path; concrete is how it lands on disk. A family that
+  // resolves in only one of the two forms leaves the other spelling undeclared.
+  for (const [family, templated, concrete] of [
+    [
+      'write-description-descriptor',
+      '<ISSUE-ID>.write-description.json',
+      'BOS-1290.write-description.json',
+    ],
+    ['candidates', '<ISSUE-ID>.candidates.json', 'BOS-1290.candidates.json'],
+  ]) {
+    for (const basename of [templated, concrete]) {
+      const result = planScratchToken(`.linear-plans/run-<RUN-SCRATCH-ID>/${basename}`)
+      assert.ok(result.ok, `${basename}: ${result.ok ? '' : result.reason}`)
+      assert.deepEqual(result.families, [family], `${basename} resolved to the wrong family`)
+    }
+    assert.equal(
+      planScratchPath('r1', family, { issueId: 'BOS-1290' }),
+      `.linear-plans/run-r1/${concrete}`,
+      `${family} must build the concrete basename its own template describes`,
+    )
+  }
+
+  // …and the spelling that was actually invented on disk still fails, so the declarations did not
+  // widen the registry into accepting anything with a plausible shape.
+  const invented = planScratchToken(
+    '.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates-raw.json',
+  )
+  assert.equal(invented.ok, false)
+  assert.match(invented.reason, /no declared scratch family/)
+})
+
 test('planScratchToken rejects a path outside the scratch root', () => {
   const result = planScratchToken('docs/plans/<ISSUE-ID>-<slug>.md')
   assert.equal(result.ok, false)
@@ -200,45 +236,13 @@ const PAYLOAD_DIR = fileURLToPath(
   new URL('../services/boss/internal/skillinstall/skills/boss-plan/', import.meta.url),
 )
 
-/** Every `.md` file in the published payload, recursively. */
-function payloadMarkdown(dir = PAYLOAD_DIR, out = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name)
-    if (entry.isDirectory()) payloadMarkdown(path, out)
-    else if (entry.name.endsWith('.md')) out.push(path)
-  }
-  return out
-}
-
-// A token runs from `.linear-plans` to the first character that cannot be part of
-// a cited path. Markdown delimiters (backticks, quotes, parens) and whitespace end
-// it; `<>{},*` stay in, because the payload cites templates, brace lists and globs.
-const TOKEN_RE = /\.linear-plans(?:\/[^\s`'"()\\|]*)?/g
-const TRAILING_RE = /[.,;:!?—-]+$/
+// The extraction rules live in scripts/plan-scratch-token-scan.mjs so that this gate and the
+// payload contract gate in scripts/bs-plan-skill.test.mjs cannot disagree about what counts as a
+// cited token — a second copy would let one of them miss a spelling and still report a clean scan.
 
 /** @returns {{token: string, file: string, line: number}[]} */
-export function payloadScratchTokens(files = payloadMarkdown()) {
-  const found = []
-  for (const file of files) {
-    const lines = readFileSync(file, 'utf8').split('\n')
-    lines.forEach((text, i) => {
-      for (const match of text.matchAll(TOKEN_RE)) {
-        let token = match[0]
-        // A trailing `}` that closes a `${VAR:-default}` expansion is not part of
-        // the path. Drop unbalanced closers before anything else.
-        while (
-          token.endsWith('}') &&
-          (token.match(/\}/g) || []).length > (token.match(/\{/g) || []).length
-        ) {
-          token = token.slice(0, -1)
-        }
-        // A sentence-ending period is not part of the path, but `.json` / `.md` is.
-        if (!/\.(json|md|rejected|sh|mjs)$/.test(token)) token = token.replace(TRAILING_RE, '')
-        found.push({ token, file: relative(PAYLOAD_DIR, file), line: i + 1 })
-      }
-    })
-  }
-  return found
+export function payloadScratchTokens(files = markdownFilesUnder(PAYLOAD_DIR)) {
+  return scratchTokensInFiles(files, { relativeTo: PAYLOAD_DIR })
 }
 
 test('the published payload cites at least one scratch path (the scan is not empty)', () => {
@@ -286,4 +290,31 @@ test('the ratchet rejects a flat, issue-scoped token injected into payload text'
   const result = planScratchToken(payloadScratchTokens([file])[0].token)
   assert.equal(result.ok, false)
   assert.match(result.reason, /must be run-scoped/)
+})
+
+test('BOS-1278: the dispatch heartbeat is a declared family in both spellings', () => {
+  // The liveness artifact an awaited dispatch touches while it works. Declaring it
+  // here is what makes it reachable by cleanup and the TTL reap; a heartbeat
+  // invented at the dispatch site would be a name no removal pattern matches.
+  const family = planScratchFamily('dispatch-heartbeat')
+  assert.equal(family.template, '<ISSUE-ID>.dispatch-heartbeat.json')
+  assert.equal(family.basename({ issueId: 'BOS-1278' }), 'BOS-1278.dispatch-heartbeat.json')
+  assert.equal(
+    planScratchPath('r1', 'dispatch-heartbeat', { issueId: 'BOS-1278' }),
+    '.linear-plans/run-r1/BOS-1278.dispatch-heartbeat.json',
+  )
+  for (const basename of [
+    '<ISSUE-ID>.dispatch-heartbeat.json',
+    'BOS-1278.dispatch-heartbeat.json',
+  ]) {
+    const result = planScratchToken(`.linear-plans/run-<RUN-SCRATCH-ID>/${basename}`)
+    assert.ok(result.ok, `${basename}: ${result.ok ? '' : result.reason}`)
+    assert.deepEqual(result.families, ['dispatch-heartbeat'])
+  }
+  // It is NOT the draft-metadata family it sits beside — a pattern that swallowed
+  // its sibling would make cleanup and the token scan report the wrong artifact.
+  assert.deepEqual(
+    planScratchToken('.linear-plans/run-<RUN-SCRATCH-ID>/BOS-1278.draft-metadata.json').families,
+    ['draft-metadata'],
+  )
 })

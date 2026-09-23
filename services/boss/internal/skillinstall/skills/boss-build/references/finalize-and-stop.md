@@ -88,6 +88,42 @@ wrong guess, and it sends a run hunting through the configuration for an allow-l
 there. The injector records the hook's own reported reason per commit; read that, and shorten or
 re-scope the message to what it names.
 
+### The non-interactive message-rewrite recipe
+
+This is the **one** place the recipe is written. The injector's untagged-commits failure names this
+section rather than restating it, and the last pre-push step below is its other caller. An
+interactive rebase is not the remedy: it opens an editor no unattended harness can drive.
+
+**Run it as the last step before the push, not only on a rejection.** Re-read the range's commit
+messages for a claim the run later disproved — a fix the review reverted, a gate the run reported
+green and then re-ran red. Correcting a false claim is free while the commits are unpublished and
+means rewriting published history afterwards, so the re-read belongs here and nowhere later.
+
+```bash
+TARGET_SHA="<the full sha of the commit to rewrite>"
+NEW_MSG="$(cat <<'MSG'
+fix(scope): the corrected subject, inside the repo's header limit once the tag is prepended
+MSG
+)"
+export TARGET_SHA NEW_MSG
+# Back the range up first: the verification below compares against this ref, so capture it BEFORE
+# anything is rewritten. An unverifiable rewrite is not a rewrite you may push.
+BACKUP_REF="refs/boss/pre-msg-rewrite-$$"
+git update-ref "$BACKUP_REF" HEAD
+COUNT_BEFORE="$(git rev-list --count "origin/$BASE_BRANCH"..HEAD)"
+# `$GIT_COMMIT` is set by filter-branch per commit, so the filter keys on the commit it is
+# rewriting instead of matching on message prose, which would rewrite every lookalike.
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter \
+  'if [ "$GIT_COMMIT" = "$TARGET_SHA" ]; then printf "%s\n" "$NEW_MSG"; else cat; fi' \
+  "origin/$BASE_BRANCH"..HEAD
+# MESSAGE-ONLY is the whole safety claim, so prove it: identical trees end to end, and the same
+# number of commits. Either check failing means the rewrite touched content — restore the backup
+# (`git reset --hard "$BACKUP_REF"`) rather than pushing it.
+test -z "$(git diff "$BACKUP_REF" HEAD)" || exit 1
+test "$(git rev-list --count "origin/$BASE_BRANCH"..HEAD)" = "$COUNT_BEFORE" || exit 1
+git update-ref -d "$BACKUP_REF"
+```
+
 Then run **boss-repair** (the finalize adapter's repair capability) to fix failing checks, rebase
 conflicts, and review comments. Cap at `policy.repairCap` (**5**) passes. If still red after the cap:
 keep the work as a **draft** PR, leave the ticket **In Progress**, post a blocker comment (failing
@@ -270,8 +306,14 @@ missingEvidence, malformedMarker, advisory }`, and
 a **non-empty** result, and no statically decidable command failure. Every `missingEvidence` item carries
 a closed-set `reason` plus a one-line `remedy`: `no-clause`, `undelimited-command`,
 `planned-tense-on-ticked`, `empty-command`, `empty-result`, `command-unresolvable`,
-`make-goal-undefined`, `path-operand-missing`, `selection-matches-no-test`, or
-`unanchored-negative-search`. An `ok:false`
+`make-goal-undefined`, `path-operand-missing`, `selection-matches-no-test`,
+`unanchored-negative-search`, `zero-selection-filter`, `pipe-without-pipefail`, or
+`git-grep-word-boundary`. The last three are the **vacuous-green** family — a command that exits 0
+while demonstrating nothing: a `-run`/`--include` filter that selected no test, a pipeline reporting
+the tail's unconditional status, and a `git grep -E` whose `\b` the matcher never interprets. They
+block here because a criterion's check **is** the evidence it is discharged by; the same three stay
+advisory when a premise names them, because a premise observes the pre-change tree where a zero
+result is frequently the fact being recorded. An `ok:false`
 result makes each criterion it names a **deferred required item**, of the unsatisfied-in-scope-criterion
 kind: name each reason/remedy in the PR body and route through the `PARTIAL` gate below, not through
 `BLOCKED`. An **unticked** marked criterion is not a failure of this gate — it is already an open
@@ -281,8 +323,11 @@ in-scope criterion under the rule above.
 after markdown emphasis is stripped. It is a warning bucket, not reclassification: the literal marker
 is prefix-only by contract. `advisory` reports static proof-quality risks that do **not** set
 `ok:false` and do **not** block readying: working-tree-scoped git evidence with no committed anchor,
-zero-selection filters with no count assertion, unscoped premise searches, unquoted option globs, pipelines with no pipefail,
-`git grep -E` word-boundary usage, and cached Bazel tests without `--nocache_test_results`.
+unscoped premise searches, unquoted option globs, bare-substring counts that also count superstrings,
+GNU-only `sed` addresses, make goals an open Makefile cannot resolve, and cached Bazel tests without
+`--nocache_test_results`. Each of those produces evidence that is stale, loud, over-counted or
+undecidable — never a green that asserted nothing, which is what the vacuous-green family above
+blocks on instead.
 
 The gate checks **structure, non-emptiness and decidable command resolvability, never truth**; it
 does not execute the recorded command.
@@ -743,13 +788,13 @@ hard stop in the same sense as a missing toolbox, and it is deliberately **not**
 
 Trust its `state`/`action` and restate no rule here:
 
-| `state`     | meaning                                                                                                    | do                                             |
-| ----------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `settled`   | every required trigger's condition already holds                                                           | print                                          |
-| `watched`   | a live watch covers every trigger not already satisfied                                                    | print                                          |
-| `polled`    | the bounded poll is the mechanism (unavailable, unverified target, arm degraded, or unreadable-after-poll) | print                                          |
-| `unwatched` | **the only blocking state** — arm the `missingTriggers` it names, then classify once more                  | re-classify, then print                        |
-| `unknown`   | check state unreadable and the poll has not run                                                            | run Protocol step 5's bounded poll, then print |
+| `state`     | meaning                                                                                                                                                                                                       | do                                                                                                                                                                                                                                                                                                            |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `settled`   | every required trigger's condition already holds                                                                                                                                                              | print                                                                                                                                                                                                                                                                                                         |
+| `watched`   | a live watch covers every trigger not already satisfied                                                                                                                                                       | print                                                                                                                                                                                                                                                                                                         |
+| `polled`    | the bounded poll is the mechanism (unavailable, unverified target, arm degraded, or unreadable-after-poll)                                                                                                    | print                                                                                                                                                                                                                                                                                                         |
+| `unwatched` | **the only blocking state** — arm the `missingTriggers` it names, then classify once more                                                                                                                     | re-classify, then print                                                                                                                                                                                                                                                                                       |
+| `unknown`   | reason `unreadable-check-state`: the check state could not be evaluated and the poll has not run. Reason `no-required-triggers-supplied`: no trigger list reached the helper, so nothing was evaluated at all | on `unreadable-check-state`, run Protocol step 5's bounded poll, then print. On `no-required-triggers-supplied`, pass `--triggers` and classify again — the CLI exits non-zero rather than printing that verdict, so a shell caller sees it as a failed command, and `mayStopObserving` refuses it in-process |
 
 ```bash
 node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \

@@ -4068,12 +4068,14 @@ type ResolveInteractiveSessionIDRequest struct {
 	ChatCreatedAt       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=chat_created_at,json=chatCreatedAt,proto3" json:"chat_created_at,omitempty"`
 	AllowLegacyBackfill bool                   `protobuf:"varint,5,opt,name=allow_legacy_backfill,json=allowLegacyBackfill,proto3" json:"allow_legacy_backfill,omitempty"`
 	// pane_pid is the tmux pane PID (the login shell) hosting this chat's agent
-	// process. When > 0 and allow_legacy_backfill is false, the codex plugin
+	// process. When > 0 — regardless of allow_legacy_backfill — the codex plugin
 	// resolves the rollout by inspecting the open file descriptors of the codex
 	// process running under this pane (process-fd resolution), which binds each
-	// sibling chat to its OWN rollout deterministically. On a miss (process not
-	// up yet, fd inspection unavailable, no rollout open) the plugin falls back
-	// to the (work_dir, launched_after) time-window scan. Additive request-side
+	// sibling chat to its OWN rollout deterministically. What a MISS (process not
+	// up yet, fd inspection unavailable, no rollout open) does next is what
+	// allow_legacy_backfill now selects: a recovery caller falls through to the
+	// time-window scan, while a launch poll reports the miss with a reason and is
+	// polled again, so it never binds a sibling's rollout. Additive request-side
 	// field: no apiversion bump (apiversion is response-side/unary-only).
 	PanePid       int32 `protobuf:"varint,6,opt,name=pane_pid,json=panePid,proto3" json:"pane_pid,omitempty"`
 	unknownFields protoimpl.UnknownFields

@@ -661,5 +661,9 @@ export function makeLinearRead(apiKey, fetchImpl = fetch) {
   return ({ query, variables }) => linearRequest({ apiKey, query, variables, fetchImpl })
 }
 export function makeLinearWrite(apiKey, fetchImpl = fetch) {
-  return ({ query, variables }) => linearRequest({ apiKey, query, variables, fetchImpl })
+  // `operation: 'write'` is what keeps the bounded retry from re-sending a mutation that may
+  // already have applied: a timeout or a dropped socket here classifies `indeterminate`, which
+  // declines the retry rather than duplicating the write.
+  return ({ query, variables }) =>
+    linearRequest({ apiKey, query, variables, fetchImpl, operation: 'write' })
 }

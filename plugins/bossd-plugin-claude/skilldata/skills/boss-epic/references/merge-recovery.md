@@ -89,8 +89,9 @@ the provider (or the daemon) refuses the strategy outright.
    invent a merge strategy the repo has not enabled.
 
 **Prevention (the linear-history invariant).** A `git merge` of the base ref into
-a session branch is forbidden — refresh with `git pull --rebase` (or a rebase onto
-the updated base) so the branch keeps a linear history. This is the same invariant the
+a session branch is forbidden — refresh with `git fetch origin <base>` followed by
+`git rebase --no-fork-point FETCH_HEAD`, never a pull of any form: a pull computes its
+own fork point from the stale reflog and silently drops this run's commits. This is the same invariant the
 `boss-repair` / `boss-finalize` contract enforces; a repair round that merges the
 base back in is what manufactures the deadlock in the first place.
 

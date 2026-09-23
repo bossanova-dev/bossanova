@@ -11,7 +11,12 @@
 // tool + shape rather than reimplementing them as GraphQL mutations (see the
 // plan's Open Questions).
 
-import { runLinearGate } from '../linear-gate-lib.mjs'
+import {
+  buildIssueCountFilter,
+  linearRequest,
+  resolveLinearUserId,
+  runLinearGate,
+} from '../linear-gate-lib.mjs'
 import { runUnblockedGate, extractBlockers, isUnblocked } from '../linear-deps-lib.mjs'
 import { claimWinner, formatClaimComment, parseClaimComments } from '../linear-claim.mjs'
 import { normalizeTicket } from '../bs-epic-lib.mjs'
@@ -19,6 +24,133 @@ import { loadSkillConfig, trackerConfigFor } from '../skill-config.mjs'
 // From adapter-core.mjs, not adapter.mjs: adapter.mjs imports THIS module to build
 // its registry, so reading the roles from there would make the pair circular.
 import { TRACKER_STATE_ROLES } from './adapter-core.mjs'
+
+// The candidate read behind the OPTIONAL executable `selectPlanned` capability. It selects exactly
+// the fields Step 2's eligibility walk and ranking read — identity, title, priority, estimate,
+// creation time, state, label names and the attachment records the canonical-plan selector picks
+// from — and nothing else, because the selection set is paid on every sweep. The window is the
+// caller's `$first` (default 250, the descriptor path's limit), not a paginated full scan.
+export const LIST_PLANNED_QUERY = `
+  query ListPlanned($first: Int!, $filter: IssueFilter!) {
+    issues(first: $first, filter: $filter) {
+      nodes {
+        identifier
+        title
+        priority
+        estimate
+        createdAt
+        state { name type }
+        labels { nodes { name } }
+        attachments { nodes { id title url createdAt } }
+      }
+    }
+  }
+`
+
+const SELECT_PLANNED_MAX_LIMIT = 250
+// The closed set of query keys `selectPlanned` knows how to put on the wire. See the adapter wrapper.
+const SELECT_PLANNED_KEYS = new Set(['state', 'label', 'assigneeOrCreator', 'limit'])
+
+// A GraphQL connection read as a plain array: `{nodes: [...]}` -> `[...]`. An already-flat array
+// passes through, and anything else is an empty list rather than a throw, matching the shared
+// ticket normalizer's own tolerance for these two fields.
+function connectionNodes(connection) {
+  if (Array.isArray(connection)) return connection
+  return Array.isArray(connection?.nodes) ? connection.nodes : []
+}
+
+/**
+ * The executable `selectPlanned` capability: the planned-candidate list, narrowed by exactly the
+ * filter the cron gate applies. The filter is composed by the SAME `buildIssueCountFilter` the gate
+ * uses — never a second construction path — and ANDed with the configured team as a sibling key, so
+ * the worker's candidate universe can only ever be the gate's, restricted to one team.
+ *
+ * Fails CLOSED on every input that would otherwise widen the scan: a missing state, a missing
+ * team, an empty or malformed label set, a blank identity selector, an out-of-range limit — each
+ * throws before any request. `me` resolves through the one identity contract (one viewer lookup,
+ * or a throw, never a dropped clause). A payload whose `issues.nodes` is not an array throws too:
+ * an empty list is an answer, and an unreadable payload is not one.
+ *
+ * Exported for its own tests: `validateConfig` already rejects a Linear block with no `team`, so
+ * the team guard is unreachable through `createLinearAdapter` and is pinned here directly — it is
+ * the last line of defence for a caller that hands this a team from anywhere else.
+ */
+export async function linearSelectPlanned({
+  apiKey,
+  fetchImpl,
+  endpoint,
+  team,
+  state,
+  label,
+  assigneeOrCreator,
+  limit = SELECT_PLANNED_MAX_LIMIT,
+}) {
+  if (typeof state !== 'string' || state.trim() === '') {
+    throw new Error(
+      'tracker/linear selectPlanned: a non-empty state is required; refusing to scan every state',
+    )
+  }
+  if (typeof team !== 'string' || team.trim() === '') {
+    throw new Error(
+      'tracker/linear selectPlanned: trackerConfig.linear.team is required to scope the candidate list; add it to .boss-skills.json',
+    )
+  }
+  if (label !== undefined && label !== null) {
+    const names = Array.isArray(label) ? label : [label]
+    if (
+      names.length === 0 ||
+      !names.every((name) => typeof name === 'string' && name.trim() !== '')
+    ) {
+      throw new Error(
+        'tracker/linear selectPlanned: label must be a non-empty name or a non-empty array of non-empty names',
+      )
+    }
+  }
+  if (
+    assigneeOrCreator !== undefined &&
+    assigneeOrCreator !== null &&
+    (typeof assigneeOrCreator !== 'string' || assigneeOrCreator.trim() === '')
+  ) {
+    throw new Error(
+      'tracker/linear selectPlanned: assigneeOrCreator must be a non-empty string when set',
+    )
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > SELECT_PLANNED_MAX_LIMIT) {
+    throw new Error(
+      `tracker/linear selectPlanned: limit must be an integer from 1 to ${SELECT_PLANNED_MAX_LIMIT}; got ${JSON.stringify(limit)}`,
+    )
+  }
+  const assigneeOrCreatorId = await resolveLinearUserId({
+    apiKey,
+    user: assigneeOrCreator ?? undefined,
+    fetchImpl,
+    endpoint,
+  })
+  const filter = {
+    ...buildIssueCountFilter({ state, label: label ?? undefined, assigneeOrCreatorId }),
+    team: { name: { eq: team } },
+  }
+  const data = await linearRequest({
+    apiKey,
+    query: LIST_PLANNED_QUERY,
+    variables: { first: limit, filter },
+    fetchImpl,
+    endpoint,
+  })
+  const nodes = data?.issues?.nodes
+  if (!Array.isArray(nodes)) {
+    throw new Error(
+      'tracker/linear selectPlanned: the issues payload cannot be evaluated (issues.nodes is not an array), so "no candidates" cannot be distinguished from "no answer"',
+    )
+  }
+  return nodes.map((node) => ({
+    ...node,
+    labels: connectionNodes(node?.labels)
+      .map((entry) => (typeof entry === 'string' ? entry : entry?.name))
+      .filter((name) => typeof name === 'string' && name !== ''),
+    attachments: connectionNodes(node?.attachments),
+  }))
+}
 
 // Declarative map of each agent-driven capability to the Linear MCP tool the
 // skills invoke today, with the argument/response shape they rely on. This is
@@ -184,10 +316,32 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
   }
   return {
     tracker: 'linear',
-    hasWork: ({ state, label } = {}) =>
-      runLinearGate({ apiKey, state, label, fetchImpl, endpoint }),
-    hasUnblockedWork: ({ state, label } = {}) =>
-      runUnblockedGate({ apiKey, state, label, fetchImpl, endpoint }),
+    // The identity selectors are forwarded, not dropped. A caller that needs to narrow the gate
+    // to its own work would otherwise have to bypass this seam and reach the gate libraries
+    // directly, which is exactly the fork this capability exists to make unnecessary. Each is
+    // optional and inert, so a `{state, label}` caller emits the filter it always did.
+    hasWork: ({ state, label, assignee, creator, assigneeOrCreator } = {}) =>
+      runLinearGate({
+        apiKey,
+        state,
+        label,
+        assignee,
+        creator,
+        assigneeOrCreator,
+        fetchImpl,
+        endpoint,
+      }),
+    hasUnblockedWork: ({ state, label, assignee, creator, assigneeOrCreator } = {}) =>
+      runUnblockedGate({
+        apiKey,
+        state,
+        label,
+        assignee,
+        creator,
+        assigneeOrCreator,
+        fetchImpl,
+        endpoint,
+      }),
     readDependencies: (issue) => extractBlockers(issue),
     isUnblocked: (issue) => isUnblocked(issue),
     formatClaimComment: (token, sessionId) => formatClaimComment(token, sessionId),
@@ -198,6 +352,31 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
     },
     normalizeTicket: (issue) => normalizeTicket(issue),
     states: (opts) => linearStates(opts),
+    // The executable half of `operationMap.selectPlanned`: the only path that can express the
+    // identity disjunction and the label set, so it is the worker's route whenever a repo narrows.
+    // `team` is read from the same config block as `mcpServer`, at call time checked, so a repo
+    // with no team still loads — it just cannot take the narrowed route. An unknown key throws
+    // rather than being dropped: `list-planned` forwards `plannedSelectionQuery` whole, so a
+    // clause this wrapper silently ignored would WIDEN the worker's read past the gate's scan.
+    selectPlanned: async (query = {}) => {
+      const unknown = Object.keys(query ?? {}).filter((key) => !SELECT_PLANNED_KEYS.has(key))
+      if (unknown.length > 0) {
+        throw new Error(
+          `tracker/linear selectPlanned: unknown selection key(s) ${unknown.map((key) => JSON.stringify(key)).join(', ')}; refusing to drop a clause the caller asked for`,
+        )
+      }
+      const { state, label, assigneeOrCreator, limit } = query ?? {}
+      return linearSelectPlanned({
+        apiKey,
+        fetchImpl,
+        endpoint,
+        team: trackerConfig?.team,
+        state,
+        label,
+        assigneeOrCreator,
+        limit,
+      })
+    },
     operationMap: buildLinearOperationMap(mcpServer),
   }
 }

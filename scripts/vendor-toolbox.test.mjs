@@ -675,6 +675,9 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'tracker/adapter.mjs',
     'tracker/cli.mjs',
     'tracker/linear.mjs',
+    // tracker/outcome.mjs (BOS-1282) is imported by linear-gate-lib.mjs, which this core already
+    // vendors. An installed tree carrying the gate without it is an import that cannot RESOLVE.
+    'tracker/outcome.mjs',
     'tracker/preflight.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
@@ -683,6 +686,17 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
   // gate that fails, and a count assertion would stay green while the wrong helper was listed.
   assert.ok(VENDOR_MAP['boss-plan'].includes('plan-writeback-verify.mjs'))
   assert.ok(VENDOR_MAP['boss-build'].includes('worktree-lock.sh'))
+  // Asserted BY NAME for each consuming core: linear-gate-lib.mjs imports tracker/outcome.mjs, so
+  // a core vendoring the gate without it ships an import that cannot resolve — a helper the
+  // installed toolbox fails to LOAD, which degrades silently. That is the failure class BOS-1282
+  // removes, so it must not be reintroduced by the vendoring of its own fix.
+  for (const core of ['boss-plan', 'boss-build', 'boss-epic']) {
+    assert.ok(
+      VENDOR_MAP[core].includes('linear-gate-lib.mjs') &&
+        VENDOR_MAP[core].includes('tracker/outcome.mjs'),
+      `${core} must vendor tracker/outcome.mjs beside linear-gate-lib.mjs`,
+    )
+  }
   // Asserted BY NAME for each consuming core: pr-check-state.mjs is the single agent-callable
   // check-state verdict the routed skill bodies invoke by path, so an installed tree without it is
   // a rule that cannot RUN rather than a rule that disagrees.

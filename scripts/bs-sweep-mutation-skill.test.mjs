@@ -20,12 +20,14 @@ import { fileURLToPath } from 'node:url'
 import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
 import {
+  GATE_FAILED,
   MUTATION_RESULTS,
   PER_MUTANT_RESULTS,
   PHASE_B_RESULTS,
   extractSurvivors,
   extractUncoveredRows,
   extractCoverageRows,
+  matchMutationResult,
 } from './bs-sweep-mutation-survivors.mjs'
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 import {
@@ -472,7 +474,23 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket
   // (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would give
   // without equalising it.
-  const SOURCE_BYTES = 28651 // measured .claude body at migration, 2026-09-08 (BOS-986 bytes)
+  // Re-banked UP 28651 -> 29627 (+976 B) for BOS-1278, the first RAISE this budget records; the
+  // reason is below in `raise.justification`. In short: the mutation-run worker ran the five make
+  // targets under a bare `set -eo pipefail`, so a red target killed it mid-block with NO sentinel.
+  // The orchestrator read `missing` and took the same safe NO_CHANGE branch a dead dispatch takes —
+  // a failed gate and a dead worker were byte-identical to it, and which target failed was
+  // unrecoverable. The bytes buy the EXIT trap that writes the bounded `gate-failed` verdict, the
+  // per-target `T=` labels it names, and the orchestrator arm that reports the target and exit code
+  // instead of reading an empty payload as "no survivors". Resident by necessity twice over: the
+  // trap IS the block a dispatched worker executes, and the arm is the orchestrator's own routing.
+  // Re-banked UP again 29627 -> 29787 (+160 B), chained onto the entry above and still 58 B
+  // clear of PRE_EXTRACTION_BASELINE. The second entry is the await-mechanism rule: this body
+  // mandated "never `run_in_background`" while naming no mechanism to await WITH, and a poll
+  // reached for in its place through the Bash tool with no explicit timeout is silently
+  // backgrounded at 120s — the mandate satisfied on paper and gone in fact. One bullet names
+  // the helper and the explicit `timeout: 600000`, and scripts/check-await-mechanism.mjs holds
+  // the whole class to it. Paid for in part by trimming the trap's own comment.
+  const SOURCE_BYTES = 29787 // re-measured for BOS-1278; see raise.justification
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -493,6 +511,26 @@ test('the resident body is pinned at its exact post-extraction size', () => {
       // stale sentence parked here would satisfy the next raise without anybody having
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 28651,
+      justification:
+        'BOS-1278: the mutation-run worker reached a terminal state — a failed make target — ' +
+        'and left NO sentinel, because the five targets run under `set -eo pipefail` and a red ' +
+        'one kills the block before the write. The orchestrator then read `missing` and routed ' +
+        'to the safe NO_CHANGE branch, which is exactly where a DEAD dispatch routes: a failed ' +
+        'gate and a dead worker were indistinguishable, and the failed target and its exit code ' +
+        'were lost entirely. +976 B buys three things none of which can move out of this body: ' +
+        'the EXIT trap that writes the bounded `gate-failed` sentinel (the block a dispatched ' +
+        'worker copies and runs), the per-target `T=` labels that give that sentinel a target to ' +
+        'name, and the orchestrator arm that reports `target` + `exitCode` instead of reading a ' +
+        'payload with no survivors in it as a clean "no survivors". A pointer to a reference ' +
+        'would not help: bs-sweep-mutation has no references/ directory, and a fence a subagent ' +
+        'must execute cannot be cited from one anyway. Chained entry, +160 B: the body ' +
+        'mandated "never `run_in_background`" and named NO mechanism to await with, so an ' +
+        'orchestrator reached for a Bash poll — which, issued with no explicit timeout, is ' +
+        'silently backgrounded at 120s, leaving the mandate satisfied on paper and absent in ' +
+        'fact. One resident bullet names the shared helper and the explicit `timeout: 600000`; ' +
+        'it is resident because choosing the await mechanism IS the decision being made at ' +
+        'every dispatch site in this body, and scripts/check-await-mechanism.mjs now holds the ' +
+        'whole discovered class to it so the gap cannot silently regrow.',
     },
     remedy: NO_REFERENCE_REMEDY,
     residual:
@@ -512,4 +550,49 @@ test('the codex mirror is exactly what regenerating it from the .claude source p
     regenerate: rewriteClaudeSkillMarkdown,
     sourcePath: abs('../.claude/skills/bs-sweep-mutation/SKILL.md'),
   })
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1278 — a worker that reaches ANY terminal state leaves a bounded sentinel.
+// ---------------------------------------------------------------------------
+
+test('a failed make target is a routable verdict, distinct from a dead dispatch', () => {
+  // Before this token a red target killed the worker under `set -e` with no sentinel,
+  // so the orchestrator read `missing` and synthesized `dispatch-failure` — the same
+  // token a dead dispatch produces. The two need different remedies (re-run the
+  // target vs re-dispatch the worker), so they may not share one verdict.
+  assert.deepEqual(matchMutationResult(GATE_FAILED), { result: GATE_FAILED })
+  assert.notEqual(GATE_FAILED, DISPATCH_FAILURE)
+  assert.equal(
+    matchMutationResult(DISPATCH_FAILURE),
+    null,
+    'the synthesized token stays unwritable by a worker',
+  )
+  // Able to fire: a near-miss token still classifies null, so the acceptance above is
+  // this token's membership and not a matcher that accepts anything.
+  assert.equal(matchMutationResult('gate-failed-ish'), null)
+})
+
+test('the failure sentinel carries the failed target and its exit code', () => {
+  // The EXECUTED bytes of the trap, pinned the way this file already pins
+  // `DISPATCH_FAILURE="dispatch-failure"`: a contract literal a dispatched worker
+  // copies and runs, not a sentence about one. Both payload keys must survive a
+  // rewrite, because the diagnostic the old silence destroyed is exactly these two.
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    assert.ok(
+      skill.includes(`mutation ${GATE_FAILED} `),
+      `${label} must write the ${GATE_FAILED} kind from the trap`,
+    )
+    assert.ok(
+      skill.includes('{target:\\$t,exitCode:\\$rc}'),
+      `${label} failure payload must carry target + exitCode`,
+    )
+    assert.ok(
+      skill.includes('.payload.target') && skill.includes('.payload.exitCode'),
+      `${label} orchestrator must report both rather than reading an empty payload as no-survivors`,
+    )
+  }
 })

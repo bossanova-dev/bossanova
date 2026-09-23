@@ -16,6 +16,7 @@ import {
   capturesAgentRunnerStubbed,
   githubCommentCommand,
   listProofCommentsCommand,
+  matchesAnyPrefix,
   minimizeCommentCommand,
   normalizeRecipe,
   parseProofArgs,
@@ -41,6 +42,7 @@ import {
   classifySurfaces,
   classifyTuiSurface,
   committedScenarioPresent,
+  productSourcePresent,
   proofHarnessOnlyDiff,
   resolveSurfaceRegistry,
   surfaceBudget,
@@ -1342,6 +1344,50 @@ export function resolveSurfacePlan({
   }
 }
 
+/**
+ * BOS-1285: true when the run has nothing for an agent surface to demonstrate,
+ * so any surface still standing in `plan.order` is there only because something
+ * FORCED it — a plan `## Required proof` bullet (the D16 `forcedSurfaces`
+ * mitigation on `classifySurfaces`), a `BOSS_PROOF_BRIEF` surface, or
+ * `BOSS_PROOF_AGENT_SURFACE`.
+ *
+ * THE DEFECT THIS CLOSES: `scopeRequiredProof` derives `forcedSurfaces` from
+ * required-proof bullets by KEYWORD, so a bullet containing the word `page` or
+ * `browser` raised the web surface on a diff that touches no product source at
+ * all. The surface came back true with `recipes: []`, the agent had nothing to
+ * drive, and the run deferred `agent-incomplete` and exited 1 — the same code a
+ * genuinely failed capture gets, and indistinguishable from one.
+ *
+ * Two conjuncts, and the `surface` argument is deliberately absent from both:
+ *   - no recipe was selected, so there is no deterministic capture either; and
+ *   - the diff holds no product source (`productSourcePresent`) — it is prose,
+ *     harness scripts, the skills payload, tier-A test files and the generated
+ *     artifacts in `GENERATED_ARTIFACT_PREFIXES`, and nothing else.
+ *
+ * The check is whole-diff rather than per-surface because that is what
+ * preserves R6: a behaviour-only backend change (a bossd handler that alters
+ * what the web app renders, or a hand-written `services/boss/internal/client/`
+ * RPC change that alters what a view receives) HAS product source, so its
+ * forced surface survives untouched — the entire point of the escape hatch. A
+ * per-surface "no rendering file for THIS surface" conjunct would NOT be
+ * redundant, and this docblock used to claim it would: `productSourcePresent`
+ * additionally excludes `PROSE_FILE_RE` and `NON_PRODUCT_PREFIXES`, which the
+ * tier filter does not, so a Markdown file under a surface prefix is a tier-C
+ * rendering file (`classifyTuiSurface(['services/boss/internal/views/R.md'])`
+ * is true) while product source is false. In that shape this predicate fires
+ * for a surface that PATH classification raised rather than one a bullet
+ * forced, and `deferredReasonMessage` then names a bullet that does not exist.
+ * The exit code is still the correct 0, so this is left as a known message
+ * inaccuracy rather than widened here; see the review note on this ticket.
+ *
+ * Pure: array + array in, boolean out.
+ * @param {{ changedFiles: string[]|null|undefined, recipes?: object[] }} opts
+ * @returns {boolean}
+ */
+export function forcedSurfaceUndemonstrable({ changedFiles, recipes = [] }) {
+  return (recipes?.length ?? 0) === 0 && !productSourcePresent(changedFiles)
+}
+
 /** A never-ran surface: carries only its deferral reason for the consolidated comment. */
 function syntheticDeferredRun(surface, reasonCode, { missing } = {}) {
   return {
@@ -1649,6 +1695,19 @@ async function runAgentSurfaces({ plan, changedFiles, args, registry = BUILTIN_S
   })
 
   for (const surface of plan.order) {
+    // BOS-1285: FIRST gate, deliberately ahead of every other. A surface that is
+    // only here because a required-proof bullet / brief / env override forced it,
+    // on a diff with no product source and no recipe, has nothing for any leg to
+    // drive. Every gate below would answer a DIFFERENT question about it and give
+    // a misleading code — a keyless forced TUI would defer `scenario-missing`
+    // (exit 1), and a forced web would run the full ~12-minute agent and defer
+    // `agent-incomplete` (exit 1, indistinguishable from a real capture failure).
+    // `forced-no-surface` is the honest answer and contributes exit 0.
+    if (forcedSurfaceUndemonstrable({ changedFiles, recipes: plan.recipes })) {
+      surfaceRuns.push(syntheticDeferredRun(surface, 'forced-no-surface'))
+      continue
+    }
+
     // Scoped bullets are this surface's PRIMARY brief content; unscoped bullets
     // feed every surface (D13).
     const planRequiredProof = [...(plan.scoped[surface] ?? []), ...plan.scoped.unscoped]
@@ -2006,14 +2065,40 @@ export function isDocsOnlyChange(changedFiles) {
 }
 
 /**
- * Docs-only changes with no visual recipe should post a neutral build-check note.
- * If a docs recipe matched (for example services/docs → Docusaurus), capture it.
+ * BOS-1285: the Docusaurus site's own build input — the `services/docs/`
+ * package. `isDocsOnlyChange` deliberately counts a much wider set as "docs"
+ * (any `docs/` path, any `.md`/`.mdx`, `README.md`), which is right for "this
+ * diff renders nothing" but wrong for "this diff can be verified by building
+ * the docs site": a plan document under repo-root `docs/plans/` or an
+ * agent-skill Markdown file is not an input to `pnpm --dir services/docs build`
+ * at all, so routing it to that build asks for a check it cannot satisfy.
+ *
+ * @param {string[]|null|undefined} changedFiles
+ * @returns {boolean}
+ */
+export function docsSiteBuildInputPresent(changedFiles) {
+  return matchesAnyPrefix(changedFiles, ['services/docs/'])
+}
+
+/**
+ * Docs-only changes THAT TOUCH THE DOCS SITE, with no visual recipe, should post
+ * a neutral build-check note. If a docs recipe matched (for example
+ * services/docs → Docusaurus), capture it instead.
+ *
+ * BOS-1285 added the `docsSiteBuildInputPresent` conjunct. Without it a
+ * plan-document-only or agent-skill-Markdown-only diff short-circuited here and
+ * was handed a Docusaurus build it has no input to; it now falls through to the
+ * honest no-surface note (exit 0) like any other diff that renders nothing.
  *
  * @param {{ changedFiles: string[], selectedRecipes: object[] }} opts
  * @returns {boolean}
  */
 export function shouldPostDocsBuildCheck({ changedFiles, selectedRecipes }) {
-  return isDocsOnlyChange(changedFiles) && (selectedRecipes?.length ?? 0) === 0
+  return (
+    isDocsOnlyChange(changedFiles) &&
+    docsSiteBuildInputPresent(changedFiles) &&
+    (selectedRecipes?.length ?? 0) === 0
+  )
 }
 
 /**

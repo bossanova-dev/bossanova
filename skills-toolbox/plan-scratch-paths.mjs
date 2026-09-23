@@ -85,6 +85,20 @@ export const PLAN_SCRATCH_FAMILIES = [
     '^SEG\\.draft-metadata\\.json$',
   ),
   fam(
+    // The LIVENESS artifact of an awaited dispatch: the worker (or a gate wrapper around one long
+    // command it is blocked inside) touches this while it is still working, and the await side
+    // reads it to tell a live dispatch from a dead one. It is declared here rather than invented at
+    // the dispatch site for the same reason every other family is — a name outside this registry is
+    // one no cleanup and no TTL reap can match. It is deliberately NOT the run-file sentinel: the
+    // sentinel records a TERMINAL decision exactly once, so its mtime is the seed's and never moves
+    // while the dispatch works.
+    'dispatch-heartbeat',
+    '<ISSUE-ID>.dispatch-heartbeat.json',
+    'the liveness artifact an awaited dispatch touches while it is still working',
+    ({ issueId }) => `${issueId}.dispatch-heartbeat.json`,
+    '^SEG\\.dispatch-heartbeat\\.json$',
+  ),
+  fam(
     'premises',
     '<ISSUE-ID>.premises.json',
     'the premise list the plan depends on',
@@ -104,6 +118,20 @@ export const PLAN_SCRATCH_FAMILIES = [
     'the dependency-scan input (candidates + subject areas)',
     ({ issueId }) => `${issueId}.deps-in.json`,
     '^SEG\\.deps-in\\.json$',
+  ),
+  fam(
+    'candidates',
+    '<ISSUE-ID>.candidates.json',
+    'the fetched dependency candidates, each with the full description the list op truncates',
+    ({ issueId }) => `${issueId}.candidates.json`,
+    '^SEG\\.candidates\\.json$',
+  ),
+  fam(
+    'write-description-descriptor',
+    '<ISSUE-ID>.write-description.json',
+    'the descriptor the tracker write-description verb emits, read for its explicit outcome',
+    ({ issueId }) => `${issueId}.write-description.json`,
+    '^SEG\\.write-description\\.json$',
   ),
   fam(
     'epic-spec',

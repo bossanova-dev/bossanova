@@ -36,6 +36,9 @@ import {
   isFundingReason,
   MUSTFIX_OVERRUN_ROUNDS,
   MUSTFIX_OVERRUN_SECONDS,
+  RESERVED_REGRESSION_ROUNDS,
+  DISPOSITIONS,
+  dispositionCensus,
   ADMIT_FIX_ROUND_REASONS,
   admitFixRound,
   ADMIT_DISPATCHED_ROUND_REASONS,
@@ -1638,6 +1641,7 @@ test('every reason in the closed set is reachable, and nothing outside it is ret
     { ...FLAGSHIP, openMustFix: false },
     { ...FLAGSHIP, unattemptedMustFix: false },
     { ...FLAGSHIP, overrunRoundsUsed: 1 },
+    { ...FLAGSHIP, overrunRoundsUsed: 1, selfInflictedMustFix: true },
     { ...FLAGSHIP, roundsUsed: 3 },
   ]) {
     const { admit, reason } = admitFixRound(input)
@@ -1802,4 +1806,297 @@ test('the pure-computation verbs record nothing — they have no verdict to reco
     assert.equal(res.status, 0, `${args.join(' ')}: ${res.stderr}`)
   }
   assert.equal(existsSync(outcomes), false, 'a non-gate verb must not create an outcome file')
+})
+
+// ---------------------------------------------------------------------------
+// R2 — a pass may repair the regression IT caused. A `Critical` raised in round
+// 2 against a fix round 1 landed competed for the same single general overrun
+// that round 1 already spent, so the pass returned `overrun-exhausted` over its
+// own damage — a lawful-looking terminal state for an unlawful reason.
+// ---------------------------------------------------------------------------
+const SELF_INFLICTED = Object.freeze({
+  ...FLAGSHIP,
+  overrunRoundsUsed: 1,
+  selfInflictedMustFix: true,
+})
+
+test('the reserved regression allowance is exactly one round, bounded apart from the overrun', () => {
+  assert.equal(RESERVED_REGRESSION_ROUNDS, 1)
+  // Independent bounds: spending one must not be spending the other.
+  assert.deepEqual(admitFixRound({ ...SELF_INFLICTED, regressionRoundsUsed: 0 }), {
+    admit: true,
+    reason: 'regression-reserved',
+  })
+})
+
+test('admitFixRound admits a self-inflicted must-fix after the general overrun is spent', () => {
+  // The baseline this is measured against: without the flag, a spent general
+  // overrun is terminal.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, overrunRoundsUsed: 1 }), {
+    admit: false,
+    reason: 'overrun-exhausted',
+  })
+  // With it, the pass draws on its own reserve instead.
+  assert.deepEqual(admitFixRound(SELF_INFLICTED), {
+    admit: true,
+    reason: 'regression-reserved',
+  })
+})
+
+test('admitFixRound spends the GENERAL overrun first and leaves the reserve intact', () => {
+  // While the ordinary override remains, a self-inflicted finding takes it —
+  // so the reserve is never consumed by a round the ordinary path could fund,
+  // and the answer is byte-identical to the pre-change one.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, selfInflictedMustFix: true }), {
+    admit: true,
+    reason: 'mustfix-override',
+  })
+})
+
+test('admitFixRound returns overrun-exhausted once the reserved allowance is ALSO spent', () => {
+  assert.deepEqual(
+    admitFixRound({ ...SELF_INFLICTED, regressionRoundsUsed: RESERVED_REGRESSION_ROUNDS }),
+    { admit: false, reason: 'overrun-exhausted' },
+  )
+})
+
+// R2's lower-only contract: the reserved round is admitted from BELOW the cap,
+// never through it. If this ever reads `regression-reserved`, a pathological
+// pass can grant itself review rounds without bound.
+test('admitFixRound still refuses a self-inflicted must-fix AT the round cap', () => {
+  assert.deepEqual(admitFixRound({ ...SELF_INFLICTED, roundsUsed: 3, maxRounds: 3 }), {
+    admit: false,
+    reason: 'round-cap',
+  })
+  // An inflated cap cannot buy the reserved round either.
+  assert.deepEqual(admitFixRound({ ...SELF_INFLICTED, roundsUsed: 3, maxRounds: 99 }), {
+    admit: false,
+    reason: 'round-cap',
+  })
+  // ...and the `no-open-mustfix` refusal still precedes it: the reserve exists
+  // only to close a must-fix, so it buys nothing when nothing is open.
+  assert.deepEqual(admitFixRound({ ...SELF_INFLICTED, openMustFix: false }), {
+    admit: false,
+    reason: 'no-open-mustfix',
+  })
+})
+
+test('admitFixRound fails CLOSED on a malformed regressionRoundsUsed', () => {
+  // Same treatment the sibling counters get: an unreadable count reads as
+  // already spent, never as a fresh allowance.
+  for (const regressionRoundsUsed of ['0', 0.5, -1, Number.NaN, null, {}]) {
+    assert.deepEqual(
+      admitFixRound({ ...SELF_INFLICTED, regressionRoundsUsed }),
+      { admit: false, reason: 'overrun-exhausted' },
+      `regressionRoundsUsed ${String(regressionRoundsUsed)} must fail closed`,
+    )
+  }
+  // An ABSENT count is not a malformed one: it takes the documented default of 0.
+  const { regressionRoundsUsed: _rr, ...absent } = SELF_INFLICTED
+  assert.deepEqual(admitFixRound(absent), { admit: true, reason: 'regression-reserved' })
+  // Only a literal `true` opens the reserve — a truthy non-boolean must not.
+  for (const selfInflictedMustFix of ['yes', 1, {}]) {
+    assert.deepEqual(
+      admitFixRound({ ...FLAGSHIP, overrunRoundsUsed: 1, selfInflictedMustFix }),
+      { admit: false, reason: 'overrun-exhausted' },
+      `selfInflictedMustFix ${String(selfInflictedMustFix)} must not open the reserve`,
+    )
+  }
+})
+
+test('regression-reserved is a member of the closed reason set', () => {
+  assert.ok(ADMIT_FIX_ROUND_REASONS.includes('regression-reserved'))
+})
+
+// ---------------------------------------------------------------------------
+// R3 — a capped verdict must disclose per-finding disposition, so a reader can
+// tell a defect left standing from a repair that ran out of rounds to confirm.
+// ---------------------------------------------------------------------------
+const cappedReport = (items) => ({
+  rounds: 3,
+  mustfix: { unresolved: 1, items },
+  invalid: [],
+  ledger: cleanLedger,
+})
+
+test('dispositionCensus distinguishes all four dispositions', () => {
+  assert.deepEqual(DISPOSITIONS, ['fixed', 'refuted', 'repaired-unconfirmed', 'open'])
+  assert.deepEqual(
+    dispositionCensus(
+      cappedReport([
+        { disposition: 'fixed' },
+        { disposition: 'fixed' },
+        { disposition: 'refuted' },
+        { disposition: 'repaired-unconfirmed' },
+        { disposition: 'open' },
+      ]),
+    ),
+    { fixed: 2, refuted: 1, 'repaired-unconfirmed': 1, open: 1 },
+  )
+})
+
+test('dispositionCensus yields an all-open census when findings carry no disposition', () => {
+  // The backward-compatible case: today's reports carry no disposition field at
+  // all, and reading one as anything but `open` would over-claim a repair.
+  assert.deepEqual(dispositionCensus(cappedReport([{}, {}, {}])), {
+    fixed: 0,
+    refuted: 0,
+    'repaired-unconfirmed': 0,
+    open: 3,
+  })
+  // An unreadable or out-of-vocabulary disposition fails closed the same way.
+  assert.deepEqual(dispositionCensus(cappedReport([{ disposition: 'wishful' }, null, 7])), {
+    fixed: 0,
+    refuted: 0,
+    'repaired-unconfirmed': 0,
+    open: 3,
+  })
+  // No findings at all, and unreadable evidence, are both an empty census.
+  assert.deepEqual(dispositionCensus(), {
+    fixed: 0,
+    refuted: 0,
+    'repaired-unconfirmed': 0,
+    open: 0,
+  })
+})
+
+// BOS-1287 review: the census read the report's OWN vocabulary wrong. `bs-review-report.mjs`
+// and the Phase 7 report shape both write `fixed | verified | unresolved`, which overlaps
+// `DISPOSITIONS` on `fixed` alone -- so before this, a `verified` finding (one a confirming round
+// positively settled) was disclosed as `open`, over-reporting standing defects on exactly the
+// capped runs the census exists to explain. Assert against the PRODUCER's spelling, not the
+// census's own, because that is the only spelling a real report ever carries.
+test("dispositionCensus maps the producing renderer's vocabulary, not just its own", () => {
+  assert.deepEqual(
+    dispositionCensus(
+      cappedReport([
+        { disposition: 'fixed' },
+        { disposition: 'verified' },
+        { disposition: 'unresolved' },
+        { disposition: 'unresolved' },
+      ]),
+    ),
+    { fixed: 1, refuted: 1, 'repaired-unconfirmed': 0, open: 2 },
+  )
+  // The alias is a rename, never a new bucket: an unknown value still fails closed to `open`.
+  assert.deepEqual(dispositionCensus(cappedReport([{ disposition: 'verified-ish' }])), {
+    fixed: 0,
+    refuted: 0,
+    'repaired-unconfirmed': 0,
+    open: 1,
+  })
+})
+
+// BOS-1287 review: `--payload` was the one position-sensitive flag here -- it truncated argv at
+// its own index, so `--payload` BEFORE `--in` ate the `--in <path>` pair and the verb exited 2
+// claiming a path that had been supplied was missing. Prove both orders agree.
+test('CLI `verdict --payload` is order-independent against `--in`', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-caps-'))
+  try {
+    const reportPath = join(scratch, 'capped.json')
+    writeFileSync(reportPath, JSON.stringify(cappedReport([{ disposition: 'verified' }])))
+    const trailing = runCli(['verdict', '--in', reportPath, '--payload'])
+    const leading = runCli(['verdict', '--payload', '--in', reportPath])
+    assert.equal(leading.status, 0, leading.stderr)
+    assert.deepEqual(JSON.parse(leading.stdout), JSON.parse(trailing.stdout))
+    // ...and with a reason, in both orders too.
+    const leadingReason = runCli(['verdict', '--payload', FUNDING_STARVED, '--in', reportPath])
+    assert.equal(leadingReason.status, 0, leadingReason.stderr)
+    assert.deepEqual(
+      JSON.parse(leadingReason.stdout),
+      JSON.parse(runCli(['verdict', '--in', reportPath, '--payload', FUNDING_STARVED]).stdout),
+    )
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('CLI `verdict --payload` carries the census beside a capped line', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-caps-'))
+  try {
+    const reportPath = join(scratch, 'capped.json')
+    writeFileSync(
+      reportPath,
+      JSON.stringify(
+        cappedReport([
+          { disposition: 'fixed' },
+          { disposition: 'refuted' },
+          { disposition: 'repaired-unconfirmed' },
+          { disposition: 'open' },
+        ]),
+      ),
+    )
+    const payload = runCli(['verdict', '--in', reportPath, '--payload'])
+    assert.equal(payload.status, 0, payload.stderr)
+    assert.deepEqual(JSON.parse(payload.stdout), {
+      provisional: false,
+      census: { fixed: 1, refuted: 1, 'repaired-unconfirmed': 1, open: 1 },
+    })
+    // The funding reason still rides the same payload, unchanged.
+    const funded = runCli(['verdict', '--in', reportPath, '--payload', FUNDING_STARVED])
+    assert.deepEqual(JSON.parse(funded.stdout), {
+      provisional: false,
+      funding: { reason: FUNDING_STARVED },
+      census: { fixed: 1, refuted: 1, 'repaired-unconfirmed': 1, open: 1 },
+    })
+    // A CLEAN run has nothing capped to disclose, so it carries no census.
+    const cleanPath = join(scratch, 'clean.json')
+    writeFileSync(
+      cleanPath,
+      JSON.stringify({
+        rounds: 1,
+        mustfix: { unresolved: 0, items: [] },
+        invalid: [],
+        ledger: cleanLedger,
+      }),
+    )
+    assert.deepEqual(JSON.parse(runCli(['verdict', '--in', cleanPath, '--payload']).stdout), {
+      provisional: false,
+    })
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+// THE BYTE-STABILITY CASE for R3. `matchSentinel`, the Step 6 routing block and
+// bs-dispatch-await.mjs all match on CAPPED_PREFIX, so the census must ride the
+// PAYLOAD and never widen the line. This fails the moment Unit 3's disclosure
+// leaks into the routing contract.
+test('the capped sentinel LINE is byte-identical with the census in flight', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-caps-'))
+  try {
+    const reportPath = join(scratch, 'capped.json')
+    writeFileSync(
+      reportPath,
+      JSON.stringify(
+        cappedReport([{ disposition: 'repaired-unconfirmed' }, { disposition: 'open' }]),
+      ),
+    )
+    // The exact bytes, pinned against the prefix and the rendered line.
+    assert.equal(CAPPED_PREFIX, 'bs-review capped:')
+    assert.equal(
+      cappedSentinel(3),
+      'bs-review capped: unresolved must-fix findings or invalid evidence remain after 3 rounds.',
+    )
+    const line = runCli(['verdict', '--in', reportPath]).stdout
+    assert.equal(line, cappedSentinel(3))
+    assert.ok(line.startsWith(CAPPED_PREFIX))
+    // No disposition word may appear in the line itself.
+    for (const disposition of DISPOSITIONS) assert.ok(!line.includes(disposition), disposition)
+    // ...and routing still parses it to the same classification.
+    assert.deepEqual(matchSentinel(line), { status: 'capped', rounds: 3 })
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('sentinelPayload without a census is byte-identical to every existing write', () => {
+  assert.equal(JSON.stringify(sentinelPayload()), '{"provisional":false}')
+  assert.equal(JSON.stringify(sentinelPayload('')), '{"provisional":false}')
+  assert.equal(
+    JSON.stringify(sentinelPayload(FUNDING_STARVED)),
+    `{"provisional":false,"funding":{"reason":"${FUNDING_STARVED}"}}`,
+  )
+  // The `sentinel-payload` verb's own stdout is untouched by Unit 3.
+  assert.equal(runCli(['sentinel-payload']).stdout, '{"provisional":false}')
 })

@@ -3,13 +3,17 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -192,7 +196,7 @@ func TestBackfillCodexProviderSessionIDPersistsBeforeAttachResume(t *testing.T) 
 		CreatedAt:      createdAt,
 	}
 
-	ok, reason, err := s.backfillCodexProviderSessionID(context.Background(), chat, "/tmp/worktree", resolver)
+	ok, reason, err := s.backfillCodexProviderSessionID(context.Background(), chat, "/tmp/worktree", 0, resolver)
 	if err != nil {
 		t.Fatalf("backfillCodexProviderSessionID: %v", err)
 	}
@@ -315,5 +319,208 @@ func TestBackgroundProviderSessionIDDiscoveryLogsResolverReasonOnTimeout(t *test
 	}
 	if got, _ := warned["reason"].(string); got != reason {
 		t.Fatalf("timeout warning reason = %q, want the resolver's %q; log was:\n%s", got, reason, sink.contents())
+	}
+}
+
+// warnEntryWithMessage returns the parsed JSON log entry whose message field
+// equals msg, or nil. The package's established idiom is to assert the
+// STRUCTURED field rather than a substring: an operator and any log query read
+// `reason`, so a value landing under some other key would not surface it.
+func warnEntryWithMessage(logs, msg string) map[string]any {
+	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["message"] == msg {
+			return entry
+		}
+	}
+	return nil
+}
+
+// newForegroundDiscoveryTimeoutFixture drives ensureChatTmuxSession far enough
+// to hit the FOREGROUND provider-id discovery timeout and returns the log sink
+// once the timeout warning has landed. The resolver never resolves an id and
+// reports resolverReason on every miss — the shape the codex plugin returns
+// while a chat's rollout fd has not appeared.
+func newForegroundDiscoveryTimeoutFixture(t *testing.T, resolverReason string) *lineSignalWriter {
+	t.Helper()
+
+	// AC9: these are shrunk for test speed and restored, never re-tuned. The
+	// production windows are unchanged by this ticket.
+	oldFg := interactiveProviderIDForegroundDiscoveryTimeout
+	oldFgPoll := interactiveProviderIDForegroundDiscoveryPollInterval
+	oldBg := providerSessionIDBackgroundDiscoveryTimeout
+	oldBgPoll := providerSessionIDBackgroundDiscoveryPollInterval
+	interactiveProviderIDForegroundDiscoveryTimeout = 20 * time.Millisecond
+	interactiveProviderIDForegroundDiscoveryPollInterval = time.Millisecond
+	providerSessionIDBackgroundDiscoveryTimeout = 20 * time.Millisecond
+	providerSessionIDBackgroundDiscoveryPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		interactiveProviderIDForegroundDiscoveryTimeout = oldFg
+		interactiveProviderIDForegroundDiscoveryPollInterval = oldFgPoll
+		providerSessionIDBackgroundDiscoveryTimeout = oldBg
+		providerSessionIDBackgroundDiscoveryPollInterval = oldBgPoll
+	})
+
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
+	chat := &models.AgentChat{ID: "c1", SessionID: sess.ID, AgentSessionID: "agent-fg-timeout", AgentName: "codex"}
+	sink := &lineSignalWriter{
+		want: "interactive provider session id not discovered after launch",
+		done: make(chan struct{}),
+	}
+	srv := newEnsureRollbackTestServer(t, &chatStoreFake{chat: chat}, sess,
+		&fakeTmuxClient{available: true},
+		&fakeInteractiveSessionResolver{reason: resolverReason})
+	srv.logger = zerolog.New(sink)
+
+	if err := srv.ensureChatTmuxSession(context.Background(), chat, false); err != nil {
+		t.Fatalf("ensureChatTmuxSession: %v", err)
+	}
+	select {
+	case <-sink.done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no interactive discovery warning was logged; log was:\n%s", sink.contents())
+	}
+	return sink
+}
+
+// TestForegroundProviderSessionIDDiscoveryTimeoutCarriesResolverReason is
+// BOS-1298's U3: the FIRST line an operator reads after a launch used to be
+// silent about why, while the background line an hour later carried the reason.
+// That asymmetry is why the incident's `interactive …` line explained nothing.
+func TestForegroundProviderSessionIDDiscoveryTimeoutCarriesResolverReason(t *testing.T) {
+	const reason = "codex process open-file probe failed; rollout fd unreadable"
+	sink := newForegroundDiscoveryTimeoutFixture(t, reason)
+
+	warned := warnEntryWithMessage(sink.contents(), "interactive provider session id not discovered after launch")
+	if warned == nil {
+		t.Fatalf("no parseable interactive discovery warning; log was:\n%s", sink.contents())
+	}
+	if got, _ := warned["reason"].(string); got != reason {
+		t.Fatalf("interactive timeout warning reason = %q, want the resolver's %q; log was:\n%s", got, reason, sink.contents())
+	}
+}
+
+// ...and a timeout with nothing to report must not invent a cause. A fabricated
+// reason is worse than none: the incident's lesson is that a specific, confident
+// message pointing away from the cause costs more than silence.
+func TestForegroundProviderSessionIDDiscoveryTimeoutInventsNoReason(t *testing.T) {
+	sink := newForegroundDiscoveryTimeoutFixture(t, "")
+
+	warned := warnEntryWithMessage(sink.contents(), "interactive provider session id not discovered after launch")
+	if warned == nil {
+		t.Fatalf("no parseable interactive discovery warning; log was:\n%s", sink.contents())
+	}
+	if got, ok := warned["reason"]; ok {
+		t.Fatalf("interactive timeout warning carries reason = %v, want the key absent when the resolver offered none", got)
+	}
+}
+
+// TestWakeChat_LivePaneBindsViaFDResolution is BOS-1298's U4, and the failing
+// case the ticket starts from: a codex chat with a nil provider id and a LIVE
+// pane whose process holds the rollout open could never be bound, because all
+// three recovery sites passed pane pid 0 with AllowLegacyBackfill — exactly the
+// combination that skips fd resolution. This is also what
+// repair_duplicate_provider_session.go's comment has always claimed happens to
+// an id it clears.
+//
+// The fixture's time-window scan is AMBIGUOUS, so a bind here cannot have come
+// from the legacy path: a pass proves fd resolution ran.
+func TestWakeChat_LivePaneBindsViaFDResolution(t *testing.T) {
+	const panePID = 4242
+	resolver := &fakeInteractiveSessionResolver{
+		byPanePID:       map[int]string{panePID: "codex-fd-bound"},
+		legacyAmbiguous: true,
+		legacyReason:    "multiple matching codex-tui rollouts found",
+	}
+	srv, store, tmuxer := newWakeLegacyBackfillFixture(t, resolver, nil)
+	tmuxer.panePIDByName = map[string]int{tmux.ChatSessionName("r1", "agent-1"): panePID}
+
+	if _, err := srv.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+
+	calls := resolver.snapshotResolverCalls()
+	if len(calls) == 0 {
+		t.Fatal("resolver was never called — the assertion below would be vacuous")
+	}
+	backfill := calls[0]
+	if !backfill.allowLegacyBackfill {
+		t.Fatalf("first resolver call was not the backfill: %+v", backfill)
+	}
+	if backfill.panePID != panePID {
+		t.Fatalf("backfill panePID = %d, want the chat's live pane %d — pane pid 0 is what skips fd resolution", backfill.panePID, panePID)
+	}
+	if store.updateProviderCall != 1 {
+		t.Fatalf("UpdateProviderSessionID calls = %d, want 1", store.updateProviderCall)
+	}
+	if store.updateProvider == nil || *store.updateProvider != "codex-fd-bound" {
+		t.Fatalf("bound provider id = %v, want the fd-resolved %q (an ambiguous time-window scan cannot produce it)", store.updateProvider, "codex-fd-bound")
+	}
+}
+
+// TestWakeChat_NoLivePaneStillBindsViaLegacyPath is the other half: chats with
+// no live process must not regress. The legacy time-window path is what that
+// flag is actually for, and it stays the fallback whenever no pane pid resolves.
+func TestWakeChat_NoLivePaneStillBindsViaLegacyPath(t *testing.T) {
+	resolver := &fakeInteractiveSessionResolver{
+		legacySessionID: "codex-legacy-1",
+		byPanePID:       map[int]string{4242: "codex-fd-bound"},
+	}
+	srv, store, tmuxer := newWakeLegacyBackfillFixture(t, resolver, map[string]bool{"codex-legacy-1": true})
+	// No pane: tmux cannot report a pid for this chat's session.
+	tmuxer.panePIDErr = errors.New("no such session")
+
+	if _, err := srv.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+
+	calls := resolver.snapshotResolverCalls()
+	if len(calls) == 0 {
+		t.Fatal("resolver was never called")
+	}
+	if calls[0].panePID != 0 {
+		t.Fatalf("backfill panePID = %d, want 0 when tmux reports no pane", calls[0].panePID)
+	}
+	if !calls[0].allowLegacyBackfill {
+		t.Fatalf("backfill did not allow the legacy scan: %+v", calls[0])
+	}
+	if store.updateProvider == nil || *store.updateProvider != "codex-legacy-1" {
+		t.Fatalf("bound provider id = %v, want the legacy %q", store.updateProvider, "codex-legacy-1")
+	}
+}
+
+// TestWakeChat_AlreadyBoundChatIsNotRewritten pins the BOS-290 invariant at the
+// recovery site now that it runs fd resolution: passing a real pane pid widens
+// what fd resolution runs against, and on wake the pane may have been reused or
+// the pid recycled. The re-read-before-write invariant is what keeps a wrong
+// bind from landing, so it is tested rather than assumed.
+func TestWakeChat_AlreadyBoundChatIsNotRewritten(t *testing.T) {
+	const panePID = 4242
+	resolver := &fakeInteractiveSessionResolver{
+		byPanePID: map[int]string{panePID: "codex-fd-other"},
+	}
+	srv, store, tmuxer := newWakeLegacyBackfillFixture(t, resolver, map[string]bool{"codex-already-bound": true})
+	tmuxer.panePIDByName = map[string]int{tmux.ChatSessionName("r1", "agent-1"): panePID}
+	bound := "codex-already-bound"
+	store.chat.ProviderSessionID = &bound
+
+	if _, err := srv.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+
+	if store.updateProviderCall != 0 {
+		t.Fatalf("UpdateProviderSessionID calls = %d, want 0: an already-bound chat's id is authoritative", store.updateProviderCall)
+	}
+	if store.chat.ProviderSessionID == nil || *store.chat.ProviderSessionID != bound {
+		t.Fatalf("provider id = %v, want it untouched at %q", store.chat.ProviderSessionID, bound)
 	}
 }

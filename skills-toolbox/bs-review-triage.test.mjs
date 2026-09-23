@@ -1657,3 +1657,152 @@ test('the patch-branch rejection reason is unchanged: `patch.file not found: <fi
     rmSync(repoRoot, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// R1 — a SELECTED lens that produced nothing must not vanish. The roster
+// registers only the Tier 2/3 fallback chosen after every Tier 1 descriptor has
+// settled, so a configured lens that was selected and then emitted no file at
+// all is named by neither the roster nor any file on disk. Before this case the
+// panel simply shrank by one reviewer and the verdict stayed well-formed.
+// ---------------------------------------------------------------------------
+test('CLI categorize names a selected lens that produced no output and holds no roster entry', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
+  try {
+    const lensEntries = join(dir, 'lens-entries.json')
+    writeFileSync(
+      lensEntries,
+      JSON.stringify([{ skill: 'reporting-lens' }, { skill: 'vanished-lens' }]),
+    )
+    // Entry 0 reported; entry 1 wrote nothing at all.
+    writeFileSync(
+      join(dir, 'findings-lens-0-reporting-lens.json'),
+      JSON.stringify([finding({ severity: 'Critical', title: 'from the lens that ran' })]),
+    )
+
+    const { stdout, stderr, status } = runCli([
+      'categorize',
+      dir,
+      '--lens-entries-file',
+      lensEntries,
+    ])
+    assert.equal(status, 0, stderr)
+    const parsed = JSON.parse(stdout)
+    // The surviving lens's evidence is untouched...
+    assert.deepEqual(
+      parsed.mustFix.map((group) => group.title),
+      ['from the lens that ran'],
+    )
+    // ...and the absent one is NAMED, in both artifacts a reader routes on.
+    assert.equal(parsed.invalid.length, 1)
+    assert.equal(
+      parsed.invalid[0].reason,
+      'findings-lens-1-*.json: selected lens vanished-lens produced no output',
+    )
+    assert.deepEqual(parsed.panel.missing, ['vanished-lens'])
+    assert.deepEqual(parsed.panel.reviewers, ['reporting-lens'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The regression case note `2e9c24ec3aa86f88` asked for: a roster populated for
+// SOME dispatches and not others must not cost an unlisted lens its identity.
+// The listed lens's findings are still read, and the unlisted-and-absent lens is
+// still named by its configured skill rather than being silently dropped.
+test('CLI categorize keeps a partially populated roster from costing an omitted lens its identity', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
+  try {
+    const lensEntries = join(dir, 'lens-entries.json')
+    const expectedOutputs = join(dir, 'expected-outputs.json')
+    writeFileSync(
+      lensEntries,
+      JSON.stringify([{ skill: 'rostered-lens' }, { skill: 'omitted-lens' }]),
+    )
+    // The roster names entry 0's fallback only — entry 1 is not registered at all.
+    writeFileSync(expectedOutputs, JSON.stringify(['findings-lens-0-rostered-lens.json']))
+    writeFileSync(
+      join(dir, 'findings-lens-0-rostered-lens.json'),
+      JSON.stringify([finding({ severity: 'Critical', title: 'from the rostered lens' })]),
+    )
+
+    const { stdout, stderr, status } = runCli([
+      'categorize',
+      dir,
+      '--lens-entries-file',
+      lensEntries,
+      '--expected-outputs-file',
+      expectedOutputs,
+    ])
+    assert.equal(status, 0, stderr)
+    const parsed = JSON.parse(stdout)
+    // The rostered lens is read, not superseded by the partial roster.
+    assert.deepEqual(
+      parsed.mustFix.map((group) => group.title),
+      ['from the rostered lens'],
+    )
+    // The omitted lens keeps its CONFIGURED identity in both artifacts.
+    assert.equal(parsed.invalid.length, 1)
+    assert.match(parsed.invalid[0].reason, /selected lens omitted-lens produced no output$/)
+    assert.deepEqual(parsed.panel.missing, ['omitted-lens'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// THE FALSIFICATION CASE for both cases above: the new reconciliation is keyed
+// on ABSENCE, never on rostering. A lens whose file is PRESENT but unrostered is
+// still read by the existing rules, so R1 cannot be implemented by making every
+// non-rostered lens an error -- which would revert the behaviour the suite's
+// Tier 1 envelope case protects and discard real findings.
+test('CLI categorize still reads a PRESENT non-rostered Tier 1 lens envelope', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
+  try {
+    const lensEntries = join(dir, 'lens-entries.json')
+    const expectedOutputs = join(dir, 'expected-outputs.json')
+    writeFileSync(lensEntries, JSON.stringify([{ skill: 'configured-lens' }]))
+    // A roster that registers a DIFFERENT dispatch entirely.
+    writeFileSync(expectedOutputs, JSON.stringify(['findings-round-selected.json']))
+    writeFileSync(
+      join(dir, 'findings-round-selected.json'),
+      JSON.stringify({
+        ok: true,
+        extension: 'r',
+        role: 'round',
+        items: [],
+        notes: '',
+        error: null,
+      }),
+    )
+    // Present, unrostered, and a valid Tier 1 envelope: still this round's evidence.
+    writeFileSync(
+      join(dir, 'findings-lens-0-tier1.json'),
+      JSON.stringify({
+        ok: true,
+        extension: 'tier-one',
+        role: 'lens',
+        items: [finding({ severity: 'Critical', title: 'from the present Tier 1 lens' })],
+        notes: '',
+        error: null,
+      }),
+    )
+
+    const { stdout, stderr, status } = runCli([
+      'categorize',
+      dir,
+      '--lens-entries-file',
+      lensEntries,
+      '--expected-outputs-file',
+      expectedOutputs,
+    ])
+    assert.equal(status, 0, stderr)
+    const parsed = JSON.parse(stdout)
+    assert.deepEqual(parsed.invalid, [])
+    assert.deepEqual(parsed.panel.missing, [])
+    assert.deepEqual(
+      parsed.mustFix.map((group) => group.title),
+      ['from the present Tier 1 lens'],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

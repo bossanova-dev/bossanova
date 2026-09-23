@@ -53,6 +53,7 @@ type fakeSessionCommandServer struct {
 	lastMoveReq                *pb.MoveSessionRequest
 	lastLinkReq                *pb.LinkSessionPRRequest
 	lastUpdateChatTitle        *pb.UpdateChatTitleRequest
+	lastDeleteChat             *pb.DeleteChatRequest
 	lastReportChatStatus       *pb.ReportChatStatusRequest
 }
 
@@ -131,7 +132,8 @@ func (f *fakeSessionCommandServer) RecordChat(_ context.Context, req *connect.Re
 	}), nil
 }
 
-func (f *fakeSessionCommandServer) DeleteChat(_ context.Context, _ *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
+func (f *fakeSessionCommandServer) DeleteChat(_ context.Context, req *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
+	f.lastDeleteChat = req.Msg
 	return connect.NewResponse(&pb.DeleteChatResponse{}), nil
 }
 
@@ -1494,9 +1496,26 @@ func TestCommandHandlerAdapter_DeleteChat(t *testing.T) {
 
 	t.Run("succeeds when the command server returns ok", func(t *testing.T) {
 		t.Parallel()
-		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
 		if err := adapter.DeleteChat(context.Background(), "s1", "as1"); err != nil {
 			t.Fatalf("DeleteChat returned error: %v", err)
+		}
+
+		// The reverse stream and the proxy carry no reason field, so this
+		// adapter is the last place one can be stated. It must STAMP the value
+		// rather than forward the zero value: an UNSPECIFIED arriving at the
+		// daemon reads as "this caller predates the field" and skips the
+		// fail-closed cleanup gate, which is exactly the silent downgrade
+		// across a converter that BOS-1299 set out to avoid.
+		if want := pb.DeleteChatRequest_DELETION_REASON_USER_REQUESTED; fake.lastDeleteChat.GetReason() != want {
+			t.Fatalf("forwarded reason = %v, want %v", fake.lastDeleteChat.GetReason(), want)
+		}
+		if got := fake.lastDeleteChat.GetAgentSessionId(); got != "as1" {
+			t.Fatalf("forwarded agent_session_id = %q, want %q", got, "as1")
+		}
+		if got := fake.lastDeleteChat.GetSessionId(); got != "s1" {
+			t.Fatalf("forwarded session_id = %q, want %q", got, "s1")
 		}
 	})
 }

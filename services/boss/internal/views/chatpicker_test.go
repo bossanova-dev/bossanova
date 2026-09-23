@@ -34,6 +34,14 @@ type chatPickerStub struct {
 	session       *pb.Session
 	repos         []*pb.Repo
 
+	// deleteChatFixtured opts this stub into answering DeleteChat; see the
+	// method. deleteChatCalls and lastDeleteReason then record what the picker
+	// asked for, so a test can assert the explicit-delete key path states its
+	// own reason instead of defaulting to UNSPECIFIED (BOS-1299).
+	deleteChatFixtured bool
+	deleteChatCalls    int
+	lastDeleteReason   pb.DeleteChatRequest_DeletionReason
+
 	// Switch-account canned data (BOS-171). accounts is returned by
 	// ListAccounts; switchResp / switchErr drive SwitchSessionAccount; and
 	// switchCalls records the requests the TUI dispatched.
@@ -190,7 +198,19 @@ func (s *chatPickerStub) titleUpdateCalls() []titleUpdateCall {
 	return out
 }
 
-func (s *chatPickerStub) DeleteChat(context.Context, string) error { panic("unused") }
+// DeleteChat answers only when the stub was fixtured for it. Unfixtured it
+// still panics rather than returning an empty success: a delete this test did
+// not arrange for must fail loudly, not look like it worked.
+func (s *chatPickerStub) DeleteChat(_ context.Context, _ string, reason pb.DeleteChatRequest_DeletionReason) error {
+	if !s.deleteChatFixtured {
+		panic("unused")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteChatCalls++
+	s.lastDeleteReason = reason
+	return nil
+}
 func (s *chatPickerStub) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
 	panic("unused")
 }
@@ -3616,4 +3636,32 @@ func (s *chatPickerStub) ListSessionsWithReadFailures(ctx context.Context, req *
 // of a reorder test, so a call is a bug in the view under test.
 func (s *chatPickerStub) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
 	panic("unused")
+}
+
+// TestChatPicker_ExplicitDeleteStatesUserRequested pins the explicit-delete
+// call site (BOS-1299). The picker's delete is a human acting on a row they
+// selected, so it must say USER_REQUESTED. The zero value would read at the
+// daemon as "this caller predates the field" — harmless here today, but it is
+// the same default that, left in place at the orphan-reap site, silently
+// disables the fail-closed recorded-agent gate.
+func TestChatPicker_ExplicitDeleteStatesUserRequested(t *testing.T) {
+	stub := &chatPickerStub{deleteChatFixtured: true}
+	m := chatPickerSized(stub)
+
+	_, cmd := m.startDelete()
+	if cmd == nil {
+		t.Fatal("startDelete returned no command; nothing would be deleted")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("delete command produced no message")
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if stub.deleteChatCalls != 1 {
+		t.Fatalf("DeleteChat called %d time(s), want 1", stub.deleteChatCalls)
+	}
+	if want := pb.DeleteChatRequest_DELETION_REASON_USER_REQUESTED; stub.lastDeleteReason != want {
+		t.Fatalf("explicit delete stated reason %v, want %v", stub.lastDeleteReason, want)
+	}
 }

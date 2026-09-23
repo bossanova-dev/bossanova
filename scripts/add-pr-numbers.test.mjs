@@ -720,3 +720,109 @@ test('add-pr-numbers case 16: a non-empty commit wearing the bootstrap subject i
   assert.ok(after[2].includes(TAG), `real work must be tagged: ${after[2]}`)
   assert.doesNotMatch(r.stderr, /untagged/, r.stderr)
 })
+
+// BOS-1284 U1/U2: the three conditions that could reject the amend are reported BEFORE the
+// rebase starts, and the refusal names a recovery an unattended harness can actually run.
+
+test('add-pr-numbers case 17: a dirty TRACKED path is refused by name, history untouched', () => {
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [{ subject: 'feat(core): add thing' }, { subject: 'fix(core): repair thing' }],
+  })
+  const before = git(repo, 'rev-parse', 'HEAD')
+  // README.md is TRACKED (makeRepo commits it on main), so this is the shape git's rebase
+  // refuses with a message naming nothing.
+  fs.writeFileSync(path.join(repo, 'README.md'), 'locally edited\n')
+
+  const r = runScript(repo)
+  assert.notEqual(r.code, 0, `expected a refusal:\n${r.stdout}\n${r.stderr}`)
+  assert.match(r.stderr, /tracked files carry uncommitted changes/i, r.stderr)
+  assert.match(r.stderr, /^ {2}.*README\.md$/m, `the refusal must name the path: ${r.stderr}`)
+
+  // History untouched: the refusal happened before any fetch or rewrite.
+  assert.equal(git(repo, 'rev-parse', 'HEAD'), before, 'HEAD must not move')
+  for (const subject of subjects(repo)) {
+    assert.ok(!subject.includes(TAG), `no commit may be tagged: ${subject}`)
+  }
+  // And the edit itself survives — the refusal must not be a disguised reset.
+  assert.equal(fs.readFileSync(path.join(repo, 'README.md'), 'utf8'), 'locally edited\n')
+})
+
+test('add-pr-numbers case 18: an UNTRACKED file does not trip the worktree pre-check', () => {
+  // The counterpart direction, and the reason the pre-check passes --untracked-files=no: a
+  // rebase runs straight past an untracked file, so counting `??` would disable the injection
+  // on exactly the routes most likely to carry scratch.
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [{ subject: 'feat(core): add thing' }],
+  })
+  fs.writeFileSync(path.join(repo, 'scratch.log'), 'leftover\n')
+
+  const r = runScript(repo)
+  assert.equal(r.code, 0, `expected success:\n${r.stdout}\n${r.stderr}`)
+  assert.ok(subjects(repo)[0].includes(TAG), 'the commit must still be tagged')
+})
+
+test('add-pr-numbers case 19: each to-be-amended subject is projected before any rewrite', () => {
+  const short = 'feat(core): add thing'
+  const long = 'fix(core): repair thing'
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [{ subject: short }, { subject: long }, { subject: 'chore: done', empty: true }],
+  })
+  const shortSha = shortShaFor(repo, short)
+  const longSha = shortShaFor(repo, long)
+
+  const r = runScript(repo)
+  assert.equal(r.code, 0, `expected success:\n${r.stdout}\n${r.stderr}`)
+
+  // `[#4242] ` is 8 characters: "[#" + 4 digits + "] ".
+  const width = TAG.length + 1
+  assert.match(r.stdout, /Projected tagged subject lengths/, r.stdout)
+  for (const [sha, subject] of [
+    [shortSha, short],
+    [longSha, long],
+  ]) {
+    const row = new RegExp(
+      `^ {2}${sha} {2}subject ${subject.length} -> ${subject.length + width} {2}`,
+      'm',
+    )
+    assert.match(r.stdout, row, `expected a projection row for ${sha}: ${r.stdout}`)
+  }
+  // The EMPTY commit is never amended, so projecting it would describe a rewrite that never
+  // happens. (Its own subject is short, so this also keeps the row count honest.)
+  assert.equal(occurrences(r.stdout, '  subject '), 2, `exactly two rows expected: ${r.stdout}`)
+
+  // BEFORE any rewrite: the projection must precede the first "Added [#N]" line.
+  const projectedAt = r.stdout.indexOf('Projected tagged subject lengths')
+  const firstAmendAt = r.stdout.indexOf(`Added ${TAG}`)
+  assert.ok(projectedAt >= 0 && firstAmendAt > projectedAt, r.stdout)
+})
+
+test('add-pr-numbers case 20: the untagged-commits failure names a non-interactive recipe', () => {
+  const repo = makeRepo({
+    hook: LONG_BODY_HOOK,
+    commits: [
+      { subject: 'feat(core): add thing', body: 'short body' },
+      { subject: 'fix: repair thing', body: 'this body line is definitely longer than twenty' },
+    ],
+  })
+
+  const r = runScript(repo)
+  assert.notEqual(r.code, 0, `expected a non-zero exit:\n${r.stdout}\n${r.stderr}`)
+  // An interactive rebase opens an editor no unattended harness can drive, so naming it is a
+  // recovery the caller cannot run.
+  assert.doesNotMatch(
+    r.stderr,
+    /rebase\s+-i/,
+    `must not prescribe an interactive rebase: ${r.stderr}`,
+  )
+  assert.match(r.stderr, /--msg-filter/, r.stderr)
+  assert.match(r.stderr, /\$GIT_COMMIT/, r.stderr)
+  // The pointer names the OWNING core and the section, never a bare `references/<file>`
+  // path: a reference path resolves against the core of the file naming it, so a bare one
+  // would claim boss-finalize ships a reference it does not.
+  assert.match(r.stderr, /boss-build core's finalize reference/, r.stderr)
+  assert.match(r.stderr, /non-interactive message-rewrite\s+recipe/, r.stderr)
+  assert.doesNotMatch(r.stderr, /references\/finalize-and-stop\.md/, r.stderr)
+})

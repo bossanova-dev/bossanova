@@ -3952,3 +3952,129 @@ func TestWaitChatRun_RemovesRunHookOnCompletion(t *testing.T) {
 		t.Errorf("remove req = %+v, want {WorkDir:/tmp/wt-1 AgentSessionId:run-1}", got)
 	}
 }
+
+// TestProviderSessionIDDiscoveryPassesLivePanePID is the host-service half of
+// BOS-1298's U4. This lookup sent AllowLegacyBackfill with no PanePid, which is
+// exactly the request shape the codex plugin's fd branch declined — so it could
+// only ever take the whole-corpus time-window scan, even for a chat whose codex
+// process was alive and holding its rollout open.
+func TestProviderSessionIDDiscoveryPassesLivePanePID(t *testing.T) {
+	shrinkLegacyBackfillBudget(t, 2*time.Second)
+
+	srv, chat, client, _ := newCodexDiscoveryServer(t)
+	client.resolveResp = &bossanovav1.ResolveInteractiveSessionIDResponse{
+		Found:     true,
+		SessionId: "codex-fd-bound",
+	}
+	paneName := "boss-r1-agent-x"
+	chat.TmuxSessionName = &paneName
+	srv.SetPanePIDResolver(func(_ context.Context, name string) (int, error) {
+		if name != paneName {
+			t.Errorf("pane pid looked up for %q, want the chat's own session %q", name, paneName)
+		}
+		return 4242, nil
+	})
+
+	if got := srv.providerSessionIDForAgentSession(context.Background(), "agent-x"); got != "codex-fd-bound" {
+		t.Fatalf("provider session id = %q, want codex-fd-bound", got)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.resolveReqs) != 1 {
+		t.Fatalf("ResolveInteractiveSessionID calls = %d, want 1", len(client.resolveReqs))
+	}
+	if got := client.resolveReqs[0].GetPanePid(); got != 4242 {
+		t.Fatalf("resolver PanePid = %d, want the chat's live pane 4242 — pane pid 0 is what skips fd resolution", got)
+	}
+	if !client.resolveReqs[0].GetAllowLegacyBackfill() {
+		t.Fatal("resolver AllowLegacyBackfill = false, want true: the time-window scan stays the fallback")
+	}
+}
+
+// ...and a chat with no recorded pane, or a lookup that fails, still sends pane
+// pid 0 and takes the legacy scan, so chats with no live process do not regress.
+func TestProviderSessionIDDiscoverySendsZeroPanePIDWithoutALivePane(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		paneName *string
+		resolver func(context.Context, string) (int, error)
+	}{
+		{name: "no recorded pane"},
+		{
+			name:     "tmux cannot report a pid",
+			paneName: func() *string { n := "boss-r1-agent-x"; return &n }(),
+			resolver: func(context.Context, string) (int, error) { return 0, errors.New("no such session") },
+		},
+		{name: "no resolver wired", paneName: func() *string { n := "boss-r1-agent-x"; return &n }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shrinkLegacyBackfillBudget(t, 2*time.Second)
+
+			srv, chat, client, _ := newCodexDiscoveryServer(t)
+			client.resolveResp = &bossanovav1.ResolveInteractiveSessionIDResponse{
+				Found:     true,
+				SessionId: "codex-legacy-bound",
+			}
+			chat.TmuxSessionName = tc.paneName
+			if tc.resolver != nil {
+				srv.SetPanePIDResolver(tc.resolver)
+			}
+
+			if got := srv.providerSessionIDForAgentSession(context.Background(), "agent-x"); got != "codex-legacy-bound" {
+				t.Fatalf("provider session id = %q, want codex-legacy-bound", got)
+			}
+			client.mu.Lock()
+			defer client.mu.Unlock()
+			if len(client.resolveReqs) != 1 {
+				t.Fatalf("ResolveInteractiveSessionID calls = %d, want 1", len(client.resolveReqs))
+			}
+			if got := client.resolveReqs[0].GetPanePid(); got != 0 {
+				t.Fatalf("resolver PanePid = %d, want 0 with no live pane", got)
+			}
+		})
+	}
+}
+
+// TestEffectiveChatSessionResetsModelAcrossAgents is the host-service half of
+// BOS-1281. The chat view mirrored the session's model onto a chat that bound
+// none of its own, so a codex chat under a claude session handed a
+// provider-scoped claude model id to the codex runner.
+func TestEffectiveChatSessionResetsModelAcrossAgents(t *testing.T) {
+	srv := &HostServiceServer{agentChats: &fakeAgentChatStore{
+		chatsByAgent: map[string]*models.AgentChat{
+			"agent-cross": {SessionID: "sess-1", AgentSessionID: "agent-cross", AgentName: "codex"},
+			"agent-same":  {SessionID: "sess-1", AgentSessionID: "agent-same", AgentName: "claude"},
+			"agent-own":   {SessionID: "sess-1", AgentSessionID: "agent-own", AgentName: "codex", Model: "gpt-5"},
+		},
+	}}
+	sess := &models.Session{
+		ID:              "sess-1",
+		AgentName:       "claude",
+		Model:           "claude-opus-4",
+		EffectiveModel:  "claude-opus-4",
+		EffectiveEffort: "high",
+	}
+
+	cross := srv.effectiveChatSessionForAgentSession(context.Background(), sess, "agent-cross")
+	if cross.Model != "" || cross.EffectiveModel != "" {
+		t.Errorf("cross-agent view model = %q / effective %q, want empty on both",
+			cross.Model, cross.EffectiveModel)
+	}
+
+	// Both directions, so the reset cannot silently become "always empty".
+	same := srv.effectiveChatSessionForAgentSession(context.Background(), sess, "agent-same")
+	if same.Model != "claude-opus-4" || same.EffectiveModel != "claude-opus-4" {
+		t.Errorf("same-agent view model = %q / effective %q, want the session's claude-opus-4",
+			same.Model, same.EffectiveModel)
+	}
+	own := srv.effectiveChatSessionForAgentSession(context.Background(), sess, "agent-own")
+	if own.Model != "gpt-5" || own.EffectiveModel != "gpt-5" {
+		t.Errorf("chat-bound view model = %q / effective %q, want the chat's gpt-5",
+			own.Model, own.EffectiveModel)
+	}
+	// The original session must not be mutated by any of the three views.
+	if sess.Model != "claude-opus-4" || sess.EffectiveModel != "claude-opus-4" {
+		t.Errorf("original session mutated: model=%q effective=%q", sess.Model, sess.EffectiveModel)
+	}
+}

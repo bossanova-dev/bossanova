@@ -881,6 +881,23 @@ export function deferredReasonMessage(reasonCode, { missing } = {}) {
       "See the PR's diff and tests for the change. This is expected, not a problem with the change."
     )
   }
+  if (reasonCode === 'forced-no-surface') {
+    // BOS-1285: the surface is in this run ONLY because a `## Required proof`
+    // bullet (or a brief/env override) forced it there, and the diff holds no
+    // product source and selected no recipe — so there is nothing for the agent
+    // to drive. Deliberately distinct from `agent-incomplete`: that code means a
+    // real surface the agent could not demonstrate, and conflating the two made
+    // this outcome indistinguishable from a failed capture. NEVER an
+    // "environment limitation" — nothing is missing from the environment.
+    return (
+      'A `## Required proof` bullet asked for this surface, but the diff holds no product ' +
+      'source for it to demonstrate and selected no proof recipe — the change is prose, ' +
+      'harness scripts, generated artifacts or test-only files. There is nothing to capture, ' +
+      'so this is NOT a failed capture and contributes no failure to the run. Scope the ' +
+      "bullet to the surface the change actually touches, or leave it unscoped. See the PR's " +
+      'diff and tests for the change.'
+    )
+  }
   if (reasonCode === 'env-unavailable') {
     const list = missing?.length ? missing.join(', ') : 'one or more prerequisites'
     return (

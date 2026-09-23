@@ -838,6 +838,14 @@ func (h *Host) SetAgentLogsDir(dir string) {
 	}
 }
 
+// SetPanePIDResolver injects the live pane-pid lookup the host service uses to
+// give codex provider-id discovery the chat's real pane (BOS-1298).
+func (h *Host) SetPanePIDResolver(fn func(ctx context.Context, tmuxSessionName string) (int, error)) {
+	if h.hostService != nil {
+		h.hostService.SetPanePIDResolver(fn)
+	}
+}
+
 // SetProofEnvResolver injects the proof env overlay resolver used on the
 // plugin-side agent spawn path. The HostServiceServer constructor defaults to
 // a hermetic no-op resolver so tests never open the real OS keyring (its Linux

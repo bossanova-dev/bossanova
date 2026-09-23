@@ -8,7 +8,7 @@
 // "blocks" whose `issue` is X. A blocker clears only when its PR is merged
 // (state Done -> type "completed") or the work is dropped (Canceled -> "canceled").
 
-import { linearRequest, buildIssueCountFilter } from './linear-gate-lib.mjs'
+import { linearRequest, buildIssueCountFilter, resolveGateSelectors } from './linear-gate-lib.mjs'
 
 // Linear state.type values that mean a blocker no longer blocks.
 export const BLOCKER_CLEARED_STATE_TYPES = new Set(['completed', 'canceled'])
@@ -62,15 +62,44 @@ export function countUnblocked(issues, opts) {
 // backlog of ≤250 matching candidates — a smaller cap could skip a run while an
 // unblocked candidate sat just past it. (Beyond 250 the gate and the skill could
 // in principle window different subsets; that backlog size is not realistic here.)
+//
+// The three identity selectors are optional and inert: each resolves to `undefined` when unset,
+// contributing no clause, so this gate emits the byte-identical filter it emitted before they
+// existed for every caller that passes only `state` and `label` — which is every caller in this
+// tree today. They resolve through the shared `resolveGateSelectors` preamble rather than a local
+// `me` check so the fail-closed identity contract, and the serial resolution order the request
+// counts are pinned against, are written once for both gate runners.
+//
+// Round trips, as the code actually spends them: an unset selector costs zero, a selector holding
+// a concrete id costs zero, and a selector set to the literal `me` costs one viewer lookup of its
+// own — the resolver is not memoised, so two `me` selectors cost two lookups. That callers in this
+// tree set at most one selector is an assumption about the callers, not a property of this gate.
 export async function runUnblockedGate({
   apiKey,
   state,
   label,
+  assignee,
+  creator,
+  assigneeOrCreator,
   maxCandidates = 250,
   fetchImpl = fetch,
   endpoint,
 }) {
-  const filter = buildIssueCountFilter({ state, label })
+  const { assigneeId, creatorId, assigneeOrCreatorId } = await resolveGateSelectors({
+    apiKey,
+    assignee,
+    creator,
+    assigneeOrCreator,
+    fetchImpl,
+    endpoint,
+  })
+  const filter = buildIssueCountFilter({
+    state,
+    label,
+    assigneeId,
+    creatorId,
+    assigneeOrCreatorId,
+  })
   const data = await linearRequest({
     apiKey,
     query: BLOCKING_GATE_QUERY,

@@ -293,6 +293,12 @@ export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
  *   rewritten to a different length, e.g. `| --- | --- |` stored as `| -- | -- |`. Alignment
  *   colons are NOT part of this transform: a cell's colons carry alignment where its dash count
  *   carries nothing, so a row that lost one is a semantic change and stays drift.
+ * - `block-boundary-blank-line-normalization` — a blank line inserted or removed at a LIST block
+ *   boundary: between a list and the heading that follows it, or between two adjacent list items.
+ *   Unlike the transforms above this one is not purely cosmetic — a blank line inside a list makes
+ *   the list loose, which changes the rendered markup — so it is a deliberate widening, bounded to
+ *   those two boundaries and never dropping a line that carries text. That bound is what keeps a
+ *   dropped list item, and two lists merged across the paragraph that separated them, drift.
  */
 export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'unordered-list-marker-substitution',
@@ -301,6 +307,7 @@ export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'trailing-whitespace-trimming',
   'terminal-newline-trimming',
   'table-delimiter-row-normalization',
+  'block-boundary-blank-line-normalization',
 ])
 
 const DESCRIPTION_NORMALIZATION_TRANSFORM_SET = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
@@ -315,6 +322,17 @@ export const UNATTRIBUTED_DRIFT_SEVERITIES = Object.freeze(['warn', 'block'])
 
 /** The default severity. `warn`, because the write has already landed by the time it is known. */
 export const DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY = 'warn'
+
+/**
+ * The CLOSED key vocabulary of a `trackerConfig.<adapter>.selection` block.
+ *
+ * Closed for the same reason `DESCRIPTION_NORMALIZATION_TRANSFORMS` is: the failure mode of an
+ * open key set is a typo that silently disables the narrowing. `selection: { assigneeOrCreatr }`
+ * or a singular `label` is well-formed JSON that no shape check rejects, and
+ * `selectionConfigFor` then resolves it to all-nulls — a gate that runs completely un-narrowed
+ * while the operator believes it is filtered, with nothing anywhere saying so.
+ */
+const SELECTION_KEYS = Object.freeze(['assigneeOrCreator', 'labels'])
 
 export const PLAN_SECTION_REQUIRED_KINDS = new Set([
   'always',
@@ -753,6 +771,88 @@ export function validateConfig(config, source) {
       ) {
         fail(
           `trackerConfig.${adapter}.followUpLabels must be a non-empty array of non-empty strings`,
+        )
+      }
+    }
+    // selection: optional. Narrows WHICH CANDIDATES a sweep's gate considers, as a property of the
+    // repository rather than of a single run. That is the whole admission rule for this block: a
+    // knob that changes what a run does once it already HAS a candidate does not belong here.
+    //
+    // Both keys are optional and independent, and every "absent" spelling — no block, no key —
+    // resolves to NO narrowing through `selectionConfigFor`, so a repo that never heard of this
+    // key keeps exactly the behaviour it has.
+    //
+    //   - assigneeOrCreator: the literal `me` (the owner of the API key in the process
+    //     environment) or a concrete tracker user id. Matched as "assigned to X OR created by X".
+    //   - labels: a non-empty array of label display names, matched as a DISJUNCTION — a candidate
+    //     qualifies if it carries ANY of them. It SUPERSEDES the single `agentFriendly` label role
+    //     for the gate's candidate filter rather than unioning with it, because a union would
+    //     WIDEN and this seam exists to narrow.
+    //
+    // Structure faults throw, in the same style as `states`/`labels`/`followUpLabels` above; a
+    // value this copy does not recognise does NOT. This file is copy-distributed into every user's
+    // global skill directory, so rejecting an unfamiliar label name or user id would turn an
+    // additive widening into a crash for every consumer of the config. Reject SHAPES only.
+    //
+    // An EMPTY `labels` array is rejected rather than read as absent: "I configured a label set of
+    // nothing" is a repo that meant something and silently got nothing, which is the one failure
+    // mode an operator would never notice.
+    //
+    // SEQUENCING NOTE, stated where an operator setting the key will hit it: gate-side narrowing
+    // is safe only because the worker narrows identically. With this key set, boss-build's worker
+    // selects through the tracker CLI's `list-planned` verb (the same `plannedSelectionQuery` the
+    // gate reads) and stops rather than falling back to the UNFILTERED descriptor, whose result
+    // set is a strict superset of the gate's and would pick somebody else's ticket.
+    if ('selection' in tc) {
+      const sel = tc.selection
+      if (!sel || typeof sel !== 'object' || Array.isArray(sel)) {
+        fail(`trackerConfig.${adapter}.selection must be an object when present`)
+      }
+      if ('assigneeOrCreator' in sel) {
+        if (typeof sel.assigneeOrCreator !== 'string' || sel.assigneeOrCreator.length === 0) {
+          fail(
+            `trackerConfig.${adapter}.selection.assigneeOrCreator must be a non-empty string when present; got ${JSON.stringify(
+              sel.assigneeOrCreator,
+            )}`,
+          )
+        }
+      }
+      if ('labels' in sel) {
+        if (!Array.isArray(sel.labels)) {
+          fail(
+            `trackerConfig.${adapter}.selection.labels must be an array of label names when present; got ${JSON.stringify(
+              sel.labels,
+            )}`,
+          )
+        }
+        if (sel.labels.length === 0) {
+          fail(
+            `trackerConfig.${adapter}.selection.labels must not be empty; omit the key to apply no label narrowing`,
+          )
+        }
+        for (const name of sel.labels) {
+          if (typeof name !== 'string' || name.length === 0) {
+            fail(
+              `trackerConfig.${adapter}.selection.labels entries must be non-empty strings; got ${JSON.stringify(
+                name,
+              )}`,
+            )
+          }
+        }
+      }
+      // Same role split as `descriptionNormalization.tolerated` above, and for the same reason:
+      // the key vocabulary is closed, but a misspelled key WARNS rather than throwing. This file
+      // is copy-distributed into every user's global skill directory, so a newer repo declaring a
+      // key an older installed copy has not learned yet must not crash that copy — while a typo
+      // that leaves the block inert has to be audible somewhere, because the resolved
+      // all-nulls gate is byte-identical to a repo that configured nothing at all.
+      const unrecognisedKeys = Object.keys(sel).filter((key) => !SELECTION_KEYS.includes(key))
+      if (unrecognisedKeys.length > 0) {
+        console.warn(
+          `skill-config: ${source}: trackerConfig.${adapter}.selection names ` +
+            `${unrecognisedKeys.map((key) => JSON.stringify(key)).join(', ')}, which this copy of the ` +
+            `selection vocabulary does not recognise; ignoring it, which applies NO narrowing of that ` +
+            `kind. Known keys: ${SELECTION_KEYS.join(', ')}`,
         )
       }
     }
@@ -1378,6 +1478,99 @@ export function unattributedDriftSeverity(config, adapter = adapterFor(config, '
   return UNATTRIBUTED_DRIFT_SEVERITIES.includes(declared)
     ? declared
     : DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY
+}
+
+/**
+ * The optional candidate-narrowing selectors this repo declares for its sweeps' gates.
+ *
+ * Returns BOTH fields always, each `null` when the repo declares no narrowing of that kind, so a
+ * caller can spread the result without re-deriving absence. `null` — never `undefined`, never an
+ * empty array — is the one spelling of "no narrowing", because a gate that forwards `undefined`
+ * into a filter builder and one that forwards an empty array must produce the same inert filter.
+ *
+ * It NEVER throws. Unlike `stateName` / `labelName`, whose roles are required and whose throw is
+ * the correct answer to a repo that failed to configure them, `selection` is genuinely optional:
+ * a throw here would take down every core that merely LOADS the config, in every repo, over a key
+ * none of them set. So this accessor is self-defending in the way `notesSampleRate` and
+ * `toleratedDescriptionTransforms` already are — a hand-built config that never went through
+ * `validateConfig` and carries garbage resolves to nulls rather than handing a caller a malformed
+ * array or an `undefined`.
+ *
+ * A malformed `labels` array is rejected WHOLE — one bad entry nulls the key — rather than
+ * salvaged entry by entry. This is the one place the self-defence deliberately diverges from
+ * `toleratedDescriptionTransforms`, which drops unrecognised ids and keeps the rest. That
+ * divergence is directional, not stylistic: dropping a tolerated transform makes a COMPARISON
+ * stricter, so its worst case is one spurious triage look. Dropping a label makes a candidate
+ * SCAN narrower, so its worst case is a gate that reports no work while work exists — a silent
+ * false negative on exactly the axis this key controls. Applying `['label-a']` where the operator
+ * wrote `['label-a', 7]` is a narrowing nobody configured; applying none is the documented
+ * "no narrowing" the caller already handles.
+ *
+ * That self-defence is why the adapter default is read straight off `config` instead of through
+ * `adapterFor(config, 'tracker')` like its siblings: `adapterFor` indexes `config.adapters`
+ * unguarded, so the sibling spelling throws a raw TypeError on exactly the hand-built config this
+ * accessor promises to survive. The resolved value is identical for every config that validated.
+ *
+ * A non-null result must narrow the gate AND the worker identically, so neither reads this
+ * directly to build a candidate query: both go through `plannedSelectionQuery` below. The worker's
+ * narrowed route is the tracker CLI's `list-planned` verb, and a worker that cannot take it stops
+ * rather than falling back to the unfiltered descriptor — a strict superset of the gate's scan.
+ *
+ * @returns {{ assigneeOrCreator: string|null, labels: string[]|null }}
+ */
+export function selectionConfigFor(config, adapter = config?.adapters?.tracker) {
+  // The adapter is checked before `trackerConfigFor` is reached, not merely defaulted. Passing an
+  // explicitly `undefined` argument RE-TRIGGERS that function's own `adapterFor` default, so
+  // forwarding an unresolved adapter would throw the exact TypeError this accessor exists to
+  // survive. An unresolved adapter also has no per-adapter block by construction, so there is
+  // nothing to compose on.
+  const tc =
+    config && typeof config === 'object' && typeof adapter === 'string' && adapter.length > 0
+      ? trackerConfigFor(config, adapter)
+      : null
+  const block = tc?.selection
+  const sel = block && typeof block === 'object' && !Array.isArray(block) ? block : null
+  const assigneeOrCreator =
+    typeof sel?.assigneeOrCreator === 'string' && sel.assigneeOrCreator.length > 0
+      ? sel.assigneeOrCreator
+      : null
+  // `every`, not `filter`: a partial salvage would hand the gate a narrowing the operator never
+  // wrote. See the note in the docblock for why this direction differs from `tolerated`.
+  const declared =
+    Array.isArray(sel?.labels) &&
+    sel.labels.length > 0 &&
+    sel.labels.every((name) => typeof name === 'string' && name.length > 0)
+      ? // A copy, as the previous `filter` produced: the caller must not be able to mutate the
+        // loaded config through the accessor's return value.
+        [...sel.labels]
+      : null
+  return { assigneeOrCreator, labels: declared }
+}
+
+/**
+ * The ONE derivation of the planned-candidate query that the boss-build cron gate and the worker's
+ * `list-planned` verb both filter on, so the two narrow identically rather than merely sharing a
+ * filter builder: `{state: <planned state>, label: <selection.labels, else the agentFriendly
+ * role>}`, plus `assigneeOrCreator` only when one is configured.
+ *
+ * A configured label set SUPERSEDES the single `agentFriendly` role rather than unioning with it —
+ * a union would WIDEN, and `selection` exists to narrow. The identity key is added by conditional
+ * assignment, never spread from a possibly-undefined value: a key present-and-undefined is a
+ * different argument object from an absent key, and the un-narrowed gate is pinned on the exact
+ * absent-key shape it emitted before the seam existed.
+ *
+ * Throws (through `stateName` / `labelName`) when the planned state or the agentFriendly role is
+ * unconfigured — the fail-closed answer, since a query without its state clause would scan the
+ * whole board.
+ *
+ * @returns {{ state: string, label: string|string[], assigneeOrCreator?: string }}
+ */
+export function plannedSelectionQuery(config) {
+  const state = stateName(config, 'planned')
+  const selection = selectionConfigFor(config)
+  const query = { state, label: selection.labels ?? labelName(config, 'agentFriendly') }
+  if (selection.assigneeOrCreator) query.assigneeOrCreator = selection.assigneeOrCreator
+  return query
 }
 
 function trackerRoleName(config, field, role, required = true) {
@@ -2047,8 +2240,26 @@ function hasCommittedAnchor(tokens) {
   )
 }
 
-function hasCountAssertion(command) {
-  return /(#\s*(?:pass|tests)\s+\d+|grep\s+-q|rg\s+-q|wc\s+-l|assert|count)/i.test(command)
+/**
+ * Does this command re-measure rather than merely run?
+ *
+ * Exported because `plan-contract-guard.mjs`'s `unmeasured-count-claim` needs exactly this
+ * predicate, and a second definition of "asserts a count" is the copied-forward claim that whole
+ * check exists to retire — the two must agree by construction, not by review.
+ */
+export function hasCountAssertion(command) {
+  // `wc -c` / `-w` / `-m` count as re-measurement alongside `-l`: a byte size is the single most
+  // common measured quantity in a plan premise (every descending-budget claim is one), and `wc -c`
+  // measures it exactly as `wc -l` measures a line count.
+  //
+  // `grep -c` / `rg -c` are the MOST idiomatic counting commands of all, and omitting them is not a
+  // neutral gap: this predicate gates two blocking codes (`unmeasured-count-claim` and, for a
+  // criterion, `zero-selection-filter`), so a plan whose claim is correctly re-measured by `rg -c`
+  // was rejected outright. The alternation admits bundled short flags (`grep -rc`) and separated
+  // ones (`grep -r -c`) because both spell the same measurement.
+  return /(#\s*(?:pass|tests)\s+\d+|grep\s+-q|rg\s+-q|\b(?:grep|rg)\s+(?:-\S+\s+)*-[A-Za-z]*c\b|wc\s+-[lcwm]|assert|count)/i.test(
+    command,
+  )
 }
 
 function advisory(code, message) {
@@ -2378,6 +2589,33 @@ export const COMMAND_BLOCKING_CODES = Object.freeze([
   'path-operand-missing',
   'selection-matches-no-test',
   'unanchored-negative-search',
+  // Promoted from the advisory tier for criteria only (see VACUOUS_GREEN_CODES).
+  'zero-selection-filter',
+  'pipe-without-pipefail',
+  'git-grep-word-boundary',
+])
+
+/**
+ * Findings whose command can **exit 0 while asserting nothing** — vacuous evidence.
+ *
+ * The discriminator is deliberately narrow, and it is what keeps the rest of the advisory tier
+ * advisory. `cached-bazel-test` asserted something once (stale, not absent); `unquoted-option-glob`
+ * aborts loudly under zsh; `substring-count-overmatch` over-counts, which fails loud;
+ * `make-goal-unresolved` and `gnu-only-sed-address` are genuinely undecidable statically. Only
+ * these three produce a green that demonstrates nothing: a selection filter that matched no test,
+ * a pipeline reporting the tail's unconditional status, and a `git grep -E` whose `\b` the matcher
+ * never interprets so the search finds nothing.
+ *
+ * The promotion is scoped to `kind === 'criterion'` — a criterion's check IS the evidence the
+ * criterion is discharged by. A premise observes the PRE-change tree, where a zero-selection result
+ * is frequently the true and intended answer, so the same finding stays advisory there. An unknown
+ * kind keeps the advisory tier too: a caller that did not say what it is classifying has not
+ * claimed the command is discharge evidence.
+ */
+const VACUOUS_GREEN_CODES = Object.freeze([
+  'zero-selection-filter',
+  'pipe-without-pipefail',
+  'git-grep-word-boundary',
 ])
 
 function rawCommandSegments(tokens) {
@@ -2514,6 +2752,16 @@ export function classifyCheckCommand(
   const tokens = commandTokens(command)
   const blocking = []
   const advisoryFindings = []
+  // One promotion decision for the whole vacuous-green family, keyed on `kind`. Every member routes
+  // through here rather than pushing its own tier, so no call site repeats the tier choice.
+  //
+  // Adding a fourth member is NOT a one-line edit, and saying so here would be false: it needs a row
+  // in `VACUOUS_GREEN_CODES`, a row in `COMMAND_BLOCKING_CODES`, a `commandFindingRemedy` branch, and
+  // its call site converted to `recordVacuityRisk`. Nothing gates that those agree.
+  const recordVacuityRisk = (code, message) => {
+    if (kind === 'criterion' && VACUOUS_GREEN_CODES.includes(code)) blocking.push({ code, message })
+    else advisoryFindings.push(advisory(code, message))
+  }
   const trimmed = String(command ?? '').trim()
   if (!trimmed) {
     return {
@@ -2610,11 +2858,9 @@ export function classifyCheckCommand(
     ) &&
     !hasCountAssertion(trimmed)
   ) {
-    advisoryFindings.push(
-      advisory(
-        'zero-selection-filter',
-        'a test or file-selection filter can select zero tests/files without a count assertion',
-      ),
+    recordVacuityRisk(
+      'zero-selection-filter',
+      'a test or file-selection filter can select zero tests/files without a count assertion',
     )
   }
   if (hasUnquotedOptionGlob(detailedTokens)) {
@@ -2630,16 +2876,15 @@ export function classifyCheckCommand(
     !tokens.includes('pipefail') &&
     !trimmed.includes('set -o pipefail')
   ) {
-    advisoryFindings.push(
-      advisory(
-        'pipe-without-pipefail',
-        'a pipeline without pipefail reports the tail command status rather than the failing command',
-      ),
+    recordVacuityRisk(
+      'pipe-without-pipefail',
+      'a pipeline without pipefail reports the tail command status rather than the failing command',
     )
   }
   if (tokens[0] === 'git' && tokens[1] === 'grep' && tokens.includes('-E') && /\\b/.test(trimmed)) {
-    advisoryFindings.push(
-      advisory('git-grep-word-boundary', 'git grep -E does not interpret \\b as a word boundary'),
+    recordVacuityRisk(
+      'git-grep-word-boundary',
+      'git grep -E does not interpret \\b as a word boundary',
     )
   }
   if (
@@ -2947,6 +3192,15 @@ export function commandFindingRemedy(code) {
   }
   if (code === 'unanchored-negative-search') {
     return 'Anchor the negative search with a word or line boundary so helper-name extensions do not trip it.'
+  }
+  if (code === 'zero-selection-filter') {
+    return 'Add a count assertion the selection must satisfy, or drop the filter so the whole target runs.'
+  }
+  if (code === 'pipe-without-pipefail') {
+    return 'Prefix the pipeline with "set -o pipefail; ", or record the head command without the pipe.'
+  }
+  if (code === 'git-grep-word-boundary') {
+    return 'Use git grep -P for \\b, or anchor with a character class git grep -E does interpret.'
   }
   return 'Use a command whose head resolves to an executable PATH binary or executable repo-relative script.'
 }

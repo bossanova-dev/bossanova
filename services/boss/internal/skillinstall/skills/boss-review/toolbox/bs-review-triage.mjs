@@ -573,6 +573,36 @@ function readFindingsDir(dir, { lensEntries = null, expectedOutputs = null } = {
     }
   }
 
+  // The roster reconciliation above covers only what the roster REGISTERS, and
+  // the roster registers only the Tier 2/3 fallback selected after every Tier 1
+  // descriptor has settled. A configured lens the round SELECTED that then
+  // produced no file at all, and that no roster entry ever named, is therefore
+  // counted as neither `missing` nor `invalid`: the panel shrinks by one
+  // reviewer with no record anywhere, and the verdict stays well-formed while
+  // being derived from a smaller panel than the round chose. Reconcile the
+  // selected set against the files present too, so "selected but absent and
+  // unrostered" is not a reachable silent state.
+  //
+  // Scoped to ABSENCE only: a PRESENT non-rostered file is still governed by
+  // `isSuperseded` below, which is what lets a superseded Tier 1 attempt stay a
+  // ledger skip rather than capping a round its fallback already answered.
+  for (const [index, entry] of (Array.isArray(lensEntries) ? lensEntries : []).entries()) {
+    const prefix = `findings-lens-${index}-`
+    // A rostered prefix is the roster's business: it was either read above or
+    // already reported missing there, and naming it twice would double-count.
+    if (files.some((name) => name.startsWith(prefix))) continue
+    if ((expectedOutputs ?? []).some((name) => name.startsWith(prefix))) continue
+    // Identity comes from `reviewerForFile`, not from `entry.skill` directly, so
+    // an absent lens is named exactly as a present one would have been.
+    const reviewer = reviewerForFile(`${prefix}absent.json`, lensEntries)
+    const lens = 'reason' in reviewer ? `lens-${index}` : reviewer.lens
+    invalid.push({
+      item: null,
+      reason: `${prefix}*.json: selected lens ${lens} produced no output`,
+    })
+    missing.add(lens)
+  }
+
   // The roster is the authority on which dispatches this round actually
   // selected. A file absent from it belongs to a dispatch a later fallback
   // replaced, so neither its failure nor its findings are this round's evidence.

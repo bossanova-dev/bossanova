@@ -52,6 +52,16 @@ var falsificationStepPins = []falsificationProsePin{
 		live:         "Name the property",
 		tokenRemoved: "Name the claim",
 	},
+	// The classification step is what turns "run a mutation" into "run the mutant SET this shape
+	// owes". It sits between naming the property and the per-mutant procedure, and the order
+	// assertion below is load-bearing: classifying AFTER mutating is how a proof lands one red in
+	// the half a widening already covered and stops.
+	{
+		name:         "classify-fix-shape",
+		pattern:      `Classify\s+the\s+fix's\s+shape`,
+		live:         "Classify the fix's shape and run the mutant set that shape owes",
+		tokenRemoved: "Consider the fix's shape and run the mutant set that shape owes",
+	},
 	{
 		name:         "mutate-production-feed",
 		pattern:      `Mutate\s+the\s+production\s+feed,\s+never\s+the\s+assertion`,
@@ -64,17 +74,30 @@ var falsificationStepPins = []falsificationProsePin{
 		live:         "Prove the mutation landed",
 		tokenRemoved: "Prove the command completed",
 	},
+	// "red" alone is no longer the requirement: a shape can oblige a mutant whose required verdict
+	// is GREEN — the pre-existing sibling under a widening revert, the PRE-fix gate on the violation
+	// a new gate claims to catch — and those are the mutants that separate "this guard fires" from
+	// "this guard fires for the reason claimed". The pin follows the obligation.
 	{
-		name:         "red-right-reason",
-		pattern:      `Require\s+red\s+for\s+the\s+right\s+reason`,
-		live:         "Require red for the right reason",
-		tokenRemoved: "Require red for a reason",
+		name:         "required-verdict-right-reason",
+		pattern:      `Require\s+the\s+mutant's\s+required\s+verdict,\s+for\s+the\s+right\s+reason`,
+		live:         "Require the mutant's required verdict, for the right reason",
+		tokenRemoved: "Require the mutant's verdict, for the right reason",
 	},
 	{
 		name:         "restore-and-prove",
 		pattern:      `Restore\s+exactly,\s+then\s+prove\s+the\s+restore`,
 		live:         "Restore exactly, then prove the restore",
 		tokenRemoved: "Restore exactly, then finish",
+	},
+	// The adjudication is the step that makes the obligation decidable rather than narrated. Without
+	// it the checklist enumerates mutants and then trusts the author's own arithmetic about whether
+	// enough of them ran — which is the failure eleven recorded incidents are instances of.
+	{
+		name:         "adjudicate-recorded-verdicts",
+		pattern:      `Record\s+every\s+observed\s+verdict\s+and\s+adjudicate`,
+		live:         "Record every observed verdict and adjudicate",
+		tokenRemoved: "Record every observed verdict and summarise",
 	},
 }
 
@@ -415,6 +438,27 @@ var falsificationReferencePins = regProsePins(append(slicesClone(falsificationSt
 		pattern:      `derivation.*widening\s+direction\s+only.*pinned\s+list.*narrowing\s+tripwire.*both\s+directions`,
 		live:         "derivation covers the widening direction only; keep a pinned list as a narrowing tripwire and compare both directions",
 		tokenRemoved: "derivation covers widening; keep a list and compare it",
+	},
+	// The shape-to-mutant mapping is DATA, owned by the helper the checklist calls, and the helper's
+	// own tests are its specification. The checklist must therefore name the call — a checklist that
+	// says "classify the shape" without naming where the enumeration lives sends an agent back to
+	// reasoning from the shape's name, which is the unqualified prose obligation this replaced.
+	{
+		name:         "names-the-obligation-helper",
+		pattern:      `bs-mutation-obligations\.mjs`,
+		live:         `node "$BOSS_REVIEW_TOOLBOX/bs-mutation-obligations.mjs" shapes`,
+		tokenRemoved: `node "$BOSS_REVIEW_TOOLBOX/bs-mutation-checklist.mjs" shapes`,
+	},
+	// Exactly one verdict proceeds. Dropping this half leaves a checklist that runs an adjudicator
+	// and then lets the author decide what its output meant.
+	{
+		name:         "satisfied-is-the-only-discharge",
+		pattern:      `satisfied.{0,40}is\s+the\s+only\s+verdict\s+that\s+discharges\s+non-vacuity`,
+		live:         "`satisfied` (exit 0) is the only verdict that discharges non-vacuity.",
+		tokenRemoved: "`satisfied` (exit 0) is the usual verdict that discharges non-vacuity.",
+		alsoRemoved: []string{
+			"`satisfied` (exit 0) is the only verdict that records non-vacuity.",
+		},
 	},
 }...))
 
@@ -1012,6 +1056,36 @@ printf %s "$PROBE_TARGET"
 	}
 }
 
+// bossRepairAdjudicatedProofPins is boss-repair's half of the non-vacuity contract after the
+// restatement was replaced by a call. Three anchors, asserted in order: classify the shape, name
+// the helper that owns the enumeration, and name the single verdict that lets the round commit.
+// Each is something only the document can carry — no helper can observe whether a body told an
+// agent to call it — while everything the enumeration itself says lives in the module and is
+// specified by the module's tests.
+var bossRepairAdjudicatedProofPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "classify-fix-shape-first",
+		pattern:      `Classify\s+the\s+fix's\s+shape\s+first`,
+		live:         "**Classify the fix's shape first**: the mutant set a proof owes",
+		tokenRemoved: "**Consider the fix's shape first**: the mutant set a proof owes",
+	},
+	{
+		name:         "repair-names-the-obligation-helper",
+		pattern:      `bs-mutation-obligations\.mjs`,
+		live:         `node "$BOSS_REPAIR_TOOLBOX/bs-mutation-obligations.mjs" adjudicate --record <record.json>`,
+		tokenRemoved: `node "$BOSS_REPAIR_TOOLBOX/bs-mutation-checklist.mjs" adjudicate --record <record.json>`,
+	},
+	{
+		name:         "satisfied-is-the-only-commit-clearance",
+		pattern:      `satisfied.{0,40}is\s+the\s+only\s+verdict\s+that\s+clears\s+the\s+commit`,
+		live:         "`satisfied` (exit 0) is the only verdict that clears the commit",
+		tokenRemoved: "`satisfied` (exit 0) is the usual verdict that clears the commit",
+		alsoRemoved: []string{
+			"`satisfied` (exit 0) is the only verdict that delays the commit",
+		},
+	},
+})
+
 func TestBossRepairStrategyCarriesFalsificationSteps(t *testing.T) {
 	for payloadName, skill := range bossRepairSkillPayloads(t) {
 		payloadName, skill := payloadName, skill
@@ -1023,8 +1097,13 @@ func TestBossRepairStrategyCarriesFalsificationSteps(t *testing.T) {
 				t.Fatalf("Strategy C is missing %q", commitMarker)
 			}
 			preCommit := strategy[:commitOffset]
-			assertFalsificationPins(t, preCommit, falsificationStepPins)
-			assertPinsInOrder(t, preCommit, falsificationStepPins)
+			// Strategy C no longer RESTATES the shared checklist; it calls the adjudicator that owns
+			// the shape-to-mutant mapping. A verbatim restatement was the drift surface — the
+			// contract and its copy could disagree, and the copy is the one a repair round reads —
+			// so what is pinned here is the routing, not the algorithm. The algorithm's
+			// specification is skills-toolbox/bs-mutation-obligations.test.mjs.
+			assertFalsificationPins(t, preCommit, bossRepairAdjudicatedProofPins)
+			assertPinsInOrder(t, preCommit, bossRepairAdjudicatedProofPins)
 			assertFalsificationPins(t, preCommit, []falsificationProsePin{bossRepairZeroWriteBeforeCommitPin, bossRepairScratchMutationPin, bossRepairScratchConfinementPin})
 			if strings.Contains(strategy, "boss-review/references/") {
 				t.Fatal("Strategy C must not cite a cross-core boss-review reference")

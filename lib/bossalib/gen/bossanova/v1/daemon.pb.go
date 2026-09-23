@@ -75,6 +75,87 @@ func (MoveDirection) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{0}
 }
 
+// DeletionReason states WHY a caller is deleting the chat, because the daemon
+// cannot discover it: the reverse-stream path synthesises the request
+// in-process and socketauth validates one shared bearer token without storing
+// an identity, so there is no peer, no header and no interceptor to read a
+// caller from. The values therefore name their own origin — a cleanup reap and
+// a user-requested delete are different reasons, not one reason from different
+// callers.
+//
+// This is an enum rather than the free string WakeChatResponse.reason uses
+// because this reason GATES behaviour instead of annotating an outcome: an
+// unrecognised value must be inert (it falls into the legacy delete path)
+// rather than permissive, which a closed enum gives and a free string does not.
+type DeleteChatRequest_DeletionReason int32
+
+const (
+	// Unset: the caller predates this field, or states no reason. Deletes
+	// exactly as the daemon did before the field existed — no gate applies.
+	DeleteChatRequest_DELETION_REASON_UNSPECIFIED DeleteChatRequest_DeletionReason = 0
+	// A human asked for this chat to be deleted (chat picker, web UI). Never
+	// gated.
+	//
+	// It is ALSO what the reverse-stream/proxy paths stamp, but there it is an
+	// assumption rather than a fact: ProxyDeleteChatRequest carries no reason,
+	// so CommandHandlerAdapter stamps this value unconditionally. An agent's
+	// delete_chat MCP tool call is AGENT_REQUESTED over the local socket and
+	// arrives here as USER_REQUESTED over the gateway. Treat a proxied
+	// USER_REQUESTED as "origin not carried", not as a proven human.
+	DeleteChatRequest_DELETION_REASON_USER_REQUESTED DeleteChatRequest_DeletionReason = 1
+	// An agent asked, through an MCP tool call. Never gated.
+	DeleteChatRequest_DELETION_REASON_AGENT_REQUESTED DeleteChatRequest_DeletionReason = 2
+	// Cleanup of a chat judged unused because no local CLAUDE transcript was
+	// found for it. That is a provider-specific, absence-based inference, so
+	// the daemon refuses it (FailedPrecondition, row preserved) unless the
+	// chat's recorded agent resolves to claude. An empty recorded agent
+	// resolves to claude by the same legacy default the rest of bossd uses.
+	DeleteChatRequest_DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT DeleteChatRequest_DeletionReason = 3
+)
+
+// Enum value maps for DeleteChatRequest_DeletionReason.
+var (
+	DeleteChatRequest_DeletionReason_name = map[int32]string{
+		0: "DELETION_REASON_UNSPECIFIED",
+		1: "DELETION_REASON_USER_REQUESTED",
+		2: "DELETION_REASON_AGENT_REQUESTED",
+		3: "DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT",
+	}
+	DeleteChatRequest_DeletionReason_value = map[string]int32{
+		"DELETION_REASON_UNSPECIFIED":                            0,
+		"DELETION_REASON_USER_REQUESTED":                         1,
+		"DELETION_REASON_AGENT_REQUESTED":                        2,
+		"DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT": 3,
+	}
+)
+
+func (x DeleteChatRequest_DeletionReason) Enum() *DeleteChatRequest_DeletionReason {
+	p := new(DeleteChatRequest_DeletionReason)
+	*p = x
+	return p
+}
+
+func (x DeleteChatRequest_DeletionReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DeleteChatRequest_DeletionReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_bossanova_v1_daemon_proto_enumTypes[1].Descriptor()
+}
+
+func (DeleteChatRequest_DeletionReason) Type() protoreflect.EnumType {
+	return &file_bossanova_v1_daemon_proto_enumTypes[1]
+}
+
+func (x DeleteChatRequest_DeletionReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DeleteChatRequest_DeletionReason.Descriptor instead.
+func (DeleteChatRequest_DeletionReason) EnumDescriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{70, 0}
+}
+
 type WakeChatResponse_Outcome int32
 
 const (
@@ -111,11 +192,11 @@ func (x WakeChatResponse_Outcome) String() string {
 }
 
 func (WakeChatResponse_Outcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_bossanova_v1_daemon_proto_enumTypes[1].Descriptor()
+	return file_bossanova_v1_daemon_proto_enumTypes[2].Descriptor()
 }
 
 func (WakeChatResponse_Outcome) Type() protoreflect.EnumType {
-	return &file_bossanova_v1_daemon_proto_enumTypes[1]
+	return &file_bossanova_v1_daemon_proto_enumTypes[2]
 }
 
 func (x WakeChatResponse_Outcome) Number() protoreflect.EnumNumber {
@@ -182,11 +263,11 @@ func (x SendChatMessageResponse_DeliveryState) String() string {
 }
 
 func (SendChatMessageResponse_DeliveryState) Descriptor() protoreflect.EnumDescriptor {
-	return file_bossanova_v1_daemon_proto_enumTypes[2].Descriptor()
+	return file_bossanova_v1_daemon_proto_enumTypes[3].Descriptor()
 }
 
 func (SendChatMessageResponse_DeliveryState) Type() protoreflect.EnumType {
-	return &file_bossanova_v1_daemon_proto_enumTypes[2]
+	return &file_bossanova_v1_daemon_proto_enumTypes[3]
 }
 
 func (x SendChatMessageResponse_DeliveryState) Number() protoreflect.EnumNumber {
@@ -246,11 +327,11 @@ func (x SendChatMessageResponse_TurnStartState) String() string {
 }
 
 func (SendChatMessageResponse_TurnStartState) Descriptor() protoreflect.EnumDescriptor {
-	return file_bossanova_v1_daemon_proto_enumTypes[3].Descriptor()
+	return file_bossanova_v1_daemon_proto_enumTypes[4].Descriptor()
 }
 
 func (SendChatMessageResponse_TurnStartState) Type() protoreflect.EnumType {
-	return &file_bossanova_v1_daemon_proto_enumTypes[3]
+	return &file_bossanova_v1_daemon_proto_enumTypes[4]
 }
 
 func (x SendChatMessageResponse_TurnStartState) Number() protoreflect.EnumNumber {
@@ -316,11 +397,11 @@ func (x NotifyAuthChangeResponse_Outcome) String() string {
 }
 
 func (NotifyAuthChangeResponse_Outcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_bossanova_v1_daemon_proto_enumTypes[4].Descriptor()
+	return file_bossanova_v1_daemon_proto_enumTypes[5].Descriptor()
 }
 
 func (NotifyAuthChangeResponse_Outcome) Type() protoreflect.EnumType {
-	return &file_bossanova_v1_daemon_proto_enumTypes[4]
+	return &file_bossanova_v1_daemon_proto_enumTypes[5]
 }
 
 func (x NotifyAuthChangeResponse_Outcome) Number() protoreflect.EnumNumber {
@@ -368,11 +449,11 @@ func (x InstalledPlugin_Status) String() string {
 }
 
 func (InstalledPlugin_Status) Descriptor() protoreflect.EnumDescriptor {
-	return file_bossanova_v1_daemon_proto_enumTypes[5].Descriptor()
+	return file_bossanova_v1_daemon_proto_enumTypes[6].Descriptor()
 }
 
 func (InstalledPlugin_Status) Type() protoreflect.EnumType {
-	return &file_bossanova_v1_daemon_proto_enumTypes[5]
+	return &file_bossanova_v1_daemon_proto_enumTypes[6]
 }
 
 func (x InstalledPlugin_Status) Number() protoreflect.EnumNumber {
@@ -4334,7 +4415,11 @@ type DeleteChatRequest struct {
 	// session_id, when set, scopes the delete: the daemon rejects the request
 	// (NotFound) if the chat does not belong to this session. Empty skips the
 	// check for backward-compatible callers.
-	SessionId     string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// reason is UNSPECIFIED for any caller that predates the field, which deletes
+	// exactly as before. Only CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT can be
+	// refused; every other value (including unset) deletes.
+	Reason        DeleteChatRequest_DeletionReason `protobuf:"varint,3,opt,name=reason,proto3,enum=bossanova.v1.DeleteChatRequest_DeletionReason" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4381,6 +4466,13 @@ func (x *DeleteChatRequest) GetSessionId() string {
 		return x.SessionId
 	}
 	return ""
+}
+
+func (x *DeleteChatRequest) GetReason() DeleteChatRequest_DeletionReason {
+	if x != nil {
+		return x.Reason
+	}
+	return DeleteChatRequest_DELETION_REASON_UNSPECIFIED
 }
 
 type DeleteChatResponse struct {
@@ -11850,11 +11942,17 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x16UpdateChatTitleRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"\x19\n" +
-	"\x17UpdateChatTitleResponse\"\\\n" +
+	"\x17UpdateChatTitleResponse\"\xdd\x02\n" +
 	"\x11DeleteChatRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x02 \x01(\tR\tsessionId\"\x14\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12F\n" +
+	"\x06reason\x18\x03 \x01(\x0e2..bossanova.v1.DeleteChatRequest.DeletionReasonR\x06reason\"\xb6\x01\n" +
+	"\x0eDeletionReason\x12\x1f\n" +
+	"\x1bDELETION_REASON_UNSPECIFIED\x10\x00\x12\"\n" +
+	"\x1eDELETION_REASON_USER_REQUESTED\x10\x01\x12#\n" +
+	"\x1fDELETION_REASON_AGENT_REQUESTED\x10\x02\x12:\n" +
+	"6DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT\x10\x03\"\x14\n" +
 	"\x12DeleteChatResponse\"\\\n" +
 	"\x0fWakeChatRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1f\n" +
@@ -12591,508 +12689,510 @@ func file_bossanova_v1_daemon_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_daemon_proto_rawDescData
 }
 
-var file_bossanova_v1_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_bossanova_v1_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
 var file_bossanova_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 186)
 var file_bossanova_v1_daemon_proto_goTypes = []any{
 	(MoveDirection)(0),                          // 0: bossanova.v1.MoveDirection
-	(WakeChatResponse_Outcome)(0),               // 1: bossanova.v1.WakeChatResponse.Outcome
-	(SendChatMessageResponse_DeliveryState)(0),  // 2: bossanova.v1.SendChatMessageResponse.DeliveryState
-	(SendChatMessageResponse_TurnStartState)(0), // 3: bossanova.v1.SendChatMessageResponse.TurnStartState
-	(NotifyAuthChangeResponse_Outcome)(0),       // 4: bossanova.v1.NotifyAuthChangeResponse.Outcome
-	(InstalledPlugin_Status)(0),                 // 5: bossanova.v1.InstalledPlugin.Status
-	(*ResolveContextRequest)(nil),               // 6: bossanova.v1.ResolveContextRequest
-	(*ResolveContextResponse)(nil),              // 7: bossanova.v1.ResolveContextResponse
-	(*ValidateRepoPathRequest)(nil),             // 8: bossanova.v1.ValidateRepoPathRequest
-	(*ValidateRepoPathResponse)(nil),            // 9: bossanova.v1.ValidateRepoPathResponse
-	(*RegisterRepoRequest)(nil),                 // 10: bossanova.v1.RegisterRepoRequest
-	(*RegisterRepoResponse)(nil),                // 11: bossanova.v1.RegisterRepoResponse
-	(*CloneAndRegisterRepoRequest)(nil),         // 12: bossanova.v1.CloneAndRegisterRepoRequest
-	(*CloneAndRegisterRepoResponse)(nil),        // 13: bossanova.v1.CloneAndRegisterRepoResponse
-	(*ListReposRequest)(nil),                    // 14: bossanova.v1.ListReposRequest
-	(*ListReposResponse)(nil),                   // 15: bossanova.v1.ListReposResponse
-	(*RemoveRepoRequest)(nil),                   // 16: bossanova.v1.RemoveRepoRequest
-	(*RemoveRepoResponse)(nil),                  // 17: bossanova.v1.RemoveRepoResponse
-	(*UpdateRepoRequest)(nil),                   // 18: bossanova.v1.UpdateRepoRequest
-	(*UpdateRepoResponse)(nil),                  // 19: bossanova.v1.UpdateRepoResponse
-	(*GetRepoSettingsRequest)(nil),              // 20: bossanova.v1.GetRepoSettingsRequest
-	(*GetRepoSettingsResponse)(nil),             // 21: bossanova.v1.GetRepoSettingsResponse
-	(*ListRepoPRsRequest)(nil),                  // 22: bossanova.v1.ListRepoPRsRequest
-	(*ListRepoPRsResponse)(nil),                 // 23: bossanova.v1.ListRepoPRsResponse
-	(*ListTrackerIssuesRequest)(nil),            // 24: bossanova.v1.ListTrackerIssuesRequest
-	(*ListTrackerIssuesResponse)(nil),           // 25: bossanova.v1.ListTrackerIssuesResponse
-	(*CreateSessionRequest)(nil),                // 26: bossanova.v1.CreateSessionRequest
-	(*CreateSessionResponse)(nil),               // 27: bossanova.v1.CreateSessionResponse
-	(*SetupScriptOutput)(nil),                   // 28: bossanova.v1.SetupScriptOutput
-	(*SessionCreated)(nil),                      // 29: bossanova.v1.SessionCreated
-	(*GetSessionRequest)(nil),                   // 30: bossanova.v1.GetSessionRequest
-	(*GetSessionResponse)(nil),                  // 31: bossanova.v1.GetSessionResponse
-	(*ListSessionsRequest)(nil),                 // 32: bossanova.v1.ListSessionsRequest
-	(*ListSessionsResponse)(nil),                // 33: bossanova.v1.ListSessionsResponse
-	(*MoveSessionRequest)(nil),                  // 34: bossanova.v1.MoveSessionRequest
-	(*MoveSessionResponse)(nil),                 // 35: bossanova.v1.MoveSessionResponse
-	(*AttachSessionRequest)(nil),                // 36: bossanova.v1.AttachSessionRequest
-	(*AttachSessionResponse)(nil),               // 37: bossanova.v1.AttachSessionResponse
-	(*OutputLine)(nil),                          // 38: bossanova.v1.OutputLine
-	(*StateChange)(nil),                         // 39: bossanova.v1.StateChange
-	(*SessionEnded)(nil),                        // 40: bossanova.v1.SessionEnded
-	(*StopSessionRequest)(nil),                  // 41: bossanova.v1.StopSessionRequest
-	(*StopSessionResponse)(nil),                 // 42: bossanova.v1.StopSessionResponse
-	(*PauseSessionRequest)(nil),                 // 43: bossanova.v1.PauseSessionRequest
-	(*PauseSessionResponse)(nil),                // 44: bossanova.v1.PauseSessionResponse
-	(*ResumeSessionRequest)(nil),                // 45: bossanova.v1.ResumeSessionRequest
-	(*ResumeSessionResponse)(nil),               // 46: bossanova.v1.ResumeSessionResponse
-	(*RetrySessionRequest)(nil),                 // 47: bossanova.v1.RetrySessionRequest
-	(*RetrySessionResponse)(nil),                // 48: bossanova.v1.RetrySessionResponse
-	(*CloseSessionRequest)(nil),                 // 49: bossanova.v1.CloseSessionRequest
-	(*CloseSessionResponse)(nil),                // 50: bossanova.v1.CloseSessionResponse
-	(*MergeSessionRequest)(nil),                 // 51: bossanova.v1.MergeSessionRequest
-	(*MergeSessionResponse)(nil),                // 52: bossanova.v1.MergeSessionResponse
-	(*RemoveSessionRequest)(nil),                // 53: bossanova.v1.RemoveSessionRequest
-	(*RemoveSessionResponse)(nil),               // 54: bossanova.v1.RemoveSessionResponse
-	(*UpdateSessionRequest)(nil),                // 55: bossanova.v1.UpdateSessionRequest
-	(*UpdateSessionResponse)(nil),               // 56: bossanova.v1.UpdateSessionResponse
-	(*LinkSessionPRRequest)(nil),                // 57: bossanova.v1.LinkSessionPRRequest
-	(*LinkSessionPRResponse)(nil),               // 58: bossanova.v1.LinkSessionPRResponse
-	(*RefreshSessionPRRequest)(nil),             // 59: bossanova.v1.RefreshSessionPRRequest
-	(*RefreshSessionPRResponse)(nil),            // 60: bossanova.v1.RefreshSessionPRResponse
-	(*SwitchSessionAccountRequest)(nil),         // 61: bossanova.v1.SwitchSessionAccountRequest
-	(*SwitchSessionAccountResponse)(nil),        // 62: bossanova.v1.SwitchSessionAccountResponse
-	(*ArchiveSessionRequest)(nil),               // 63: bossanova.v1.ArchiveSessionRequest
-	(*ArchiveSessionResponse)(nil),              // 64: bossanova.v1.ArchiveSessionResponse
-	(*ResurrectSessionRequest)(nil),             // 65: bossanova.v1.ResurrectSessionRequest
-	(*ResurrectSessionResponse)(nil),            // 66: bossanova.v1.ResurrectSessionResponse
-	(*SessionResurrected)(nil),                  // 67: bossanova.v1.SessionResurrected
-	(*EmptyTrashRequest)(nil),                   // 68: bossanova.v1.EmptyTrashRequest
-	(*EmptyTrashResponse)(nil),                  // 69: bossanova.v1.EmptyTrashResponse
-	(*RecordChatRequest)(nil),                   // 70: bossanova.v1.RecordChatRequest
-	(*RecordChatResponse)(nil),                  // 71: bossanova.v1.RecordChatResponse
-	(*ListChatsRequest)(nil),                    // 72: bossanova.v1.ListChatsRequest
-	(*ListChatsResponse)(nil),                   // 73: bossanova.v1.ListChatsResponse
-	(*UpdateChatTitleRequest)(nil),              // 74: bossanova.v1.UpdateChatTitleRequest
-	(*UpdateChatTitleResponse)(nil),             // 75: bossanova.v1.UpdateChatTitleResponse
-	(*DeleteChatRequest)(nil),                   // 76: bossanova.v1.DeleteChatRequest
-	(*DeleteChatResponse)(nil),                  // 77: bossanova.v1.DeleteChatResponse
-	(*WakeChatRequest)(nil),                     // 78: bossanova.v1.WakeChatRequest
-	(*WakeChatResponse)(nil),                    // 79: bossanova.v1.WakeChatResponse
-	(*DescribeChatLaunchRequest)(nil),           // 80: bossanova.v1.DescribeChatLaunchRequest
-	(*DescribeChatLaunchResponse)(nil),          // 81: bossanova.v1.DescribeChatLaunchResponse
-	(*DescribeChatMCPRequest)(nil),              // 82: bossanova.v1.DescribeChatMCPRequest
-	(*DescribeChatMCPResponse)(nil),             // 83: bossanova.v1.DescribeChatMCPResponse
-	(*GetChatTranscriptRequest)(nil),            // 84: bossanova.v1.GetChatTranscriptRequest
-	(*GetChatTranscriptResponse)(nil),           // 85: bossanova.v1.GetChatTranscriptResponse
-	(*SendChatMessageRequest)(nil),              // 86: bossanova.v1.SendChatMessageRequest
-	(*SendChatMessageResponse)(nil),             // 87: bossanova.v1.SendChatMessageResponse
-	(*ChatStatusReport)(nil),                    // 88: bossanova.v1.ChatStatusReport
-	(*ReportChatStatusRequest)(nil),             // 89: bossanova.v1.ReportChatStatusRequest
-	(*ReportChatStatusResponse)(nil),            // 90: bossanova.v1.ReportChatStatusResponse
-	(*GetChatStatusesRequest)(nil),              // 91: bossanova.v1.GetChatStatusesRequest
-	(*ChatStatusEntry)(nil),                     // 92: bossanova.v1.ChatStatusEntry
-	(*GetChatStatusesResponse)(nil),             // 93: bossanova.v1.GetChatStatusesResponse
-	(*GetSessionStatusesRequest)(nil),           // 94: bossanova.v1.GetSessionStatusesRequest
-	(*SessionStatusEntry)(nil),                  // 95: bossanova.v1.SessionStatusEntry
-	(*GetSessionStatusesResponse)(nil),          // 96: bossanova.v1.GetSessionStatusesResponse
-	(*DeliverVCSEventRequest)(nil),              // 97: bossanova.v1.DeliverVCSEventRequest
-	(*DeliverVCSEventResponse)(nil),             // 98: bossanova.v1.DeliverVCSEventResponse
-	(*NotifyAuthChangeRequest)(nil),             // 99: bossanova.v1.NotifyAuthChangeRequest
-	(*NotifyAuthChangeResponse)(nil),            // 100: bossanova.v1.NotifyAuthChangeResponse
-	(*GetAuthStateRequest)(nil),                 // 101: bossanova.v1.GetAuthStateRequest
-	(*GetAuthStateResponse)(nil),                // 102: bossanova.v1.GetAuthStateResponse
-	(*CreateCronJobRequest)(nil),                // 103: bossanova.v1.CreateCronJobRequest
-	(*CreateCronJobResponse)(nil),               // 104: bossanova.v1.CreateCronJobResponse
-	(*ListCronJobsRequest)(nil),                 // 105: bossanova.v1.ListCronJobsRequest
-	(*ListCronJobsResponse)(nil),                // 106: bossanova.v1.ListCronJobsResponse
-	(*GetCronJobRequest)(nil),                   // 107: bossanova.v1.GetCronJobRequest
-	(*GetCronJobResponse)(nil),                  // 108: bossanova.v1.GetCronJobResponse
-	(*UpdateCronJobRequest)(nil),                // 109: bossanova.v1.UpdateCronJobRequest
-	(*UpdateCronJobResponse)(nil),               // 110: bossanova.v1.UpdateCronJobResponse
-	(*DeleteCronJobRequest)(nil),                // 111: bossanova.v1.DeleteCronJobRequest
-	(*DeleteCronJobResponse)(nil),               // 112: bossanova.v1.DeleteCronJobResponse
-	(*RunCronJobNowRequest)(nil),                // 113: bossanova.v1.RunCronJobNowRequest
-	(*RunCronJobNowResponse)(nil),               // 114: bossanova.v1.RunCronJobNowResponse
-	(*CreateGithubCallbackRequest)(nil),         // 115: bossanova.v1.CreateGithubCallbackRequest
-	(*CreateGithubCallbackResponse)(nil),        // 116: bossanova.v1.CreateGithubCallbackResponse
-	(*ListGithubCallbacksRequest)(nil),          // 117: bossanova.v1.ListGithubCallbacksRequest
-	(*ListGithubCallbacksResponse)(nil),         // 118: bossanova.v1.ListGithubCallbacksResponse
-	(*DeleteGithubCallbackRequest)(nil),         // 119: bossanova.v1.DeleteGithubCallbackRequest
-	(*DeleteGithubCallbackResponse)(nil),        // 120: bossanova.v1.DeleteGithubCallbackResponse
-	(*BroadcastSelectorClause)(nil),             // 121: bossanova.v1.BroadcastSelectorClause
-	(*BroadcastSelector)(nil),                   // 122: bossanova.v1.BroadcastSelector
-	(*Broadcast)(nil),                           // 123: bossanova.v1.Broadcast
-	(*BroadcastDelivery)(nil),                   // 124: bossanova.v1.BroadcastDelivery
-	(*SendBroadcastRequest)(nil),                // 125: bossanova.v1.SendBroadcastRequest
-	(*SendBroadcastResponse)(nil),               // 126: bossanova.v1.SendBroadcastResponse
-	(*ListBroadcastsRequest)(nil),               // 127: bossanova.v1.ListBroadcastsRequest
-	(*ListBroadcastsResponse)(nil),              // 128: bossanova.v1.ListBroadcastsResponse
-	(*DeleteBroadcastRequest)(nil),              // 129: bossanova.v1.DeleteBroadcastRequest
-	(*DeleteBroadcastResponse)(nil),             // 130: bossanova.v1.DeleteBroadcastResponse
-	(*Note)(nil),                                // 131: bossanova.v1.Note
-	(*NoteTagSet)(nil),                          // 132: bossanova.v1.NoteTagSet
-	(*CreateNoteRequest)(nil),                   // 133: bossanova.v1.CreateNoteRequest
-	(*CreateNoteResponse)(nil),                  // 134: bossanova.v1.CreateNoteResponse
-	(*GetNoteRequest)(nil),                      // 135: bossanova.v1.GetNoteRequest
-	(*GetNoteResponse)(nil),                     // 136: bossanova.v1.GetNoteResponse
-	(*ListNotesRequest)(nil),                    // 137: bossanova.v1.ListNotesRequest
-	(*ListNotesResponse)(nil),                   // 138: bossanova.v1.ListNotesResponse
-	(*UpdateNoteRequest)(nil),                   // 139: bossanova.v1.UpdateNoteRequest
-	(*UpdateNoteResponse)(nil),                  // 140: bossanova.v1.UpdateNoteResponse
-	(*DeleteNoteRequest)(nil),                   // 141: bossanova.v1.DeleteNoteRequest
-	(*DeleteNoteResponse)(nil),                  // 142: bossanova.v1.DeleteNoteResponse
-	(*BroadcastSubscription)(nil),               // 143: bossanova.v1.BroadcastSubscription
-	(*CreateBroadcastSubscriptionRequest)(nil),  // 144: bossanova.v1.CreateBroadcastSubscriptionRequest
-	(*CreateBroadcastSubscriptionResponse)(nil), // 145: bossanova.v1.CreateBroadcastSubscriptionResponse
-	(*ListBroadcastSubscriptionsRequest)(nil),   // 146: bossanova.v1.ListBroadcastSubscriptionsRequest
-	(*ListBroadcastSubscriptionsResponse)(nil),  // 147: bossanova.v1.ListBroadcastSubscriptionsResponse
-	(*DeleteBroadcastSubscriptionRequest)(nil),  // 148: bossanova.v1.DeleteBroadcastSubscriptionRequest
-	(*DeleteBroadcastSubscriptionResponse)(nil), // 149: bossanova.v1.DeleteBroadcastSubscriptionResponse
-	(*ListAccountsRequest)(nil),                 // 150: bossanova.v1.ListAccountsRequest
-	(*ListAccountsResponse)(nil),                // 151: bossanova.v1.ListAccountsResponse
-	(*AddAccountRequest)(nil),                   // 152: bossanova.v1.AddAccountRequest
-	(*AddAccountResponse)(nil),                  // 153: bossanova.v1.AddAccountResponse
-	(*RefreshAccountRequest)(nil),               // 154: bossanova.v1.RefreshAccountRequest
-	(*RefreshAccountResponse)(nil),              // 155: bossanova.v1.RefreshAccountResponse
-	(*UpdateAccountRequest)(nil),                // 156: bossanova.v1.UpdateAccountRequest
-	(*UpdateAccountResponse)(nil),               // 157: bossanova.v1.UpdateAccountResponse
-	(*RemoveAccountRequest)(nil),                // 158: bossanova.v1.RemoveAccountRequest
-	(*RemoveAccountResponse)(nil),               // 159: bossanova.v1.RemoveAccountResponse
-	(*TestAccountRequest)(nil),                  // 160: bossanova.v1.TestAccountRequest
-	(*TestAccountResponse)(nil),                 // 161: bossanova.v1.TestAccountResponse
-	(*RepairDoctorRequest)(nil),                 // 162: bossanova.v1.RepairDoctorRequest
-	(*RepairDoctorCheck)(nil),                   // 163: bossanova.v1.RepairDoctorCheck
-	(*StartRepairWorkflowRequest)(nil),          // 164: bossanova.v1.StartRepairWorkflowRequest
-	(*StartRepairWorkflowResponse)(nil),         // 165: bossanova.v1.StartRepairWorkflowResponse
-	(*RepairDoctorResponse)(nil),                // 166: bossanova.v1.RepairDoctorResponse
-	(*RepairLogSnapshot)(nil),                   // 167: bossanova.v1.RepairLogSnapshot
-	(*ListCheckSnapshotsRequest)(nil),           // 168: bossanova.v1.ListCheckSnapshotsRequest
-	(*CheckSnapshot)(nil),                       // 169: bossanova.v1.CheckSnapshot
-	(*ListCheckSnapshotsResponse)(nil),          // 170: bossanova.v1.ListCheckSnapshotsResponse
-	(*GetRunCostRequest)(nil),                   // 171: bossanova.v1.GetRunCostRequest
-	(*AgentRunCost)(nil),                        // 172: bossanova.v1.AgentRunCost
-	(*RunCostAggregate)(nil),                    // 173: bossanova.v1.RunCostAggregate
-	(*RunCostBackfillSummary)(nil),              // 174: bossanova.v1.RunCostBackfillSummary
-	(*GetRunCostResponse)(nil),                  // 175: bossanova.v1.GetRunCostResponse
-	(*ListAgentsRequest)(nil),                   // 176: bossanova.v1.ListAgentsRequest
-	(*ListAgentsResponse)(nil),                  // 177: bossanova.v1.ListAgentsResponse
-	(*AgentInfo)(nil),                           // 178: bossanova.v1.AgentInfo
-	(*ListPluginsRequest)(nil),                  // 179: bossanova.v1.ListPluginsRequest
-	(*ListPluginsResponse)(nil),                 // 180: bossanova.v1.ListPluginsResponse
-	(*InstalledPlugin)(nil),                     // 181: bossanova.v1.InstalledPlugin
-	(*GetSettingsRequest)(nil),                  // 182: bossanova.v1.GetSettingsRequest
-	(*GetSettingsResponse)(nil),                 // 183: bossanova.v1.GetSettingsResponse
-	(*GlobalSettings)(nil),                      // 184: bossanova.v1.GlobalSettings
-	(*AgentSettings)(nil),                       // 185: bossanova.v1.AgentSettings
-	(*UpdateSettingsRequest)(nil),               // 186: bossanova.v1.UpdateSettingsRequest
-	(*AgentSettingsUpdate)(nil),                 // 187: bossanova.v1.AgentSettingsUpdate
-	(*UpdateSettingsResponse)(nil),              // 188: bossanova.v1.UpdateSettingsResponse
-	nil,                                         // 189: bossanova.v1.RunCostAggregate.TerminalStateMixEntry
-	nil,                                         // 190: bossanova.v1.AgentSettings.ConfigEntry
-	nil,                                         // 191: bossanova.v1.AgentSettingsUpdate.ConfigEntry
-	(*Repo)(nil),                                // 192: bossanova.v1.Repo
-	(*Session)(nil),                             // 193: bossanova.v1.Session
-	(*SecretUpdate)(nil),                        // 194: bossanova.v1.SecretUpdate
-	(*timestamppb.Timestamp)(nil),               // 195: google.protobuf.Timestamp
-	(*RepoSettings)(nil),                        // 196: bossanova.v1.RepoSettings
-	(*PRSummary)(nil),                           // 197: bossanova.v1.PRSummary
-	(*TrackerIssue)(nil),                        // 198: bossanova.v1.TrackerIssue
-	(SessionState)(0),                           // 199: bossanova.v1.SessionState
-	(SessionEvent)(0),                           // 200: bossanova.v1.SessionEvent
-	(*ClaudeChat)(nil),                          // 201: bossanova.v1.ClaudeChat
-	(*MCPServerReport)(nil),                     // 202: bossanova.v1.MCPServerReport
-	(*ChatMessage)(nil),                         // 203: bossanova.v1.ChatMessage
-	(ChatStatus)(0),                             // 204: bossanova.v1.ChatStatus
-	(*VCSEvent)(nil),                            // 205: bossanova.v1.VCSEvent
-	(*CronJob)(nil),                             // 206: bossanova.v1.CronJob
-	(*GithubCallback)(nil),                      // 207: bossanova.v1.GithubCallback
-	(*Account)(nil),                             // 208: bossanova.v1.Account
-	(DisplayStatus)(0),                          // 209: bossanova.v1.DisplayStatus
-	(*UserSetting)(nil),                         // 210: bossanova.v1.UserSetting
+	(DeleteChatRequest_DeletionReason)(0),       // 1: bossanova.v1.DeleteChatRequest.DeletionReason
+	(WakeChatResponse_Outcome)(0),               // 2: bossanova.v1.WakeChatResponse.Outcome
+	(SendChatMessageResponse_DeliveryState)(0),  // 3: bossanova.v1.SendChatMessageResponse.DeliveryState
+	(SendChatMessageResponse_TurnStartState)(0), // 4: bossanova.v1.SendChatMessageResponse.TurnStartState
+	(NotifyAuthChangeResponse_Outcome)(0),       // 5: bossanova.v1.NotifyAuthChangeResponse.Outcome
+	(InstalledPlugin_Status)(0),                 // 6: bossanova.v1.InstalledPlugin.Status
+	(*ResolveContextRequest)(nil),               // 7: bossanova.v1.ResolveContextRequest
+	(*ResolveContextResponse)(nil),              // 8: bossanova.v1.ResolveContextResponse
+	(*ValidateRepoPathRequest)(nil),             // 9: bossanova.v1.ValidateRepoPathRequest
+	(*ValidateRepoPathResponse)(nil),            // 10: bossanova.v1.ValidateRepoPathResponse
+	(*RegisterRepoRequest)(nil),                 // 11: bossanova.v1.RegisterRepoRequest
+	(*RegisterRepoResponse)(nil),                // 12: bossanova.v1.RegisterRepoResponse
+	(*CloneAndRegisterRepoRequest)(nil),         // 13: bossanova.v1.CloneAndRegisterRepoRequest
+	(*CloneAndRegisterRepoResponse)(nil),        // 14: bossanova.v1.CloneAndRegisterRepoResponse
+	(*ListReposRequest)(nil),                    // 15: bossanova.v1.ListReposRequest
+	(*ListReposResponse)(nil),                   // 16: bossanova.v1.ListReposResponse
+	(*RemoveRepoRequest)(nil),                   // 17: bossanova.v1.RemoveRepoRequest
+	(*RemoveRepoResponse)(nil),                  // 18: bossanova.v1.RemoveRepoResponse
+	(*UpdateRepoRequest)(nil),                   // 19: bossanova.v1.UpdateRepoRequest
+	(*UpdateRepoResponse)(nil),                  // 20: bossanova.v1.UpdateRepoResponse
+	(*GetRepoSettingsRequest)(nil),              // 21: bossanova.v1.GetRepoSettingsRequest
+	(*GetRepoSettingsResponse)(nil),             // 22: bossanova.v1.GetRepoSettingsResponse
+	(*ListRepoPRsRequest)(nil),                  // 23: bossanova.v1.ListRepoPRsRequest
+	(*ListRepoPRsResponse)(nil),                 // 24: bossanova.v1.ListRepoPRsResponse
+	(*ListTrackerIssuesRequest)(nil),            // 25: bossanova.v1.ListTrackerIssuesRequest
+	(*ListTrackerIssuesResponse)(nil),           // 26: bossanova.v1.ListTrackerIssuesResponse
+	(*CreateSessionRequest)(nil),                // 27: bossanova.v1.CreateSessionRequest
+	(*CreateSessionResponse)(nil),               // 28: bossanova.v1.CreateSessionResponse
+	(*SetupScriptOutput)(nil),                   // 29: bossanova.v1.SetupScriptOutput
+	(*SessionCreated)(nil),                      // 30: bossanova.v1.SessionCreated
+	(*GetSessionRequest)(nil),                   // 31: bossanova.v1.GetSessionRequest
+	(*GetSessionResponse)(nil),                  // 32: bossanova.v1.GetSessionResponse
+	(*ListSessionsRequest)(nil),                 // 33: bossanova.v1.ListSessionsRequest
+	(*ListSessionsResponse)(nil),                // 34: bossanova.v1.ListSessionsResponse
+	(*MoveSessionRequest)(nil),                  // 35: bossanova.v1.MoveSessionRequest
+	(*MoveSessionResponse)(nil),                 // 36: bossanova.v1.MoveSessionResponse
+	(*AttachSessionRequest)(nil),                // 37: bossanova.v1.AttachSessionRequest
+	(*AttachSessionResponse)(nil),               // 38: bossanova.v1.AttachSessionResponse
+	(*OutputLine)(nil),                          // 39: bossanova.v1.OutputLine
+	(*StateChange)(nil),                         // 40: bossanova.v1.StateChange
+	(*SessionEnded)(nil),                        // 41: bossanova.v1.SessionEnded
+	(*StopSessionRequest)(nil),                  // 42: bossanova.v1.StopSessionRequest
+	(*StopSessionResponse)(nil),                 // 43: bossanova.v1.StopSessionResponse
+	(*PauseSessionRequest)(nil),                 // 44: bossanova.v1.PauseSessionRequest
+	(*PauseSessionResponse)(nil),                // 45: bossanova.v1.PauseSessionResponse
+	(*ResumeSessionRequest)(nil),                // 46: bossanova.v1.ResumeSessionRequest
+	(*ResumeSessionResponse)(nil),               // 47: bossanova.v1.ResumeSessionResponse
+	(*RetrySessionRequest)(nil),                 // 48: bossanova.v1.RetrySessionRequest
+	(*RetrySessionResponse)(nil),                // 49: bossanova.v1.RetrySessionResponse
+	(*CloseSessionRequest)(nil),                 // 50: bossanova.v1.CloseSessionRequest
+	(*CloseSessionResponse)(nil),                // 51: bossanova.v1.CloseSessionResponse
+	(*MergeSessionRequest)(nil),                 // 52: bossanova.v1.MergeSessionRequest
+	(*MergeSessionResponse)(nil),                // 53: bossanova.v1.MergeSessionResponse
+	(*RemoveSessionRequest)(nil),                // 54: bossanova.v1.RemoveSessionRequest
+	(*RemoveSessionResponse)(nil),               // 55: bossanova.v1.RemoveSessionResponse
+	(*UpdateSessionRequest)(nil),                // 56: bossanova.v1.UpdateSessionRequest
+	(*UpdateSessionResponse)(nil),               // 57: bossanova.v1.UpdateSessionResponse
+	(*LinkSessionPRRequest)(nil),                // 58: bossanova.v1.LinkSessionPRRequest
+	(*LinkSessionPRResponse)(nil),               // 59: bossanova.v1.LinkSessionPRResponse
+	(*RefreshSessionPRRequest)(nil),             // 60: bossanova.v1.RefreshSessionPRRequest
+	(*RefreshSessionPRResponse)(nil),            // 61: bossanova.v1.RefreshSessionPRResponse
+	(*SwitchSessionAccountRequest)(nil),         // 62: bossanova.v1.SwitchSessionAccountRequest
+	(*SwitchSessionAccountResponse)(nil),        // 63: bossanova.v1.SwitchSessionAccountResponse
+	(*ArchiveSessionRequest)(nil),               // 64: bossanova.v1.ArchiveSessionRequest
+	(*ArchiveSessionResponse)(nil),              // 65: bossanova.v1.ArchiveSessionResponse
+	(*ResurrectSessionRequest)(nil),             // 66: bossanova.v1.ResurrectSessionRequest
+	(*ResurrectSessionResponse)(nil),            // 67: bossanova.v1.ResurrectSessionResponse
+	(*SessionResurrected)(nil),                  // 68: bossanova.v1.SessionResurrected
+	(*EmptyTrashRequest)(nil),                   // 69: bossanova.v1.EmptyTrashRequest
+	(*EmptyTrashResponse)(nil),                  // 70: bossanova.v1.EmptyTrashResponse
+	(*RecordChatRequest)(nil),                   // 71: bossanova.v1.RecordChatRequest
+	(*RecordChatResponse)(nil),                  // 72: bossanova.v1.RecordChatResponse
+	(*ListChatsRequest)(nil),                    // 73: bossanova.v1.ListChatsRequest
+	(*ListChatsResponse)(nil),                   // 74: bossanova.v1.ListChatsResponse
+	(*UpdateChatTitleRequest)(nil),              // 75: bossanova.v1.UpdateChatTitleRequest
+	(*UpdateChatTitleResponse)(nil),             // 76: bossanova.v1.UpdateChatTitleResponse
+	(*DeleteChatRequest)(nil),                   // 77: bossanova.v1.DeleteChatRequest
+	(*DeleteChatResponse)(nil),                  // 78: bossanova.v1.DeleteChatResponse
+	(*WakeChatRequest)(nil),                     // 79: bossanova.v1.WakeChatRequest
+	(*WakeChatResponse)(nil),                    // 80: bossanova.v1.WakeChatResponse
+	(*DescribeChatLaunchRequest)(nil),           // 81: bossanova.v1.DescribeChatLaunchRequest
+	(*DescribeChatLaunchResponse)(nil),          // 82: bossanova.v1.DescribeChatLaunchResponse
+	(*DescribeChatMCPRequest)(nil),              // 83: bossanova.v1.DescribeChatMCPRequest
+	(*DescribeChatMCPResponse)(nil),             // 84: bossanova.v1.DescribeChatMCPResponse
+	(*GetChatTranscriptRequest)(nil),            // 85: bossanova.v1.GetChatTranscriptRequest
+	(*GetChatTranscriptResponse)(nil),           // 86: bossanova.v1.GetChatTranscriptResponse
+	(*SendChatMessageRequest)(nil),              // 87: bossanova.v1.SendChatMessageRequest
+	(*SendChatMessageResponse)(nil),             // 88: bossanova.v1.SendChatMessageResponse
+	(*ChatStatusReport)(nil),                    // 89: bossanova.v1.ChatStatusReport
+	(*ReportChatStatusRequest)(nil),             // 90: bossanova.v1.ReportChatStatusRequest
+	(*ReportChatStatusResponse)(nil),            // 91: bossanova.v1.ReportChatStatusResponse
+	(*GetChatStatusesRequest)(nil),              // 92: bossanova.v1.GetChatStatusesRequest
+	(*ChatStatusEntry)(nil),                     // 93: bossanova.v1.ChatStatusEntry
+	(*GetChatStatusesResponse)(nil),             // 94: bossanova.v1.GetChatStatusesResponse
+	(*GetSessionStatusesRequest)(nil),           // 95: bossanova.v1.GetSessionStatusesRequest
+	(*SessionStatusEntry)(nil),                  // 96: bossanova.v1.SessionStatusEntry
+	(*GetSessionStatusesResponse)(nil),          // 97: bossanova.v1.GetSessionStatusesResponse
+	(*DeliverVCSEventRequest)(nil),              // 98: bossanova.v1.DeliverVCSEventRequest
+	(*DeliverVCSEventResponse)(nil),             // 99: bossanova.v1.DeliverVCSEventResponse
+	(*NotifyAuthChangeRequest)(nil),             // 100: bossanova.v1.NotifyAuthChangeRequest
+	(*NotifyAuthChangeResponse)(nil),            // 101: bossanova.v1.NotifyAuthChangeResponse
+	(*GetAuthStateRequest)(nil),                 // 102: bossanova.v1.GetAuthStateRequest
+	(*GetAuthStateResponse)(nil),                // 103: bossanova.v1.GetAuthStateResponse
+	(*CreateCronJobRequest)(nil),                // 104: bossanova.v1.CreateCronJobRequest
+	(*CreateCronJobResponse)(nil),               // 105: bossanova.v1.CreateCronJobResponse
+	(*ListCronJobsRequest)(nil),                 // 106: bossanova.v1.ListCronJobsRequest
+	(*ListCronJobsResponse)(nil),                // 107: bossanova.v1.ListCronJobsResponse
+	(*GetCronJobRequest)(nil),                   // 108: bossanova.v1.GetCronJobRequest
+	(*GetCronJobResponse)(nil),                  // 109: bossanova.v1.GetCronJobResponse
+	(*UpdateCronJobRequest)(nil),                // 110: bossanova.v1.UpdateCronJobRequest
+	(*UpdateCronJobResponse)(nil),               // 111: bossanova.v1.UpdateCronJobResponse
+	(*DeleteCronJobRequest)(nil),                // 112: bossanova.v1.DeleteCronJobRequest
+	(*DeleteCronJobResponse)(nil),               // 113: bossanova.v1.DeleteCronJobResponse
+	(*RunCronJobNowRequest)(nil),                // 114: bossanova.v1.RunCronJobNowRequest
+	(*RunCronJobNowResponse)(nil),               // 115: bossanova.v1.RunCronJobNowResponse
+	(*CreateGithubCallbackRequest)(nil),         // 116: bossanova.v1.CreateGithubCallbackRequest
+	(*CreateGithubCallbackResponse)(nil),        // 117: bossanova.v1.CreateGithubCallbackResponse
+	(*ListGithubCallbacksRequest)(nil),          // 118: bossanova.v1.ListGithubCallbacksRequest
+	(*ListGithubCallbacksResponse)(nil),         // 119: bossanova.v1.ListGithubCallbacksResponse
+	(*DeleteGithubCallbackRequest)(nil),         // 120: bossanova.v1.DeleteGithubCallbackRequest
+	(*DeleteGithubCallbackResponse)(nil),        // 121: bossanova.v1.DeleteGithubCallbackResponse
+	(*BroadcastSelectorClause)(nil),             // 122: bossanova.v1.BroadcastSelectorClause
+	(*BroadcastSelector)(nil),                   // 123: bossanova.v1.BroadcastSelector
+	(*Broadcast)(nil),                           // 124: bossanova.v1.Broadcast
+	(*BroadcastDelivery)(nil),                   // 125: bossanova.v1.BroadcastDelivery
+	(*SendBroadcastRequest)(nil),                // 126: bossanova.v1.SendBroadcastRequest
+	(*SendBroadcastResponse)(nil),               // 127: bossanova.v1.SendBroadcastResponse
+	(*ListBroadcastsRequest)(nil),               // 128: bossanova.v1.ListBroadcastsRequest
+	(*ListBroadcastsResponse)(nil),              // 129: bossanova.v1.ListBroadcastsResponse
+	(*DeleteBroadcastRequest)(nil),              // 130: bossanova.v1.DeleteBroadcastRequest
+	(*DeleteBroadcastResponse)(nil),             // 131: bossanova.v1.DeleteBroadcastResponse
+	(*Note)(nil),                                // 132: bossanova.v1.Note
+	(*NoteTagSet)(nil),                          // 133: bossanova.v1.NoteTagSet
+	(*CreateNoteRequest)(nil),                   // 134: bossanova.v1.CreateNoteRequest
+	(*CreateNoteResponse)(nil),                  // 135: bossanova.v1.CreateNoteResponse
+	(*GetNoteRequest)(nil),                      // 136: bossanova.v1.GetNoteRequest
+	(*GetNoteResponse)(nil),                     // 137: bossanova.v1.GetNoteResponse
+	(*ListNotesRequest)(nil),                    // 138: bossanova.v1.ListNotesRequest
+	(*ListNotesResponse)(nil),                   // 139: bossanova.v1.ListNotesResponse
+	(*UpdateNoteRequest)(nil),                   // 140: bossanova.v1.UpdateNoteRequest
+	(*UpdateNoteResponse)(nil),                  // 141: bossanova.v1.UpdateNoteResponse
+	(*DeleteNoteRequest)(nil),                   // 142: bossanova.v1.DeleteNoteRequest
+	(*DeleteNoteResponse)(nil),                  // 143: bossanova.v1.DeleteNoteResponse
+	(*BroadcastSubscription)(nil),               // 144: bossanova.v1.BroadcastSubscription
+	(*CreateBroadcastSubscriptionRequest)(nil),  // 145: bossanova.v1.CreateBroadcastSubscriptionRequest
+	(*CreateBroadcastSubscriptionResponse)(nil), // 146: bossanova.v1.CreateBroadcastSubscriptionResponse
+	(*ListBroadcastSubscriptionsRequest)(nil),   // 147: bossanova.v1.ListBroadcastSubscriptionsRequest
+	(*ListBroadcastSubscriptionsResponse)(nil),  // 148: bossanova.v1.ListBroadcastSubscriptionsResponse
+	(*DeleteBroadcastSubscriptionRequest)(nil),  // 149: bossanova.v1.DeleteBroadcastSubscriptionRequest
+	(*DeleteBroadcastSubscriptionResponse)(nil), // 150: bossanova.v1.DeleteBroadcastSubscriptionResponse
+	(*ListAccountsRequest)(nil),                 // 151: bossanova.v1.ListAccountsRequest
+	(*ListAccountsResponse)(nil),                // 152: bossanova.v1.ListAccountsResponse
+	(*AddAccountRequest)(nil),                   // 153: bossanova.v1.AddAccountRequest
+	(*AddAccountResponse)(nil),                  // 154: bossanova.v1.AddAccountResponse
+	(*RefreshAccountRequest)(nil),               // 155: bossanova.v1.RefreshAccountRequest
+	(*RefreshAccountResponse)(nil),              // 156: bossanova.v1.RefreshAccountResponse
+	(*UpdateAccountRequest)(nil),                // 157: bossanova.v1.UpdateAccountRequest
+	(*UpdateAccountResponse)(nil),               // 158: bossanova.v1.UpdateAccountResponse
+	(*RemoveAccountRequest)(nil),                // 159: bossanova.v1.RemoveAccountRequest
+	(*RemoveAccountResponse)(nil),               // 160: bossanova.v1.RemoveAccountResponse
+	(*TestAccountRequest)(nil),                  // 161: bossanova.v1.TestAccountRequest
+	(*TestAccountResponse)(nil),                 // 162: bossanova.v1.TestAccountResponse
+	(*RepairDoctorRequest)(nil),                 // 163: bossanova.v1.RepairDoctorRequest
+	(*RepairDoctorCheck)(nil),                   // 164: bossanova.v1.RepairDoctorCheck
+	(*StartRepairWorkflowRequest)(nil),          // 165: bossanova.v1.StartRepairWorkflowRequest
+	(*StartRepairWorkflowResponse)(nil),         // 166: bossanova.v1.StartRepairWorkflowResponse
+	(*RepairDoctorResponse)(nil),                // 167: bossanova.v1.RepairDoctorResponse
+	(*RepairLogSnapshot)(nil),                   // 168: bossanova.v1.RepairLogSnapshot
+	(*ListCheckSnapshotsRequest)(nil),           // 169: bossanova.v1.ListCheckSnapshotsRequest
+	(*CheckSnapshot)(nil),                       // 170: bossanova.v1.CheckSnapshot
+	(*ListCheckSnapshotsResponse)(nil),          // 171: bossanova.v1.ListCheckSnapshotsResponse
+	(*GetRunCostRequest)(nil),                   // 172: bossanova.v1.GetRunCostRequest
+	(*AgentRunCost)(nil),                        // 173: bossanova.v1.AgentRunCost
+	(*RunCostAggregate)(nil),                    // 174: bossanova.v1.RunCostAggregate
+	(*RunCostBackfillSummary)(nil),              // 175: bossanova.v1.RunCostBackfillSummary
+	(*GetRunCostResponse)(nil),                  // 176: bossanova.v1.GetRunCostResponse
+	(*ListAgentsRequest)(nil),                   // 177: bossanova.v1.ListAgentsRequest
+	(*ListAgentsResponse)(nil),                  // 178: bossanova.v1.ListAgentsResponse
+	(*AgentInfo)(nil),                           // 179: bossanova.v1.AgentInfo
+	(*ListPluginsRequest)(nil),                  // 180: bossanova.v1.ListPluginsRequest
+	(*ListPluginsResponse)(nil),                 // 181: bossanova.v1.ListPluginsResponse
+	(*InstalledPlugin)(nil),                     // 182: bossanova.v1.InstalledPlugin
+	(*GetSettingsRequest)(nil),                  // 183: bossanova.v1.GetSettingsRequest
+	(*GetSettingsResponse)(nil),                 // 184: bossanova.v1.GetSettingsResponse
+	(*GlobalSettings)(nil),                      // 185: bossanova.v1.GlobalSettings
+	(*AgentSettings)(nil),                       // 186: bossanova.v1.AgentSettings
+	(*UpdateSettingsRequest)(nil),               // 187: bossanova.v1.UpdateSettingsRequest
+	(*AgentSettingsUpdate)(nil),                 // 188: bossanova.v1.AgentSettingsUpdate
+	(*UpdateSettingsResponse)(nil),              // 189: bossanova.v1.UpdateSettingsResponse
+	nil,                                         // 190: bossanova.v1.RunCostAggregate.TerminalStateMixEntry
+	nil,                                         // 191: bossanova.v1.AgentSettings.ConfigEntry
+	nil,                                         // 192: bossanova.v1.AgentSettingsUpdate.ConfigEntry
+	(*Repo)(nil),                                // 193: bossanova.v1.Repo
+	(*Session)(nil),                             // 194: bossanova.v1.Session
+	(*SecretUpdate)(nil),                        // 195: bossanova.v1.SecretUpdate
+	(*timestamppb.Timestamp)(nil),               // 196: google.protobuf.Timestamp
+	(*RepoSettings)(nil),                        // 197: bossanova.v1.RepoSettings
+	(*PRSummary)(nil),                           // 198: bossanova.v1.PRSummary
+	(*TrackerIssue)(nil),                        // 199: bossanova.v1.TrackerIssue
+	(SessionState)(0),                           // 200: bossanova.v1.SessionState
+	(SessionEvent)(0),                           // 201: bossanova.v1.SessionEvent
+	(*ClaudeChat)(nil),                          // 202: bossanova.v1.ClaudeChat
+	(*MCPServerReport)(nil),                     // 203: bossanova.v1.MCPServerReport
+	(*ChatMessage)(nil),                         // 204: bossanova.v1.ChatMessage
+	(ChatStatus)(0),                             // 205: bossanova.v1.ChatStatus
+	(*VCSEvent)(nil),                            // 206: bossanova.v1.VCSEvent
+	(*CronJob)(nil),                             // 207: bossanova.v1.CronJob
+	(*GithubCallback)(nil),                      // 208: bossanova.v1.GithubCallback
+	(*Account)(nil),                             // 209: bossanova.v1.Account
+	(DisplayStatus)(0),                          // 210: bossanova.v1.DisplayStatus
+	(*UserSetting)(nil),                         // 211: bossanova.v1.UserSetting
 }
 var file_bossanova_v1_daemon_proto_depIdxs = []int32{
-	192, // 0: bossanova.v1.ResolveContextResponse.repo:type_name -> bossanova.v1.Repo
-	193, // 1: bossanova.v1.ResolveContextResponse.session:type_name -> bossanova.v1.Session
-	192, // 2: bossanova.v1.RegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
-	192, // 3: bossanova.v1.CloneAndRegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
-	192, // 4: bossanova.v1.ListReposResponse.repos:type_name -> bossanova.v1.Repo
-	194, // 5: bossanova.v1.UpdateRepoRequest.linear_key:type_name -> bossanova.v1.SecretUpdate
-	194, // 6: bossanova.v1.UpdateRepoRequest.sentry_key:type_name -> bossanova.v1.SecretUpdate
-	195, // 7: bossanova.v1.UpdateRepoRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
-	192, // 8: bossanova.v1.UpdateRepoResponse.repo:type_name -> bossanova.v1.Repo
-	196, // 9: bossanova.v1.GetRepoSettingsResponse.settings:type_name -> bossanova.v1.RepoSettings
-	197, // 10: bossanova.v1.ListRepoPRsResponse.pull_requests:type_name -> bossanova.v1.PRSummary
-	198, // 11: bossanova.v1.ListTrackerIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
-	198, // 12: bossanova.v1.CreateSessionRequest.tracker_issue:type_name -> bossanova.v1.TrackerIssue
-	28,  // 13: bossanova.v1.CreateSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
-	29,  // 14: bossanova.v1.CreateSessionResponse.session_created:type_name -> bossanova.v1.SessionCreated
-	193, // 15: bossanova.v1.SessionCreated.session:type_name -> bossanova.v1.Session
-	193, // 16: bossanova.v1.GetSessionResponse.session:type_name -> bossanova.v1.Session
-	199, // 17: bossanova.v1.ListSessionsRequest.states:type_name -> bossanova.v1.SessionState
-	193, // 18: bossanova.v1.ListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	193, // 0: bossanova.v1.ResolveContextResponse.repo:type_name -> bossanova.v1.Repo
+	194, // 1: bossanova.v1.ResolveContextResponse.session:type_name -> bossanova.v1.Session
+	193, // 2: bossanova.v1.RegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
+	193, // 3: bossanova.v1.CloneAndRegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
+	193, // 4: bossanova.v1.ListReposResponse.repos:type_name -> bossanova.v1.Repo
+	195, // 5: bossanova.v1.UpdateRepoRequest.linear_key:type_name -> bossanova.v1.SecretUpdate
+	195, // 6: bossanova.v1.UpdateRepoRequest.sentry_key:type_name -> bossanova.v1.SecretUpdate
+	196, // 7: bossanova.v1.UpdateRepoRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
+	193, // 8: bossanova.v1.UpdateRepoResponse.repo:type_name -> bossanova.v1.Repo
+	197, // 9: bossanova.v1.GetRepoSettingsResponse.settings:type_name -> bossanova.v1.RepoSettings
+	198, // 10: bossanova.v1.ListRepoPRsResponse.pull_requests:type_name -> bossanova.v1.PRSummary
+	199, // 11: bossanova.v1.ListTrackerIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
+	199, // 12: bossanova.v1.CreateSessionRequest.tracker_issue:type_name -> bossanova.v1.TrackerIssue
+	29,  // 13: bossanova.v1.CreateSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
+	30,  // 14: bossanova.v1.CreateSessionResponse.session_created:type_name -> bossanova.v1.SessionCreated
+	194, // 15: bossanova.v1.SessionCreated.session:type_name -> bossanova.v1.Session
+	194, // 16: bossanova.v1.GetSessionResponse.session:type_name -> bossanova.v1.Session
+	200, // 17: bossanova.v1.ListSessionsRequest.states:type_name -> bossanova.v1.SessionState
+	194, // 18: bossanova.v1.ListSessionsResponse.sessions:type_name -> bossanova.v1.Session
 	0,   // 19: bossanova.v1.MoveSessionRequest.direction:type_name -> bossanova.v1.MoveDirection
-	193, // 20: bossanova.v1.MoveSessionResponse.session:type_name -> bossanova.v1.Session
-	38,  // 21: bossanova.v1.AttachSessionResponse.output_line:type_name -> bossanova.v1.OutputLine
-	39,  // 22: bossanova.v1.AttachSessionResponse.state_change:type_name -> bossanova.v1.StateChange
-	40,  // 23: bossanova.v1.AttachSessionResponse.session_ended:type_name -> bossanova.v1.SessionEnded
-	195, // 24: bossanova.v1.OutputLine.timestamp:type_name -> google.protobuf.Timestamp
-	199, // 25: bossanova.v1.StateChange.previous_state:type_name -> bossanova.v1.SessionState
-	199, // 26: bossanova.v1.StateChange.new_state:type_name -> bossanova.v1.SessionState
-	200, // 27: bossanova.v1.StateChange.trigger:type_name -> bossanova.v1.SessionEvent
-	199, // 28: bossanova.v1.SessionEnded.final_state:type_name -> bossanova.v1.SessionState
-	193, // 29: bossanova.v1.StopSessionResponse.session:type_name -> bossanova.v1.Session
-	193, // 30: bossanova.v1.PauseSessionResponse.session:type_name -> bossanova.v1.Session
-	193, // 31: bossanova.v1.ResumeSessionResponse.session:type_name -> bossanova.v1.Session
-	193, // 32: bossanova.v1.RetrySessionResponse.session:type_name -> bossanova.v1.Session
-	193, // 33: bossanova.v1.CloseSessionResponse.session:type_name -> bossanova.v1.Session
-	193, // 34: bossanova.v1.MergeSessionResponse.session:type_name -> bossanova.v1.Session
-	193, // 35: bossanova.v1.UpdateSessionResponse.session:type_name -> bossanova.v1.Session
-	193, // 36: bossanova.v1.LinkSessionPRResponse.session:type_name -> bossanova.v1.Session
-	193, // 37: bossanova.v1.RefreshSessionPRResponse.session:type_name -> bossanova.v1.Session
-	193, // 38: bossanova.v1.ArchiveSessionResponse.session:type_name -> bossanova.v1.Session
-	28,  // 39: bossanova.v1.ResurrectSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
-	67,  // 40: bossanova.v1.ResurrectSessionResponse.session_resurrected:type_name -> bossanova.v1.SessionResurrected
-	193, // 41: bossanova.v1.SessionResurrected.session:type_name -> bossanova.v1.Session
-	195, // 42: bossanova.v1.EmptyTrashRequest.older_than:type_name -> google.protobuf.Timestamp
-	201, // 43: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.ClaudeChat
-	201, // 44: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.ClaudeChat
-	1,   // 45: bossanova.v1.WakeChatResponse.outcome:type_name -> bossanova.v1.WakeChatResponse.Outcome
-	202, // 46: bossanova.v1.DescribeChatMCPResponse.servers:type_name -> bossanova.v1.MCPServerReport
-	195, // 47: bossanova.v1.DescribeChatMCPResponse.probed_at:type_name -> google.protobuf.Timestamp
-	203, // 48: bossanova.v1.GetChatTranscriptResponse.messages:type_name -> bossanova.v1.ChatMessage
-	2,   // 49: bossanova.v1.SendChatMessageResponse.delivery_state:type_name -> bossanova.v1.SendChatMessageResponse.DeliveryState
-	3,   // 50: bossanova.v1.SendChatMessageResponse.turn_start_state:type_name -> bossanova.v1.SendChatMessageResponse.TurnStartState
-	204, // 51: bossanova.v1.ChatStatusReport.status:type_name -> bossanova.v1.ChatStatus
-	195, // 52: bossanova.v1.ChatStatusReport.last_output_at:type_name -> google.protobuf.Timestamp
-	88,  // 53: bossanova.v1.ReportChatStatusRequest.reports:type_name -> bossanova.v1.ChatStatusReport
-	204, // 54: bossanova.v1.ChatStatusEntry.status:type_name -> bossanova.v1.ChatStatus
-	195, // 55: bossanova.v1.ChatStatusEntry.last_output_at:type_name -> google.protobuf.Timestamp
-	195, // 56: bossanova.v1.ChatStatusEntry.last_substantive_output_at:type_name -> google.protobuf.Timestamp
-	92,  // 57: bossanova.v1.GetChatStatusesResponse.statuses:type_name -> bossanova.v1.ChatStatusEntry
-	204, // 58: bossanova.v1.SessionStatusEntry.status:type_name -> bossanova.v1.ChatStatus
-	95,  // 59: bossanova.v1.GetSessionStatusesResponse.statuses:type_name -> bossanova.v1.SessionStatusEntry
-	205, // 60: bossanova.v1.DeliverVCSEventRequest.event:type_name -> bossanova.v1.VCSEvent
-	4,   // 61: bossanova.v1.NotifyAuthChangeResponse.outcome:type_name -> bossanova.v1.NotifyAuthChangeResponse.Outcome
-	195, // 62: bossanova.v1.GetAuthStateResponse.last_registered_at:type_name -> google.protobuf.Timestamp
-	195, // 63: bossanova.v1.GetAuthStateResponse.auth_failing_since:type_name -> google.protobuf.Timestamp
-	206, // 64: bossanova.v1.CreateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
-	206, // 65: bossanova.v1.ListCronJobsResponse.cron_jobs:type_name -> bossanova.v1.CronJob
-	206, // 66: bossanova.v1.GetCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
-	206, // 67: bossanova.v1.UpdateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
-	193, // 68: bossanova.v1.RunCronJobNowResponse.session:type_name -> bossanova.v1.Session
-	195, // 69: bossanova.v1.CreateGithubCallbackRequest.expires_at:type_name -> google.protobuf.Timestamp
-	207, // 70: bossanova.v1.CreateGithubCallbackResponse.github_callback:type_name -> bossanova.v1.GithubCallback
-	207, // 71: bossanova.v1.ListGithubCallbacksResponse.github_callbacks:type_name -> bossanova.v1.GithubCallback
-	121, // 72: bossanova.v1.BroadcastSelector.clauses:type_name -> bossanova.v1.BroadcastSelectorClause
-	122, // 73: bossanova.v1.Broadcast.selector:type_name -> bossanova.v1.BroadcastSelector
-	195, // 74: bossanova.v1.Broadcast.created_at:type_name -> google.protobuf.Timestamp
-	195, // 75: bossanova.v1.Broadcast.expires_at:type_name -> google.protobuf.Timestamp
-	195, // 76: bossanova.v1.BroadcastDelivery.delivered_at:type_name -> google.protobuf.Timestamp
-	122, // 77: bossanova.v1.SendBroadcastRequest.selector:type_name -> bossanova.v1.BroadcastSelector
-	123, // 78: bossanova.v1.SendBroadcastResponse.broadcast:type_name -> bossanova.v1.Broadcast
-	124, // 79: bossanova.v1.SendBroadcastResponse.deliveries:type_name -> bossanova.v1.BroadcastDelivery
-	123, // 80: bossanova.v1.ListBroadcastsResponse.broadcasts:type_name -> bossanova.v1.Broadcast
-	195, // 81: bossanova.v1.Note.created_at:type_name -> google.protobuf.Timestamp
-	195, // 82: bossanova.v1.Note.updated_at:type_name -> google.protobuf.Timestamp
-	131, // 83: bossanova.v1.CreateNoteResponse.note:type_name -> bossanova.v1.Note
-	131, // 84: bossanova.v1.GetNoteResponse.note:type_name -> bossanova.v1.Note
-	131, // 85: bossanova.v1.ListNotesResponse.notes:type_name -> bossanova.v1.Note
-	132, // 86: bossanova.v1.UpdateNoteRequest.tags:type_name -> bossanova.v1.NoteTagSet
-	131, // 87: bossanova.v1.UpdateNoteResponse.note:type_name -> bossanova.v1.Note
-	122, // 88: bossanova.v1.BroadcastSubscription.selector:type_name -> bossanova.v1.BroadcastSelector
-	195, // 89: bossanova.v1.BroadcastSubscription.fired_at:type_name -> google.protobuf.Timestamp
-	195, // 90: bossanova.v1.BroadcastSubscription.expires_at:type_name -> google.protobuf.Timestamp
-	195, // 91: bossanova.v1.BroadcastSubscription.created_at:type_name -> google.protobuf.Timestamp
-	195, // 92: bossanova.v1.BroadcastSubscription.updated_at:type_name -> google.protobuf.Timestamp
-	122, // 93: bossanova.v1.CreateBroadcastSubscriptionRequest.selector:type_name -> bossanova.v1.BroadcastSelector
-	143, // 94: bossanova.v1.CreateBroadcastSubscriptionResponse.subscription:type_name -> bossanova.v1.BroadcastSubscription
-	143, // 95: bossanova.v1.ListBroadcastSubscriptionsResponse.subscriptions:type_name -> bossanova.v1.BroadcastSubscription
-	208, // 96: bossanova.v1.ListAccountsResponse.accounts:type_name -> bossanova.v1.Account
-	208, // 97: bossanova.v1.AddAccountResponse.account:type_name -> bossanova.v1.Account
-	208, // 98: bossanova.v1.RefreshAccountResponse.account:type_name -> bossanova.v1.Account
-	208, // 99: bossanova.v1.UpdateAccountResponse.account:type_name -> bossanova.v1.Account
-	208, // 100: bossanova.v1.TestAccountResponse.account:type_name -> bossanova.v1.Account
-	163, // 101: bossanova.v1.RepairDoctorResponse.checks:type_name -> bossanova.v1.RepairDoctorCheck
-	167, // 102: bossanova.v1.RepairDoctorResponse.recent_logs:type_name -> bossanova.v1.RepairLogSnapshot
-	195, // 103: bossanova.v1.RepairLogSnapshot.modified_at:type_name -> google.protobuf.Timestamp
-	195, // 104: bossanova.v1.CheckSnapshot.polled_at:type_name -> google.protobuf.Timestamp
-	209, // 105: bossanova.v1.CheckSnapshot.computed_status:type_name -> bossanova.v1.DisplayStatus
-	169, // 106: bossanova.v1.ListCheckSnapshotsResponse.snapshots:type_name -> bossanova.v1.CheckSnapshot
-	195, // 107: bossanova.v1.GetRunCostRequest.since:type_name -> google.protobuf.Timestamp
-	195, // 108: bossanova.v1.GetRunCostRequest.until:type_name -> google.protobuf.Timestamp
-	195, // 109: bossanova.v1.AgentRunCost.started_at:type_name -> google.protobuf.Timestamp
-	195, // 110: bossanova.v1.AgentRunCost.stopped_at:type_name -> google.protobuf.Timestamp
-	189, // 111: bossanova.v1.RunCostAggregate.terminal_state_mix:type_name -> bossanova.v1.RunCostAggregate.TerminalStateMixEntry
-	172, // 112: bossanova.v1.GetRunCostResponse.runs:type_name -> bossanova.v1.AgentRunCost
-	173, // 113: bossanova.v1.GetRunCostResponse.aggregate:type_name -> bossanova.v1.RunCostAggregate
-	174, // 114: bossanova.v1.GetRunCostResponse.backfill_summary:type_name -> bossanova.v1.RunCostBackfillSummary
-	178, // 115: bossanova.v1.ListAgentsResponse.agents:type_name -> bossanova.v1.AgentInfo
-	210, // 116: bossanova.v1.AgentInfo.user_settings:type_name -> bossanova.v1.UserSetting
-	181, // 117: bossanova.v1.ListPluginsResponse.plugins:type_name -> bossanova.v1.InstalledPlugin
-	5,   // 118: bossanova.v1.InstalledPlugin.status:type_name -> bossanova.v1.InstalledPlugin.Status
-	184, // 119: bossanova.v1.GetSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
-	185, // 120: bossanova.v1.GlobalSettings.agents:type_name -> bossanova.v1.AgentSettings
-	190, // 121: bossanova.v1.AgentSettings.config:type_name -> bossanova.v1.AgentSettings.ConfigEntry
-	187, // 122: bossanova.v1.UpdateSettingsRequest.agents:type_name -> bossanova.v1.AgentSettingsUpdate
-	191, // 123: bossanova.v1.AgentSettingsUpdate.config:type_name -> bossanova.v1.AgentSettingsUpdate.ConfigEntry
-	184, // 124: bossanova.v1.UpdateSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
-	6,   // 125: bossanova.v1.DaemonService.ResolveContext:input_type -> bossanova.v1.ResolveContextRequest
-	8,   // 126: bossanova.v1.DaemonService.ValidateRepoPath:input_type -> bossanova.v1.ValidateRepoPathRequest
-	10,  // 127: bossanova.v1.DaemonService.RegisterRepo:input_type -> bossanova.v1.RegisterRepoRequest
-	12,  // 128: bossanova.v1.DaemonService.CloneAndRegisterRepo:input_type -> bossanova.v1.CloneAndRegisterRepoRequest
-	14,  // 129: bossanova.v1.DaemonService.ListRepos:input_type -> bossanova.v1.ListReposRequest
-	16,  // 130: bossanova.v1.DaemonService.RemoveRepo:input_type -> bossanova.v1.RemoveRepoRequest
-	18,  // 131: bossanova.v1.DaemonService.UpdateRepo:input_type -> bossanova.v1.UpdateRepoRequest
-	20,  // 132: bossanova.v1.DaemonService.GetRepoSettings:input_type -> bossanova.v1.GetRepoSettingsRequest
-	22,  // 133: bossanova.v1.DaemonService.ListRepoPRs:input_type -> bossanova.v1.ListRepoPRsRequest
-	24,  // 134: bossanova.v1.DaemonService.ListTrackerIssues:input_type -> bossanova.v1.ListTrackerIssuesRequest
-	26,  // 135: bossanova.v1.DaemonService.CreateSession:input_type -> bossanova.v1.CreateSessionRequest
-	30,  // 136: bossanova.v1.DaemonService.GetSession:input_type -> bossanova.v1.GetSessionRequest
-	32,  // 137: bossanova.v1.DaemonService.ListSessions:input_type -> bossanova.v1.ListSessionsRequest
-	34,  // 138: bossanova.v1.DaemonService.MoveSession:input_type -> bossanova.v1.MoveSessionRequest
-	36,  // 139: bossanova.v1.DaemonService.AttachSession:input_type -> bossanova.v1.AttachSessionRequest
-	41,  // 140: bossanova.v1.DaemonService.StopSession:input_type -> bossanova.v1.StopSessionRequest
-	43,  // 141: bossanova.v1.DaemonService.PauseSession:input_type -> bossanova.v1.PauseSessionRequest
-	45,  // 142: bossanova.v1.DaemonService.ResumeSession:input_type -> bossanova.v1.ResumeSessionRequest
-	47,  // 143: bossanova.v1.DaemonService.RetrySession:input_type -> bossanova.v1.RetrySessionRequest
-	49,  // 144: bossanova.v1.DaemonService.CloseSession:input_type -> bossanova.v1.CloseSessionRequest
-	51,  // 145: bossanova.v1.DaemonService.MergeSession:input_type -> bossanova.v1.MergeSessionRequest
-	53,  // 146: bossanova.v1.DaemonService.RemoveSession:input_type -> bossanova.v1.RemoveSessionRequest
-	55,  // 147: bossanova.v1.DaemonService.UpdateSession:input_type -> bossanova.v1.UpdateSessionRequest
-	57,  // 148: bossanova.v1.DaemonService.LinkSessionPR:input_type -> bossanova.v1.LinkSessionPRRequest
-	59,  // 149: bossanova.v1.DaemonService.RefreshSessionPR:input_type -> bossanova.v1.RefreshSessionPRRequest
-	61,  // 150: bossanova.v1.DaemonService.SwitchSessionAccount:input_type -> bossanova.v1.SwitchSessionAccountRequest
-	63,  // 151: bossanova.v1.DaemonService.ArchiveSession:input_type -> bossanova.v1.ArchiveSessionRequest
-	65,  // 152: bossanova.v1.DaemonService.ResurrectSession:input_type -> bossanova.v1.ResurrectSessionRequest
-	68,  // 153: bossanova.v1.DaemonService.EmptyTrash:input_type -> bossanova.v1.EmptyTrashRequest
-	70,  // 154: bossanova.v1.DaemonService.RecordChat:input_type -> bossanova.v1.RecordChatRequest
-	72,  // 155: bossanova.v1.DaemonService.ListChats:input_type -> bossanova.v1.ListChatsRequest
-	74,  // 156: bossanova.v1.DaemonService.UpdateChatTitle:input_type -> bossanova.v1.UpdateChatTitleRequest
-	76,  // 157: bossanova.v1.DaemonService.DeleteChat:input_type -> bossanova.v1.DeleteChatRequest
-	78,  // 158: bossanova.v1.DaemonService.WakeChat:input_type -> bossanova.v1.WakeChatRequest
-	80,  // 159: bossanova.v1.DaemonService.DescribeChatLaunch:input_type -> bossanova.v1.DescribeChatLaunchRequest
-	82,  // 160: bossanova.v1.DaemonService.DescribeChatMCP:input_type -> bossanova.v1.DescribeChatMCPRequest
-	84,  // 161: bossanova.v1.DaemonService.GetChatTranscript:input_type -> bossanova.v1.GetChatTranscriptRequest
-	86,  // 162: bossanova.v1.DaemonService.SendChatMessage:input_type -> bossanova.v1.SendChatMessageRequest
-	89,  // 163: bossanova.v1.DaemonService.ReportChatStatus:input_type -> bossanova.v1.ReportChatStatusRequest
-	91,  // 164: bossanova.v1.DaemonService.GetChatStatuses:input_type -> bossanova.v1.GetChatStatusesRequest
-	94,  // 165: bossanova.v1.DaemonService.GetSessionStatuses:input_type -> bossanova.v1.GetSessionStatusesRequest
-	97,  // 166: bossanova.v1.DaemonService.DeliverVCSEvent:input_type -> bossanova.v1.DeliverVCSEventRequest
-	99,  // 167: bossanova.v1.DaemonService.NotifyAuthChange:input_type -> bossanova.v1.NotifyAuthChangeRequest
-	101, // 168: bossanova.v1.DaemonService.GetAuthState:input_type -> bossanova.v1.GetAuthStateRequest
-	103, // 169: bossanova.v1.DaemonService.CreateCronJob:input_type -> bossanova.v1.CreateCronJobRequest
-	105, // 170: bossanova.v1.DaemonService.ListCronJobs:input_type -> bossanova.v1.ListCronJobsRequest
-	107, // 171: bossanova.v1.DaemonService.GetCronJob:input_type -> bossanova.v1.GetCronJobRequest
-	109, // 172: bossanova.v1.DaemonService.UpdateCronJob:input_type -> bossanova.v1.UpdateCronJobRequest
-	111, // 173: bossanova.v1.DaemonService.DeleteCronJob:input_type -> bossanova.v1.DeleteCronJobRequest
-	113, // 174: bossanova.v1.DaemonService.RunCronJobNow:input_type -> bossanova.v1.RunCronJobNowRequest
-	115, // 175: bossanova.v1.DaemonService.CreateGithubCallback:input_type -> bossanova.v1.CreateGithubCallbackRequest
-	117, // 176: bossanova.v1.DaemonService.ListGithubCallbacks:input_type -> bossanova.v1.ListGithubCallbacksRequest
-	119, // 177: bossanova.v1.DaemonService.DeleteGithubCallback:input_type -> bossanova.v1.DeleteGithubCallbackRequest
-	125, // 178: bossanova.v1.DaemonService.SendBroadcast:input_type -> bossanova.v1.SendBroadcastRequest
-	127, // 179: bossanova.v1.DaemonService.ListBroadcasts:input_type -> bossanova.v1.ListBroadcastsRequest
-	129, // 180: bossanova.v1.DaemonService.DeleteBroadcast:input_type -> bossanova.v1.DeleteBroadcastRequest
-	133, // 181: bossanova.v1.DaemonService.CreateNote:input_type -> bossanova.v1.CreateNoteRequest
-	135, // 182: bossanova.v1.DaemonService.GetNote:input_type -> bossanova.v1.GetNoteRequest
-	137, // 183: bossanova.v1.DaemonService.ListNotes:input_type -> bossanova.v1.ListNotesRequest
-	139, // 184: bossanova.v1.DaemonService.UpdateNote:input_type -> bossanova.v1.UpdateNoteRequest
-	141, // 185: bossanova.v1.DaemonService.DeleteNote:input_type -> bossanova.v1.DeleteNoteRequest
-	144, // 186: bossanova.v1.DaemonService.CreateBroadcastSubscription:input_type -> bossanova.v1.CreateBroadcastSubscriptionRequest
-	146, // 187: bossanova.v1.DaemonService.ListBroadcastSubscriptions:input_type -> bossanova.v1.ListBroadcastSubscriptionsRequest
-	148, // 188: bossanova.v1.DaemonService.DeleteBroadcastSubscription:input_type -> bossanova.v1.DeleteBroadcastSubscriptionRequest
-	150, // 189: bossanova.v1.DaemonService.ListAccounts:input_type -> bossanova.v1.ListAccountsRequest
-	152, // 190: bossanova.v1.DaemonService.AddAccount:input_type -> bossanova.v1.AddAccountRequest
-	154, // 191: bossanova.v1.DaemonService.RefreshAccount:input_type -> bossanova.v1.RefreshAccountRequest
-	156, // 192: bossanova.v1.DaemonService.UpdateAccount:input_type -> bossanova.v1.UpdateAccountRequest
-	158, // 193: bossanova.v1.DaemonService.RemoveAccount:input_type -> bossanova.v1.RemoveAccountRequest
-	160, // 194: bossanova.v1.DaemonService.TestAccount:input_type -> bossanova.v1.TestAccountRequest
-	162, // 195: bossanova.v1.DaemonService.RepairDoctor:input_type -> bossanova.v1.RepairDoctorRequest
-	164, // 196: bossanova.v1.DaemonService.StartRepairWorkflow:input_type -> bossanova.v1.StartRepairWorkflowRequest
-	168, // 197: bossanova.v1.DaemonService.ListCheckSnapshots:input_type -> bossanova.v1.ListCheckSnapshotsRequest
-	171, // 198: bossanova.v1.DaemonService.GetRunCost:input_type -> bossanova.v1.GetRunCostRequest
-	176, // 199: bossanova.v1.DaemonService.ListAgents:input_type -> bossanova.v1.ListAgentsRequest
-	179, // 200: bossanova.v1.DaemonService.ListPlugins:input_type -> bossanova.v1.ListPluginsRequest
-	182, // 201: bossanova.v1.DaemonService.GetSettings:input_type -> bossanova.v1.GetSettingsRequest
-	186, // 202: bossanova.v1.DaemonService.UpdateSettings:input_type -> bossanova.v1.UpdateSettingsRequest
-	7,   // 203: bossanova.v1.DaemonService.ResolveContext:output_type -> bossanova.v1.ResolveContextResponse
-	9,   // 204: bossanova.v1.DaemonService.ValidateRepoPath:output_type -> bossanova.v1.ValidateRepoPathResponse
-	11,  // 205: bossanova.v1.DaemonService.RegisterRepo:output_type -> bossanova.v1.RegisterRepoResponse
-	13,  // 206: bossanova.v1.DaemonService.CloneAndRegisterRepo:output_type -> bossanova.v1.CloneAndRegisterRepoResponse
-	15,  // 207: bossanova.v1.DaemonService.ListRepos:output_type -> bossanova.v1.ListReposResponse
-	17,  // 208: bossanova.v1.DaemonService.RemoveRepo:output_type -> bossanova.v1.RemoveRepoResponse
-	19,  // 209: bossanova.v1.DaemonService.UpdateRepo:output_type -> bossanova.v1.UpdateRepoResponse
-	21,  // 210: bossanova.v1.DaemonService.GetRepoSettings:output_type -> bossanova.v1.GetRepoSettingsResponse
-	23,  // 211: bossanova.v1.DaemonService.ListRepoPRs:output_type -> bossanova.v1.ListRepoPRsResponse
-	25,  // 212: bossanova.v1.DaemonService.ListTrackerIssues:output_type -> bossanova.v1.ListTrackerIssuesResponse
-	27,  // 213: bossanova.v1.DaemonService.CreateSession:output_type -> bossanova.v1.CreateSessionResponse
-	31,  // 214: bossanova.v1.DaemonService.GetSession:output_type -> bossanova.v1.GetSessionResponse
-	33,  // 215: bossanova.v1.DaemonService.ListSessions:output_type -> bossanova.v1.ListSessionsResponse
-	35,  // 216: bossanova.v1.DaemonService.MoveSession:output_type -> bossanova.v1.MoveSessionResponse
-	37,  // 217: bossanova.v1.DaemonService.AttachSession:output_type -> bossanova.v1.AttachSessionResponse
-	42,  // 218: bossanova.v1.DaemonService.StopSession:output_type -> bossanova.v1.StopSessionResponse
-	44,  // 219: bossanova.v1.DaemonService.PauseSession:output_type -> bossanova.v1.PauseSessionResponse
-	46,  // 220: bossanova.v1.DaemonService.ResumeSession:output_type -> bossanova.v1.ResumeSessionResponse
-	48,  // 221: bossanova.v1.DaemonService.RetrySession:output_type -> bossanova.v1.RetrySessionResponse
-	50,  // 222: bossanova.v1.DaemonService.CloseSession:output_type -> bossanova.v1.CloseSessionResponse
-	52,  // 223: bossanova.v1.DaemonService.MergeSession:output_type -> bossanova.v1.MergeSessionResponse
-	54,  // 224: bossanova.v1.DaemonService.RemoveSession:output_type -> bossanova.v1.RemoveSessionResponse
-	56,  // 225: bossanova.v1.DaemonService.UpdateSession:output_type -> bossanova.v1.UpdateSessionResponse
-	58,  // 226: bossanova.v1.DaemonService.LinkSessionPR:output_type -> bossanova.v1.LinkSessionPRResponse
-	60,  // 227: bossanova.v1.DaemonService.RefreshSessionPR:output_type -> bossanova.v1.RefreshSessionPRResponse
-	62,  // 228: bossanova.v1.DaemonService.SwitchSessionAccount:output_type -> bossanova.v1.SwitchSessionAccountResponse
-	64,  // 229: bossanova.v1.DaemonService.ArchiveSession:output_type -> bossanova.v1.ArchiveSessionResponse
-	66,  // 230: bossanova.v1.DaemonService.ResurrectSession:output_type -> bossanova.v1.ResurrectSessionResponse
-	69,  // 231: bossanova.v1.DaemonService.EmptyTrash:output_type -> bossanova.v1.EmptyTrashResponse
-	71,  // 232: bossanova.v1.DaemonService.RecordChat:output_type -> bossanova.v1.RecordChatResponse
-	73,  // 233: bossanova.v1.DaemonService.ListChats:output_type -> bossanova.v1.ListChatsResponse
-	75,  // 234: bossanova.v1.DaemonService.UpdateChatTitle:output_type -> bossanova.v1.UpdateChatTitleResponse
-	77,  // 235: bossanova.v1.DaemonService.DeleteChat:output_type -> bossanova.v1.DeleteChatResponse
-	79,  // 236: bossanova.v1.DaemonService.WakeChat:output_type -> bossanova.v1.WakeChatResponse
-	81,  // 237: bossanova.v1.DaemonService.DescribeChatLaunch:output_type -> bossanova.v1.DescribeChatLaunchResponse
-	83,  // 238: bossanova.v1.DaemonService.DescribeChatMCP:output_type -> bossanova.v1.DescribeChatMCPResponse
-	85,  // 239: bossanova.v1.DaemonService.GetChatTranscript:output_type -> bossanova.v1.GetChatTranscriptResponse
-	87,  // 240: bossanova.v1.DaemonService.SendChatMessage:output_type -> bossanova.v1.SendChatMessageResponse
-	90,  // 241: bossanova.v1.DaemonService.ReportChatStatus:output_type -> bossanova.v1.ReportChatStatusResponse
-	93,  // 242: bossanova.v1.DaemonService.GetChatStatuses:output_type -> bossanova.v1.GetChatStatusesResponse
-	96,  // 243: bossanova.v1.DaemonService.GetSessionStatuses:output_type -> bossanova.v1.GetSessionStatusesResponse
-	98,  // 244: bossanova.v1.DaemonService.DeliverVCSEvent:output_type -> bossanova.v1.DeliverVCSEventResponse
-	100, // 245: bossanova.v1.DaemonService.NotifyAuthChange:output_type -> bossanova.v1.NotifyAuthChangeResponse
-	102, // 246: bossanova.v1.DaemonService.GetAuthState:output_type -> bossanova.v1.GetAuthStateResponse
-	104, // 247: bossanova.v1.DaemonService.CreateCronJob:output_type -> bossanova.v1.CreateCronJobResponse
-	106, // 248: bossanova.v1.DaemonService.ListCronJobs:output_type -> bossanova.v1.ListCronJobsResponse
-	108, // 249: bossanova.v1.DaemonService.GetCronJob:output_type -> bossanova.v1.GetCronJobResponse
-	110, // 250: bossanova.v1.DaemonService.UpdateCronJob:output_type -> bossanova.v1.UpdateCronJobResponse
-	112, // 251: bossanova.v1.DaemonService.DeleteCronJob:output_type -> bossanova.v1.DeleteCronJobResponse
-	114, // 252: bossanova.v1.DaemonService.RunCronJobNow:output_type -> bossanova.v1.RunCronJobNowResponse
-	116, // 253: bossanova.v1.DaemonService.CreateGithubCallback:output_type -> bossanova.v1.CreateGithubCallbackResponse
-	118, // 254: bossanova.v1.DaemonService.ListGithubCallbacks:output_type -> bossanova.v1.ListGithubCallbacksResponse
-	120, // 255: bossanova.v1.DaemonService.DeleteGithubCallback:output_type -> bossanova.v1.DeleteGithubCallbackResponse
-	126, // 256: bossanova.v1.DaemonService.SendBroadcast:output_type -> bossanova.v1.SendBroadcastResponse
-	128, // 257: bossanova.v1.DaemonService.ListBroadcasts:output_type -> bossanova.v1.ListBroadcastsResponse
-	130, // 258: bossanova.v1.DaemonService.DeleteBroadcast:output_type -> bossanova.v1.DeleteBroadcastResponse
-	134, // 259: bossanova.v1.DaemonService.CreateNote:output_type -> bossanova.v1.CreateNoteResponse
-	136, // 260: bossanova.v1.DaemonService.GetNote:output_type -> bossanova.v1.GetNoteResponse
-	138, // 261: bossanova.v1.DaemonService.ListNotes:output_type -> bossanova.v1.ListNotesResponse
-	140, // 262: bossanova.v1.DaemonService.UpdateNote:output_type -> bossanova.v1.UpdateNoteResponse
-	142, // 263: bossanova.v1.DaemonService.DeleteNote:output_type -> bossanova.v1.DeleteNoteResponse
-	145, // 264: bossanova.v1.DaemonService.CreateBroadcastSubscription:output_type -> bossanova.v1.CreateBroadcastSubscriptionResponse
-	147, // 265: bossanova.v1.DaemonService.ListBroadcastSubscriptions:output_type -> bossanova.v1.ListBroadcastSubscriptionsResponse
-	149, // 266: bossanova.v1.DaemonService.DeleteBroadcastSubscription:output_type -> bossanova.v1.DeleteBroadcastSubscriptionResponse
-	151, // 267: bossanova.v1.DaemonService.ListAccounts:output_type -> bossanova.v1.ListAccountsResponse
-	153, // 268: bossanova.v1.DaemonService.AddAccount:output_type -> bossanova.v1.AddAccountResponse
-	155, // 269: bossanova.v1.DaemonService.RefreshAccount:output_type -> bossanova.v1.RefreshAccountResponse
-	157, // 270: bossanova.v1.DaemonService.UpdateAccount:output_type -> bossanova.v1.UpdateAccountResponse
-	159, // 271: bossanova.v1.DaemonService.RemoveAccount:output_type -> bossanova.v1.RemoveAccountResponse
-	161, // 272: bossanova.v1.DaemonService.TestAccount:output_type -> bossanova.v1.TestAccountResponse
-	166, // 273: bossanova.v1.DaemonService.RepairDoctor:output_type -> bossanova.v1.RepairDoctorResponse
-	165, // 274: bossanova.v1.DaemonService.StartRepairWorkflow:output_type -> bossanova.v1.StartRepairWorkflowResponse
-	170, // 275: bossanova.v1.DaemonService.ListCheckSnapshots:output_type -> bossanova.v1.ListCheckSnapshotsResponse
-	175, // 276: bossanova.v1.DaemonService.GetRunCost:output_type -> bossanova.v1.GetRunCostResponse
-	177, // 277: bossanova.v1.DaemonService.ListAgents:output_type -> bossanova.v1.ListAgentsResponse
-	180, // 278: bossanova.v1.DaemonService.ListPlugins:output_type -> bossanova.v1.ListPluginsResponse
-	183, // 279: bossanova.v1.DaemonService.GetSettings:output_type -> bossanova.v1.GetSettingsResponse
-	188, // 280: bossanova.v1.DaemonService.UpdateSettings:output_type -> bossanova.v1.UpdateSettingsResponse
-	203, // [203:281] is the sub-list for method output_type
-	125, // [125:203] is the sub-list for method input_type
-	125, // [125:125] is the sub-list for extension type_name
-	125, // [125:125] is the sub-list for extension extendee
-	0,   // [0:125] is the sub-list for field type_name
+	194, // 20: bossanova.v1.MoveSessionResponse.session:type_name -> bossanova.v1.Session
+	39,  // 21: bossanova.v1.AttachSessionResponse.output_line:type_name -> bossanova.v1.OutputLine
+	40,  // 22: bossanova.v1.AttachSessionResponse.state_change:type_name -> bossanova.v1.StateChange
+	41,  // 23: bossanova.v1.AttachSessionResponse.session_ended:type_name -> bossanova.v1.SessionEnded
+	196, // 24: bossanova.v1.OutputLine.timestamp:type_name -> google.protobuf.Timestamp
+	200, // 25: bossanova.v1.StateChange.previous_state:type_name -> bossanova.v1.SessionState
+	200, // 26: bossanova.v1.StateChange.new_state:type_name -> bossanova.v1.SessionState
+	201, // 27: bossanova.v1.StateChange.trigger:type_name -> bossanova.v1.SessionEvent
+	200, // 28: bossanova.v1.SessionEnded.final_state:type_name -> bossanova.v1.SessionState
+	194, // 29: bossanova.v1.StopSessionResponse.session:type_name -> bossanova.v1.Session
+	194, // 30: bossanova.v1.PauseSessionResponse.session:type_name -> bossanova.v1.Session
+	194, // 31: bossanova.v1.ResumeSessionResponse.session:type_name -> bossanova.v1.Session
+	194, // 32: bossanova.v1.RetrySessionResponse.session:type_name -> bossanova.v1.Session
+	194, // 33: bossanova.v1.CloseSessionResponse.session:type_name -> bossanova.v1.Session
+	194, // 34: bossanova.v1.MergeSessionResponse.session:type_name -> bossanova.v1.Session
+	194, // 35: bossanova.v1.UpdateSessionResponse.session:type_name -> bossanova.v1.Session
+	194, // 36: bossanova.v1.LinkSessionPRResponse.session:type_name -> bossanova.v1.Session
+	194, // 37: bossanova.v1.RefreshSessionPRResponse.session:type_name -> bossanova.v1.Session
+	194, // 38: bossanova.v1.ArchiveSessionResponse.session:type_name -> bossanova.v1.Session
+	29,  // 39: bossanova.v1.ResurrectSessionResponse.setup_output:type_name -> bossanova.v1.SetupScriptOutput
+	68,  // 40: bossanova.v1.ResurrectSessionResponse.session_resurrected:type_name -> bossanova.v1.SessionResurrected
+	194, // 41: bossanova.v1.SessionResurrected.session:type_name -> bossanova.v1.Session
+	196, // 42: bossanova.v1.EmptyTrashRequest.older_than:type_name -> google.protobuf.Timestamp
+	202, // 43: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.ClaudeChat
+	202, // 44: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.ClaudeChat
+	1,   // 45: bossanova.v1.DeleteChatRequest.reason:type_name -> bossanova.v1.DeleteChatRequest.DeletionReason
+	2,   // 46: bossanova.v1.WakeChatResponse.outcome:type_name -> bossanova.v1.WakeChatResponse.Outcome
+	203, // 47: bossanova.v1.DescribeChatMCPResponse.servers:type_name -> bossanova.v1.MCPServerReport
+	196, // 48: bossanova.v1.DescribeChatMCPResponse.probed_at:type_name -> google.protobuf.Timestamp
+	204, // 49: bossanova.v1.GetChatTranscriptResponse.messages:type_name -> bossanova.v1.ChatMessage
+	3,   // 50: bossanova.v1.SendChatMessageResponse.delivery_state:type_name -> bossanova.v1.SendChatMessageResponse.DeliveryState
+	4,   // 51: bossanova.v1.SendChatMessageResponse.turn_start_state:type_name -> bossanova.v1.SendChatMessageResponse.TurnStartState
+	205, // 52: bossanova.v1.ChatStatusReport.status:type_name -> bossanova.v1.ChatStatus
+	196, // 53: bossanova.v1.ChatStatusReport.last_output_at:type_name -> google.protobuf.Timestamp
+	89,  // 54: bossanova.v1.ReportChatStatusRequest.reports:type_name -> bossanova.v1.ChatStatusReport
+	205, // 55: bossanova.v1.ChatStatusEntry.status:type_name -> bossanova.v1.ChatStatus
+	196, // 56: bossanova.v1.ChatStatusEntry.last_output_at:type_name -> google.protobuf.Timestamp
+	196, // 57: bossanova.v1.ChatStatusEntry.last_substantive_output_at:type_name -> google.protobuf.Timestamp
+	93,  // 58: bossanova.v1.GetChatStatusesResponse.statuses:type_name -> bossanova.v1.ChatStatusEntry
+	205, // 59: bossanova.v1.SessionStatusEntry.status:type_name -> bossanova.v1.ChatStatus
+	96,  // 60: bossanova.v1.GetSessionStatusesResponse.statuses:type_name -> bossanova.v1.SessionStatusEntry
+	206, // 61: bossanova.v1.DeliverVCSEventRequest.event:type_name -> bossanova.v1.VCSEvent
+	5,   // 62: bossanova.v1.NotifyAuthChangeResponse.outcome:type_name -> bossanova.v1.NotifyAuthChangeResponse.Outcome
+	196, // 63: bossanova.v1.GetAuthStateResponse.last_registered_at:type_name -> google.protobuf.Timestamp
+	196, // 64: bossanova.v1.GetAuthStateResponse.auth_failing_since:type_name -> google.protobuf.Timestamp
+	207, // 65: bossanova.v1.CreateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
+	207, // 66: bossanova.v1.ListCronJobsResponse.cron_jobs:type_name -> bossanova.v1.CronJob
+	207, // 67: bossanova.v1.GetCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
+	207, // 68: bossanova.v1.UpdateCronJobResponse.cron_job:type_name -> bossanova.v1.CronJob
+	194, // 69: bossanova.v1.RunCronJobNowResponse.session:type_name -> bossanova.v1.Session
+	196, // 70: bossanova.v1.CreateGithubCallbackRequest.expires_at:type_name -> google.protobuf.Timestamp
+	208, // 71: bossanova.v1.CreateGithubCallbackResponse.github_callback:type_name -> bossanova.v1.GithubCallback
+	208, // 72: bossanova.v1.ListGithubCallbacksResponse.github_callbacks:type_name -> bossanova.v1.GithubCallback
+	122, // 73: bossanova.v1.BroadcastSelector.clauses:type_name -> bossanova.v1.BroadcastSelectorClause
+	123, // 74: bossanova.v1.Broadcast.selector:type_name -> bossanova.v1.BroadcastSelector
+	196, // 75: bossanova.v1.Broadcast.created_at:type_name -> google.protobuf.Timestamp
+	196, // 76: bossanova.v1.Broadcast.expires_at:type_name -> google.protobuf.Timestamp
+	196, // 77: bossanova.v1.BroadcastDelivery.delivered_at:type_name -> google.protobuf.Timestamp
+	123, // 78: bossanova.v1.SendBroadcastRequest.selector:type_name -> bossanova.v1.BroadcastSelector
+	124, // 79: bossanova.v1.SendBroadcastResponse.broadcast:type_name -> bossanova.v1.Broadcast
+	125, // 80: bossanova.v1.SendBroadcastResponse.deliveries:type_name -> bossanova.v1.BroadcastDelivery
+	124, // 81: bossanova.v1.ListBroadcastsResponse.broadcasts:type_name -> bossanova.v1.Broadcast
+	196, // 82: bossanova.v1.Note.created_at:type_name -> google.protobuf.Timestamp
+	196, // 83: bossanova.v1.Note.updated_at:type_name -> google.protobuf.Timestamp
+	132, // 84: bossanova.v1.CreateNoteResponse.note:type_name -> bossanova.v1.Note
+	132, // 85: bossanova.v1.GetNoteResponse.note:type_name -> bossanova.v1.Note
+	132, // 86: bossanova.v1.ListNotesResponse.notes:type_name -> bossanova.v1.Note
+	133, // 87: bossanova.v1.UpdateNoteRequest.tags:type_name -> bossanova.v1.NoteTagSet
+	132, // 88: bossanova.v1.UpdateNoteResponse.note:type_name -> bossanova.v1.Note
+	123, // 89: bossanova.v1.BroadcastSubscription.selector:type_name -> bossanova.v1.BroadcastSelector
+	196, // 90: bossanova.v1.BroadcastSubscription.fired_at:type_name -> google.protobuf.Timestamp
+	196, // 91: bossanova.v1.BroadcastSubscription.expires_at:type_name -> google.protobuf.Timestamp
+	196, // 92: bossanova.v1.BroadcastSubscription.created_at:type_name -> google.protobuf.Timestamp
+	196, // 93: bossanova.v1.BroadcastSubscription.updated_at:type_name -> google.protobuf.Timestamp
+	123, // 94: bossanova.v1.CreateBroadcastSubscriptionRequest.selector:type_name -> bossanova.v1.BroadcastSelector
+	144, // 95: bossanova.v1.CreateBroadcastSubscriptionResponse.subscription:type_name -> bossanova.v1.BroadcastSubscription
+	144, // 96: bossanova.v1.ListBroadcastSubscriptionsResponse.subscriptions:type_name -> bossanova.v1.BroadcastSubscription
+	209, // 97: bossanova.v1.ListAccountsResponse.accounts:type_name -> bossanova.v1.Account
+	209, // 98: bossanova.v1.AddAccountResponse.account:type_name -> bossanova.v1.Account
+	209, // 99: bossanova.v1.RefreshAccountResponse.account:type_name -> bossanova.v1.Account
+	209, // 100: bossanova.v1.UpdateAccountResponse.account:type_name -> bossanova.v1.Account
+	209, // 101: bossanova.v1.TestAccountResponse.account:type_name -> bossanova.v1.Account
+	164, // 102: bossanova.v1.RepairDoctorResponse.checks:type_name -> bossanova.v1.RepairDoctorCheck
+	168, // 103: bossanova.v1.RepairDoctorResponse.recent_logs:type_name -> bossanova.v1.RepairLogSnapshot
+	196, // 104: bossanova.v1.RepairLogSnapshot.modified_at:type_name -> google.protobuf.Timestamp
+	196, // 105: bossanova.v1.CheckSnapshot.polled_at:type_name -> google.protobuf.Timestamp
+	210, // 106: bossanova.v1.CheckSnapshot.computed_status:type_name -> bossanova.v1.DisplayStatus
+	170, // 107: bossanova.v1.ListCheckSnapshotsResponse.snapshots:type_name -> bossanova.v1.CheckSnapshot
+	196, // 108: bossanova.v1.GetRunCostRequest.since:type_name -> google.protobuf.Timestamp
+	196, // 109: bossanova.v1.GetRunCostRequest.until:type_name -> google.protobuf.Timestamp
+	196, // 110: bossanova.v1.AgentRunCost.started_at:type_name -> google.protobuf.Timestamp
+	196, // 111: bossanova.v1.AgentRunCost.stopped_at:type_name -> google.protobuf.Timestamp
+	190, // 112: bossanova.v1.RunCostAggregate.terminal_state_mix:type_name -> bossanova.v1.RunCostAggregate.TerminalStateMixEntry
+	173, // 113: bossanova.v1.GetRunCostResponse.runs:type_name -> bossanova.v1.AgentRunCost
+	174, // 114: bossanova.v1.GetRunCostResponse.aggregate:type_name -> bossanova.v1.RunCostAggregate
+	175, // 115: bossanova.v1.GetRunCostResponse.backfill_summary:type_name -> bossanova.v1.RunCostBackfillSummary
+	179, // 116: bossanova.v1.ListAgentsResponse.agents:type_name -> bossanova.v1.AgentInfo
+	211, // 117: bossanova.v1.AgentInfo.user_settings:type_name -> bossanova.v1.UserSetting
+	182, // 118: bossanova.v1.ListPluginsResponse.plugins:type_name -> bossanova.v1.InstalledPlugin
+	6,   // 119: bossanova.v1.InstalledPlugin.status:type_name -> bossanova.v1.InstalledPlugin.Status
+	185, // 120: bossanova.v1.GetSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
+	186, // 121: bossanova.v1.GlobalSettings.agents:type_name -> bossanova.v1.AgentSettings
+	191, // 122: bossanova.v1.AgentSettings.config:type_name -> bossanova.v1.AgentSettings.ConfigEntry
+	188, // 123: bossanova.v1.UpdateSettingsRequest.agents:type_name -> bossanova.v1.AgentSettingsUpdate
+	192, // 124: bossanova.v1.AgentSettingsUpdate.config:type_name -> bossanova.v1.AgentSettingsUpdate.ConfigEntry
+	185, // 125: bossanova.v1.UpdateSettingsResponse.settings:type_name -> bossanova.v1.GlobalSettings
+	7,   // 126: bossanova.v1.DaemonService.ResolveContext:input_type -> bossanova.v1.ResolveContextRequest
+	9,   // 127: bossanova.v1.DaemonService.ValidateRepoPath:input_type -> bossanova.v1.ValidateRepoPathRequest
+	11,  // 128: bossanova.v1.DaemonService.RegisterRepo:input_type -> bossanova.v1.RegisterRepoRequest
+	13,  // 129: bossanova.v1.DaemonService.CloneAndRegisterRepo:input_type -> bossanova.v1.CloneAndRegisterRepoRequest
+	15,  // 130: bossanova.v1.DaemonService.ListRepos:input_type -> bossanova.v1.ListReposRequest
+	17,  // 131: bossanova.v1.DaemonService.RemoveRepo:input_type -> bossanova.v1.RemoveRepoRequest
+	19,  // 132: bossanova.v1.DaemonService.UpdateRepo:input_type -> bossanova.v1.UpdateRepoRequest
+	21,  // 133: bossanova.v1.DaemonService.GetRepoSettings:input_type -> bossanova.v1.GetRepoSettingsRequest
+	23,  // 134: bossanova.v1.DaemonService.ListRepoPRs:input_type -> bossanova.v1.ListRepoPRsRequest
+	25,  // 135: bossanova.v1.DaemonService.ListTrackerIssues:input_type -> bossanova.v1.ListTrackerIssuesRequest
+	27,  // 136: bossanova.v1.DaemonService.CreateSession:input_type -> bossanova.v1.CreateSessionRequest
+	31,  // 137: bossanova.v1.DaemonService.GetSession:input_type -> bossanova.v1.GetSessionRequest
+	33,  // 138: bossanova.v1.DaemonService.ListSessions:input_type -> bossanova.v1.ListSessionsRequest
+	35,  // 139: bossanova.v1.DaemonService.MoveSession:input_type -> bossanova.v1.MoveSessionRequest
+	37,  // 140: bossanova.v1.DaemonService.AttachSession:input_type -> bossanova.v1.AttachSessionRequest
+	42,  // 141: bossanova.v1.DaemonService.StopSession:input_type -> bossanova.v1.StopSessionRequest
+	44,  // 142: bossanova.v1.DaemonService.PauseSession:input_type -> bossanova.v1.PauseSessionRequest
+	46,  // 143: bossanova.v1.DaemonService.ResumeSession:input_type -> bossanova.v1.ResumeSessionRequest
+	48,  // 144: bossanova.v1.DaemonService.RetrySession:input_type -> bossanova.v1.RetrySessionRequest
+	50,  // 145: bossanova.v1.DaemonService.CloseSession:input_type -> bossanova.v1.CloseSessionRequest
+	52,  // 146: bossanova.v1.DaemonService.MergeSession:input_type -> bossanova.v1.MergeSessionRequest
+	54,  // 147: bossanova.v1.DaemonService.RemoveSession:input_type -> bossanova.v1.RemoveSessionRequest
+	56,  // 148: bossanova.v1.DaemonService.UpdateSession:input_type -> bossanova.v1.UpdateSessionRequest
+	58,  // 149: bossanova.v1.DaemonService.LinkSessionPR:input_type -> bossanova.v1.LinkSessionPRRequest
+	60,  // 150: bossanova.v1.DaemonService.RefreshSessionPR:input_type -> bossanova.v1.RefreshSessionPRRequest
+	62,  // 151: bossanova.v1.DaemonService.SwitchSessionAccount:input_type -> bossanova.v1.SwitchSessionAccountRequest
+	64,  // 152: bossanova.v1.DaemonService.ArchiveSession:input_type -> bossanova.v1.ArchiveSessionRequest
+	66,  // 153: bossanova.v1.DaemonService.ResurrectSession:input_type -> bossanova.v1.ResurrectSessionRequest
+	69,  // 154: bossanova.v1.DaemonService.EmptyTrash:input_type -> bossanova.v1.EmptyTrashRequest
+	71,  // 155: bossanova.v1.DaemonService.RecordChat:input_type -> bossanova.v1.RecordChatRequest
+	73,  // 156: bossanova.v1.DaemonService.ListChats:input_type -> bossanova.v1.ListChatsRequest
+	75,  // 157: bossanova.v1.DaemonService.UpdateChatTitle:input_type -> bossanova.v1.UpdateChatTitleRequest
+	77,  // 158: bossanova.v1.DaemonService.DeleteChat:input_type -> bossanova.v1.DeleteChatRequest
+	79,  // 159: bossanova.v1.DaemonService.WakeChat:input_type -> bossanova.v1.WakeChatRequest
+	81,  // 160: bossanova.v1.DaemonService.DescribeChatLaunch:input_type -> bossanova.v1.DescribeChatLaunchRequest
+	83,  // 161: bossanova.v1.DaemonService.DescribeChatMCP:input_type -> bossanova.v1.DescribeChatMCPRequest
+	85,  // 162: bossanova.v1.DaemonService.GetChatTranscript:input_type -> bossanova.v1.GetChatTranscriptRequest
+	87,  // 163: bossanova.v1.DaemonService.SendChatMessage:input_type -> bossanova.v1.SendChatMessageRequest
+	90,  // 164: bossanova.v1.DaemonService.ReportChatStatus:input_type -> bossanova.v1.ReportChatStatusRequest
+	92,  // 165: bossanova.v1.DaemonService.GetChatStatuses:input_type -> bossanova.v1.GetChatStatusesRequest
+	95,  // 166: bossanova.v1.DaemonService.GetSessionStatuses:input_type -> bossanova.v1.GetSessionStatusesRequest
+	98,  // 167: bossanova.v1.DaemonService.DeliverVCSEvent:input_type -> bossanova.v1.DeliverVCSEventRequest
+	100, // 168: bossanova.v1.DaemonService.NotifyAuthChange:input_type -> bossanova.v1.NotifyAuthChangeRequest
+	102, // 169: bossanova.v1.DaemonService.GetAuthState:input_type -> bossanova.v1.GetAuthStateRequest
+	104, // 170: bossanova.v1.DaemonService.CreateCronJob:input_type -> bossanova.v1.CreateCronJobRequest
+	106, // 171: bossanova.v1.DaemonService.ListCronJobs:input_type -> bossanova.v1.ListCronJobsRequest
+	108, // 172: bossanova.v1.DaemonService.GetCronJob:input_type -> bossanova.v1.GetCronJobRequest
+	110, // 173: bossanova.v1.DaemonService.UpdateCronJob:input_type -> bossanova.v1.UpdateCronJobRequest
+	112, // 174: bossanova.v1.DaemonService.DeleteCronJob:input_type -> bossanova.v1.DeleteCronJobRequest
+	114, // 175: bossanova.v1.DaemonService.RunCronJobNow:input_type -> bossanova.v1.RunCronJobNowRequest
+	116, // 176: bossanova.v1.DaemonService.CreateGithubCallback:input_type -> bossanova.v1.CreateGithubCallbackRequest
+	118, // 177: bossanova.v1.DaemonService.ListGithubCallbacks:input_type -> bossanova.v1.ListGithubCallbacksRequest
+	120, // 178: bossanova.v1.DaemonService.DeleteGithubCallback:input_type -> bossanova.v1.DeleteGithubCallbackRequest
+	126, // 179: bossanova.v1.DaemonService.SendBroadcast:input_type -> bossanova.v1.SendBroadcastRequest
+	128, // 180: bossanova.v1.DaemonService.ListBroadcasts:input_type -> bossanova.v1.ListBroadcastsRequest
+	130, // 181: bossanova.v1.DaemonService.DeleteBroadcast:input_type -> bossanova.v1.DeleteBroadcastRequest
+	134, // 182: bossanova.v1.DaemonService.CreateNote:input_type -> bossanova.v1.CreateNoteRequest
+	136, // 183: bossanova.v1.DaemonService.GetNote:input_type -> bossanova.v1.GetNoteRequest
+	138, // 184: bossanova.v1.DaemonService.ListNotes:input_type -> bossanova.v1.ListNotesRequest
+	140, // 185: bossanova.v1.DaemonService.UpdateNote:input_type -> bossanova.v1.UpdateNoteRequest
+	142, // 186: bossanova.v1.DaemonService.DeleteNote:input_type -> bossanova.v1.DeleteNoteRequest
+	145, // 187: bossanova.v1.DaemonService.CreateBroadcastSubscription:input_type -> bossanova.v1.CreateBroadcastSubscriptionRequest
+	147, // 188: bossanova.v1.DaemonService.ListBroadcastSubscriptions:input_type -> bossanova.v1.ListBroadcastSubscriptionsRequest
+	149, // 189: bossanova.v1.DaemonService.DeleteBroadcastSubscription:input_type -> bossanova.v1.DeleteBroadcastSubscriptionRequest
+	151, // 190: bossanova.v1.DaemonService.ListAccounts:input_type -> bossanova.v1.ListAccountsRequest
+	153, // 191: bossanova.v1.DaemonService.AddAccount:input_type -> bossanova.v1.AddAccountRequest
+	155, // 192: bossanova.v1.DaemonService.RefreshAccount:input_type -> bossanova.v1.RefreshAccountRequest
+	157, // 193: bossanova.v1.DaemonService.UpdateAccount:input_type -> bossanova.v1.UpdateAccountRequest
+	159, // 194: bossanova.v1.DaemonService.RemoveAccount:input_type -> bossanova.v1.RemoveAccountRequest
+	161, // 195: bossanova.v1.DaemonService.TestAccount:input_type -> bossanova.v1.TestAccountRequest
+	163, // 196: bossanova.v1.DaemonService.RepairDoctor:input_type -> bossanova.v1.RepairDoctorRequest
+	165, // 197: bossanova.v1.DaemonService.StartRepairWorkflow:input_type -> bossanova.v1.StartRepairWorkflowRequest
+	169, // 198: bossanova.v1.DaemonService.ListCheckSnapshots:input_type -> bossanova.v1.ListCheckSnapshotsRequest
+	172, // 199: bossanova.v1.DaemonService.GetRunCost:input_type -> bossanova.v1.GetRunCostRequest
+	177, // 200: bossanova.v1.DaemonService.ListAgents:input_type -> bossanova.v1.ListAgentsRequest
+	180, // 201: bossanova.v1.DaemonService.ListPlugins:input_type -> bossanova.v1.ListPluginsRequest
+	183, // 202: bossanova.v1.DaemonService.GetSettings:input_type -> bossanova.v1.GetSettingsRequest
+	187, // 203: bossanova.v1.DaemonService.UpdateSettings:input_type -> bossanova.v1.UpdateSettingsRequest
+	8,   // 204: bossanova.v1.DaemonService.ResolveContext:output_type -> bossanova.v1.ResolveContextResponse
+	10,  // 205: bossanova.v1.DaemonService.ValidateRepoPath:output_type -> bossanova.v1.ValidateRepoPathResponse
+	12,  // 206: bossanova.v1.DaemonService.RegisterRepo:output_type -> bossanova.v1.RegisterRepoResponse
+	14,  // 207: bossanova.v1.DaemonService.CloneAndRegisterRepo:output_type -> bossanova.v1.CloneAndRegisterRepoResponse
+	16,  // 208: bossanova.v1.DaemonService.ListRepos:output_type -> bossanova.v1.ListReposResponse
+	18,  // 209: bossanova.v1.DaemonService.RemoveRepo:output_type -> bossanova.v1.RemoveRepoResponse
+	20,  // 210: bossanova.v1.DaemonService.UpdateRepo:output_type -> bossanova.v1.UpdateRepoResponse
+	22,  // 211: bossanova.v1.DaemonService.GetRepoSettings:output_type -> bossanova.v1.GetRepoSettingsResponse
+	24,  // 212: bossanova.v1.DaemonService.ListRepoPRs:output_type -> bossanova.v1.ListRepoPRsResponse
+	26,  // 213: bossanova.v1.DaemonService.ListTrackerIssues:output_type -> bossanova.v1.ListTrackerIssuesResponse
+	28,  // 214: bossanova.v1.DaemonService.CreateSession:output_type -> bossanova.v1.CreateSessionResponse
+	32,  // 215: bossanova.v1.DaemonService.GetSession:output_type -> bossanova.v1.GetSessionResponse
+	34,  // 216: bossanova.v1.DaemonService.ListSessions:output_type -> bossanova.v1.ListSessionsResponse
+	36,  // 217: bossanova.v1.DaemonService.MoveSession:output_type -> bossanova.v1.MoveSessionResponse
+	38,  // 218: bossanova.v1.DaemonService.AttachSession:output_type -> bossanova.v1.AttachSessionResponse
+	43,  // 219: bossanova.v1.DaemonService.StopSession:output_type -> bossanova.v1.StopSessionResponse
+	45,  // 220: bossanova.v1.DaemonService.PauseSession:output_type -> bossanova.v1.PauseSessionResponse
+	47,  // 221: bossanova.v1.DaemonService.ResumeSession:output_type -> bossanova.v1.ResumeSessionResponse
+	49,  // 222: bossanova.v1.DaemonService.RetrySession:output_type -> bossanova.v1.RetrySessionResponse
+	51,  // 223: bossanova.v1.DaemonService.CloseSession:output_type -> bossanova.v1.CloseSessionResponse
+	53,  // 224: bossanova.v1.DaemonService.MergeSession:output_type -> bossanova.v1.MergeSessionResponse
+	55,  // 225: bossanova.v1.DaemonService.RemoveSession:output_type -> bossanova.v1.RemoveSessionResponse
+	57,  // 226: bossanova.v1.DaemonService.UpdateSession:output_type -> bossanova.v1.UpdateSessionResponse
+	59,  // 227: bossanova.v1.DaemonService.LinkSessionPR:output_type -> bossanova.v1.LinkSessionPRResponse
+	61,  // 228: bossanova.v1.DaemonService.RefreshSessionPR:output_type -> bossanova.v1.RefreshSessionPRResponse
+	63,  // 229: bossanova.v1.DaemonService.SwitchSessionAccount:output_type -> bossanova.v1.SwitchSessionAccountResponse
+	65,  // 230: bossanova.v1.DaemonService.ArchiveSession:output_type -> bossanova.v1.ArchiveSessionResponse
+	67,  // 231: bossanova.v1.DaemonService.ResurrectSession:output_type -> bossanova.v1.ResurrectSessionResponse
+	70,  // 232: bossanova.v1.DaemonService.EmptyTrash:output_type -> bossanova.v1.EmptyTrashResponse
+	72,  // 233: bossanova.v1.DaemonService.RecordChat:output_type -> bossanova.v1.RecordChatResponse
+	74,  // 234: bossanova.v1.DaemonService.ListChats:output_type -> bossanova.v1.ListChatsResponse
+	76,  // 235: bossanova.v1.DaemonService.UpdateChatTitle:output_type -> bossanova.v1.UpdateChatTitleResponse
+	78,  // 236: bossanova.v1.DaemonService.DeleteChat:output_type -> bossanova.v1.DeleteChatResponse
+	80,  // 237: bossanova.v1.DaemonService.WakeChat:output_type -> bossanova.v1.WakeChatResponse
+	82,  // 238: bossanova.v1.DaemonService.DescribeChatLaunch:output_type -> bossanova.v1.DescribeChatLaunchResponse
+	84,  // 239: bossanova.v1.DaemonService.DescribeChatMCP:output_type -> bossanova.v1.DescribeChatMCPResponse
+	86,  // 240: bossanova.v1.DaemonService.GetChatTranscript:output_type -> bossanova.v1.GetChatTranscriptResponse
+	88,  // 241: bossanova.v1.DaemonService.SendChatMessage:output_type -> bossanova.v1.SendChatMessageResponse
+	91,  // 242: bossanova.v1.DaemonService.ReportChatStatus:output_type -> bossanova.v1.ReportChatStatusResponse
+	94,  // 243: bossanova.v1.DaemonService.GetChatStatuses:output_type -> bossanova.v1.GetChatStatusesResponse
+	97,  // 244: bossanova.v1.DaemonService.GetSessionStatuses:output_type -> bossanova.v1.GetSessionStatusesResponse
+	99,  // 245: bossanova.v1.DaemonService.DeliverVCSEvent:output_type -> bossanova.v1.DeliverVCSEventResponse
+	101, // 246: bossanova.v1.DaemonService.NotifyAuthChange:output_type -> bossanova.v1.NotifyAuthChangeResponse
+	103, // 247: bossanova.v1.DaemonService.GetAuthState:output_type -> bossanova.v1.GetAuthStateResponse
+	105, // 248: bossanova.v1.DaemonService.CreateCronJob:output_type -> bossanova.v1.CreateCronJobResponse
+	107, // 249: bossanova.v1.DaemonService.ListCronJobs:output_type -> bossanova.v1.ListCronJobsResponse
+	109, // 250: bossanova.v1.DaemonService.GetCronJob:output_type -> bossanova.v1.GetCronJobResponse
+	111, // 251: bossanova.v1.DaemonService.UpdateCronJob:output_type -> bossanova.v1.UpdateCronJobResponse
+	113, // 252: bossanova.v1.DaemonService.DeleteCronJob:output_type -> bossanova.v1.DeleteCronJobResponse
+	115, // 253: bossanova.v1.DaemonService.RunCronJobNow:output_type -> bossanova.v1.RunCronJobNowResponse
+	117, // 254: bossanova.v1.DaemonService.CreateGithubCallback:output_type -> bossanova.v1.CreateGithubCallbackResponse
+	119, // 255: bossanova.v1.DaemonService.ListGithubCallbacks:output_type -> bossanova.v1.ListGithubCallbacksResponse
+	121, // 256: bossanova.v1.DaemonService.DeleteGithubCallback:output_type -> bossanova.v1.DeleteGithubCallbackResponse
+	127, // 257: bossanova.v1.DaemonService.SendBroadcast:output_type -> bossanova.v1.SendBroadcastResponse
+	129, // 258: bossanova.v1.DaemonService.ListBroadcasts:output_type -> bossanova.v1.ListBroadcastsResponse
+	131, // 259: bossanova.v1.DaemonService.DeleteBroadcast:output_type -> bossanova.v1.DeleteBroadcastResponse
+	135, // 260: bossanova.v1.DaemonService.CreateNote:output_type -> bossanova.v1.CreateNoteResponse
+	137, // 261: bossanova.v1.DaemonService.GetNote:output_type -> bossanova.v1.GetNoteResponse
+	139, // 262: bossanova.v1.DaemonService.ListNotes:output_type -> bossanova.v1.ListNotesResponse
+	141, // 263: bossanova.v1.DaemonService.UpdateNote:output_type -> bossanova.v1.UpdateNoteResponse
+	143, // 264: bossanova.v1.DaemonService.DeleteNote:output_type -> bossanova.v1.DeleteNoteResponse
+	146, // 265: bossanova.v1.DaemonService.CreateBroadcastSubscription:output_type -> bossanova.v1.CreateBroadcastSubscriptionResponse
+	148, // 266: bossanova.v1.DaemonService.ListBroadcastSubscriptions:output_type -> bossanova.v1.ListBroadcastSubscriptionsResponse
+	150, // 267: bossanova.v1.DaemonService.DeleteBroadcastSubscription:output_type -> bossanova.v1.DeleteBroadcastSubscriptionResponse
+	152, // 268: bossanova.v1.DaemonService.ListAccounts:output_type -> bossanova.v1.ListAccountsResponse
+	154, // 269: bossanova.v1.DaemonService.AddAccount:output_type -> bossanova.v1.AddAccountResponse
+	156, // 270: bossanova.v1.DaemonService.RefreshAccount:output_type -> bossanova.v1.RefreshAccountResponse
+	158, // 271: bossanova.v1.DaemonService.UpdateAccount:output_type -> bossanova.v1.UpdateAccountResponse
+	160, // 272: bossanova.v1.DaemonService.RemoveAccount:output_type -> bossanova.v1.RemoveAccountResponse
+	162, // 273: bossanova.v1.DaemonService.TestAccount:output_type -> bossanova.v1.TestAccountResponse
+	167, // 274: bossanova.v1.DaemonService.RepairDoctor:output_type -> bossanova.v1.RepairDoctorResponse
+	166, // 275: bossanova.v1.DaemonService.StartRepairWorkflow:output_type -> bossanova.v1.StartRepairWorkflowResponse
+	171, // 276: bossanova.v1.DaemonService.ListCheckSnapshots:output_type -> bossanova.v1.ListCheckSnapshotsResponse
+	176, // 277: bossanova.v1.DaemonService.GetRunCost:output_type -> bossanova.v1.GetRunCostResponse
+	178, // 278: bossanova.v1.DaemonService.ListAgents:output_type -> bossanova.v1.ListAgentsResponse
+	181, // 279: bossanova.v1.DaemonService.ListPlugins:output_type -> bossanova.v1.ListPluginsResponse
+	184, // 280: bossanova.v1.DaemonService.GetSettings:output_type -> bossanova.v1.GetSettingsResponse
+	189, // 281: bossanova.v1.DaemonService.UpdateSettings:output_type -> bossanova.v1.UpdateSettingsResponse
+	204, // [204:282] is the sub-list for method output_type
+	126, // [126:204] is the sub-list for method input_type
+	126, // [126:126] is the sub-list for extension type_name
+	126, // [126:126] is the sub-list for extension extendee
+	0,   // [0:126] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_daemon_proto_init() }
@@ -13154,7 +13254,7 @@ func file_bossanova_v1_daemon_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_daemon_proto_rawDesc), len(file_bossanova_v1_daemon_proto_rawDesc)),
-			NumEnums:      6,
+			NumEnums:      7,
 			NumMessages:   186,
 			NumExtensions: 0,
 			NumServices:   1,

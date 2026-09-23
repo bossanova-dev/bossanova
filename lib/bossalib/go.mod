@@ -15,8 +15,8 @@ require (
 	github.com/gofrs/flock v0.13.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-plugin v1.8.0
-	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/posthog/posthog-go v1.25.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/posthog/posthog-go v1.25.2
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/qmuntal/stateless v1.8.0
 	github.com/robfig/cron/v3 v3.0.1

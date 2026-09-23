@@ -249,7 +249,12 @@ function runStubbed({
     const finalize = path.join(home, agentHome, 'skills', 'bossanova', 'boss-finalize')
     fs.mkdirSync(finalize, { recursive: true })
     const injector = path.join(finalize, 'add-pr-numbers.sh')
-    fs.writeFileSync(injector, '#!/usr/bin/env bash\necho "add-pr-numbers ran" >&2\n')
+    // Traced, not merely echoed: BOS-1284 asserts the injection precedes the force-push and the
+    // ready, and an ordering claim needs the injector's call in the same ordered log as theirs.
+    fs.writeFileSync(
+      injector,
+      '#!/usr/bin/env bash\necho "add-pr-numbers $*" >> "$STUB_TRACE"\necho "add-pr-numbers ran" >&2\n',
+    )
     fs.chmodSync(injector, 0o755)
   }
   for (const [name, body] of [
@@ -893,4 +898,51 @@ test('the PR body temp file is removed before the result is checked, where one i
       )
     }
   }
+})
+
+// BOS-1284 U4 (note b7749a1de2e22723): the gate retags every commit and force-pushes AFTER it
+// acquires the PR, so a PR created ready fires `opened` against a head the gate then replaces —
+// review ran on a dead head. Creating a draft moves the only `ready_for_review` to the far side of
+// the rewrite. Both directions: the flag is present, and the ORDER it buys is what holds.
+
+test('BOS-1284: the gate creates its PR as a draft', () => {
+  assert.ok(SOURCE.includes('--draft \\'), 'gh pr create must pass --draft')
+  const { code, calls } = runStubbed({ prExists: false, isDraft: 'true' })
+  assert.equal(code, 0)
+  const create = calls.split('\n').find((line) => line.startsWith('gh pr create'))
+  assert.ok(create, `expected a create call: ${calls}`)
+  assert.match(create, /--draft/, `the create must be a draft: ${create}`)
+})
+
+test('BOS-1284: ready runs only after the injection and the force-push', () => {
+  const { code, calls } = runStubbed({ prExists: false, isDraft: 'true' })
+  assert.equal(code, 0)
+  const lines = calls.split('\n')
+  const at = (prefix) => lines.findIndex((line) => line.startsWith(prefix))
+  const created = at('gh pr create')
+  const injected = at('add-pr-numbers')
+  const pushed = at('git push')
+  const readied = at('gh pr ready')
+  for (const [label, index] of [
+    ['create', created],
+    ['inject', injected],
+    ['push', pushed],
+    ['ready', readied],
+  ]) {
+    assert.ok(index >= 0, `expected a ${label} call: ${calls}`)
+  }
+  assert.ok(created < injected, `the PR must exist before the injection: ${calls}`)
+  assert.ok(injected < pushed, `the injection must precede the force-push: ${calls}`)
+  assert.ok(pushed < readied, `the force-push must precede the ready: ${calls}`)
+})
+
+test('BOS-1284: a failure before the ready leaves the PR a draft', () => {
+  // An untagged commit is the live pre-ready failure: the [#N] re-check aborts between the
+  // injection and the push. `set -euo pipefail` then stops the gate with no `pr ready` issued,
+  // so the PR the gate created stays a draft and no review workflow was ever pointed at it.
+  const { code, calls } = runStubbed({ prExists: false, isDraft: 'true', gitLog: 'untagged' })
+  assert.notEqual(code, 0, 'an untagged commit must abort the gate')
+  assert.match(calls, /gh pr create/, 'the PR was created')
+  assert.doesNotMatch(calls, /gh pr ready/, `no ready may be issued: ${calls}`)
+  assert.doesNotMatch(calls, /git push/, `and no push either: ${calls}`)
 })

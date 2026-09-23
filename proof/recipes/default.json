@@ -574,6 +574,42 @@
       "viewport": { "width": 390, "height": 844 }
     },
     {
+      "id": "web-sessions-mobile-scrolled",
+      "surface": "web",
+      "title": "Web Sessions Scrolled (mobile)",
+      "description": "BOS-1301: the sessions list at phone width after scrolling down. The 'Sessions' filter bar with its drop-downs and '+' button stays pinned directly under the 'bossanova' brand bar, and later session rows fill the rest of the frame, passing underneath the bar rather than over it.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 390, "height": 560 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/",
+          "label": "Open sessions",
+          "caption": "Open the sessions list on a phone"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap",
+          "label": "Sessions list",
+          "caption": "The list sits flush under the filter bar"
+        },
+        {
+          "action": "scroll",
+          "byPx": 480,
+          "label": "Scrolled list",
+          "caption": "Scroll down through the sessions"
+        },
+        {
+          "action": "wait",
+          "timeoutMs": 800,
+          "label": "Pinned filter bar",
+          "caption": "The filter bar stays pinned under the brand bar"
+        }
+      ]
+    },
+    {
       "id": "web-new-session-mobile",
       "surface": "web",
       "title": "Web New Session (mobile)",
@@ -2658,6 +2694,7 @@
       "recipeIds": [
         "web-sessions",
         "web-sessions-mobile",
+        "web-sessions-mobile-scrolled",
         "web-sessions-filters",
         "web-sessions-filters-mobile",
         "web-daemon-label-collision",

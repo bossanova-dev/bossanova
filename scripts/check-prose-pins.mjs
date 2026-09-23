@@ -749,7 +749,22 @@ export const PROSE_PIN_BASELINE = {
   // the rule names against deletion; two pin that each rule still NAMES its helper, which is the
   // line between a computed verdict and the recall that failed. The behaviour behind them is
   // tested in skills-toolbox/callback/ci-watch.test.mjs, so nothing here restates a rule.
-  'scripts/boss-build-skill.test.mjs': 845,
+  // BOS-1280: 845 -> 844. One pin RETIRED, not re-aimed: the drift preflight's severity `case`
+  // arm moved into skills-toolbox/skill-drift-verdict.mjs, so the assertion that the body carries
+  // the advisory wording is now made over the vendored module, and the negative on the hand-rolled
+  // remedy extraction became a planted prohibition. A budget that descends is the point; this one
+  // descended because a rule left prose for a helper with its own tests.
+  // BOS-1284: 844 -> 861. +17, and every one is a structural pin over a RULE NAME or an ordering
+  // in the shipped markdown, not a sentence — there is no helper to delegate to, because the
+  // artifact under test IS the prose a dispatched pass executes. Four rules: the commit contract's
+  // message budget (stated against `policy.tagFormat` and the repo's own limits, never a literal
+  // cap), its post-hook-rejection `git show --stat` verification and its format-before-commit
+  // rule, boss-review's copy of the budget with the `--no-verify` reason it turns on, and the
+  // REVIEW_READY route's create -> inject -> force-push -> ready ORDERING, which is asserted as
+  // three `indexOf` comparisons rather than as prose about ordering. Those four account for
+  // the first 16; the 17th (860 -> 861) is the pre-push message re-read, whose recipe is written once in the finalize reference: the pin is
+  // on the rule's NAME, so the reference keeps sole ownership of the recipe's text.
+  'scripts/boss-build-skill.test.mjs': 861,
   // BOS-1243: 13 -> 14. The claim-adjudication pass gives an action per VERDICT but gave none
   // for the CLI's fourth outcome, exit 2 — an operator error where nothing was adjudicated at
   // all and an empty record list reads exactly like "nothing was refuted". The exit CODE itself
@@ -757,13 +772,32 @@ export const PROSE_PIN_BASELINE = {
   // document can carry is the ACTION it obliges, so one pin was added rather than two.
   // BOS-1265: 14 -> 19. Repair's per-iteration re-resolution and fail-safe command routing live
   // only in the published core's reader contract; no helper can observe an agent's later loop.
-  'scripts/boss-repair-skill.test.mjs': 19,
+  // BOS-1288: 19 -> 23. Strategy C step 3 stopped restating a five-step checklist and now CALLS
+  // bs-mutation-obligations.mjs, whose own tests are the specification for which mutants each fix
+  // shape owes — so the per-shape content is asserted behaviourally, not pinned. What only the
+  // document can carry is that the call is made at all, that a shape classification precedes it,
+  // that `satisfied` is the sole proceeding verdict, and that the folded tightening bullet has not
+  // grown back as a second prose copy. Four pins, and the core body shrank by 16 bytes
+  // (160856 -> 160840 at d271c595..HEAD). That shrink does not pay for the change: the
+  // references it routes to (boss-review/references/falsification.md, boss-build's
+  // core-spine.md, docs/testing/non-vacuity-proof.md) all GREW, so this raise is bought
+  // by moving the per-shape obligation into a tested helper, not by a net prose descent.
+  'scripts/boss-repair-skill.test.mjs': 23,
   // BOS-1213 lowered this from 194: the four regexes quoting §Caller deadline's budget numbers
   // became a numeric comparison against the helper's own constants, plus executable
   // admit-fix-round cases covering every verdict it can return.
   // BOS-1265: 193 -> 197. Review's batch-close selection/report/fallback contract is prose-only;
   // the helper tests cover selection semantics separately.
-  'scripts/boss-review-skill.test.mjs': 197,
+  // BOS-1288: 197 -> 203. references/falsification.md's `## Shared checklist` is the NORMATIVE
+  // non-vacuity contract for this tree; the shape-to-mutant mapping moved into
+  // bs-mutation-obligations.mjs and is specified by that module's tests, so none of these six pins
+  // restates a per-shape obligation. They pin the rule NAMES and structural leads a rewrite must
+  // not lose: the helper is named, a shape classification precedes the per-mutant procedure,
+  // `satisfied` is the sole discharging verdict, and the three discharge rules (test-first-red as
+  // an equal discharge, a skip judged at the parsing layer, no staging during an in-place proof)
+  // are present. Each is resident-context content an agent must have to make the next decision,
+  // and no helper can observe whether a document told it.
+  'scripts/boss-review-skill.test.mjs': 203,
   'scripts/boss-skill.test.mjs': 2,
   // 149 -> 150: the wait-recipe pin split in two. It used to assert ONE sentence naming a
   // "session cron" as the fallback wait mechanism — the sentence that was itself teaching
@@ -772,7 +806,18 @@ export const PROSE_PIN_BASELINE = {
   // cron``). The prohibition is the point of the change, so it is pinned separately: folding it
   // back into the mechanism pin would let a future rewrite drop the rail while staying green.
   'scripts/bs-epic-skill.test.mjs': 150,
-  'scripts/bs-plan-ce-skill.test.mjs': 24,
+  // BOS-1290: 24 -> 26. One pin deleted with the claim it pinned (`Nothing CE wrote **outside**
+  // `runTmp` may survive`, the set-difference boundary that made cleanup delete a concurrent
+  // peer's untracked file), and three added. All three are over the EXECUTABLE cleanup block this
+  // same file extracts and runs, not over prose: the presence of the `ls-files --error-unmatch`
+  // tracked-path guard, the absence of `comm -13`, and the requirement that exactly two removals
+  // survive and each name a run-owned or snapshot-justified path. A helper cannot assert these —
+  // the artifact under test is a shell recipe embedded in markdown, and what must not regress is
+  // that no NEW removal driven by an enumeration difference appears beside the two that are
+  // attributable. The behaviour each one guards is separately proved executably by the BOS-1290
+  // peer-file fixtures; these three exist so a reintroduced enumeration reds at the shape rather
+  // than only when someone writes a fixture for the peer shape it happens to destroy.
+  'scripts/bs-plan-ce-skill.test.mjs': 26,
   // BOS-1214: 308 -> 306. Two pins deleted with the byte mechanics they pinned — the
   // snapshot's trailing-newline shape and `renormalized bullets alone defeat byte-equality`.
   // The bullet-renormalization pin's behaviour is now asserted over the write-back verifier
@@ -829,7 +874,18 @@ export const PROSE_PIN_BASELINE = {
   // still a prose pin because the subject is published prose an agent reads to decide whether to
   // CREATE children, so there is no behaviour to assert instead; it is deliberately a rule over a
   // captured region rather than a sentence, so it survives further edits to the list.
-  'scripts/bs-plan-skill.test.mjs': 322,
+  // BOS-1282: +4 for the two Phase 4 outcome rules (indeterminate write, landed relation check).
+  // Both are pinned by RULE NAME / structural lead rather than by sentence text, and the behaviour
+  // half of each lives in skills-toolbox/tracker/outcome.test.mjs over the helper itself.
+  // BOS-1286: 326 -> 328, one pin per step-5(f) rule and no more. The subject is the published
+  // markdown body itself — which bytes step 5(f) composes its save FROM, and where it puts an
+  // appended bullet — so there is no helper to ask instead: the rules govern what an agent types
+  // into a tracker save, and nothing in this repo executes them. The behaviour half that CAN be
+  // asserted is, over the helper that measures the result: the blank-line reshaping these rules
+  // avoid provoking is now a declared transform with its own near-miss coverage in
+  // skills-toolbox/plan-writeback-verify.test.mjs. Both pins are a bolded rule name plus the
+  // clause that bounds it, not a sentence, so a rewording that keeps the rule keeps them green.
+  'scripts/bs-plan-skill.test.mjs': 328,
   'scripts/bs-record-notes-skill.test.mjs': 2,
   'scripts/bs-sweep-debt-skill.test.mjs': 32,
   'scripts/bs-sweep-mutation-skill.test.mjs': 32,
@@ -847,9 +903,26 @@ export const PROSE_PIN_BASELINE = {
   // (`durable-corruption-first`), the outcome TOKEN (`planned epic <PARENT-ID>`) and the roster
   // fields, plus two absence pins that stop the replaced "most impactful" judgement from being
   // supplemented rather than removed.
-  'scripts/bs-sweep-plan-skill.test.mjs': 27,
+  // 27 -> 31 (BOS-1283): the sweep's pre-delegate re-read is structurally blind to a peer that
+  // selected the same ticket minutes earlier, because a mid-flight peer has made zero tracker
+  // mutations. The detector itself is a helper (skills-toolbox/plan-peer-claim.mjs) asserted
+  // against its own output in skills-toolbox/plan-peer-claim.test.mjs; what remains unassertable
+  // any other way is the WIRING, which lives only in instruction Markdown an agent loads at
+  // execution time. The four pins key on the helper's filename at the two sites that must call
+  // and cite it, the outcome TOKEN (`deferred <ISSUE-ID>: peer run in flight`), and the one
+  // clause that separates a deferral from the already-planned skip it reuses — the queue label
+  // is left in place, so a deferred ticket is re-swept rather than lost.
+  'scripts/bs-sweep-plan-skill.test.mjs': 31,
   'scripts/bs-sweep-prettify-skill.test.mjs': 7,
-  'scripts/bs-sweep-releases-skill.test.mjs': 66,
+  // 66 -> 68 (BOS-1277). The retired pin asserted the "one continuous shell session" MANDATE,
+  // which was unfollowable — every Bash tool call is a fresh shell — so it was replaced by the
+  // mechanism that makes a phase boundary survivable: the two values a fresh shell cannot
+  // re-derive must be written into the lock directory (`$LOCK_DIR/run-dir`, `$LOCK_DIR/owner`) and
+  // readable back from it. Both new pins are over FENCED command invocations, which
+  // docs/skills/prose-pins.md itself records as outside the reflow hazard; the gate counts them
+  // anyway because it keys on the assertion site, not on the subject. The absence pin that keeps
+  // the retired mandate from coming back is a doesNotMatch, which this gate does not count.
+  'scripts/bs-sweep-releases-skill.test.mjs': 68,
   'scripts/bs-sweep-security-skill.test.mjs': 28,
   // 39 -> 45 (BOS-1253): the kill-set gate reference admitted `scripts/` and the docs module on
   // coverage-neutrality alone while naming an exact command only for Go and services/web, so a run
@@ -859,7 +932,17 @@ export const PROSE_PIN_BASELINE = {
   // .claude/skills/bs-sweep-tests/SKILL.md sits exactly at its banked 26600-byte budget.
   'scripts/bs-sweep-tests-skill.test.mjs': 45,
   'scripts/check-skill-node-fences.test.mjs': 2,
-  'scripts/check-skill-shell.test.mjs': 21,
+  // 21 -> 29 (BOS-1277), for three new lettered rules at the file's established ratio of message
+  // pins per rule. The subject is a message the GATE builds at runtime, not a document — the class
+  // docs/skills/prose-pins.md names as outside the reflow hazard — and the message is the whole
+  // deliverable of a finding: a rule that fires but does not name its consequence and its
+  // sanctioned fix sends the reader back to a 267 KB checker to work out what to do. So the pins
+  // are the irreducible evidence, and there is no helper to ask instead: `findZshSpecialScalars`,
+  // `findMixedGlobRemovals` and `findTrailingConditionalStatus` return positions and names, and
+  // the emission site that turns those into guidance has no other return value. Three of the eight
+  // carry a second job: `zsh-special-scalar` must say that a bash shebang is NOT the fix, because
+  // the source note that reported the class proposed exactly that on a premise measured false.
+  'scripts/check-skill-shell.test.mjs': 29,
   'scripts/check-skill-symbols.test.mjs': 8,
   'scripts/skill-extensions.test.mjs': 12,
   'scripts/skill-model-tier.test.mjs': 8,

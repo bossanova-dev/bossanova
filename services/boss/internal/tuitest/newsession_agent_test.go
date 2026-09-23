@@ -117,6 +117,18 @@ func TestCLI_New_AgentFlagRegistered(t *testing.T) {
 	// `--help` exits before the TUI starts; wait for the help text.
 	deadline := time.Now().Add(waitTimeout)
 	for time.Now().Before(deadline) {
+		// READ THIS BEFORE "FIXING" A FAILURE HERE (BOS-1281). The gated
+		// contract is the TOTAL length of `boss new --help`, not anything about
+		// --agent in particular. The screen is a fixed 120x50 above, cobra prints
+		// flags alphabetically, and the driver reads only what fits — so --agent,
+		// the second flag cobra prints (--account sorts ahead of it), scrolls off
+		// the top early once the accumulated help text grows past 50 rows.
+		//
+		// That is why a failure here usually names a flag nobody touched: the
+		// culprit is whatever flag or usage string was lengthened elsewhere, not
+		// --agent. Shorten the added help text, or raise the terminal size above
+		// — do not swap this assertion for a different flag, which only moves the
+		// tripwire to the next alphabetical entry.
 		if strings.Contains(h.Driver.Screen(), "--agent") {
 			return
 		}

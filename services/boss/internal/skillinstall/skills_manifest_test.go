@@ -384,6 +384,50 @@ func TestPublishedCoresNeverInstructBaseMerge(t *testing.T) {
 	}
 }
 
+// pullRebasePrescriptionBodies are the published-core bodies that used to prescribe a rebasing
+// pull as the base reconcile. The scope is a FILE LIST rather than a prose-negation heuristic on
+// purpose: boss-build's review-stack reference names the same command three times as a
+// PROHIBITION, and no regex reliably separates "use this" from "never use this" in prose. A list
+// of the bodies that must not contain the literal at all is a gate whose verdict is unambiguous,
+// and adding a body to it is the cheap way to extend the scope later.
+var pullRebasePrescriptionBodies = []string{
+	"skills/boss-repair/SKILL.md",
+	"skills/boss-finalize/SKILL.md",
+	"skills/boss-epic/SKILL.md",
+	"skills/boss-epic/references/merge-recovery.md",
+}
+
+// TestPublishedCoresDoNotPrescribeRebasingPull is the sibling of the base-merge gate above, for
+// the other half of the same linear-history failure. A rebasing pull is not merely redundant with
+// `git fetch` + `git rebase`: its fork-point heuristic reads the STALE `origin/<branch>` reflog,
+// concludes this run's own commits are already upstream, and drops them — after which the push
+// honestly reports success for a branch the work is no longer on. `rebase.forkPoint=false` is not
+// an equivalent escape, because the pull computes the fork point itself and the config never
+// reaches the rebase it runs. So these bodies must name the fetch + `--no-fork-point` form and
+// must not carry the literal at all, in either shipped payload.
+func TestPublishedCoresDoNotPrescribeRebasingPull(t *testing.T) {
+	const forbidden = "git pull --rebase"
+	const prescribed = "git rebase --no-fork-point FETCH_HEAD"
+
+	for label, fsys := range shippedPayloads(t) {
+		for _, name := range pullRebasePrescriptionBodies {
+			data, err := fs.ReadFile(fsys, name)
+			if err != nil {
+				// A renamed or dropped body would make this gate vacuous, so an unreadable
+				// entry is a failure rather than a skip.
+				t.Fatalf("%s: read %s: %v", label, name, err)
+			}
+			body := string(data)
+			if strings.Contains(body, forbidden) {
+				t.Errorf("%s: %s prescribes %q; the base reconcile is %q — a rebasing pull silently drops this run's own commits when the tracking ref is stale", label, name, forbidden, prescribed)
+			}
+			if !strings.Contains(body, prescribed) {
+				t.Errorf("%s: %s no longer names %q; without it the body states a prohibition with no sanctioned replacement", label, name, prescribed)
+			}
+		}
+	}
+}
+
 // TestBaseMergeDirectivesDetection pins the classifier itself: the forms it must catch (so the
 // gate cannot quietly stop gating) and the forms it must not (so the skills can keep documenting
 // the sanctioned rebase-based commands and can name the forbidden command in prose).

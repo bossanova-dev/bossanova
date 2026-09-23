@@ -19,6 +19,8 @@ import {
   epochMs,
   isGreen,
   mergeStateVerdict,
+  ABSENT_GATE_REMEDIES,
+  absentGateRemedy,
   PROVES_GREEN_REASONS,
   provesGreen,
   provesGreenAgrees,
@@ -346,6 +348,182 @@ test('diffCheckSets — reports ran, pending and absent, and flags an unknown pr
   )
 })
 
+// The absent set requires EVIDENCE the prior context ran. A path-filtered follow-up push shrinks
+// the check set, and comparing head against prior is what tells an absent job from a queued one —
+// but a context that attached to the prior SHA and deliberately did NOT run proved nothing about
+// that SHA either, so counting its disappearance turns an all-green head into an `absent-gate`
+// verdict that never resolves by waiting.
+
+test('diffCheckSets — a prior context that classified skipped is not absent', () => {
+  const head = { check_runs: [checkRun('test-go', 'completed', 'success')] }
+  const prior = {
+    check_runs: [
+      checkRun('test-go', 'completed', 'success'),
+      checkRun('web-e2e', 'completed', 'skipped'),
+    ],
+  }
+  assert.deepEqual(diffCheckSets({ head, prior }).absent, [])
+  assert.equal(diffCheckSets({ head, prior }).priorKnown, true, 'the prior side is still known')
+})
+
+test('diffCheckSets — a prior context that classified SUCCESS is still absent', () => {
+  // The converse direction. The discount must not widen into the genuine-lost-gate case, which is
+  // the whole reason the two-SHA comparison exists.
+  const head = { check_runs: [checkRun('test-go', 'completed', 'success')] }
+  const prior = {
+    check_runs: [
+      checkRun('test-go', 'completed', 'success'),
+      checkRun('web-e2e', 'completed', 'success'),
+    ],
+  }
+  assert.deepEqual(diffCheckSets({ head, prior }).absent, ['web-e2e'])
+})
+
+test('diffCheckSets — a prior side of bare names carries no conclusion, so it keeps counting', () => {
+  // Fail-closed: a name is not evidence that the gate was skipped, and the shipped recipes pass a
+  // bare `--prior` name list. Discounting one would silence a genuinely lost gate.
+  const head = { check_runs: [checkRun('test-go', 'completed', 'success')] }
+  assert.deepEqual(diffCheckSets({ head, prior: ['test-go', 'web-e2e'] }).absent, ['web-e2e'])
+})
+
+test('classifyChecks — an all-green head whose only missing prior context was skipped is green/ok', () => {
+  const verdict = classifyChecks({
+    headSHA: 'abc',
+    observedSHA: 'abc',
+    checkRuns: { check_runs: [checkRun('test-go', 'completed', 'success')] },
+    priorContexts: {
+      check_runs: [
+        checkRun('test-go', 'completed', 'success'),
+        checkRun('web-e2e', 'completed', 'skipped'),
+      ],
+    },
+  })
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.equal(verdict.reason, CHECK_REASONS.OK)
+  assert.deepEqual(verdict.absent, [])
+  assert.equal(provesGreen(verdict), true)
+  assert.equal(provesGreenReason(verdict), PROVES_GREEN_REASONS.OK)
+})
+
+test('classifyChecks — a SUCCESS prior context absent from the head still reports absent-gate', () => {
+  const verdict = classifyChecks({
+    headSHA: 'abc',
+    observedSHA: 'abc',
+    checkRuns: { check_runs: [checkRun('test-go', 'completed', 'success')] },
+    priorContexts: {
+      check_runs: [
+        checkRun('test-go', 'completed', 'success'),
+        checkRun('web-e2e', 'completed', 'success'),
+      ],
+    },
+  })
+  assert.equal(verdict.state, CHECK_STATES.PENDING)
+  assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(verdict.absent, ['web-e2e'])
+  assert.equal(provesGreenReason(verdict), PROVES_GREEN_REASONS.INCOMPLETE_HEAD_SET)
+})
+
+// `absent-gate` names its remedy. The verdict says a gate the prior head carried is missing from
+// this one, but two different situations wear that shape and only one is worth re-triggering: a
+// context that CANNOT attach to this head (a workflow whose triggers a push cannot produce, so a
+// draft PR never gets it) versus a job that genuinely went missing. Neither resolves by waiting.
+//
+// ADDITIVE ONLY. The structural input is caller-supplied and defaults to empty, and the verdict's
+// existing fields keep their current values for every existing caller.
+
+test('ABSENT_GATE_REMEDIES is frozen and names exactly the four outcomes', () => {
+  assert.ok(Object.isFrozen(ABSENT_GATE_REMEDIES))
+  assert.deepEqual([...Object.values(ABSENT_GATE_REMEDIES)].sort(), [
+    'mixed-absent-gates',
+    'none',
+    're-trigger-absent-gate',
+    'structurally-unreachable',
+  ])
+})
+
+function absentGateVerdict(structurallyAbsentContexts) {
+  return classifyChecks({
+    headSHA: 'abc',
+    observedSHA: 'abc',
+    checkRuns: { check_runs: [checkRun('test-go', 'completed', 'success')] },
+    priorContexts: ['test-go', 'pr_agent', 'web-e2e'],
+    ...(structurallyAbsentContexts === undefined ? {} : { structurallyAbsentContexts }),
+  })
+}
+
+test('absentGateRemedy — with no caller input every absent gate is worth re-triggering', () => {
+  const verdict = absentGateVerdict(undefined)
+  assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(verdict.absent, ['pr_agent', 'web-e2e'])
+  assert.deepEqual(verdict.structurallyAbsent, [], 'the input defaults to empty')
+  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.RETRIGGER)
+})
+
+test('absentGateRemedy — an all-structural absent set is structurally unreachable', () => {
+  const verdict = absentGateVerdict(['pr_agent', 'web-e2e'])
+  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.STRUCTURAL)
+  assert.deepEqual(verdict.structurallyAbsent, ['pr_agent', 'web-e2e'])
+})
+
+test('absentGateRemedy — a partly-structural absent set is mixed, never silenced', () => {
+  const verdict = absentGateVerdict(['pr_agent'])
+  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.MIXED)
+  assert.deepEqual(verdict.structurallyAbsent, ['pr_agent'])
+  assert.deepEqual(verdict.absent, ['pr_agent', 'web-e2e'], 'absent is unchanged')
+})
+
+test('absentGateRemedy — a verdict that is not absent-gate has no remedy to name', () => {
+  for (const verdict of [
+    classifyChecks({ rollup: { statusCheckRollup: [{ name: 'test-go', conclusion: 'SUCCESS' }] } }),
+    classifyChecks({ rollup: { statusCheckRollup: [{ name: 'test-go', conclusion: 'FAILURE' }] } }),
+    classifyChecks(),
+    null,
+    undefined,
+  ]) {
+    assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.NONE)
+  }
+})
+
+test('the structural input is additive — it changes no existing field or predicate', () => {
+  // The one invariant that makes this safe to ship: a caller can use the input to silence a real
+  // missing gate in the REMEDY, and must not be able to use it to change the verdict.
+  const without = absentGateVerdict(undefined)
+  const withAll = absentGateVerdict(['pr_agent', 'web-e2e'])
+  for (const key of ['state', 'reason', 'total', 'passed', 'pending', 'priorKnown']) {
+    assert.equal(withAll[key], without[key], key)
+  }
+  assert.deepEqual(withAll.absent, without.absent)
+  assert.equal(isGreen(withAll), isGreen(without))
+  assert.equal(provesGreen(withAll), provesGreen(without))
+  assert.equal(provesGreenReason(withAll), provesGreenReason(without))
+})
+
+test('CLI classify — the absent-gate remedy is printed beside the existing reported fields', () => {
+  const base = [
+    'classify',
+    '--head-sha',
+    'abc',
+    '--observed-sha',
+    'abc',
+    '--check-runs',
+    JSON.stringify({ check_runs: [checkRun('test-go', 'completed', 'success')] }),
+    '--prior',
+    JSON.stringify(['test-go', 'pr_agent']),
+  ]
+
+  const plain = JSON.parse(runCli(base).stdout)
+  assert.equal(plain.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.equal(plain.absentGateRemedy, ABSENT_GATE_REMEDIES.RETRIGGER)
+  assert.equal(plain.provesGreen, false)
+
+  const declared = runCli([...base, '--structurally-absent', 'pr_agent'])
+  assert.equal(declared.status, 0, declared.stderr)
+  const parsed = JSON.parse(declared.stdout)
+  assert.equal(parsed.absentGateRemedy, ABSENT_GATE_REMEDIES.STRUCTURAL)
+  assert.deepEqual(parsed.absent, ['pr_agent'], 'the absent set itself is unchanged')
+  assert.deepEqual(parsed.structurallyAbsent, ['pr_agent'])
+})
+
 test('contextNames — extracts names from all three payload shapes and from a bare name list', () => {
   assert.deepEqual(contextNames(['a', 'b']), ['a', 'b'])
   assert.deepEqual(contextNames({ statusCheckRollup: [{ name: 'roll' }] }), ['roll'])
@@ -593,6 +771,143 @@ test('CLI — an unknown command exits 1', () => {
   const result = runCli(['bogus'])
   assert.equal(result.status, 1)
   assert.match(result.stderr, /unknown command/)
+})
+
+// Per-verb flag validation. `parseFlags` accepts any `--name value` pair and each verb read only
+// the keys it knew, so an unrecognised name landed in the bag and was never looked at. The verb
+// that makes this a false GREEN is `classify`: the stale-SHA arm requires BOTH SHA fields
+// non-empty, so a dropped `--observed-sha` skips it entirely and a check set read against a
+// superseded head reports `green`/`ok`.
+
+test('CLI classify — a misspelled --observed-sha is rejected rather than silently dropped', () => {
+  const result = runCli([
+    'classify',
+    '--head-sha',
+    'abc',
+    '--observedSha',
+    'def',
+    '--rollup',
+    JSON.stringify({ statusCheckRollup: [{ name: 'test-go', conclusion: 'SUCCESS' }] }),
+  ])
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /--observedSha/)
+  assert.match(result.stderr, /unrecognised flag/)
+  assert.equal(result.stdout, '', 'no verdict is printed for a rejected invocation')
+})
+
+test('CLI — every verb rejects an unrecognised flag and names it', () => {
+  for (const [verb, args] of [
+    ['classify', ['--head-sha', 'abc']],
+    ['merge-state', ['--merge-state', 'CLEAN']],
+    ['liveness', ['--started-at', ZULU_TS]],
+  ]) {
+    const result = runCli([verb, ...args, '--not-a-flag', 'x'])
+    assert.notEqual(result.status, 0, verb)
+    assert.match(result.stderr, /--not-a-flag/, verb)
+    assert.match(result.stderr, /pr-check-state: /, verb)
+    assert.match(result.stderr, new RegExp(`${verb}\\(`), verb)
+    assert.equal(result.stdout, '', verb)
+  }
+})
+
+test('diffCheckSets — only a conclusion meaning DID NOT RUN is discounted from absent', () => {
+  // `classifyKind` folds NEUTRAL, STALE and SKIPPED into one `skipped` kind, but a check only
+  // reaches NEUTRAL or STALE by RUNNING. Discounting by kind hid a gate that ran and then vanished
+  // — the genuine lost gate this comparison exists to find.
+  const head = { statusCheckRollup: [{ name: 'a', conclusion: 'SUCCESS', status: 'COMPLETED' }] }
+  const withPrior = (conclusion) =>
+    classifyChecks({
+      headSHA: 's',
+      observedSHA: 's',
+      rollup: head,
+      priorContexts: {
+        statusCheckRollup: [
+          { name: 'a', conclusion: 'SUCCESS', status: 'COMPLETED' },
+          { name: 'g', conclusion, status: 'COMPLETED' },
+        ],
+      },
+    })
+  assert.deepEqual(withPrior('SKIPPED').absent, [], 'a gate that did not run is discounted')
+  assert.equal(withPrior('SKIPPED').state, 'green')
+  for (const ran of ['NEUTRAL', 'STALE', 'SUCCESS', 'FAILURE']) {
+    assert.deepEqual(
+      withPrior(ran).absent,
+      ['g'],
+      `${ran} ran, so its disappearance is a lost gate`,
+    )
+    assert.equal(withPrior(ran).reason, CHECK_REASONS.ABSENT_GATE, ran)
+  }
+  // The bucket view has no conclusion; `skipping` is its own did-not-run spelling.
+  assert.deepEqual(
+    classifyChecks({
+      headSHA: 's',
+      observedSHA: 's',
+      rollup: head,
+      priorContexts: {
+        checks: [
+          { name: 'a', bucket: 'pass' },
+          { name: 'g', bucket: 'skipping' },
+        ],
+      },
+    }).absent,
+    [],
+  )
+})
+
+test('CLI — a recognised flag that lost its value is refused, not silently emptied', () => {
+  // `parseFlags` renders a value-less flag as boolean `true`, which every read type-tests away to
+  // an empty default — so a LOST VALUE was byte-indistinguishable from an omitted flag exactly as a
+  // misspelt NAME was. On classify that is the same false GREEN: the stale-SHA arm needs both SHAs.
+  const lost = runCli([
+    'classify',
+    '--observed-sha',
+    '--head-sha',
+    'deadbeef',
+    '--rollup',
+    JSON.stringify([{ name: 'x', conclusion: 'SUCCESS', status: 'COMPLETED' }]),
+    '--prior',
+    JSON.stringify(['x']),
+  ])
+  assert.notEqual(lost.status, 0)
+  assert.match(lost.stderr, /--observed-sha needs a value/)
+  assert.equal(lost.stdout, '', 'no verdict is printed for a rejected invocation')
+  // The genuinely value-less flags are unaffected.
+  for (const args of [
+    ['classify', '--rollup', JSON.stringify([]), '--accept-no-gate-ran'],
+    ['merge-state', '--merge-state', 'CLEAN', '--readied-this-run'],
+  ]) {
+    assert.equal(runCli(args).status, 0, args.join(' '))
+  }
+})
+
+test('CLI — every flag each verb reads is accepted', () => {
+  // The guard is only as good as its accepted set: a name left out of it turns a working shipped
+  // invocation into a hard failure. Each flag is probed on top of a known-good baseline.
+  const probes = [
+    ['classify', ['--head-sha', 'abc']],
+    ['classify', ['--observed-sha', 'abc']],
+    ['classify', ['--rollup', JSON.stringify({ statusCheckRollup: [] })]],
+    ['classify', ['--checks', JSON.stringify({ checks: [] })]],
+    ['classify', ['--check-runs', JSON.stringify({ check_runs: [] })]],
+    ['classify', ['--prior', JSON.stringify(['test-go'])]],
+    ['classify', ['--read-error', 'quota exhausted']],
+    ['classify', ['--accept-no-gate-ran']],
+    ['classify', ['--structurally-absent', 'pr_agent']],
+    ['merge-state', ['--merge-state', 'CLEAN']],
+    ['merge-state', ['--check-state', 'green']],
+    ['merge-state', ['--check-reason', 'ok']],
+    ['merge-state', ['--unresolved-threads', '0']],
+    ['merge-state', ['--readied-this-run']],
+    ['liveness', ['--started-at', ZULU_TS]],
+    ['liveness', ['--updated-at', ZULU_TS]],
+    ['liveness', ['--now', ZULU_TS]],
+    ['liveness', ['--stalled-after-ms', '900000']],
+  ]
+  for (const [verb, args] of probes) {
+    const result = runCli([verb, ...args])
+    assert.equal(result.status, 0, `${verb} ${args[0]}: ${result.stderr}`)
+    assert.ok(JSON.parse(result.stdout), `${verb} ${args[0]}`)
+  }
 })
 
 // ---------------------------------------------------------------------------

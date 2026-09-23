@@ -34,6 +34,9 @@ small metadata object.
 - `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel context you write your terminal
   decision to (see "Write the terminal sentinel" below). `RUN_DIR` is under `$TMPDIR`; it is **not**
   where scratch goes.
+- The heartbeat path you touch **while working** (see the next section). You DERIVE it from
+  `<RUN-SCRATCH-ID>` and the ticket id rather than being handed it; it is not the sentinel, which is
+  written once, at the end.
 - `<RUN-SCRATCH-ID>` — the suffix of the orchestrator's `.linear-plans/run-<RUN-SCRATCH-ID>/`
   directory, handed to you with the rest of the brief. Every local file you write goes in that
   directory, under a basename declared in `$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs`
@@ -41,6 +44,36 @@ small metadata object.
   scratch filename and never write scratch anywhere else**: a name outside that registry is one no
   cleanup pattern matches, so it survives into a checkout other runs share. It is not the sentinel
   `RUN_ID`.
+
+## Beat the heartbeat while you work — it is the only proof you are alive
+
+Set `HEARTBEAT_PATH=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json"` — the
+declared `dispatch-heartbeat` family, derived from the two ids you already hold, so no orchestrator
+variable has to carry it. The orchestrator has **no other** liveness signal: the run-file sentinel
+records one terminal decision, so its mtime never moves while you work, and a 34-minute draft that
+writes nothing classifies `abandoned` at the staleness window even though it is working. Your
+transcript is not a substitute — reading it is what the harness warns against, and idle time there
+fires while you are alive inside one long call.
+
+**Beat at every step boundary**, with the toolbox that owns the artifact — never `touch`, which
+records no epoch:
+
+```bash
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 5: drafting"
+```
+
+**Wrap any command that runs longer than a beat interval** rather than hoping to beat around it. A
+dispatch blocked inside one long gate call writes nothing between tool calls — the exact silence
+that makes transcript-idle a false oracle — so the beat has to come from the call itself. The
+wrapper exits with the **wrapped command's** status, never the launcher's:
+
+```bash
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" beat "$HEARTBEAT_PATH" --interval 30000 -- make test
+```
+
+A missing heartbeat is read as `absent`, not as death, so forgetting one beat does not kill you; a
+heartbeat that stops for the whole staleness window does. Never beat it from a background loop that
+outlives your work: that manufactures the liveness it is supposed to observe.
 
 ## If you are a RESUMED dispatch, normalize — do not redraft
 
@@ -645,6 +678,15 @@ Include, in the plan body, all of the following (scaled to triage):
   discharge. Do not write an acceptance criterion that caps the number of changed files. Examples:
   `exactly two files`, `only these paths`, or equivalent. Scope comes from the enumeration and its
   verdicts, not from a pre-search file count.
+  **When the plan proposes a whole-tree invariant, the enumeration must include a cross-language
+  existing-owner search.** A repo holds more than one language, and an invariant over the whole
+  tree — every skill payload, every generated mirror, every module manifest — is exactly the kind
+  another language may already own. Search the other languages for that owner before writing the
+  unit (for this repo: `rg -n "<the invariant>" --glob '*.go' --glob '*.ts' --glob '*.mjs'`, quoted
+  so the shell does not eat the glob), and record the result as a row: either the existing-owner it
+  found, in which case the plan extends that owner rather than minting a second, or the searches run
+  and what they returned. An enumeration that searched only the language the ticket happened to name
+  has not enumerated the class.
 - A **## Acceptance criteria** section: concrete, testable pass/fail conditions. **Prefer an
   assertion**: a claim worth verifying once is usually worth pinning, so write each criterion so a
   test or a gate demonstrates it. Only where the invariant genuinely cannot be pinned that way —
@@ -671,6 +713,13 @@ Include, in the plan body, all of the following (scaled to triage):
   `set -o pipefail` are all understood. Note what this rule does **not** catch: it reads only each
   segment's first word, so `make lint and make test` classifies clean while failing when run. Join
   commands with `&&`, not with the word "and"; the gate will not catch that one for you.
+  **A criterion that ships a conditional strike licence must carry a drafting-time verification
+  pointer.** A criterion written as "strike this if <condition>" hands the implementing run a
+  licence to delete the criterion on its own reading of a condition nobody checked. Name, in the
+  criterion itself, the command or coordinate that settles the condition — the same `— check: `
+  discipline a premise carries — so the strike licence is exercised against evidence rather than
+  against an impression. A strike licence with no pointer is an unverified premise wearing a
+  criterion's checkbox, and the run that takes it removes the only thing that would have caught it.
 - A **## Premises** section when the plan rests on load-bearing facts that are not themselves
   acceptance criteria. Write premise bullets with the same checkbox and `— check: `<command>``notation, and mark exactly one central premise with `(central)` when the ticket's goal depends on
 it. Example:``- [ ] (central) the target helper does not already reject stale citations — check:
@@ -692,6 +741,20 @@ it. Example:``- [ ] (central) the target helper does not already reject stale ci
   `## Premises` bullet whose `— check: ` clause names the command that re-measures it, and the
   number must be one this run measured from disk (Step 8's measured-size rule, which applies to
   every pinned constant and not only to byte counts).
+  **A negative claim about repo tooling must cite file contents that were read, never a filename
+  match.** "No workflow runs this on a feature branch", "nothing gates that", "no helper owns this"
+  are all claims about what a file _says_, and a filename match — a path listed by `ls`, a hit in a
+  `--files` listing, a name that reads as if it covers the case — is not evidence of content. Open
+  the file and cite the line, or write the claim as a premise whose `— check: ` clause greps the
+  contents. A filename match recorded as a content fact is the shape that put a false CI premise
+  into a plan and survived every gate, because nothing downstream can tell the two apart.
+  **A preferred implementation approach stated by the ticket is a claim to verify, not a
+  constraint to inherit.** The reporter's proposed option may be structurally impossible against the
+  current tree or against the vendor behaviour it assumes. Verify it — against the code, and against
+  the vendor's own documentation when it rests on third-party behaviour — _before_ the approach is
+  locked, and record the verification. When it does not survive, say so in `## Open Questions` and
+  plan the approach that does; a ticket's preference is evidence about intent, never about
+  feasibility.
 - For semantic failure shapes the guard cannot decide safely, write the required judgement into the
   plan instead of pretending a green check proves it: state-mutating proof needs an offline
   equivalent named at plan time or a human-only marking; an absence assertion must be shown able to
@@ -1027,7 +1090,7 @@ It prints one stderr line per violation, tagged `line-spanning-emphasis`, `missi
 `plan-file-structure-exemption`,
 `pr-body-only-evidence`, `premise-reused-as-criterion`, `section-order`, `self-falsified-literal-search`, `stale-premise-citation`,
 `subject-areas-unresolved`,
-`unanchored-premise-citation`, `unknown-section`, `unresolvable-citation`, any `vacuous-*` code
+`unanchored-premise-citation`, `unknown-section`, `unmeasured-count-claim`, `unresolvable-citation`, any `vacuous-*` code
 (the dynamic `vacuous-<kind>-command-<reason>` family), or `unreadable-input`. **A non-zero exit
 means write no `ok` sentinel** — fix the description or the plan file and re-run, or leave the
 sentinel absent so the orchestrator reads `missing` and takes the safe branch.

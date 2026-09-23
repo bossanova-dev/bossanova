@@ -155,6 +155,70 @@ export function reviewVerdict(evidence = undefined) {
   return reasons.length ? { status: 'capped', reasons } : { status: 'clean', reasons: [] }
 }
 
+/**
+ * The closed per-finding disposition vocabulary a capped verdict discloses.
+ *
+ * `repaired-unconfirmed` is the distinction the census exists for: a repair that
+ * landed with every gate green but ran out of rounds to CONFIRM is not the same
+ * news as a defect left standing, and a bare `capped` line cannot tell a reader
+ * which one it is holding.
+ */
+export const DISPOSITIONS = Object.freeze(['fixed', 'refuted', 'repaired-unconfirmed', 'open'])
+
+/**
+ * The producer's spelling for each census bucket.
+ *
+ * `bs-review-report.mjs` and the report shape in `boss-review`'s Phase 7 both
+ * write `'fixed' | 'verified' | 'unresolved'`, which overlaps the vocabulary
+ * above on `fixed` ALONE. Without this map the fail-closed arm below folds
+ * `verified` — a finding a confirming round positively settled — into `open`,
+ * the one number a reader of a capped verdict treats as defects left standing,
+ * so the census would over-report exactly the runs it exists to explain.
+ *
+ * Aliases only, never new buckets: the four names in `DISPOSITIONS` stay the
+ * closed disclosure vocabulary, and a value outside both sets is still `open`.
+ */
+const DISPOSITION_ALIASES = Object.freeze({ verified: 'refuted', unresolved: 'open' })
+
+/**
+ * The finding records a report carries, wherever it keeps them. `mustfix.items`
+ * is the shape `reviewConfidence` already reads; `findings` is accepted as the
+ * flatter alternative so the census does not silently read zero against a report
+ * that spells it the other way.
+ */
+function reportFindings(evidence) {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return []
+  if (Array.isArray(evidence.mustfix?.items)) return evidence.mustfix.items
+  if (Array.isArray(evidence.findings)) return evidence.findings
+  return []
+}
+
+/**
+ * Count the report's own finding records by disposition.
+ *
+ * Fails closed in the same direction every other counter here does: a record
+ * with no disposition field, or one carrying a value outside the closed set,
+ * counts as `open`. An unreadable disposition is not evidence of a repair, and
+ * a report whose findings carry no disposition at all yields an all-`open`
+ * census — today's behaviour, which is what keeps this backward-compatible.
+ *
+ * @param {unknown} evidence
+ * @returns {{fixed:number,refuted:number,'repaired-unconfirmed':number,open:number}}
+ */
+export function dispositionCensus(evidence = undefined) {
+  const census = { fixed: 0, refuted: 0, 'repaired-unconfirmed': 0, open: 0 }
+  for (const record of reportFindings(evidence)) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      census.open += 1
+      continue
+    }
+    const raw = record.disposition ?? record.status
+    const key = typeof raw === 'string' ? (DISPOSITION_ALIASES[raw] ?? raw) : raw
+    census[typeof key === 'string' && DISPOSITIONS.includes(key) ? key : 'open'] += 1
+  }
+  return census
+}
+
 function validLedgerCoverage(ledger) {
   if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return false
   const keys = ['discovered', 'completed', 'skipped', 'timedOut', 'notReached']
@@ -529,6 +593,24 @@ export const MUSTFIX_OVERRUN_ROUNDS = 1
  */
 export const MUSTFIX_OVERRUN_SECONDS = MUSTFIX_OVERRUN_ROUNDS * DEFAULT_FIX_ROUND_SECONDS
 
+/**
+ * How many rounds are reserved for a must-fix the pass ITSELF caused, in total.
+ *
+ * Distinct from `MUSTFIX_OVERRUN_ROUNDS` and bounded independently of it. A
+ * `Critical` raised in round 2 against a fix round 1 landed competes for the
+ * same single general overrun that round 1 already spent, so without a reserve
+ * the pass cannot lawfully repair the regression it introduced and returns
+ * `overrun-exhausted` — a lawful-looking terminal state over a defect the
+ * review itself created.
+ *
+ * One, for the same reason the general overrun is one: the allowance sits
+ * inside the caller's post-review reserve, so it needs no second absolute bound
+ * threaded across the skill boundary. The bound is also what keeps
+ * over-reporting `selfInflictedMustFix` non-catastrophic — it can buy one round
+ * for the whole pass, never one per round.
+ */
+export const RESERVED_REGRESSION_ROUNDS = 1
+
 export const FUNDING_STARVED = 'funding-starved'
 
 /**
@@ -688,15 +770,27 @@ export function fundingDisclosure(input = {}) {
  * `reason` is empty (or absent) for a step that was priced and funded, or one of
  * `FUNDING_REASONS`.
  *
+ * `census`, when supplied, rides the payload BESIDE the sentinel line and never
+ * inside it. The line is a byte-stable external contract — `matchSentinel`, the
+ * Step 6 routing block and `bs-dispatch-await.mjs` all match on `CAPPED_PREFIX`
+ * — so disclosure that a reader needs but a router must not parse belongs here.
+ * Omitted, the payload is byte-identical to what every existing site writes.
+ *
  * @param {string} [reason]
- * @returns {{provisional:false,funding?:{reason:string}}}
+ * @param {object} [extra]
+ * @param {object|null} [extra.census] per-finding disposition counts, capped runs only
+ * @returns {{provisional:false,funding?:{reason:string},census?:object}}
  */
-export function sentinelPayload(reason = '') {
-  if (reason === undefined || reason === null || reason === '') return { provisional: false }
-  if (typeof reason !== 'string' || !FUNDING_REASONS.includes(reason)) {
-    return { provisional: false, funding: { reason: FUNDING_UNPRICED } }
+export function sentinelPayload(reason = '', { census = null } = {}) {
+  const disclosed =
+    census !== null && typeof census === 'object' && !Array.isArray(census) ? { census } : {}
+  if (reason === undefined || reason === null || reason === '') {
+    return { provisional: false, ...disclosed }
   }
-  return { provisional: false, funding: { reason } }
+  if (typeof reason !== 'string' || !FUNDING_REASONS.includes(reason)) {
+    return { provisional: false, funding: { reason: FUNDING_UNPRICED }, ...disclosed }
+  }
+  return { provisional: false, funding: { reason }, ...disclosed }
 }
 
 /** True when `reason` is a value `sentinelPayload` carries through unchanged. */
@@ -711,6 +805,7 @@ export const ADMIT_FIX_ROUND_REASONS = Object.freeze([
   'no-open-mustfix',
   'all-attempted',
   'overrun-exhausted',
+  'regression-reserved',
   'round-cap',
 ])
 
@@ -809,6 +904,8 @@ function safeCount(raw, fallback) {
  *   3. whole allowance remains (or no deadline at all) — ordinary admission
  *   4. below the allowance — only an UNATTEMPTED must-fix overrides, and only
  *      while overrun allowance remains
+ *   5. general overrun spent — a must-fix the pass ITSELF caused draws on a
+ *      separate, independently bounded reserve before `overrun-exhausted`
  *
  * `remainingSeconds: null` (or absent) means **no deadline was supplied**, never
  * a deadline of `0` — the distinction the skill's gate turns on. An unreadable
@@ -823,6 +920,8 @@ function safeCount(raw, fallback) {
  * @param {number} [input.roundsUsed] fix rounds already run
  * @param {number} [input.maxRounds] the effective round cap (clamped lower-only)
  * @param {number} [input.overrunRoundsUsed] override rounds already spent
+ * @param {boolean} [input.selfInflictedMustFix] an open must-fix whose cited site a fix commit THIS pass landed touched
+ * @param {number} [input.regressionRoundsUsed] reserved regression rounds already spent
  * @returns {{admit: boolean, reason: string}}
  */
 export function admitFixRound({
@@ -833,6 +932,8 @@ export function admitFixRound({
   roundsUsed = 0,
   maxRounds = DEFAULT_REVIEW_MAX_ROUNDS,
   overrunRoundsUsed = 0,
+  selfInflictedMustFix = false,
+  regressionRoundsUsed = 0,
 } = {}) {
   // 1. The round cap bounds ATTEMPT COUNT and is never overridden. A run that
   //    exhausts it has attempted the finding up to `maxRounds` times, which is
@@ -869,7 +970,27 @@ export function admitFixRound({
   if (!unattemptedMustFix) return { admit: false, reason: 'all-attempted' }
   // Fail closed: an unreadable overrun count is treated as already spent.
   const overrunUsed = safeCount(overrunRoundsUsed, MUSTFIX_OVERRUN_ROUNDS)
-  if (overrunUsed >= MUSTFIX_OVERRUN_ROUNDS) return { admit: false, reason: 'overrun-exhausted' }
+  if (overrunUsed >= MUSTFIX_OVERRUN_ROUNDS) {
+    // 5. The general overrun is spent. A must-fix the pass ITSELF caused draws
+    //    on its own reserve instead, so the pass can repair the regression it
+    //    introduced rather than reporting a lawful-looking `overrun-exhausted`
+    //    over its own damage. Evaluated HERE, not earlier: while the general
+    //    allowance remains it is spent first, so the reserve is not consumed by
+    //    a round the ordinary path could already fund, and the answer for every
+    //    caller that does not supply the flag is byte-identical to today's.
+    //
+    //    Attribution is the CALLER's: `selfInflictedMustFix` is a supplied
+    //    boolean, never computed here, so this stays pure. Absent input is
+    //    `false` and the change is strictly additive.
+    if (selfInflictedMustFix === true) {
+      // Fail closed: an unreadable reserve count is treated as already spent.
+      const regressionUsed = safeCount(regressionRoundsUsed, RESERVED_REGRESSION_ROUNDS)
+      if (regressionUsed < RESERVED_REGRESSION_ROUNDS) {
+        return { admit: true, reason: 'regression-reserved' }
+      }
+    }
+    return { admit: false, reason: 'overrun-exhausted' }
+  }
   return { admit: true, reason: 'mustfix-override' }
 }
 
@@ -880,6 +1001,7 @@ export function admitFixRound({
 //   node bs-review-caps.mjs sentinel capped N → the capped sentinel line for N rounds
 //   node bs-review-caps.mjs match "<line>"    → JSON classification of a sentinel line
 //   node bs-review-caps.mjs verdict --in <report.json> → sentinel derived from report evidence
+//   node bs-review-caps.mjs verdict --in <report.json> --payload [<reason>] → the payload beside it
 //   node bs-review-caps.mjs confidence --in <report.json> → JSON derived confidence grade/reasons
 //   node bs-review-caps.mjs classify --in <file> → JSON whole-text sentinel classification
 //   node bs-review-caps.mjs oscillation --in <payload.json> → JSON {oscillating,reasons}
@@ -963,6 +1085,28 @@ if (isMainModule(import.meta.url)) {
   } else if (cmd === 'match') {
     process.stdout.write(`${JSON.stringify(matchSentinel(rest[0] ?? ''))}\n`)
   } else if (cmd === 'verdict') {
+    // `--payload [<reason>]` is ADDITIVE. Without it this verb's stdout is the
+    // same sentinel LINE it has always printed, byte for byte, which is what
+    // routing matches on; with it the verb prints the payload that rides beside
+    // that line instead, carrying the disposition census a capped run discloses.
+    // Splitting the two keeps the census reachable without ever widening the
+    // line, whose prefix is an external contract three consumers match on.
+    //
+    // STAGED: no `SKILL.md` write site calls this route yet — every terminal
+    // sentinel write still spells `sentinel-payload "${STEP_6C_FUNDING_REASON:-}"`,
+    // which carries no census. The census is reachable only through this flag
+    // until a caller is wired to it.
+    const payloadAt = rest.indexOf('--payload')
+    // The reason is OPTIONAL, so the next token is only a reason when it is not
+    // itself a flag. Splicing just this flag out — rather than truncating
+    // everything after it — keeps `readInputFile`'s exact `--in <path>` arity
+    // whatever ORDER the two are given in; truncating made `--payload` the one
+    // position-sensitive flag here, so `--payload --in x` exited 2 claiming
+    // `--in` was missing when it had been supplied.
+    const nextArg = payloadAt === -1 ? undefined : rest[payloadAt + 1]
+    const hasReason = nextArg !== undefined && !nextArg.startsWith('--')
+    const payloadReason = payloadAt === -1 ? null : hasReason ? nextArg : ''
+    if (payloadAt !== -1) rest.splice(payloadAt, hasReason ? 2 : 1)
     let report
     try {
       report = JSON.parse(readInputFile())
@@ -971,7 +1115,21 @@ if (isMainModule(import.meta.url)) {
       process.exit(2)
     }
     const verdict = reviewVerdict(report)
-    if (verdict.status === 'clean') {
+    if (payloadAt !== -1) {
+      // Same total-never-throws contract as `sentinel-payload`: this is an
+      // unchecked command substitution at every write site, so an unrecognised
+      // reason is disclosed as `funding-unpriced` and named on stderr rather
+      // than emptying the argument and dropping `provisional:false` with it.
+      if (!isFundingReason(payloadReason)) {
+        process.stderr.write(
+          `verdict --payload: unrecognised funding reason ${JSON.stringify(payloadReason)}; ` +
+            `disclosing ${FUNDING_UNPRICED} instead (expected empty or one of: ${FUNDING_REASONS.join(', ')})\n`,
+        )
+      }
+      // A clean run has nothing capped to disclose, so it carries no census.
+      const census = verdict.status === 'capped' ? dispositionCensus(report) : null
+      process.stdout.write(`${JSON.stringify(sentinelPayload(payloadReason, { census }))}\n`)
+    } else if (verdict.status === 'clean') {
       process.stdout.write(`${cleanSentinel()}\n`)
     } else {
       const rounds = Number.isInteger(report?.rounds) && report.rounds > 0 ? report.rounds : 1
@@ -1112,7 +1270,7 @@ if (isMainModule(import.meta.url)) {
     process.stdout.write(`${JSON.stringify(sentinelPayload(requested))}\n`)
   } else {
     process.stderr.write(
-      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean --in <report.json> | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>' | funding '<json>' | sentinel-payload [<reason>]>\n",
+      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean --in <report.json> | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> [--payload [<reason>]] | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>' | funding '<json>' | sentinel-payload [<reason>]>\n",
     )
     process.exit(2)
   }

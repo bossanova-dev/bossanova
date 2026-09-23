@@ -93,6 +93,61 @@ but it must not claim the parent as if the parent's work were directly implement
 A claim comment is an ownership signal for exactly one issue: the one Step 2 selected, or the one a
 human explicitly named. Do not post it on a related child, parent, dependency, or umbrella issue.
 
+## Filtered Selection
+
+Read this from Step 2's auto-queue branch when the repo narrows its sweep — that is, when
+`trackerConfigFor(config).selection` is **present**. Presence decides the route, not what the block
+resolves to: a present block always takes this route, so there is never a judgement call about
+whether a filter "counts".
+
+**Why a second route exists.** The adapter's `selectPlanned` operation descriptor names a tracker tool
+that can filter by team, state and one label, and nothing else: it has no creator filter and no OR,
+so neither "assigned to or created by me" nor a disjunctive label set is expressible through it. Its
+result set is therefore a strict **superset** of what a narrowed cron gate scanned. A worker that
+ranked that superset would wake on the operator's own unblocked ticket and then pick somebody
+else's — with every gate in the run green. That is why a configured filter makes the executable
+route mandatory rather than preferred.
+
+**The rule.** With a selection configured, the candidate list comes **only** from:
+
+```bash
+if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
+  done
+fi
+if CANDIDATES="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned)"; then
+  printf '%s\n' "$CANDIDATES"
+else
+  echo "NO_CHANGE: filtered selection unavailable (list-planned stderr above)"
+fi
+```
+
+A non-zero exit stops the run `NO_CHANGE`, routed through **Stop cleanly** (Step 12) like every exit
+after Step 1's lock, with the verb's one-line stderr quoted as the reason. That line names what
+failed: an adapter without the executable `selectPlanned` capability, a config the verb could not
+derive the selection from, or a tracker read it could not evaluate. **There is no fallback.** Do not
+re-run the selection through the operation descriptor, drop a filter that "did not work", or widen
+the label set: each of those reproduces exactly the superset read this route exists to prevent. An
+exit-0 empty array `[]` is a real answer — zero candidates — and ends in the ranked walk's clean
+`NO_CHANGE`, not in this stop.
+
+**What `list-planned` applies.** Its query comes from `plannedSelectionQuery` in
+`toolbox/skill-config.mjs` — the one derivation the cron gate filters on too, so the two cannot
+narrow differently: the configured planned state; the selection's `labels` set, which
+**supersedes** the `agentFriendly` role rather than unioning with it (the role applies when no set is
+configured); the `assigneeOrCreator` identity, matched as assigned-to **or** created-by (`me` is the
+owner of the tracker API key); ANDed with the configured backlog team; window 250. Each returned
+candidate carries `identifier`, `title`, `priority`, `estimate`, `createdAt`, `state`, `labels` as
+plain names and `attachments` as a plain array — the inputs Step 2's ranking and
+`selectImplementationPlanAttachment` read directly.
+
+Everything after the candidate list is unchanged on this route: the `agent-friendly` label and
+native-plan-attachment requirements, the `needs-human` exclusion, the rank rule, the ranked walk and
+the epic-parent skip all apply exactly as on the unfiltered route. One consequence follows from the
+supersede rule: a configured label set that omits the `agent-friendly` label admits candidates the
+walk then drops, so such a run ends `NO_CHANGE` — it can only narrow, never widen.
+
 ## Claim Signals
 
 Read this from Step 2.5 when classifying an existing workspace, and from Step 3 before deciding the

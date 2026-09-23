@@ -156,7 +156,35 @@ test('untrusted review text cannot create markers and neither remote review surf
 
 test('lock, heartbeat, stale reclaim, scratch cleanup, clean tree, and nonfatal notes teardown are explicit', () => {
   const body = skill()
-  assert.match(body, /every\s+shell\s+fence.*one\s+continuous\s+shell\s+session/i)
+  // BOS-1277 replaced the "one continuous shell session" mandate — unfollowable, because every
+  // Bash tool call is a fresh shell — with on-disk run state. What is pinned is the MECHANISM that
+  // makes a phase boundary survivable, not the sentence describing it: the two values a fresh
+  // shell cannot re-derive must be recorded in the lock directory and readable back from it.
+  assert.doesNotMatch(body, /one\s+continuous\s+(?:bash|shell)\s+session/i)
+  assert.match(body, /printf '%s\\n' "\$RUN_DIR" >"\$LOCK_DIR\/run-dir"/)
+  assert.match(body, /\$LOCK_DIR\/owner/)
+  // The WRITE side alone is satisfied by Phase 1 and proves nothing about a later phase, which is
+  // the only place the read matters. Pin the READ side too, and its fail-closed reading of an
+  // empty value: an inherited-but-empty LOCK_TOKEN compares the owner file against '' and an empty
+  // RUN_DIR roots every scratch path at '/'.
+  const tokenReadBacks = body.match(/LOCK_TOKEN="\$\(cat "\$LOCK_DIR\/owner" 2>\/dev\/null/g) || []
+  const runDirReadBacks = body.match(/RUN_DIR="\$\(cat "\$LOCK_DIR\/run-dir" 2>\/dev\/null/g) || []
+  assert.ok(
+    tokenReadBacks.length >= 2,
+    `every phase after the first must read the lease token back; found ${tokenReadBacks.length}`,
+  )
+  assert.equal(
+    runDirReadBacks.length,
+    tokenReadBacks.length,
+    'the scratch directory is read back wherever the token is — one without the other is half a phase',
+  )
+  const failClosed =
+    body.match(/test -n "\$(?:LOCK_TOKEN|RUN_DIR)"[^\n]*\|\| \{ echo "BLOCKED/g) || []
+  assert.equal(
+    failClosed.length,
+    tokenReadBacks.length * 2,
+    `each read-back pair must abort on an empty value; found ${failClosed.length} guards`,
+  )
   assert.match(body, /mkdir/)
   assert.match(body, /bs-sweep-releases\.lock/)
   assert.match(body, /heartbeat/i)

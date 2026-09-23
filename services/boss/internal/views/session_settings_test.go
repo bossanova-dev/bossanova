@@ -118,7 +118,9 @@ func (s *stubSessionSettingsClient) ListChats(context.Context, string) ([]*pb.Cl
 func (s *stubSessionSettingsClient) UpdateChatTitle(context.Context, string, string) error {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) DeleteChat(context.Context, string) error { panic("unused") }
+func (s *stubSessionSettingsClient) DeleteChat(context.Context, string, pb.DeleteChatRequest_DeletionReason) error {
+	panic("unused")
+}
 func (s *stubSessionSettingsClient) WakeChat(context.Context, string, string, bool) (*pb.WakeChatResponse, error) {
 	panic("unused")
 }

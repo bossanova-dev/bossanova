@@ -43,6 +43,8 @@ import {
   isHeadless,
   adapterFor,
   trackerConfigFor,
+  selectionConfigFor,
+  plannedSelectionQuery,
   toleratedDescriptionTransforms,
   DESCRIPTION_NORMALIZATION_TRANSFORMS,
   unattributedDriftSeverity,
@@ -68,6 +70,7 @@ import {
   validateVerifyOnlyEvidence,
   classifyCheckCommand,
   COMMAND_BLOCKING_CODES,
+  hasCountAssertion,
   commandFindingRemedy,
   tokenizeSimpleShell,
   VERIFY_ONLY_MARKER,
@@ -3265,6 +3268,103 @@ test('classifyCheckCommand exports every blocking reason and its remedy', () => 
   }
 })
 
+// BOS-1289 — the three findings whose command can exit 0 while asserting nothing are blocking for a
+// criterion (whose check IS its discharge evidence) and advisory for a premise (which observes the
+// pre-change tree, where the zero result is frequently the fact being recorded). Both directions are
+// pinned per code, because a one-directional pin would pass on a global promotion that rejects
+// correct premises.
+const VACUOUS_GREEN_CASES = [
+  ['zero-selection-filter', 'go test ./... -run TestNoMatch'],
+  ['pipe-without-pipefail', 'make test | tee out.log'],
+  ['git-grep-word-boundary', 'git grep -E "\\bneedle\\b"'],
+]
+
+test('classifyCheckCommand promotes vacuous-green findings for criteria only', () => {
+  for (const [code, command] of VACUOUS_GREEN_CASES) {
+    const criterion = classifyCheckCommand(command, { kind: 'criterion' })
+    assert.ok(
+      criterion.blocking.some((finding) => finding.code === code),
+      `${command} must block as a criterion with ${code}`,
+    )
+    assert.equal(
+      criterion.advisory.some((finding) => finding.code === code),
+      false,
+      `${command} must not also stay advisory as a criterion`,
+    )
+
+    const premise = classifyCheckCommand(command, { kind: 'premise' })
+    assert.ok(
+      premise.advisory.some((finding) => finding.code === code),
+      `${command} must stay advisory as a premise with ${code}`,
+    )
+    assert.equal(
+      premise.blocking.some((finding) => finding.code === code),
+      false,
+      `${command} must not block as a premise`,
+    )
+
+    // An unknown kind is not a claim that the command is discharge evidence, so it keeps the
+    // advisory tier — this is the direction every pre-BOS-1289 caller relies on.
+    const unkeyed = classifyCheckCommand(command)
+    assert.ok(
+      unkeyed.advisory.some((finding) => finding.code === code),
+      `${command} must stay advisory with no kind`,
+    )
+    assert.equal(unkeyed.blocking.length, 0, `${command} must not block with no kind`)
+
+    assert.ok(COMMAND_BLOCKING_CODES.includes(code), `${code} must be a frozen blocking code`)
+    assert.notEqual(commandFindingRemedy(code), '')
+    assert.notEqual(
+      commandFindingRemedy(code),
+      commandFindingRemedy('command-unresolvable'),
+      `${code} must carry its own remedy, not the fallback`,
+    )
+  }
+})
+
+test('hasCountAssertion recognises every wc measurement, not only -l', () => {
+  // One shared definition of "this command re-measures something": classifyCheckCommand's
+  // zero-selection rule and the plan-contract guard's unmeasured-count-claim both read it, so the
+  // two cannot disagree about what counts as a measurement.
+  for (const command of [
+    'wc -l f',
+    'wc -c f',
+    'wc -w f',
+    'wc -m f',
+    'rg -q x f',
+    'go test -count=1',
+  ]) {
+    assert.equal(hasCountAssertion(command), true, command)
+  }
+  for (const command of ['rg -n needle file', 'make test', 'go test ./...']) {
+    assert.equal(hasCountAssertion(command), false, command)
+  }
+  // The byte-size case is why `-c` was added: a descending-budget premise is measured with `wc -c`,
+  // so a criterion checking one must not also raise zero-selection-filter.
+  assert.deepEqual(classifyCheckCommand('wc -c skills-toolbox/skill-config.mjs').advisory, [])
+})
+
+test('the promotion leaves every other advisory finding advisory for a criterion', () => {
+  // The discriminator is "can exit 0 asserting nothing", not "is a command-shape risk". A global
+  // promotion would pass the test above and red here.
+  for (const [command, code] of [
+    ['git diff -- skills-toolbox/skill-config.mjs', 'working-tree-scoped-git-check'],
+    // `# pass 2` supplies the count assertion, so this isolates the glob finding from the
+    // zero-selection finding `--include` would otherwise raise alongside it.
+    ['node --include=*.md # pass 2', 'unquoted-option-glob'],
+    ['bazel test //services/boss/...', 'cached-bazel-test'],
+    ["grep -c '<th' skills-toolbox/skill-config.mjs", 'substring-count-overmatch'],
+    ["sed '1{/^$/d}' skills-toolbox/skill-config.mjs", 'gnu-only-sed-address'],
+  ]) {
+    const result = classifyCheckCommand(command, { kind: 'criterion' })
+    assert.ok(
+      result.advisory.some((finding) => finding.code === code),
+      `${command} should still report ${code} as advisory`,
+    )
+    assert.equal(result.blocking.length, 0, `${command} must not block as a criterion`)
+  }
+})
+
 test('verify-only discharge accepts explanatory prose before the first backticked command', () => {
   const body = planBody(
     `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}after checking the fixture, \`make test-scripts\`${VERIFY_ONLY_RESULT}pass`,
@@ -4042,4 +4142,258 @@ test('U3: that authoring guard REDS on a mistyped id — proven, not merely pass
   assert.deepEqual(unrecognisedIn(rawToleratedIds(raw)), ['terminal-newline-trimmingg'])
   // And the valid neighbour is NOT flagged, so the predicate discriminates rather than rejecting.
   assert.ok(unrecognisedIn(['terminal-newline-trimming']).length === 0)
+})
+
+// --- trackerConfig.<adapter>.selection: candidate narrowing --------------------------
+//
+// The seam ships INERT in every repo in this tree, so every assertion below is written against
+// synthetic configs. The one exception is the inertness probe at the end, which is deliberately
+// about THIS repo and keeps resolving to all-nulls until this repo deliberately opts in.
+
+/** A config whose sole tracker adapter carries the given `selection` value (or none). */
+const withSelection = (selection) =>
+  mergeConfig(DEFAULT_CONFIG, {
+    adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+    trackerConfig: {
+      demo: {
+        mcpServer: 'demo-tracker',
+        team: 'Demo',
+        ...(selection === undefined ? {} : { selection }),
+      },
+    },
+  })
+
+test('selection: a well-formed block validates and resolves to the configured values', () => {
+  const config = withSelection({ assigneeOrCreator: 'me', labels: ['label-a', 'label-b'] })
+  validateConfig(config, 'test')
+  assert.deepEqual(selectionConfigFor(config), {
+    assigneeOrCreator: 'me',
+    labels: ['label-a', 'label-b'],
+  })
+  // A concrete tracker user id is equally well-formed: validation rejects SHAPES, never a value
+  // it does not recognise, because this file is copy-distributed to every consuming repo.
+  const byId = withSelection({ assigneeOrCreator: 'usr_1234' })
+  validateConfig(byId, 'test')
+  assert.deepEqual(selectionConfigFor(byId), { assigneeOrCreator: 'usr_1234', labels: null })
+})
+
+test('selection: each structural fault fails with a message naming the full config path', () => {
+  const cases = [
+    ['a non-object selection', [], /trackerConfig\.demo\.selection must be an object when present/],
+    ['a null selection', null, /trackerConfig\.demo\.selection must be an object when present/],
+    [
+      'an empty-string assigneeOrCreator',
+      { assigneeOrCreator: '' },
+      /trackerConfig\.demo\.selection\.assigneeOrCreator must be a non-empty string when present/,
+    ],
+    [
+      'a non-string assigneeOrCreator',
+      { assigneeOrCreator: 42 },
+      /trackerConfig\.demo\.selection\.assigneeOrCreator must be a non-empty string when present/,
+    ],
+    [
+      'a non-array labels',
+      { labels: 'label-a' },
+      /trackerConfig\.demo\.selection\.labels must be an array of label names when present/,
+    ],
+    [
+      'an empty labels array',
+      { labels: [] },
+      /trackerConfig\.demo\.selection\.labels must not be empty/,
+    ],
+    [
+      'a non-string entry in labels',
+      { labels: ['label-a', 7] },
+      /trackerConfig\.demo\.selection\.labels entries must be non-empty strings/,
+    ],
+    [
+      'an empty-string entry in labels',
+      { labels: [''] },
+      /trackerConfig\.demo\.selection\.labels entries must be non-empty strings/,
+    ],
+  ]
+  for (const [label, selection, pattern] of cases) {
+    assert.throws(() => validateConfig(withSelection(selection), 'test'), pattern, label)
+    // and every one of them is a `skill-config:` error, not a raw TypeError from an accessor.
+    assert.throws(() => validateConfig(withSelection(selection), 'test'), /^Error: skill-config:/)
+  }
+})
+
+test('selection: an unrecognised key WARNS rather than validating silently clean', () => {
+  // The defect this pins: `selection` has a closed two-key vocabulary, but the validator only
+  // inspects the keys it knows. A typo is well-formed JSON that no shape check rejects, and
+  // `selectionConfigFor` then resolves it to all-nulls — so the gate runs completely un-narrowed
+  // while the operator believes it is filtered, and nothing anywhere says so.
+  const cases = [
+    ['a misspelled assigneeOrCreator', { assigneeOrCreatr: 'me' }, /"assigneeOrCreatr"/],
+    ['a singular label', { label: ['label-a'] }, /"label"/],
+    // Alongside a RECOGNISED key: the known key must still validate and resolve normally.
+    [
+      'an unknown key beside a good one',
+      { labels: ['label-a'], assignee: 'me' },
+      /"assignee"/,
+      { assigneeOrCreator: null, labels: ['label-a'] },
+    ],
+  ]
+  for (const [label, selection, pattern, resolved] of cases) {
+    const originalWarn = console.warn
+    const warnings = []
+    console.warn = (message) => warnings.push(String(message))
+    const config = withSelection(selection)
+    try {
+      // A WARN, not a throw: this file is copy-distributed into every user's global skill
+      // directory, so a newer repo's key must not crash an older installed copy. That is the
+      // same role split `descriptionNormalization.tolerated` already makes.
+      validateConfig(config, 'test')
+    } finally {
+      console.warn = originalWarn
+    }
+    const joined = warnings.join('\n')
+    assert.match(joined, pattern, label)
+    // The message has to be actionable: the config path, the source, and the known set.
+    assert.match(joined, /trackerConfig\.demo\.selection/, label)
+    assert.match(joined, /skill-config: test:/, label)
+    assert.match(joined, /Known keys: assigneeOrCreator, labels/, label)
+    assert.deepEqual(
+      selectionConfigFor(config),
+      resolved ?? { assigneeOrCreator: null, labels: null },
+      label,
+    )
+  }
+  // The discriminating half: a block using only the known keys must emit NOTHING. Without this a
+  // validator that warned unconditionally would pass every assertion above.
+  const originalWarn = console.warn
+  const warnings = []
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    validateConfig(withSelection({ assigneeOrCreator: 'me', labels: ['label-a'] }), 'test')
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.deepEqual(warnings, [])
+})
+
+test('selection: an absent block loads clean and resolves to all-nulls', () => {
+  const config = withSelection(undefined)
+  validateConfig(config, 'test')
+  assert.deepEqual(selectionConfigFor(config), { assigneeOrCreator: null, labels: null })
+  // An absent KEY inside a present block is the same answer, per key and independently.
+  const partial = withSelection({ labels: ['label-a'] })
+  validateConfig(partial, 'test')
+  assert.deepEqual(selectionConfigFor(partial), { assigneeOrCreator: null, labels: ['label-a'] })
+})
+
+test('selection: the accessor returns nulls rather than throwing on an unvalidated config', () => {
+  // Hand-built objects that never went through validateConfig. Each would have thrown, or handed
+  // back `undefined` / a malformed array, under a naive accessor — and a THROW here would take
+  // down every core that merely loads the config.
+  const garbage = [
+    { adapters: { tracker: 'demo' }, trackerConfig: { demo: { selection: [] } } },
+    { adapters: { tracker: 'demo' }, trackerConfig: { demo: { selection: 'me' } } },
+    { adapters: { tracker: 'demo' }, trackerConfig: { demo: { selection: null } } },
+    {
+      adapters: { tracker: 'demo' },
+      trackerConfig: { demo: { selection: { assigneeOrCreator: 42, labels: 'label-a' } } },
+    },
+    {
+      adapters: { tracker: 'demo' },
+      trackerConfig: { demo: { selection: { assigneeOrCreator: '', labels: [] } } },
+    },
+    { adapters: { tracker: 'demo' }, trackerConfig: {} },
+    { adapters: { tracker: 'demo' } },
+    // No `adapters` at all: the sibling accessors' `adapterFor(config, 'tracker')` default throws
+    // a raw TypeError on this input, which is precisely why this one resolves the adapter itself.
+    { trackerConfig: { demo: { selection: { labels: ['label-a'] } } } },
+    {},
+    null,
+    undefined,
+  ]
+  for (const raw of garbage) {
+    assert.deepEqual(
+      selectionConfigFor(raw),
+      { assigneeOrCreator: null, labels: null },
+      `unvalidated config ${JSON.stringify(raw)} must resolve to nulls, not throw`,
+    )
+  }
+  // A malformed `labels` array is rejected WHOLE rather than salvaged entry by entry. A partial
+  // salvage would hand the gate `['label-a']` — a narrowing nobody configured — and a narrower
+  // candidate scan is a gate that reports no work while work exists. That is the opposite
+  // direction from `tolerated`, where dropping an unrecognised id only makes a comparison
+  // stricter, which is why the two self-defending accessors legitimately differ here.
+  assert.deepEqual(
+    selectionConfigFor({
+      adapters: { tracker: 'demo' },
+      trackerConfig: { demo: { selection: { labels: ['label-a', '', 9] } } },
+    }),
+    { assigneeOrCreator: null, labels: null },
+  )
+  // The garbage-in path must still DISCRIMINATE: a wholly well-formed block inside an otherwise
+  // unvalidated config resolves, rather than being flattened to null along with the rest.
+  assert.deepEqual(
+    selectionConfigFor({
+      adapters: { tracker: 'demo' },
+      trackerConfig: { demo: { selection: { labels: ['label-a', 'label-b'] } } },
+    }),
+    { assigneeOrCreator: null, labels: ['label-a', 'label-b'] },
+  )
+  // And the returned array is a COPY: a caller that mutates it must not reach the loaded config.
+  const live = {
+    adapters: { tracker: 'demo' },
+    trackerConfig: { demo: { selection: { labels: ['label-a'] } } },
+  }
+  selectionConfigFor(live).labels.push('label-b')
+  assert.deepEqual(live.trackerConfig.demo.selection.labels, ['label-a'])
+})
+
+// BOS-1294: the ONE derivation of the planned-candidate query, shared by the cron gate and the
+// worker's `list-planned` verb. Both must narrow identically, so the helper is pinned on its exact
+// output shapes — including key ABSENCE, which is what keeps the un-narrowed gate byte-identical.
+const plannedConfig = (selection) =>
+  mergeConfig(DEFAULT_CONFIG, {
+    adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+    trackerConfig: {
+      demo: {
+        mcpServer: 'demo-tracker',
+        team: 'Demo',
+        states: { planned: 'Planned' },
+        labels: { agentFriendly: 'agent-friendly' },
+        ...(selection === undefined ? {} : { selection }),
+      },
+    },
+  })
+
+test('plannedSelectionQuery: no selection yields exactly {state, label} with no identity key', () => {
+  const query = plannedSelectionQuery(plannedConfig(undefined))
+  assert.deepEqual(query, { state: 'Planned', label: 'agent-friendly' })
+  assert.equal('assigneeOrCreator' in query, false)
+})
+
+test('plannedSelectionQuery: a label set supersedes agentFriendly and identity is added', () => {
+  assert.deepEqual(
+    plannedSelectionQuery(
+      plannedConfig({ assigneeOrCreator: 'me', labels: ['label-a', 'label-b'] }),
+    ),
+    { state: 'Planned', label: ['label-a', 'label-b'], assigneeOrCreator: 'me' },
+  )
+  assert.deepEqual(plannedSelectionQuery(plannedConfig({ assigneeOrCreator: 'usr_1' })), {
+    state: 'Planned',
+    label: 'agent-friendly',
+    assigneeOrCreator: 'usr_1',
+  })
+})
+
+test('plannedSelectionQuery: an unconfigured planned state throws rather than widening', () => {
+  const config = plannedConfig(undefined)
+  delete config.trackerConfig.demo.states.planned
+  assert.throws(() => plannedSelectionQuery(config), /trackerConfig\.demo\.states\.planned/)
+})
+
+test('selection: this repo ships the seam INERT, so no registered job narrows yet', () => {
+  // The verify-only acceptance criterion, as a test rather than a one-off shell probe. Worker-side
+  // filtered selection (the `list-planned` route, BOS-1294) ships without enabling the key here:
+  // opting this repo in is its own deliberate change, and that change is what revisits this test.
+  assert.deepEqual(selectionConfigFor(loadSkillConfig()), {
+    assigneeOrCreator: null,
+    labels: null,
+  })
 })

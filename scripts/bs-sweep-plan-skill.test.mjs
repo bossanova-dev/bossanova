@@ -61,9 +61,28 @@ for (const [label, skill] of [
     assert.match(phase3, /re-run\s+Phase\s+2\s+selection/i)
   })
 
+  // A peer mid-drafting the same ticket has made zero tracker mutations, so the `get_issue`
+  // re-read beside this one correctly answers `proceed` while the duplicate dispatch is already
+  // running. Pin the helper the check calls and the fourth outcome's ROUTING — the label must
+  // survive a deferral, which is the one thing that separates it from the already-planned skip.
+  test(`${label}: Phase 3 defers to a live peer claim without dropping the queue label`, () => {
+    const phase3 = phaseSection(skill, 'Phase 3')
+    assert.match(phase3, /plan-peer-claim\.mjs/, 'Phase 3 must name the peer-claim detector')
+    assert.match(
+      phase3,
+      /defer\s+\(peer\s+claim\)[\s\S]{0,460}leave\s+`agent-plan`\s+in\s+place/i,
+      'the deferral outcome must leave the queue label in place so the ticket is re-swept',
+    )
+  })
+
   test(`${label}: Phase 5 has the skipped terminal outcome`, () => {
     const phase5 = phaseSection(skill, 'Phase 5')
     assert.match(phase5, /`skipped\s+<ISSUE-ID>:\s+already\s+planned`/)
+  })
+
+  test(`${label}: Phase 5 can report a peer deferral as a terminal outcome`, () => {
+    const phase5 = phaseSection(skill, 'Phase 5')
+    assert.match(phase5, /`deferred\s+<ISSUE-ID>:\s+peer\s+run\s+in\s+flight`/)
   })
 
   // Phase 2's all-unprioritized branch used to hand the run an unnamed "most impactful"
@@ -124,10 +143,14 @@ for (const [label, skill] of [
     )
   })
 
+  // The row used to offer the whole-sweep `mkdir` lock as the guard that did not exist yet.
+  // A per-ticket guard exists now, so the row must say so AND say why the whole-sweep lock was
+  // still not taken — the heartbeat citation is retained, with its verdict inverted.
   test(`${label}: no-lock edge case points at supersede and the existing heartbeat option`, () => {
     const edgeCases = phaseSection(skill, 'Edge cases')
     assert.doesNotMatch(edgeCases, /bossd\s+schedules\s+one\s+cron\s+session\s+per\s+job/)
     assert.match(edgeCases, /publish-side\s+supersede/i)
     assert.match(edgeCases, /`mkdir`\s+heartbeat\s+lock\s+from\s+`bs-sweep-security`/)
+    assert.match(edgeCases, /plan-peer-claim\.mjs/, 'the row must state the per-ticket guard')
   })
 }

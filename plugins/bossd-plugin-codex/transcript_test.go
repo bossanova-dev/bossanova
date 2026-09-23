@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rs/zerolog"
 )
 
 // copyFixture copies a file from src to dst (creating dst's parent dirs).
@@ -970,7 +972,7 @@ func TestReadTranscriptAt(t *testing.T) {
 		dst := shardedRolloutPath(root, uuid)
 		copyFixture(t, "testdata/transcripts/chat.jsonl", dst)
 
-		resp, err := readTranscriptAt(root, "", uuid, 0)
+		resp, err := readTranscriptAt(root, "", uuid, 0, zerolog.Nop())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1009,7 +1011,7 @@ func TestReadTranscriptAt(t *testing.T) {
 		dst := shardedRolloutPath(root, uuid)
 		copyFixture(t, "testdata/transcripts/chat.jsonl", dst)
 
-		resp, err := readTranscriptAt(root, "", uuid, 2)
+		resp, err := readTranscriptAt(root, "", uuid, 2, zerolog.Nop())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1036,7 +1038,7 @@ func TestReadTranscriptAt(t *testing.T) {
 
 	t.Run("no rollout file returns Exists=false nil error", func(t *testing.T) {
 		root := t.TempDir()
-		resp, err := readTranscriptAt(root, "", "no-such-uuid", 0)
+		resp, err := readTranscriptAt(root, "", "no-such-uuid", 0, zerolog.Nop())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

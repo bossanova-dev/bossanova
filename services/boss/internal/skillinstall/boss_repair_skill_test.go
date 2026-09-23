@@ -349,7 +349,17 @@ func TestBossRepairSkillPinsLinearHistoryInvariant(t *testing.T) {
 	assertContains(t, invariant, "Never merge the base branch into the session branch")
 	assertContains(t, invariant, "FORBIDDEN")
 	assertContains(t, invariant, "rebase-merge")
-	assertContains(t, invariant, "git pull --rebase")
+	// BOS-1284: the base reconcile is a fetch plus a fork-point-disabled rebase, NOT a rebasing
+	// pull. A pull computes its own fork point from the stale `origin/<branch>` reflog, concludes
+	// this run's commits are already upstream and drops them; the push afterwards then reports
+	// success for a branch the work has left. The invariant must name the replacement and must not
+	// carry the old literal at all — a prohibition that still spells the command hands a model a
+	// copyable one. TestPublishedCoresDoNotPrescribeRebasingPull is the cross-core form of this.
+	assertContains(t, invariant, "git fetch origin <base>")
+	assertContains(t, invariant, "git rebase --no-fork-point FETCH_HEAD")
+	if strings.Contains(invariant, "git pull --rebase") {
+		t.Errorf("the Linear-History Invariant must not spell out a rebasing pull; the reconcile is a fetch plus `git rebase --no-fork-point FETCH_HEAD`")
+	}
 
 	// The mechanical preflight, stated as a command that must evaluate to zero.
 	assertContains(t, invariant, "git rev-list --merges --count \"origin/$BASE_BRANCH\"..HEAD")
@@ -2083,6 +2093,26 @@ func assertNotContains(t *testing.T, haystack, needle string) {
 	}
 }
 
+// assertRowInsideShape proves a mutant row lives inside the shape that owes it, not merely
+// somewhere in the module. A whole-file `strings.Contains` cannot tell an obligation that moved
+// between shapes from one that stayed put, and a shape losing a mutant is exactly the vendored
+// weakening these payload gates exist to catch.
+func assertRowInsideShape(t *testing.T, module, shapeStart, shapeEnd, row string) {
+	t.Helper()
+
+	start := strings.Index(module, shapeStart)
+	if start < 0 {
+		t.Fatalf("shape start %q not found in module", shapeStart)
+	}
+	end := strings.Index(module[start:], shapeEnd)
+	if end < 0 {
+		t.Fatalf("shape end %q not found after %q", shapeEnd, shapeStart)
+	}
+	if !strings.Contains(module[start:start+end], row) {
+		t.Errorf("expected row %q inside the %q shape (between it and %q)", row, shapeStart, shapeEnd)
+	}
+}
+
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
 
@@ -2571,15 +2601,38 @@ func TestBossRepairSkillSweepReportsSiblingKind(t *testing.T) {
 func TestBossRepairSkillTighteningFixCoversWhatItRejects(t *testing.T) {
 	for name, skill := range bossRepairSkillPayloads(t) {
 		t.Run(name, func(t *testing.T) {
+			// The obligation itself is now DATA in the vendored module: the `tightening` shape owes
+			// an input the narrowed form newly rejects, and that mutant additionally requires a
+			// written justification, so a verdict alone cannot discharge it. Asserting it here as
+			// well as in skills-toolbox/bs-mutation-obligations.test.mjs is not duplication — that
+			// suite proves the behaviour of the CANONICAL module, and this proves the SHIPPED
+			// payload carries the same shape. A vendored copy that lost the row would install into
+			// every user's skill directory with the contract weakened back to "one red is enough".
+			obligations := bossRepairToolboxModule(t, name, "toolbox/bs-mutation-obligations.mjs")
+			assertContains(t, obligations, "tightening: Object.freeze({")
+			// Scoped to the mutant ROW, and then to the tightening SHAPE. `justification: true`
+			// sits on three mutant rows plus a header-comment line across this module, so three
+			// floating substring checks stay green after the tightening shape's own row loses the
+			// flag — the precise weakening this gate exists to catch. Asserting the row as one
+			// contiguous literal refuses that; asserting where the row sits refuses the other
+			// half, moving `newly-rejected-input` out of `tightening` into any other shape.
+			const newlyRejectedRow = `        id: 'newly-rejected-input',
+        expected: 'red',
+        justification: true,`
+			assertContains(t, obligations, newlyRejectedRow)
+			assertRowInsideShape(t, obligations, "tightening: Object.freeze({", "'compound-guard': Object.freeze({", newlyRejectedRow)
+
 			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
 
-			assertContains(t, strategyC, "**A fix that tightens a guard states what the guard now rejects, and covers that.**")
-			// The obligation's mechanics: enumerate the newly rejected inputs and cover the moved boundary.
-			assertContains(t, strategyC, "write\n     down the inputs the narrowed form newly **rejects**")
-			assertContains(t, strategyC, "add coverage for the boundary that moved")
-			// The rationale, which is the half a restatement-only pin would miss.
-			assertContains(t, strategyC, "A round\n     that tests a tightening solely on what it still admits ships the over-rejection undetected")
-			assertContains(t, strategyC, "Loosening and tightening are not the same review")
+			// The standalone prose bullet folded INTO that shape. Its return would be a second copy
+			// of an obligation that now has one home, and a second copy is what drifts: the body and
+			// the module would disagree about what a tightening owes, and the body is the one a
+			// repair round reads first.
+			assertNotContains(t, strategyC, "**A fix that tightens a guard states what the guard now rejects, and covers that.**")
+			assertNotContains(t, strategyC, "Loosening and tightening are not the same review")
+			// What survives in the body is the routing that reaches the shape at all.
+			assertContains(t, strategyC, "Classify the fix's shape first")
+			assertContains(t, strategyC, "bs-mutation-obligations.mjs")
 		})
 	}
 }
@@ -2864,13 +2917,13 @@ func bossRepairEscalationActions(t *testing.T, payload string) []string {
 	return actions
 }
 
-// bossRepairEscalationModule reads bs-repair-escalation.mjs out of the named payload tree, keyed the
-// way bossRepairSkillPayloads keys the body: a table checked only against the embedded copy would go
-// green on a mirror `make copy-skills` has not refreshed, and the mirror is what the plugin installs.
-func bossRepairEscalationModule(t *testing.T, payload string) string {
+// bossRepairToolboxModule reads a vendored module out of the named boss-repair payload tree, keyed
+// the way bossRepairSkillPayloads keys the body: a table checked only against the embedded copy
+// would go green on a mirror `make copy-skills` has not refreshed, and the mirror is what the plugin
+// installs.
+func bossRepairToolboxModule(t *testing.T, payload, rel string) string {
 	t.Helper()
 
-	const rel = "toolbox/bs-repair-escalation.mjs"
 	switch payload {
 	case "embedded":
 		moduleBytes, err := SkillsFS.ReadFile("skills/boss-repair/" + rel)
@@ -2889,6 +2942,15 @@ func bossRepairEscalationModule(t *testing.T, payload string) string {
 		t.Fatalf("unknown boss-repair payload %q", payload)
 		return ""
 	}
+}
+
+// bossRepairEscalationModule reads bs-repair-escalation.mjs out of the named payload tree, keyed the
+// way bossRepairSkillPayloads keys the body: a table checked only against the embedded copy would go
+// green on a mirror `make copy-skills` has not refreshed, and the mirror is what the plugin installs.
+func bossRepairEscalationModule(t *testing.T, payload string) string {
+	t.Helper()
+
+	return bossRepairToolboxModule(t, payload, "toolbox/bs-repair-escalation.mjs")
 }
 
 // TestBossRepairSkillDispatchBriefCarriesTheResidualRule pins the residual-versus-repair rule INTO
@@ -3173,23 +3235,5 @@ func assertBossRepairTableRoutesEveryModuleValue(t *testing.T, payload, section,
 func bossRepairDerivationsModule(t *testing.T, payload string) string {
 	t.Helper()
 
-	const rel = "toolbox/bs-repair-derivations.mjs"
-	switch payload {
-	case "embedded":
-		moduleBytes, err := SkillsFS.ReadFile("skills/boss-repair/" + rel)
-		if err != nil {
-			t.Fatalf("read embedded boss-repair %s: %v", rel, err)
-		}
-		return string(moduleBytes)
-	case "mirror":
-		mirrorRoot := filepath.Join(findRepoRoot(t), "plugins", "bossd-plugin-claude", "skilldata", "skills", "boss-repair")
-		moduleBytes, err := fs.ReadFile(os.DirFS(mirrorRoot), rel)
-		if err != nil {
-			t.Fatalf("read bossd-plugin-claude boss-repair %s under %s: %v", rel, mirrorRoot, err)
-		}
-		return string(moduleBytes)
-	default:
-		t.Fatalf("unknown boss-repair payload %q", payload)
-		return ""
-	}
+	return bossRepairToolboxModule(t, payload, "toolbox/bs-repair-derivations.mjs")
 }

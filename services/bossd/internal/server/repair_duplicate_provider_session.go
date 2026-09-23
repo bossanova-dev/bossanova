@@ -52,7 +52,12 @@ func codexProviderSessionIDDuplicatesToClear(chats []*models.AgentChat) []string
 // chats that collide on provider_session_id and clears the duplicates (keeping
 // each group's earliest chat) so fd resolution rebinds them on next wake. It is
 // self-healing and non-destructive: a cleared id is re-derivable from the
-// rollout the chat's process holds open; nothing is lost. Returns the count of
+// rollout the chat's process holds open; nothing is lost.
+//
+// "on next wake" became true with BOS-1298. Until then the wake backfill passed
+// pane pid 0, which is the request shape the codex plugin's fd branch declines,
+// so a cleared id was re-resolved by the time-window scan or not at all — the
+// exact mechanism this comment named was the one that could not run. Returns the count of
 // sessions inspected and the AgentSessionIDs cleared.
 //
 // Placement: this runs from RepairDoctor rather than a standalone RPC because

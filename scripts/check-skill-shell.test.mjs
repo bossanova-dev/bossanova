@@ -19,12 +19,15 @@ import {
   findUnsafeGhBody,
   findInertGuards,
   findMaskedPipelineStatus,
+  findMixedGlobRemovals,
   findMultiGlobRemovals,
   findUnquotedOptionGlobs,
   findSkillMarkdownFiles,
+  findTrailingConditionalStatus,
   findUnsafeNodeEval,
   findUnterminatedHeredoc,
   findWordSplitReliance,
+  findZshSpecialScalars,
   normalizePlaceholders,
   startsComment,
 } from './check-skill-shell.mjs'
@@ -4428,9 +4431,40 @@ test('findMaskedPipelineStatus evaluates pipefail in execution order', () => {
 })
 
 test('findMaskedPipelineStatus exempts conditional predicate pipelines', () => {
-  assert.deepEqual(findMaskedPipelineStatus('if make test | tee log.txt; then echo ok; fi'), [])
-  assert.deepEqual(findMaskedPipelineStatus('while make test | tee log.txt; do break; done'), [])
-  assert.deepEqual(findMaskedPipelineStatus('until make test | tee log.txt; do break; done'), [])
+  // The exemption's justification is that the pipeline's VALUE is the consumed signal, so it
+  // holds for a tail that produces one. BOS-1284 narrowed it to exactly that case; the
+  // display-filter direction is the sibling test below.
+  assert.deepEqual(findMaskedPipelineStatus('if make test | grep -q ok; then echo ok; fi'), [])
+  assert.deepEqual(findMaskedPipelineStatus('while make test | grep -q ok; do break; done'), [])
+  assert.deepEqual(findMaskedPipelineStatus('until make test | grep -q ok; do break; done'), [])
+})
+
+// BOS-1284: a display-filter tail is never "the value is the consumed signal" — `head`, `tail`,
+// `tee` and friends report an unconditional 0, so the predicate tests the FILTER and reads green
+// on a failed head. That is rule (k)'s founding defect standing inside an `if`, not an exemption
+// from it. Both directions, because a one-directional pin here would pass on a gate that reports
+// every predicate pipeline — the false-positive direction this file forbids.
+test('findMaskedPipelineStatus reports a conditional predicate ending in a display filter', () => {
+  for (const body of [
+    'if make test | tee log.txt; then echo ok; fi',
+    'if make test | tee log.txt\nthen\n  echo ok\nfi',
+    'while make test | tee log.txt; do break; done',
+    'until make test | tee log.txt; do break; done',
+    'if git push -u origin b | tail -1; then PUSHED=yes; fi',
+    'if boss skills check --gate | tail -20; then echo ok; fi',
+  ]) {
+    assert.equal(findMaskedPipelineStatus(body).length, 1, `expected a finding for: ${body}`)
+  }
+  // ...and pipefail still clears it, so the narrowing did not bypass the option model.
+  assert.deepEqual(
+    findMaskedPipelineStatus('set -o pipefail\nif make test | tee log.txt; then echo ok; fi'),
+    [],
+  )
+  // A `set -o pipefail` inside the predicate protects the BODY, not the pipeline before it.
+  assert.deepEqual(
+    findMaskedPipelineStatus('if set -o pipefail; then make test | tee log.txt; fi'),
+    [],
+  )
 })
 
 test('findMaskedPipelineStatus still flags AND/OR-tested pipeline tails and inline bodies', () => {
@@ -5266,4 +5300,557 @@ test('16z. inside heredoc payload the waiver must still open the line’s first 
       .length,
     1,
   )
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (m) — zsh tied scalars. Measured on zsh 5.9:
+// `zsh -c 'path=x; command -v git >/dev/null && echo STILL-FOUND || echo CLOBBERED'` → CLOBBERED.
+// ---------------------------------------------------------------------------------------------
+
+test('findZshSpecialScalars reports an assignment, a read target and a for loop variable', () => {
+  assert.deepEqual(findZshSpecialScalars('path="${entry:3}"'), [
+    { lineOffset: 0, name: 'path', form: 'assignment' },
+  ])
+  assert.deepEqual(findZshSpecialScalars("while IFS= read -r -d '' path; do :; done"), [
+    { lineOffset: 0, name: 'path', form: 'read' },
+  ])
+  assert.deepEqual(findZshSpecialScalars('while IFS= read -r path; do :; done'), [
+    { lineOffset: 0, name: 'path', form: 'read' },
+  ])
+  assert.deepEqual(findZshSpecialScalars('for path in a b; do :; done'), [
+    { lineOffset: 0, name: 'path', form: 'for' },
+  ])
+  // The uppercase name is reported as a LOOP VARIABLE only; see the assignment case below.
+  assert.deepEqual(findZshSpecialScalars('for PATH in a b; do :; done'), [
+    { lineOffset: 0, name: 'PATH', form: 'for' },
+  ])
+  // Every tied name, not just the one the corpus carries.
+  for (const name of ['cdpath', 'fpath', 'manpath', 'module_path']) {
+    assert.deepEqual(
+      findZshSpecialScalars(`${name}="x"`),
+      [{ lineOffset: 0, name, form: 'assignment' }],
+      `expected a finding for the tied scalar ${name}`,
+    )
+  }
+  assert.deepEqual(
+    findZshSpecialScalars('echo start\npath="${entry:3}"'),
+    [{ lineOffset: 1, name: 'path', form: 'assignment' }],
+    'reported against its own line, not the block head',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('path=\\\n  "$value"'),
+    [{ lineOffset: 0, name: 'path', form: 'assignment' }],
+    'a backslash-continued assignment is joined before the name is read',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('V="$(path=x; echo y)"'),
+    [{ lineOffset: 0, name: 'path', form: 'assignment' }],
+    'a command substitution is re-entered, because it executes shell commands',
+  )
+})
+
+test('findZshSpecialScalars stays silent on names zsh does not tie', () => {
+  for (const body of [
+    'entry="${line:3}"',
+    'for p in a b; do :; done',
+    'while IFS= read -r name; do :; done',
+    "while IFS= read -r -d '' relpath; do :; done",
+    'cmd --path=x',
+    'PATHS="a b"',
+    'mypath=x',
+    'echo "path=$p"',
+    "grep 'path=' file",
+    'for (( i=0; i<3; i++ )); do :; done',
+  ]) {
+    assert.deepEqual(findZshSpecialScalars(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The ACCEPTED FALSE NEGATIVES named in (m), pinned so a later widening is a deliberate act.
+test('findZshSpecialScalars does not report the four shapes (m) gives up', () => {
+  assert.deepEqual(
+    findZshSpecialScalars('PATH="$PATH:/opt/bin"'),
+    [],
+    'an uppercase assignment is the ordinary correct spelling; reporting it would false-positive',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('read -r PATH'),
+    [],
+    'the uppercase read target is given up for the same reason as the assignment',
+  )
+  for (const body of [
+    'local path=x',
+    'typeset path=x',
+    'declare path=x',
+    'export path=x',
+    'eval "path=x"',
+  ]) {
+    assert.deepEqual(
+      findZshSpecialScalars(body),
+      [],
+      `a tied name written through a builtin is not a leading assignment: ${body}`,
+    )
+  }
+  assert.deepEqual(
+    findZshSpecialScalars('( path=x )'),
+    [],
+    'a lone assignment in a `)`-terminated segment is the cost of keeping case patterns silent',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('case "$x" in\n  path=*) echo a ;;\n  *) echo b ;;\nesac'),
+    [],
+    'a case branch pattern is not an assignment',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars("cat <<'EOF'\npath=x\nEOF"),
+    [],
+    'heredoc payload is data, exactly as the sibling rules read it',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('# path=x'),
+    [],
+    'a comment is cut before the scan, as `stripTrailingComment` does for the sibling rules',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('read -d path X'),
+    [],
+    "`-d`'s separated value is a delimiter, not a variable",
+  )
+})
+
+test('checkSkillShellInRepo reports one zsh-special-scalar finding per real site shape', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('ce-like')]: md(
+      'staging snapshot',
+      '```bash',
+      "while IFS= read -r -d '' entry; do",
+      '  path="${entry:3}"',
+      '  cp "$ROOT/$path" "$STAGE/before/$path"',
+      'done <"$STAGE/before.z"',
+      '```',
+      '',
+      'restore',
+      '```bash',
+      '(cd "$STAGE/before" && find . -type f -print0) | while IFS= read -r -d \'\' path; do',
+      '  path="${path#./}"',
+      'done',
+      '```',
+    ),
+    [claudeSkill('mutation-like')]: md(
+      '```bash',
+      'while IFS= read -r path; do',
+      '  if [ -n "$path" ]; then git clean -fd -- "$path"; fi',
+      'done < .mutate/clean-files.txt',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const tied = findings.filter((f) => f.kind === 'zsh-special-scalar')
+    assert.equal(tied.length, 4, `expected four, got ${JSON.stringify(findings)}`)
+    assert.deepEqual(
+      tied.map((f) => f.line),
+      [4, 11, 12, 2],
+      'each finding points at its own line, not at the fence',
+    )
+    assert.match(tied[0].message, /ties[ ]that[ ]name[ ]to `PATH`/)
+    assert.match(tied[0].message, /rename[ ]the[ ]variable/, 'names the sanctioned fix')
+    assert.match(
+      tied[0].message,
+      /a[ ]bash[ ]shebang[ ]is[ ]not[ ]the[ ]fix/,
+      'corrects the source note that proposed a bash shebang',
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (n) — one unquoted glob beside a literal path on `rm`.
+// ---------------------------------------------------------------------------------------------
+
+test('findMixedGlobRemovals reports one unquoted glob co-located with a literal path', () => {
+  assert.deepEqual(findMixedGlobRemovals('rm -f /tmp/a.plan.bak /tmp/a.hdrs.* /tmp/a.put.out'), [
+    {
+      lineOffset: 0,
+      command: 'rm',
+      glob: '/tmp/a.hdrs.*',
+      literals: ['/tmp/a.plan.bak', '/tmp/a.put.out'],
+    },
+  ])
+  assert.equal(
+    findMixedGlobRemovals('rm -rf "$STAGE/keep" "$STAGE"/scratch-*').length,
+    1,
+    'an expansion is still a literal target the abort would skip',
+  )
+  assert.deepEqual(
+    findMixedGlobRemovals('echo start\nrm -f a.txt b*.log'),
+    [{ lineOffset: 1, command: 'rm', glob: 'b*.log', literals: ['a.txt'] }],
+    'reported against its own line',
+  )
+  assert.equal(
+    findMixedGlobRemovals('rm -f \\\n  a.txt \\\n  b*.log').length,
+    1,
+    'a backslash-continued removal is joined before its arguments are counted',
+  )
+  assert.equal(
+    findMixedGlobRemovals('V="$(rm -f a.txt b*.log)"').length,
+    1,
+    'a removal nested in a command substitution is reached',
+  )
+})
+
+test('findMixedGlobRemovals stays silent on the correct spellings', () => {
+  for (const body of [
+    "rm -f a.txt 'b*.log'",
+    'rm -f "b*.log" a.txt',
+    'rm -rf "$ROOT/docs/plans/$name"',
+    'rm -f b*.log',
+    'rm -f -- b*.log',
+    "cat <<'EOF'\nrm -f a.txt b*.log\nEOF",
+    '# rm -f a.txt b*.log',
+    // A redirection word survives tokenization as an ordinary argument, so it must be excluded
+    // explicitly or the commonest `rm`-plus-glob spelling of all reports a literal it never had.
+    'rm -f /tmp/foo.* 2>/dev/null',
+    'rm -rf "$D"/*.tmp >/dev/null 2>&1',
+    'rm -f b*.log <input.txt',
+  ]) {
+    assert.deepEqual(findMixedGlobRemovals(body), [], `expected silence for: ${body}`)
+  }
+
+  assert.deepEqual(
+    findMixedGlobRemovals('rm -f /tmp/a.bak /tmp/b.* /tmp/c.out'),
+    [
+      {
+        lineOffset: 0,
+        command: 'rm',
+        glob: '/tmp/b.*',
+        literals: ['/tmp/a.bak', '/tmp/c.out'],
+      },
+    ],
+    'excluding redirections must not silence a line that carries REAL literals',
+  )
+  assert.deepEqual(
+    findMixedGlobRemovals('rm -f /tmp/a.bak /tmp/b.* 2>/dev/null'),
+    [{ lineOffset: 0, command: 'rm', glob: '/tmp/b.*', literals: ['/tmp/a.bak'] }],
+    'a redirection alongside a real literal drops only the redirection',
+  )
+})
+
+// The ACCEPTED FALSE NEGATIVES named in (n).
+test('findMixedGlobRemovals leaves multi-glob lines to (f) and does not cover find', () => {
+  assert.deepEqual(
+    findMixedGlobRemovals('rm -f a.txt b*.log c*.tmp'),
+    [],
+    'two or more globs are `multi-glob`; one line must never report under both rules',
+  )
+  assert.equal(
+    findMultiGlobRemovals('rm -f a.txt b*.log c*.tmp').length,
+    1,
+    'and (f) is the rule that does report it',
+  )
+  assert.deepEqual(
+    findMixedGlobRemovals('find dir1 dir2 -name *.tmp'),
+    [],
+    'a literal on `find` argv is a search root, not a removal target',
+  )
+})
+
+test('checkSkillShellInRepo reports mixed-glob-removal with a quotable fix', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('cleanup-like')]: md(
+      '```bash',
+      'rm -f /tmp/bos1157.plan.bak /tmp/bos1157.hdrs.* /tmp/bos1157.put.out',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const mixed = findings.filter((f) => f.kind === 'mixed-glob-removal')
+    assert.equal(mixed.length, 1, `expected one, got ${JSON.stringify(findings)}`)
+    assert.equal(mixed[0].line, 2)
+    assert.match(mixed[0].message, /\/tmp\/bos1157\.hdrs\.\*/)
+    assert.match(mixed[0].message, /silently[ ]not[ ]removed/)
+    // `rm`'s glob is expanded by the SHELL, so (i)'s quote-the-pattern remedy would hand `rm` a
+    // literal filename that `-f` skips in silence. The sanctioned fix is the other one.
+    assert.match(
+      mixed[0].message,
+      /give[ ]the[ ]glob[ ]its[ ]own[ ]line[\s\S]*do[ ]NOT[ ]quote[ ]the[ ]pattern[ ]here/,
+      'names the correct fix and says quoting is wrong for rm, not an equivalent alternative',
+    )
+    assert.equal(
+      findings.filter((f) => f.kind === 'multi-glob').length,
+      0,
+      'the same line must not also report as multi-glob',
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (o) — a block must not end on `[ … ] && cmd`.
+// ---------------------------------------------------------------------------------------------
+
+test('findTrailingConditionalStatus reports a block-final test-and-command', () => {
+  assert.deepEqual(
+    findTrailingConditionalStatus('node gate.mjs > out\n[ -n "$V" ] && printf \'%s\\n\' "$V"'),
+    [
+      {
+        lineOffset: 1,
+        head: '[',
+        statement: '[ -n "$V" ] && printf \'%s\\n\' "$V"',
+      },
+    ],
+  )
+  assert.equal(
+    findTrailingConditionalStatus('test -n "$V" && echo found').length,
+    1,
+    'the `test` spelling reports identically',
+  )
+  // A trailing `;` does not change the block's exit status, so the defect is identical and the
+  // rule must not go silent on it — the cosmetic separator used to be scanned as the list end.
+  assert.deepEqual(
+    findTrailingConditionalStatus('[ -n "$V" ] && printf "%s" "$V";'),
+    [{ lineOffset: 0, head: '[', statement: '[ -n "$V" ] && printf "%s" "$V"' }],
+    'a semicolon-terminated `[ … ] && cmd` reports, with the `;` off the reported statement',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('test -n "$V" && printf "%s" "$V";').length,
+    1,
+    'and the `test` spelling of the same semicolon-terminated statement reports too',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('make x; [ -n "$V" ] && echo found').length,
+    1,
+    'the final STATEMENT of the final line, not only a line of its own',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('[ -n "$V" ] && echo found\n\n# trailing prose comment').length,
+    1,
+    'blank lines and comments below do not move the final statement',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('[ -n "$V" ] && \\\n  echo found').length,
+    1,
+    'a backslash-continued conditional is joined before position is decided',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('echo a\necho b').length,
+    0,
+    'an ordinary final command is not a conditional',
+  )
+})
+
+// THE RULE IS POSITIONAL — this is the assertion that makes it true rather than tidy. The corpus's
+// five live `[ … ] && …` sites are all mid-loop or mid-function and every one must stay silent.
+test('findTrailingConditionalStatus reports nothing outside block-final position', () => {
+  for (const body of [
+    'for x in a b; do\n  [ -f "$x" ] && continue\ndone',
+    'while read -r x; do\n  [ -n "$x" ] || continue\n  [ -f "$x" ] && continue\ndone',
+    'run() {\n  [ -n "$1" ] && return 0\n  echo missing\n}',
+    '[ -n "$V" ] && echo found\necho done',
+    'if [ -n "$V" ]; then echo found; fi',
+    'while read -r x; do [ -f "$x" ] && echo y; done',
+    'cat <<\'EOF\'\n[ -n "$V" ] && echo found\nEOF',
+  ]) {
+    assert.deepEqual(findTrailingConditionalStatus(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The ACCEPTED FALSE NEGATIVES named in (o).
+test('findTrailingConditionalStatus gives up the three shapes (o) names', () => {
+  assert.deepEqual(
+    findTrailingConditionalStatus('[ -n "$V" ] && echo found || true'),
+    [],
+    'a trailing `||` arm yields its own status, so a pass cannot read as a red',
+  )
+  assert.deepEqual(
+    findTrailingConditionalStatus('[[ -n "$V" ]] && echo found'),
+    [],
+    '`[[` is not reported: identical semantics, no live site, kept to the measured spellings',
+  )
+  assert.deepEqual(
+    findTrailingConditionalStatus('grep -q PATTERN file && echo found'),
+    [],
+    'a non-test head is not reported — an arbitrary command falsity is usually a real failure',
+  )
+  assert.deepEqual(
+    findTrailingConditionalStatus('[ -n "$V" ] &&'),
+    [],
+    'an `&&` with no command after it is not this defect',
+  )
+})
+
+test('checkSkillShellInRepo reports trailing-conditional-status once per block', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('gate-like')]: md(
+      'the plan-contract gate',
+      '```bash',
+      'VIOLATIONS="$(node "$GUARD" check "$PLAN" || true)"',
+      '[ -n "$VIOLATIONS" ] && printf \'%s\\n\' "$VIOLATIONS"',
+      '```',
+      '',
+      'the same construct mid-loop stays clean',
+      '```bash',
+      'for f in a b; do',
+      '  [ -f "$f" ] && continue',
+      'done',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const trailing = findings.filter((f) => f.kind === 'trailing-conditional-status')
+    assert.equal(trailing.length, 1, `expected one, got ${JSON.stringify(findings)}`)
+    assert.equal(trailing[0].line, 4, 'the final statement of the first block only')
+    assert.match(trailing[0].message, /exits[ ]1[ ]even[ ]though[ ]nothing[ ]failed/)
+    assert.match(trailing[0].message, /if \[ … \]; then …; fi/, 'names the sanctioned fix')
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (k), widened: `boss` and `node` heads, keyed additionally on a display-filter tail.
+// ---------------------------------------------------------------------------------------------
+
+test('findMaskedPipelineStatus reports the two widened heads piped into a display filter', () => {
+  assert.deepEqual(findMaskedPipelineStatus('boss skills check --gate | tail -20'), [
+    { lineOffset: 0, head: 'boss', option: 'pipefail' },
+  ])
+  assert.deepEqual(findMaskedPipelineStatus('node scripts/proof.mjs run fixture | tail -25'), [
+    { lineOffset: 0, head: 'node', option: 'pipefail' },
+  ])
+  for (const tail of ['head -5', 'tee log.txt', 'cat', 'less', 'more', 'wc -l', 'nl -ba']) {
+    assert.equal(
+      findMaskedPipelineStatus(`boss skills check --gate | ${tail}`).length,
+      1,
+      `expected a finding for a \`${tail}\` tail`,
+    )
+  }
+  assert.equal(
+    findMaskedPipelineStatus('node gate.mjs | jq -r .k | tail -5').length,
+    1,
+    'the LAST stage decides, so an intermediate filter does not exempt',
+  )
+})
+
+// (k)'s three existing exemptions, re-asserted against BOTH new heads. A widening that broke one of
+// these would report correct lines, which is the direction this file forbids.
+test('findMaskedPipelineStatus keeps all three (k) exemptions for boss and node', () => {
+  for (const head of ['boss skills check --gate', 'node scripts/proof.mjs run fixture']) {
+    // BOS-1284: predicate position no longer exempts a DISPLAY-FILTER tail — the measured
+    // incident behind this head (`boss skills check --gate | tail -20` inverting a FAIL into a
+    // PASS) is exactly as wrong inside an `if`. The exemption survives for a value-bearing tail,
+    // asserted immediately below.
+    assert.equal(
+      findMaskedPipelineStatus(`if ${head} | tail -20; then echo ok; fi`).length,
+      1,
+      `a display-filter tail is reported in predicate position too: ${head}`,
+    )
+    assert.equal(
+      findMaskedPipelineStatus(`while ${head} | tail -20; do echo ok; done`).length,
+      1,
+      `a while predicate with a display-filter tail is reported: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`if ${head} | jq -e '.ok'; then echo ok; fi`),
+      [],
+      `predicate position still exempts a value-bearing tail: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`V="$(${head} | tail -20)"`),
+      [],
+      `command-substitution value still exempts: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`V=\`${head} | tail -20\``),
+      [],
+      `the backtick substitution form still exempts: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`${head} | tail -20\n[ $pipestatus[1] -eq 0 ] || exit 1`),
+      [],
+      `a $pipestatus[1] guard still exempts: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`set -o pipefail\n${head} | tail -20`),
+      [],
+      `pipefail still exempts: ${head}`,
+    )
+    assert.equal(
+      findMaskedPipelineStatus(
+        `${head} | tail -20\nif [ "\${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi`,
+      ).length,
+      1,
+      `the bash-only spelling is still inert under zsh: ${head}`,
+    )
+  }
+})
+
+// The narrowing measured against the corpus: a head-only widening produced 23 findings, 20 of them
+// a `|` inside a `<a|b>` documentation placeholder and 3 of them `boss … --json | jq …` value
+// plumbing. Every one is the false-positive direction, so the tail decides for these two heads.
+test('findMaskedPipelineStatus does not report boss or node without a display-filter tail', () => {
+  for (const body of [
+    'boss ls --json | jq -r \'.sessions[] | select(.state=="READY_FOR_REVIEW") | .pr_url\'',
+    'boss tail --json | jq \'select(.level=="error")\'',
+    'boss chat show <session-id|chat-id> --limit 10',
+    'node "$TOOLBOX/epic-driver.mjs" validate --state <file|->',
+    'node "$TOOLBOX/epic-driver.mjs" prompt --epic <id> [--kind callback|subscription|fallback]',
+    'node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" phase-b \\\n  <tests-written|skipped|no-target>',
+  ]) {
+    assert.deepEqual(findMaskedPipelineStatus(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// BOS-1284 (note 8daf76581e4c1191): the push loop's `PUSHED=yes` is set from `git push`'s own
+// status, so piping the push for brevity hands the loop the filter's unconditional 0 — a push that
+// failed, recorded as one that landed. `git` joins the tail-keyed heads, plus one more key: a WRITE
+// subcommand. Measured on the tail-only form, six `git log … | grep … | head -8` census one-liners
+// in the repo-local skills reported, every one a correct line whose status nobody reads.
+test('findMaskedPipelineStatus reports a git WRITE subcommand piped into a display filter', () => {
+  assert.deepEqual(findMaskedPipelineStatus('git push -u origin "$SESSION_BRANCH" | tail -1'), [
+    { lineOffset: 0, head: 'git', option: 'pipefail' },
+  ])
+  for (const write of [
+    'git push origin b',
+    'git fetch origin b',
+    'git rebase --no-fork-point FETCH_HEAD',
+    'git commit -m x',
+    'git cherry-pick abc123',
+    'git reset --hard HEAD',
+    'git -C "$REPO" push origin b',
+  ]) {
+    assert.equal(
+      findMaskedPipelineStatus(`${write} | tee out.log`).length,
+      1,
+      `expected a finding for: ${write}`,
+    )
+  }
+})
+
+// The silent direction, and the reason the subcommand is an ALLOWLIST: a read verb's status is not
+// the recorded signal, and reporting a correct line is the one direction this gate must never fail
+// in. The last two rows are verbatim shapes from the repo-local sweep skills.
+test('findMaskedPipelineStatus stays silent on git value plumbing', () => {
+  for (const body of [
+    "git log --oneline | jq -R '.'",
+    'git status --porcelain | wc -l',
+    'git log --oneline | head -8',
+    'git rev-list --count HEAD | cat',
+    'git diff --stat "$START_SHA" -- | tail -n 1',
+    "git log -n 400 --no-merges --pretty='%(trailers:key=Debt-Area,valueonly)' origin/main \\\n  | grep -v '^$' | head -8",
+    'git push origin b | jq -R .',
+  ]) {
+    assert.deepEqual(findMaskedPipelineStatus(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The narrowing is scoped to the two NEW heads; the original allowlist reports on the head alone.
+test('findMaskedPipelineStatus still reports the original heads whatever the tail', () => {
+  assert.equal(findMaskedPipelineStatus('make test | tee log.txt').length, 1)
+  assert.equal(findMaskedPipelineStatus("go test ./... | jq -r '.k'").length, 1)
+  assert.equal(findMaskedPipelineStatus('pnpm lint | grep -c error').length, 1)
 })

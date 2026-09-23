@@ -35,6 +35,12 @@ The orchestrator does not run Steps 1–8 inline on its own context. Instead it 
 `subagent_type: general-purpose`, `model: "sonnet"`) and **awaits** it — **never** `run_in_background`;
 use `$BOSS_FINALIZE_TOOLBOX/bs-dispatch-await.mjs` (`toolbox/bs-dispatch-await.mjs`) for completion classification.
 
+The await is bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms), which that helper
+reads itself — stated agent-neutrally on purpose, because a concrete Bash-tool `timeout:` value is
+one harness's parameter and this core installs onto every harness. Whatever the running agent's
+awaiting primitive is, hold the turn for that bound: a launcher result is not the job's result, and
+an await that ends the turn is not an await.
+
 <!-- tier: sonnet because the finalize workflow is mechanical on its happy path — base-freshness/
      branch-inference bash, `[#PR-NUM]` stamping (script-produced by add-pr-numbers.sh), conflict-free
      squash, `gh pr checks` polling, `gh pr ready`. The `[#PR-NUM]` tags and the PR ready-state come
@@ -156,8 +162,12 @@ test "$BASE_TIP" = "$(git rev-parse origin/$BASE_BRANCH)" || { echo "origin/$BAS
 
 **Sync with the base by rebasing only.** Merging the base ref into the branch — or any `git pull` that
 records a merge — leaves a merge commit that structurally breaks a rebase-merge repo, so GitHub
-refuses the PR no matter how green the checks are. Use `git pull --rebase` when a pull is
-unavoidable, and keep `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` at `0`.
+refuses the PR no matter how green the checks are. Refresh with `git fetch origin "$BASE_BRANCH"`
+followed by `git rebase --no-fork-point FETCH_HEAD` — never a pull of any form, whose own fork-point
+heuristic reads the stale `origin/<branch>` reflog and silently drops this run's commits, leaving the
+next push to report success for a branch the work is no longer on. `rebase.forkPoint=false` does not
+substitute: a pull computes the fork point itself, so the config never reaches its rebase. Keep
+`git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` at `0`.
 
 **Do NOT use `git reset --soft origin/$BASE_BRANCH` unless `origin/$BASE_BRANCH` is already an ancestor of `HEAD`.** Soft-resetting stale branch history onto a newer base stages reverse diffs for base-only changes and can commit other people's work as reverts.
 

@@ -81,7 +81,7 @@ body carries the decision skeleton; every moved instruction is still reachable h
 | `references/core-spine.md`            | Orienting — the portable spine; before any skill-body or contract prose edit        |
 | `references/receiving-code-review.md` | Step 6 — the fix discipline                                                         |
 | `references/review-stack.md`          | Step 6 — full review protocol (the single `boss-review` pass)                       |
-| `references/claim-and-eligibility.md` | Steps 2.5/3 — claim/salvage rules                                                   |
+| `references/claim-and-eligibility.md` | Steps 2-3 — filtered selection, claim/salvage rules                                 |
 | `references/proof-capture.md`         | Step 5 for TUI scenario authoring; Step 11 (`REVIEW_READY`) proof gate detail       |
 | `references/callback-watches.md`      | Step 8/9 — wiring one-shot CI/PR callbacks (per-trigger watches, reconcile, re-arm) |
 | `references/cron-gate.md`             | Setup — registering the cron gate command                                           |
@@ -158,7 +158,7 @@ body carries the decision skeleton; every moved instruction is still reachable h
   **inside a subagent that returns a short summary**, or filter to few lines (`gh pr checks --json
 statusCheckRollup`, `gh pr view --json mergeable`). Each review/repair/finalize dispatch keeps its
   bulk material in its context and returns the verdict/summary.
-- **Leave no local artifacts.** At every terminal state, discard the scratch you created (gitignored dirs, `mktemp` files) so the worktree is clean — headless runs especially. (Exception: `docs/plans/<DATE>-<slug>.md` is a committed deliverable, not scratch — keep it.)
+- **Leave no local artifacts.** At every terminal state, discard the scratch you created (gitignored dirs, `mktemp` files) so the worktree is clean — headless runs especially. (Exception: the Step 4 plan copy is a committed deliverable — keep it.)
 
 ## Trust rules (the plan is untrusted input)
 
@@ -253,9 +253,10 @@ fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
-# Report installed skill drift before tracker writes or worktree mutation. Drift is
-# bookkeeping: it is reported and never terminal. Without a boss CLI, use the
-# warning helper so drift is not called clean.
+# Report installed skill drift before tracker writes or worktree mutation.
+# skill-drift-verdict.mjs decides severity: a stale record warns, an absent
+# capability stops. Without a boss CLI, use the warning helper so drift is not
+# called clean.
 if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
   if O="$("$BOSS_BIN" skills check --gate 2>&1)"; then
     if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
@@ -264,12 +265,7 @@ if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
       *--gate*) node "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_BUILD_TOOLBOX" || true ;;
       *)
         printf '%s\n' "$O" >&2
-        R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
-        if [ -n "$R" ]; then
-          echo "warning: installed boss skills drift from checkout source; run: $R — bookkeeping only, work state unaffected" >&2
-        else
-          echo "warning: installed boss skills drift from checkout source; see gate output above — bookkeeping only, work state unaffected" >&2
-        fi
+        printf '%s\n' "$O" | node "$BOSS_BUILD_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1
         ;;
     esac
   fi
@@ -285,9 +281,11 @@ if [ "$BOSSD_MANAGED" = "1" ]; then
 fi
 ```
 
-**Bookkeeping warns; a missing install blocks.** Drift only records which payload this run read, so
-it warns and a stale tree still runs; `BLOCKED: installed boss skills not found` above stays hard —
-no toolbox, nothing runs. See _Bookkeeping is advisory_ in
+**Bookkeeping warns; a missing install blocks.** A stale-but-present file only records which
+payload this run read, so it warns and the tree still runs; an `absent`, `mode` or `broken-symlink`
+row is an absent capability and stops, as does a gate that reported nothing classifiable — a run
+that continued past one of those fails later, at the step that invokes the file by path.
+`BLOCKED: installed boss skills not found` above stays hard — no toolbox, nothing runs. See _Bookkeeping is advisory_ in
 [`references/finalize-and-stop.md`](references/finalize-and-stop.md).
 
 Confirm the tracker is reachable with a cheap read through the adapter's status/select capability
@@ -372,9 +370,7 @@ green. Under `BOSSD_MANAGED=0` there may be no boss transport at all; that is
 
 ## Step 1: Acquire the worktree lock (simplified)
 
-<!-- BLI_RUNID="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-token)"; "$LOCK" acquire "$BLI_RUNID" pending
-     ACQUIRED/TOOK_OVER_STALE => own it; HELD_BY_PEER => yield NO_CHANGE.
-     No ledger, no re-entrancy essay, no phantom-peer prose. -->
+<!-- No ledger, no re-entrancy essay, no phantom-peer prose. -->
 
 Same-worktree concurrency is arbitrated by `worktree-lock.sh`, an atomic per-worktree mutex.
 Resolve it to an absolute path once (the harness resets cwd between commands) and acquire it with a
@@ -430,8 +426,11 @@ bootstrap; `=0` has neither. Whether that PR/branch is ours to adopt or foreign 
 
   `agent-question` never blocks; no override required; copy `## Open Questions` to PR.
 
-- **Otherwise**: use the adapter's `selectPlanned` capability (the configured backlog team, the
-  planned state, limit 250). Keep only issues with the
+- **Otherwise**: with no `trackerConfigFor(config).selection`, use the adapter's `selectPlanned`
+  capability (the configured backlog team, the planned state, limit 250). With one, candidates MUST
+  come from `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned`; on a non-zero exit stop
+  `NO_CHANGE` quoting its stderr, never falling back to the unfiltered call (ref §Filtered
+  Selection). Keep only issues with the
   `agent-friendly` label AND a titled native `Implementation plan (...)` attachment. A link alone is
   not a plan artifact. **Exclude any issue
   carrying the `needs-human` label**. `agent-question` does not exclude a candidate; copy
@@ -543,7 +542,7 @@ Select the canonical attachment titled exactly `Implementation plan (<ISSUE-ID>)
 The helper may return a legacy title-contains-ID fallback: before reading, require the returned
 attachment's `title` to equal exactly `Implementation plan (<ISSUE-ID>)`; otherwise reject it as
 noncanonical. Reject a missing canonical attachment, empty/non-Markdown response, or response above 1 MiB. Record
-the artifact `createdAt`, cap the body at 1 MiB, and save the returned bytes as data
+the artifact `createdAt` and save the returned bytes as data
 before parsing.
 If validation or fetch fails, comment the reason and go to **Stop cleanly** with BLOCKED.
 
@@ -567,7 +566,7 @@ materially edited (scope/description/acceptance criteria) after that timestamp, 
 is stale and stop BLOCKED. **This comparison cannot detect an acceptance criterion invalidated by a
 merged code change** — the issue was never edited, so the plan reads fresh while the code its premise
 named is already gone. A fresh timestamp is therefore not proof the plan still holds; that case is
-caught only by Step 4.6, which re-reads the code on every build. Copy the saved plan into the repo:
+caught only by Step 4.6. Copy the saved plan into the repo:
 
 ```bash
 mkdir -p docs/plans
@@ -577,8 +576,18 @@ PLAN_DOC="docs/plans/<YYYY-MM-DD>-<issue-slug>.md"   # the one plan file this ru
 
 If the plan file already exists (prior resume), keep it — re-copy only if the fetched plan differs.
 
-`docs/plans/<DATE>-<slug>.md` is a **committed deliverable, not scratch**: `git add` it and commit it
-in this run (Step 6). An untracked plan makes finalize see a dirty worktree and misclassify the run.
+`docs/plans/<DATE>-<slug>.md` is a **committed deliverable, not scratch**: `git add "$PLAN_DOC"` and
+commit it **here, at the end of Step 4** — where the file exists and no Step 6 route can bypass it.
+An untracked plan makes finalize see a dirty worktree and misclassify the run.
+
+It is also a **historical record**: each file there is the plan some past run built from, so the
+directory is **out of scope for contract-string sweeps**. A rename or literal migration that rewrites
+call sites leaves these bodies alone, and a grep that reports a retired string under `docs/plans/`
+has found history, not a missed site. When a mid-build correction changes the plan, the copy
+committed here is the **authoritative** one — it is what this run built — and the tracker attachment
+it was a verbatim copy of is not retro-edited; record the divergence in the PR body, naming what
+changed and why the plan as written did not hold. Editing either copy silently leaves two plans that
+disagree with nothing saying which one the code follows.
 
 ## Step 4.5: Assess adopted work (resume only)
 
@@ -599,6 +608,14 @@ re-dispatched subagent.
 `## Premises` / `## Acceptance criteria`: resolve `path:line`s, re-derive claimed-complete sets, read
 symbols claimed missing; exclude `## Original notes`. False premise: merged-work inversion ⇒
 departure; else comment refutation and stop BLOCKED.
+
+**Re-verify by symbol or predicate, never by line number alone.** A `path:line` is a locator, and
+locators rot between planning and building. Resolve the premise's **anchor token** — the backticked
+symbol copied from that location — or re-run its own `— check: ` command. A line-number miss whose
+anchor is still present in the file is **locator drift**: record the corrected coordinate in the PR
+body and carry on. Only a missing anchor or a failing predicate is a refutation. Reporting drift as
+refutation stops a sound build on a premise that still holds, which is the commoner failure of the
+two.
 
 ## Step 5: Implement — methodology resolution (strict precedence)
 
@@ -636,6 +653,25 @@ whichever tier resolves — carries this verbatim in substance:
   report the failure and name the uncommitted paths, so the orchestrator's residue recovery can
   pick them up. That is the one case where work may remain in the tree, and it is a reported task
   failure — never a silent one, and never an excuse to skip a commit that would have succeeded.
+- **Author the message inside the tag's budget.** Every commit carries a **scope**
+  (`type(scope): …`). Its subject must still validate once finalize prepends `policy.tagFormat`,
+  so the authored subject's budget is the repo's own header limit **minus** that tag's width, and
+  body lines stay inside the repo's own body-line limit. Read those limits from the repo; never
+  assume a number. A message that only fits untagged is discovered at the finalize amend —
+  mid-rebase, over the whole branch, where one commit blocks every commit's tag.
+- **After a rejected commit, verify what landed.** A commit a hook rejects leaves its files
+  **staged**, so the next `git add` adds to that surviving set and the next commit silently
+  absorbs work it does not name. Before the next `git add`, read `git show --stat` on `HEAD` and
+  confirm it carries what you meant and nothing more.
+- **A tree-writing gate runs before the commit it belongs to.** Any formatter or codegen step
+  rewrites files: run it, stage its output, then commit. Run after the commit and the rewrite
+  stays outside it — the local gate passes while the published tree is the unformatted one. Re-read
+  `git status --porcelain` after the gates and before any push is declared done.
+- **The last read before a push is the commit messages.** Re-read the range for a claim this run
+  later disproved — a fix the review reverted, a gate reported green and then re-run red.
+  Correcting one is free while the commits are unpublished and means rewriting published history
+  afterwards. The non-interactive rewrite recipe, and the empty-diff check that proves it touched
+  only messages, are written once in this core's finalize reference.
 - Rationale: uncommitted subagent edits make the finalize inject-PR-tag rebase fail, and per-task
   commits bound the blast radius of a mid-run death to one task instead of the whole run.
 - Commit messages need **no** PR tag — finalize injects `[#<PR>]` across the branch later — so
@@ -665,7 +701,7 @@ Each way it can fail has exactly one remedy:
 
 - **Attributed residue** — the returned contract's **files touched** field names it. Commit it yourself, staging only those paths, then re-assess the task against its acceptance criteria — capturing residue preserves the work, it never proves the task is done.
 - **Unattributable residue** — that field does **not** name it. Leave it in the tree, stop dispatching, and go to **Stop cleanly** with BLOCKED naming those paths.
-- **An empty log range**, with no _no commit — verification only_ claim. Establish first whether work is actually **missing**: check that dispatch's acceptance criteria against the branch, and where **you** confirm every one already holds, record it as landing nothing against an already-satisfied scope and move on, with neither a re-dispatch nor a deferred required item. Confirm it from the diff yourself, never on the dispatch's word. Otherwise re-dispatch the same brief **once**; if that second attempt also lands nothing, record a deferred required item — unless a lower tier is still to run, which outranks this remedy and takes that tier's own skip instead.
+- **An empty log range**, with no _no commit — verification only_ claim. Establish first whether work is actually **missing**: check that dispatch's acceptance criteria against the branch, and where **you** confirm every one already holds, record it as landing nothing against an already-satisfied scope and move on, with neither a re-dispatch nor a deferred required item. Confirm it from the diff yourself, never on the dispatch's word. Otherwise re-dispatch that brief **once, with every finding from the dead dispatch that YOU verified folded into it** — routing ignores a dead dispatch's returned prose, and that does not change, but a claim you confirmed against the file it names is evidence a retry may start from. Re-deriving it buys the same recon twice and often loses it; if that second attempt also lands nothing, record a deferred required item — unless a lower tier is still to run, which outranks this remedy and takes that tier's own skip instead.
 
 Scope the check to exclude the two classes that are **expected**, not residue: the single
 `$PLAN_DOC` path Step 4 copied — never the whole `docs/plans` directory, which would also hide a
@@ -844,9 +880,19 @@ git status --porcelain --untracked-files=all -- . \
 
 If both are empty → no committable change: restore the ticket to its entry state, delete the claim comment,
 go to **Stop cleanly** with `NO_CHANGE`. Otherwise stage **only the paths this run's work touched —
-never a blanket `git add -A`**, commit tagless, and ensure all work to review is committed. This
-**includes the plan deliverable `docs/plans/<DATE>-<slug>.md`** copied in Step 4 — stage and commit it
-so the worktree is clean for finalize.
+never a blanket `git add -A`**, commit tagless, and ensure all work to review is committed. The plan
+deliverable was committed at the **end of Step 4**; assert it tracked before dispatching — every
+Step 6 route below passes here, so no route can reach review with an untracked deliverable:
+
+```bash
+# Re-derive: Step 4 assigned $PLAN_DOC in an EARLIER Bash call and shell state does not survive
+# between them. Unset, this checks the EMPTY path, `git ls-files` exits 128, and every run BLOCKS
+# on a false cause with an empty path in the message.
+PLAN_DOC="${PLAN_DOC:-$(git diff --name-only --diff-filter=A \
+  "$(git merge-base "${BASE_REF:-origin/HEAD}" HEAD)"..HEAD -- 'docs/plans/*.md' | head -1)}"
+git ls-files --error-unmatch "$PLAN_DOC" >/dev/null 2>&1 \
+  || { echo "BLOCKED: plan deliverable ${PLAN_DOC:-<unresolved>} is untracked"; exit 1; }
+```
 
 **Provision the run-file sentinel.** The Step-6 verdict routes through a file, never the subagent's
 returned prose. Provision it **before** dispatch — and seed it:
@@ -872,7 +918,8 @@ cross-model `second-voice` round, and its own capped fix loop, and commits fixes
 **not** dispatch a second review of any kind — no whole-branch loop before it, no cross-model chain
 after it, no reviewer prompt of this step's own. Pass it `REVIEW_BASE`, `HEAD=$(git rev-parse HEAD)`,
 `BASE_REF` / `BASE_REMOTE` / `BASE_BRANCH` (the base-drift check), the
-plan/acceptance-criteria (the pass certifies against them), (on a resume) the Step 4.5 map, and
+plan/acceptance-criteria (the pass certifies against them), (on a resume) the Step 4.5 map,
+`BOSS_NOTES_SUPPRESSED=1` (review-stack.md requires it on the dispatched pass), and
 `RUN_DIR` / `RUN_ID`. **Lead that prompt with exactly `[bs-reviewer-dispatch]` on a line of its
 own** — an inert marker, not an instruction to the subagent, that run-cost telemetry matches at the
 head of a dispatched prompt to count reviewer subagents.
@@ -908,7 +955,9 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
 pass's own Phase 7 report) emits `bs-review clean:` only when that report carries zero open must-fix
 **and** zero unrepaired `invalid` evidence, and `bs-review capped:` otherwise. That
 verdict is **blocking**: it is the only review verdict this run has, so nothing downstream may demote
-it to advisory.
+it to advisory. That write also happens **before** the pass runs any publication route it owns —
+push, `[#PR]` tag injection, ready-for-review — so a pass that dies mid-publication cannot leave a
+readied PR behind an undetermined verdict.
 
 **What comes back (thin, non-routing).** The subagent RETURNS only the rendered `boss-review` report
 (leading with `<!-- bs-review -->`, for Step 7), the `## Cross-model review` token
@@ -996,7 +1045,11 @@ budget gate, then** discover:
 dispatch each descriptor by reading its `skillPath`, validate each result with
 `validate --role knowledge --file`, and append `extension <name>: skipped (<reason>)` per failure.
 An extension commits a knowledge artifact to this branch, so Step 7 must capture the reviewed tip
-**after** this phase returns. Non-fatal in every case; it may never produce `BLOCKED`. Full spec:
+**after** this phase returns. Work a dispatch did that left **no commit** — a verification it ran, a
+cause it ruled out — may be handed to this phase as **testimony**: named as such, attributed to the
+dispatch that claimed it, and never as a landed change. A later phase may cite testimony; it may not
+treat it as a diff, and Step 5's clean-tree plus advanced-log-range check stays the authority on what
+actually landed. Non-fatal in every case; it may never produce `BLOCKED`. Full spec:
 [`references/knowledge-extensions.md`](references/knowledge-extensions.md).
 
 ## Step 7: PR gate (create/reuse)

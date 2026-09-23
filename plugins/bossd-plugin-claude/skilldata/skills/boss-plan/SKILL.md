@@ -119,9 +119,10 @@ names generically everywhere else:
    (`loadSkillConfig({ cwd })`); positional or awaited calls read as broken config.
 2. **Report installed skill drift before planning.** If `boss` resolves, run the read-only
    `boss skills check --gate` before any tracker write. It fails only on installed-vs-checkout drift
-   that is not `self-edited` by this branch; non-zero is **advisory** — print a `warning:` line with
-   the reported reinstall remedy and continue, because drift is bookkeeping and a stale tree still
-   runs. The hard stop is the line before it: a missing `boss-plan-env.sh` means the skills are not
+   that is not `self-edited` by this branch. `skill-drift-verdict.mjs` decides what a non-zero exit
+   means: a stale record warns and planning continues, while an `absent`, `mode` or `broken-symlink`
+   row is an absent capability and stops, as does a gate that reported nothing classifiable. The
+   other hard stop is the line before it: a missing `boss-plan-env.sh` means the skills are not
    installed at all, and nothing downstream can execute. Without `boss`, keep the older warning probe
    so drift is visible rather than called clean. Re-derive the path first, since an unset guard is
    silent like a clean tree:
@@ -135,12 +136,7 @@ names generically everywhere else:
          *--gate*) node "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_PLAN_TOOLBOX" || true ;;
          *)
            printf '%s\n' "$O" >&2
-           R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
-           if [ -n "$R" ]; then
-             echo "warning: installed boss skills drift from checkout source; run: $R — bookkeeping only, work state unaffected" >&2
-           else
-             echo "warning: installed boss skills drift from checkout source; see gate output above — bookkeeping only, work state unaffected" >&2
-           fi
+           printf '%s\n' "$O" | node "$BOSS_PLAN_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1
            ;;
        esac
      fi
@@ -151,8 +147,8 @@ names generically everywhere else:
    fi
    ```
    A `boss-toolbox-drift:` line is the no-CLI fallback signal: warning-only, because that helper may
-   itself be stale. Re-vendor and reinstall the skills to clear it. Either way drift never decides a
-   terminal state.
+   itself be stale and cannot see drift kinds at all. Re-vendor and reinstall the skills to clear it.
+   A drift row on the recording side still decides no terminal state.
 3. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`,
    `readPlanAttachment`, and `deletePlanAttachment` operations now. If any is absent, stop before
    drafting or tracker writes. These names are conventional tracker-adapter operations declared in
@@ -194,13 +190,13 @@ the Phase 1 read to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 PRECHECK=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json"
-node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" idempotence "$PRECHECK"
+node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" idempotence "$PRECHECK" --selected-id "<ISSUE-ID>"
 ```
 
 If it prints `action: "noop"`, delete the scratch file, print one line naming the ticket and the
 satisfied conjuncts (planned state, valid description, canonical plan attachment), then exit **0**
 with **zero tracker writes**. If it prints `action: "plan"`, log every `reasons[]` token and
-continue. This precheck applies to explicitly-named tickets as well as queue-selected tickets; a
+continue. `fetched-issue-id-mismatch` means the fetch returned a different ticket: re-select, never draft it. This precheck applies to explicitly-named tickets as well as queue-selected tickets; a
 named ticket is not permission to destructively re-draft an already valid plan.
 
 ## Phase 2 — Draft the plan
@@ -277,16 +273,16 @@ for the Phase 4 secret gate.
    its text), the ticket `id`/`title`, the description snapshot path, the target `PLAN_PATH`, the run scratch
    directory `RUN_SCRATCH` (every local file it writes goes inside it, under a basename declared in
    `toolbox/plan-scratch-paths.mjs`), and the sentinel context `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`. The brief tells it to recon, work the review dimensions, write
-   the plan to `PLAN_PATH`, write the terminal sentinel with a `planPath` payload, and **return only**
+   the plan to `PLAN_PATH`, touch its heartbeat, write the terminal sentinel, and **return only**
    the bounded metadata object
    (`planPath`, `labels`, `agentFriendly`, `estimate`, `priority`, `openQuestions`,
    `descriptionSummary` — that one **by reference**, `{path}` naming the run's `description`
    artifact) — **never the plan file's content**, and never drafted text of any kind: it re-inflates
    the caller (codex fold), and this channel escapes `<`/`>`/`&`.
 
-   If the dispatch tool itself errors before the subagent starts, treat that as a dispatch failure:
-   print one clear stderr line, clean up the sentinel context if it exists, make **no Linear write**,
-   and exit non-zero. Do **not** draft inline in headless mode.
+   `references/headless-dispatch.md` owns this dispatch's failure rules: **Phase 2.5
+   tracker-write authority**, a transport death retried once before tier 3, and validating the
+   returned object, not a file at its path.
 
 4. **Classify from the run-file sentinel only**, then re-verify (never trust the sentinel alone —
    epic D11):
@@ -294,8 +290,6 @@ for the Phase 4 secret gate.
    `wc -c`; reported size is never the input. After `ok`, re-verify every orchestrator-consumed
    artifact: `PLAN_PATH`, guard, child-plan and epic-spec scratch. Epics
    require artifact manifests (`guardScratchPaths`,`epicSpecPaths`).
-   Zero-byte original guard sources
-   (`.image-guard-orig.md` / `.attachment-guard-orig.md`) are ok; others non-empty.
    Missing, empty, directory or wrong-path ⇒ `$DISPATCH_FAILURE`, no Linear write, abort (the
    verifier below owns the wording).
 
@@ -303,7 +297,7 @@ for the Phase 4 secret gate.
    READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" draft)"
    AWAIT="${RUN_SENTINEL%/*}/bs-dispatch-await.mjs"
    # `disposition` demotes a provisional (never-upgraded) payload on EVERY kind.
-   DISP="$(node "$AWAIT" disposition "$RUN_DIR" "$RUN_ID" draft)"
+   DISP="$(node "$AWAIT" disposition "$RUN_DIR" "$RUN_ID" draft --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json)"
    if [ "$(printf '%s' "$DISP" | jq -r '.publishable')" != true ]; then
      # SAFE branch — NO Linear write, non-zero exit.
      echo "$DISPATCH_FAILURE: no publishable sentinel ($(printf '%s' "$DISP" | jq -r '.reason')) — aborting" >&2
@@ -387,15 +381,14 @@ for the Phase 4 secret gate.
    `description` artifact whose bytes become the Linear description; read the plan file only for the
    secret gate.
 
-   After an `ok` sentinel and the plan-file reverify pass, validate the returned bounded metadata
-   before Phase 3.5. Write exactly the returned metadata object to
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json` and run:
+   After an `ok` sentinel and the plan-file reverify pass, validate the metadata the dispatch
+   **returned** — never a same-named file, which that declared basename lets the worker write:
 
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    METADATA=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.draft-metadata.json"
-   if ! node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata "$METADATA"; then
-     echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs metadata — no Linear write, aborting" >&2
+   if ! node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" adopt-metadata "$METADATA" "$RETURNED_METADATA"; then
+     echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs adopt-metadata — no Linear write, aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
      # Read before discard, most sharply here: the plan already PASSED re-verify.
      node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" guard-discard "$PLAN_PATH" || exit 1
@@ -408,6 +401,7 @@ for the Phase 4 secret gate.
    fi
    ```
 
+   `$RETURNED_METADATA`: the returned object, assigned per `references/headless-dispatch.md`.
    Unknown top-level keys, a missing `descriptionSummary`, non-boolean `agentFriendly`, a
    non-single-ticket estimate, or an off-contract `descriptionSummary` are all the same SAFE branch:
    `DISPATCH_FAILURE`, no Phase 3.5, no tracker write. Preserve `PREMISES` from the sentinel payload
@@ -1033,7 +1027,7 @@ subagent → validate its envelope → fold or skip), against
 > `plan-file-structure-exemption`, `pr-body-only-evidence`, `premise-reused-as-criterion`, `section-order`,
 > `self-falsified-literal-search`, `stale-premise-citation`, `subject-areas-unresolved`,
 > `unanchored-premise-citation`,
-> `unknown-section`, `unresolvable-citation`, any `vacuous-*` code, or
+> `unknown-section`, `unmeasured-count-claim`, `unresolvable-citation`, any `vacuous-*` code, or
 > `unreadable-input`; a missing
 > or unreadable file is itself a violation, never a pass, and an `unknown-section` message names both
 > the heading and its remedy. On non-zero exit take the **SAFE branch**: **no Linear write**, no
@@ -1082,7 +1076,7 @@ subagent → validate its envelope → fold or skip), against
    `id`:
    - `description`: **written from the file the gates above just validated, never retyped into this
      argument.** Re-derive the toolbox preamble (blocks inherit nothing), then run
-     `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md`
+     `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md >.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.write-description.json`
      and branch on the emitted record's explicit `outcome`, never on exit status alone:
      `descriptor-emitted` means execute the returned `{tool, args}` as this save, folding in the
      fields below. On exit 2 the verb wrote **nothing** to stdout; fall back to an inline
@@ -1102,6 +1096,15 @@ subagent → validate its envelope → fold or skip), against
    If the tracker save rejects `estimate` (Linear needs Fibonacci enabled), retry without
    `estimate`, complete the rest, and warn the user.
 
+   **Indeterminate write — verify, then decide.** Classify any save failure before reacting to it:
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" classify-outcome --observed "<error text>" --operation write`.
+   A `permanent` verdict fails now; a verdict of **`indeterminate`** means the write MAY already have
+   applied, so read the issue back **before any second attempt** and let that read decide — landed,
+   proceed; not landed, retry once. A **blind retry** duplicates a write that landed and a **silent
+   abandon** loses one that did not: both are forbidden, and the read-back is the only thing that
+   tells them apart. This is not step 6's write-back verification, which runs once on the success
+   path and forbids a corrective rewrite.
+
 5. **Link conflicting dependencies (library-decided, cycle-safe).**
    Every decision comes from `$BOSS_PLAN_TOOLBOX/plan-deps-lib.mjs`; this step is I/O only. Never
    re-decide an edge in prose.
@@ -1118,7 +1121,7 @@ createdAt` plus the adapter's workflow-state/status fields (`stateName`/`stateTy
    its description and let the library decide. Then read this ticket's declared relations (op
    `getIssue` with relations) and fetch each related id **by id, regardless of state** — `selectPlanned` never
    returns a cleared ticket, so that is the only path by which a completed or canceled prerequisite
-   is considered at all.
+   is considered at all. Cache to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json`.
 
    b. **Judge logical dependency** per candidate (does either ticket need the other's feature? the
    one call no function can make) and pass it as `logicalDependencies[<candidate id>] = {direction,
@@ -1208,6 +1211,13 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    itself open **AND** has ≥1 uncleared blocker, record a Transitive-block warning naming it and the
    immediate open ticket(s) blocking it. Detection only — never auto-prune, never via AskUserQuestion.
 
+   e3. **Landed relation check — read both sides.** `appendDependency` and `appendRelatedTo` both
+   map to a save that returns the full issue payload with **no confirmation that the edge exists**.
+   After each relation write, re-run (e)'s relations read on **both ids**: a relations read on one
+   side alone has been observed returning an empty blocker list for an edge that really exists, so
+   one side landing is not evidence the edge did. A missing edge is **recorded** under `## Planning`,
+   never re-written — an append that already landed would duplicate it.
+
    f. Record what step 5 found — **whenever (d) produced ≥1 relation, note, or question**; skip only
    when it produced none of the three. A zero-relation run is not a quiet run: an arealess subject, an
    unresolved declared relation, an ambiguous orientation and a canceled prerequisite each write no
@@ -1216,8 +1226,11 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    Step 4 saved the description first, so send a second tracker save with `id` + `description`
    (adding `labels` only to carry `agent-question`, when (d) produced a question — union it into the
    set Step 4 saved, because `labels` **replaces** the whole set; this is the run's last save, so a
-   label deferred past it is a label never applied): re-send Step 4's
-   description, including (d)'s notes and questions under the sections (d) named, plus — only when ≥1
+   label deferred past it is a label never applied): compose it from a **fresh read of the stored
+   description**, never by re-sending Step 4's bytes: the tracker may have renormalized that write,
+   and re-sending reverts it. Put (d)'s notes and questions under the sections (d) named, each
+   bullet **directly after the last existing bullet** of its section, with no blank line introduced
+   before it and the blank line before the next heading left in place, plus — only when ≥1
    relation was written — `- Dependencies: blocks <BLOCKED-ID>; blocked by <BLOCKER-ID>` under
    `## Planning`. When (e2) found ≥1 warning, add a sibling conditional line next to
    `- Dependencies:` (omit it otherwise, mirroring how `- Dependencies:` is conditional):
@@ -1231,19 +1244,16 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    supersede a correct attachment for cosmetic parity, and name it in the Phase 6 report so a reader
    meeting the difference does not read it as drift.
 
-   If you send an incremental `patch` rather than the whole description, copy every anchor from the
-   tracker's **stored, normalized** text — read the description back first and anchor on those bytes
-   — never from the gated local draft. A tracker may renormalize markers on write (a `-` bullet
-   stored as `*`), so an anchor transcribed from the local draft silently fails to match and the op
-   reports nothing you can act on. Anchoring on the stored form is also what lets a one-line
-   addition land without retyping a whole description, leaving `## Original notes` untouched.
+   If you send an incremental `patch` instead, place bullets as above and copy every anchor from
+   the tracker's **stored, normalized** text — that same read-back — never from the gated local draft:
+   an anchor transcribed from the draft silently fails to match and the op reports nothing you can
+   act on. Anchoring on the stored form is also what lets a one-line addition land without retyping
+   a whole description, leaving `## Original notes` untouched.
 
    A `patch` sends anchors and fragments, never a whole description, so it produces no "bytes I
    saved" for step 6 to compare against — and step 6's `--intended` input is mandatory. Materialize
    it on this path: keep the stored read-back you just anchored on, apply the SAME patch operations
-   to that local copy, and the result is the intended bytes of this save. That is a local edit of
-   text the tracker itself returned, so it is the description the patch was constructed to produce,
-   not a re-derivation from the local draft the tracker never saw.
+   to that local copy, and the result is the intended bytes of this save.
 
 6. **STOP — write-back verification (mandatory, mechanical, do not skip).** Every gate above is
    pre-write prevention read from local bytes; nothing has yet observed what actually landed on the

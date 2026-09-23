@@ -48,6 +48,32 @@ export const TRANSPORT_FAILURE_RULES = [
       'a network read timed out during the gate; re-run the gate before treating it as a defect',
   },
   {
+    // A gateway timeout fetching an EXTERNAL REPOSITORY (BOS-1276). Bazel renders it
+    // `ERROR: An error occurred during the fetch of repository '<name>'` followed by
+    // `GET returned 504 Gateway Time-out`; curl renders the same upstream answer as
+    // `The requested URL returned error: 504`. A CDN or module proxy answering 504 says nothing
+    // about the branch's code.
+    //
+    // Deliberately in THIS table rather than ENV_FAILURE_RULES, which means `scripts/run-gate.mjs`
+    // — the wrapper that consults the host table only — still returns a red gate for this case.
+    // That fork is intentional: as the comment above this list records, widening the host table
+    // silently changes the exit code of every wrapped make target, in CI as well as locally, and
+    // that blast radius is worse than the single case it would fix. `scripts/gate-run.mjs` is the
+    // surface that classifies it.
+    kind: 'gateway-timeout-fetch',
+    // The 504 token must share its LINE with fetch context. A bare 504 anywhere in the log is not
+    // evidence of a fetch: a non-test gate (a curl smoke check, a Makefile recipe) that fails
+    // because the branch's OWN service answered 504 would otherwise be reported as an environment
+    // failure and the reader told to re-run it. The test-failure withholding in classifyGateFailure
+    // does not cover those - it keys on Go/TAP markers this gate never emits. This narrows the rule
+    // to what its kind and remedy actually claim; it does not make the claim exact, because a smoke
+    // check fetching a URL is still indistinguishable from a dependency fetch by text alone.
+    pattern:
+      /^.*(?:fetch|download|GET |requested URL|proxy\.golang|https?:\/\/).*(?:Gateway Time-?out|returned (?:error: )?504\b|HTTP(?:\/[\d.]+)? 504\b)/im,
+    remedy:
+      'an upstream gateway returned 504 while fetching an external repository; re-run the gate rather than reading the exit code as a red gate',
+  },
+  {
     kind: 'network-connection-reset',
     pattern: /connection reset by peer/i,
     remedy: 'the remote peer dropped the connection mid-gate; re-run the gate',

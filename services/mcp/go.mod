@@ -6,7 +6,7 @@ replace github.com/recurser/bossalib => ../../lib/bossalib
 
 require (
 	connectrpc.com/connect v1.21.0
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/recurser/bossalib v0.0.0
 )
 

@@ -18,10 +18,12 @@ import (
 
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/termreset"
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/revisiondrift"
 	"github.com/spf13/cobra"
 )
 
@@ -995,6 +997,24 @@ func prepareDaemonDoctorPaths(t *testing.T) (home, sourcePath, stagedPath string
 		Domain: daemonDoctorJobDisabledDomain,
 		Label:  "com.bossanova.bossd",
 	}, nil)
+
+	// BOS-1300: doctor now classifies the executing boss binary and the
+	// installed bossd file against the checkout it is run from. Left unstubbed
+	// those read the DEVELOPER's real repository and exec the developer's real
+	// bossd, so every doctor test's verdict would be decided by whether the
+	// engineer running the suite happens to have a stale build. Both are pinned
+	// to the ordinary healthy shape — descended from the checkout — and a test
+	// that wants drift re-stubs after calling the fixture, which wins.
+	stubRevisionDriftProbes(t, descendantRevisionDrift(), descendantRevisionDrift())
+	// Pinned separately, and to a FAILING runner rather than a working fake.
+	// The probes above are the route the fixture closes; this closes the second
+	// one, so a future change that reaches the git seam outside a probe fails
+	// loudly instead of quietly reading the real repository.
+	previousRevisionGit := daemonDoctorRevisionGit
+	daemonDoctorRevisionGit = func(context.Context, string, ...string) (revisiondrift.GitResult, error) {
+		return revisiondrift.GitResult{}, errors.New("daemonDoctorRevisionGit is not stubbed for this test")
+	}
+	t.Cleanup(func() { daemonDoctorRevisionGit = previousRevisionGit })
 
 	appDataDir, err := config.DefaultAppDataDir()
 	if err != nil {
@@ -3965,5 +3985,654 @@ func TestGatherDaemonSpawnCauseFactsFoldsInAnUnattemptedProbe(t *testing.T) {
 	}
 	if facts.DomainCommand != "launchctl print "+daemonSpawnDisabledDomainFallback {
 		t.Errorf("DomainCommand = %q, want the domain fallback", facts.DomainCommand)
+	}
+}
+
+// --- BOS-1300: binary revision drift -----------------------------------------
+
+// stubRevisionDriftProbes pins both revision-drift probes, the same way and for
+// the same reason stubDaemonDoctorSpawnHistory pins spawn history: left
+// unstubbed the boss probe shells out to the DEVELOPER's real repository and
+// the bossd probe execs the developer's real daemon binary.
+func stubRevisionDriftProbes(t *testing.T, bossDrift, bossdDrift revisiondrift.Drift) {
+	t.Helper()
+	previousBoss, previousBossd := bossRevisionDriftProbe, bossdFileRevisionDriftProbe
+	bossRevisionDriftProbe = func(context.Context) revisiondrift.Drift { return bossDrift }
+	bossdFileRevisionDriftProbe = func(context.Context) revisiondrift.Drift { return bossdDrift }
+	t.Cleanup(func() {
+		bossRevisionDriftProbe, bossdFileRevisionDriftProbe = previousBoss, previousBossd
+	})
+}
+
+func descendantRevisionDrift() revisiondrift.Drift {
+	return revisiondrift.Drift{
+		BehindKnown:      true,
+		Reason:           revisiondrift.ReasonDescendant,
+		RevisionStamped:  true,
+		BinaryRevision:   "aaaaaaaaa",
+		BinaryVersion:    "v1.99.0",
+		CheckoutRoot:     "/fixture/checkout",
+		CheckoutRevision: "cccccccccc",
+	}
+}
+
+func behindRevisionDrift() revisiondrift.Drift {
+	drift := descendantRevisionDrift()
+	drift.Behind = true
+	drift.Reason = revisiondrift.ReasonBehind
+	drift.BinaryRevision = "ba75863ae"
+	return drift
+}
+
+// unknownRevisionDrift builds an unknown verdict for one cause. RevisionStamped
+// tracks the cause rather than being pinned true, because the unstamped outcome
+// is precisely the one where it is false.
+func unknownRevisionDrift(reason revisiondrift.Reason, detail string) revisiondrift.Drift {
+	drift := revisiondrift.Drift{
+		Reason:          reason,
+		Detail:          detail,
+		RevisionStamped: reason != revisiondrift.ReasonUnstamped && reason != revisiondrift.ReasonRevisionUnreadable,
+		BinaryVersion:   "v1.99.0",
+	}
+	if drift.RevisionStamped {
+		drift.BinaryRevision = "ba75863ae"
+	}
+	return drift
+}
+
+// newLinuxDaemonDoctorRun prepares a doctor run on the non-darwin path.
+//
+// daemonDoctorGOOS is forced to "linux" and there is deliberately NO
+// runtime.GOOS skip: the point of every caller is to prove the revision check
+// survives the darwin early return, and a skip would make that assertion
+// unreachable on the machines that most need it.
+func newLinuxDaemonDoctorRun(t *testing.T) (*bytes.Buffer, *cobra.Command) {
+	t.Helper()
+	prepareDaemonDoctorPaths(t)
+	previous := daemonDoctorGOOS
+	daemonDoctorGOOS = "linux"
+	t.Cleanup(func() { daemonDoctorGOOS = previous })
+
+	output := &bytes.Buffer{}
+	cmd := &cobra.Command{}
+	cmd.SetOut(output)
+	return output, cmd
+}
+
+// TestRunDaemonDoctorFailsWhenBossBinaryIsBehindTheCheckout is the headline
+// behaviour, and it asserts the failure TEXT rather than only the boolean: a
+// test that checked just "doctor exits non-zero" cannot tell a correct verdict
+// from a broken classifier.
+//
+// The negative assertion is the load-bearing half. Folding this verdict into
+// unhealthyNonAuth would still produce a red doctor run and still look correct,
+// while telling the operator to restart a daemon over bytes a restart
+// re-executes unchanged.
+func TestRunDaemonDoctorFailsWhenBossBinaryIsBehindTheCheckout(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+	stubRevisionDriftProbes(t, behindRevisionDrift(), descendantRevisionDrift())
+
+	err := runDaemonDoctor(cmd)
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("runDaemonDoctor error = %v, want unhealthy; output:\n%s", err, output.String())
+	}
+	out := output.String()
+	for _, want := range []string{
+		"FAIL boss binary",
+		"ba75863ae",
+		"cccccccccc",
+		"/fixture/checkout",
+		string(revisiondrift.ReasonBehind),
+		"\nRemediation:",
+		"rebuild and reinstall",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+	remediation := remediationBlock(t, out)
+	if strings.Contains(remediation, "boss daemon restart") {
+		t.Fatalf("remediation names a restart, which cannot replace an executing binary:\n%s", remediation)
+	}
+}
+
+func TestRunDaemonDoctorFailsWhenBossdFileIsBehindTheCheckout(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+	stubRevisionDriftProbes(t, descendantRevisionDrift(), behindRevisionDrift())
+
+	err := runDaemonDoctor(cmd)
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("runDaemonDoctor error = %v, want unhealthy; output:\n%s", err, output.String())
+	}
+	out := output.String()
+	if !strings.Contains(out, "FAIL bossd binary") {
+		t.Errorf("doctor output does not FAIL the bossd binary:\n%s", out)
+	}
+	if !strings.Contains(out, "rebuild and reinstall") {
+		t.Errorf("doctor output missing the rebuild remedy:\n%s", out)
+	}
+}
+
+func TestRunDaemonDoctorDescendantRevisionsPrintNoRemediation(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+	stubRevisionDriftProbes(t, descendantRevisionDrift(), descendantRevisionDrift())
+
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor error = %v, want nil; output:\n%s", err, output.String())
+	}
+	out := output.String()
+	if strings.Contains(out, "Remediation:") {
+		t.Fatalf("a descendant binary produced a Remediation block:\n%s", out)
+	}
+	if !strings.Contains(out, string(revisiondrift.ReasonDescendant)) {
+		t.Errorf("doctor output does not report the healthy relation:\n%s", out)
+	}
+}
+
+// TestRunDaemonDoctorRendersEachUnknownRevisionCauseDistinctly pins that every
+// could-not-evaluate cause reaches the output as its OWN phrase, leaves the
+// exit code alone, and never renders the healthy phrasing. Unknown is neither
+// healthy nor unhealthy.
+//
+// Each case carries its own expected reason; none shares an expectation with
+// another, so a classifier that collapsed two causes fails here rather than
+// passing on a shared assertion.
+func TestRunDaemonDoctorRendersEachUnknownRevisionCauseDistinctly(t *testing.T) {
+	seen := map[string]string{}
+	for _, reason := range []revisiondrift.Reason{
+		revisiondrift.ReasonNoCheckout,
+		revisiondrift.ReasonUnstamped,
+		revisiondrift.ReasonDevBuild,
+		revisiondrift.ReasonRevisionAbsent,
+		revisiondrift.ReasonCheckoutUntrusted,
+		revisiondrift.ReasonGitUnavailable,
+		revisiondrift.ReasonRevisionUnreadable,
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			output, cmd := newLinuxDaemonDoctorRun(t)
+			stubRevisionDriftProbes(t, unknownRevisionDrift(reason, ""), descendantRevisionDrift())
+
+			if err := runDaemonDoctor(cmd); err != nil {
+				t.Fatalf("an unknown revision verdict failed the run: %v\n%s", err, output.String())
+			}
+			out := output.String()
+			if !strings.Contains(out, string(reason)) {
+				t.Errorf("doctor output missing the %q cause:\n%s", reason, out)
+			}
+			if !strings.Contains(out, "unknown, so neither healthy nor stale") {
+				t.Errorf("an unknown verdict is not labelled unknown:\n%s", out)
+			}
+			bossLine := bossBinaryLine(t, out)
+			if strings.Contains(bossLine, string(revisiondrift.ReasonDescendant)) {
+				t.Errorf("an unknown verdict rendered the healthy phrasing: %q", bossLine)
+			}
+			if strings.Contains(bossLine, "FAIL") {
+				t.Errorf("an unknown verdict rendered as a failure: %q", bossLine)
+			}
+		})
+		if previous, ok := seen[string(reason)]; ok {
+			t.Fatalf("reason %q duplicates %q — two causes share one phrase", reason, previous)
+		}
+		seen[string(reason)] = string(reason)
+	}
+}
+
+// TestRunDaemonDoctorSeparatesUnstampedFromDevBuild and the dev-build case
+// below are two tests on purpose. The plan forbids parameterising them into one
+// row with a shared expectation, because they are two producer states: a bare
+// `go build` leaves the buildinfo "unknown" default, while a failed
+// `git describe` leaves "dev".
+func TestRunDaemonDoctorSeparatesUnstampedFromDevBuild(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+	stubRevisionDriftProbes(t, unknownRevisionDrift(revisiondrift.ReasonUnstamped, ""), descendantRevisionDrift())
+
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("an unstamped binary failed the run: %v", err)
+	}
+	line := bossBinaryLine(t, output.String())
+	if !strings.Contains(line, string(revisiondrift.ReasonUnstamped)) {
+		t.Fatalf("boss line = %q, want the unstamped cause", line)
+	}
+	if strings.Contains(line, string(revisiondrift.ReasonDevBuild)) {
+		t.Fatalf("the unstamped cause was rendered as a dev build: %q", line)
+	}
+	if !strings.Contains(line, "(unstamped)") {
+		t.Errorf("boss line = %q, want the revision rendered as unstamped", line)
+	}
+}
+
+func TestRunDaemonDoctorReportsDevBuildAsItsOwnCause(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+	stubRevisionDriftProbes(t, unknownRevisionDrift(revisiondrift.ReasonDevBuild, ""), descendantRevisionDrift())
+
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("a dev build failed the run: %v", err)
+	}
+	line := bossBinaryLine(t, output.String())
+	if !strings.Contains(line, string(revisiondrift.ReasonDevBuild)) {
+		t.Fatalf("boss line = %q, want the dev-build cause", line)
+	}
+	if strings.Contains(line, string(revisiondrift.ReasonUnstamped)) {
+		t.Fatalf("the dev-build cause was rendered as unstamped: %q", line)
+	}
+	if !strings.Contains(line, "ba75863ae") {
+		t.Errorf("boss line = %q, want the real revision a dev build still carries", line)
+	}
+}
+
+// TestRunDaemonDoctorGitUnavailableKeepsItsOwnDetail pins that a git failure
+// surfaces the real message rather than a bare exit status, which is what
+// separates a diagnosable unknown from an opaque one.
+func TestRunDaemonDoctorGitUnavailableKeepsItsOwnDetail(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+	stubRevisionDriftProbes(t,
+		unknownRevisionDrift(revisiondrift.ReasonGitUnavailable, "exec: \"git\": executable file not found in $PATH"),
+		descendantRevisionDrift())
+
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("a missing git failed the run: %v", err)
+	}
+	line := bossBinaryLine(t, output.String())
+	if !strings.Contains(line, "executable file not found") {
+		t.Fatalf("boss line = %q, want git's own message preserved", line)
+	}
+	if strings.Contains(line, "exit status 1") {
+		t.Errorf("boss line collapsed to a bare exit status: %q", line)
+	}
+}
+
+// TestRunDaemonDoctorReportsTheRunningDaemonRevisionAsUnknown pins the inverse
+// of the file's existing "does not fabricate a line about a thing it never
+// observed" tests: a fact the operator came here for must not be silently
+// dropped either, because an absent line reads as "checked, fine".
+func TestRunDaemonDoctorReportsTheRunningDaemonRevisionAsUnknown(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v", err)
+	}
+	if !strings.Contains(output.String(), daemonRunningProcessRevisionLine) {
+		t.Fatalf("doctor never states that the running daemon's revision is unobtainable:\n%s", output.String())
+	}
+}
+
+// TestRunDaemonDoctorBossRevisionReachesTheDarwinExitPath covers the fourth
+// threading edit. The darwin path evaluates the unhealthy set twice — once to
+// print the remedy and once to return — so a verdict threaded into only the
+// first prints the rebuild instruction and still exits 0.
+//
+// It also carries the load-bearing half of the negative assertion. The wrong
+// remedy bucket is only observable HERE: unhealthyNonAuth is declared after the
+// non-darwin early return, so its ladder — whose default branch prints
+// "run 'boss daemon restart'" — cannot run on the linux path at all. Folding
+// this verdict into that flag leaves every linux test green while sending a
+// macOS operator to restart a daemon over bytes a restart re-executes
+// unchanged. Measured: with the verdict threaded correctly this block holds the
+// rebuild line and nothing else.
+func TestRunDaemonDoctorBossRevisionReachesTheDarwinExitPath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the darwin exit path is only reachable on darwin")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorState(t, stagedPath, true, nil)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	stubRevisionDriftProbes(t, behindRevisionDrift(), descendantRevisionDrift())
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+
+	err := runDaemonDoctor(cmd)
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("the darwin path printed the remedy and exited 0: err = %v; output:\n%s", err, output.String())
+	}
+	out := output.String()
+	if !strings.Contains(out, "FAIL boss binary") {
+		t.Errorf("darwin output does not FAIL the boss binary:\n%s", out)
+	}
+	remediation := remediationBlock(t, out)
+	if !strings.Contains(remediation, "rebuild and reinstall") {
+		t.Errorf("darwin remediation missing the rebuild remedy:\n%s", remediation)
+	}
+	if strings.Contains(remediation, "boss daemon restart") {
+		t.Fatalf("the revision verdict rode unhealthyNonAuth, whose ladder tells the operator to restart a daemon over a stale build:\n%s", remediation)
+	}
+}
+
+// TestPrepareDaemonDoctorPathsClosesEveryRevisionMachineRead is AC8's own
+// assertion: doctor tests must not read the developer's real repository. It
+// checks both routes — the pinned probes, and the git seam behind them.
+func TestPrepareDaemonDoctorPathsClosesEveryRevisionMachineRead(t *testing.T) {
+	prepareDaemonDoctorPaths(t)
+
+	if got := bossRevisionDriftProbe(context.Background()); got.CheckoutRoot != "/fixture/checkout" {
+		t.Errorf("boss probe was not pinned by the fixture: %+v", got)
+	}
+	if got := bossdFileRevisionDriftProbe(context.Background()); got.CheckoutRoot != "/fixture/checkout" {
+		t.Errorf("bossd probe was not pinned by the fixture: %+v", got)
+	}
+	if _, err := daemonDoctorRevisionGit(context.Background(), "/", "rev-parse", "HEAD"); err == nil {
+		t.Fatalf("the git seam is live in a doctor test — verdicts would read the real repository")
+	}
+}
+
+// TestBossdVersionRevisionREParsesTheDaemonsOwnStamp asserts the PRODUCER, not
+// this parser in isolation: the pattern is checked against the exact string
+// bossd prints, which is `"bossd " + buildinfo.String()`. A change to that
+// format fails here rather than silently turning every bossd verdict into an
+// unreadable-revision unknown.
+func TestBossdVersionRevisionREParsesTheDaemonsOwnStamp(t *testing.T) {
+	match := bossdVersionRevisionRE.FindStringSubmatch("bossd " + buildinfo.String())
+	if match == nil {
+		t.Fatalf("the pattern does not match bossd's own --version line %q", "bossd "+buildinfo.String())
+	}
+	if match[1] != buildinfo.Version {
+		t.Errorf("parsed version = %q, want %q", match[1], buildinfo.Version)
+	}
+	if match[2] != buildinfo.Commit {
+		t.Errorf("parsed revision = %q, want %q", match[2], buildinfo.Commit)
+	}
+}
+
+// remediationBlock returns doctor's Remediation section, so a negative
+// assertion about the remedy cannot be satisfied by output that has no remedy
+// section at all — the absence of the block is itself a failure here, since
+// every caller has already established the run is unhealthy.
+func remediationBlock(t *testing.T, out string) string {
+	t.Helper()
+	const marker = "\nRemediation:"
+	start := strings.Index(out, marker)
+	if start < 0 {
+		t.Fatalf("doctor output has no Remediation block:\n%s", out)
+	}
+	return out[start:]
+}
+
+// bossBinaryLine extracts doctor's boss-binary line so an assertion about it
+// cannot be satisfied by the bossd line, or by a remediation block that quotes
+// the same words.
+func bossBinaryLine(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "boss binary revision") {
+			return line
+		}
+	}
+	t.Fatalf("doctor output has no boss-binary revision line:\n%s", out)
+	return ""
+}
+
+// --- BOS-1300: the passive per-invocation warning ----------------------------
+
+// newRevisionDriftWarningCommand builds a synthetic command tree and points the
+// executable seam at a directory that is NOT the fixture checkout's bin/, so
+// the checkout-build guard does not suppress the warning by accident.
+func newRevisionDriftWarningCommand(t *testing.T, path ...string) (stdout, stderr *bytes.Buffer, leaf *cobra.Command) {
+	t.Helper()
+	stdout, stderr, leaf = newStalenessWarningCommand(t, path...)
+	previous := bossExecutablePath
+	installed := filepath.Join(t.TempDir(), "usr", "local", "bin", "boss")
+	bossExecutablePath = func() (string, error) { return installed, nil }
+	t.Cleanup(func() { bossExecutablePath = previous })
+	return stdout, stderr, leaf
+}
+
+// stubBossRevisionDriftCheckoutRoot pins the subprocess-free checkout
+// resolution the hoisted checkout-build guard reads.
+func stubBossRevisionDriftCheckoutRoot(t *testing.T, root string) {
+	t.Helper()
+	previous := bossRevisionDriftCheckoutRoot
+	bossRevisionDriftCheckoutRoot = func() string { return root }
+	t.Cleanup(func() { bossRevisionDriftCheckoutRoot = previous })
+}
+
+func TestWarnIfBossBinaryBehindCheckoutWritesExactlyOneStderrLine(t *testing.T) {
+	stubRevisionDriftProbes(t, behindRevisionDrift(), descendantRevisionDrift())
+	stdout, stderr, cmd := newRevisionDriftWarningCommand(t, "boss")
+
+	warnIfBossBinaryBehindCheckout(cmd)
+
+	if !strings.Contains(stderr.String(), bossRevisionDriftWarningText) {
+		t.Fatalf("stderr missing the revision-drift warning:\n%s", stderr.String())
+	}
+	if got := strings.Count(strings.TrimSpace(stderr.String()), "\n"); got != 0 {
+		t.Fatalf("stderr = %q, want exactly one line", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want untouched — a warning there corrupts --json consumers", stdout.String())
+	}
+}
+
+func TestWarnIfBossBinaryBehindCheckoutRespectsTheSuppressionVariable(t *testing.T) {
+	stubRevisionDriftProbes(t, behindRevisionDrift(), descendantRevisionDrift())
+	t.Setenv(skipBossRevisionDriftWarningEnv, "1")
+	_, stderr, cmd := newRevisionDriftWarningCommand(t, "boss")
+
+	warnIfBossBinaryBehindCheckout(cmd)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("the suppression variable did not silence the warning: %q", stderr.String())
+	}
+}
+
+// TestWarnIfBossBinaryBehindCheckoutSkipsACheckoutsOwnBuild covers the guard
+// that makes a warning on every invocation tolerable: a developer running their
+// own ./bin/boss is legitimately a commit behind their working tree, and
+// nagging them is how a warning gets trained away.
+func TestWarnIfBossBinaryBehindCheckoutSkipsACheckoutsOwnBuild(t *testing.T) {
+	checkout := t.TempDir()
+	drift := behindRevisionDrift()
+	drift.CheckoutRoot = checkout
+	stubRevisionDriftProbes(t, drift, descendantRevisionDrift())
+
+	_, stderr, cmd := newRevisionDriftWarningCommand(t, "boss")
+	binDir := filepath.Join(checkout, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkout bin: %v", err)
+	}
+	bossExecutablePath = func() (string, error) { return filepath.Join(binDir, "boss"), nil }
+	// The guard runs BEFORE the probe now, so it reads the locally-resolved
+	// root rather than the probe's verdict. Pinned, or it reads the developer's
+	// real checkout.
+	stubBossRevisionDriftCheckoutRoot(t, checkout)
+
+	warnIfBossBinaryBehindCheckout(cmd)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("a checkout's own build was nagged: %q", stderr.String())
+	}
+}
+
+// TestWarnIfBossBinaryBehindCheckoutGuardsRunBeforeTheProbe pins the ORDERING,
+// not just the silence. Every guard here is a read of the process's own
+// environment, its command path, or the filesystem; the probe spawns up to five
+// git subprocesses and runs on every ordinary `boss` invocation. A suppression
+// guard ordered after the probe still silences the output, so a
+// silence-only assertion passes while the cost is paid in full — which is
+// exactly the state this test was written against.
+func TestWarnIfBossBinaryBehindCheckoutGuardsRunBeforeTheProbe(t *testing.T) {
+	checkout := t.TempDir()
+	binDir := filepath.Join(checkout, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkout bin: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		arm  func(t *testing.T) *cobra.Command
+	}{
+		{
+			name: "developer suppression variable",
+			arm: func(t *testing.T) *cobra.Command {
+				t.Setenv(skipBossRevisionDriftWarningEnv, "1")
+				_, _, cmd := newRevisionDriftWarningCommand(t, "boss")
+				return cmd
+			},
+		},
+		{
+			name: "remedy command",
+			arm: func(t *testing.T) *cobra.Command {
+				_, _, cmd := newRevisionDriftWarningCommand(t, "boss", "daemon", "doctor")
+				return cmd
+			},
+		},
+		{
+			name: "checkout's own build",
+			arm: func(t *testing.T) *cobra.Command {
+				_, _, cmd := newRevisionDriftWarningCommand(t, "boss")
+				bossExecutablePath = func() (string, error) { return filepath.Join(binDir, "boss"), nil }
+				stubBossRevisionDriftCheckoutRoot(t, checkout)
+				return cmd
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := tc.arm(t)
+
+			probes := 0
+			previous := bossRevisionDriftProbe
+			bossRevisionDriftProbe = func(context.Context) revisiondrift.Drift {
+				probes++
+				return behindRevisionDrift()
+			}
+			t.Cleanup(func() { bossRevisionDriftProbe = previous })
+
+			warnIfBossBinaryBehindCheckout(cmd)
+
+			if probes != 0 {
+				t.Fatalf("the probe ran %d time(s) despite the %s guard — the guard filters the output, it does not guard the cost", probes, tc.name)
+			}
+		})
+	}
+
+	// Green-required sibling: with no guard armed the probe MUST still run, or
+	// the ordering change has disabled detection rather than reordering it.
+	t.Run("no guard armed", func(t *testing.T) {
+		_, stderr, cmd := newRevisionDriftWarningCommand(t, "boss")
+		stubBossRevisionDriftCheckoutRoot(t, checkout)
+
+		probes := 0
+		previous := bossRevisionDriftProbe
+		bossRevisionDriftProbe = func(context.Context) revisiondrift.Drift {
+			probes++
+			return behindRevisionDrift()
+		}
+		t.Cleanup(func() { bossRevisionDriftProbe = previous })
+
+		warnIfBossBinaryBehindCheckout(cmd)
+
+		if probes != 1 {
+			t.Fatalf("the probe ran %d time(s), want exactly 1", probes)
+		}
+		if !strings.Contains(stderr.String(), bossRevisionDriftWarningText) {
+			t.Fatalf("stderr missing the warning:\n%s", stderr.String())
+		}
+	})
+}
+
+func TestWarnIfBossBinaryBehindCheckoutSkipsRemedyCommands(t *testing.T) {
+	stubRevisionDriftProbes(t, behindRevisionDrift(), descendantRevisionDrift())
+
+	for _, path := range [][]string{
+		{"boss", "daemon", "doctor"},
+		{"boss", "env"},
+		{"boss", "upgrade"},
+	} {
+		_, stderr, cmd := newRevisionDriftWarningCommand(t, path...)
+		warnIfBossBinaryBehindCheckout(cmd)
+		if stderr.Len() != 0 {
+			t.Errorf("%q emitted a revision-drift warning: %q", cmd.CommandPath(), stderr.String())
+		}
+	}
+
+	// The remedy list is a prefix match over the command SUBTREE, not a
+	// substring match: a sibling that merely shares leading words must warn.
+	_, stderr, cmd := newRevisionDriftWarningCommand(t, "boss", "daemon", "status")
+	warnIfBossBinaryBehindCheckout(cmd)
+	if stderr.Len() == 0 {
+		t.Fatalf("%q suppressed the revision-drift warning", cmd.CommandPath())
+	}
+}
+
+// TestWarnIfBossBinaryBehindCheckoutIsSilentForEveryUnknown pins the surface
+// decision: an unknown earns a line in a diagnostic an operator asked for, not
+// on every invocation.
+func TestWarnIfBossBinaryBehindCheckoutIsSilentForEveryUnknown(t *testing.T) {
+	for _, reason := range []revisiondrift.Reason{
+		revisiondrift.ReasonNoCheckout,
+		revisiondrift.ReasonUnstamped,
+		revisiondrift.ReasonDevBuild,
+		revisiondrift.ReasonRevisionAbsent,
+		revisiondrift.ReasonCheckoutUntrusted,
+		revisiondrift.ReasonGitUnavailable,
+		revisiondrift.ReasonRevisionUnreadable,
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			stubRevisionDriftProbes(t, unknownRevisionDrift(reason, ""), descendantRevisionDrift())
+			_, stderr, cmd := newRevisionDriftWarningCommand(t, "boss")
+
+			warnIfBossBinaryBehindCheckout(cmd)
+
+			if stderr.Len() != 0 {
+				t.Fatalf("the %q unknown warned on an ordinary invocation: %q", reason, stderr.String())
+			}
+		})
+	}
+}
+
+// TestWarnIfBossBinaryBehindCheckoutIsSilentForADescendantBinary is the other
+// half of the trichotomy: a healthy verdict must be as silent as an unknown.
+func TestWarnIfBossBinaryBehindCheckoutIsSilentForADescendantBinary(t *testing.T) {
+	stubRevisionDriftProbes(t, descendantRevisionDrift(), descendantRevisionDrift())
+	_, stderr, cmd := newRevisionDriftWarningCommand(t, "boss")
+
+	warnIfBossBinaryBehindCheckout(cmd)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("a descendant binary warned: %q", stderr.String())
+	}
+}
+
+// TestRootCommandWarnsOnRevisionDriftWithoutChangingTheExitCode drives a real
+// rootCmd() so the PersistentPreRunE wiring is the thing under test, not the
+// helper. Every other test here calls the helper directly against a synthetic
+// command, so deleting that one line from rootCmd would leave all of them green
+// while the headline criterion silently became false.
+//
+// It also pins the "can never fail a command" half explicitly: the assertion is
+// on Execute's returned error, not merely on the absence of a panic.
+//
+// fix-terminal is the subcommand for the same reasons the staleness warning's
+// equivalent test uses it — it dials no daemon, mutates no global state, is not
+// a remedy path, and writes real bytes to stdout, which makes the stream
+// separation a genuine assertion rather than an empty buffer nobody wrote to.
+func TestRootCommandWarnsOnRevisionDriftWithoutChangingTheExitCode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("BOSS_DAEMON_SKIP_STALE_WARNING", "1")
+	stubRevisionDriftProbes(t, behindRevisionDrift(), descendantRevisionDrift())
+	previous := bossExecutablePath
+	bossExecutablePath = func() (string, error) { return filepath.Join(home, "bin", "boss"), nil }
+	t.Cleanup(func() { bossExecutablePath = previous })
+
+	root := rootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetArgs([]string{"fix-terminal"})
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("the warning path failed the command: %v", err)
+	}
+	if !strings.Contains(stderr.String(), bossRevisionDriftWarningText) {
+		t.Fatalf("rootCmd PersistentPreRunE did not emit the revision-drift warning:\n%q", stderr.String())
+	}
+	if stdout.Len() == 0 {
+		t.Fatalf("fix-terminal wrote nothing to stdout, so the stream separation is not proven")
+	}
+	if strings.Contains(stdout.String(), bossRevisionDriftWarningText) {
+		t.Fatalf("the warning leaked onto stdout:\n%q", stdout.String())
 	}
 }

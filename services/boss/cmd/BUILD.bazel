@@ -60,6 +60,7 @@ go_library(
         "//lib/bossalib/keyringutil",
         "//lib/bossalib/log",
         "//lib/bossalib/models",
+        "//lib/bossalib/revisiondrift",
         "//lib/bossalib/skillinstall",
         "//lib/bossalib/socketauth",
         "//lib/bossalib/telemetry",
@@ -161,6 +162,7 @@ go_test(
     ],
     deps = [
         "//lib/bossalib/broadcast",
+        "//lib/bossalib/buildinfo",
         "//lib/bossalib/chatdelivery",
         "//lib/bossalib/config",
         "//lib/bossalib/daemonbin",
@@ -168,6 +170,7 @@ go_test(
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/githubcallback",
         "//lib/bossalib/log",
+        "//lib/bossalib/revisiondrift",
         "//lib/bossalib/skillinstall",
         "//lib/bossalib/socketauth",
         "//lib/bossalib/telemetry",

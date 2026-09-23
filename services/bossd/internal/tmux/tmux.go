@@ -518,21 +518,75 @@ func (c *Client) ListSessions(ctx context.Context) ([]LiveSession, error) {
 	return out, nil
 }
 
+// ShowEnvStatus is the outcome of a session-environment read (BOS-1281).
+//
+// The three cases exist because `tmux show-environment` exits non-zero BOTH for
+// a variable that is simply not set AND for a read that failed outright — no
+// tmux server, a session that has gone, an exec error, a timeout. Exit status
+// therefore cannot separate them, and a caller that collapses the two is
+// reading a transient failure as a settled negative answer. That is only safe
+// where both answers route to the same harmless outcome; it is not safe where
+// the read gates a destructive decision.
+type ShowEnvStatus int
+
+const (
+	// ShowEnvSet means tmux answered and the variable carries a value. The
+	// value may legitimately be empty, which is what tmux prints as "KEY=".
+	ShowEnvSet ShowEnvStatus = iota
+	// ShowEnvUnset means tmux answered, and the answer is that the variable
+	// holds no value in this session's environment — either "unknown variable"
+	// on stderr, or a "-KEY" removal marker on stdout.
+	ShowEnvUnset
+	// ShowEnvError means the read itself failed, so NOTHING is known about the
+	// variable. A caller gating a destructive action must fail closed here
+	// rather than treat it as ShowEnvUnset.
+	ShowEnvError
+)
+
+// String renders the status for log lines and test failures.
+func (s ShowEnvStatus) String() string {
+	switch s {
+	case ShowEnvSet:
+		return "set"
+	case ShowEnvUnset:
+		return "unset"
+	case ShowEnvError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+// tmuxUnknownVariableStderr is what tmux prints when the requested variable is
+// not set in the session environment (cmd-show-environment.c emits
+// "unknown variable: %s"). It is the ONLY signal that separates unset from
+// failed, because tmux exits non-zero for both — which is exactly why the
+// classification below reads stderr rather than the exit status.
+const tmuxUnknownVariableStderr = "unknown variable"
+
 // ShowEnv reads a single environment variable baked into a tmux session's
 // session-environment via `tmux show-environment -t <name> <key>` (BOS-409). On
-// success tmux prints `KEY=value` on stdout; ShowEnv returns (value, true). It
-// is best-effort: an absent variable (tmux exits non-zero with "unknown
-// variable"), a removal marker line ("-KEY", no value), a dead session, or any
-// tmux failure all return ("", false) so a single bad row never blocks a sweep.
-// An explicitly-empty value ("KEY=") returns ("", true).
-func (c *Client) ShowEnv(ctx context.Context, name, key string) (string, bool) {
+// success tmux prints `KEY=value` on stdout; ShowEnv returns (value, ShowEnvSet),
+// and an explicitly-empty value ("KEY=") returns ("", ShowEnvSet).
+//
+// An absent variable and a removal marker line ("-KEY", no value) return
+// ("", ShowEnvUnset). Anything else — a dead session, no tmux server, an exec
+// or timeout failure — returns ("", ShowEnvError) so a caller whose decision is
+// destructive can fail closed instead of mistaking a failed read for a settled
+// "not set" (BOS-1281).
+func (c *Client) ShowEnv(ctx context.Context, name, key string) (string, ShowEnvStatus) {
 	cmd := c.cmdFunc(ctx, "tmux", "show-environment", "-t", name, key)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = tmuxCommandWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
-		return "", false
+		if strings.Contains(strings.ToLower(stderr.String()), tmuxUnknownVariableStderr) {
+			return "", ShowEnvUnset
+		}
+		// Includes the empty-stderr case: a non-zero exit that said nothing is
+		// not evidence the variable is unset, so it is an error, not an answer.
+		return "", ShowEnvError
 	}
 	line := strings.TrimRight(string(out), "\r\n")
 	// The first line is the only one that matters. Guard against multi-line
@@ -542,10 +596,11 @@ func (c *Client) ShowEnv(ctx context.Context, name, key string) (string, bool) {
 	}
 	prefix := key + "="
 	if !strings.HasPrefix(line, prefix) {
-		// "-KEY" removal marker, or anything unexpected — treat as absent.
-		return "", false
+		// "-KEY" removal marker, or anything unexpected. tmux ANSWERED here, so
+		// this is a settled "no value", not a failed read.
+		return "", ShowEnvUnset
 	}
-	return strings.TrimPrefix(line, prefix), true
+	return strings.TrimPrefix(line, prefix), ShowEnvSet
 }
 
 // PanePID returns the PID of the first pane in the named tmux session (the

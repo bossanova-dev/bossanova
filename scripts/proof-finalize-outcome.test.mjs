@@ -146,6 +146,50 @@ test('aggregateExitCode: no-media / no-ui-surface / env-unavailable → 0', () =
   }
 })
 
+// BOS-1285: `forced-no-surface` is the honest code for a surface a
+// `## Required proof` bullet forced onto a diff with nothing to demonstrate. It
+// MUST be neutral (exit 0) and MUST stay distinct from `agent-incomplete`,
+// which keeps its fail-loud 1 — conflating the two is exactly what made this
+// outcome indistinguishable from a failed capture.
+test('aggregateExitCode: forced-no-surface → 0 while agent-incomplete stays 1', () => {
+  for (const surface of ['tui', 'web']) {
+    assert.equal(
+      aggregateExitCode([{ surface, outcome: 'deferred', reasonCode: 'forced-no-surface' }]),
+      0,
+      `forced-no-surface must be neutral on ${surface}`,
+    )
+    assert.equal(
+      aggregateExitCode([{ surface, outcome: 'deferred', reasonCode: 'agent-incomplete' }]),
+      1,
+      `agent-incomplete must stay fatal on ${surface}`,
+    )
+  }
+  // The two codes are not interchangeable in the same run either.
+  assert.equal(
+    aggregateExitCode([
+      { surface: 'tui', outcome: 'deferred', reasonCode: 'forced-no-surface' },
+      { surface: 'web', outcome: 'deferred', reasonCode: 'agent-incomplete' },
+    ]),
+    1,
+  )
+})
+
+test('classifySurfaceOutcomes passes a synthetic forced-no-surface run through verbatim', () => {
+  const out = classifySurfaceOutcomes([
+    {
+      surface: 'web',
+      captureShapes: [],
+      agentResult: { passed: false, summary: '', evidence: [], steps: 0 },
+      hasFailure: false,
+      noSurface: false,
+      reasonCode: 'forced-no-surface',
+    },
+  ])
+  assert.equal(out[0].outcome, 'deferred')
+  assert.equal(out[0].reasonCode, 'forced-no-surface')
+  assert.equal(aggregateExitCode(out), 0)
+})
+
 // BOS-226: `scenario-missing` was a warn-only TUI authoring deferral (BOS-220,
 // neutral → 0). Epic 4 (BOS-226) makes proof required for TUI: a missing
 // scenario now contributes exit 1 on both surfaces. Pin the single-surface and

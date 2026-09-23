@@ -730,6 +730,36 @@ test('BOS-1265: Phase 6 selects and reports its test gate fail-safely', () => {
         false,
         'overrun-exhausted',
       ],
+      // 3b. ...and the same shape again when the pass ITSELF caused the finding: the reserved
+      //     regression round is drawn only after the general override is spent, and is bounded
+      //     apart from it, so the pass can repair its own regression exactly once.
+      [
+        'self-inflicted must-fix, override already spent',
+        {
+          ...open,
+          remainingSeconds: price - 1,
+          unattemptedMustFix: true,
+          overrunRoundsUsed: caps.MUSTFIX_OVERRUN_ROUNDS,
+          selfInflictedMustFix: true,
+          regressionRoundsUsed: 0,
+        },
+        true,
+        'regression-reserved',
+      ],
+      // 3c. the reserve itself spent -> back to the terminal state above
+      [
+        'both allowances spent',
+        {
+          ...open,
+          remainingSeconds: price - 1,
+          unattemptedMustFix: true,
+          overrunRoundsUsed: caps.MUSTFIX_OVERRUN_ROUNDS,
+          selfInflictedMustFix: true,
+          regressionRoundsUsed: caps.RESERVED_REGRESSION_ROUNDS,
+        },
+        false,
+        'overrun-exhausted',
+      ],
       // 4. below the allowance with every open must-fix already attempted
       [
         'every must-fix attempted',
@@ -1025,3 +1055,21 @@ for (const skillDir of REVIEW_CE_EXTENSION_DIRS) {
     }
   })
 }
+
+test('BOS-1288: the shared checklist classifies the fix shape before the per-mutant procedure', () => {
+  const checklist = sectionRegion(
+    read(`${REVIEW_CANONICAL}/references/falsification.md`),
+    '## Shared checklist',
+    `${REVIEW_CANONICAL}/references/falsification.md`,
+  )
+  // RULE NAME and STRUCTURAL LEAD only — the per-shape obligation lives in the helper, whose tests
+  // are its specification, so nothing here restates which mutants a shape owes.
+  assert.match(checklist, /bs-mutation-obligations\.mjs/)
+  assert.match(checklist, /Classify\s+the\s+fix's\s+shape/)
+  assert.match(checklist, /only\s+verdict\s+that\s+discharges\s+non-vacuity/)
+  // The two discharge rules and the in-flight staging rule are the part an agent must have
+  // resident: without them a green-expected mutant reads as optional and a probe reads as mandatory.
+  assert.match(checklist, /Test-first-red\s+is\s+an\s+equal\s+discharge/)
+  assert.match(checklist, /naming\s+the\s+layer\s+that\s+PARSES\s+the\s+input/)
+  assert.match(checklist, /Stage\s+and\s+commit\s+nothing/)
+})

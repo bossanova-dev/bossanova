@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/revisiondrift"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/cmd/skillgen"
@@ -28,7 +30,27 @@ type EnvReport struct {
 	Cron         *EnvCron    `json:"cron,omitempty"`
 	Binaries     EnvBinaries `json:"binaries"`
 	Daemon       EnvDaemon   `json:"daemon"`
+	Revision     EnvRevision `json:"revision"`
 	Capabilities EnvCaps     `json:"capabilities"`
+}
+
+// EnvRevision reports whether the executing boss binary contains the commits
+// the checkout it is being run from has. Additive: it is a new field, and no
+// existing EnvReport field name changes, because renames are breaking changes.
+//
+// Relation is a tri-state string rather than a boolean, for the reason the
+// classifier pairs every verdict with a known flag: an undeterminable input has
+// to render as unknown, and a boolean has nowhere to put that. Reason carries
+// WHICH unknown, so a consumer is never left to guess between "no checkout" and
+// "no git".
+type EnvRevision struct {
+	BinaryVersion    string `json:"binary_version"`
+	BinaryRevision   string `json:"binary_revision"`
+	CheckoutRoot     string `json:"checkout_root"`
+	CheckoutRevision string `json:"checkout_revision"`
+	Relation         string `json:"relation"` // "descendant", "behind" or "unknown"
+	Reason           string `json:"reason"`
+	Detail           string `json:"detail,omitempty"`
 }
 
 // EnvSession holds the managed-chat identifiers. All fields are empty in
@@ -157,8 +179,81 @@ func resolveEnvReport(getenv func(string) string) EnvReport {
 		rep.Daemon.Reachable = daemonSocketReachable(rep.Daemon.Socket)
 	}
 
+	rep.Revision = envRevisionReport(envRevisionDrift())
+
 	rep.Capabilities = EnvCaps{CLI: cliCommandPaths(), MCP: bossmcp.ToolNames()}
 	return rep
+}
+
+// envRevisionDrift is the revision-drift probe resolveEnvReport calls. A seam
+// for the same reason the doctor's is: resolveEnvReport is the pure, injectable
+// core driven by a fake getenv, and an unstubbed git shell-out inside it would
+// make every existing env test read the developer's real checkout.
+//
+// Only the `boss` verdict is reported here. `boss env` describes the context
+// this command is running in; the bossd file's own verdict belongs to the
+// diagnostic that can also act on it.
+var envRevisionDrift = func() revisiondrift.Drift {
+	return bossRevisionDriftProbe(context.Background())
+}
+
+// envRevisionReport projects the classifier's verdict onto the report schema.
+// It adds no judgement of its own: the relation and the reason are both the
+// classifier's, so this surface cannot disagree with doctor about one binary.
+// The revision is emitted RAW — the real revision when one was read, and empty
+// otherwise — never through RevisionLabel. RevisionLabel's "(unstamped)" and
+// "(unreadable)" are display sentinels for a human reading a terminal; putting
+// them in `--json` makes a machine consumer string-match prose to learn what
+// `relation` and `reason` already state as data, and makes this the only field
+// in the schema whose emptiness is spelled as a parenthesised word.
+func envRevisionReport(drift revisiondrift.Drift) EnvRevision {
+	return EnvRevision{
+		BinaryVersion:    drift.BinaryVersion,
+		BinaryRevision:   envRevisionValue(drift),
+		CheckoutRoot:     drift.CheckoutRoot,
+		CheckoutRevision: drift.CheckoutRevision,
+		Relation:         drift.Relation(),
+		Reason:           string(drift.Reason),
+		Detail:           drift.Detail,
+	}
+}
+
+// envRevisionValue is the machine-readable binary revision: the embedded
+// revision when the classifier established there is one, and empty when there
+// is not. Keyed on the carried RevisionStamped flag rather than on the string,
+// so the "unknown" no-ldflags default is reported as absent rather than as a
+// revision named "unknown".
+func envRevisionValue(drift revisiondrift.Drift) string {
+	if !drift.RevisionStamped {
+		return ""
+	}
+	return drift.BinaryRevision
+}
+
+// envHumanRevisionLabel renders the binary revision for a HUMAN, restoring the
+// sentinel that envRevisionValue deliberately keeps out of the JSON schema.
+//
+// Keyed on the carried reason, never on the revision string being empty:
+// re-deriving stamped-ness from emptiness is the conflation the revisiondrift
+// package exists to prevent, and it is also what would report an unreadable
+// binary as an unstamped one.
+func envHumanRevisionLabel(rev EnvRevision) string {
+	if rev.BinaryRevision != "" {
+		return rev.BinaryRevision
+	}
+	switch revisiondrift.Reason(rev.Reason) {
+	case revisiondrift.ReasonRevisionUnreadable:
+		return "(unreadable)"
+	case revisiondrift.ReasonUnstamped:
+		return "(unstamped)"
+	default:
+		// Every other outcome either carries a revision (handled above) or has
+		// no claim to make about the binary's stamp, so it renders as unknown
+		// rather than borrowing one of the two labels above. `default` also
+		// satisfies the exhaustive linter, which this repo configures with
+		// default-signifies-exhaustive.
+		return "(unknown)"
+	}
 }
 
 // resolveSocketFallback mirrors ResolveSessionFacts' socket logic for the
@@ -230,6 +325,16 @@ func renderEnvHuman(rep EnvReport) string {
 	fmt.Fprintln(&b, "\nDaemon:")
 	fmt.Fprintf(&b, "  socket:    %s\n", rep.Daemon.Socket)
 	fmt.Fprintf(&b, "  reachable: %t\n", rep.Daemon.Reachable)
+	fmt.Fprintln(&b, "\nRevision:")
+	fmt.Fprintf(&b, "  boss version:       %s\n", orDefault(rep.Revision.BinaryVersion, "(unknown)"))
+	fmt.Fprintf(&b, "  boss revision:      %s\n", envHumanRevisionLabel(rep.Revision))
+	fmt.Fprintf(&b, "  checkout:           %s\n", orDefault(rep.Revision.CheckoutRoot, "(none found)"))
+	fmt.Fprintf(&b, "  checkout revision:  %s\n", orDefault(rep.Revision.CheckoutRevision, "(unknown)"))
+	fmt.Fprintf(&b, "  relation:           %s\n", rep.Revision.Relation)
+	fmt.Fprintf(&b, "  reason:             %s\n", rep.Revision.Reason)
+	if rep.Revision.Detail != "" {
+		fmt.Fprintf(&b, "  detail:             %s\n", rep.Revision.Detail)
+	}
 	fmt.Fprintf(&b, "\nCapabilities (%d CLI commands, %d MCP tools):\n",
 		len(rep.Capabilities.CLI), len(rep.Capabilities.MCP))
 	fmt.Fprintln(&b, "  CLI commands:")

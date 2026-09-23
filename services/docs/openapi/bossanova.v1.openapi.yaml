@@ -6787,8 +6787,36 @@ components:
             session_id, when set, scopes the delete: the daemon rejects the request
              (NotFound) if the chat does not belong to this session. Empty skips the
              check for backward-compatible callers.
+        reason:
+          title: reason
+          description: |-
+            reason is UNSPECIFIED for any caller that predates the field, which deletes
+             exactly as before. Only CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT can be
+             refused; every other value (including unset) deletes.
+          $ref: '#/components/schemas/bossanova.v1.DeleteChatRequest.DeletionReason'
       title: DeleteChatRequest
       additionalProperties: false
+    bossanova.v1.DeleteChatRequest.DeletionReason:
+      type: string
+      title: DeletionReason
+      enum:
+        - DELETION_REASON_UNSPECIFIED
+        - DELETION_REASON_USER_REQUESTED
+        - DELETION_REASON_AGENT_REQUESTED
+        - DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT
+      description: |-
+        DeletionReason states WHY a caller is deleting the chat, because the daemon
+         cannot discover it: the reverse-stream path synthesises the request
+         in-process and socketauth validates one shared bearer token without storing
+         an identity, so there is no peer, no header and no interceptor to read a
+         caller from. The values therefore name their own origin — a cleanup reap and
+         a user-requested delete are different reasons, not one reason from different
+         callers.
+
+         This is an enum rather than the free string WakeChatResponse.reason uses
+         because this reason GATES behaviour instead of annotating an outcome: an
+         unrecognised value must be inert (it falls into the legacy delete path)
+         rather than permissive, which a closed enum gives and a free string does not.
     bossanova.v1.DeleteChatResponse:
       type: object
       title: DeleteChatResponse
@@ -13999,12 +14027,14 @@ components:
           format: int32
           description: |-
             pane_pid is the tmux pane PID (the login shell) hosting this chat's agent
-             process. When > 0 and allow_legacy_backfill is false, the codex plugin
+             process. When > 0 — regardless of allow_legacy_backfill — the codex plugin
              resolves the rollout by inspecting the open file descriptors of the codex
              process running under this pane (process-fd resolution), which binds each
-             sibling chat to its OWN rollout deterministically. On a miss (process not
-             up yet, fd inspection unavailable, no rollout open) the plugin falls back
-             to the (work_dir, launched_after) time-window scan. Additive request-side
+             sibling chat to its OWN rollout deterministically. What a MISS (process not
+             up yet, fd inspection unavailable, no rollout open) does next is what
+             allow_legacy_backfill now selects: a recovery caller falls through to the
+             time-window scan, while a launch poll reports the miss with a reason and is
+             polled again, so it never binds a sibling's rollout. Additive request-side
              field: no apiversion bump (apiversion is response-side/unary-only).
       title: ResolveInteractiveSessionIDRequest
       additionalProperties: false

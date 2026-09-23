@@ -542,9 +542,13 @@ func (c *LocalClient) UpdateChatTitle(ctx context.Context, agentSessionID, title
 	return err
 }
 
-func (c *LocalClient) DeleteChat(ctx context.Context, agentSessionID string) error {
+// DeleteChat forwards the caller's reason to the local daemon verbatim. This is
+// the only DeleteChat path that carries it end to end: the remote path proxies
+// through ProxyDeleteChatRequest, which has no reason field (see remote.go).
+func (c *LocalClient) DeleteChat(ctx context.Context, agentSessionID string, reason pb.DeleteChatRequest_DeletionReason) error {
 	_, err := c.rpc.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
 		AgentSessionId: agentSessionID,
+		Reason:         reason,
 	}))
 	return err
 }

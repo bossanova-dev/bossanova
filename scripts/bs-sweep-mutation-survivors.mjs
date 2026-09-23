@@ -33,7 +33,16 @@ import { readFileSync } from 'node:fs'
 // missing/stale sentinel is NEVER one of these — the orchestrator synthesizes
 // `dispatch-failure` (from bs-run-sentinel.mjs) and routes to the safe NO_CHANGE
 // branch, never a false "no survivors".
-export const MUTATION_RESULTS = ['extracted', 'empty']
+//
+// `gate-failed` (BOS-1278) is the terminal state a failed `make` target reaches.
+// The worker runs under `set -e`, so before this token existed a red target killed
+// it mid-block with no sentinel at all: the orchestrator read `missing` and routed
+// to the same safe NO_CHANGE branch a dead dispatch takes, and the one thing nobody
+// learned was WHICH target failed and with what status. Silence is never a verdict
+// (R4) — a worker that reaches any terminal state leaves a bounded sentinel, and
+// this one's payload carries `target` + `exitCode` and nothing else.
+export const GATE_FAILED = 'gate-failed'
+export const MUTATION_RESULTS = ['extracted', 'empty', GATE_FAILED]
 
 // The per-survivor sentinel `kind` vocabulary. Each per-survivor subagent writes
 // exactly one of these terminal decisions: `killed` (a test now defeats the

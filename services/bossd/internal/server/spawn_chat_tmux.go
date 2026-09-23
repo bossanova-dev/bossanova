@@ -201,10 +201,14 @@ type spawnInput struct {
 	// session.BuildAppendSystemPrompt alongside the text; nil (the value a
 	// caller that builds no instructions passes) reports nothing.
 	AppendSystemPromptClasses []string
-	// Model is the session's opaque agent model id ("" = plugin default). It
-	// must thread through so a re-ensured (RecordChat) or woken (WakeChat) pane
-	// launches on the same model as the initial StartTmuxChat rather than
-	// silently reverting to the plugin default.
+	// Model is the CHAT's opaque agent model id ("" = plugin default). Every
+	// caller passes chat.Model, which is why nothing here re-resolves it across
+	// an agent boundary: a model the chat bound is already its own agent's, so
+	// session.EffectiveModelForAgent has nothing to reset (BOS-1281 — the
+	// comment previously said "the session's", which named a value no caller
+	// has ever passed). It must thread through so a re-ensured (RecordChat) or
+	// woken (WakeChat) pane launches on the same model the chat was created
+	// with rather than silently reverting to the plugin default.
 	Model string
 	// SessionAgentName is the parent session's resolved agent name. It lets the
 	// spawn resolver distinguish the original session effort from a cross-agent
@@ -449,6 +453,14 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 			}
 		}
 		deadline := time.Now().Add(interactiveProviderIDForegroundDiscoveryTimeout)
+		// lastReason carries the plugin's own account of the most recent miss
+		// onto the timeout returns below, exactly as the background loop already
+		// does onto its timeout log. Without it the FIRST line an operator reads
+		// after a launch — the interactive one — is silent about why, and only
+		// the background line an eleven-hour incident later explains anything
+		// (BOS-1298). An empty lastReason stays empty: a timeout with nothing to
+		// report must not invent a cause.
+		lastReason := ""
 		for time.Now().Before(deadline) {
 			resolution, resolveErr := deps.Resolver.ResolveInteractiveSessionID(ctx, in.Chat.AgentName, in.WorktreePath, in.Chat.AgentSessionID, launchedAt, time.Time{}, false, panePID)
 			if resolveErr != nil {
@@ -469,7 +481,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 					Str("agent_session_id", in.Chat.AgentSessionID).
 					Str("agent", in.Chat.AgentName).
 					Msg("foreground provider session id discovery failed; leaving the pane live for background discovery")
-				return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: WakeFallbackReasonProviderIDDiscoveryTimeout}, nil
+				return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: WakeFallbackReasonProviderIDDiscoveryTimeout, DiscoveryReason: lastReason}, nil
 			}
 			if resolution.SessionID != "" {
 				return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, ProviderSessionID: resolution.SessionID, FallbackReason: fallbackReason}, nil
@@ -483,13 +495,16 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 					DiscoveryReason:    resolution.Reason,
 				}, nil
 			}
+			if resolution.Reason != "" {
+				lastReason = resolution.Reason
+			}
 			select {
 			case <-ctx.Done():
-				return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: WakeFallbackReasonProviderIDDiscoveryTimeout}, nil
+				return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: WakeFallbackReasonProviderIDDiscoveryTimeout, DiscoveryReason: lastReason}, nil
 			case <-time.After(interactiveProviderIDForegroundDiscoveryPollInterval):
 			}
 		}
-		return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: WakeFallbackReasonProviderIDDiscoveryTimeout}, nil
+		return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: WakeFallbackReasonProviderIDDiscoveryTimeout, DiscoveryReason: lastReason}, nil
 	}
 	return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: fallbackReason}, nil
 }

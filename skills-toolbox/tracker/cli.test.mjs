@@ -5,7 +5,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
-import { createLinearAdapter } from './linear.mjs'
+import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
+import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../skill-config.mjs'
 
 const won = '11111111111111111111111111111111'
 const lost = '22222222222222222222222222222222'
@@ -710,6 +711,194 @@ test('claim-verdict refuses any other --comments shape by name, not as a claim f
   assert.match(emptyErr, /an object with keys /, 'and an empty object still reads as an object')
 })
 
+// --- list-planned (BOS-1294) ----------------------------------------------------
+// The worker's narrowed candidate read. Defaults come from the repo config through the SAME helper
+// the cron gate reads; explicit flags override. Config and adapter are both injected, so no test
+// here reads this repo's real config or reaches a network.
+
+/** A validated config whose tracker block carries the given `selection` (or none). */
+function plannedCliConfig(selection) {
+  const config = mergeConfig(DEFAULT_CONFIG, {
+    adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+    trackerConfig: {
+      demo: {
+        mcpServer: 'demo-tracker',
+        team: 'Demo',
+        states: { planned: 'Planned' },
+        labels: { agentFriendly: 'agent-friendly' },
+        ...(selection === undefined ? {} : { selection }),
+      },
+    },
+  })
+  validateConfig(config, 'test')
+  return config
+}
+
+/** Run list-planned against a recording stub adapter; resolves to what it printed and was asked. */
+async function listPlanned(args, { result = [], config = plannedCliConfig(), adapter } = {}) {
+  const calls = []
+  let out = ''
+  let err = ''
+  let configLoads = 0
+  const stub = adapter ?? {
+    selectPlanned: async (query) => {
+      calls.push(query)
+      return typeof result === 'function' ? result() : result
+    },
+  }
+  const code = await runCli(['list-planned', ...args], {
+    write: (s) => (out += s),
+    errWrite: (s) => (err += s),
+    env: {},
+    resolveAdapter: () => stub,
+    loadConfig: () => {
+      configLoads += 1
+      if (config instanceof Error) throw config
+      return config
+    },
+  })
+  return { code, out, err, calls, configLoads }
+}
+
+test('list-planned with no flags queries the config-derived selection and prints a JSON array', async () => {
+  const nodes = [{ identifier: 'DEMO-1', labels: ['agent-friendly'], attachments: [] }]
+  const { code, out, err, calls } = await listPlanned([], { result: nodes })
+  assert.equal(code, 0)
+  assert.equal(err, '')
+  assert.ok(out.endsWith('\n'))
+  assert.deepEqual(JSON.parse(out), nodes)
+  // Exactly the gate's un-narrowed query, plus the Step 2 window — no identity key at all.
+  assert.deepEqual(calls, [{ state: 'Planned', label: 'agent-friendly', limit: 250 }])
+})
+
+test('list-planned defaults pick up a configured selection block, identically to the gate', async () => {
+  const { code, calls } = await listPlanned([], {
+    config: plannedCliConfig({ assigneeOrCreator: 'me', labels: ['label-a', 'label-b'] }),
+  })
+  assert.equal(code, 0)
+  assert.deepEqual(calls, [
+    { state: 'Planned', label: ['label-a', 'label-b'], assigneeOrCreator: 'me', limit: 250 },
+  ])
+})
+
+test('list-planned parses all four flags; explicit flags override the config', async () => {
+  const { code, calls } = await listPlanned([
+    '--state',
+    'Ready',
+    '--label',
+    'label-a,label-b',
+    '--label',
+    'label-c',
+    '--assignee-or-creator',
+    'usr_9',
+    '--limit',
+    '25',
+  ])
+  assert.equal(code, 0)
+  assert.deepEqual(calls, [
+    {
+      state: 'Ready',
+      label: ['label-a', 'label-b', 'label-c'],
+      assigneeOrCreator: 'usr_9',
+      limit: 25,
+    },
+  ])
+  assert.equal(typeof calls[0].limit, 'number', '--limit is parsed as an integer')
+})
+
+test('list-planned refuses selection override flags when a selection block is configured', async () => {
+  const config = plannedCliConfig({ assigneeOrCreator: 'me', labels: ['label-a'] })
+  for (const [args, flag] of [
+    [['--label', 'agent-friendly'], '--label'],
+    [['--state', 'Other'], '--state'],
+    [['--assignee-or-creator', 'usr_other'], '--assignee-or-creator'],
+  ]) {
+    const { code, out, err, calls } = await listPlanned(args, { config })
+    assert.equal(code, 2, JSON.stringify(args))
+    assert.equal(out, '', `${JSON.stringify(args)} prints nothing on stdout`)
+    assert.match(err, /^list-planned: /, JSON.stringify(args))
+    assert.ok(err.includes(flag), `${JSON.stringify(args)} names the refused flag`)
+    assert.equal(err.trim().split('\n').length, 1, 'a one-line diagnostic')
+    assert.equal(calls.length, 0, `${JSON.stringify(args)} must never reach the adapter`)
+  }
+})
+
+test('list-planned still accepts --limit under a configured selection, keeping the narrowing', async () => {
+  const { code, calls } = await listPlanned(['--limit', '10'], {
+    config: plannedCliConfig({ assigneeOrCreator: 'me', labels: ['label-a'] }),
+  })
+  assert.equal(code, 0)
+  assert.deepEqual(calls, [
+    { state: 'Planned', label: ['label-a'], assigneeOrCreator: 'me', limit: 10 },
+  ])
+})
+
+test('list-planned keeps a single --label a single name, not a one-element set', async () => {
+  const { calls } = await listPlanned(['--label', 'label-a'])
+  assert.equal(calls[0].label, 'label-a')
+})
+
+test('list-planned exits 2 with EMPTY stdout when the adapter lacks the selectPlanned capability', async () => {
+  for (const adapter of [
+    {},
+    { selectPlanned: undefined },
+    { selectPlanned: null },
+    { selectPlanned: 'nope' },
+  ]) {
+    const { code, out, err, configLoads } = await listPlanned([], { adapter })
+    assert.equal(code, 2, JSON.stringify(adapter))
+    assert.equal(out, '', 'nothing on stdout without the capability')
+    assert.match(err, /no selectPlanned capability/)
+    assert.equal(err.trim().split('\n').length, 1, 'a one-line diagnostic')
+    assert.equal(configLoads, 0, 'the capability is checked before any config work')
+  }
+})
+
+test('list-planned rejects an invalid --limit, a bad --label, an unknown or valueless flag', async () => {
+  for (const args of [
+    ['--limit', '0'],
+    ['--limit', '251'],
+    ['--limit', 'abc'],
+    ['--limit', '2.5'],
+    ['--limit', '10abc'],
+    ['--label', 'label-a,,label-b'],
+    ['--label', ''],
+    ['--state', ''],
+    ['--assignee-or-creator', ''],
+    ['--state'],
+    ['--team', 'Other'],
+  ]) {
+    const { code, out, err, calls } = await listPlanned(args)
+    assert.equal(code, 2, JSON.stringify(args))
+    assert.equal(out, '', JSON.stringify(args))
+    assert.match(err, /^list-planned: /, JSON.stringify(args))
+    assert.equal(calls.length, 0, `${JSON.stringify(args)} must never reach the adapter`)
+  }
+})
+
+test('list-planned fails closed — exit 2, empty stdout — on config, adapter, or result failure', async () => {
+  const cases = [
+    [{ config: new Error('skill-config: broken') }, /skill-config: broken/],
+    [{ result: () => Promise.reject(new Error('Linear API HTTP 500\nsecond line')) }, /HTTP 500/],
+    [{ result: { nodes: [] } }, /non-array/],
+    [{ result: null }, /non-array/],
+  ]
+  for (const [options, pattern] of cases) {
+    const { code, out, err } = await listPlanned([], options)
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.match(err, pattern)
+    assert.equal(err.trim().split('\n').length, 1, 'the diagnostic stays on one line')
+  }
+  // A config without the planned state cannot derive a default, so it fails rather than widening.
+  const noState = plannedCliConfig()
+  delete noState.trackerConfig.demo.states.planned
+  const { code, out, err } = await listPlanned([], { config: noState })
+  assert.equal(code, 2)
+  assert.equal(out, '')
+  assert.match(err, /states\.planned/)
+})
+
 // --- help surface -------------------------------------------------------------
 
 // The capability names are derived from this module's OWN dispatch literals, so a new
@@ -745,4 +934,105 @@ test('an unknown tracker capability rejection carries the capability list', () =
     assert.ok(err.includes(cmd), `rejection is missing capability ${cmd}`)
   }
   assert.ok(err.includes(TRACKER_USAGE))
+})
+
+// --- classify-outcome ---------------------------------------------------------
+// BOS-1282: the agent-driven MCP sites execute the tool themselves, so no code wrapper can
+// intercept their outcome. This verb is how they reach the SAME classifier the executable paths
+// run on — the mechanism that stops a second outcome vocabulary growing in skill prose.
+
+function classify(args) {
+  let out = ''
+  let err = ''
+  const code = runCli(['classify-outcome', ...args], {
+    write: (s) => (out += s),
+    errWrite: (s) => (err += s),
+  })
+  return { code, out, err, machine: out.split('\n')[0] }
+}
+
+test('classify-outcome prints a machine-readable verdict line for each of the five verdicts', () => {
+  const cases = [
+    [['--observed', 'fetch failed'], 'retryable', 'transport-failed', 'yes'],
+    [['--observed', 'Linear API HTTP 401'], 'permanent', 'unauthorized', 'no'],
+    [
+      ['--observed', 'The operation timed out', '--operation', 'write'],
+      'indeterminate',
+      'write-may-have-applied',
+      'no',
+    ],
+    [['--result', '{"issues":{"nodes":[]}}'], 'ok', 'success', 'no'],
+    [['--result', 'null'], 'false-empty', 'unreadable-payload', 'no'],
+  ]
+  const seen = new Set()
+  for (const [args, verdict, reason, retry] of cases) {
+    const { code, machine, out, err } = classify(args)
+    assert.equal(code, 0, `${args.join(' ')} must exit 0`)
+    assert.equal(err, '')
+    const operation = args.includes('write') ? 'write' : 'read'
+    assert.equal(
+      machine,
+      `tracker-outcome verdict=${verdict} reason=${reason} retry=${retry} operation=${operation}`,
+    )
+    // One machine line, then one human line naming the action — never more.
+    assert.equal(out.trimEnd().split('\n').length, 2, `${verdict} must print exactly two lines`)
+    seen.add(verdict)
+  }
+  assert.equal(seen.size, 5, 'all five verdicts must be reachable through the verb')
+})
+
+test('classify-outcome names the action each verdict requires, not just the verdict', () => {
+  const indeterminate = classify(['--observed', 'The operation timed out', '--operation', 'write'])
+  // The forbidden pair is what makes the verdict actionable at an agent-driven site.
+  assert.match(indeterminate.out, /READ THE TARGET BACK before any second attempt/)
+  assert.match(indeterminate.out, /blind retry and a silent abandon are both forbidden/)
+
+  const falseEmpty = classify(['--result', 'null'])
+  assert.match(falseEmpty.out, /never "no work"/)
+})
+
+test('classify-outcome reads an explicit --status when the text carries none', () => {
+  assert.equal(
+    classify(['--observed', 'upstream said no', '--status', '429']).machine,
+    'tracker-outcome verdict=retryable reason=rate-limited retry=yes operation=read',
+  )
+})
+
+test('classify-outcome exits non-zero with a diagnostic and EMPTY stdout when the observation is missing', () => {
+  const { code, out, err } = classify([])
+  assert.equal(code, 2)
+  assert.equal(out, '', 'a refusal must write nothing to stdout')
+  assert.match(err, /one of --observed <text> or --result <json> is required/)
+})
+
+test('classify-outcome refuses both sources at once, and a bad operation or status', () => {
+  const both = classify(['--observed', 'x', '--result', '{}'])
+  assert.equal(both.code, 2)
+  assert.equal(both.out, '')
+  assert.match(both.err, /mutually exclusive/)
+
+  const badOp = classify(['--observed', 'x', '--operation', 'delete'])
+  assert.equal(badOp.code, 2)
+  assert.equal(badOp.out, '')
+  assert.match(badOp.err, /--operation must be one of read, write/)
+
+  const badStatus = classify(['--observed', 'x', '--status', 'nope'])
+  assert.equal(badStatus.code, 2)
+  assert.equal(badStatus.out, '')
+  assert.match(badStatus.err, /--status must be an integer HTTP status/)
+
+  const badJson = classify(['--result', '{oops'])
+  assert.equal(badJson.code, 2)
+  assert.equal(badJson.out, '')
+  assert.match(badJson.err, /malformed JSON/)
+})
+
+test('classify-outcome is a CLI capability and NOT a tracker operation', () => {
+  // The verb is DISPATCHED here...
+  assert.ok(dispatchedTrackerCommands().includes('classify-outcome'))
+  // ...and absent from the declarative operation map, which is the invariant that keeps every
+  // vendored adapter conforming: classification is not something a tracker performs.
+  const operationMap = buildLinearOperationMap('bossanova-linear')
+  assert.equal('classifyOutcome' in operationMap, false)
+  for (const key of Object.keys(operationMap)) assert.doesNotMatch(key, /classif/i)
 })

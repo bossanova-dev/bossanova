@@ -736,6 +736,15 @@ and is separate from — never a substitute for — recording _why_ the fire was
 signal "no work" with a plain non-zero exit; the shell's own "could not run what you asked" codes are
 reserved, and a gate that borrows one is reported as broken rather than as a skip.
 
+Because the verdict travels only as an exit status, a gate's whole observable contract is the exit
+code of the **process**, not the return value of whatever decision procedure it calls. Every path a
+job can register as its gate command is therefore itself a gate — including a compatibility
+forwarder kept alive only so already-persisted commands keep resolving. A forwarder that reaches the
+end of its body without producing a verdict exits zero, which the scheduler reads as _fire_: the one
+direction in which this contract fails **open**, and the failure a gate exists to prevent. Coverage
+has to be taken at the process boundary on each registered path, because a suite that pins only the
+shared decision procedure cannot see whether the decision was ever reached.
+
 ### Worker gate
 
 A cron gate whose side effect is the work itself, rather than a decision about whether to wake an
@@ -878,6 +887,20 @@ A unit of adapter behavior the skill performs by having the **agent** call one o
 tools. The adapter supplies the tool's name and a one-line summary of its use rather than executing
 anything itself, which is what distinguishes an operation from a Tracker capability — code for a
 capability, a tool name for an operation.
+
+### Planned selection
+
+A repo's configured narrowing of which planned tickets its scheduled build is allowed to take — for
+example a label set, or tickets assigned to or created by one identity — derived once and applied
+identically by the **Cron gate** that decides whether to fire and by the build worker that then picks
+the ticket, so the two scan exactly the same set.
+
+Whether a selection is configured is decided by its presence, not by what it resolves to, and a
+configured selection can only be narrowed further, never replaced or widened. Every layer it passes
+through must either carry each of its clauses to the tracker or refuse to run: a layer that silently
+drops a clause, or a caller-supplied override that substitutes a different set, turns a read that
+should match the gate into a strictly wider one, and the worker then acts on a ticket the gate never
+saw. A refusal stops the run; it never falls back to an unfiltered read.
 
 ### Plan contract
 
@@ -1769,7 +1792,7 @@ while still reading as assurance. It is worse than an absent gate rather than eq
 absent gate leaves a risk everyone downstream still treats as unchecked, while a vacuous one converts
 that risk into a false assurance every consumer spends.
 
-A gate can become vacuous at any of nine layers, and each has been observed independently: its
+A gate can become vacuous at any of ten layers, and each has been observed independently: its
 **trigger reach**, when the routing tables that decide whether it runs are keyed on where it lives
 rather than on everything it reads, so it never executes on the change class it exists for — and a
 green check is then indistinguishable from a real pass; its
@@ -1791,7 +1814,13 @@ wanted; its **observation moment**, when the check reads a subject that has not 
 artifact it certifies predates the state it claims about — the runtime is real and the property is
 genuinely computed, merely at a time when the answer is not yet the one under test, which is why
 this layer resolves as a race whose two outcomes are a correct pass and a silently wrong pass but
-never a failure; and its input discovery, when the set of subjects it scans comes back empty and that
+never a failure; its **input arrival**, when a named input the verdict rests on can go missing
+without the check noticing — a misspelt flag name that lands in the parsed bag and is never read, or
+a flag whose value was swallowed as the next flag's name — so the argument channel quietly
+substitutes a default, the arm that default disables never runs, and the answer is reported as
+though the input had been read; the direction is never neutral, because the substituted value is
+precisely the one that decides whether the arm which would have withheld the verdict executes at
+all; and its input discovery, when the set of subjects it scans comes back empty and that
 emptiness is reported as a pass rather than as an inability to evaluate. The failure is silent by
 construction, because a gate's job is to be quiet when nothing is wrong.
 
@@ -2243,6 +2272,25 @@ a meaningful value the same sentinel makes clearing the field silently unperform
 need pinning, and neither test is optional: one that proves only preservation passes equally on a
 sink that ignores the field outright, and one that writes a single time cannot observe the defect at
 any level of effort, because the first write is always correct.
+
+### Attributive deletion
+
+A removal authorised by an enumeration difference — what a directory listing, a `git status`, or any
+before/after snapshot shows as having appeared during a run's window — on the unstated premise that
+appearance implies authorship. It does not: none of those observations records a writer, so in any
+directory a concurrent peer can also be inside, the difference names that peer's work alongside the
+run's own and the removal destroys it. The failure is silent in both directions and leaves no
+distinguishing exit code, since a cleanup that deleted a stranger's file and one that deleted only
+its own both report success.
+
+The remedy is not a better difference but a different authority: an allow-list, where the run
+declares one staging directory keyed to itself before it starts and removes exactly that. The
+snapshots remain useful for restoring tracked paths and for naming **reported residue** — a path the
+run cannot prove it created, which is recorded for the caller rather than deleted, on the asymmetry
+that a stray artifact is visible and reversible while a deleted untracked file has no object to
+recover from. The one case where authorship is provable is a path the pre-run snapshot positively
+recorded as already gone, and there a trackedness guard is actively wrong, because it restores
+content at a path that was deliberately emptied.
 
 ### Borrowed bound
 

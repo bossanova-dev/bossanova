@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,53 @@ const ellipsis = "…"
 // transcriptTailSize is the trailing byte window scanned for the most recent
 // meaningful JSONL entry. 32 KB holds ~60-200 turns in a typical transcript.
 const transcriptTailSize = 32 * 1024
+
+// Claude transcript JSONL line limits (BOS-1281).
+//
+// transcriptScanInitialBytes is what bufio allocates up front;
+// transcriptScanMaxBytes is the ceiling it may GROW to. Splitting them matters:
+// the previous code passed 256 KiB for both, so every scan paid the ceiling
+// eagerly and a line one byte over it failed. bufio only grows to what a line
+// actually needs, so raising the ceiling raises a bound, not a steady-state
+// cost.
+//
+// 256 KiB was too small in practice, not in theory: a single transcript entry
+// carrying an inlined tool result was observed at roughly 742 KiB, which made
+// `boss chat show` fail on the transcript with a bare
+// `bufio.Scanner: token too long`. 8 MiB is ~11x that observed maximum — chosen
+// against the measurement rather than picked round, since a ceiling raised
+// without a named reason is the same defect one order of magnitude later.
+//
+// The same 64 KiB/8 MiB split the codex runner reads against, which BOS-1297
+// moved out of that plugin into lib/bossalib/jsonlscan (ChunkBytes /
+// MaxLineBytes): the two read the same family of agent JSONL, and a divergent
+// cap is precisely this defect reappearing at a different call site. That path
+// now SKIPS and counts a record past the budget instead of failing the read;
+// this one still fails, so adopting jsonlscan here is follow-up work.
+const (
+	transcriptScanInitialBytes = 64 * 1024
+	transcriptScanMaxBytes     = 8 * 1024 * 1024
+)
+
+// errTranscriptLineTooLong classifies bufio.ErrTooLong. Without it the failure
+// reached a caller as `bufio.Scanner: token too long` — a message that names
+// neither the file, nor the limit, nor the fact that this is a readable
+// transcript the reader refused rather than a missing or corrupt one.
+var errTranscriptLineTooLong = errors.New("claude transcript line exceeds the scanner limit")
+
+// classifyTranscriptScanErr names an over-long line and leaves every other
+// scanner error untouched. line is the 1-based index of the last line the
+// scanner completed, so the offending line is the one after it.
+func classifyTranscriptScanErr(err error, path string, line int) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, bufio.ErrTooLong) {
+		return fmt.Errorf("%w of %d bytes at %s line %d: the transcript exists but cannot be parsed",
+			errTranscriptLineTooLong, transcriptScanMaxBytes, path, line+1)
+	}
+	return err
+}
 
 // transcriptPath resolves ~/.claude/projects/<key>/<agentSessionID>.jsonl.
 func transcriptPath(worktreePath, agentSessionID string) (string, error) {
@@ -420,10 +468,12 @@ func readTranscript(path string, maxMessages int32) (messages []*bossanovav1.Cha
 	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, transcriptScanInitialBytes), transcriptScanMaxBytes)
 
 	var all []*bossanovav1.ChatMessage
+	line := 0
 	for scanner.Scan() {
+		line++
 		var entry transcriptLineWithTS
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
@@ -458,7 +508,7 @@ func readTranscript(path string, maxMessages int32) (messages []*bossanovav1.Cha
 			Kind:      "text",
 		})
 	}
-	if scanErr := scanner.Err(); scanErr != nil {
+	if scanErr := classifyTranscriptScanErr(scanner.Err(), cleaned, line); scanErr != nil {
 		return nil, "", true, scanErr
 	}
 

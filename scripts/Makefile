@@ -129,6 +129,7 @@ lint:
 	@node check-skill-node-fences.mjs
 	@node check-dispatch-contract.mjs
 	@node check-dispatch-batching.mjs
+	@node check-await-mechanism.mjs
 	@node check-extension-dispatch-parity.mjs
 	@node check-docs-mcp-props.mjs
 	@node check-docs-tool-counts.mjs

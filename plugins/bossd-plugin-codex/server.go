@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -356,15 +358,59 @@ func codexInitialInput(req *bossanovav1.BuildInteractiveCommandRequest) string {
 	return req.GetInitialPrompt()
 }
 
-// Reasons a resolution miss reports back to the daemon. They are deliberately
-// distinct: reasonPaneRolloutFDNotOpenYet is a "not yet" that the daemon should
-// keep polling on, while reasonNoRolloutFound is a "nothing here" for the
-// time-window scan. Both must stay non-empty — an unexplained miss is what made
-// the BOS-1144 unbound chats invisible in the logs.
+// Reasons a resolution miss reports back to the daemon. They must all stay
+// non-empty — an unexplained miss is what made the BOS-1144 unbound chats
+// invisible in the logs — and they are pinned by tests, so a rename is a visible
+// signal in review rather than a silent contract change.
+//
+// The ladder that chooses between them is ordered by REMEDY, not by cheapness
+// (BOS-1298). "The fd is not open yet" is routinely true on a cold worktree and
+// is the only rung whose remedy is "wait", so it goes LAST: put it first and it
+// shadows every real fault behind it, which is exactly what happened for eleven
+// hours. Ahead of it sit the two that never resolve on their own —
+// reasonPaneProbeFailed (go and look at the probe host) and reasonNoRolloutFound
+// (wrong CODEX_HOME, or codex wrote its rollout somewhere else).
 const (
-	reasonPaneRolloutFDNotOpenYet = "codex process tree visible but no rollout fd open yet"
+	reasonPaneProbeFailed         = "codex process open-file probe failed; rollout fd unreadable"
 	reasonNoRolloutFound          = "no matching codex-tui rollout found"
+	reasonPaneRolloutFDNotOpenYet = "codex process tree visible but no rollout fd open yet"
 )
+
+// anyRolloutUnderSessionsRoot reports whether the codex sessions root holds at
+// least one rollout file. It separates two misses whose remedies differ
+// completely: rollouts present but none held open by this pane's tree is a
+// genuine "codex has not got there yet" (wait), while a root with no rollout at
+// all means the root itself is wrong — a CODEX_HOME mismatch, or a codex that
+// wrote elsewhere — which waiting never fixes.
+func anyRolloutUnderSessionsRoot() bool {
+	root, err := codexSessionsRoot()
+	if err != nil {
+		return false
+	}
+	return anyRolloutUnder(root)
+}
+
+// anyRolloutUnder is the testable core of anyRolloutUnderSessionsRoot. It stops
+// at the first hit, and an unreadable directory is skipped rather than aborting
+// the walk: this feeds a diagnostic rung, so it must never turn a readable
+// sibling into a wrong verdict.
+func anyRolloutUnder(root string) bool {
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil //nolint:nilerr // an unreadable shard must not abort the probe
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if _, ok := rolloutUUIDFromPath(path); ok {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
+}
 
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
 	var id, path, reason string
@@ -372,42 +418,79 @@ func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1
 	// Process-fd resolution is the authoritative path: bind this chat to the
 	// rollout its own codex process (under the given tmux pane) holds open. It
 	// is deterministic and race-free, so siblings in one worktree never collide.
-	// Only attempted for the live spawn path (not legacy backfill, which has no
-	// pane pid); a miss falls through to the time-window scan below unchanged.
+	// Gated on a live pane pid ALONE. It used to also require
+	// !AllowLegacyBackfill, which meant the three RECOVERY sites — wake,
+	// RecordChat resume, and the host-service lookup — could never reach it even
+	// once they knew which pane a chat owned, so a chat with a live codex
+	// process and a nil ProviderSessionID was unbindable by the one mechanism
+	// that could read its id (BOS-1298). AllowLegacyBackfill now selects the
+	// FALLBACK scan below, which is what the flag is actually for; a caller with
+	// no live pane still passes pane pid 0 and takes that path unchanged.
 	//
 	// NOTE: this relies on codex keeping the rollout fd open for the process
 	// lifetime (verified in the BOS-290 spike). If a future codex stops doing
 	// so, resolution silently regresses to the time-window fallback — no worse
 	// than before this change.
-	if !req.GetAllowLegacyBackfill() && req.GetPanePid() > 0 {
-		fdID, fdPath, ok, treeVisible := resolveInteractiveSessionIDByPID(s.inspector, req.WorkDir, int(req.GetPanePid()))
-		if ok {
+	if req.GetPanePid() > 0 {
+		fdID, fdPath, outcome := resolveInteractiveSessionIDByPID(s.inspector, req.WorkDir, int(req.GetPanePid()))
+		if outcome == fdOutcomeBound {
 			return &bossanovav1.ResolveInteractiveSessionIDResponse{
 				Found:          true,
 				SessionId:      fdID,
 				TranscriptPath: fdPath,
 			}, nil
 		}
-		// fd missed but the pane's process tree is visible: this chat's codex
-		// simply hasn't opened its rollout yet. Report not-found so the daemon
-		// keeps polling for THIS chat's OWN fd rather than accepting the racy
-		// time-window scan below, which — with its -2s window slack — could bind
-		// a sibling chat's already-written rollout in the same worktree
-		// (BOS-290). Only when the tree is NOT visible (fd inspection genuinely
-		// unavailable on this host) do we fall through to the time-window scan.
-		//
-		// Trade-off: on a host where `ps` works but open-file reads never do
-		// (e.g. Linux hidepid where /proc/<pid>/fd is denied), treeVisible stays
-		// true and this path never time-window-falls-back during the live
-		// session. That is acceptable because bossd spawns codex as the same
-		// user (same-user /proc/<pid>/fd is readable by default), and the
-		// wake-time legacy backfill (pane_pid 0) still uses the time-window scan,
-		// so an id is bound on first wake — the pre-fix result, merely deferred.
-		if treeVisible {
-			return &bossanovav1.ResolveInteractiveSessionIDResponse{
-				Found:  false,
-				Reason: reasonPaneRolloutFDNotOpenYet,
-			}, nil
+		// Everything from here down is a MISS, and which misses terminate here
+		// depends on WHO asked. A LAUNCH poll (AllowLegacyBackfill false) must
+		// never accept the racy time-window scan below — with its -2s window slack
+		// it could bind a sibling chat's already-written rollout in the same
+		// worktree (BOS-290) — so it reports the miss and gets polled again until
+		// its OWN fd appears. A RECOVERY caller (wake, RecordChat resume, the
+		// host-service lookup) gets no such second chance: its chat's codex may be
+		// long gone while tmux `remain-on-exit` still reports a live pane pid, and
+		// then every fd probe fails forever. It therefore falls THROUGH to the
+		// time-window scan on any non-binding outcome — which is precisely what
+		// AllowLegacyBackfill selects for (BOS-1298).
+		if !req.GetAllowLegacyBackfill() {
+			// Rung 1 — the probe itself could not run. No amount of waiting repairs
+			// it, so it is reported ahead of the routinely-true "not yet" below.
+			if outcome == fdOutcomeProbeFailed {
+				return &bossanovav1.ResolveInteractiveSessionIDResponse{
+					Found:  false,
+					Reason: reasonPaneProbeFailed,
+				}, nil
+			}
+			// Rung 2 — the tree was fully readable and holds no rollout, and there is
+			// no rollout under the sessions root at all. The root is wrong; waiting
+			// does not make one appear.
+			if outcome == fdOutcomeNoRolloutFDOpen && !anyRolloutUnderSessionsRoot() {
+				return &bossanovav1.ResolveInteractiveSessionIDResponse{
+					Found:  false,
+					Reason: reasonNoRolloutFound,
+				}, nil
+			}
+			// Trade-off: on a host where `ps` works but open-file reads never do
+			// (e.g. Linux hidepid where /proc/<pid>/fd is denied), the outcome is
+			// fdOutcomeProbeFailed — or fdOutcomeNoRolloutFDOpen, when the probe
+			// returns an empty list without erroring — and never
+			// fdOutcomeTreeNotVisible, because the tree WAS enumerable. So a launch
+			// poll on such a host keeps waiting for its own fd for the whole live
+			// session, which is the deliberate choice: binding a sibling's rollout
+			// is worse than binding late. A recovery caller does not wait — it fell
+			// through above and the time-window scan binds the id. The launch-side
+			// wait is in any case rare, because bossd spawns codex as the same user
+			// and same-user /proc/<pid>/fd is readable by default.
+			//
+			// Rung 3 — rollouts exist, this tree simply holds none of them open yet.
+			// The one rung whose remedy really is "wait", so it comes last. Only
+			// fdOutcomeTreeNotVisible (fd inspection genuinely unavailable here)
+			// escapes to the time-window scan on the launch path.
+			if outcome != fdOutcomeTreeNotVisible {
+				return &bossanovav1.ResolveInteractiveSessionIDResponse{
+					Found:  false,
+					Reason: reasonPaneRolloutFDNotOpenYet,
+				}, nil
+			}
 		}
 	}
 	if req.GetAllowLegacyBackfill() {
@@ -573,7 +656,7 @@ func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscri
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 	}
-	return readTranscriptAt(root, req.WorkDir, req.AgentSessionId, req.MaxMessages)
+	return readTranscriptAt(root, req.WorkDir, req.AgentSessionId, req.MaxMessages, s.logger)
 }
 
 // RotationCapability: codex injects its credential as a per-account home dir.

@@ -950,6 +950,11 @@ type chatMutationSpy struct {
 	// the orphan reap must not fire it. The embedded stubClient.ListChats panics,
 	// so before BOS-869 no fixture in this file could reach it at all.
 	listChatsCalls int
+	// lastDeleteReason records the reason the reap stated, so a test can assert
+	// the call site names its actual basis rather than defaulting to
+	// UNSPECIFIED — which would silently disable the daemon's cleanup gate
+	// (BOS-1299). Additive: the deletes counter above is unchanged.
+	lastDeleteReason pb.DeleteChatRequest_DeletionReason
 }
 
 func (s *chatMutationSpy) UpdateChatTitle(_ context.Context, _ string, title string) error {
@@ -958,8 +963,9 @@ func (s *chatMutationSpy) UpdateChatTitle(_ context.Context, _ string, title str
 	return nil
 }
 
-func (s *chatMutationSpy) DeleteChat(context.Context, string) error {
+func (s *chatMutationSpy) DeleteChat(_ context.Context, _ string, reason pb.DeleteChatRequest_DeletionReason) error {
 	s.deletes++
+	s.lastDeleteReason = reason
 	return nil
 }
 
@@ -1207,6 +1213,14 @@ func TestAttach_LocalStillReapsTheOrphan(t *testing.T) {
 	}
 	if client.deletes != 1 {
 		t.Fatalf("DeleteChat called %d time(s) locally, want 1 (unchanged orphan reap)", client.deletes)
+	}
+	// The reap must state its actual basis — "no local claude transcript was
+	// found" — and not the zero value. UNSPECIFIED reads at the daemon as "this
+	// caller predates the field" and skips the fail-closed recorded-agent gate
+	// entirely, so a reap that forgets the reason silently reopens the
+	// cross-provider deletion this whole mechanism exists to stop (BOS-1299).
+	if want := pb.DeleteChatRequest_DELETION_REASON_CLEANUP_LOCAL_CLAUDE_TRANSCRIPT_ABSENT; client.lastDeleteReason != want {
+		t.Fatalf("orphan reap stated reason %v, want %v", client.lastDeleteReason, want)
 	}
 }
 

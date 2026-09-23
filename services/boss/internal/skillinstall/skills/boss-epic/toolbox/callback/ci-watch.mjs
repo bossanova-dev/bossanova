@@ -72,6 +72,12 @@ export const CI_WATCH_REASONS = Object.freeze({
   ARM_FAILED: 'arm-failed-degraded-to-poll',
   UNREADABLE_POLLED: 'unreadable-check-state-polled',
   UNREADABLE: 'unreadable-check-state',
+  // The caller asked "is CI observed" without naming what has to be observed. Its own verdict,
+  // because the alternative is a universally-quantified predicate answered over an empty set: the
+  // `watched` arm tests `missingTriggers.length === 0`, which is trivially true when nothing is
+  // required, so "live watches cover the required triggers" held over nothing and the empty
+  // `liveTriggers` beside it was the proof no watch had ever been read.
+  NO_REQUIRED_TRIGGERS: 'no-required-triggers-supplied',
 })
 
 // The action the caller takes per verdict. Named so the skill prose can state one action per row and
@@ -242,6 +248,23 @@ export function classifyCiObservation(options = {}) {
     liveTriggers,
   })
 
+  // Answered nothing, so it says so. This arm sits ahead of every other — including the degrades —
+  // because a degrade is a statement about the observation MECHANISM, and with no required trigger
+  // there is no question for that mechanism to settle: `polled`/`proceed` over an empty required
+  // set is the same invented permission in a different costume.
+  //
+  // It stays NON-BLOCKING, and deliberately: `unwatched` is this module's entire blocking surface,
+  // and the header states at length why a blocking `unknown` hangs a headless run. The refusal
+  // lands on `mayStopObserving` and on the CLI's non-zero exit instead — both of which have the
+  // caller's own remedy immediately to hand, namely supplying the trigger list.
+  if (required.length === 0) {
+    return verdict(
+      CI_WATCH_STATES.UNKNOWN,
+      CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS,
+      CI_WATCH_ACTIONS.POLL,
+    )
+  }
+
   // Nothing left to watch: every required trigger's own condition already holds.
   if (required.length > 0 && missingTriggers.length === 0 && liveTriggers.length === 0) {
     return verdict(
@@ -299,8 +322,16 @@ export function classifyCiObservation(options = {}) {
   return verdict(CI_WATCH_STATES.UNWATCHED, CI_WATCH_REASONS.MISSING_WATCHES, CI_WATCH_ACTIONS.ARM)
 }
 
-/** May the caller stop looking at CI and print a terminal state? */
+/**
+ * May the caller stop looking at CI and print a terminal state?
+ *
+ * Keyed on the verdict's own `reason` before its `blocking` flag, in the same idiom the sibling
+ * `provesGreenReason` uses to name a remedy ahead of the generic state it is an instance of. The
+ * no-required-triggers verdict is non-blocking by design, so `blocking === false` alone would hand
+ * this predicate exactly the permission the verdict exists to withhold.
+ */
 export function mayStopObserving(verdict) {
+  if (verdict?.reason === CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS) return false
   return verdict?.blocking === false
 }
 
@@ -343,11 +374,63 @@ function readPayload(flags, name) {
   return JSON.parse(raw)
 }
 
+// Every flag `classify` reads, and nothing else. `parseFlags` accepts any `--name value` pair, and
+// `main` used to read only the keys it knew — so an unrecognised name landed in the bag, was never
+// looked at, and made a typo byte-indistinguishable from omitting the flag. For `--triggers` that
+// omission routed straight into the permissive verdict `classifyCiObservation` now refuses; naming
+// the offending flag on a non-zero exit is the only thing that tells the two apart.
+//
+// Kept as a literal list rather than derived from the reads below: a derived set would grow
+// silently with a new read, which is the same unchecked widening in the other direction.
+const CLASSIFY_FLAGS = Object.freeze([
+  'check-verdict',
+  'pr-view',
+  'callbacks-available',
+  'unavailable-reason',
+  'target-chat',
+  'pr',
+  'target-unverified',
+  'watches',
+  'triggers',
+  'now',
+  'min-remaining',
+  'poll-completed',
+  'arm-attempts',
+  'arm-error',
+])
+
+// Message form is `<module>: <verb>(<expected shape>) — <what was actually passed>`, matching the
+// sibling `pr-check-state.mjs` guards. The top-level catch already turns a raised error into a
+// non-zero exit with the message on stderr and no verdict on stdout.
+// The flags that carry no value. Everything else in `CLASSIFY_FLAGS` takes one, and `parseFlags`
+// renders a value-less flag as boolean `true` — which the reads below type-test away to an empty
+// default, making a LOST VALUE byte-indistinguishable from an omitted flag exactly as a misspelt
+// NAME once was. `--triggers --now <t>` is the case that matters: the trigger list silently empties.
+const CLASSIFY_BOOLEAN_FLAGS = Object.freeze([
+  'callbacks-available',
+  'target-unverified',
+  'poll-completed',
+])
+
+function assertKnownFlags(verb, flags, accepted, valueless = []) {
+  const shape = accepted.map((name) => `--${name}`).join(', ')
+  for (const [name, value] of Object.entries(flags)) {
+    if (!accepted.includes(name)) {
+      throw new Error(`ci-watch: ${verb}(${shape}) — unrecognised flag --${name}`)
+    }
+    if (value === true && !valueless.includes(name)) {
+      throw new Error(`ci-watch: ${verb}(${shape}) — --${name} needs a value`)
+    }
+  }
+  return shape
+}
+
 export function main(argv) {
   const [cmd, ...rest] = argv
   const flags = parseFlags(rest)
 
   if (cmd === 'classify') {
+    const shape = assertKnownFlags('classify', flags, CLASSIFY_FLAGS, CLASSIFY_BOOLEAN_FLAGS)
     const triggers =
       typeof flags.triggers === 'string'
         ? flags.triggers
@@ -355,6 +438,14 @@ export function main(argv) {
             .map((t) => t.trim())
             .filter(Boolean)
         : []
+    // The CLI refuses what `classifyCiObservation` merely reports. An in-process caller gets the
+    // non-blocking `no-required-triggers-supplied` verdict and its own `mayStopObserving` refusal;
+    // a shell caller has no predicate to consult and reads `$?`, so the exit code is its gate.
+    if (triggers.length === 0) {
+      throw new Error(
+        `ci-watch: classify(${shape}) — --triggers named no trigger; a verdict over no required triggers is not an answer`,
+      )
+    }
     return classifyCiObservation({
       checkVerdict: readPayload(flags, 'check-verdict'),
       prView: readPayload(flags, 'pr-view'),

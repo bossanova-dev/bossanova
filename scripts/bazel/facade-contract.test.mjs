@@ -27,9 +27,17 @@ function makeDryRun(args, extraEnv = {}) {
   // `make test-race` exports RACE=1 to this suite. Default-contract assertions
   // must stay default; recursive make also forwards it through MAKEFLAGS. The
   // race-specific test passes RACE=1 explicitly below.
+  //
+  // BOSS_GATE_FORCE_UNCACHED is scrubbed for the same reason and one more (BOS-1276): Makefile:91
+  // appends --nocache_test_results to BAZEL_TEST_FLAGS when it is 1, so an AMBIENT value silently
+  // rewrites the very command line the default-contract assertions pin. Until it was scrubbed, no
+  // criterion in this repo could demand a proven-uncached gate run, because exporting the variable
+  // to force one turned this suite red for a reason that had nothing to do with the facade. The
+  // forced-uncached test below passes it as a make ARGUMENT instead, which is unaffected.
   const cleanEnv = { ...process.env }
   delete cleanEnv.RACE
   delete cleanEnv.MAKEFLAGS
+  delete cleanEnv.BOSS_GATE_FORCE_UNCACHED
   return execFileSync('make', ['-n', `BAZEL=${fakeBazel}`, ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -133,4 +141,22 @@ test('optional-module guard: mcp-gateway present here yields its bazel line', ()
     out,
     /test --test_output=errors\s+(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/mcp-gateway\/\.\.\./,
   )
+})
+
+// The prerequisite itself, asserted rather than assumed: with the variable ambient, the
+// default-contract dry run must still be the DEFAULT contract. Without the scrub above this reads
+// `--nocache_test_results` in a run that asked for no such thing.
+test('an ambient forced-uncached variable does not leak into the default contract', () => {
+  const original = process.env.BOSS_GATE_FORCE_UNCACHED
+  process.env.BOSS_GATE_FORCE_UNCACHED = '1'
+  try {
+    const out = makeDryRun(['test-bossd'])
+    // The literal flag must appear only inside the shell-conditional expansion, never as a bare
+    // flag make itself appended.
+    const bare = out.replace(/\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}/g, '')
+    assert.doesNotMatch(bare, /--nocache_test_results/)
+  } finally {
+    if (original === undefined) delete process.env.BOSS_GATE_FORCE_UNCACHED
+    else process.env.BOSS_GATE_FORCE_UNCACHED = original
+  }
 })

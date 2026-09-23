@@ -225,11 +225,111 @@ export function browserSurfaceNames(registry) {
     .map((d) => d.name)
 }
 
+// ── Visibility tiers (BOS-1285) ──────────────────────────────────────────────
+//
+// The two surface classifiers below used to hand `matchesAnyPrefix` the RAW
+// changed-file list, so ANY path under a surface prefix raised that surface —
+// including files that compile but can never render. A changed file should
+// raise a proof surface only when a reviewer could SEE its effect there, which
+// splits the set into three tiers:
+//
+//   A. never demonstrable — a Go `_test.go` file. It compiles, it never
+//      renders. Dropped from the set the classifier sees.
+//   B. accompanying-only — a contract (`proto/`) or generated-client
+//      (`services/boss/internal/client/`, `services/web/src/gen/`) edit has no
+//      independent appearance. It raises a surface only when a RENDERING file
+//      for that same surface also changed.
+//   C. rendering — everything else under that surface's prefixes.
+//
+// The remedy is deliberately a FILTER in front of the prefix lists, never a
+// deletion from them: `TUI_SURFACE_PREFIXES` / `WEB_UI_SURFACE_PREFIXES` stay
+// the readable answer to "what IS this surface", and a mixed diff that touches
+// both a `.proto` and a view still proves the view.
+
 /**
- * Pure path classifier: true when ANY changed file lives under a TUI prefix.
- * Independent of the recipe catalog, so a boss-only diff routes to the agentic
- * TUI proof path even though the catalog no longer holds any TUI recipes.
- * (Moved from proof-lib, BOS-201.)
+ * Tier A — a Go test file. Anchored at a path segment boundary so
+ * `views/home_test.go` matches while a hand-written `views/pretest_go.go` or a
+ * directory named `_test.go/` does not.
+ * @type {RegExp}
+ */
+export const NEVER_RENDERING_FILE_RE = /(?:^|\/)[^/]*_test\.go$/
+
+/**
+ * Tier B — path prefixes whose files accompany a visible change rather than
+ * being one. `proto/` and `services/boss/internal/client/` are TUI prefixes
+ * (a contract or client edit can alter what a view renders or receives);
+ * `services/web/src/gen/` is the buf `protoc-gen-es` output under a web prefix
+ * (`buf.gen.yaml`). Each stays in its surface's prefix list; this tier only
+ * stops it raising the surface ON ITS OWN.
+ * @type {readonly string[]}
+ */
+export const ACCOMPANYING_ONLY_PREFIXES = [
+  'proto/',
+  'services/boss/internal/client/',
+  'services/web/src/gen/',
+]
+
+/**
+ * Tier A membership for a single path. Pure; normalizes `./` and backslashes
+ * the same way every other predicate in this file does.
+ * @param {string|null|undefined} file
+ * @returns {boolean}
+ */
+export function neverRenderingPath(file) {
+  const [normalized] = normalizeChangedFiles([file])
+  return normalized !== undefined && NEVER_RENDERING_FILE_RE.test(normalized)
+}
+
+/**
+ * Tier B membership for a single path. Pure.
+ * @param {string|null|undefined} file
+ * @returns {boolean}
+ */
+export function accompanyingOnlyPath(file) {
+  return matchesAnyPrefix([file], ACCOMPANYING_ONLY_PREFIXES)
+}
+
+/**
+ * The tier-C (rendering) subset of `changedFiles` for one surface: every
+ * changed file under `surfacePrefixes` that is neither tier A nor tier B.
+ * Array in, array out; no fs/env/Date.
+ * @param {string[]|null|undefined} changedFiles
+ * @param {readonly string[]} surfacePrefixes
+ * @returns {string[]}
+ */
+export function renderingFilesForSurface(changedFiles, surfacePrefixes) {
+  return normalizeChangedFiles(changedFiles ?? []).filter(
+    (file) =>
+      !neverRenderingPath(file) &&
+      !accompanyingOnlyPath(file) &&
+      matchesAnyPrefix([file], surfacePrefixes),
+  )
+}
+
+/**
+ * True when the diff holds at least one rendering file for `surfacePrefixes`.
+ * This is the single replacement for the bare `matchesAnyPrefix(changedFiles,
+ * …)` the two classifiers below used to call. Array in, boolean out, pure —
+ * same shape as `proofHarnessOnlyDiff` / `committedScenarioPresent`.
+ * @param {string[]|null|undefined} changedFiles
+ * @param {readonly string[]} surfacePrefixes
+ * @returns {boolean}
+ */
+export function renderingFilePresent(changedFiles, surfacePrefixes) {
+  return renderingFilesForSurface(changedFiles, surfacePrefixes).length > 0
+}
+
+/**
+ * Pure path classifier: true when a RENDERING changed file lives under a TUI
+ * prefix. Independent of the recipe catalog, so a boss-only diff routes to the
+ * agentic TUI proof path even though the catalog no longer holds any TUI
+ * recipes. (Moved from proof-lib, BOS-201.)
+ *
+ * BOS-1285: "rendering" is the tier-C filter above, not a bare prefix match — a
+ * diff whose only TUI-prefixed files are `_test.go` compile fallout, `proto/`
+ * contracts, or `services/boss/internal/client/` transport does NOT raise the
+ * surface, because there is nothing a reviewer could watch. Pair any of those
+ * with a file under `services/boss/internal/views/` and the surface is back.
  *
  * Note: a mixed diff that touches BOTH a TUI prefix and a web/marketing/docs
  * surface classifies as TUI (any-match wins). This differs from the old
@@ -240,12 +340,13 @@ export function browserSurfaceNames(registry) {
  * @returns {boolean}
  */
 export function classifyTuiSurface(changedFiles) {
-  return matchesAnyPrefix(changedFiles, TUI_SURFACE_PREFIXES)
+  return renderingFilePresent(changedFiles, TUI_SURFACE_PREFIXES)
 }
 
 /**
- * Pure path pre-gate: true when ANY changed file lives under a web UI surface
- * prefix. Used to skip the (expensive, ~12-minute) web agent run entirely for a
+ * Pure path pre-gate: true when a RENDERING changed file lives under a web UI
+ * surface prefix (BOS-1285: buf's generated `services/web/src/gen/` output is
+ * tier B and never raises the surface alone). Used to skip the (expensive, ~12-minute) web agent run entirely for a
  * change with no demonstrable web surface (e.g. a scripts-only or backend-only
  * PR), so it posts an honest "no UI surface" note instead of running the agent,
  * having it decline, and posting useless filler. Biased slightly broad: a
@@ -256,7 +357,7 @@ export function classifyTuiSurface(changedFiles) {
  * @returns {boolean}
  */
 export function webUiSurfacePresent(changedFiles) {
-  return matchesAnyPrefix(changedFiles, WEB_UI_SURFACE_PREFIXES)
+  return renderingFilePresent(changedFiles, WEB_UI_SURFACE_PREFIXES)
 }
 
 /**
@@ -335,6 +436,65 @@ export function proofHarnessOnlyDiff(changedFiles) {
     if (!PLAN_DOC_RE.test(f)) return false
   }
   return sawHarnessFile
+}
+
+/**
+ * BOS-1285: path prefixes that hold no product source at all — documentation,
+ * the proof/build harness, the agent-skill payload. A change confined to them
+ * cannot alter what ANY surface renders, directly or behaviourally.
+ * @type {readonly string[]}
+ */
+export const NON_PRODUCT_PREFIXES = ['docs/', 'scripts/', 'skills-toolbox/', '.claude/', '.codex/']
+
+/**
+ * BOS-1285: the tier-B prefixes whose contents are MACHINE-GENERATED, and so
+ * carry no hand-authored behaviour of their own.
+ *
+ * Deliberately NOT `ACCOMPANYING_ONLY_PREFIXES`. Tier B answers the narrow
+ * question "does this raise a surface ON ITS OWN" — for which a hand-written
+ * RPC client belongs — while `productSourcePresent` below asks the much
+ * stronger "could this change what a user experiences at all". Reusing tier B
+ * for both conflated the two and silently neutralised the R6 escape hatch:
+ * `services/boss/internal/client/` is hand-written Go compiled into the boss
+ * binary (client.go, local.go, remote.go; no `Code generated` marker), so a
+ * client-only change that alters what a view receives read as "no product
+ * source", and the `## Required proof` bullet forcing the TUI surface for it
+ * was discarded as `forced-no-surface`. `proto/` and `services/web/src/gen/`
+ * ARE generated, so they stay non-product here.
+ * @type {readonly string[]}
+ */
+export const GENERATED_ARTIFACT_PREFIXES = ['proto/', 'services/web/src/gen/']
+
+/** Markdown/MDX anywhere in the tree is prose, never product source. */
+export const PROSE_FILE_RE = /\.(?:md|mdx)$/
+
+/**
+ * BOS-1285: pure predicate — true when the diff holds at least one file that
+ * could change what a user experiences, directly or behaviourally.
+ *
+ * This is the guard that keeps the `forcedSurfaces` escape hatch alive. A
+ * behaviour-only change (say a bossd handler that alters what the web app
+ * renders) classifies to no surface by path, and a plan's `## Required proof`
+ * bullet is the documented way to force one back (the D16 mitigation on
+ * `classifySurfaces`). That force must keep working, so the
+ * forced-but-undemonstrable deferral in proof.mjs fires ONLY when the diff is
+ * entirely non-product: prose, harness scripts, the skills payload, tier-A test
+ * files and the GENERATED artifacts in `GENERATED_ARTIFACT_PREFIXES`. Anything
+ * else — a Go handler, a hand-written RPC client, a `.tsx`, a migration — is
+ * product source and keeps its forced surface.
+ *
+ * Array in, boolean out; no fs/env/Date.
+ * @param {string[]|null|undefined} changedFiles
+ * @returns {boolean}
+ */
+export function productSourcePresent(changedFiles) {
+  return normalizeChangedFiles(changedFiles ?? []).some(
+    (file) =>
+      !neverRenderingPath(file) &&
+      !matchesAnyPrefix([file], GENERATED_ARTIFACT_PREFIXES) &&
+      !PROSE_FILE_RE.test(file) &&
+      !matchesAnyPrefix([file], NON_PRODUCT_PREFIXES),
+  )
 }
 
 /**

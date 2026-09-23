@@ -534,7 +534,37 @@ func (c *RemoteClient) UpdateChatTitle(ctx context.Context, agentSessionID, titl
 // DeleteChat proxies a chat delete through the orchestrator, which resolves the
 // owning daemon by agent_session_id (scoped to the caller's daemons) since the
 // delete_chat tool carries no session_id.
-func (c *RemoteClient) DeleteChat(ctx context.Context, agentSessionID string) error {
+//
+// reason is accepted but NOT forwarded, and deliberately so.
+// ProxyDeleteChatRequest is on bosso's versioned OrchestratorService surface, so
+// widening it would owe a dated API version bump plus a down-convert transform;
+// DeleteChatRequest.reason is a daemon-only field. The reverse-stream path only
+// ever means "a user asked", so bossd's CommandHandlerAdapter stamps
+// DELETION_REASON_USER_REQUESTED at that boundary rather than letting an
+// UNSPECIFIED default cross the converter.
+//
+// The consequence worth knowing: a cleanup reap that reached this method would
+// arrive at the daemon as USER_REQUESTED and therefore ungated. What keeps that
+// unreachable today is NOT the TUI's recordedAgent guard, which is weaker than
+// it looks: displayAgentName() (views/attach.go) falls back to the SESSION's
+// agent_name when the per-chat recordedAgent is "", so a sibling chat of
+// another provider inside a claude-owned session reads as claude and passes it.
+// What actually closes the path is that the sole caller that can set the
+// cleanup reason -- the orphan reap in views/attach.go -- never runs over this
+// client: it returns early under isRemoteHost() on the --host tunnel, and the
+// --remote orchestrator transport cannot reach it at all because
+// RemoteClient.RecordChat is errLocalOnly, so the attach flow that would emit
+// the reap never gets past recording the chat.
+//
+// That makes the exposure LATENT rather than live, and it is latent on a
+// coincidence: the day any cleanup-reason caller becomes reachable over the
+// orchestrator, the reason is silently dropped here and the daemon gate does
+// not fire. The properly-scoped fix is to widen ProxyDeleteChatRequest so the
+// reason survives the wire, which owes a dated apiversion bump and a
+// down-convert transform; until then, do not add a cleanup-reason caller on a
+// remote-capable path without carrying that work. The daemon gate covers local
+// callers only.
+func (c *RemoteClient) DeleteChat(ctx context.Context, agentSessionID string, _ pb.DeleteChatRequest_DeletionReason) error {
 	_, err := c.rpc.ProxyDeleteChat(ctx, connect.NewRequest(&pb.ProxyDeleteChatRequest{
 		AgentSessionId: agentSessionID,
 	}))

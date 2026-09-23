@@ -155,6 +155,73 @@ export function configHashOf(repoRoot, workspaceFile = path.join(repoRoot, 'go.w
   return hash.digest('hex')
 }
 
+// --- The stamp's replayable summary (BOS-1276) --------------------------------------------------
+//
+// A cached lint used to print `==> Linting <mod> (cached)` with no issue count, which reads exactly
+// the same as a module that was never linted at all. The stamp records what golangci reported and
+// the cached branch replays it, so the banner distinguishes "linted clean at <ts>" from "never
+// linted".
+//
+// Today that recorded count is ALWAYS zero, and the comment used to imply otherwise. A stamp is
+// written only after the `status !== 0` early return, and .golangci.yml sets no
+// `issues-exit-code` override, so golangci's default exit-1-on-any-finding means the captured
+// output on the stamping path carries no finding line. summarizeLintFindings and the parsing below
+// are exercised against synthetic input by the tests; they are kept because they make the stored
+// value self-describing rather than a bare "clean" flag, not because a non-zero count is reachable
+// under the current lint configuration.
+//
+// Findings are counted from golangci's default line format, `path.go:LINE:COL: message (linter)`,
+// anchored at line start so a message that happens to contain the shape is not counted twice.
+const GOLANGCI_FINDING_LINE = /^\S+\.go:\d+:\d+:\s/
+
+export function summarizeLintFindings(output) {
+  const count = String(output ?? '')
+    .split('\n')
+    .filter((line) => GOLANGCI_FINDING_LINE.test(line)).length
+  return `${count} ${count === 1 ? 'issue' : 'issues'}`
+}
+
+// Line 1 stays the ISO timestamp the previous format wrote, so an older reader is unaffected and
+// the TTL sweep (which uses mtime, not content) is untouched. The summary is an additional line.
+export function renderLintStamp({ summary, at = new Date().toISOString() } = {}) {
+  return summary ? `${at}\nsummary=${summary}\n` : `${at}\n`
+}
+
+// Tolerant by construction: a stamp written by an older build carries only the timestamp, and every
+// unparseable shape yields `{ at: null, summary: null }` rather than throwing. This file is a
+// machine-wide, cross-worktree on-disk format; a reader that throws on an old stamp would break
+// linting on every checkout that shares the stamp dir.
+export function readLintStamp(text) {
+  const lines = String(text ?? '').split('\n')
+  let at = null
+  let summary = null
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (trimmed.startsWith('summary=')) {
+      const value = trimmed.slice('summary='.length).trim()
+      if (value) summary = value
+      continue
+    }
+    if (at === null && !Number.isNaN(Date.parse(trimmed))) at = trimmed
+  }
+  return { at, summary }
+}
+
+// What the cached branch prints. With no stored summary it degrades to the banner this repo has
+// always printed — never an invented count, and never a throw.
+export function cachedLintBanner({ module: moduleDir, stampText }) {
+  let stamp = { at: null, summary: null }
+  try {
+    stamp = readLintStamp(stampText)
+  } catch {
+    // An unreadable stamp is a cache detail, not a lint result: fall through to the bare banner.
+  }
+  if (!stamp.summary) return `==> Linting ${moduleDir} (cached)`
+  const when = stamp.at ? `, linted ${stamp.at}` : ''
+  return `==> Linting ${moduleDir} (cached: ${stamp.summary}${when})`
+}
+
 // The cache-skip decision for one module: reuse the stamp only when stamps are
 // enabled (dir usable), the run isn't forced, and a stamp for this key exists.
 // Fail-open by construction — !stampsEnabled, force, or a missing stamp all route
@@ -230,12 +297,14 @@ export function runGolangci({ cwd, attempts = 3, backoffMs = 500 }) {
     throw new RangeError(`runGolangci: attempts must be a positive integer, got ${attempts}`)
   }
   let result
+  let output = ''
   for (let attempt = 1; attempt <= attempts; attempt++) {
     result = spawnSync('golangci-lint', ['run', './...'], {
       cwd,
       encoding: 'utf8',
       maxBuffer: GOLANGCI_MAX_BUFFER,
     })
+    output = `${result.stdout ?? ''}${result.stderr ?? ''}`
     // Echo before the throw: on a spawn error that still produced output (an
     // ENOBUFS overflow truncates rather than discards), the partial findings
     // are more useful to the reader than the bare error.
@@ -243,17 +312,17 @@ export function runGolangci({ cwd, attempts = 3, backoffMs = 500 }) {
     if (result.stderr) process.stderr.write(result.stderr)
     if (result.error) throw result.error
 
-    if (result.status === 0) return { status: 0, attempts: attempt }
+    if (result.status === 0) return { status: 0, attempts: attempt, output }
 
     const isContention = `${result.stdout ?? ''}${result.stderr ?? ''}`.includes(
       LOCK_CONTENTION_SIGNATURE,
     )
-    if (!isContention) return { status: result.status ?? 1, attempts: attempt }
+    if (!isContention) return { status: result.status ?? 1, attempts: attempt, output }
 
     if (attempt < attempts) sleepSync(backoffMs)
   }
   process.stderr.write(`${lockContentionExhaustedMessage(attempts)}\n`)
-  return { status: result.status ?? 1, attempts, contentionExhausted: true }
+  return { status: result.status ?? 1, attempts, output, contentionExhausted: true }
 }
 
 function parseArgs(argv) {
@@ -304,12 +373,19 @@ function main() {
     const stampPath = path.join(stampDir, key)
 
     if (isModuleCached({ stampsEnabled, force, stampPath })) {
-      console.log(`==> Linting ${mod} (cached)`)
+      let stampText = ''
+      try {
+        stampText = fs.readFileSync(stampPath, 'utf8')
+      } catch {
+        // Racing GC or an unreadable stamp: the skip decision already stands, so print the
+        // summary-less banner rather than turning a cache detail into a lint failure.
+      }
+      console.log(cachedLintBanner({ module: mod, stampText }))
       continue
     }
 
     console.log(`==> Linting ${mod}`)
-    const { status } = runGolangci({ cwd: path.join(repoRoot, mod) })
+    const { status, output } = runGolangci({ cwd: path.join(repoRoot, mod) })
     // Set exitCode and RETURN rather than process.exit(): on POSIX, Node's
     // stdout/stderr are asynchronous when they are pipes, and process.exit()
     // does not flush pending writes. Since runGolangci captures golangci's
@@ -326,7 +402,7 @@ function main() {
 
     if (stampsEnabled) {
       try {
-        fs.writeFileSync(stampPath, `${new Date().toISOString()}\n`)
+        fs.writeFileSync(stampPath, renderLintStamp({ summary: summarizeLintFindings(output) }))
       } catch {
         // Non-fatal: linting still succeeded; we just don't cache it.
       }

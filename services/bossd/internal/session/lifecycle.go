@@ -1630,6 +1630,13 @@ func (l *Lifecycle) effectiveSpawnTarget(ctx context.Context, sess *models.Sessi
 	}
 	if chat.Model != "" {
 		eff.Model = chat.Model
+	} else {
+		// A chat that bound no model of its own must not INHERIT the session's
+		// across an agent boundary: model ids are provider-scoped, so a codex
+		// chat under a claude session would otherwise carry a claude model id
+		// into its own runner (BOS-1281). Reads eff.AgentName, already resolved
+		// above, exactly as the effort line below does.
+		eff.Model = EffectiveModelForAgent(sess.AgentName, sess.Model, eff.AgentName)
 	}
 	eff.EffectiveEffort = EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, eff.AgentName)
 	if chat.AccountID != nil {

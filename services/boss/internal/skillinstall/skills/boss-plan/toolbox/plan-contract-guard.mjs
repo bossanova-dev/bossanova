@@ -43,6 +43,7 @@ import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
 import {
   classifyCheckCommand,
   DEFAULT_CONFIG,
+  hasCountAssertion,
   loadSkillConfig,
   markdownH2Heading,
   parseAcceptanceCriteria,
@@ -172,6 +173,7 @@ export const VIOLATION_CODES = [
   'subject-areas-unresolved',
   'unanchored-premise-citation',
   'unknown-section',
+  'unmeasured-count-claim',
   'unresolvable-citation',
 ]
 
@@ -840,6 +842,108 @@ export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
   return { violations, advisories }
 }
 
+// Words that end in `s` but are not the countable noun of a quantity claim. Without this, a bare
+// `\d+ \w+s` rule reads "the 3 checks pass" and "line 1939 is stale" as the same shape. Kept SMALL
+// and verb-shaped on purpose: the discriminator that does the real work is adjacency plus the
+// code-span strip, not an open-ended dictionary nobody can keep current.
+const NOT_A_COUNTED_NOUN = new Set([
+  'across',
+  'always',
+  'as',
+  'does',
+  'exists',
+  'gives',
+  'goes',
+  'has',
+  'is',
+  'its',
+  'less',
+  'makes',
+  'means',
+  'plus',
+  'remains',
+  'returns',
+  'says',
+  'stays',
+  'this',
+  'thus',
+  'versus',
+  'was',
+  'yes',
+])
+
+/**
+ * The narrowest reading of "this claim asserts a number somebody must have measured": a bare
+ * cardinal IMMEDIATELY followed by a plural noun — `6 entries`, `170 bytes`, `11 incidents`.
+ *
+ * Three deliberate narrowings keep the false-positive surface small, which is the whole risk this
+ * check carries:
+ *
+ *   1. Inline code spans are stripped first. A number inside backticks is a coordinate, a version,
+ *      an identifier or a literal (`skill-config.mjs:2374`, `Contract: v1`, a ticket id) — never a
+ *      prose count. This single strip removes most of the surface.
+ *   2. The cardinal must not be preceded by a character that makes it part of a token: `:` (a line
+ *      locator), `-` (an identifier suffix), `.` (a version or decimal), `#` (an issue number),
+ *      `v` (a version), or a word character.
+ *   3. Adjacency is required — one run of spaces, no intervening adjective — and the noun must be
+ *      plural and not one of the verb-shaped words above. A cardinal introduced by a structural
+ *      noun (`Step 4 decides`, `finding 8 needs`, `Phase 3 documents`) is excluded outright: that
+ *      is a locator followed by a verb, and it was the largest single false-positive class the
+ *      first falsification pass over an archive of past plan bodies raised, which is why this
+ *      lookbehind exists. No figure is quoted here because nothing re-measures one.
+ *
+ * Spelled-out numbers ("three entries") are deliberately NOT matched. A word-number detector has a
+ * far larger false-positive surface and no way to tell "three entries" from "three of them"; the
+ * drafting rule covers that half in prose.
+ */
+export function assertedNumericQuantity(claim) {
+  const prose = String(claim ?? '').replace(/`[^`]*`/g, ' ')
+  for (const match of prose.matchAll(
+    /(?<!\b(?:step|phase|stage|tier|round|finding|item|note|section|part|rule|figure|table|version|level|option|column|line)\s)(?<![\w:.#v-])(\d+)\s+([a-z][a-z-]*s)\b/gi,
+  )) {
+    if (!NOT_A_COUNTED_NOUN.has(match[2].toLowerCase())) return `${match[1]} ${match[2]}`
+  }
+  return null
+}
+
+/** The claim half of a parsed item — everything before its ` — check: ` clause. */
+function claimText(item) {
+  if (typeof item?.claim === 'string') return item.claim
+  return String(item?.text ?? '').split(/\s+—\s+check(?:ed)?:/)[0]
+}
+
+/**
+ * A number the plan states that nothing re-measures.
+ *
+ * Plan prose is read downstream as fact: a regression test written from a plan encodes the count the
+ * plan stated, so a count nobody measured ships as a durably wrong artifact. A quantity claim must
+ * therefore name a check command that RE-MEASURES it, and "re-measures" is `hasCountAssertion` from
+ * `skill-config.mjs` — the tree's existing definition, imported rather than restated, so the two
+ * cannot drift.
+ *
+ * A claim with no check command at all is NOT reported here: that is `checkPlanCitations`' subject,
+ * and one defect must not trip two codes.
+ */
+export function checkUnmeasuredCountClaim(config, description) {
+  const violations = []
+  const inspect = (kind, item) => {
+    if (!item.check) return
+    const quantity = assertedNumericQuantity(claimText(item))
+    if (!quantity) return
+    if (hasCountAssertion(item.check)) return
+    violations.push(
+      violation(
+        'unmeasured-count-claim',
+        `${kind} "${claimText(item)}" asserts "${quantity}", but its check command re-measures nothing — record a command that counts (grep -c, rg -c, wc -l, grep -q, rg -q, an explicit count or assertion), or drop the number`,
+      ),
+    )
+  }
+  for (const criterion of parseAcceptanceCriteria(config, description))
+    inspect('criterion', criterion)
+  for (const premise of parsePremises(config, description)) inspect('premise', premise)
+  return violations
+}
+
 export function checkPremiseReusedAsCriterion(config, description) {
   const premiseChecks = new Set(
     parsePremises(config, description)
@@ -994,6 +1098,7 @@ export function checkPlanContract({
   const commandVacuity = checkVerifyOnlyCommandVacuity(config, description, { cwd: citationCwd })
   violations.push(...commandVacuity.violations)
   violations.push(...checkPremiseReusedAsCriterion(config, description))
+  violations.push(...checkUnmeasuredCountClaim(config, description))
   if (!unterminated) {
     violations.push(...checkSubjectAreas(config, description, { mode, moduleRoots }))
   }

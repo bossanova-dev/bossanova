@@ -46,8 +46,12 @@ git rebase "origin/$BASE_BRANCH"
 A `git merge` of the base ref — and any `git pull` that records a merge — is **FORBIDDEN**. On a repo
 whose merge strategy is rebase, a merge commit on the PR branch structurally breaks GitHub's
 rebase-merge: GitHub refuses the merge no matter how green the checks are, and every later repair
-round that merges again re-poisons the branch, deadlocking the PR. When a pull is unavoidable, use
-`git pull --rebase`.
+round that merges again re-poisons the branch, deadlocking the PR. Refresh the base with
+`git fetch origin <base>` followed by `git rebase --no-fork-point FETCH_HEAD` — never with a pull of
+any form. A pull computes its own fork point from the stale `origin/<branch>` reflog, concludes this
+run's commits are already upstream, and drops them; the push afterwards honestly reports success for
+a branch the work is no longer on. Setting `rebase.forkPoint=false` is not the same fix and does not
+help: the pull computes the fork point itself, so the config never reaches the rebase it runs.
 
 **Preflight — before any push that follows a base sync, assert zero merge commits:**
 
@@ -117,12 +121,7 @@ if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
       *--gate*) node "$BOSS_REPAIR_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_REPAIR_TOOLBOX" || true ;;
       *)
         printf '%s\n' "$O" >&2
-        R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
-        if [ -n "$R" ]; then
-          echo "warning: installed boss skills drift from checkout source; run: $R — bookkeeping only, work state unaffected" >&2
-        else
-          echo "warning: installed boss skills drift from checkout source; see gate output above — bookkeeping only, work state unaffected" >&2
-        fi
+        printf '%s\n' "$O" | node "$BOSS_REPAIR_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1
         ;;
     esac
   fi
@@ -133,10 +132,12 @@ else
 fi
 ```
 
-Drift is **bookkeeping**: both the CLI gate and the no-CLI helper path report it and neither is
-terminal, because a drifted-but-present tree still repairs correctly and the helper can only compare
-helper files and may itself be stale. A drift report never decides a terminal state; only the repair
-work does.
+Stale content is **bookkeeping**: a drifted-but-present tree still repairs correctly, so
+`skill-drift-verdict.mjs` warns and the run continues. An `absent`, `mode` or `broken-symlink` row
+is an absent capability — a later step invoking that file by path fails there, not here — so it
+stops instead, as does a gate that reported nothing classifiable. The no-CLI helper path stays
+warning-only: it compares helper files alone and may itself be stale. A recording-side drift report
+never decides a terminal state; only the repair work does.
 
 ---
 
@@ -418,7 +419,18 @@ summary line** as printed — the test runner's own summary line, the linter's o
 the runner's closest equivalent. For a multi-command gate, the aggregate command's completed exit
 status or status file is the authority; an absent status file is unknown rather than a pass; an early subcommand's passing summary is not. A gate figure
 that is not backed by both the completion evidence and quoted line is **unverified** and must be
-reported as unverified rather than as a result. The reason is mechanical: a restated number and a
+reported as unverified rather than as a result.
+
+**That status must not be read through a pipe.** A pipeline reports its TAIL's status, not the
+gate's, unless `pipefail` is set — so `gh run view … | tail -40` and `boss skills check --gate |
+tail -20` hand back `tail`'s unconditional 0 whatever the gate did, and a measured run took a real
+FAIL as a PASS that way. Filtering the OUTPUT is fine and is what the guidelines below recommend it
+for; taking the VERDICT from the filtered command is not. Get the status unpiped: run the gate on
+its own line and capture `RC=$?` in its own statement before anything else touches `$?`, or put
+`set -o pipefail` ahead of the pipeline (zsh and bash both accept it), or read the head's status as
+`$pipestatus[1]` — the zsh spelling, and zsh is what the Bash tool evaluates, where the bash
+`${PIPESTATUS[0]}` is unset and so guards nothing. A verdict whose only evidence came out of a pipe
+is **unverified**, exactly like a restated figure. The reason is mechanical: a restated number and a
 fabricated number have the same shape, so quoting the line byte-for-byte and tying it to the
 completed runner is the cheap check that separates a measurement from a guess. Carry those quoted
 lines and the completion evidence into the [Repair Summary](#repair-summary)'s `**Gate results**`
@@ -746,7 +758,7 @@ newer commit.** Report it as a **residual** naming both SHAs, and do not claim t
    done
    git rebase "origin/$BASE_BRANCH"          # flattens; the amendments are now saved off-branch
    git apply "/tmp/amend-<sha>.patch"        # re-apply each captured amendment, oldest first
-   git add -A && git commit -m "fix: re-apply conflict resolution from flattened merge"
+   git add -A && git commit -m "fix(rebase): re-apply conflict resolution from flattened merge"
    ```
 
    Confirm each `/tmp/amend-<sha>.patch` exists before trusting the rebase: the capture loop runs in
@@ -880,7 +892,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    - Commit if changes were made:
      ```bash
      git add .
-     git commit -m "style: apply formatting fixes"
+     git commit -m "style(format): apply formatting fixes"
      git push
      ```
 
@@ -1174,25 +1186,29 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      credentials or home paths, and deny writes outside the sandbox root. Network access is disabled,
      including loopback, link-local, and metadata endpoints. If filesystem or network confinement is
      unavailable, reject the probe; never execute the copied command on the host.
-   - If a fix adds or changes a guard, gate, or assertion, prove it non-vacuous with this ordered
-     checklist before committing the review-feedback result:
-     1. **Name the property** the gate claims to forbid, including the unbounded direction for a
-        one-sided bound.
-     2. **Mutate the production feed, never the assertion**, using the zero-write scratch copy.
-     3. **Prove the mutation landed** before reading the result; a no-op mutation proves nothing.
-     4. **Require red for the right reason** and require the failure to name the property. A compile
-        or harness error is not evidence that the gate detected the mutation.
-     5. **Restore exactly, then prove the restore** and re-run the gate green.
-   - **A fix that tightens a guard states what the guard now rejects, and covers that.** The
-     checklist above proves a guard still catches what it should; a tightening carries the opposite
-     risk, and it is the side nobody tests. When a fix narrows a guard, gate, or predicate, write
-     down the inputs the narrowed form newly **rejects**, confirm each one deserves rejection, and
-     add coverage for the boundary that moved — not only for the case that still passes. A round
-     that tests a tightening solely on what it still admits ships the over-rejection undetected: an
-     arm added to reject a non-positive value also rejected the zero-padded positive values the
-     surrounding helper accepts, the round that wrote it saw green, and the next review round paid
-     for the regression. Loosening and tightening are not the same review, so do not reuse one
-     argument for both.
+   - If a fix adds or changes a guard, gate, or assertion, prove it non-vacuous before committing
+     the review-feedback result. **Classify the fix's shape first**: the mutant set a proof owes is
+     a function of that shape, and one mutation discharges only a `replacement` — every other shape
+     owes more, including mutants whose required verdict is **green**. Take the obliged set from the
+     enumeration rather than from memory and run every mutant it names: **Mutate the production
+     feed, never the assertion**, using the zero-write scratch copy, prove each mutation landed,
+     require each red to name the property, restore exactly, then adjudicate the recorded
+     `{shape, mutants, skips}`:
+
+     ```bash
+     BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+     if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+     node "$BOSS_REPAIR_TOOLBOX/bs-mutation-obligations.mjs" shapes
+     node "$BOSS_REPAIR_TOOLBOX/bs-mutation-obligations.mjs" adjudicate --record <record.json>
+     ```
+
+     `satisfied` (exit 0) is the only verdict that clears the commit; `insufficient` (exit 1) names
+     every missing mutant and every observed verdict that contradicts its obligation, and the guard
+     stays unproven until those are run. Exit 2 is an operator error, never a verdict. Writing the
+     test first and showing it red for a named reason is an equal discharge to the scratch-copy
+     probe. Stage nothing while an in-place proof is in flight: a concurrent `git add` captures the
+     neutered file.
+
    - **When the diff touches markdown, read the rendered hunk before you commit** — including a
      hunk a dispatched worker handed back, because delegating the edit does not delegate this.
      Prettier's default `proseWrap: preserve` does not reflow prose, so a hand-split or inserted
@@ -1936,8 +1952,11 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    the unarmed-exit shape this catches — decide whether anything will still be watching this PR with
    `$BOSS_REPAIR_TOOLBOX/callback/ci-watch.mjs classify`. Trust its `state`/`action` and restate no
    rule here: `settled` / `watched` / `polled` exit; `unwatched` is **the only blocking state** — arm
-   the `missingTriggers` it names, classify once more, then exit; `unknown` runs the bounded poll
-   first. Arm at most once per exit: the daemon rejects a co-satisfiable re-arm in the same group, so
+   the `missingTriggers` it names, classify once more, then exit; `unknown` with reason
+   `unreadable-check-state` runs the bounded poll first, and `unknown` with reason
+   `no-required-triggers-supplied` means no trigger list reached the helper at all — pass
+   `--triggers` and classify again rather than reading it as an all-clear, which is what the CLI's
+   non-zero exit and `mayStopObserving`'s refusal already enforce. Arm at most once per exit: the daemon rejects a co-satisfiable re-arm in the same group, so
    a second attempt cannot help and the helper degrades `armAttempts >= 1` to `polled` for that
    reason. This is a capability check, not bookkeeping — an unobserved PR with moving checks is a
    repair that cannot know its own outcome. Once all four hold, stop and exit zero.
@@ -2151,5 +2170,10 @@ Validate each result with `node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" vali
 "<outPath>"`. On success append one terminal-ledger line with the total persisted-note count. On a
 discovery skip, timeout, missing output, malformed envelope, validation failure, or subagent failure,
 append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
-post-opt-in terminal path. The phase cannot change the outcome, exit code, tracker or PR writes, and
+post-opt-in terminal path — but **re-read every prior pass's `outPath` immediately before that
+removal**. A late envelope can land mid-pass, so a first-read miss is not proof the extension
+produced nothing; it is proof it had not landed _yet_. An envelope that appears on the re-read is
+validated and counted like any other, and the earlier `skipped (missing output)` line is corrected
+rather than left standing. Removing on the strength of the first read destroys the artifact and the
+only evidence that it existed. The phase cannot change the outcome, exit code, tracker or PR writes, and
 is non-fatal in every case.

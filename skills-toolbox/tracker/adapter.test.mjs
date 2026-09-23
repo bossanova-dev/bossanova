@@ -113,6 +113,10 @@ test('assertConforms passes for the Linear adapter, with all 17 operations decla
   // BOS-1198 raised the optional half to 8 with writeDescription, the file-based
   // description write the planning flow saves through.
   assert.equal(Object.keys(adapter.operationMap).length, 17)
+  // BOS-1282 added the `classify-outcome` CLI capability and deliberately did NOT move this
+  // number: classification is not something a tracker PERFORMS, so an operationMap entry for it
+  // would make every already-vendored adapter non-conforming. The count staying at 17 is how
+  // that boundary is enforced rather than merely intended.
   for (const key of [...REQUIRED_TRACKER_OPERATIONS, ...OPTIONAL_TRACKER_OPERATIONS]) {
     assert.ok(key in adapter.operationMap, `the reference adapter must still declare ${key}`)
   }

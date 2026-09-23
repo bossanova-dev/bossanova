@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -984,4 +985,77 @@ func TestTruncate_CutFallsInsideMultiByteRune(t *testing.T) {
 	if want := strings.Repeat("a", 76) + ellipsis; got != want {
 		t.Errorf("truncate(...) = %q, want %q", got, want)
 	}
+}
+
+// TestReadTranscript_OversizedLine straddles the old 256 KiB cap and the new
+// 8 MiB ceiling in BOTH directions (BOS-1281). A test that only fed an
+// over-256-KiB line would pass against any raised cap whatever; the second case
+// is what pins the ceiling as a real bound rather than an absent one.
+func TestReadTranscript_OversizedLine(t *testing.T) {
+	const oldCap = 256 * 1024
+
+	t.Run("a line above the old cap and below the new ceiling parses", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sess.jsonl")
+
+		// ~742 KiB of inlined tool result — the observed maximum the ceiling
+		// was sized against, and comfortably over the old 256 KiB cap.
+		big := strings.Repeat("x", 742*1024)
+		jsonl := `{"type":"user","message":{"role":"user","content":"` + big + `"},"timestamp":"2024-01-15T10:00:00Z"}` + "\n" +
+			`{"type":"assistant","message":{"role":"assistant","content":"done"},"timestamp":"2024-01-15T10:00:01Z"}` + "\n"
+		if len(jsonl) <= oldCap {
+			t.Fatalf("fixture is %d bytes, which does not exceed the old %d-byte cap", len(jsonl), oldCap)
+		}
+		if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		messages, finalAssistant, exists, err := readTranscript(path, 0)
+		if err != nil {
+			t.Fatalf("readTranscript on an oversized line: %v", err)
+		}
+		if !exists {
+			t.Fatal("exists = false, want true")
+		}
+		if len(messages) != 2 {
+			t.Fatalf("len(messages) = %d, want 2", len(messages))
+		}
+		if len(messages[0].Text) != len(big) {
+			t.Fatalf("oversized message text = %d bytes, want %d", len(messages[0].Text), len(big))
+		}
+		if finalAssistant != "done" {
+			t.Fatalf("finalAssistant = %q, want \"done\"", finalAssistant)
+		}
+	})
+
+	t.Run("a line past the new ceiling reports the line-length cause", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipping the 8 MiB fixture in -short; run the plugin target for coverage")
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sess.jsonl")
+
+		huge := strings.Repeat("x", transcriptScanMaxBytes+1)
+		if err := os.WriteFile(path, []byte(`{"type":"user","message":{"role":"user","content":"`+huge+`"}}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		_, _, exists, err := readTranscript(path, 0)
+		if err == nil {
+			t.Fatal("readTranscript past the ceiling returned nil error")
+		}
+		if !exists {
+			t.Fatal("exists = false, want true: the transcript is present, it is the line that is too long")
+		}
+		if !errors.Is(err, errTranscriptLineTooLong) {
+			t.Fatalf("err = %v, want it to wrap errTranscriptLineTooLong", err)
+		}
+		// The whole point of the classification: the message must name the
+		// cause rather than surfacing a bare "bufio.Scanner: token too long".
+		for _, want := range []string{"exceeds the scanner limit", path, "line 1"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("err = %q, want it to contain %q", err.Error(), want)
+			}
+		}
+	})
 }

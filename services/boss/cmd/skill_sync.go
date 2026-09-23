@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,8 +108,27 @@ const canonicalBossanovaRepo = "recurser/bossanova"
 
 const canonicalBossanovaURL = "https://github.com/" + canonicalBossanovaRepo
 
+// checkoutGitTimeout bounds every checkout git query.
+//
+// These run on the per-invocation path: trustedSkillSourceRoot is the
+// revision-drift probe's TrustCheckout, so an unbounded query here is an
+// unbounded subprocess before any `boss` command starts. A context-free
+// exec.Command has no deadline at all, which is not "5 seconds worst case" but
+// "until git returns".
+const checkoutGitTimeout = 5 * time.Second
+
+// checkoutGitWaitDelay bounds the output-pipe wait after the deadline has
+// already killed git, for the reason revisiondrift.ExecGit sets it: .Output()
+// copies through a pipe and blocks until every writer closes it, so a git that
+// spawns a pager or a credential helper outlives the bound that killed git.
+const checkoutGitWaitDelay = 2 * time.Second
+
 func checkoutGitOutput(repoRoot string, args ...string) (string, error) {
-	out, err := exec.Command("git", append([]string{"-C", repoRoot}, args...)...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), checkoutGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoRoot}, args...)...)
+	cmd.WaitDelay = checkoutGitWaitDelay
+	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
 

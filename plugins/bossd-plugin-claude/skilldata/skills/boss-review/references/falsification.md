@@ -8,19 +8,74 @@ is for orchestrator, fix, and repair paths only.
 
 1. **Name the property.** State what the gate claims to forbid. A one-sided bound must name the
    direction it does not bound; for example, a minimum does not constrain larger values.
-2. **Mutate the production feed, never the assertion.** Break the input the gate measures, whether
+2. **Classify the fix's shape and run the mutant set that shape owes.** One mutation discharges
+   only a `replacement` — one condition or literal swapped for another. For every other shape a
+   single red is ambiguous between "the new guard is load-bearing" and something strictly weaker: a
+   widened condition reds in the half that was already covered, a compound guard reds when only one
+   of its clauses matters, a new gate reds without proving the old gate missed anything, and an
+   assertion over text reds against the old defect while over-rejecting something new. Read the
+   obligation rather than reasoning from the shape's name:
+
+   ```sh
+   BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+   if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
+   node "$BOSS_REVIEW_TOOLBOX/bs-mutation-obligations.mjs" shapes
+   ```
+
+   Run every mutant it names, including the ones whose **required verdict is green** — the
+   pre-existing sibling that must stay green under a widening revert, the PRE-fix gate that must
+   stay green on the violation a new gate claims to catch, the legitimately-skipped input that must
+   take a different branch. Those are the mutants an author never writes unprompted, and they are
+   what separates "this guard fires" from "this guard fires for the reason claimed". Steps 3-6 are
+   the procedure for **each** mutant, not for the proof as a whole.
+
+3. **Mutate the production feed, never the assertion.** Break the input the gate measures, whether
    that input is a source conditional, fixture, literal shell line, or prose sentence. Changing the
    gate's own expected value does not prove the production feed is connected.
-3. **Prove the mutation landed.** Do this before reading the gate result. For Tier B, git diff
+4. **Prove the mutation landed.** Do this before reading the gate result. For Tier B, git diff
    --numstat -- "<absolute path>" must be non-empty. For Tier A, cmp -s on the original and copy
    must fail with exit 1: the inputs differ. Treat exit 2 as a harness error, not evidence of a mutation. An
    exit-zero replacement that matched nothing is not a probe.
-4. **Require red for the right reason.** The failure must name the property from step 1. A compile
-   error, module-resolution error, or harness error is not a kill; those show that the build broke,
-   not that the gate detected the mutation.
-5. **Restore exactly, then prove the restore.** Verify the original path or scratch copy is exact,
+5. **Require the mutant's required verdict, for the right reason.** A mutant required to go red must
+   fail naming the property from step 1. A compile error, module-resolution error, or harness error
+   is not a kill; those show that the build broke, not that the gate detected the mutation. A mutant
+   required to stay **green** is subject to the same standard in the other direction: show the gate
+   actually ran and selected the case, because a green that never executed is indistinguishable from
+   a green that did.
+6. **Restore exactly, then prove the restore.** Verify the original path or scratch copy is exact,
    verify the checkout path is clean when Tier B was used, and re-run the gate green before
    recording a conclusion.
+7. **Record every observed verdict and adjudicate.** Write the record as
+   `{shape, mutants: [{id, expected, observed}], skips: [...]}` and hand it to the adjudicator:
+
+   ```sh
+   BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+   if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
+   node "$BOSS_REVIEW_TOOLBOX/bs-mutation-obligations.mjs" adjudicate --record <record.json>
+   ```
+
+   `satisfied` (exit 0) is the only verdict that discharges non-vacuity. `insufficient` (exit 1)
+   names every missing mutant, every observed verdict that contradicts its obligation, and every
+   skip whose justification does not name the consuming layer — the guard is unproven until what it
+   names has been run. Exit 2 is an operator error and never a verdict, so an absent or unreadable
+   adjudication is never a pass.
+
+Three rules govern how a mutant may be discharged at all:
+
+- **Test-first-red is an equal discharge, not a lesser one.** Writing the test before the production
+  change and showing it red for a named reason reaches the same guarantee as a sandboxed probe,
+  whenever the pass controls edit ordering. Record it as `"mechanism": "test-first-red"`. The
+  sandbox is the safer mechanism where ordering cannot be controlled, not the mandatory one.
+- **A mutant may be skipped only by naming the layer that PARSES the input.** An "impossible input"
+  argument evaluated against the language the file is nominally written in is not a discharge: a
+  text scanner that reads a file with `readFileSync` and splits on newlines never compiles that
+  language, so its validity rules gate nothing there and the supposedly impossible input reaches the
+  guard unimpeded. Record the skip as `{mutantId, reason, consumingLayer}`; naming the source
+  language in `consumingLayer` is refused.
+- **Stage and commit nothing in the worktree while an in-place proof is in flight.** Tier B mutates
+  a tracked file, and a concurrent `git add` or `git commit` — including one an orchestrator makes
+  while a dispatched worker holds the branch neutered — captures the mutated form and ships it.
+  Complete the restore and prove the path clean before anything is staged.
 
 ## Tier A — zero-write probe
 
@@ -211,8 +266,11 @@ by its exact path, and run the unchanged gate green.
 
 Tier B is restricted to state-owning orchestrator, fix, and repair paths.
 
-1. **Commit the work first.** The probe and repository tooling may restore tracked paths. git
-   checkout -- <file> discards uncommitted edits that share the file, often without output.
+1. **Commit the work first, then stage nothing until the restore is proven.** The probe and
+   repository tooling may restore tracked paths. git checkout -- <file> discards uncommitted edits
+   that share the file, often without output. Committing BEFORE the probe is what makes the restore
+   recoverable; staging or committing DURING it captures the mutated file instead, which is why the
+   shared checklist forbids it for the whole span of an in-place proof.
 2. Resolve the checkout root and target to absolute paths. Set `PROBE_TARGET` to the exact target,
    create a private backup directory before mutation, and register cleanup that restores the target
    before deleting the backup:
@@ -521,8 +579,10 @@ Tier B is restricted to state-owning orchestrator, fix, and repair paths.
 3. Use absolute paths and never inherit the cwd from an earlier shell call. Otherwise a later
    pathspec or build can silently run relative to the wrong directory. Re-anchor each call when an
    absolute command path is unavailable.
-4. Follow the shared checklist: mutate, prove the non-empty diff, require the named failure, restore
-   from the backup, prove the path clean, and re-run green.
+4. Follow the shared checklist once per mutant the classified shape owes: mutate, prove the
+   non-empty diff, require that mutant's required verdict for the named reason, restore from the
+   backup, prove the path clean, and re-run green. Adjudicate the recorded set at the end; a single
+   restored-and-green cycle is one mutant's evidence, not the proof.
 5. Delete scratch files by exact path, never by glob. An unmatched glob can abort cleanup and strand
    a deliberately broken file.
 

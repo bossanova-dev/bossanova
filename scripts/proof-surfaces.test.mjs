@@ -16,6 +16,14 @@ import {
   committedScenarioPresent,
   proofHarnessOnlyDiff,
   classifySurfaces,
+  neverRenderingPath,
+  accompanyingOnlyPath,
+  renderingFilesForSurface,
+  renderingFilePresent,
+  productSourcePresent,
+  ACCOMPANYING_ONLY_PREFIXES,
+  NON_PRODUCT_PREFIXES,
+  GENERATED_ARTIFACT_PREFIXES,
   TUI_SURFACE_PREFIXES,
   WEB_UI_SURFACE_PREFIXES,
   BUILTIN_SURFACES,
@@ -79,8 +87,12 @@ test('SURFACE_DESCRIPTORS covers exactly tui, web, marketing, docs', () => {
 
 // ── classifyTuiSurface: catalog-independent TUI path detection (BOS-115) ──────
 
-test('classifyTuiSurface is true for any changed file under a TUI prefix', () => {
-  for (const prefix of TUI_SURFACE_PREFIXES) {
+test('classifyTuiSurface is true for a rendering changed file under a TUI prefix', () => {
+  // BOS-1285: the accompanying-only prefixes are excluded here and pinned
+  // separately below — they raise the surface only alongside a rendering file.
+  const rendering = TUI_SURFACE_PREFIXES.filter((p) => !ACCOMPANYING_ONLY_PREFIXES.includes(p))
+  assert.ok(rendering.length > 0)
+  for (const prefix of rendering) {
     assert.equal(
       classifyTuiSurface([`${prefix}some/file.go`]),
       true,
@@ -158,6 +170,206 @@ test('webUiSurfacePresent is false for changes with no demonstrable web surface'
 test('webUiSurfacePresent is true when ANY changed file is a web UI path (mixed diff)', () => {
   assert.equal(
     webUiSurfacePresent(['scripts/proof.mjs', 'services/web/src/pages/SessionDetail.tsx']),
+    true,
+  )
+})
+
+// ── BOS-1285 visibility tiers: what a changed file can actually demonstrate ──
+
+test('neverRenderingPath matches Go test files and nothing else', () => {
+  assert.equal(neverRenderingPath('services/boss/internal/views/home_test.go'), true)
+  assert.equal(neverRenderingPath('home_test.go'), true)
+  assert.equal(neverRenderingPath('./services/boss/cmd/root_test.go'), true)
+  assert.equal(neverRenderingPath('services\\boss\\cmd\\root_test.go'), true)
+  assert.equal(neverRenderingPath('services/boss/internal/views/home.go'), false)
+  // A `_test.go` INFIX, not suffix, is a real source file.
+  assert.equal(neverRenderingPath('services/boss/internal/views/home_test.golden'), false)
+  assert.equal(neverRenderingPath('services/web/src/App.test.tsx'), false)
+  assert.equal(neverRenderingPath(null), false)
+  assert.equal(neverRenderingPath(undefined), false)
+})
+
+test('accompanyingOnlyPath matches the contract + generated-client tier', () => {
+  assert.deepEqual(ACCOMPANYING_ONLY_PREFIXES, [
+    'proto/',
+    'services/boss/internal/client/',
+    'services/web/src/gen/',
+  ])
+  assert.equal(accompanyingOnlyPath('proto/bossanova/v1/orchestrator.proto'), true)
+  assert.equal(accompanyingOnlyPath('services/boss/internal/client/orchestrator.go'), true)
+  assert.equal(accompanyingOnlyPath('services/web/src/gen/bossanova/v1/orchestrator_pb.ts'), true)
+  assert.equal(accompanyingOnlyPath('services/boss/internal/views/home.go'), false)
+  assert.equal(accompanyingOnlyPath('services/web/src/pages/Sessions.tsx'), false)
+  assert.equal(accompanyingOnlyPath(null), false)
+})
+
+test('renderingFilesForSurface keeps only tier-C files under the surface prefixes', () => {
+  assert.deepEqual(
+    renderingFilesForSurface(
+      [
+        'services/boss/internal/views/home_test.go',
+        'proto/bossanova/v1/orchestrator.proto',
+        'services/boss/internal/client/orchestrator.go',
+        'services/boss/internal/views/home.go',
+        'services/web/src/App.tsx',
+      ],
+      TUI_SURFACE_PREFIXES,
+    ),
+    ['services/boss/internal/views/home.go'],
+  )
+  assert.deepEqual(renderingFilesForSurface([], TUI_SURFACE_PREFIXES), [])
+  assert.deepEqual(renderingFilesForSurface(null, TUI_SURFACE_PREFIXES), [])
+})
+
+test('renderingFilePresent is renderingFilesForSurface reduced to a boolean', () => {
+  assert.equal(renderingFilePresent(['services/web/src/App.tsx'], WEB_UI_SURFACE_PREFIXES), true)
+  assert.equal(
+    renderingFilePresent(['services/web/src/gen/x_pb.ts'], WEB_UI_SURFACE_PREFIXES),
+    false,
+  )
+})
+
+test('classifyTuiSurface ignores a diff whose only TUI files are tier A or tier B', () => {
+  // Tier A — compile fallout. The whole defect BOS-1285 exists to close.
+  assert.equal(classifyTuiSurface(['services/boss/internal/views/home_test.go']), false)
+  assert.equal(
+    classifyTuiSurface([
+      'services/boss/internal/views/home_test.go',
+      'services/boss/internal/tuitest/fixtureenv_test.go',
+    ]),
+    false,
+  )
+  // Tier B — a contract edit alone.
+  assert.equal(classifyTuiSurface(['proto/bossanova/v1/orchestrator.proto']), false)
+  // Tier B — a transport-only RPC client migration alone.
+  assert.equal(classifyTuiSurface(['services/boss/internal/client/orchestrator.go']), false)
+  // Both tiers together are still nothing to watch.
+  assert.equal(
+    classifyTuiSurface([
+      'proto/bossanova/v1/orchestrator.proto',
+      'services/boss/internal/client/orchestrator.go',
+      'services/boss/internal/views/home_test.go',
+    ]),
+    false,
+  )
+})
+
+test('classifyTuiSurface still fires when a rendering file accompanies tier A/B', () => {
+  assert.equal(
+    classifyTuiSurface([
+      'services/boss/internal/views/home_test.go',
+      'services/boss/internal/views/home.go',
+    ]),
+    true,
+  )
+  assert.equal(
+    classifyTuiSurface([
+      'proto/bossanova/v1/orchestrator.proto',
+      'services/boss/internal/views/home.go',
+    ]),
+    true,
+  )
+  assert.equal(
+    classifyTuiSurface([
+      'services/boss/internal/client/orchestrator.go',
+      'services/boss/internal/views/home.go',
+    ]),
+    true,
+  )
+})
+
+test('webUiSurfacePresent ignores buf-generated output on its own', () => {
+  assert.equal(webUiSurfacePresent(['services/web/src/gen/bossanova/v1/orchestrator_pb.ts']), false)
+  assert.equal(
+    webUiSurfacePresent([
+      'services/web/src/gen/bossanova/v1/orchestrator_pb.ts',
+      'services/web/src/gen/bossanova/v1/orchestrator_connect.ts',
+    ]),
+    false,
+  )
+  // A hand-written sibling elsewhere under services/web/src/ restores it.
+  assert.equal(
+    webUiSurfacePresent([
+      'services/web/src/gen/bossanova/v1/orchestrator_pb.ts',
+      'services/web/src/pages/Sessions.tsx',
+    ]),
+    true,
+  )
+})
+
+test('classifySurfaces reports no surface for a generated/contract/test-only diff', () => {
+  const result = classifySurfaces({
+    changedFiles: [
+      'proto/bossanova/v1/orchestrator.proto',
+      'services/boss/internal/client/orchestrator.go',
+      'services/web/src/gen/bossanova/v1/orchestrator_pb.ts',
+      'services/boss/internal/views/home_test.go',
+    ],
+    catalog,
+  })
+  assert.equal(result.tui, false)
+  assert.equal(result.web, false)
+})
+
+// ── productSourcePresent: the R6 guard on the forced-surface escape hatch ────
+
+test('productSourcePresent is false for a prose/harness/skills-only diff', () => {
+  assert.deepEqual(NON_PRODUCT_PREFIXES, [
+    'docs/',
+    'scripts/',
+    'skills-toolbox/',
+    '.claude/',
+    '.codex/',
+  ])
+  assert.equal(
+    productSourcePresent([
+      'scripts/proof.mjs',
+      'skills-toolbox/pr-check-state.mjs',
+      '.claude/skills/boss-proof/SKILL.md',
+      'docs/plans/BOS-1285.md',
+      'docs/solutions/proof/classification.md',
+      'CONCEPTS.md',
+    ]),
+    false,
+  )
+  // Tier A and tier B files are not product source for this purpose either.
+  assert.equal(
+    productSourcePresent([
+      'services/boss/internal/views/home_test.go',
+      'proto/bossanova/v1/orchestrator.proto',
+      'services/web/src/gen/bossanova/v1/orchestrator_pb.ts',
+    ]),
+    false,
+  )
+  assert.equal(productSourcePresent([]), false)
+  assert.equal(productSourcePresent(null), false)
+})
+
+test('productSourcePresent treats the hand-written RPC client as product source', () => {
+  // BOS-1285 review: tier B answers "does this raise a surface ON ITS OWN".
+  // productSourcePresent asks the stronger "could a user experience differ at
+  // all", so it must NOT reuse ACCOMPANYING_ONLY_PREFIXES wholesale.
+  // services/boss/internal/client/ is hand-written Go compiled into the boss
+  // binary; only proto/ and services/web/src/gen/ are generated.
+  assert.deepEqual(GENERATED_ARTIFACT_PREFIXES, ['proto/', 'services/web/src/gen/'])
+  assert.equal(productSourcePresent(['services/boss/internal/client/remote.go']), true)
+  assert.equal(productSourcePresent(['proto/bossanova/v1/orchestrator.proto']), false)
+  assert.equal(productSourcePresent(['services/web/src/gen/orchestrator_pb.ts']), false)
+  // …while the SURFACE tier is unchanged: a client-only diff still raises no
+  // TUI surface, which is what AC3 requires.
+  assert.equal(classifyTuiSurface(['services/boss/internal/client/remote.go']), false)
+  assert.equal(accompanyingOnlyPath('services/boss/internal/client/remote.go'), true)
+})
+
+test('productSourcePresent is true for a behaviour-only backend change', () => {
+  // The D16 case the forced-surface escape hatch exists for: no surface by
+  // path, but real product code whose behaviour a plan bullet can ask to see.
+  assert.equal(productSourcePresent(['services/bossd/internal/server/server.go']), true)
+  assert.equal(productSourcePresent(['lib/bossalib/vcs/checks_verdict.go']), true)
+  assert.equal(productSourcePresent(['services/web/src/pages/Sessions.tsx']), true)
+  // Mixed: one product file among prose is enough.
+  assert.equal(
+    productSourcePresent(['docs/plans/BOS-1285.md', 'services/bosso/internal/server/stream.go']),
     true,
   )
 })

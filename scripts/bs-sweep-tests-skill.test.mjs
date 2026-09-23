@@ -564,7 +564,12 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // 0.83% of the largest budget (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket
   // (bs-sweep-tests, 26600 B), so two buckets narrow the spread a single flat number would give
   // without equalising it.
-  const SOURCE_BYTES = 26600 // measured .claude body at migration, 2026-09-08 (BOS-919 bytes)
+  // Re-banked UP 26600 -> 26950 (+350 B) for BOS-1278, the first RAISE this budget records and
+  // still 100 B clear of PRE_EXTRACTION_BASELINE; the reason is below in `raise.justification`.
+  // In short: this body mandated "never `run_in_background`" while naming no mechanism to await
+  // WITH, and the poll an orchestrator reaches for instead is silently backgrounded at 120s when
+  // the Bash call carries no explicit timeout.
+  const SOURCE_BYTES = 26950 // re-measured for BOS-1278; see raise.justification
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -585,6 +590,18 @@ test('the resident body is pinned at its exact post-extraction size', () => {
       // stale sentence parked here would satisfy the next raise without anybody having
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 26600,
+      justification:
+        'BOS-1278: the Hard Rules mandated "never `run_in_background` a subagent — always ' +
+        'await every dispatch" and named no mechanism to await WITH. An orchestrator following ' +
+        'it reaches for the only awaiting thing it has, a poll through the Bash tool, and a ' +
+        'Bash call issued with no explicit timeout is silently BACKGROUNDED at 120s: nothing ' +
+        'errors, the mandated in-turn await is now a background task, and the run walks on and ' +
+        'reports a clean pass over a dispatch it never awaited. +350 B is one bullet naming the ' +
+        'shared helper and the explicit `timeout: 600000`, placed beside the mandate it ' +
+        'completes because choosing the await mechanism is the decision being made right there ' +
+        '— a pointer into references/ would cost most of the same bytes and arrive after the ' +
+        'decision. scripts/check-await-mechanism.mjs now derives this obligation over every ' +
+        'orchestrating skill rather than a hand list, so the class cannot silently regrow.',
     },
     residual:
       'the references/ files this body routes to, and the gate/ scripts it invokes — bytes ' +

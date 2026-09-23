@@ -419,8 +419,17 @@ func (b *Backend) UpdateChatTitle(ctx context.Context, agentSessionID, title str
 	return err
 }
 
+// DeleteChat stamps AGENT_REQUESTED rather than passing the zero value through.
+// Everything reaching this backend is an agent's delete_chat MCP tool call —
+// that is the only thing the path can mean — so the reason is stated at the
+// boundary instead of defaulting to UNSPECIFIED, which is reserved for callers
+// predating the field. AGENT_REQUESTED is never gated by the daemon; only the
+// transcript-absent cleanup reason is.
 func (b *Backend) DeleteChat(ctx context.Context, agentSessionID string) error {
-	_, err := b.rpc.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{AgentSessionId: agentSessionID}))
+	_, err := b.rpc.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
+		AgentSessionId: agentSessionID,
+		Reason:         pb.DeleteChatRequest_DELETION_REASON_AGENT_REQUESTED,
+	}))
 	return err
 }
 

@@ -1918,6 +1918,10 @@ func run(opts runOpts) error {
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
 	pluginHost.SetSessionDeps(repos, sessions, agentChats, displayTracker, chatStatusTracker)
+	// The live pane-pid lookup lets the host service's codex provider-id
+	// discovery pass a chat's real pane, so the plugin runs authoritative fd
+	// resolution instead of the time-window scan alone (BOS-1298).
+	pluginHost.SetPanePIDResolver(tmuxClient.PanePID)
 	pluginHost.SetAgentRunStore(agentRuns)
 	pluginHost.SetRepairLease(repairLease)
 	// The plugin host's HostServiceServer defaults to a hermetic no-op proof env

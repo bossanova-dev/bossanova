@@ -110,6 +110,14 @@ func rootCmd() *cobra.Command {
 			// at most one line to stderr, never to stdout, and can never fail
 			// a command.
 			warnIfDaemonBinaryStale(cmd)
+			// BOS-1300, and the same shape one binary over: a defect fixed in
+			// source destroyed a live chat two days later because the running
+			// `boss` predated the fix, and nothing compared the executing
+			// binary's revision against the checkout. Doctor reports it in
+			// full, but a diagnostic is run by someone who already suspects a
+			// problem and the failure mode is not suspecting it. Warning only:
+			// one line to stderr, never stdout, exit code untouched.
+			warnIfBossBinaryBehindCheckout(cmd)
 			// gen-skill regenerates the embedded payload; the `skills` subtree is
 			// itself the explicit, no-prompt installer. Both must bypass the
 			// interactive startup installer/self-heal — otherwise `boss skills

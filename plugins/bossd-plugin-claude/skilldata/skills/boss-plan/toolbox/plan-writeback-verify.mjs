@@ -81,6 +81,37 @@ export const WRITEBACK_CAUSES = Object.freeze({
   UNATTRIBUTED: 'unattributed',
 })
 
+/**
+ * Mark every line that is FENCED, the opening and closing fences included. Both transforms below
+ * skip literal text, and both used to carry their own copy of this scanner — including the two
+ * edge cases a bare boolean toggle gets wrong: CommonMark closes a fence only with the SAME
+ * character at >= the opening length, so a `~~~` line does not close a ```` block, and the
+ * four-backtick wrapper this repo's docs use to quote a markdown block containing a fence is not
+ * closed by the inner ```. Two copies of that would drift the next time one is corrected, inside a
+ * gate whose whole job is that nothing else observes what landed on the tracker. An unclosed fence
+ * deliberately swallows the rest of the document: the text is literal until proven otherwise.
+ */
+const fencedLineMap = (lines) => {
+  const FENCE_OPEN = /^[ \t]{0,3}(`{3,}|~{3,})/
+  const FENCE_CLOSE = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/
+  const literal = lines.map(() => false)
+  let fence = null
+  for (let i = 0; i < lines.length; i += 1) {
+    if (fence) {
+      literal[i] = true
+      const close = FENCE_CLOSE.exec(lines[i])
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) fence = null
+      continue
+    }
+    const open = FENCE_OPEN.exec(lines[i])
+    if (open) {
+      literal[i] = true
+      fence = { char: open[1][0], length: open[1].length }
+    }
+  }
+  return literal
+}
+
 // One canonicalizer per transform id in skill-config's closed vocabulary. Each maps BOTH spellings
 // of its transform onto one canonical form, so it can be applied to the intended and the stored side
 // alike without knowing which one the tracker reshaped. Each is idempotent.
@@ -205,28 +236,14 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
     // pipes, then an optional trailing pipe. Every repetition must consume a `|`, so the quantifier
     // cannot backtrack quadratically on a long line.
     const DELIMITER_ROW = /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?[ \t]*$/
-    const FENCE_OPEN = /^[ \t]{0,3}(`{3,}|~{3,})/
-    // CommonMark closes a fence only with the SAME character at >= the opening length, and a closing
-    // fence carries no info string. A bare boolean toggle got both wrong: a `~~~` line closed a
-    // ``` block, and the four-backtick wrapper this repo's docs use to quote a markdown block that
-    // itself contains a fence was closed by the inner ``` — exposing the quoted content to rewrite.
-    const FENCE_CLOSE = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/
     const delimiterShaped = (line) => line.includes('|') && DELIMITER_ROW.test(line)
-    let fence = null
+    const lines = String(text).split('\n')
+    const literal = fencedLineMap(lines)
     // The line before this one, when it was ordinary text outside a fence; null otherwise.
     let previous = null
-    return String(text)
-      .split('\n')
-      .map((line) => {
-        if (fence) {
-          const close = FENCE_CLOSE.exec(line)
-          if (close && close[1][0] === fence.char && close[1].length >= fence.length) fence = null
-          previous = null
-          return line
-        }
-        const open = FENCE_OPEN.exec(line)
-        if (open) {
-          fence = { char: open[1][0], length: open[1].length }
+    return lines
+      .map((line, i) => {
+        if (literal[i]) {
           previous = null
           return line
         }
@@ -236,6 +253,73 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
         return rewrite ? line.replace(/-+/g, '---') : line
       })
       .join('\n')
+  },
+  // `* item` followed flush by `## Heading` stored with a blank line pushed between them, and an
+  // appended `* b` stored with the blank line above it gone: ONE transform seen from either side of
+  // the write. The canonical form DROPS the blank line at both boundaries, so either spelling
+  // reduces to the other and the canonicalizer can be applied to the intended and the stored side
+  // alike without knowing which one the tracker reshaped.
+  //
+  // Recognised shape, both ends required: a run of blank lines whose preceding line is a list item
+  // and whose following line is a list item or an ATX heading. Everything else is deliberately left
+  // alone — a blank line after a paragraph, before a fence, before a table, at the end of the
+  // document. Only BLANK lines are ever dropped, never a line carrying text, and that is the whole
+  // bound on a tolerance that is NOT purely cosmetic (a blank line inside a list makes the list
+  // loose, which changes the rendered markup). It is what keeps the two near misses drift: a stored
+  // text that dropped a list item is still missing that item's bytes, and two lists separated by a
+  // paragraph cannot be merged into one, because the paragraph is a text line this rule will not
+  // remove and the blank lines flanking it do not qualify at the paragraph end.
+  //
+  // A LAZY CONTINUATION line ends the recognised shape: in `* a long item` / `  continued` / blank /
+  // `## H` the line before the run carries no marker, so the blank line stays and the difference is
+  // reported. That is the conservative direction — an unrecognised shape stays a byte difference.
+  //
+  // FENCED content is skipped for the reason the table rule skips it: it is literal text, and
+  // reshaping it would change what the block SHOWS rather than how the document renders. Literal
+  // text is also why every matcher below bounds its indentation to three spaces: at four the line
+  // opens an INDENTED code block, whose content is literal by the same argument, and a rule that
+  // read `    * a` there as a list item would drop a blank line that the block DISPLAYS — turning
+  // two texts that genuinely differ into a normalized match. Two residuals remain, both of the
+  // false-PASS shape and both accepted. This rule's own: a fence indented four or more spaces
+  // (inside a list item) is not tracked as a fence, so a line at three spaces or less inside it can
+  // still qualify — a contorted document, because CommonMark strips the block's indentation. The
+  // table rule's is LARGER and reachable: it bounds nothing, so a delimiter row inside an indented
+  // code block is rewritten. Do not read the two as equivalent. Only a shape this rule RECOGNISES
+  // is ever reshaped; everything else stays a byte difference.
+  'block-boundary-blank-line-normalization': (text) => {
+    // A marker, then whitespace, then content. Ordered markers are included because a tracker
+    // reshapes an ordered list's boundaries the same way; the marker itself is never rewritten.
+    // The indentation bound matches its two siblings below: four spaces is an indented code block,
+    // not a list item, and mistaking one for the other canonicalizes away a real difference.
+    const LIST_ITEM = /^[ \t]{0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+\S/
+    const ATX_HEADING = /^[ \t]{0,3}#{1,6}(?:[ \t]|$)/
+    const lines = String(text).split('\n')
+    // Map the fenced lines FIRST, fences included. The drop decision reads one line backward and
+    // one line forward, so a running toggle would have to guess at the forward one.
+    const literal = fencedLineMap(lines)
+    const out = []
+    let i = 0
+    while (i < lines.length) {
+      if (literal[i] || lines[i].trim() !== '') {
+        out.push(lines[i])
+        i += 1
+        continue
+      }
+      // A MAXIMAL run of blank lines outside a fence, so the line before its start and the line
+      // after its end are both non-blank (or fenced, which disqualifies them below).
+      let end = i
+      while (end < lines.length && !literal[end] && lines[end].trim() === '') end += 1
+      const opensOnItem = i > 0 && !literal[i - 1] && LIST_ITEM.test(lines[i - 1])
+      const closesOnBlock =
+        end < lines.length &&
+        !literal[end] &&
+        (LIST_ITEM.test(lines[end]) || ATX_HEADING.test(lines[end]))
+      if (!(opensOnItem && closesOnBlock)) for (let k = i; k < end; k += 1) out.push(lines[k])
+      i = end
+    }
+    // Idempotent: qualification is decided against the INPUT lines, and dropping blank lines never
+    // creates a blank line, so a run either qualifies on the first pass or on no pass at all.
+    return out.join('\n')
   },
 })
 
@@ -322,6 +406,11 @@ function locate(intendedText, storedText) {
  * Returns `{ verdict, exitCode, reason, line, column, tolerated }`. A `verdict` of `null` is a
  * REFUSAL, not a tier: the comparison could not be performed at all, which is neither a pass nor
  * drift, and callers must not report it as either.
+ *
+ * `line`/`column` are VERDICT-DEPENDENT — branch on `verdict` before using them. `drift` locates
+ * the first difference in the RAW texts. `unattributed` locates it in the NORMALIZED texts, so it
+ * need NOT index the stored document. `normalized-equivalent` carries the raw coordinate of a
+ * difference it has just excused. `byte-exact` and the refusal report null.
  */
 export function verifyWriteback({
   config,
@@ -439,6 +528,20 @@ export function verifyWriteback({
     // content checks all passed.
     const declaredList = declared.size === 0 ? 'none declared' : [...declared].sort().join(', ')
     const blocking = severity === 'block'
+    // NOT the raw coordinate the three content-loss branches report. `at` indexes the first RAW
+    // difference, and by the time control reaches here normalization has already excused every
+    // declared transform — so the raw first difference is usually one this helper itself just
+    // excused. Measured on one run: of 26 differing lines, 24 were declared marker substitution and
+    // 2 were not, and the verdict named line 7, one of the 24. A reader sent there finds nothing
+    // wrong. Locate the difference in the texts this branch ACTUALLY compared.
+    //
+    // The cost of doing that is paid in the reason, not hidden: a declared transform may change
+    // line counts, so a normalized coordinate need not index the stored document. Saying which
+    // comparison the coordinate belongs to is what keeps this from trading one misleading pointer
+    // for another; a reader who needs the stored document's own line numbers re-derives them from
+    // the retained scratch.
+    const normalizedDifference = locate(normalizedIntended, normalizedStored)
+    const normalizedAt = `line ${normalizedDifference.line}, column ${normalizedDifference.column}`
     return {
       verdict: WRITEBACK_VERDICTS.UNATTRIBUTED,
       cause: WRITEBACK_CAUSES.UNATTRIBUTED,
@@ -450,12 +553,13 @@ export function verifyWriteback({
       // lets a reader see the gap; asserting a clean bill of health hides it.
       reason:
         `stored description differs from the intended bytes outside the declared transform set ` +
-        `(${declaredList}) (first difference at ${at}); the semantic contract, the verbatim block ` +
-        `and every upload identity are intact, so no content-loss check fired — but body prose is ` +
-        `not compared line-by-line, so read the diff at that location` +
+        `(${declaredList}); first unattributable difference at ${normalizedAt} of the NORMALIZED ` +
+        `texts — both sides canonicalized by the declared transforms, so it is NOT a position in ` +
+        `the stored document; the semantic contract, the verbatim block and every upload identity ` +
+        `are intact, so no content-loss check fired — but body prose is not compared line-by-line` +
         (blocking ? '' : ' — reported, not fatal'),
-      line,
-      column,
+      line: normalizedDifference.line,
+      column: normalizedDifference.column,
       tolerated: declared,
     }
   }

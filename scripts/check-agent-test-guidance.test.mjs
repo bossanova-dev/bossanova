@@ -67,8 +67,15 @@ const requiredFiles = [
 // blanket stash clear against a worktree-shared stack. Replaced by a pointer at boss-finalize plus
 // the two mechanics generic advice gets wrong here. Budgets descend: this is a shrink, and the
 // numbers are re-measured from disk with `wc -l -c CLAUDE.md`.
+// Re-banked 27079 -> 27078 bytes by BOS-1277 (lines unchanged at 180). Two bullets were WIDENED —
+// the piped-status trap from `make` to any pipeline, and the `grep -r` scoping bullet to name peer
+// checkouts under `.claude/worktrees/` — and the added information was paid for out of the same two
+// bullets rather than out of the pin, which is what "Budgets descend" asks for: the first pass cost
+// 442 bytes and was tightened back until the file came out one byte smaller than it started. The
+// measurements, counter-forms and the three new gate rules live in `docs/skills/README.md`
+// § "Shell portability"; only the decision an agent needs in the moment is resident here.
 const CLAUDE_MD_MAX_LINES = 180
-const CLAUDE_MD_MAX_BYTES = 27079
+const CLAUDE_MD_MAX_BYTES = 27078
 
 // The seven authoring rules, pinned by NAME rather than by the sentence that states them. That is
 // the point of rule 4 applied to this file: a rule name is what a reader cites and what the two

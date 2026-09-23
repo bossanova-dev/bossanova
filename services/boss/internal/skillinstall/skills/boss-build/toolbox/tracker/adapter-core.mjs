@@ -62,14 +62,28 @@
 // capability shifts the whole burden onto configuration —
 // `trackerConfig.<tracker>.states` becomes REQUIRED for every repo using it, because
 // the fallback is then the only source and an empty one BLOCKs the caller.
+//
+// selectPlanned — the OPTIONAL executable, query-backed candidate read. The
+// `operationMap.selectPlanned` DESCRIPTOR stays required: it names an MCP tool that cannot
+// express an identity disjunction or a label set, so it is the path only for a repo with no
+// `trackerConfig.<tracker>.selection` narrowing. A repo that narrows must select through this
+// capability (the tracker CLI's `list-planned` verb), and a run whose adapter omits it stops
+// rather than falling back to the unfiltered descriptor — that fallback would hand the worker a
+// strict superset of what the narrowed gate saw.
 
 /**
  * @typedef {Object} TrackerAdapter
  * @property {string} tracker           Stable adapter id (e.g. "linear").
- * @property {(opts: {state: string, label?: string}) => Promise<boolean>} hasWork
+ * @property {(opts: {state: string, label?: string|string[], assignee?: string, creator?: string, assigneeOrCreator?: string}) => Promise<boolean>} hasWork
  *           Existence gate: does at least one matching issue exist? (select capability)
- * @property {(opts: {state: string, label?: string}) => Promise<boolean>} hasUnblockedWork
- *           Existence gate restricted to issues with no uncleared blocker.
+ *           `label` is a single display name, OR an array of names matched as a
+ *           DISJUNCTION — a candidate qualifies if it carries ANY of them. An adapter
+ *           must handle both spellings; emitting an equality clause against an array
+ *           matches nothing and turns the gate into a silent permanent "no work".
+ *           The identity selectors are optional and contribute no clause when unset.
+ * @property {(opts: {state: string, label?: string|string[], assignee?: string, creator?: string, assigneeOrCreator?: string}) => Promise<boolean>} hasUnblockedWork
+ *           Existence gate restricted to issues with no uncleared blocker. Same
+ *           argument shape as `hasWork`, including the array `label` spelling.
  * @property {(issue: object) => object[]} readDependencies
  *           Blocker issues of a raw tracker issue payload. (read dependency edges)
  * @property {(issue: object) => boolean} isUnblocked
@@ -86,6 +100,13 @@
  *           Declarative map of agent-driven capability -> tracker MCP operation.
  *           Must include every key in REQUIRED_TRACKER_OPERATIONS (readComments,
  *           writeComment, updateComment, ...) — see assertConforms.
+ * @property {(opts: {state: string, label?: string|string[], assigneeOrCreator?: string, limit?: number}) => Promise<object[]>} [selectPlanned]
+ *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). The executable candidate read behind the
+ *           `operationMap.selectPlanned` descriptor, able to express every filter the gates apply.
+ *           Resolves to the matching issues with the fields the worker ranks and walks on
+ *           (identifier, title, priority, estimate, createdAt, state, label names, and attachments
+ *           as a plain array). Must fail closed — throw — rather than widen: a missing state or
+ *           team, or a payload it cannot read, is never answered with a broader or empty list.
  * @property {() => Record<string, string|null>} [states]
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). Synchronous — every caller on
  *           this path is. Returns a plain object mapping every role in
@@ -117,11 +138,12 @@ export const TRACKER_CAPABILITIES = [
   'operationMap',
 ]
 
-// Capabilities an adapter MAY expose. Never fold these into TRACKER_CAPABILITIES —
+// Capabilities an adapter MAY expose: `states` (workflow-state names) and `selectPlanned`
+// (the executable filtered candidate read). Never fold these into TRACKER_CAPABILITIES —
 // assertConforms requires every entry there, so promoting one would fail every
 // conforming adapter that legitimately omits it. assertConforms validates the SHAPE
 // of an optional capability when present, and ignores it when absent.
-export const OPTIONAL_TRACKER_CAPABILITIES = ['states']
+export const OPTIONAL_TRACKER_CAPABILITIES = ['states', 'selectPlanned']
 
 // Operations an adapter MAY declare. Two groups live here, for two different reasons:
 //
@@ -199,9 +221,9 @@ export const REQUIRED_TRACKER_OPERATIONS = [
  * calls this to prove conformance.
  *
  * OPTIONAL_TRACKER_CAPABILITIES are never *required* — omitting one conforms — but a
- * present one must be callable. A `states` that is, say, a plain object rather than a
- * function would otherwise pass here and blow up at the call site as a raw TypeError,
- * defeating the fallback the caller wrote.
+ * present one must be callable. A `states` or `selectPlanned` that is, say, a plain object
+ * rather than a function would otherwise pass here and blow up at the call site as a raw
+ * TypeError, defeating the fallback (or the fail-closed stop) the caller wrote.
  * @param {TrackerAdapter} adapter
  */
 export function assertConforms(adapter) {

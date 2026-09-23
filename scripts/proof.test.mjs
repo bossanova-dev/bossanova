@@ -12,7 +12,9 @@ import {
   agentSurface,
   buildTuiAgentBridge,
   defaultBinFresh,
+  docsSiteBuildInputPresent,
   evaluateRunPreflight,
+  forcedSurfaceUndemonstrable,
   isDocsOnlyChange,
   newestSourceMtime,
   prefixStillFileNames,
@@ -718,7 +720,7 @@ test('isDocsOnlyChange detects docs/markdown-only change sets', () => {
 test('shouldPostDocsBuildCheck only applies when docs-only changes have no recipe', () => {
   assert.equal(
     shouldPostDocsBuildCheck({
-      changedFiles: ['docs/cron.md'],
+      changedFiles: ['services/docs/docs/cron.md'],
       selectedRecipes: [],
     }),
     true,
@@ -737,6 +739,155 @@ test('shouldPostDocsBuildCheck only applies when docs-only changes have no recip
     }),
     false,
   )
+})
+
+// ── BOS-1285: the docs-build check must name the docs SITE, not any Markdown ──
+
+test('docsSiteBuildInputPresent is true only for the services/docs package', () => {
+  assert.equal(docsSiteBuildInputPresent(['services/docs/docs/guides/mcp.md']), true)
+  assert.equal(docsSiteBuildInputPresent(['services/docs/docusaurus.config.ts']), true)
+  assert.equal(docsSiteBuildInputPresent(['./services/docs/sidebars.ts']), true)
+  assert.equal(docsSiteBuildInputPresent(['docs/plans/BOS-1285.md']), false)
+  assert.equal(docsSiteBuildInputPresent(['README.md']), false)
+  assert.equal(docsSiteBuildInputPresent([]), false)
+  assert.equal(docsSiteBuildInputPresent(null), false)
+})
+
+test('shouldPostDocsBuildCheck no longer fires for a diff the docs site cannot build', () => {
+  // A plan document is not an input to `pnpm --dir services/docs build`.
+  assert.equal(
+    shouldPostDocsBuildCheck({ changedFiles: ['docs/plans/BOS-1285.md'], selectedRecipes: [] }),
+    false,
+  )
+  // Nor is repo-root docs/ prose, or the agent-skill Markdown payload.
+  assert.equal(
+    shouldPostDocsBuildCheck({
+      changedFiles: ['docs/cron.md', 'docs/solutions/proof/classification.md'],
+      selectedRecipes: [],
+    }),
+    false,
+  )
+  assert.equal(
+    shouldPostDocsBuildCheck({
+      changedFiles: ['.claude/skills/boss-proof/SKILL.md', 'CONCEPTS.md'],
+      selectedRecipes: [],
+    }),
+    false,
+  )
+  // A real services/docs change with no matched recipe STILL gets the check.
+  assert.equal(
+    shouldPostDocsBuildCheck({ changedFiles: ['services/docs/README.md'], selectedRecipes: [] }),
+    true,
+  )
+  // Mixed: the docs site plus repo-root prose still builds the site.
+  assert.equal(
+    shouldPostDocsBuildCheck({
+      changedFiles: ['services/docs/docs/guides/mcp.md', 'docs/plans/BOS-1285.md'],
+      selectedRecipes: [],
+    }),
+    true,
+  )
+})
+
+// ── BOS-1285: forcedSurfaceUndemonstrable ────────────────────────────────────
+
+test('forcedSurfaceUndemonstrable is true for a prose/harness diff with no recipe', () => {
+  // The exact shape source note BOS-1186 reports: a skills-toolbox, scripts,
+  // agent-skill Markdown, docs/solutions and CONCEPTS.md diff whose plan bullet
+  // said "page", leaving surfaces.web true with recipes: [].
+  assert.equal(
+    forcedSurfaceUndemonstrable({
+      changedFiles: [
+        'skills-toolbox/pr-check-state.mjs',
+        'scripts/proof-surfaces.mjs',
+        '.claude/skills/boss-proof/SKILL.md',
+        'docs/solutions/proof/classification.md',
+        'CONCEPTS.md',
+      ],
+      recipes: [],
+    }),
+    true,
+  )
+  // Test-only and generated/contract files are equally undemonstrable.
+  assert.equal(
+    forcedSurfaceUndemonstrable({
+      changedFiles: [
+        'services/boss/internal/views/home_test.go',
+        'proto/bossanova/v1/orchestrator.proto',
+        'services/web/src/gen/orchestrator_pb.ts',
+      ],
+      recipes: [],
+    }),
+    true,
+  )
+})
+
+test('forcedSurfaceUndemonstrable keeps the R6 escape hatch for product code', () => {
+  // A behaviour-only backend change is exactly what forcedSurfaces exists for:
+  // no surface by path, but real product code a bullet can ask to see.
+  assert.equal(
+    forcedSurfaceUndemonstrable({
+      changedFiles: ['services/bossd/internal/server/server.go'],
+      recipes: [],
+    }),
+    false,
+  )
+  assert.equal(
+    forcedSurfaceUndemonstrable({
+      changedFiles: ['services/web/src/pages/Sessions.tsx'],
+      recipes: [],
+    }),
+    false,
+  )
+  // A selected recipe means there IS a deterministic capture to run.
+  assert.equal(
+    forcedSurfaceUndemonstrable({
+      changedFiles: ['docs/plans/BOS-1285.md'],
+      recipes: [{ id: 'docs-home', surface: 'docs' }],
+    }),
+    false,
+  )
+  // Defaults: `recipes` is optional.
+  assert.equal(forcedSurfaceUndemonstrable({ changedFiles: ['scripts/proof.mjs'] }), true)
+})
+
+test('forcedSurfaceUndemonstrable keeps the R6 hatch for a hand-written client change', () => {
+  // BOS-1285 review: the committed catalog has no services/boss/ pathRule, so
+  // recipes are ALWAYS [] for a TUI diff — the productSourcePresent conjunct is
+  // the only thing standing between a forced TUI surface and a silent
+  // forced-no-surface discard. A client-only change alters what a view
+  // receives, so its forced surface must survive.
+  assert.equal(
+    forcedSurfaceUndemonstrable({
+      changedFiles: ['services/boss/internal/client/remote.go'],
+      recipes: [],
+    }),
+    false,
+  )
+  // Genuinely generated contract/client output is still undemonstrable.
+  assert.equal(
+    forcedSurfaceUndemonstrable({
+      changedFiles: ['proto/bossanova/v1/orchestrator.proto', 'services/web/src/gen/x_pb.ts'],
+      recipes: [],
+    }),
+    true,
+  )
+})
+
+test('forcedSurfaceUndemonstrable agrees with resolveSurfacePlan on a forced-web prose diff', () => {
+  const changedFiles = ['.claude/skills/boss-proof/SKILL.md', 'skills-toolbox/x.mjs']
+  const plan = resolveSurfacePlan({
+    catalog: { version: 1, recipes: [], pathRules: [] },
+    changedFiles,
+    requiredProofBullets: ['(web) The /settings page shows the new toggle.'],
+    env: {},
+  })
+  // The keyword force still puts web in the order — this ticket deliberately
+  // does NOT suppress the force …
+  assert.deepEqual(plan.order, ['web'])
+  assert.equal(plan.surfaces.web, true)
+  // … it gives the dispatcher an honest, non-fatal code for it instead.
+  assert.equal(forcedSurfaceUndemonstrable({ changedFiles, recipes: plan.recipes }), true)
 })
 
 test('shouldCleanupRunDir: clean only on a real successful post', () => {
@@ -760,7 +911,7 @@ const defaultCatalog = JSON.parse(
 // a recipe-less TUI diff to the web agent.
 test('a boss-only diff resolves to surface tui with zero matched recipes', () => {
   withAgentSurfaceEnv({}, () => {
-    const changedFiles = ['services/boss/internal/client/cron.go']
+    const changedFiles = ['services/boss/internal/views/cron.go']
     assert.deepEqual(
       selectRecipes(defaultCatalog, changedFiles),
       [],
@@ -770,13 +921,12 @@ test('a boss-only diff resolves to surface tui with zero matched recipes', () =>
   })
 })
 
-test('agentSurface routes every TUI prefix to tui against the real default catalog', () => {
+test('agentSurface routes every RENDERING TUI prefix to tui against the real default catalog', () => {
   withAgentSurfaceEnv({}, () => {
     for (const file of [
       'services/boss/internal/views/home.go',
       'services/boss/internal/tuidriver/keybytes.go',
       'services/boss/cmd/root.go',
-      'proto/boss.proto',
     ]) {
       assert.equal(
         agentSurface({ catalog: defaultCatalog, changedFiles: [file] }),
@@ -784,6 +934,32 @@ test('agentSurface routes every TUI prefix to tui against the real default catal
         `${file} should route to the agentic TUI surface`,
       )
     }
+  })
+})
+
+// BOS-1285: the accompanying-only tier. `proto/` and
+// `services/boss/internal/client/` STAY in TUI_SURFACE_PREFIXES — a contract or
+// client edit can change what a view renders or receives — but neither raises
+// the TUI surface alone, because a client-only RPC migration has no runnable
+// TUI scene (source note BOS-1165). Pinned against the REAL default catalog so
+// the routing, not just the predicate, is covered.
+test('agentSurface does not route a contract- or client-only diff to the TUI agent', () => {
+  withAgentSurfaceEnv({}, () => {
+    for (const file of ['proto/boss.proto', 'services/boss/internal/client/cron.go']) {
+      assert.notEqual(
+        agentSurface({ catalog: defaultCatalog, changedFiles: [file] }),
+        'tui',
+        `${file} alone must not force the agentic TUI surface`,
+      )
+    }
+    // Paired with a view, the TUI surface is back.
+    assert.equal(
+      agentSurface({
+        catalog: defaultCatalog,
+        changedFiles: ['proto/boss.proto', 'services/boss/internal/views/home.go'],
+      }),
+      'tui',
+    )
   })
 })
 
@@ -1754,10 +1930,31 @@ test('BOS-789: plan emits no top-level surface scalar for a backend-only diff', 
 })
 
 test('BOS-789: plan keeps the authoritative multi-surface view intact', () => {
-  const out = runPlan('proto/x.proto')
+  const out = runPlan('services/boss/internal/views/home.go')
   assert.ok(!('surface' in out), 'no surface scalar on the TUI path either')
   assert.deepEqual(out.surfaces, { tui: true, web: false })
   assert.deepEqual(out.order, ['tui'])
+})
+
+// BOS-1285: the `plan` JSON is the only artifact a downstream agent or reviewer
+// reads, so the tier filter has to be visible IN IT, through the real CLI.
+test('BOS-1285: plan reports no surface for a contract-only diff', () => {
+  const out = runPlan('proto/x.proto')
+  assert.deepEqual(out.surfaces, { tui: false, web: false })
+  assert.deepEqual(out.order, [])
+  assert.deepEqual(out.recipes, [])
+})
+
+test('BOS-1285: plan reports no surface for a generated-web-client-only diff', () => {
+  const out = runPlan('services/web/src/gen/bossanova/v1/orchestrator_pb.ts')
+  assert.deepEqual(out.surfaces, { tui: false, web: false })
+  assert.deepEqual(out.order, [])
+})
+
+test('BOS-1285: plan reports no surface for a test-only TUI diff', () => {
+  const out = runPlan('services/boss/internal/views/home_test.go')
+  assert.deepEqual(out.surfaces, { tui: false, web: false })
+  assert.deepEqual(out.order, [])
 })
 
 test('BOS-789: an unknown proof command names the accepted set and points at --help', () => {

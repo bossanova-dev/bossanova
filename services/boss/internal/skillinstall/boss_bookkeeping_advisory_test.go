@@ -70,15 +70,24 @@ func TestSkillsDriftWarnsWhileMissingInstallBlocks(t *testing.T) {
 				hasHardStop bool
 				stillHard   string
 				driftWarns  string
+				// delegates is the call that replaced this skill's hand-rolled severity `case`
+				// arm, and verdictPath is the vendored classifier it calls. Both are per-skill
+				// because each core resolves its own toolbox variable.
+				delegates   string
+				verdictPath string
 			}{
 				{
 					path:        "skills/boss-build/SKILL.md",
+					delegates:   `node "$BOSS_BUILD_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1`,
+					verdictPath: "skills/boss-build/toolbox/skill-drift-verdict.mjs",
 					hasHardStop: true,
 					stillHard:   `BLOCKED: installed boss skills not found`,
 					driftWarns:  "warning: installed boss skills drift from checkout source",
 				},
 				{
 					path:        "skills/boss-plan/SKILL.md",
+					delegates:   `node "$BOSS_PLAN_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1`,
+					verdictPath: "skills/boss-plan/toolbox/skill-drift-verdict.mjs",
 					hasHardStop: true,
 					stillHard:   `BLOCKED: installed boss skills missing or stale`,
 					driftWarns:  "warning: installed boss skills drift from checkout source",
@@ -89,6 +98,8 @@ func TestSkillsDriftWarnsWhileMissingInstallBlocks(t *testing.T) {
 					// homes), so there is no stillHard string to assert here. Its only
 					// `BLOCKED:` is the transport stop, which this table does not cover.
 					path:        "skills/boss-repair/SKILL.md",
+					delegates:   `node "$BOSS_REPAIR_TOOLBOX/skill-drift-verdict.mjs" classify --status 1 >&2 || exit 1`,
+					verdictPath: "skills/boss-repair/toolbox/skill-drift-verdict.mjs",
 					hasHardStop: false,
 					stillHard:   "",
 					driftWarns:  "warning: installed boss skills drift from checkout source",
@@ -110,15 +121,30 @@ func TestSkillsDriftWarnsWhileMissingInstallBlocks(t *testing.T) {
 
 					skill := unwrapped(readPayloadFile(t, payload, tc.path))
 
-					// Drift warns and continues...
-					assertContains(t, skill, tc.driftWarns)
-					assertContains(t, skill, "bookkeeping only, work state unaffected")
-					// ...and the old BLOCKED arm is gone from both drift gates...
+					// The severity decision is DELEGATED, not restated. BOS-1280 split the one
+					// flat advisory along the kind and direction the gate already reports, so a
+					// body that still decided severity itself would be a second rule free to
+					// disagree with the classifier.
+					assertContains(t, skill, tc.delegates)
+
+					// The wording moved with the decision, so the advisory sentence must be
+					// reachable from the copy an installed run loads — the classifier vendored
+					// into this core's own toolbox. Asserting it in the body instead would pass
+					// only while the duplication this ticket deleted was still present.
+					verdict := readPayloadFile(t, payload, tc.verdictPath)
+					assertContains(t, verdict, tc.driftWarns)
+					assertContains(t, verdict, "bookkeeping only, work state unaffected")
+
+					// The RECORDING side still warns and continues: a blanket stop over every
+					// drifted path stays gone. The capability side blocks through the
+					// classifier's verdict on the kind the gate reported, never through an arm
+					// that cannot tell the two apart.
 					assertNotContains(t, skill, "BLOCKED: installed boss skills differ from checkout source")
-					// ...including its `exit 1`: warning wording alone would still pass with the
-					// hard stop restored underneath it, which is the regression this ticket
-					// exists to prevent. The control-flow change IS the ticket's claim.
-					assertContains(t, skill, `work state unaffected" >&2 fi ;; esac`)
+
+					// ...and the hand-rolled remedy extraction the delegation replaced is gone.
+					// Pinning the call alone would stay green with the old prose rule left
+					// underneath it, which is the shape this row exists to prevent.
+					assertNotContains(t, skill, "sed -n")
 
 					// ...but a missing install is still a hard stop, where the skill has one.
 					if tc.hasHardStop {

@@ -56,6 +56,12 @@ tier and reason. The Bossanova-specific operational rules on top of that core:
 - **Commit discipline.** Commit fixes tagless with `git commit --no-verify` (the husky hooks
   crash in dependency-free worktrees; bossd's finalize injects the `[#PR]` tag). Stage only
   the paths a fix touched — never a blanket `git add -A`.
+- **Author the message inside the tag's budget.** `--no-verify` bypasses every message check, so
+  **nothing validates these messages until the finalize amend does** — and that amend runs
+  mid-rebase over the whole branch, where one unamendable message leaves every commit untagged.
+  So write a **scope** (`type(scope): …`), keep the subject inside the repo's own header limit
+  **minus** the width of the tag finalize prepends, and keep body lines inside the repo's own
+  body-line limit. Read those limits from the repo; never assume a number.
 
 ### Verify a claim before you write it down
 
@@ -193,18 +199,35 @@ remaining=null                        # `null` = no deadline supplied; NEVER a d
 if [ -n "${deadline:-}" ]; then
   remaining=$(( deadline - now ))
 fi
+# Default the reserve inputs HERE: an unset name interpolates empty and the JSON
+# below stops parsing, which reads as a broken gate rather than a spent reserve.
+self_inflicted_mustfix="${self_inflicted_mustfix:-false}"   # false unless THIS pass caused it
+regression_rounds_used="${regression_rounds_used:-0}"
 node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-fix-round \
   "{\"remainingSeconds\": $remaining, \"fixRoundSeconds\": $FIX_ROUND_SECONDS,
     \"openMustFix\": $open_mustfix, \"unattemptedMustFix\": $unattempted_mustfix,
     \"roundsUsed\": $rounds_used, \"maxRounds\": $max_rounds,
-    \"overrunRoundsUsed\": $overrun_rounds_used}"
+    \"overrunRoundsUsed\": $overrun_rounds_used,
+    \"selfInflictedMustFix\": $self_inflicted_mustfix,
+    \"regressionRoundsUsed\": $regression_rounds_used}"
 # {"admit":true,"reason":"within-budget"}      → run it; charge nothing to the overrun allowance
 # {"admit":true,"reason":"mustfix-override"}   → run it, and increment $overrun_rounds_used
+# {"admit":true,"reason":"regression-reserved"} → run it, and increment $regression_rounds_used
 # {"admit":false,"reason":"round-cap"}         → stop the fix loop; the round cap is NEVER overridden
-# {"admit":false,"reason":"overrun-exhausted"} → stop the fix loop; the override is spent for this run
+# {"admit":false,"reason":"overrun-exhausted"} → stop the fix loop; both allowances are spent
 # {"admit":false,"reason":"all-attempted"}     → stop the fix loop; every open must-fix has had a round
 # {"admit":false,"reason":"no-open-mustfix"}   → stop the fix loop; never dispatch a fixer on an empty list
 ```
+
+**The second exception — a must-fix this pass itself caused.** A `Critical` raised in a later round
+against a fix an earlier round of THIS pass landed competes for the same single overrun the earlier
+round already spent, so the pass cannot repair the regression it introduced and stops at
+`overrun-exhausted` — a lawful-looking terminal state over its own damage. Set
+`self_inflicted_mustfix=true` when an open must-fix cites a site a fix commit this pass landed
+touched, and that round draws on `RESERVED_REGRESSION_ROUNDS` instead: one round for the whole run,
+bounded apart from the overrun and spent only after it. Attribution is **yours** — the helper stays
+pure and never computes it — so report it only from the pass's own fix commits, never from a guess.
+The round cap still wins outright: the reserve admits from below the cap, never through it.
 
 **What `→ stop` stops is the _fix_ loop, and nothing else.** This gate admits or refuses a **fix
 round**, so `no-open-mustfix` restates the standing rule that the Phase 6 fixer is never dispatched

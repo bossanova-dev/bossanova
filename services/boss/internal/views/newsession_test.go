@@ -201,7 +201,9 @@ func (s *stubClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error
 	panic("unused")
 }
 func (s *stubClient) UpdateChatTitle(context.Context, string, string) error { panic("unused") }
-func (s *stubClient) DeleteChat(context.Context, string) error              { panic("unused") }
+func (s *stubClient) DeleteChat(context.Context, string, pb.DeleteChatRequest_DeletionReason) error {
+	panic("unused")
+}
 func (s *stubClient) WakeChat(context.Context, string, string, bool) (*pb.WakeChatResponse, error) {
 	panic("unused")
 }

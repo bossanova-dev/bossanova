@@ -855,8 +855,9 @@ non-empty, **skip the merge this cycle with a progress-comment note** (e.g.
 state: "Done"}`, fold the id into `merged` (plus `externallyCleared` for a
    non-node adopted child — its dependents gate externally and must unpark
    before the exit check), and refresh the base:
-   `git pull --rebase` in the driver's repo checkout (skip with a logged note if
-   the driver worktree is not on the base branch or is dirty).
+   `git fetch origin <base>` then `git rebase --no-fork-point FETCH_HEAD` in
+   the driver's repo checkout (skip with a logged note if the driver worktree
+   is not on the base branch or is dirty).
 3. **`FailedPrecondition "PR is not passing"` or a conflict** (a sibling merge
    just landed and invalidated this green) → demote the ticket from `greens` back
    to a repair round. This conflict-after-green demotion gets its **own single

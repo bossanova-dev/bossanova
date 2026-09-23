@@ -199,15 +199,41 @@ func (s *SQLiteAgentChatStore) ClearTmuxSessionNameIf(ctx context.Context, agent
 	return nil
 }
 
+// requireRowAffected turns "this UPDATE matched nothing" into an error. A
+// statement whose WHERE clause is not the primary key can silently address no
+// row at all, and a store method whose contract is "this row exists, change it"
+// must not report success for that: a binding that never landed would be
+// indistinguishable from one that was never attempted (BOS-1298).
+//
+// RowsAffected's own error is surfaced as itself and never collapsed into the
+// zero-row branch — that collapse is how a driver fault gets reported as a
+// missing row, which sends the reader looking in the wrong place.
+func requireRowAffected(res sql.Result, op, agentSessionID string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s rows affected: %w", op, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, agentSessionID)
+	}
+	return nil
+}
+
+// UpdateProviderSessionID binds (or clears) a chat's provider_session_id. The
+// statement is addressed by agent_session_id, which
+// 20260904000000_agent_chats_unique_agent_session_id makes UNIQUE — so exactly
+// one row can match and a zero-row result is unambiguously "no such chat"
+// rather than "which of several?". No matching row is an error (wrapped
+// ErrAgentChatNotFound), matching RebindResumedChat in this same store.
 func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error {
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE agent_chats SET provider_session_id = ? WHERE agent_session_id = ?`,
 		providerSessionID, agentSessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update agent_chat provider_session_id: %w", err)
 	}
-	return nil
+	return requireRowAffected(res, "update agent_chat provider_session_id", agentSessionID)
 }
 
 func (s *SQLiteAgentChatStore) UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {

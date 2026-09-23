@@ -1,7 +1,6 @@
 package agenttelemetry
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +12,57 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/jsonlscan"
 )
+
+// skipLog reports records dropped for exceeding the JSONL parse budget.
+//
+// It defaults to stderr rather than to Nop because every consumer of this
+// package runs inside bossd, whose stderr is captured into the service log —
+// a Nop default would make the count unreachable in the only process that
+// produces it. Tests swap it for a buffer.
+var skipLog = zerolog.New(os.Stderr).With().Timestamp().Str("component", "agenttelemetry").Logger()
+
+// reportSkipped emits one structured line per read that dropped records, and
+// nothing at all when a read was clean: zero skips is not an event, and a line
+// saying so would bury the ones that matter.
+func reportSkipped(source string, skipped int) {
+	if skipped <= 0 {
+		return
+	}
+	skipLog.Info().
+		Str("source", source).
+		Int("skipped_records", skipped).
+		Int("max_line_bytes", jsonlscan.MaxLineBytes).
+		Msg("agent JSONL: skipped records over the parse budget")
+}
+
+// classifyJSONLErr wires up RedactedLineError, which shipped with zero
+// callers. That is exactly why the incident log read as a bare
+// `bufio.Scanner: token too long`: the error naming the stream, the line and
+// the failure type existed but nothing called it. The underlying error stays
+// reachable so a caller's errors.Is still works.
+func classifyJSONLErr(source string, line int, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &redactedError{msg: RedactedLineError(source, line, err), err: err}
+}
+
+// redactedError renders the redacted message while leaving the underlying
+// error reachable by errors.Is/As. Wrapping with %w instead would splice
+// err.Error() — the very content RedactedLineError omits — back into the text,
+// which is how the redaction contract was unenforced at its only call site.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
 
 var claudeProjectKeyRe = regexp.MustCompile(`[^A-Za-z0-9]`)
 
@@ -479,7 +528,13 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 	var finalReasoningTokenCount *int64
 	subtractCodexTokenBaseline := codexTokenBaseline
 	var finalCodexUsageCumulative bool
-	scanner := newJSONLScanner(r)
+	// A 10 MiB ceiling used to live here, independent of the codex plugin's
+	// 8 MiB one and breached by 7 records in the same file. Both callers logged
+	// at Warn and dropped the run's token counts. Telemetry reads only the type
+	// discriminator and the token payload, both of which sit in the first few
+	// hundred bytes of a line, so a skipped multi-megabyte tool-output record
+	// cannot change a tally.
+	scanner := jsonlscan.New(r)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return Counts{}, codexTokenBaseline, err
@@ -681,7 +736,8 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 	if err := ctx.Err(); err != nil {
 		return Counts{}, codexTokenBaseline, err
 	}
-	return out, codexTokenBaseline, scanner.Err()
+	reportSkipped(provider+" jsonl", scanner.Skipped())
+	return out, codexTokenBaseline, classifyJSONLErr(provider+" jsonl", scanner.Line(), scanner.Err())
 }
 
 func isCodexSubagentToolName(name string) bool {
@@ -732,7 +788,7 @@ func timestamps(path string) (time.Time, time.Time, error) {
 		return time.Time{}, time.Time{}, err
 	}
 	defer func() { _ = f.Close() }()
-	scanner := newJSONLScanner(f)
+	scanner := jsonlscan.New(f)
 	var first, last time.Time
 	for scanner.Scan() {
 		var line genericLine
@@ -748,19 +804,14 @@ func timestamps(path string) (time.Time, time.Time, error) {
 		}
 		last = ts
 	}
-	if err := scanner.Err(); err != nil {
+	reportSkipped(path, scanner.Skipped())
+	if err := classifyJSONLErr(path, scanner.Line(), scanner.Err()); err != nil {
 		return time.Time{}, time.Time{}, err
 	}
 	if first.IsZero() || last.IsZero() {
 		return time.Time{}, time.Time{}, errors.New("no parseable timestamps")
 	}
 	return first, last, nil
-}
-
-func newJSONLScanner(r io.Reader) *bufio.Scanner {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
-	return scanner
 }
 
 func addPtr(dst **int64, value int64) {

@@ -292,6 +292,14 @@
 //     pipeline nested in command substitution where the value is the consumed signal, and a same-line
 //     or next-line `$pipestatus[1]` guard that exits or returns on failure.
 //
+//     THE PREDICATE EXEMPTION DOES NOT SURVIVE A DISPLAY-FILTER TAIL. Its whole justification is
+//     that the pipeline's VALUE is the consumed signal, and a display filter (the
+//     PIPELINE_STATUS_DISPLAY_TAILS set) yields no value to consume while reporting an
+//     unconditional 0 — so `if make test | tee log.txt; then` tests `tee`, not `make`, and reads
+//     green on a failure. That is rule (k)'s founding defect standing inside an `if`, not an
+//     instance of the exemption. The exemption is unchanged for every other tail, which is the
+//     shape it was written for (`if boss … --json | jq -e '.ok'; then`).
+//
 //     THE EXEMPTING SPELLING IS `$pipestatus[1]`, NOT `${PIPESTATUS[0]}`, and the asymmetry is a
 //     measurement rather than a preference. The harness's Bash tool evaluates zsh (see (l)), and
 //     measured there `${PIPESTATUS[0]}` expands to NOTHING — it is unset — while `$pipestatus[1]`
@@ -302,8 +310,41 @@
 //     Measured when this was narrowed: zero blocks in either authoring root read either name, so no
 //     existing finding moved.
 //
+//     THREE HEADS ARE ALSO KEYED ON THE TAIL, and the corpus is what decided that rather than taste.
+//     `boss` and `node` were added because both head real status-bearing gates: a piped
+//     `boss skills check --gate | tail -20` measurably inverted a FAIL into a PASS, and
+//     `node scripts/proof.mjs run … | tail -25` is the same shape. Unlike `make`, `go` and the
+//     package managers, though, they also head VALUE plumbing and — being the two command words
+//     this corpus documents most — they stand on documentation lines carrying `<a|b>` alternation
+//     placeholders, whose `|` is not a pipeline at all. Measured on the head-only widening: 23
+//     findings, of which 20 were a placeholder's `|` (`boss chat show <session-id|chat-id>`,
+//     `node … validate --state <file|->`) and 3 were `boss … --json | jq …` one-liners whose jq
+//     output IS the consumed signal. All 23 are the false POSITIVE direction this file forbids.
+//     So for these two heads the finding additionally requires the pipeline's LAST stage to be a
+//     DISPLAY filter — `tail`, `head`, `tee`, `cat`, `less`, `more`, `wc`, `nl` — a process that
+//     exists to show its input and whose own status is an unconditional 0 masking the head's. Both
+//     measured incidents pipe into `tail`, so the narrowing keeps exactly what the widening was for.
+//     It is applied to NEITHER of the original heads: `make test | tee log.txt` and every sibling
+//     verb report on the head alone, exactly as before, and no existing finding moved.
+//
+//     `git` JOINED THE TAIL-KEYED SET for the same reason, and needed ONE MORE KEY. A `git push`
+//     whose status decides a `PUSHED=yes` is a status-bearing gate, and piping it for brevity
+//     hands the loop the filter's unconditional 0 — a push that failed, recorded as one that
+//     landed. But `git` heads more value plumbing than any other word in this corpus, and the
+//     display-filter tail alone does not separate the two: measured on the tail-only widening,
+//     six `git log … | grep … | head -8` census one-liners across the repo-local skills reported,
+//     every one a correct line whose status nobody reads. So a `git` finding additionally requires
+//     a WRITE subcommand (PIPELINE_STATUS_GIT_WRITE_SUBCOMMANDS, an allowlist, so an unrecognised
+//     verb stays silent). With that key the whole-tree finding count is unchanged, and the class
+//     is guarded against reintroduction rather than an existing finding being moved.
+//
 //     Accepted false negatives, same direction as the other rules: unallowlisted command heads,
-//     status guards farther away, and pipelines in prose or non-shell fences.
+//     status guards farther away, pipelines in prose or non-shell fences, and — for the three
+//     tail-keyed heads only — a masked status whose tail is not a display filter (`boss ls --json | jq …`
+//     really does report jq's status, and is knowingly given up to keep the placeholder lines
+//     silent). The placeholder `|` itself is left unmasked for the other heads too: no live site
+//     exists there, and `docs/skills/README.md`'s standing convention is that a class with no live
+//     site is recorded rather than gated.
 //
 // (l) A `for … in $VAR` LOOP RELIES ON WORD-SPLITTING THE SHELL MAY NOT DO. This is the one rule
 //     here whose subject is a DIFFERENT SHELL from the one (e) parses with. Measured on this
@@ -345,6 +386,102 @@
 //     cmd $F` yields argc=2). Reporting them would be the false POSITIVE this file forbids four
 //     times over, on day one, with no waiver to reach for. Widening to argument position needs a
 //     per-line waiver like (j)'s first; it is not a patch here.
+//
+// (m) A ZSH TIED SCALAR MUST NOT BE USED AS AN ORDINARY VARIABLE. Same subject as (l) — the shell
+//     the Bash tool really evaluates — and the same silent-green consequence, arrived at by a
+//     different route. zsh TIES five lowercase scalars to the colon-lists of the same uppercase
+//     name: `path`/`PATH`, `cdpath`/`CDPATH`, `fpath`/`FPATH`, `manpath`/`MANPATH` and
+//     `module_path`/`MODULE_PATH`. Writing the lowercase name REPLACES the uppercase value, so a
+//     loop that borrows `path` as its iteration variable empties `PATH` on its first pass and every
+//     command after it in the block is not found. Measured on zsh 5.9:
+//     `zsh -c 'path=x; command -v git >/dev/null && echo STILL-FOUND || echo CLOBBERED'` prints
+//     CLOBBERED. Under bash the same line is an ordinary variable, which is exactly why this has
+//     never been caught by eye.
+//
+//     THE `read` TARGET IS THE SPELLING NOBODY EXPECTS, and it is worse than the assignment because
+//     the loop LOOKS contained. Measured:
+//     `zsh -c 'printf "x/y\n" | while IFS= read -r path; do :; done; echo "[$PATH]"'` prints `[]` —
+//     zsh runs a pipeline's LAST stage in the CURRENT shell (see (l)), so the clobber escapes the
+//     loop it was written inside. bash runs that stage in a subshell and contains it.
+//
+//     THE FIX IS THE NAME, NOT THE SHEBANG. A source note for this rule proposed pinning the block
+//     to bash because it also believed `${entry:3}` was a zsh modifier rather than a substring.
+//     Measured, `${entry:3}` is ordinary substring expansion under zsh 5.9 and bash 5.3.9 alike, so
+//     that premise is false; and a bash shebang would leave the tied name in place for the next
+//     author, in a block that is executed by whatever the harness evaluates. Rename the variable.
+//
+//     Three constructs are reported — a LEADING ASSIGNMENT, a `read` TARGET, and a `for` LOOP
+//     VARIABLE — because those are the three ways a block writes a name without saying `export`.
+//     The uppercase `PATH` is reported ONLY as a loop variable: `PATH="$PATH:/x"` is the ordinary
+//     correct spelling of an assignment and reporting it would be the false POSITIVE this file
+//     forbids, while no loop ever wants to overwrite `PATH` one item at a time.
+//
+//     ACCEPTED FALSE NEGATIVES, in the same one direction as (f), (h), (i) and (l):
+//     an uppercase `PATH=`/`read PATH` (indistinguishable from a deliberate re-export, and the
+//     corpus has none); a tied name written through `local`, `typeset`, `declare`, `export`,
+//     `eval` or `set -A`, since none of those is a leading assignment and `local path` is in fact
+//     the one spelling zsh scopes for you; a LONE assignment whose segment is terminated by `)`,
+//     which is given up so that every `case` branch pattern (`;; path=*) …`) stays silent — a
+//     `( path=x )` inline subshell is the whole cost; and heredoc payload, prose and non-shell
+//     fences, which this rule inherits from the fence walker like every rule above.
+//
+// (n) ONE UNQUOTED GLOB BESIDE A LITERAL PATH IS STILL AN ABORT. This narrows the hole (f) names
+//     out loud. (f) requires TWO unquoted globs before it reports, because "on `rm`/`find` argv one
+//     glob is the ordinary correct spelling" — and it is, when the glob is the only thing being
+//     removed. It stops being true the moment the same `rm` also carries a LITERAL path: the
+//     unmatched glob aborts the whole line under zsh (`no matches found`) and fish, so the literals
+//     are silently not removed and the block still reads as a completed cleanup. Measured incident:
+//     `rm -f /tmp/x.plan.bak /tmp/x.hdrs.* /tmp/x.put.out` left BOTH literals on disk whenever no
+//     `hdrs` file happened to exist. THE SANCTIONED FIX IS NOT (i)'s. Quoting works for
+//     `grep --include` and `find -name` because those commands match the pattern INTERNALLY; `rm`
+//     does not, the SHELL expands its glob, so a quoted pattern reaches `rm` as a literal filename
+//     that almost never exists — and under `-f` that exits 0 in silence, leaving the files the glob
+//     was meant to remove exactly where they were. Quoting therefore satisfies this GATE while
+//     making the BEHAVIOUR worse. Give the glob its own line: the literals are removed first, and an
+//     aborting glob line can no longer take them down with it.
+//
+//     A REDIRECTION WORD IS NOT A REMOVAL TARGET. The tokenizer leaves `2>/dev/null`, `>/dev/null`
+//     and `2>&1` in argv as ordinary words rather than operators, and each one would otherwise pass
+//     every test `isLiteralRemovalTarget` makes — so `rm -f /tmp/x.* 2>/dev/null`, the commonest
+//     `rm`-plus-glob spelling of all, would report that the line "silently does not remove"
+//     `2>/dev/null`. Anything matching `/^\d*[<>]/` is therefore excluded, and an `rm` whose only
+//     non-glob words are redirections stays (f)'s ordinary-spelling allowance.
+//
+//     ACCEPTED FALSE NEGATIVES: a real file whose name BEGINS with `<` or `>` is excluded with the
+//     redirections and goes unreported — unnameable in this corpus, and the alternative is the one
+//     direction this file forbids; `find` is not covered, even though an unmatched pattern aborts its
+//     line identically, because a literal on `find` argv is a SEARCH ROOT rather than a removal
+//     target and the corpus carries none; two or more unquoted globs belong to (f)'s `multi-glob`
+//     and are deliberately left there so one line never reports twice; an `rm` whose only other
+//     arguments are options stays (f)'s ordinary-spelling allowance; and a command word hidden
+//     behind a wrapper option shares `commandWordIndex`'s own accepted cost.
+//
+// (o) A BLOCK MUST NOT END ON `[ … ] && cmd`. The inverse of (k), and no `pipefail` guard reaches
+//     it. A list's status is its last command's, and `[ … ] && cmd` reports the TEST's status when
+//     the test is false — so a block whose final statement has that shape exits 1 whenever the
+//     condition does not hold. Measured incident: a plan-contract gate block ended on
+//     `[ -n "$VIOLATIONS" ] && printf '%s\n' "$VIOLATIONS"`, where an EMPTY `$VIOLATIONS` is the
+//     PASSING case; the gate passed, the block exited 1, and the run read it as a red gate. The
+//     sanctioned fix keeps the status out of the accident of a truth value: write the conditional
+//     as `if [ … ]; then cmd; fi`, or capture it in its own statement (`cmd; RC=$?`) and end the
+//     block on something whose status you mean.
+//
+//     THE RULE IS POSITIONAL, and that is the whole of it. `[ … ] && continue` inside a loop and
+//     `[ … ] && return 0` inside a function are correct, ordinary shell whose status no one reads;
+//     this corpus carries five of them and every one must stay silent. Only the FINAL statement of
+//     the FINAL code line of a block is considered, because only that one becomes the block's own
+//     status. ONE trailing `;` is stripped before that final statement is taken: it terminates the
+//     statement it already ends and leaves the list's status untouched, so `[ … ] && cmd;` is the
+//     same defect as `[ … ] && cmd` and must not go silent on a cosmetic separator. Exactly one,
+//     and only a lone one — `;;`, `;&` and `;;&` end a `case` branch whose status no one reads.
+//
+//     ACCEPTED FALSE NEGATIVES: a trailing `||` arm exempts (`[ … ] && a || b` yields b's status
+//     when the test fails, so it cannot invert a pass into a red); `[[ … ]] && cmd` is not reported
+//     although its semantics are identical, because the corpus has no live site and this rule is
+//     kept to the two spellings the measured incidents used; a non-test head (`grep -q X && echo
+//     found`) is not reported, since an arbitrary command's falsity is usually a real failure and
+//     reporting it would flag correct lines; and a final statement whose status an enclosing
+//     construct consumes is outside a rule that reads position only.
 //
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
@@ -3914,6 +4051,81 @@ export function findMultiGlobRemovals(body) {
   return findings
 }
 
+// A word that contributes a LITERAL removal target: not an option, not the `--` end-of-options
+// marker, and carrying no pathname pattern at all. An unquoted expansion (`"$FILE"`, `$DIR/x`)
+// counts, because the abort skips it exactly as it skips a spelled-out path — the rule's subject is
+// what the line fails to remove, not whether the name was written out in full.
+function isLiteralRemovalTarget(token) {
+  if (globPatterns(token).length > 0) return false
+  const word = removeQuotes(token.raw)
+  if (word === '' || word === '--') return false
+  // A REDIRECTION is not an argument. The tokenizer does not mark `2>/dev/null`, `>/dev/null` or
+  // `2>&1` as an operator, so each survives into argv as an ordinary word — and every one of them
+  // passes the three tests above. Without this guard `rm <glob> 2>/dev/null`, the commonest
+  // `rm`-plus-glob spelling there is, reports that the shell "silently does not remove"
+  // `2>/dev/null`, which is the false POSITIVE this file forbids three times over.
+  if (/^\d*[<>]/.test(word)) return false
+  return !word.startsWith('-')
+}
+
+/**
+ * Report `rm` invocations carrying exactly ONE unquoted glob alongside at least one literal path —
+ * see header rule (n). Returns [{ lineOffset, command, glob, literals }], with `lineOffset` the
+ * 0-based index of the first physical line of the (continuation-joined) logical line.
+ *
+ * Deliberately disjoint from `findMultiGlobRemovals`: two or more globs are that rule's finding, so
+ * a line is never reported by both.
+ */
+export function findMixedGlobRemovals(body) {
+  const findings = []
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+
+  const analyze = (tokens, lineOffset) => {
+    let segment = []
+    const segments = []
+    for (const token of tokens) {
+      if (token.operator) {
+        segments.push(segment)
+        segment = []
+        continue
+      }
+      segment.push(token)
+    }
+    segments.push(segment)
+
+    for (const seg of segments) {
+      const at = commandWordIndex(seg)
+      if (at === -1) continue
+      const command = removeQuotes(seg[at].raw).split('/').pop()
+      if (command !== 'rm') continue
+      const args = seg.slice(at + 1)
+      const globs = args.flatMap(globPatterns)
+      if (globs.length !== 1) continue
+      const literals = args.filter(isLiteralRemovalTarget).map((token) => token.raw)
+      if (literals.length === 0) continue
+      findings.push({ lineOffset, command, glob: globs[0], literals })
+    }
+
+    for (const token of tokens) {
+      for (const inner of token.subs || []) {
+        for (const nested of findMixedGlobRemovals(inner)) findings.push({ ...nested, lineOffset })
+      }
+    }
+  }
+
+  let pending = null
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const tokens = tokenizeShellLine(text, state)
+    if (pending) pending.tokens.push(...tokens)
+    else pending = { tokens, lineOffset }
+    if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) continue
+    analyze(pending.tokens, pending.lineOffset)
+    pending = null
+  }
+  if (pending) analyze(pending.tokens, pending.lineOffset)
+  return findings
+}
+
 // The options whose value is a filename PATTERN the command matches internally, so an unquoted glob
 // there is always wrong (see (i)). Only the space-separated form needs this table: the attached
 // `--opt=<glob>` form carries its own `=` and is recognised structurally on any option. A separated
@@ -3951,10 +4163,16 @@ const PATTERN_VALUE_OPTIONS_BY_COMMAND = new Map([
 // length is the index just past it and any glob mark at or beyond that index sits in the value.
 const ATTACHED_OPTION_VALUE = /^-{1,2}[A-Za-z0-9][^=]*=/
 
-const PIPELINE_STATUS_HEAD_COMMANDS = new Set([
+export const PIPELINE_STATUS_HEAD_COMMANDS = new Set([
   'make',
   'go',
   'bazel',
+  // See (k)'s widening paragraph: these three are reported only through
+  // PIPELINE_STATUS_DISPLAY_TAILS, because unlike every other head here they also head value
+  // plumbing and appear in placeholder-bearing documentation lines.
+  'boss',
+  'node',
+  'git',
   'pnpm',
   'npm',
   'npx',
@@ -3967,6 +4185,74 @@ const PIPELINE_STATUS_HEAD_COMMANDS = new Set([
   'eslint',
   'tsc',
 ])
+
+// Heads whose finding additionally requires a display-filter TAIL — see (k)'s widening paragraph.
+const PIPELINE_STATUS_TAIL_SENSITIVE_HEADS = new Set(['boss', 'node', 'git'])
+
+// `git` subcommands that WRITE, and whose exit status is therefore the outcome a caller records.
+// An ALLOWLIST, not a denylist of read verbs: an unrecognised subcommand stays silent, which is
+// the accepted-false-negative direction this file takes everywhere else. Measured: `git` keyed on
+// the display-filter tail ALONE reported six census one-liners of the
+// `git log … | grep … | head -8` shape across the repo-local skills — every one a correct line
+// whose status nobody reads, and reporting a correct line is the one direction this gate must
+// never fail in. The subcommand is what separates note 8daf76581e4c1191's `git push | tail`, where
+// the status IS the recorded signal, from a `git log` census where it is not.
+const PIPELINE_STATUS_GIT_WRITE_SUBCOMMANDS = new Set([
+  'push',
+  'pull',
+  'fetch',
+  'rebase',
+  'merge',
+  'cherry-pick',
+  'revert',
+  'commit',
+  'am',
+  'apply',
+  'reset',
+  'checkout',
+  'switch',
+  'restore',
+  'clone',
+  'stash',
+  'filter-branch',
+  'update-ref',
+  'gc',
+])
+
+// Tails that exist to DISPLAY their input rather than to decide anything, and whose own status is
+// therefore an unconditional 0 that masks the head's. Both measured incidents behind the widening
+// pipe into `tail`; `tee` is the shape (k)'s founding example uses.
+const PIPELINE_STATUS_DISPLAY_TAILS = new Set([
+  'tail',
+  'head',
+  'tee',
+  'cat',
+  'less',
+  'more',
+  'wc',
+  'nl',
+])
+
+// The command word of the LAST stage of the pipeline opening at `pipelineAt` — the process whose
+// status the shell actually reports. Quote-aware through `scanGuardOperators`, so the `|` inside a
+// `jq -r '.a[] | .b'` program is not mistaken for another stage. Same slice-local approximation
+// `pipelineHeadCommand` makes; an unresolvable tail returns '' and therefore never reports.
+function pipelineTailCommand(text, pipelineAt) {
+  const after = scanGuardOperators(text.slice(pipelineAt + 1))
+  const end = after.separators[0] ? pipelineAt + 1 + after.separators[0].at : text.length
+  const lastPipe = after.pipelines.filter(({ at }) => pipelineAt + 1 + at < end).at(-1)
+  const start = lastPipe ? pipelineAt + lastPipe.at + 2 : pipelineAt + 1
+  const tokens = tokenizeShellLine(text.slice(start, end), {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  }).filter((token) => !token.operator)
+  const at = commandWordIndex(tokens)
+  if (at === -1) return ''
+  return removeQuotes(tokens[at].raw).split('/').pop()
+}
 
 // See (i): `[UPPER_SNAKE]` is this corpus’s documentation placeholder — a word a reader
 // substitutes by hand, not a bracket glob they are meant to quote. The space-separated form is
@@ -4241,6 +4527,168 @@ export function findWordSplitReliance(body) {
   return findings
 }
 
+// See (m). zsh ties each of these lowercase scalars to the colon-list of the same uppercase name,
+// so an ordinary write to one replaces the environment value. `module_path` is spelled with an
+// underscore because its array is `module_path`/`MODULE_PATH`; the others are the obvious pairs.
+const ZSH_TIED_SCALARS = new Set(['path', 'cdpath', 'fpath', 'manpath', 'module_path'])
+
+// Reported as a LOOP VARIABLE only — see (m). `PATH="$PATH:/x"` is the correct spelling of an
+// assignment, so the uppercase name is not reported there.
+const ZSH_TIED_LOOP_ONLY = new Set(['PATH', 'CDPATH', 'FPATH', 'MANPATH', 'MODULE_PATH'])
+
+// A leading `NAME=` word. The shell reads these BEFORE the command word, which is what makes a bare
+// `path="…"` line an assignment rather than an argument.
+const LEADING_ASSIGNMENT = /^([A-Za-z_]\w*)=/
+
+// A bare variable name, the only shape a `read` target can take. Options start with `-` and a
+// redirection or a quoted delimiter value cannot match, so this one test replaces an option table
+// for every spelling except the separated-value options listed below.
+const BARE_SHELL_NAME = /^[A-Za-z_]\w*$/
+
+// `read` options whose value is written as the NEXT word, so that word is a delimiter or a count
+// rather than a variable. Without this, `read -d path X` would report the delimiter.
+const READ_OPTIONS_WITH_ARGUMENTS = new Set(['-d', '-n', '-N', '-p', '-t', '-u', '-a', '-i'])
+
+/**
+ * zsh tied scalars used as ordinary variables, as [{ lineOffset, name, form }] where `form` is
+ * `assignment`, `read` or `for` — see header rule (m).
+ *
+ * Built on the same masking, continuation-joining and substitution recursion as the sibling
+ * predicates, so heredoc payload is data and a command nested in `$( … )` is still reached.
+ */
+export function findZshSpecialScalars(body) {
+  const findings = []
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+
+  const analyze = (tokens, lineOffset) => {
+    const segments = []
+    let segment = { tokens: [], terminator: null }
+    for (const token of tokens) {
+      if (token.operator) {
+        segment.terminator = token.raw
+        segments.push(segment)
+        segment = { tokens: [], terminator: null }
+        continue
+      }
+      segment.tokens.push(token)
+    }
+    segments.push(segment)
+
+    for (const { tokens: seg, terminator } of segments) {
+      // A segment closed by `)` is a `case` branch pattern far more often than it is an inline
+      // subshell holding a lone assignment; see (m) for the one instance that costs.
+      if (terminator !== ')') {
+        for (const token of seg) {
+          const assignment = LEADING_ASSIGNMENT.exec(token.raw)
+          if (assignment) {
+            if (ZSH_TIED_SCALARS.has(assignment[1]))
+              findings.push({ lineOffset, name: assignment[1], form: 'assignment' })
+            continue
+          }
+          // The leading run ends at the first word that is neither an assignment nor a keyword the
+          // shell allows in front of one, which is the command word or an argument.
+          if (!LEADING_WORDS.has(token.raw)) break
+        }
+      }
+
+      const at = commandWordIndex(seg)
+      if (at === -1) continue
+      const command = removeQuotes(seg[at].raw).split('/').pop()
+
+      if (command === 'read') {
+        for (let i = at + 1; i < seg.length; i += 1) {
+          const raw = seg[i].raw
+          if (READ_OPTIONS_WITH_ARGUMENTS.has(raw)) {
+            i += 1
+            continue
+          }
+          if (!BARE_SHELL_NAME.test(raw)) continue
+          if (ZSH_TIED_SCALARS.has(raw)) findings.push({ lineOffset, name: raw, form: 'read' })
+        }
+        continue
+      }
+
+      if (command === 'for') {
+        const name = seg[at + 1]?.raw
+        if (
+          name &&
+          BARE_SHELL_NAME.test(name) &&
+          (ZSH_TIED_SCALARS.has(name) || ZSH_TIED_LOOP_ONLY.has(name))
+        )
+          findings.push({ lineOffset, name, form: 'for' })
+      }
+    }
+
+    for (const token of tokens) {
+      for (const inner of token.subs || []) {
+        for (const nested of findZshSpecialScalars(inner)) findings.push({ ...nested, lineOffset })
+      }
+    }
+  }
+
+  let pending = null
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const tokens = tokenizeShellLine(stripTrailingComment(text), state)
+    if (pending) pending.tokens.push(...tokens)
+    else pending = { tokens, lineOffset }
+    if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) continue
+    analyze(pending.tokens, pending.lineOffset)
+    pending = null
+  }
+  if (pending) analyze(pending.tokens, pending.lineOffset)
+  return findings
+}
+
+// See (o). The head of a trailing conditional whose status becomes the block's. `[` needs its `]`
+// back; `test` takes none.
+const TRAILING_TEST_HEAD = /^(?:\[|test)(?=[ \t]|$)/
+
+/**
+ * A block whose FINAL statement is `[ … ] && cmd` or `test … && cmd`, as
+ * [{ lineOffset, head, statement }] — see header rule (o). At most one finding per block: only the
+ * final statement becomes the block's own exit status.
+ */
+export function findTrailingConditionalStatus(body) {
+  let last = null
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const code = stripTrailingComment(text).trim()
+    if (code === '') continue
+    last = { code, lineOffset }
+  }
+  if (!last) return []
+
+  // A trailing `;` is cosmetic — it terminates the statement it already ends, and a list's status
+  // is unchanged by it — but left in place it is scanned as the list-ending separator, so the
+  // "final statement" comes out EMPTY and `[ … ] && cmd;` goes silent while `[ … ] && cmd` reports.
+  // Strip exactly one, and only a lone one: `;;` is a `case` terminator (as are `;&` and `;;&`),
+  // and the statement it ends is a branch body whose status no one reads.
+  const code = /(^|[^;]);$/.test(last.code) ? last.code.slice(0, -1).trim() : last.code
+  if (code === '') return []
+
+  const { separators } = scanGuardOperators(code)
+  // The final statement starts after the last separator that ENDS a list rather than continuing it.
+  const listEnd = separators.filter(({ operator }) => operator !== '&&' && operator !== '||').pop()
+  const from = listEnd ? listEnd.at + listEnd.operator.length : 0
+  const statement = code.slice(from).trim()
+  if (!TRAILING_TEST_HEAD.test(statement)) return []
+
+  // Relative to `statement`, so a `&&` in the list before it cannot be mistaken for this one.
+  const tail = scanGuardOperators(statement).separators.filter(
+    ({ operator }) => operator === '&&' || operator === '||',
+  )
+  const firstAnd = tail.find(({ operator }) => operator === '&&')
+  if (!firstAnd) return []
+  // `[ … ] && a || b` yields b's status when the test fails, so the pass cannot read as a red.
+  if (tail.some(({ at, operator }) => operator === '||' && at > firstAnd.at)) return []
+  const condition = statement.slice(0, firstAnd.at).trim()
+  if (statement.slice(firstAnd.at + firstAnd.operator.length).trim() === '') return []
+  if (condition.startsWith('[') && !condition.endsWith(']')) return []
+
+  return [
+    { lineOffset: last.lineOffset, head: condition.startsWith('[') ? '[' : 'test', statement },
+  ]
+}
+
 // Only the zsh spelling counts as a live read of the pipeline head's status — see (k). Measured:
 // `${PIPESTATUS[0]}` is UNSET under zsh, which is the shell the Bash tool evaluates, so a guard
 // written only that way cannot fire where the block runs. A guard that also spells `$pipestatus[1]`
@@ -4357,7 +4805,12 @@ function pipelineIsConditionalPredicate(text, pipelineAt) {
   return Boolean(conditional && pipelineAt < conditionalPredicateEndsAt(text, conditional))
 }
 
-function pipelineHeadCommand(text, pipelineAt) {
+// The command word of the FIRST stage of the pipeline opening at `pipelineAt`, plus the first
+// non-option word after it. One scan produces both: `pipelineHeadCommand` needs the command and
+// PIPELINE_STATUS_GIT_WRITE_SUBCOMMANDS needs the subcommand, and a second copy of this token walk
+// is exactly the kind of drift the two hand-written emptiness checks in add-pr-numbers.sh cost.
+// An unresolvable head yields empty strings and therefore never reports.
+function pipelineHeadWords(text, pipelineAt) {
   const before = scanGuardOperators(text.slice(0, pipelineAt))
   const segmentStart = Math.max(
     before.pipelines.at(-1)?.at ?? -1,
@@ -4374,8 +4827,42 @@ function pipelineHeadCommand(text, pipelineAt) {
     paramDepth: 0,
   }).filter((token) => !token.operator)
   const at = commandWordIndex(tokens)
-  if (at === -1) return ''
-  return removeQuotes(tokens[at].raw).split('/').pop()
+  if (at === -1) return { command: '', subcommand: '' }
+  const command = removeQuotes(tokens[at].raw).split('/').pop()
+  const words = tokens
+    .slice(at + 1)
+    .map((token) => removeQuotes(token.raw))
+    .filter((word) => word !== '')
+  return { command, subcommand: gitSubcommand(words) }
+}
+
+// `git`'s global options that consume the NEXT word. Without them `git -C "$REPO" push` reads
+// `$REPO` as the subcommand, which is silent rather than wrong — but `git -C <dir> push` is a real
+// shape in this corpus, so the silence would be a live false negative rather than a theoretical
+// one. Attached forms (`-C=dir`, `--git-dir=…`) carry their own `=` and need no entry.
+const GIT_GLOBAL_VALUE_OPTIONS = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--exec-path',
+  '--config-env',
+])
+
+// The first word after `git` that is neither a global option nor a global option's value. An
+// unresolvable subcommand is '' and therefore matches no write verb — the silent direction.
+function gitSubcommand(words) {
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i]
+    if (!word.startsWith('-')) return word
+    if (GIT_GLOBAL_VALUE_OPTIONS.has(word)) i += 1
+  }
+  return ''
+}
+
+function pipelineHeadCommand(text, pipelineAt) {
+  return pipelineHeadWords(text, pipelineAt).command
 }
 
 function inlineCommandGroups(text) {
@@ -4555,7 +5042,12 @@ export function findMaskedPipelineStatus(body) {
       else scopedOptions.set(key, { options: optionState(next) })
     }
 
-    const analyze = (text, lineOffset, next, lineOptions) => {
+    // `predicateScan` marks the one call that analyses a conditional's PREDICATE rather than a
+    // body. There, only a display-filter tail reports: the predicate exemption's whole
+    // justification is that the pipeline's value is the consumed signal, and a display filter
+    // yields no value while reporting an unconditional 0 — so `if make test | tee log.txt; then`
+    // tests `tee`. Every other predicate pipeline stays exempt, unanalysed as before.
+    const analyze = (text, lineOffset, next, lineOptions, predicateScan = false) => {
       for (const group of inlineCommandGroups(text)) {
         const prefixOptions = shellOptionStateAfter(text.slice(0, group.at), lineOptions)
         const inner = text.slice(group.at + 1, group.end)
@@ -4573,14 +5065,21 @@ export function findMaskedPipelineStatus(body) {
         if (pipelineInsideCommandSubstitution(text, at)) continue
         const pipelineOptions = shellOptionStateAfter(text.slice(0, at), lineOptions)
         if (pipelineOptions.pipefail) continue
-        if (
-          guardedPipelineAts.has(at) ||
-          at === guardedPipelineAt ||
-          pipelineIsConditionalPredicate(text, at)
-        )
-          continue
-        const head = pipelineHeadCommand(text, at)
+        if (guardedPipelineAts.has(at) || at === guardedPipelineAt) continue
+        // The tail decides two separate things below, so resolve it once.
+        const tailIsDisplayFilter = PIPELINE_STATUS_DISPLAY_TAILS.has(pipelineTailCommand(text, at))
+        // The conditional-predicate exemption rests on the pipeline's VALUE being the consumed
+        // signal. A display filter produces no value to consume and reports an unconditional 0,
+        // so an `if`/`while`/`until` over one tests the FILTER, never the head — the exact defect
+        // this rule exists to catch, wearing an exemption's clothes. Measured: a
+        // `boss skills check --gate | tail -20` inside an `if` inverted a FAIL into a PASS.
+        if (predicateScan) {
+          if (!tailIsDisplayFilter) continue
+        } else if (!tailIsDisplayFilter && pipelineIsConditionalPredicate(text, at)) continue
+        const { command: head, subcommand } = pipelineHeadWords(text, at)
         if (!PIPELINE_STATUS_HEAD_COMMANDS.has(head)) continue
+        if (PIPELINE_STATUS_TAIL_SENSITIVE_HEADS.has(head) && !tailIsDisplayFilter) continue
+        if (head === 'git' && !PIPELINE_STATUS_GIT_WRITE_SUBCOMMANDS.has(subcommand)) continue
         findings.push({ lineOffset: baseOffset + lineOffset, head, option: 'pipefail' })
       }
     }
@@ -4605,10 +5104,11 @@ export function findMaskedPipelineStatus(body) {
         inspect(subshell, baseOffset + lineOffset, lineOptions)
       } else if (conditionalOpener(text)) {
         let parts = inlineCompoundParts(text)
-        lineOptions = shellOptionStateAfter(
-          conditionalPredicate(text, conditionalOpener(text)),
-          lineOptions,
-        )
+        const predicate = conditionalPredicate(text, conditionalOpener(text))
+        // Scan the predicate itself, under the options in force BEFORE it runs — a `set -o
+        // pipefail` inside the predicate protects the body, not the pipeline that precedes it.
+        analyze(predicate, lineOffset, null, lineOptions, true)
+        lineOptions = shellOptionStateAfter(predicate, lineOptions)
         for (const part of parts.bodies) {
           analyze(part.text, lineOffset + part.lineOffset, null, lineOptions)
         }
@@ -5558,7 +6058,8 @@ function makeBashRunner(tmpDir) {
 
 /**
  * Walk both authoring roots and return [{ file, line, kind, message }]. `kind` is one of
- * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `option-glob` / `pipeline-status` /
+ * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `mixed-glob-removal` / `option-glob` /
+ * `word-split` / `zsh-special-scalar` / `pipeline-status` / `trailing-conditional-status` /
  * `inert-guard` / `gh-body-interpolation` / `gh-body-file-interpolation` /
  * `node-eval-interpolation` / `bare-positional`, plus `missing-bash` when the gate fails closed.
  */
@@ -5612,6 +6113,15 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
           })
         }
 
+        for (const mixed of findMixedGlobRemovals(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + mixed.lineOffset,
+            kind: 'mixed-glob-removal',
+            message: `${mixed.command} carries the unquoted glob ${mixed.glob} alongside the literal path${mixed.literals.length > 1 ? 's' : ''} ${mixed.literals.join(' ')} — when the glob matches nothing, zsh and fish abort the WHOLE line (\`no matches found\`), so ${mixed.literals.length > 1 ? 'those literals are' : 'that literal is'} silently not removed and the block still exits as a completed cleanup; give the glob its own line, so the literals are removed first and an aborting glob line cannot take them down with it — do NOT quote the pattern here as (i) would, because the SHELL expands an \`rm\` glob, so a quoted one becomes a literal filename that \`-f\` reports success for while removing nothing`,
+          })
+        }
+
         for (const optionGlob of findUnquotedOptionGlobs(block.body)) {
           // The hint must be pasteable as-is, so it has to keep the OFFENDING form's separator.
           // `find . -name='<PATTERN>'` is not a quoted `-name`; it is a word `find` rejects outright
@@ -5638,12 +6148,36 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
           })
         }
 
+        for (const tied of findZshSpecialScalars(block.body)) {
+          const where =
+            tied.form === 'assignment'
+              ? `assigned as \`${tied.name}=\``
+              : tied.form === 'read'
+                ? `used as a \`read\` target`
+                : `used as a \`for\` loop variable`
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + tied.lineOffset,
+            kind: 'zsh-special-scalar',
+            message: `\`${tied.name}\` is ${where}, and zsh — which this harness's Bash tool evaluates — ties that name to \`${tied.name.toUpperCase()}\`, so the write REPLACES the environment value: measured, \`path=x\` empties \`PATH\` and every later command in the block is not found, and a \`read\` target does it too because zsh runs a pipeline's last stage in the current shell; rename the variable (a bash shebang is not the fix — it leaves the name for the next author)`,
+          })
+        }
+
         for (const pipeline of findMaskedPipelineStatus(block.body)) {
           findings.push({
             file: rel,
             line: block.startLine + 1 + pipeline.lineOffset,
             kind: 'pipeline-status',
             message: `${pipeline.head} is the head of a pipeline without pipefail, so the shell reports the tail command's status instead; add \`set -o pipefail\` before it (zsh and bash both accept it), or read the head's status explicitly as \`$pipestatus[1]\` — the zsh spelling, and zsh is what this harness's Bash tool evaluates, where the bash \`\${PIPESTATUS[0]}\` is unset and so guards nothing`,
+          })
+        }
+
+        for (const trailing of findTrailingConditionalStatus(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + trailing.lineOffset,
+            kind: 'trailing-conditional-status',
+            message: `the block's FINAL statement is \`${trailing.statement}\`, so the block's exit status is the \`${trailing.head}\`'s: when the condition is FALSE the block exits 1 even though nothing failed — the measured case is a gate whose empty output is the passing one, reported as a red gate; write it as \`if ${trailing.head === '[' ? '[ … ]' : 'test …'}; then …; fi\`, or capture the status in its own statement and end the block on something whose status you mean`,
           })
         }
 

@@ -1,13 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
   PREMISE_LIMIT,
+  adoptReturnedMetadata,
   planIdempotencePrecheck,
   premiseDrift,
   validateDraftMetadata,
@@ -458,6 +459,120 @@ test('planIdempotencePrecheck reports every failed conjunct separately', () => {
   )
 })
 
+// BOS-1289 — the precheck interrogated the payload it was handed but never asked whether that
+// payload was the ticket the run selected, so a mispicked id planned a different ticket with every
+// guard clean.
+test('planIdempotencePrecheck is byte-identical when selectedID is absent', () => {
+  // The whole optionality claim in one assertion: omitted, null, and blank must all reproduce
+  // today's verdict exactly, or the conjunct is a breaking change to every existing caller.
+  const baseline = planIdempotencePrecheck({ issue: issue(), config: TEST_CONFIG })
+  assert.deepEqual(baseline, { action: 'noop', reasons: [] })
+  for (const selectedID of [undefined, null, '', '   ']) {
+    assert.deepEqual(
+      planIdempotencePrecheck({ issue: issue(), selectedID, config: TEST_CONFIG }),
+      baseline,
+      `selectedID ${JSON.stringify(selectedID)} must not change the verdict`,
+    )
+  }
+})
+
+test('planIdempotencePrecheck matches selectedID against id and identifier', () => {
+  for (const selectedID of ['BOS-1', 'bos-1', ' BOS-1 ']) {
+    assert.deepEqual(
+      planIdempotencePrecheck({ issue: issue(), selectedID, config: TEST_CONFIG }),
+      { action: 'noop', reasons: [] },
+      `${JSON.stringify(selectedID)} names the fetched issue`,
+    )
+  }
+  // The human identifier is as legitimate a selector as the UUID, so either field may satisfy it.
+  assert.deepEqual(
+    planIdempotencePrecheck({
+      issue: issue({ id: undefined, identifier: 'BOS-1' }),
+      selectedID: 'BOS-1',
+      config: TEST_CONFIG,
+    }),
+    { action: 'noop', reasons: [] },
+  )
+  // ...and the UUID satisfies it when that is the field the payload carries.
+  const uuid = 'c0ffee00-dead-4bee-8000-000000000001'
+  assert.deepEqual(
+    planIdempotencePrecheck({
+      issue: issue({
+        id: uuid,
+        attachments: [{ id: 'att-1', title: `Implementation plan (${uuid})` }],
+      }),
+      selectedID: uuid,
+      config: TEST_CONFIG,
+    }),
+    { action: 'noop', reasons: [] },
+  )
+})
+
+test('planIdempotencePrecheck can never noop on a fetched-issue id mismatch', () => {
+  // Every other conjunct is satisfied — this is exactly the run that shipped the wrong ticket
+  // silently, and the identity conjunct is the only thing standing between it and `noop`.
+  assert.deepEqual(
+    planIdempotencePrecheck({ issue: issue(), selectedID: 'BOS-999', config: TEST_CONFIG }),
+    { action: 'plan', reasons: ['fetched-issue-id-mismatch'] },
+  )
+  // It only ever ADDS a reason, so it composes with the existing three rather than masking them.
+  assert.deepEqual(
+    planIdempotencePrecheck({
+      issue: issue({ status: 'Unplanned', description: 'too small', attachments: null }),
+      selectedID: 'BOS-999',
+      config: TEST_CONFIG,
+    }),
+    {
+      action: 'plan',
+      reasons: [
+        'fetched-issue-id-mismatch',
+        'state-not-planned',
+        'description-invalid',
+        'plan-attachment-missing',
+      ],
+    },
+  )
+  // A payload carrying no usable id is not a match either: an unidentifiable fetch is precisely
+  // what this conjunct must refuse to call clean.
+  assert.ok(
+    planIdempotencePrecheck({
+      issue: issue({ id: undefined, identifier: undefined }),
+      selectedID: 'BOS-1',
+      config: TEST_CONFIG,
+    }).reasons.includes('fetched-issue-id-mismatch'),
+  )
+})
+
+test('the idempotence CLI verb threads --selected-id through to the precheck', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-selected-'))
+  const issuePath = path.join(dir, 'issue.json')
+  writeFileSync(issuePath, JSON.stringify(issue()))
+
+  const run = (...extra) =>
+    spawnSync(process.execPath, [GUARD, 'idempotence', issuePath, ...extra], {
+      cwd: dir,
+      encoding: 'utf8',
+    })
+
+  // The CLI resolves its own config from the repo, so the other three conjuncts may legitimately
+  // fire against this synthetic fixture. Only the identity conjunct is this test's subject.
+  const reasons = (result) => {
+    assert.equal(result.status, 0, result.stderr)
+    return JSON.parse(result.stdout).reasons
+  }
+  const omitted = reasons(run())
+  assert.equal(omitted.includes('fetched-issue-id-mismatch'), false)
+  assert.deepEqual(
+    reasons(run('--selected-id', 'BOS-1')),
+    omitted,
+    'a matching selector must leave the pre-flag verdict untouched',
+  )
+  const mismatched = reasons(run('--selected-id', 'BOS-999'))
+  assert.ok(mismatched.includes('fetched-issue-id-mismatch'))
+  assert.equal(JSON.parse(run('--selected-id', 'BOS-999').stdout).action, 'plan')
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test('premiseDrift reports drifted, unresolved, and verification coverage', () => {
   assert.deepEqual(premiseDrift([], {}), {
     ok: true,
@@ -728,4 +843,91 @@ test('planIdempotencePrecheck is unchanged for an issue that legitimately carrie
     config: TEST_CONFIG,
   })
   assert.deepEqual(result, { action: 'noop', reasons: [] })
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1278 / R3 — the orchestrator validates the object it RECEIVED, never a
+// same-named file the worker could have written at that path.
+// ---------------------------------------------------------------------------
+
+test('adoptReturnedMetadata refuses when the on-disk file is not the returned object', () => {
+  // The defect: `draft-metadata` is a DECLARED scratch family, and the drafting worker is told to
+  // write its local files under declared basenames — so the worker can write the very path the
+  // orchestrator is specified to write from the returned object before validating.
+  const returned = metadata()
+  const workerWrote = metadata({ estimate: 1, agentFriendly: false })
+  const diverged = adoptReturnedMetadata({ returned, onDisk: workerWrote })
+  assert.equal(diverged.ok, false)
+  assert.equal(diverged.state, 'diverged')
+  assert.deepEqual(
+    diverged.violations.map((v) => v.code),
+    ['metadata-not-from-message'],
+  )
+
+  // Able to fire both other ways, so the refusal is the DIVERGENCE's doing: an absent file is
+  // adopted, and an equal one is adopted even with its keys in a different write order (a resumed
+  // pass re-running this step is not a contract violation).
+  assert.deepEqual(
+    [adoptReturnedMetadata({ returned }).state, adoptReturnedMetadata({ returned }).ok],
+    ['absent', true],
+  )
+  const reordered = Object.fromEntries(Object.entries(returned).reverse())
+  assert.equal(adoptReturnedMetadata({ returned, onDisk: reordered }).state, 'identical')
+})
+
+test('adoptReturnedMetadata refuses a dispatch that returned no message at all', () => {
+  // Artifact readiness is not message readiness. A caller with nothing in hand must not be able to
+  // reach the guard at all, because the file it would validate is the only thing left.
+  for (const nothing of [undefined, null, 'not an object']) {
+    const result = adoptReturnedMetadata({ returned: nothing, onDisk: metadata() })
+    assert.equal(result.ok, false)
+    assert.deepEqual(
+      result.violations.map((v) => v.code),
+      ['metadata-not-returned'],
+    )
+  }
+})
+
+test('adopt-metadata CLI writes the returned object, and leaves a diverged file untouched', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-adopt-'))
+  const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
+  const returned = metadata()
+
+  // Nothing on disk: the returned object is what lands, and what gets validated.
+  const fresh = spawnSync(
+    process.execPath,
+    [GUARD, 'adopt-metadata', metadataPath, JSON.stringify(returned)],
+    { encoding: 'utf8' },
+  )
+  assert.equal(fresh.status, 0, fresh.stderr)
+  assert.deepEqual(JSON.parse(readFileSync(metadataPath, 'utf8')), returned)
+
+  // A worker-authored file that differs: refuse, and do NOT overwrite. The file is the evidence
+  // that the dispatch broke its contract; an orchestrator that silently repaired it would keep
+  // dispatching workers that do this.
+  const workerWrote = metadata({ estimate: 1 })
+  writeFileSync(metadataPath, JSON.stringify(workerWrote))
+  const refused = spawnSync(
+    process.execPath,
+    [GUARD, 'adopt-metadata', metadataPath, JSON.stringify(returned)],
+    { encoding: 'utf8' },
+  )
+  assert.equal(refused.status, 1)
+  assert.match(refused.stderr, /metadata-not-from-message/)
+  assert.deepEqual(
+    JSON.parse(readFileSync(metadataPath, 'utf8')),
+    workerWrote,
+    'the diverged file must survive the refusal',
+  )
+
+  // The adopted object is still held to the ordinary metadata contract, so adoption is not a way
+  // around validation: an invalid returned object fails after it is written.
+  const invalidPath = path.join(dir, 'BOS-2.draft-metadata.json')
+  const invalid = spawnSync(
+    process.execPath,
+    [GUARD, 'adopt-metadata', invalidPath, JSON.stringify(metadata({ estimate: 8 }))],
+    { encoding: 'utf8' },
+  )
+  assert.equal(invalid.status, 1)
+  assert.match(invalid.stderr, /estimate/)
 })

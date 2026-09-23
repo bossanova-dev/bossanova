@@ -89,7 +89,7 @@ test('REQUIRED_TRACKER_OPERATIONS lists the full required op surface, including 
 })
 
 test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does NOT (BOS-524)', () => {
-  assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, ['states'])
+  assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, ['states', 'selectPlanned'])
   // The separation is the whole point: assertConforms REQUIRES every
   // TRACKER_CAPABILITIES entry, so promoting `states` there would fail every
   // conforming adapter that legitimately omits it.
@@ -217,6 +217,50 @@ test('assertConforms accepts a states FUNCTION and rejects a non-callable one (B
       `expected a throw for states = ${JSON.stringify(bad)}`,
     )
   }
+})
+
+// BOS-1294: the executable, query-backed candidate read. Optional for the same reason `states`
+// is — an adapter without it must still load, because the `operationMap.selectPlanned` descriptor
+// remains its documented path — while a DECLARED one must be callable, or the worker's filtered
+// route would crash at the call site instead of failing closed with a named diagnostic.
+test('assertConforms accepts an adapter with NO executable selectPlanned (BOS-1294)', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.equal(adapter.selectPlanned, undefined, 'fixture must genuinely omit selectPlanned')
+  assert.doesNotThrow(() => assertConforms(adapter))
+  assert.ok(
+    !TRACKER_CAPABILITIES.includes('selectPlanned'),
+    'selectPlanned must stay optional — requiring it fails adapters that legitimately omit it',
+  )
+})
+
+test('assertConforms accepts a selectPlanned FUNCTION and rejects a non-callable one (BOS-1294)', () => {
+  const withSelect = (selectPlanned) => ({
+    ...stubAdapterWithOperationMap(validOperationMap()),
+    selectPlanned,
+  })
+  assert.doesNotThrow(() => assertConforms(withSelect(async () => [])))
+  for (const bad of [{ state: 'Ready' }, 'list_issues', 42, [], true]) {
+    assert.throws(
+      () => assertConforms(withSelect(bad)),
+      /tracker adapter optional capability selectPlanned must be a function/,
+      `expected a throw for selectPlanned = ${JSON.stringify(bad)}`,
+    )
+  }
+})
+
+test('the operationMap.selectPlanned DESCRIPTOR stays required beside the capability (BOS-1294)', () => {
+  // The descriptor is the only path an adapter without the executable capability has, so the
+  // promotion must not have moved it to the optional list — and declaring the capability does not
+  // excuse a missing descriptor either.
+  assert.ok(REQUIRED_TRACKER_OPERATIONS.includes('selectPlanned'))
+  assert.ok(!OPTIONAL_TRACKER_OPERATIONS.includes('selectPlanned'))
+  const map = validOperationMap()
+  delete map.selectPlanned
+  const adapter = { ...stubAdapterWithOperationMap(map), selectPlanned: async () => [] }
+  assert.throws(
+    () => assertConforms(adapter),
+    /tracker adapter operationMap missing operation: selectPlanned/,
+  )
 })
 
 test('assertConforms throws when a capability is missing', () => {

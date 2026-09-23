@@ -16,6 +16,7 @@ import {
 // literal in the shipped markdown (the classify block already has `jq`, so no second node
 // spawn is added for it). Importing the module's constant gives that literal one definition to
 // be compared against, which is what stops the two prose copies drifting apart.
+import { CI_WATCH_REASONS } from '../skills-toolbox/callback/ci-watch.mjs'
 import { PROVISIONAL_KEY } from '../skills-toolbox/bs-run-sentinel.mjs'
 import {
   OPTIONAL_ROUTE_TOKENS,
@@ -679,7 +680,13 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // deliberately not claimed to be: measured, the step runs from 0.83% of the largest budget
   // (bs-plan, 123354 B) to 3.85% of the smallest in the 1 KiB bucket (bs-sweep-tests, 26600 B),
   // so two buckets narrow the spread a single flat number would give without equalising it.
-  const RATCHET = 81932 // measured resident body at migration, 2026-09-08 (BOS-1197 round 2)
+  // Re-banked UP 81932 -> 81985 (+53 B) for BOS-1278, the first RAISE this budget records; the
+  // reason is below in `raise.justification`. In short: both Step 5 remedies were silent about
+  // knowledge a dead dispatch had already produced — the empty-log-range arm said "re-dispatch the
+  // same brief" with no instruction to carry forward what the dead pass verified, and Step 6.5 had
+  // no way to record in-dispatch work that left no commit. Both are resident by necessity: they
+  // are the remedy and the handoff an orchestrator applies at exactly those two steps.
+  const RATCHET = 81985 // re-measured for BOS-1278; see raise.justification
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   // When this reds upward, the fix is a trim somewhere in an 80 KB body, not in whatever file you
@@ -709,6 +716,20 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
         // (+54 B), because the dispatched pass's contract builds its sentinel payload through
         // the verb rather than a hardcoded literal.
         from: 81932,
+        justification:
+          'BOS-1278: recovery after a dead dispatch threw away what the dead dispatch had ' +
+          'already proved. Step 5\'s empty-log-range remedy said "re-dispatch the same brief" ' +
+          'and stopped there, so the retry re-derived recon the dead pass had done and the ' +
+          'orchestrator had already verified against the files it named — routing correctly ' +
+          "ignores a dead dispatch's prose, but a claim CONFIRMED against source is evidence, " +
+          'and the remedy conflated the two. Step 6.5 had the matching gap in the other ' +
+          'direction: work a dispatch genuinely did that left no commit (a verification run, a ' +
+          'cause ruled out) had nowhere to go, so it was either lost or smuggled in as a landed ' +
+          'change. +53 B adds the fold-forward clause to the one remedy and a testimony rule to ' +
+          'the other, with the clean-tree plus advanced-log-range check left explicitly as the ' +
+          'authority on what landed so testimony can never be read as a diff. Both are resident ' +
+          'because they are applied at the step that reads them, and an orchestrator standing in ' +
+          'an empty log range does not open a reference to find out what to carry forward.',
       },
       residual:
         'the references/ files this body points at — content moved out of the resident body ' +
@@ -741,7 +762,15 @@ test('BOS-1216: the always-read review-stack reference stays under a descending 
   // second of two blockers so a pass could no longer print a clean line over unrepaired
   // `invalid` evidence (+995 B). Both are resident by necessity: this reference IS what the
   // dispatched pass executes, and a write rule documented elsewhere is one run from a stale copy.
-  const REVIEW_STACK_RATCHET = 160063
+  // Re-banked UP 160063 -> 162843 (+2780 B), the fourth RAISE. BOS-1284 reorders the one route
+  // that published a head it never tagged and makes the push loop's status unmaskable; the reason
+  // is in `raise.justification` below, newest first. The last +735 B of it is review-repair: the
+  // REVIEW_READY tag arm cited the injection block in a comment instead of executing one, so the
+  // arm force-pushed an unrewritten branch — and because an unrewritten HEAD already equals
+  // `@{u}`, that push was a no-op whose assertion passed, readying untagged commits with every
+  // signal green. Making the injection executable, and gating the push on a HEAD that actually
+  // moved, is this ticket's own defect class removed from its own fix; a citation cannot execute.
+  const REVIEW_STACK_RATCHET = 162843
   assertDescendingBudget({
     budget: REVIEW_STACK_RATCHET,
     constFile: 'scripts/boss-build-skill.test.mjs',
@@ -757,6 +786,18 @@ test('BOS-1216: the always-read review-stack reference stays under a descending 
       // budget now sits 99 B above it, so this raise is priced and carries the reason below.
       from: 156053,
       justification:
+        'BOS-1284: the REVIEW_READY-with-findings route created a draft PR and readied it in the ' +
+        'SAME block, so on a fresh workspace — the path that route exists to serve — the commits ' +
+        'it had just pushed were published untagged and then made review-visible with no window ' +
+        'between. +2045 B buys three things this file cannot delegate: the inject + ' +
+        'force-push-with-lease pass between the create arm and the ready arm, keyed on the tip ' +
+        "origin advertised BEFORE this run's own push (REMOTE_SHA) so the containment guard still " +
+        'refuses commits this run did not author; the non-goal narrowed from "commits origin ' +
+        'already holds" to "commits this run did not author", because the blanket form is what ' +
+        'made the free window look forbidden; and the push loop reading its status into ' +
+        'PUSH_STATUS on its own line, with the reason a pipeline may not carry it. Resident by ' +
+        'necessity: this reference IS the block a dispatched pass executes, and an ordering rule ' +
+        'documented elsewhere is one run from a stale copy. Earlier entry: ' +
         "BOS-1251: the post-loop tag-state re-derivation now grades the range with the INJECTOR's " +
         'own non-empty-work-commit predicate (commit-work-predicate.mjs untagged-work) instead of ' +
         'testing every subject for the tag. The old grader asked a STRICTLY STRONGER question than ' +
@@ -1713,6 +1754,26 @@ test('methodology extension falls back to the core when Compound Engineering is 
   }
 })
 
+test('methodology extension returns a phase-ordering receipt (BOS-1278)', () => {
+  // The core's post-dispatch authority is clean tree + advanced log range, and BOTH pass
+  // identically whether the extension ran its phases in order or skipped straight to the commit:
+  // a dispatch that never tested leaves exactly the tree and exactly the log range a disciplined
+  // one does. The receipt is the ordering signal neither check carries, and it is SHA-bearing so
+  // the core verifies it against ancestry rather than accepting an assertion.
+  for (const skillDir of METHODOLOGY_EXTENSION_DIRS) {
+    const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')
+    assert.ok(
+      regionUntilNext(skill, '```json', '```').includes('"phaseReceipt"'),
+      `${skillDir}/SKILL.md return object must carry the phase-ordering receipt`,
+    )
+    // The SHA is what makes the receipt checkable; a bare phase-name list is self-attestation.
+    assert.ok(
+      skill.includes('<phase>@<HEAD short SHA when that phase ended>'),
+      `${skillDir}/SKILL.md must pin each receipt entry to the HEAD its phase ended at`,
+    )
+  }
+})
+
 test('methodology extension returns the commits the tier-1 gate checks for', () => {
   // The core's Tier-1 "ran successfully" gate requires the commits the extension reported to
   // appear in the log range snapshotted around the whole dispatch. The extension's own return
@@ -1791,6 +1852,13 @@ test('Step 6 routes the review verdict from a run-file sentinel, not returned pr
   }
 })
 
+// The line the preflight's severity arm became. Shared by the two prohibitions below so a
+// rewording of the call cannot leave one of them planting text that is no longer there — a
+// mutation whose `find` misses plants nothing, and a prohibition that planted nothing passes.
+const DELEGATION_CALL =
+  'printf \'%s\\n\' "$O" | node "$BOSS_BUILD_TOOLBOX/skill-drift-verdict.mjs"' +
+  ' classify --status 1 >&2 || exit 1'
+
 test('BOS-1002: installed-skill gate degrades for an old boss CLI', () => {
   {
     const dir = CORE
@@ -1800,24 +1868,48 @@ test('BOS-1002: installed-skill gate degrades for an old boss CLI', () => {
       skill,
       /case "\$O" in[\s\S]{0,120}\*--gate\*\) node "\$BOSS_BUILD_TOOLBOX\/toolbox-drift\.mjs"/,
     )
-    // BOS-1105 flipped skills drift from BLOCKING to advisory: drift is bookkeeping, so the gate
-    // reports it and the run continues. A totally missing install still blocks (asserted
-    // separately); only the drift arm warns.
-    assert.match(skill, /warning:\s+installed\s+boss\s+skills\s+drift\s+from\s+checkout\s+source/)
-    assert.match(skill, /bookkeeping\s+only,\s+work\s+state\s+unaffected/)
+    // BOS-1105 flipped skills drift from BLOCKING to advisory; BOS-1280 split that one flat
+    // advisory along the kind and direction the gate already reports. The severity decision has
+    // one implementation now, so the body DELEGATES to it rather than re-deriving it in prose...
+    assert.match(
+      skill,
+      // prose-pin: literal-space ok — a shell invocation in a fenced block, not rewrappable prose
+      /\*\)[\s\S]{0,200}node "\$BOSS_BUILD_TOOLBOX\/skill-drift-verdict\.mjs" classify --status 1/,
+    )
+    // ...and the hand-rolled remedy extraction the delegation replaced is gone, so no second
+    // severity rule is left behind to disagree with the first. Planted back rather than merely
+    // asserted absent: a negative over a whole body passes just as well when the body it reads
+    // is the wrong one.
+    assertProhibitionFires({
+      source: skill,
+      pattern: /sed\s+-n/,
+      violation: {
+        find: DELEGATION_CALL,
+        replacement: `R="$(printf '%s\\n' "$O" | sed -n 's/^  run \`\\(.*\\)\`$/\\1/p' | head -n 1)"`,
+      },
+      label: `${dir}: no second severity rule may sit beside the classifier call`,
+    })
+    // The advisory wording moved WITH the decision, so assert it where an installed run now loads
+    // it: the copy vendored into this core's own toolbox. Asserting it in the body instead would
+    // pass only while the duplication this ticket deleted was still there.
+    const verdict = fs.readFileSync(
+      path.join(rootDir, dir, 'toolbox', 'skill-drift-verdict.mjs'),
+      'utf8',
+    )
+    assert.match(verdict, /warning:\s+installed\s+boss\s+skills\s+drift\s+from\s+checkout\s+source/)
+    assert.match(verdict, /bookkeeping\s+only,\s+work\s+state\s+unaffected/)
     assertProhibitionFires({
       source: skill,
       pattern: /BLOCKED:\s+installed\s+boss\s+skills\s+differ\s+from\s+checkout\s+source/,
       violation: {
-        // Reverting the advisory arm to the pre-BOS-1105 blocking wording is exactly the
-        // regression this prohibition exists to catch: drift is bookkeeping, and bookkeeping
-        // must never be one of BLOCKED's four causes.
-        find:
-          'warning: installed boss skills drift from checkout source; run: $R' +
-          ' \u2014 bookkeeping only, work state unaffected',
-        replacement: 'BLOCKED: installed boss skills differ from checkout source; run: $R',
+        // A body that blocks on ALL drift is still the regression this prohibition exists to
+        // catch. The capability side does block now, but through the helper's verdict on the
+        // kind the gate reported — never through a blanket arm over every drifted path.
+        find: DELEGATION_CALL,
+        replacement:
+          'echo "BLOCKED: installed boss skills differ from checkout source" >&2; exit 1',
       },
-      label: `${dir}: skills drift must warn, never block`,
+      label: `${dir}: the recording side of skills drift must warn, never block`,
     })
   }
 })
@@ -6883,9 +6975,14 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits', () => 
     // Step 12 with the commits still stranded — the very outcome the rule exists to prevent,
     // wearing a reassuring log line. The push must be retried, reconciling with rebase (never a
     // merge) between attempts, and the echo may only fire after the retries are exhausted.
+    // BOS-1284 replaced the proximity window (900, then 1400) with the loop CLOSE. The bound is
+    // INSIDE the retry loop rather than somewhere else in the section; 900 was the distance the
+    // text happened to have when it was written, not a designed limit, and this ticket added the
+    // push-status rule (`PUSH_STATUS` captured beside the push, never from a pipeline) between the
+    // loop head and the reconcile. 1400 still fails if the reconcile leaves the loop body.
     assert.match(
       section,
-      /while \[ "\$attempts" -lt \d+ \][\s\S]{0,900}git[ ]rebase --no-fork-point[ ]FETCH_HEAD/,
+      /while \[ "\$attempts" -lt \d+ \](?:(?!\n  done)[\s\S])*?git[ ]rebase --no-fork-point[ ]FETCH_HEAD/,
       `${dir}: the BLOCKED-route push must retry and reconcile, not swallow the failure`,
     )
     assert.match(
@@ -12420,4 +12517,148 @@ test('BOS-1244: every resident validatePlanDescription citation states its argum
       `${skillPath}: every validatePlanDescription citation must spell (config, description)`,
     )
   }
+})
+
+test('BOS-1279: the CI verdict table names both reasons the helper can report as `unknown`', () => {
+  // The token is READ from the helper's own exported vocabulary rather than restated here, in the
+  // same idiom as the Go-to-JS reason pin in skills-toolbox/pr-check-state.test.mjs — so a rename
+  // on either side fails this gate instead of leaving the table describing a reason that no longer
+  // exists. It pins the vocabulary, not a sentence.
+  //
+  // The two `unknown` reasons have DIFFERENT remedies, which is the whole reason the row has to
+  // name them: an unreadable check state is settled by the bounded poll, while an unsupplied
+  // trigger list is settled only by supplying one. A row naming just the first sends a run to poll
+  // its way out of a question that was never asked.
+  const table = fs.readFileSync(path.join(rootDir, CORE, 'references/finalize-and-stop.md'), 'utf8')
+  const row = region(table, '### CI observation gate', 'Arm at most')
+  for (const reason of [CI_WATCH_REASONS.UNREADABLE, CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS]) {
+    assert.ok(row.includes(reason), `the CI observation gate's \`unknown\` row must name ${reason}`)
+  }
+})
+
+// BOS-1284 U3/U6: the commit-before-return contract is the one place an implementation subagent
+// reads its message rules, and boss-review's commit discipline is the other carrier of the same
+// rule. Pinned by RULE NAME and by the operative token each rule turns on — never by a sentence:
+// a sentence pin reds on a rewrite that preserves the behaviour and passes on a deletion that
+// takes the paragraph with it. Both carriers are asserted HERE, together, because they state one
+// rule: split across two files, one copy drifts and nothing notices.
+test('BOS-1284: the commit contract budgets the authored message against the finalize tag', () => {
+  const contract = region(
+    fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`), 'utf8'),
+    '**Commit-before-return contract.**',
+    '**Orchestrator verification.**',
+    `${CORE}/SKILL.md`,
+  )
+  // The rule name, then what it turns on: a scope, the repo's OWN header limit minus the tag
+  // width, and the repo's own body-line limit.
+  assert.match(contract, /\*\*Author\s+the\s+message\s+inside\s+the\s+tag's\s+budget\.\*\*/)
+  assert.match(contract, /policy\.tagFormat/)
+  assert.match(contract, /scope/)
+  assert.match(contract, /repo's\s+own\s+header\s+limit\s+\*\*minus\*\*/)
+  assert.match(contract, /body-line\s+limit/)
+  // Project-agnostic: a published core may not carry this repo's configured caps.
+  assert.doesNotMatch(contract, /\b(100|250)\b/)
+
+  // U6's two structural rules, same pin discipline.
+  assert.match(contract, /\*\*After\s+a\s+rejected\s+commit,\s+verify\s+what\s+landed\.\*\*/)
+  assert.match(contract, /git\s+show\s+--stat/)
+  assert.match(
+    contract,
+    /\*\*A\s+tree-writing\s+gate\s+runs\s+before\s+the\s+commit\s+it\s+belongs\s+to\.\*\*/,
+  )
+  assert.match(
+    contract,
+    /git\s+status\s+--porcelain[\s\S]{0,120}before\s+any\s+push\s+is\s+declared\s+done/,
+  )
+  // U2's other caller: the recipe is written ONCE in the finalize reference and named from here.
+  assert.match(
+    contract,
+    /\*\*The\s+last\s+read\s+before\s+a\s+push\s+is\s+the\s+commit\s+messages\.\*\*/,
+  )
+})
+
+test('BOS-1284: boss-review carries the same message budget, and says why it must', () => {
+  const REVIEW = 'services/boss/internal/skillinstall/skills/boss-review'
+  const body = fs.readFileSync(path.join(rootDir, `${REVIEW}/SKILL.md`), 'utf8')
+  assert.match(body, /\*\*Author\s+the\s+message\s+inside\s+the\s+tag's\s+budget\.\*\*/)
+  // The REASON is load-bearing here and nowhere else: this batch commits with the repo's hooks
+  // bypassed, so the finalize amend is the first thing that validates the message at all.
+  assert.match(body, /\`--no-verify\`\s+bypasses\s+every\s+message\s+check/)
+  assert.match(body, /repo's\s+own\s+header\s+limit\s+\*\*minus\*\*/)
+  assert.match(body, /body-line\s+limit/)
+  assert.doesNotMatch(body, /header\s+limit\s+of\s+\d+/)
+})
+
+// BOS-1284 U4/U5: the two review-stack orderings this ticket fixed. Pinned by the block's
+// STRUCTURAL LEAD and by the operative tokens, not by a sentence — a sentence pin reds on a
+// rewrite that keeps the behaviour and passes on a deletion that takes the paragraph with it.
+test('BOS-1284: the REVIEW_READY route tags and force-pushes between create and ready', () => {
+  const reviewStack = reviewStackFor(CORE)
+  const section = sectionRegion(
+    reviewStack,
+    '### REVIEW_READY-with-findings publication',
+    `${CORE}: review-stack.md`,
+  )
+  // The block that acquires the PR, keyed on its structural lead.
+  const block = region(
+    section,
+    '**Get a PR to write to, and ready it.**',
+    '**Write the body and the title yourself**',
+    `${CORE}: review-stack.md`,
+  )
+  // Order is the fix: create arm, then the injection + force-push, then the ready arm.
+  // NOT named `at`: scripts/check-prose-pins.mjs resolves references by identifier, so a binding
+  // called `at` makes every `.at(…)` in this file read as a reference to it — which silently
+  // reclassified 152 markdown-bound pins as executable and dropped them from the gate's count.
+  const locate = (needle) => block.indexOf(needle)
+  const created = locate('gh pr create --base')
+  // The INVOCATION, not the words "inject-pr-tag": this route shipped once with the injection
+  // present only as a `#` comment citing another section, which executes nothing. The arm then
+  // force-pushed an unrewritten branch, and since an unrewritten HEAD already equals `@{u}` the
+  // push was a no-op whose assertion passed — readying untagged commits with every signal green.
+  // A citation cannot execute, so pin the call.
+  const injected = locate('inject-pr-tag "$PR_NUMBER"')
+  const forced = locate('git push --force-with-lease origin "$SESSION_BRANCH"')
+  const readied = locate('gh pr ready "$PR_NUMBER"')
+  assert.ok(
+    created >= 0 && injected >= 0 && forced >= 0 && readied >= 0,
+    'all four arms must be present',
+  )
+  assert.ok(created < injected, 'the PR must exist before its number can be injected')
+  assert.ok(injected < forced, 'the rewrite must happen before it is published')
+  assert.ok(forced < readied, 'the rewrite must reach origin before ready_for_review fires')
+  // The push is gated on a HEAD that actually moved, so an injection that changed nothing cannot
+  // be published as though it had.
+  assert.match(block, /PRE_INJECT_SHA[\s\S]{0,400}force-with-lease/)
+  // Keyed on the tip origin advertised BEFORE this run's own push — that is the whole safety
+  // argument for rewriting here, and the containment guard is retained, not removed.
+  assert.match(block, /PUBLISHED_TIP[\s\S]{0,200}REMOTE_SHA/)
+  assert.match(block, /still\s+a\s+draft/)
+
+  // ...and the non-goal it narrows now names the commits it actually protects.
+  assert.match(
+    reviewStack,
+    /\*\*Not\s+a\s+goal:\s+retro-tagging\s+commits\s+_this\s+run\s+did\s+not\s+author_\.\*\*/,
+  )
+})
+
+test('BOS-1284: PUSHED is set from a push status no pipeline can substitute', () => {
+  const section = sectionRegion(
+    reviewStackFor(CORE),
+    '### BLOCKED-route publication',
+    `${CORE}: review-stack.md`,
+  )
+  const pushBlock = [...section.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .find((b) => /git[ ]push -u[ ]origin/.test(b))
+  assert.ok(pushBlock, 'the push rule must ship a runnable bash block')
+  // The push stands alone and its status is captured beside it; `PUSHED` reads the variable.
+  assert.match(pushBlock, /git[ ]push -u[ ]origin "\$SESSION_BRANCH" \|\| PUSH_STATUS=\$\?/)
+  // prose-pin: literal-space ok — a shell line in a fenced block, not rewrappable prose
+  assert.match(pushBlock, /if \[ "\$PUSH_STATUS" -eq 0 \]; then PUSHED=yes; break; fi/)
+  // The defect this replaced: `PUSHED=yes` taken from the status of a pipeline headed by the push.
+  // prose-pin: literal-space ok — a shell line in a fenced block, not rewrappable prose
+  assert.doesNotMatch(pushBlock, /git[ ]push[^\n]*\|[^|][^\n]*then PUSHED=yes/)
+  // And the reason is next to the code, naming the zsh spelling that actually reads the head.
+  assert.match(pushBlock, /\$pipestatus\[1\]/)
 })

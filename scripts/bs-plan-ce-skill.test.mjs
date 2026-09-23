@@ -218,7 +218,7 @@ const git = (cwd, ...args) =>
     },
   )
 
-test('BOS-813 fixtures: the documented staging recipe enumerates exactly what CE added', () => {
+test('BOS-813 fixtures: the documented staging recipe restores what CE touched', () => {
   withTmp((dir) => {
     const repo = join(dir, 'repo')
     const runTmp = join(dir, 'runtmp')
@@ -265,9 +265,6 @@ test('BOS-813 fixtures: the documented staging recipe enumerates exactly what CE
     })
 
     const stage = join(runTmp, 'ce-stage')
-    const plansBefore = readFileSync(join(stage, 'plans-before.txt'), 'utf8')
-      .split('\n')
-      .filter(Boolean)
     for (const rel of ['CONCEPTS.md', 'spaced name.md', 'renamed.md', 'userdir/u.md']) {
       assert.equal(
         readFileSync(join(stage, 'before', rel), 'utf8'),
@@ -275,15 +272,24 @@ test('BOS-813 fixtures: the documented staging recipe enumerates exactly what CE
         `the pre-run snapshot must carry the BYTES of ${rel}, not just its status`,
       )
     }
-    assert.deepEqual(
-      plansBefore,
-      ['pre-existing-plan.md'],
-      'the pre-run plans snapshot must list what was there',
+    // BOS-1290: the snapshot no longer records a docs/plans LISTING, because a listing difference
+    // is exactly the enumeration that attributed a peer's file to CE. What it records instead is
+    // the one directory this dispatch owns — the allow-list cleanup deletes by.
+    const owned = readFileSync(join(stage, 'owned-dir.txt'), 'utf8').trim()
+    assert.ok(
+      owned.startsWith('docs/plans/') && owned.length > 'docs/plans/'.length,
+      `the snapshot must declare an owned staging directory under docs/plans/, got ${owned}`,
     )
+    assert.ok(
+      owned.includes('runtmp'),
+      'the owned directory must be keyed by the runTmp this dispatch was handed, so no peer shares it',
+    )
+    assert.ok(existsSync(join(repo, owned)), 'the snapshot must create the directory it declares')
 
-    // CE runs: it writes its own plan and gap-fills two unrelated tracked files — one the worktree
-    // was already carrying dirty, one that was clean.
-    const cePlan = join(repo, 'docs', 'plans', '2026-08-09-001-feature-thing-plan.md')
+    // CE runs: it writes its own plan INTO the directory the extension told it to use, and
+    // gap-fills two unrelated tracked files — one the worktree was already carrying dirty, one
+    // that was clean.
+    const cePlan = join(repo, owned, '2026-08-09-001-feature-thing-plan.md')
     writeFileSync(cePlan, "CE's own plan\n")
     writeFileSync(join(repo, 'CONCEPTS.md'), 'original concepts\nwork in progress\nCE gap-fill\n')
     writeFileSync(wasClean, 'committed readme\nCE gap-fill\n')
@@ -296,30 +302,12 @@ test('BOS-813 fixtures: the documented staging recipe enumerates exactly what CE
     writeFileSync(join(repo, 'CE-ADDED.md'), "CE's own new file\n")
     git(repo, 'add', 'STAGEME.md', 'CE-ADDED.md')
 
-    // The cleanup list is the diff of the two snapshots — not a glob, not a guess.
-    const plansAfter = git(repo, 'status', '--porcelain', '--', 'docs/plans')
-    const addedPlans = execFileSync('bash', ['-c', 'ls docs/plans | sort'], {
-      cwd: repo,
-      encoding: 'utf8',
-    })
-      .split('\n')
-      .filter(Boolean)
-      .filter((name) => !plansBefore.includes(name))
     const after = git(repo, 'status', '--porcelain')
     const changedSincebefore = after
       .split('\n')
       .filter(Boolean)
       .filter((line) => !before.split('\n').filter(Boolean).includes(line))
 
-    assert.deepEqual(
-      addedPlans,
-      ['2026-08-09-001-feature-thing-plan.md'],
-      'the enumeration must name CE’s plan',
-    )
-    assert.ok(
-      plansAfter.includes('2026-08-09-001-feature-thing-plan.md'),
-      'git must agree the plan is new',
-    )
     // CONCEPTS.md was dirty before AND after, so its porcelain line is unchanged and it does NOT
     // appear as newly-changed. Status can neither see nor undo that drift — only the pre-run byte
     // copy the snapshot took can, which is why the snapshot copies content and not just status.
@@ -327,7 +315,8 @@ test('BOS-813 fixtures: the documented staging recipe enumerates exactly what CE
       changedSincebefore
         .map((l) => l.trim())
         .filter((l) => !/(README|STAGEME|CE-ADDED)\.md$/.test(l)),
-      ['?? docs/plans/2026-08-09-001-feature-thing-plan.md'],
+      [`?? ${owned}/`],
+      'git must agree the only new docs/plans entry is the directory this dispatch owns',
     )
     assert.equal(
       readFileSync(join(stage, 'before', 'CONCEPTS.md'), 'utf8'),
@@ -362,6 +351,11 @@ test('BOS-813 fixtures: the documented staging recipe enumerates exactly what CE
       existsSync(join(repo, 'docs', 'plans', 'pre-existing-plan.md')),
       'a pre-existing plan must survive',
     )
+    assert.equal(
+      existsSync(join(repo, owned)),
+      false,
+      'the owned per-dispatch staging directory, and CE’s plan inside it, must be removed',
+    )
     assert.ok(
       existsSync(join(runTmp, 'ce-notes.md')),
       'what CE wrote inside runTmp is the core’s to remove',
@@ -387,11 +381,33 @@ test('BOS-813 fixtures: cleanup is documented as unconditional across the failur
     /runs\s+on\s+the\s+failure\s+paths\s+too/i,
     'a dispatch that fails after CE wrote its plan must still restore the worktree',
   )
-  assert.match(
+  // BOS-1290: the boundary moved from "delete everything outside runTmp" to "delete only what this
+  // dispatch owns, report the rest". The old claim was the defect: cleanup could not tell CE's
+  // untracked artifact from a concurrent peer's, and deleting a peer's untracked file is
+  // unrecoverable. Pin the replacement rather than dropping the pin — an unpinned boundary is how
+  // the set difference would come back.
+  assert.doesNotMatch(
     body,
-    /Nothing\s+CE\s+wrote \*\*outside\*\* `runTmp` may\s+survive/,
-    'the cleanup boundary must stay at runTmp',
+    /comm\s+-13/,
+    'no enumeration difference may authorise a removal — that is the defect BOS-1290 removed',
   )
+  const [, cleanupBlock] = stagingBlocks(body)
+  assert.match(
+    cleanupBlock,
+    /ls-files --error-unmatch/,
+    'a tracked-path guard must sit in front of every surviving removal',
+  )
+  // Exactly two removals may survive, and each must be attributable without an enumeration: the
+  // directory this dispatch owns, and a path the pre-run snapshot itself recorded as already gone.
+  const removals = cleanupBlock.split('\n').filter((l) => /\brm -rf\b/.test(l))
+  assert.equal(removals.length, 2, `cleanup must keep exactly two removals, got ${removals.length}`)
+  for (const removal of removals) {
+    assert.match(
+      removal,
+      /\$ROOT\/\$(OWNED|rel)"/,
+      `every removal must be run-owned or snapshot-justified, got: ${removal.trim()}`,
+    )
+  }
 
   // The two reaches the recipe does not have. `git status` is blind to gitignored paths and to
   // empty directories, so the boundary claim above is only true for paths git can see. A doc that
@@ -473,6 +489,177 @@ test('BOS-813 fixtures: an unsubstituted runTmp aborts both blocks instead of si
     assert.ok(
       existsSync(join(repo, 'docs', 'plans', 'ce-plan.md')),
       'the aborted cleanup must not be mistaken for a cleanup that ran: the artifact is still here',
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// BOS-1290 — deletion is an allow-list. A shared worktree carries concurrent writers, git records
+// no writer identity, and a peer's untracked file cannot be restored once removed. These four
+// fixtures run the documented recipe verbatim against exactly the three peer shapes the source
+// notes recorded, plus the owned-directory case that proves cleanup still cleans up.
+// ---------------------------------------------------------------------------------------------
+
+/** Seed a repo, run the documented snapshot block against it, and hand back everything a peer
+ *  fixture needs: the repo, the owned directory the snapshot declared, a cleanup runner, and the
+ *  residue the run reported. Nothing here reimplements the recipe — both blocks come out of the
+ *  SKILL.md and are executed. */
+function stagedRepo(dir, seed = () => {}) {
+  const repo = join(dir, 'repo')
+  const runTmp = join(dir, 'runtmp')
+  mkdirSync(repo)
+  mkdirSync(runTmp)
+  git(repo, 'init', '-q')
+  mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
+  writeFileSync(join(repo, 'README.md'), 'committed readme\n')
+  writeFileSync(join(repo, 'docs', 'plans', 'pre-existing-plan.md'), 'an older plan\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'seed')
+  seed(repo)
+
+  const [snapshot, cleanup] = stagingBlocks(draftBody())
+  const env = { ...process.env, RUN_TMP: runTmp }
+  execFileSync('bash', ['-euo', 'pipefail', '-c', snapshot], { cwd: repo, env, encoding: 'utf8' })
+  const stage = join(runTmp, 'ce-stage')
+  const owned = readFileSync(join(stage, 'owned-dir.txt'), 'utf8').trim()
+  return {
+    repo,
+    stage,
+    owned,
+    runCleanup: () =>
+      execFileSync('bash', ['-euo', 'pipefail', '-c', cleanup], {
+        cwd: repo,
+        env,
+        encoding: 'utf8',
+      }),
+    residue: () =>
+      existsSync(join(stage, 'residue.txt'))
+        ? readFileSync(join(stage, 'residue.txt'), 'utf8').split('\n').filter(Boolean)
+        : [],
+  }
+}
+
+test('BOS-1290 fixtures: a peer’s UNTRACKED docs/plans file written after the snapshot survives', () => {
+  withTmp((dir) => {
+    const { repo, owned, runCleanup, residue } = stagedRepo(dir)
+
+    // A sibling chat sharing this worktree drafts its own plan while CE runs. It is untracked, so
+    // there is no git object to restore it from: a deletion here is unrecoverable data loss. The
+    // old recipe removed it because `comm -13` saw a name that was not in the pre-run listing.
+    const peerPlan = join(repo, 'docs', 'plans', 'BOS-9999-peer-plan.md')
+    writeFileSync(peerPlan, "a peer session's plan, untracked\n")
+    // CE meanwhile writes where it was told to.
+    writeFileSync(join(repo, owned, 'ce-plan.md'), "CE's own plan\n")
+
+    runCleanup()
+
+    assert.ok(existsSync(peerPlan), 'a peer’s untracked docs/plans file must survive cleanup')
+    assert.equal(
+      readFileSync(peerPlan, 'utf8'),
+      "a peer session's plan, untracked\n",
+      'and survive unchanged — cleanup must not rewrite it either',
+    )
+    assert.equal(existsSync(join(repo, owned)), false, 'CE’s own owned directory is still removed')
+    assert.deepEqual(
+      residue(),
+      ['docs/plans/BOS-9999-peer-plan.md'],
+      'the surviving peer file must be REPORTED as residue; silence about residue is forbidden',
+    )
+  })
+})
+
+test('BOS-1290 fixtures: a peer’s COMMITTED docs/plans file written after the snapshot survives', () => {
+  withTmp((dir) => {
+    const { repo, owned, runCleanup, residue } = stagedRepo(dir)
+
+    // The other half of the pair, and it fails on a different guard: this path IS tracked, so the
+    // directory scoping is not what saves it — the `ls-files --error-unmatch` guard is. The old
+    // recipe listed `docs/plans` with `ls -A`, which sees committed entries too.
+    const peerPlan = join(repo, 'docs', 'plans', 'BOS-8888-peer-committed.md')
+    writeFileSync(peerPlan, "a peer session's plan, committed\n")
+    git(repo, 'add', 'docs/plans/BOS-8888-peer-committed.md')
+    git(repo, 'commit', '-qm', 'peer commits its plan mid-window')
+    writeFileSync(join(repo, owned, 'ce-plan.md'), "CE's own plan\n")
+
+    runCleanup()
+
+    assert.ok(existsSync(peerPlan), 'a peer’s committed docs/plans file must survive cleanup')
+    assert.equal(
+      readFileSync(peerPlan, 'utf8'),
+      "a peer session's plan, committed\n",
+      'and survive unchanged — a tracked path is restored, never deleted, and this one needed neither',
+    )
+    assert.equal(existsSync(join(repo, owned)), false, 'CE’s own owned directory is still removed')
+    assert.deepEqual(
+      residue(),
+      [],
+      'a committed peer file is clean, so it is not residue — nothing was left behind by this run',
+    )
+  })
+})
+
+test('BOS-1290 fixtures: an untracked file OUTSIDE docs/plans survives and is named in the residue', () => {
+  withTmp((dir) => {
+    const { repo, owned, runCleanup, residue } = stagedRepo(dir)
+
+    // The hazard was never docs/plans-scoped: step 3 read a WHOLE-WORKTREE status snapshot and
+    // ended in `rm -rf "$ROOT/$rel"`, so any untracked path anywhere was reachable.
+    mkdirSync(join(repo, 'services', 'web'), { recursive: true })
+    const peerScratch = join(repo, 'services', 'web', 'peer-notes.md')
+    writeFileSync(peerScratch, "a peer's untracked scratch, nowhere near docs/plans\n")
+    // CE ignoring the owned-directory instruction produces the SAME outcome by design: reported,
+    // not guessed at. That is the trade the plan's Open Questions section records.
+    const strayCePlan = join(repo, 'docs', 'plans', '2026-08-09-001-feature-thing-plan.md')
+    writeFileSync(strayCePlan, "CE's plan at a path of its own choosing\n")
+    writeFileSync(join(repo, owned, 'ce-notes.md'), 'CE artifact where it was told to write\n')
+
+    runCleanup()
+
+    assert.ok(existsSync(peerScratch), 'an untracked file outside docs/plans must survive cleanup')
+    assert.equal(
+      readFileSync(peerScratch, 'utf8'),
+      "a peer's untracked scratch, nowhere near docs/plans\n",
+      'and survive unchanged',
+    )
+    assert.ok(existsSync(strayCePlan), 'a stray CE artifact is reported, not destroyed')
+    assert.deepEqual(
+      residue().sort(),
+      ['docs/plans/2026-08-09-001-feature-thing-plan.md', 'services/web/peer-notes.md'],
+      'every unattributable untracked path must be named in the residue the dispatch reports',
+    )
+    assert.equal(existsSync(join(repo, owned)), false, 'the owned directory is still removed')
+  })
+})
+
+test('BOS-1290 fixtures: CE’s own artifacts inside the owned directory are still removed', () => {
+  withTmp((dir) => {
+    const { repo, owned, runCleanup, residue } = stagedRepo(dir)
+
+    // The other direction of the trade: scoping deletion to an owned directory must not turn
+    // cleanup into a no-op. Everything CE writes where it was told to still goes, including
+    // nested directories and a file CE staged.
+    mkdirSync(join(repo, owned, 'research'), { recursive: true })
+    writeFileSync(join(repo, owned, 'ce-plan.md'), "CE's own plan\n")
+    writeFileSync(join(repo, owned, 'research', 'notes.md'), 'CE research notes\n')
+    writeFileSync(join(repo, owned, 'staged.md'), 'CE staged this one\n')
+    git(repo, 'add', `${owned}/staged.md`)
+
+    runCleanup()
+
+    assert.equal(
+      existsSync(join(repo, owned)),
+      false,
+      'the whole owned per-dispatch staging directory must be gone, nested artifacts included',
+    )
+    assert.equal(
+      git(repo, 'status', '--porcelain'),
+      '',
+      'and the index must come back clean: a staged CE artifact inside it is removed from both trees',
+    )
+    assert.deepEqual(residue(), [], 'nothing CE wrote inside the owned directory is residue')
+    assert.ok(
+      existsSync(join(repo, 'docs', 'plans', 'pre-existing-plan.md')),
+      'a pre-existing plan beside the owned directory must survive',
     )
   })
 })

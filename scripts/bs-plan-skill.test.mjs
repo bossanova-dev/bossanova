@@ -1247,7 +1247,7 @@ test('Phase 4 counts canonical upload identities for the image guard (BOS-702)',
   )
   assert.ok(
     PHASE_4_SECTION.includes(
-      'EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"',
+      'EXPECTED_IMAGES="<distinct canonical upload identities observed in the snapshot>"',
     ),
     'the command placeholder must not ask callers to count raw upload URLs',
   )
@@ -2779,6 +2779,19 @@ test('BOS-475: epic parents carry configured label, summed estimate, and backlog
     /reporter.{0,80}priority[\s\S]{0,180}planned.{0,80}backlog/i,
     'the brief must carry backlog-relative priority guidance',
   )
+  // BOS-1304: Linear can accept an off-scale sum, store a different value, and report success,
+  // so the flip must re-read the parent. Both files are pinned: the orchestrator runs SKILL.md's
+  // flip, but on the headless path the drafting subagent runs the brief's, and they drifted once.
+  for (const [name, body] of [
+    ['SKILL.md', SKILL],
+    ['references/headless-drafting-brief.md', BRIEF],
+  ]) {
+    assert.match(
+      body,
+      /Do\s+not\s+rely\s+on\s+rejection\s+alone[\s\S]{0,400}?re-read\s+the\s+parent[\s\S]{0,80}?stored\s+estimate[\s\S]{0,40}?`epicParentEstimate\(spec\)`[\s\S]{0,20}?warn\s+on\s+any\s+difference/,
+      `${name}: the epic-parent flip must re-read the parent, compare its stored estimate with epicParentEstimate(spec), and warn on any difference (either direction), not rely on rejection alone`,
+    )
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -3115,6 +3128,48 @@ test('BOS-1198: plan-storage.md carries the file-based write mechanics', () => {
     /same\s+file\s+every\s+Phase\s+4\s+gate\s+read,\s+not\s+a\s+fresh\s+copy\s+of\s+it/,
     'plan-storage must say why the gated file itself is sent rather than a second rendering',
   )
+})
+
+test('BOS-1303: the three stored-description reads route through read-description', () => {
+  // The file a stored-description gate compares must be written by code from the tracker's
+  // response, never retyped by the model. The verb's behaviour — verbatim bytes, atomic write, the
+  // receipt, exit 2 vs 64 — is asserted over the helper in skills-toolbox/tracker/cli.test.mjs;
+  // what is left here is WHICH sites call it, which only the published body can answer. One pin
+  // per question, looped over its sites, and each is a structural lead rather than a sentence.
+  const sites = [
+    ['Phase 2 step 2', sectionBetween(HEADLESS_SECTION, '2. Before dispatch, write', '\n3. ')],
+    [
+      'Phase 4 step 5(f)',
+      sectionBetween(PHASE_4_SECTION, 'fresh read of the stored', 'If you send an incremental'),
+    ],
+    [
+      'Phase 4 step 6',
+      sectionBetween(PHASE_4_SECTION, 'STOP — write-back verification', '```bash'),
+    ],
+  ]
+  for (const [name, region] of sites) {
+    assert.match(
+      region,
+      /`(?:node\s+"\$BOSS_PLAN_TOOLBOX\/tracker\/cli\.mjs"\s+)?read-description\b/,
+      `${name} must read the stored description with read-description`,
+    )
+  }
+  // Both verbatim references Phase 4 compares must share ONE provenance: the safe-source original
+  // is derived from the snapshot file, not from a second copy of the Phase 1 result.
+  assert.match(
+    PHASE_4_SECTION,
+    /attachment-guard-orig\.md`\s+from\s+that\s+(?:>\s+)?snapshot\s+file/,
+    'the safe-source original must be derived from the snapshot file',
+  )
+  // The mechanics live in the reference, pinned by rule name plus the invocation shape.
+  for (const rule of [
+    /read-description\s+--id\s+"<PHASE-1-ISSUE-UUID>"\s+--out-file/,
+    /\*\*Identity\s+—\s+the\s+receipt\s+`id`\s+must\s+be\s+the\s+Phase\s+1\s+UUID\.\*\*/,
+    /\*\*Route\s+—\s+chosen\s+once\s+per\s+run\.\*\*[\s\S]*?tracker\s+adapter's\s+`getIssue`/,
+    /\*\*Usage\s+error\s+—\s+exit\s+64\s+stops\.\*\*/,
+  ]) {
+    assert.match(PLAN_STORAGE, rule, `plan-storage.md must carry ${rule}`)
+  }
 })
 
 // ---------------------------------------------------------------------------

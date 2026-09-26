@@ -89,7 +89,7 @@ test('REQUIRED_TRACKER_OPERATIONS lists the full required op surface, including 
 })
 
 test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does NOT (BOS-524)', () => {
-  assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, ['states', 'selectPlanned'])
+  assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, ['states', 'selectPlanned', 'readDescription'])
   // The separation is the whole point: assertConforms REQUIRES every
   // TRACKER_CAPABILITIES entry, so promoting `states` there would fail every
   // conforming adapter that legitimately omits it.
@@ -261,6 +261,42 @@ test('the operationMap.selectPlanned DESCRIPTOR stays required beside the capabi
     () => assertConforms(adapter),
     /tracker adapter operationMap missing operation: selectPlanned/,
   )
+})
+
+// BOS-1303: the executable stored-description read. Optional because no caller's control flow
+// depends on it — a caller that finds it absent falls back to the MCP `getIssue` byte-copy — while
+// a DECLARED one must be callable, or `read-description` would crash at the call site instead of
+// exiting 2 with the named fallback diagnostic.
+test('assertConforms accepts an adapter with NO readDescription capability (BOS-1303)', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.equal(adapter.readDescription, undefined, 'fixture must genuinely omit readDescription')
+  assert.doesNotThrow(() => assertConforms(adapter))
+  assert.ok(
+    !TRACKER_CAPABILITIES.includes('readDescription'),
+    'readDescription must stay optional — requiring it fails adapters that legitimately omit it',
+  )
+  assert.ok(
+    !REQUIRED_TRACKER_OPERATIONS.includes('readDescription') &&
+      !OPTIONAL_TRACKER_OPERATIONS.includes('readDescription'),
+    'readDescription is an executable capability, never an operationMap entry',
+  )
+})
+
+test('assertConforms accepts a readDescription FUNCTION and rejects a non-callable one (BOS-1303)', () => {
+  const withRead = (readDescription) => ({
+    ...stubAdapterWithOperationMap(validOperationMap()),
+    readDescription,
+  })
+  assert.doesNotThrow(() =>
+    assertConforms(withRead(async () => ({ id: 'u', identifier: 'X-1', description: '' }))),
+  )
+  for (const bad of [{ description: 'x' }, 'get_issue', 42, [], true]) {
+    assert.throws(
+      () => assertConforms(withRead(bad)),
+      /tracker adapter optional capability readDescription must be a function/,
+      `expected a throw for readDescription = ${JSON.stringify(bad)}`,
+    )
+  }
 })
 
 test('assertConforms throws when a capability is missing', () => {

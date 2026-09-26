@@ -153,7 +153,7 @@ test('buildSpec stages repository holder organizations only for repository list 
   assert.doesNotMatch(editSpec, /repoOrganizations:/)
 })
 
-test('repository filter proof captures all organizations before a narrowed-empty state', () => {
+test('repository filter proof drives the filter menu by clicks from a daemon to an empty organization', () => {
   const catalog = JSON.parse(
     fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
   )
@@ -162,30 +162,46 @@ test('repository filter proof captures all organizations before a narrowed-empty
   )
   assert.ok(recipe, 'web-repositories-daemon-filter-flow recipe is missing from the catalog')
   assert.doesNotThrow(() => validateRecipe(recipe))
-  assert.match(recipe.title, /Organization Filter Flow/)
-  assert.match(recipe.description, /All organizations/)
-
-  const allOrganizationsIndex = recipe.steps.findIndex(
-    (step) =>
-      step.action === 'select' &&
-      step.selector === '[data-testid="repository-organization-filter"]' &&
-      step.value === '',
-  )
-  const emptyOrganizationIndex = recipe.steps.findIndex(
-    (step) =>
-      step.action === 'select' &&
-      step.selector === '[data-testid="repository-organization-filter"]' &&
-      step.value === 'org-proof-initech',
-  )
-  const emptyStateIndex = recipe.steps.findIndex(
-    (step) =>
-      step.action === 'wait' &&
-      step.selector === 'text=No repositories belong to the selected organization',
-  )
-  assert.ok(allOrganizationsIndex >= 0, 'catalog must show All organizations')
+  assert.equal(recipe.viewport.width, 1440)
+  for (const token of ['Daemon', 'Proof web repository', 'Initech']) {
+    assert.ok(recipe.description.includes(token), `description must name the ${token} evidence`)
+  }
+  // The native drop-downs are gone; nothing may still select on them.
   assert.ok(
-    allOrganizationsIndex < emptyOrganizationIndex && emptyOrganizationIndex < emptyStateIndex,
-    'catalog must select the empty Initech organization before waiting for its empty state',
+    recipe.steps.every((step) => step.action !== 'select'),
+    'the filter menu is driven by clicks, not native selects',
+  )
+
+  const clickIndex = (selector) =>
+    recipe.steps.findIndex((step) => step.action === 'click' && step.selector === selector)
+  const trigger = clickIndex("[data-testid='repository-filter-trigger']")
+  const daemonFacet = clickIndex("[data-testid='repository-filter-facet-daemon']")
+  const standby = clickIndex(
+    "[data-testid='repository-filter-option-daemon-daemon-proof-standby-check']",
+  )
+  const orgFacet = clickIndex("[data-testid='repository-filter-facet-org']")
+  const initech = clickIndex("[data-testid='repository-filter-option-org-org-proof-initech-check']")
+  const emptyState = recipe.steps.findIndex(
+    (step) =>
+      step.action === 'wait' && step.selector === 'text=No repositories match the selected filters',
+  )
+  for (const [name, index] of Object.entries({
+    trigger,
+    daemonFacet,
+    standby,
+    orgFacet,
+    initech,
+    emptyState,
+  })) {
+    assert.ok(index >= 0, `catalog must include the ${name} step`)
+  }
+  assert.ok(
+    trigger < daemonFacet &&
+      daemonFacet < standby &&
+      standby < orgFacet &&
+      orgFacet < initech &&
+      initech < emptyState,
+    'catalog must tick the Standby daemon before ticking the empty Initech organization and waiting for the empty state',
   )
 
   const spec = buildSpec({
@@ -195,30 +211,27 @@ test('repository filter proof captures all organizations before a narrowed-empty
     stageEnv: { VITE_E2E: '1' },
   })
 
-  const allOrganizationsStep = region(
+  const standbyStep = region(
     spec,
-    "caption(t), 'All organizations are included'",
-    "caption(t), 'Filter to an organization with no matching repositories'",
-    'all-organizations proof step',
+    "caption(t), 'Tick the Standby daemon'",
+    "caption(t), 'Escape steps back to the facet list'",
+    'standby-daemon proof step',
   )
-  assert.match(allOrganizationsStep, /repository-organization-filter/)
-  assert.match(allOrganizationsStep, /selectOption\('\'\)/)
-  const emptyOrganizationStep = region(
-    spec,
-    "caption(t), 'Filter to an organization with no matching repositories'",
-    "caption(t), 'No repositories belong to the selected organization'",
-    'empty-organization proof step',
-  )
-  assert.match(emptyOrganizationStep, /repository-organization-filter/)
-  assert.match(emptyOrganizationStep, /selectOption\('org-proof-initech'\)/)
+  assert.match(standbyStep, /repository-filter-option-daemon-daemon-proof-standby/)
+  assert.match(standbyStep, /__loc\.click\(\)/)
+  assert.doesNotMatch(spec, /selectOption\(/)
   assert.ok(
     precedes(
       spec,
-      "caption(t), 'All organizations are included'",
-      "caption(t), 'Filter to an organization with no matching repositories'",
-      "page.locator('text=No repositories belong to the selected organization')",
-    ),
-    'organization proof must show the all-organizations control before selecting an empty organization and waiting for its empty state',
+      "caption(t), 'Tick the Standby daemon'",
+      "caption(t), 'Tick Initech, an organization with no repositories'",
+    ) &&
+      precedes(
+        spec,
+        "caption(t), 'Tick Initech, an organization with no repositories'",
+        "page.locator('text=No repositories match the selected filters')",
+      ),
+    'repository filter proof must tick the daemon, then Initech, then wait for the empty state',
   )
 })
 

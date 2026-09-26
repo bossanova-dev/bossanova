@@ -28,6 +28,15 @@
 //
 // Register on the cron job (gate cwd = repo root):
 //   node skills-toolbox/cron-gates/boss-build.mjs
+// A repo that carries no skills-toolbox/ (and a launcher wrapper that execs this gate) runs the
+// INSTALLED global copy instead, via the recipe in boss-build's references/cron-gate.md:
+//   ~/.claude/skills/boss-build/toolbox/cron-gates/boss-build.mjs   (Codex: ~/.codex/skills/...)
+// That copy picks up a repo-side edit to this file only after the install is refreshed
+// (`boss skills sync`); toolbox-drift.mjs is the probe that reports the two diverging.
+//
+// Selection-aware registration: the command is unchanged — `selection` is read from the
+// .boss-skills.json at the gate cwd. Set that key only once the boss-build tree the job runs
+// ships the `list-planned` verb (see NARROWING above).
 
 import { gateExit } from '../linear-gate-lib.mjs'
 import { isMainModule } from '../main-module.mjs'

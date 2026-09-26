@@ -51,10 +51,10 @@
       "id": "web-sessions-filters",
       "surface": "web",
       "title": "Web Sessions Filters",
-      "description": "Sessions breadcrumb row at desktop width in the default unfiltered state: THREE drop-downs sit to the LEFT of the '+' New session button, on the same row as the 'Sessions' crumb — broadest scope first, an organization drop-down reading 'All organizations', then a daemon drop-down reading 'All daemons', then a repository drop-down reading 'All repositories'.",
+      "description": "Sessions sub-header at desktop width opened from a shared URL with two filters active: the breadcrumb row carries the 'Sessions' crumb, the accent-tinted square filter trigger and the '+' New session button, and the filter bar beneath it shows a 'Daemon | is any of | 2 daemons' chip and a 'Repository | is | Proof repository' chip, then a '+' button, with a Clear button at the right.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/",
+      "route": "/sessions?daemon=daemon-proof&daemon=daemon-proof-standby&repo=github.com/e2e/repo-proof",
       "cropToSelector": ".sub-header",
       "viewport": { "width": 1440, "height": 1000 }
     },
@@ -62,10 +62,10 @@
       "id": "web-sessions-filters-mobile",
       "surface": "web",
       "title": "Web Sessions Filters (mobile)",
-      "description": "Sessions breadcrumb row at 390px: the 'Sessions' crumb, all THREE filter drop-downs (organization, daemon, repository), and the '+' New session button share one line, every control fully on screen and none overlapping. The drop-down labels ellipsize to yield the width, so 'All organizations' / 'All daemons' / 'All repositories' may read truncated. (Absence of horizontal overflow is asserted by mobile-layout.spec.ts, not by this crop.)",
+      "description": "Sessions sub-header at 390px opened from a shared URL with two filters active: the 'Sessions' crumb, the square filter trigger and the '+' New session button share the breadcrumb row, and beneath it inside the same pinned sub-header the Daemon chip ('Standby daemon') and the Repository chip ('Proof web repository') stack one per line, the '+' after the last chip and a Clear button on its own row at the right. Every control is fully on screen. (Absence of horizontal overflow and the pinning on scroll are asserted by mobile-layout.spec.ts, not by this crop.)",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/",
+      "route": "/sessions?daemon=daemon-proof-standby&repo=github.com/e2e/repo-proof-web",
       "cropToSelector": ".sub-header",
       "viewport": { "width": 390, "height": 844 }
     },
@@ -73,18 +73,49 @@
       "id": "web-daemon-label-collision",
       "surface": "web",
       "title": "Web daemon-label collision",
-      "description": "Sessions daemon filter with two mac.lan daemons visibly qualified by their parenthesised ids, a unique solo.local daemon left clean, and All daemons retained as the unfiltered choice.",
+      "description": "The sessions filter menu drilled into Daemon, with two mac.lan daemons visibly qualified by their parenthesised ids ('mac.lan (daemon-proof-standby)' and 'mac.lan (daemon-proof)') and the unique solo.local daemon listed after them without a qualifier. Captured as a flow because the menu is opened by clicks; the last step's still is the evidence.",
       "privacy": "fixture",
-      "capture": "still",
-      "route": "/",
-      "cropToSelector": ".sub-header",
-      "viewport": { "width": 1440, "height": 1000 }
+      "capture": "video",
+      "viewport": { "width": 1440, "height": 1000 },
+      "slowMo": 350,
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/",
+          "label": "Open home",
+          "caption": "Open the sessions list"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap",
+          "label": "Sessions list",
+          "caption": "Sessions across three daemons, two sharing a hostname"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-facet-daemon']",
+          "label": "Choose Daemon",
+          "caption": "Daemon opens its value list"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='sessions-filter-option-daemon-daemon-proof-solo']",
+          "label": "Daemon values",
+          "caption": "Colliding hostnames carry their ids; solo.local stays clean"
+        }
+      ]
     },
     {
       "id": "web-sessions-filter-flow",
       "surface": "web",
       "title": "Web Sessions Filter Flow",
-      "description": "The desktop Sessions daemon filter offers the peer-serving Standby daemon alongside inventory, then choosing it narrows the table: 'Proof session' is gone and only the Standby daemon's 'Proof quick chat' remains while 'Standby daemon' shows as selected.",
+      "description": "The desktop sessions filter menu: the square filter trigger opens 'Add filter', Daemon drills into its values listing the inventory 'Proof daemon' and the peer-serving 'Standby daemon', and ticking Standby daemon narrows the table to its 'Proof quick chat' row ('Proof session' is gone). Ticking Proof daemon as well widens it to both daemons' sessions, one read per daemon merged. Clicking the trigger again closes the menu, leaving a 'Daemon | is any of | 2 daemons' chip in the filter bar.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -103,17 +134,46 @@
           "caption": "All sessions across every daemon"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"sessions-daemon-filter\"]",
-          "value": "daemon-proof-standby",
-          "label": "Choose a daemon",
-          "caption": "Filter the list down to the Standby daemon"
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-facet-daemon']",
+          "label": "Choose Daemon",
+          "caption": "Daemon lists the inventory and the peer-serving daemon"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-option-daemon-daemon-proof-standby-check']",
+          "label": "Tick Standby daemon",
+          "caption": "The list narrows to the Standby daemon's sessions"
         },
         {
           "action": "wait",
           "timeoutMs": 800,
           "label": "Narrowed list",
-          "caption": "Only that daemon's sessions remain"
+          "caption": "Only 'Proof quick chat' remains"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-option-daemon-daemon-proof-check']",
+          "label": "Tick Proof daemon",
+          "caption": "A second daemon: the union of both"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-trigger']",
+          "label": "Close menu",
+          "caption": "The trigger closes the menu, leaving the filter bar"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='sessions-filter-chip-daemon']",
+          "label": "Filter bar",
+          "caption": "Daemon is any of 2 daemons"
         }
       ]
     },
@@ -121,7 +181,7 @@
       "id": "web-sessions-filter-persist",
       "surface": "web",
       "title": "Web Sessions Filter Persistence",
-      "description": "With the Standby daemon selected, reloading the sessions list keeps 'Standby daemon' as the selected value and keeps the table narrowed to the same rows.",
+      "description": "Choosing two repositories through the sessions filter menu (Repository, then Proof repository and Proof web repository) leaves a 'Repository | is any of | 2 repositories' chip; reloading the page keeps that chip and the same rows, because the selection lives in the URL.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -137,21 +197,48 @@
           "action": "wait",
           "selector": ".data-table-wrap",
           "label": "Sessions list",
-          "caption": "All sessions across every daemon"
+          "caption": "All sessions across every repository"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"sessions-daemon-filter\"]",
-          "value": "daemon-proof-standby",
-          "label": "Choose a daemon",
-          "caption": "Filter the list down to the Standby daemon"
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
         },
-        { "action": "reload", "label": "Reload the page", "caption": "Reload the page" },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-facet-repo']",
+          "label": "Choose Repository",
+          "caption": "Repository opens its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-option-repo-github.com/e2e/repo-proof-check']",
+          "label": "Tick the first repository",
+          "caption": "One repository narrows the list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-option-repo-github.com/e2e/repo-proof-web-check']",
+          "label": "Tick the second repository",
+          "caption": "A second repository: sessions in either"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-trigger']",
+          "label": "Close menu",
+          "caption": "The trigger closes the menu, leaving the filter bar"
+        },
+        {
+          "action": "reload",
+          "label": "Reload the page",
+          "caption": "Reload the page"
+        },
         {
           "action": "wait",
-          "selector": ".data-table-wrap",
+          "selector": "[data-testid='sessions-filter-chip-repo']",
           "label": "Selection survived",
-          "caption": "The daemon selection and the narrowed list survive the reload"
+          "caption": "Both repositories and the same rows survive the reload"
         }
       ]
     },
@@ -207,7 +294,7 @@
       "id": "web-sessions-org-filter-flow",
       "surface": "web",
       "title": "Web Sessions Organization Filter Flow",
-      "description": "Choosing an organization in the sessions-list organization filter narrows the table across every daemon and repository: 'Proof session' is listed before the selection and gone after it, leaving only Globex's 'Proof quick chat' row while 'Globex' shows as the selected value. In both states, each row's Repository cell shows the repository name on a single line with nothing beneath it.",
+      "description": "Choosing Globex through the sessions filter menu narrows the table across every daemon and repository: 'Proof session' is listed before the choice and gone after it, leaving only Globex's 'Proof quick chat' row, and an 'Organization | is | Globex' chip appears in the filter bar. In both states, each row's Repository cell shows the repository name on a single line with nothing beneath it.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -226,17 +313,34 @@
           "caption": "All sessions across every organization"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"sessions-org-filter\"]",
-          "value": "org-proof-globex",
-          "label": "Choose an organization",
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-facet-org']",
+          "label": "Choose Organization",
+          "caption": "Organization lists Acme and Globex"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-option-org-org-proof-globex-check']",
+          "label": "Tick Globex",
           "caption": "Filter the list down to Globex"
         },
         {
+          "action": "click",
+          "selector": "[data-testid='sessions-filter-trigger']",
+          "label": "Close menu",
+          "caption": "The trigger closes the menu, leaving the filter bar"
+        },
+        {
           "action": "wait",
-          "timeoutMs": 800,
+          "selector": "[data-testid='sessions-filter-chip-org']",
           "label": "Narrowed list",
-          "caption": "Only that organization's sessions remain"
+          "caption": "Only Globex's sessions remain, under an Organization chip"
         }
       ]
     },
@@ -622,7 +726,7 @@
       "id": "web-repositories",
       "surface": "web",
       "title": "Web Repositories",
-      "description": "Repositories settings page at desktop width: the Settings / Repositories sub-header carries a drop-down reading 'All daemons', and below it one unified, heading-less list of registered repos with a per-row edit icon and no separate 'GitHub App' section. Rows are alphabetical — 'Proof repository' (Proof daemon) before 'Proof web repository' (Standby daemon) — and each names its serving daemon in the Daemon column.",
+      "description": "Repositories settings page at desktop width: the Settings / Repositories sub-header carries the square filter trigger, and below it one unified, heading-less list of registered repos with a per-row edit icon and no separate 'GitHub App' section. Rows are alphabetical — 'Proof repository' (Proof daemon) before 'Proof web repository' (Standby daemon) — and each names its serving daemon in the Daemon column.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/repos",
@@ -633,7 +737,7 @@
       "id": "web-repositories-daemon-filter-flow",
       "surface": "web",
       "title": "Web Repositories Daemon and Organization Filter Flow",
-      "description": "Choosing a daemon in the repository-settings header filter narrows the table and the user chooses when to leave it: both repositories are listed before the selection, only 'Proof web repository' remains while 'Standby daemon' shows as the selected label, and selecting 'All daemons' again restores the full list. The flow then shows All organizations before selecting Initech, an organization with no matching repositories, and reports that no repositories belong to the selected organization. Nothing resets either selection on the page's behalf.",
+      "description": "The Linear-style filter menu on the repository settings list, driven by clicks: the square filter trigger in the sub-header opens the 'Add filter' menu, Daemon drills into its value list, and ticking the Standby daemon narrows the table until only 'Proof web repository' remains, with a Daemon chip in the filter bar beneath the header. The '+' in the bar then reopens the menu, Organization drills in, and ticking Initech, an organization with no repositories, adds an 'Organization | is | Initech' chip and empties the list: it reports that no repositories match the selected filters and offers Clear filters. Nothing drops either chosen value on the page's behalf.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -652,50 +756,82 @@
           "caption": "All repositories across every daemon"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"repository-daemon-filter\"]",
-          "value": "daemon-proof-standby",
-          "label": "Choose a daemon",
-          "caption": "Filter the list down to the Standby daemon"
+          "action": "click",
+          "selector": "[data-testid='repository-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='repository-filter-facet-daemon']",
+          "label": "Choose Daemon",
+          "caption": "Daemon drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='repository-filter-option-daemon-daemon-proof-standby-check']",
+          "label": "Tick Standby daemon",
+          "caption": "Tick the Standby daemon"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='repository-filter-chip-daemon']",
+          "label": "Daemon chip",
+          "caption": "The Daemon filter sits in the bar beneath the header"
         },
         {
           "action": "wait",
           "timeoutMs": 800,
           "label": "Narrowed list",
-          "caption": "Only that daemon's repositories remain"
+          "caption": "Only Proof web repository remains"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"repository-daemon-filter\"]",
-          "value": "",
-          "label": "Return to All daemons",
-          "caption": "Clearing the filter is the user's own choice"
+          "action": "click",
+          "selector": "[data-testid='repository-filter-add']",
+          "label": "Add another filter",
+          "caption": "The + in the filter bar reopens the menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='repository-filter-facet-org']",
+          "label": "Choose Organization",
+          "caption": "Organization drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='repository-filter-option-org-org-proof-initech-check']",
+          "label": "Tick Initech",
+          "caption": "Tick Initech, an organization with no repositories"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
         },
         {
           "action": "wait",
-          "selector": "text=Proof repository",
-          "label": "Full list restored",
-          "caption": "Every repository is listed again"
-        },
-        {
-          "action": "select",
-          "selector": "[data-testid=\"repository-organization-filter\"]",
-          "value": "",
-          "label": "All organizations",
-          "caption": "All organizations are included"
-        },
-        {
-          "action": "select",
-          "selector": "[data-testid=\"repository-organization-filter\"]",
-          "value": "org-proof-initech",
-          "label": "Choose an organization with no repositories",
-          "caption": "Filter to an organization with no matching repositories"
-        },
-        {
-          "action": "wait",
-          "selector": "text=No repositories belong to the selected organization",
-          "label": "Narrowed organization empty state",
-          "caption": "No repositories belong to the selected organization"
+          "selector": "text=No repositories match the selected filters",
+          "label": "Filtered empty state",
+          "caption": "No repositories match the selected filters"
         }
       ]
     },
@@ -870,7 +1006,7 @@
       "id": "web-cron-org-filter-row-attribution",
       "surface": "web",
       "title": "Web Cron Job Organization Attribution",
-      "description": "Cron jobs across the caller's organizations with All organizations selected: the Organization column attributes rows to Acme and Globex.",
+      "description": "Cron jobs across the caller's organizations with no organization filter applied: the Organization column attributes rows to Acme and Globex.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/cron",
@@ -881,7 +1017,7 @@
       "id": "web-cron-org-filter-flow",
       "surface": "web",
       "title": "Web Cron Job Organization Filter Flow",
-      "description": "Selecting Globex narrows the cross-organization cron list to Standby cache warmer; selecting an organization with no jobs then reports that no cron jobs belong to the selected organization.",
+      "description": "The Linear-style filter menu on the cross-organization cron list: the square filter trigger in the sub-header opens the 'Add filter' menu, Organization drills into its value list, and ticking Globex narrows the table to Standby cache warmer with an 'Organization | is | Globex' chip in the filter bar. Unticking Globex and ticking Umbrella, an organization with no cron jobs, then leaves the filtered-empty state 'No cron jobs belong to the selected organization' with a 'Clear filters' button.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -895,35 +1031,63 @@
         },
         {
           "action": "wait",
-          "selector": "[data-testid=\"cron-jobs-section\"]",
+          "selector": "[data-testid='cron-jobs-section']",
           "label": "Cron list",
           "caption": "Every cron job carries its owning organization"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"cron-organization-filter\"]",
-          "value": "org-proof-globex",
-          "label": "Choose Globex",
-          "caption": "Narrow the list to Globex"
+          "action": "click",
+          "selector": "[data-testid='cron-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='cron-filter-facet-org']",
+          "label": "Choose Organization",
+          "caption": "Organization drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='cron-filter-option-org-org-proof-globex-check']",
+          "label": "Tick Globex",
+          "caption": "Only Globex's Standby cache warmer remains"
         },
         {
           "action": "wait",
-          "selector": "[data-testid=\"cron-jobs-section\"]",
+          "selector": "[data-testid='cron-filter-chip-org']",
           "label": "Globex jobs",
-          "caption": "Only Standby cache warmer remains"
+          "caption": "The filter bar reads Organization is Globex"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"cron-organization-filter\"]",
-          "value": "org-proof-empty",
-          "label": "Choose an empty organization",
-          "caption": "Select an organization with no cron jobs"
+          "action": "click",
+          "selector": "[data-testid='cron-filter-option-org-org-proof-globex-check']",
+          "label": "Untick Globex",
+          "caption": "Unticking Globex restores every organization"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='cron-filter-option-org-org-proof-empty-check']",
+          "label": "Tick an empty organization",
+          "caption": "Umbrella has no cron jobs"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
         },
         {
           "action": "wait",
           "selector": ".list-empty-filtered",
           "label": "Organization empty state",
-          "caption": "No cron jobs belong to the selected organization"
+          "caption": "No cron jobs belong to the selected organization, with Clear filters"
         }
       ]
     },
@@ -931,7 +1095,7 @@
       "id": "web-cron-filter-flow",
       "surface": "web",
       "title": "Web Cron Filter Flow",
-      "description": "Choosing a daemon in the cron-list daemon filter narrows the table: 'Nightly dependency sweep' is listed before the selection and gone after it, leaving only the Standby daemon's 'Standby cache warmer' row while 'Standby daemon' shows as the selected value.",
+      "description": "Choosing a daemon through the cron list's Linear-style filter menu narrows the table: 'Nightly dependency sweep' is listed before the selection and gone after it. The square filter trigger opens the 'Add filter' menu, Daemon drills into its value list, and ticking Standby daemon leaves only the 'Standby cache warmer' row, with a 'Daemon | is | Standby daemon' chip in the filter bar beneath the header once the menu closes.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -945,22 +1109,45 @@
         },
         {
           "action": "wait",
-          "selector": "[data-testid=\"cron-jobs-section\"]",
+          "selector": "[data-testid='cron-jobs-section']",
           "label": "Cron list",
           "caption": "Every daemon's cron jobs, sorted by name"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"cron-daemon-filter\"]",
-          "value": "daemon-proof-standby",
-          "label": "Choose a daemon",
+          "action": "click",
+          "selector": "[data-testid='cron-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='cron-filter-facet-daemon']",
+          "label": "Choose Daemon",
+          "caption": "Daemon drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='cron-filter-option-daemon-daemon-proof-standby-check']",
+          "label": "Tick Standby daemon",
           "caption": "Filter the list down to the Standby daemon"
         },
         {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
+        },
+        {
           "action": "wait",
-          "timeoutMs": 800,
+          "selector": "[data-testid='cron-filter-chip-daemon']",
           "label": "Narrowed list",
-          "caption": "Only that daemon's cron jobs remain"
+          "caption": "Daemon is Standby daemon: only Standby cache warmer remains"
         }
       ]
     },
@@ -1026,7 +1213,7 @@
       "id": "web-accounts-filter-flow",
       "surface": "web",
       "title": "Web Accounts Filter Flow",
-      "description": "Choosing a daemon in the accounts-list daemon filter narrows the table: every daemon's accounts are listed under 'All daemons' first, and after selecting 'Standby daemon' only that daemon's 'standby@anthropic.com' row remains while the Proof daemon's rows are gone.",
+      "description": "Choosing a daemon through the accounts filter menu narrows the table: every daemon's accounts are listed first; the square filter trigger opens the 'Add filter' menu, Daemon drills into its value list, and ticking 'Standby daemon' leaves only its 'standby@anthropic.com' row, under a 'Daemon | is | Standby daemon' chip in the filter bar, while the Proof daemon's rows are gone.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -1045,15 +1232,44 @@
           "caption": "Every daemon's rotation accounts, with the daemon named per row"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"accounts-daemon-filter\"]",
-          "value": "daemon-proof-standby",
-          "label": "Choose a daemon",
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-facet-daemon']",
+          "label": "Choose Daemon",
+          "caption": "Daemon drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-option-daemon-daemon-proof-standby-check']",
+          "label": "Tick Standby daemon",
           "caption": "Filter the list down to the Standby daemon"
         },
         {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
+        },
+        {
           "action": "wait",
-          "timeoutMs": 800,
+          "selector": "[data-testid='accounts-filter-chip-daemon']",
+          "label": "Daemon chip",
+          "caption": "Daemon is Standby daemon"
+        },
+        {
+          "action": "wait",
+          "selector": "text=standby@anthropic.com",
           "label": "Narrowed list",
           "caption": "Only that daemon's accounts remain"
         }
@@ -1063,7 +1279,7 @@
       "id": "web-accounts-org-filter-flow",
       "surface": "web",
       "title": "Web Accounts Organization Filter Flow",
-      "description": "Choosing Globex in the accounts organization filter narrows the cross-organization table to Standby daemon accounts. Selecting the incompatible Proof daemon then shows the both-filters empty state and its plural Clear filters escape hatch.",
+      "description": "Choosing Globex through the accounts filter menu (trigger, Organization, tick Globex) narrows the cross-organization table to Standby daemon accounts under an 'Organization | is | Globex' chip. Adding the incompatible Proof daemon through the same menu then shows the both-filters empty state and its plural Clear filters escape hatch.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -1076,11 +1292,40 @@
           "caption": "All organizations and their accounts are visible"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"accounts-organization-filter\"]",
-          "value": "org-proof-globex",
-          "label": "Choose Globex",
+          "action": "wait",
+          "selector": "[data-testid=\"accounts-section\"]",
+          "label": "Accounts list",
+          "caption": "Accounts across every organization"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-facet-org']",
+          "label": "Choose Organization",
+          "caption": "Organization drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-option-org-org-proof-globex-check']",
+          "label": "Tick Globex",
           "caption": "Narrow accounts to one organization"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
         },
         {
           "action": "wait",
@@ -1089,11 +1334,34 @@
           "caption": "Only Globex accounts remain"
         },
         {
-          "action": "select",
-          "selector": "[data-testid=\"accounts-daemon-filter\"]",
-          "value": "daemon-proof",
-          "label": "Choose incompatible daemon",
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-trigger']",
+          "label": "Open filter menu again",
+          "caption": "The same menu adds a second filter"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-facet-daemon']",
+          "label": "Choose Daemon",
+          "caption": "Daemon drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='accounts-filter-option-daemon-daemon-proof-check']",
+          "label": "Tick Proof daemon",
           "caption": "Both filters now exclude every account"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
         },
         {
           "action": "wait",
@@ -1321,7 +1589,7 @@
       "id": "web-daemons-org-filter",
       "surface": "web",
       "title": "Web Daemons Organization Filter",
-      "description": "Selecting Acme in the daemon organization filter narrows the desktop inventory to Proof daemon while keeping the All organizations control available.",
+      "description": "The Linear-style filter menu on the desktop daemon inventory: the square filter trigger in the sub-header opens the 'Add filter' menu, Organization drills into its value list, and ticking Acme then Globex keeps the menu open. Escape steps back and closes it, leaving the filter bar beneath the header with one 'Organization | is any of | 2 organizations' chip, a '+' button and a Clear button, and both organizations' daemons still listed.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -1340,17 +1608,172 @@
           "caption": "Organization attribution is populated"
         },
         {
-          "action": "select",
-          "selector": "[data-testid='daemons-org-filter']",
-          "value": "org-proof-acme",
-          "label": "Choose Acme",
-          "caption": "Narrow the inventory to Acme"
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "The filter trigger opens the Add filter menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-facet-org']",
+          "label": "Choose Organization",
+          "caption": "Organization drills into its value list"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-option-org-org-proof-acme-check']",
+          "label": "Tick Acme",
+          "caption": "Acme is ticked and the menu stays open"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-option-org-org-proof-globex-check']",
+          "label": "Tick Globex",
+          "caption": "Globex is ticked too: several organizations at once"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Back to facets",
+          "caption": "Escape steps back to the facet list"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close menu",
+          "caption": "Escape closes the menu"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='daemons-filter-chip-org']",
+          "label": "Filter bar",
+          "caption": "Organization is any of 2 organizations, with + and Clear"
+        }
+      ]
+    },
+    {
+      "id": "web-daemons-filter-menu",
+      "surface": "web",
+      "title": "Web Daemons Filter Menu",
+      "description": "The desktop filter menu open on the daemon inventory and drilled into Organization: the 'Add filter' facet list on the right with Organization highlighted, and its value flyout to the left with a 'Filter…' search and Acme ticked (accent checkbox) above an unticked Globex. Captured as a flow because the menu is opened by clicks, not reachable as a static route; the last step's still is the evidence.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1024, "height": 768 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-proof-acme/settings/daemons",
+          "label": "Open daemons",
+          "caption": "Daemon inventory across two organizations"
         },
         {
           "action": "wait",
           "selector": "[data-testid='daemons-section']",
-          "label": "Acme daemons",
-          "caption": "Only Acme daemon rows remain"
+          "label": "Daemon inventory",
+          "caption": "The filter trigger sits at the right of the sub-header"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-trigger']",
+          "label": "Open filter menu",
+          "caption": "Add filter lists the facets alphabetically"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-facet-org']",
+          "label": "Choose Organization",
+          "caption": "Organization opens its value list beside the menu"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-option-org-org-proof-acme-check']",
+          "label": "Tick Acme",
+          "caption": "Acme is ticked"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='daemons-filter-option-org-org-proof-acme'][aria-checked='true']",
+          "label": "Menu drilled in",
+          "caption": "Add filter, Organization, and a ticked Acme"
+        }
+      ]
+    },
+    {
+      "id": "web-daemons-filter-menu-mobile",
+      "surface": "web",
+      "title": "Web Daemons Filter Menu (mobile)",
+      "description": "The daemon inventory at 390px with an Organization filter applied: the chip bar sits beneath the sub-header with the '+' after the chip, and tapping '+' opens the 'Add filter' menu full-width beneath it, inside the 16px gutters, listing Organization. Captured as a flow because the menu is opened by a tap; the last step's still is the evidence.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 390, "height": 844 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/org-proof-acme/settings/daemons?org=org-proof-acme",
+          "label": "Open filtered daemons",
+          "caption": "A shared URL opens already narrowed to Acme"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='daemons-filter-chip-org']",
+          "label": "Filter bar",
+          "caption": "The chip stacks with + after it and Clear beneath"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='daemons-filter-add']",
+          "label": "Open menu from +",
+          "caption": "Tap + to add a filter"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='daemons-filter-menu']",
+          "label": "Menu open",
+          "caption": "Add filter opens full-width beneath the + button"
+        }
+      ]
+    },
+    {
+      "id": "web-daemons-filter-light",
+      "surface": "web",
+      "title": "Web Daemons Filter Bar (light theme)",
+      "description": "The daemon filter bar in the light theme, reached by choosing Light on the appearance settings first: a grey bar beneath the sub-header carrying the white 'Organization | is any of | 2 organizations' chip, a '+' button and a Clear button at the right, with the accent-tinted filter trigger above it. Every colour comes from the design tokens.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1024, "height": 768 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/settings/appearance",
+          "label": "Open appearance",
+          "caption": "Theme settings"
+        },
+        {
+          "action": "wait",
+          "selector": ".theme-switcher-options",
+          "label": "Theme control",
+          "caption": "Light, Dark and System"
+        },
+        {
+          "action": "click",
+          "selector": "input[name='theme'][value='light']",
+          "label": "Choose Light",
+          "caption": "Switch to the light theme"
+        },
+        {
+          "action": "goto",
+          "route": "/org-proof-acme/settings/daemons?org=org-proof-acme&org=org-proof-globex",
+          "label": "Open filtered daemons",
+          "caption": "Daemons filtered to two organizations"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='daemons-filter-chip-org']",
+          "label": "Light filter bar",
+          "caption": "Organization is any of 2 organizations, with Clear"
         }
       ]
     },
@@ -1362,10 +1785,7 @@
       "privacy": "fixture",
       "capture": "still",
       "route": "/",
-      "viewport": {
-        "width": 1440,
-        "height": 1000
-      }
+      "viewport": { "width": 1440, "height": 1000 }
     },
     {
       "id": "web-sessions-daemons-give-up",
@@ -1375,10 +1795,7 @@
       "privacy": "fixture",
       "capture": "still",
       "route": "/",
-      "viewport": {
-        "width": 1440,
-        "height": 1000
-      }
+      "viewport": { "width": 1440, "height": 1000 }
     },
     {
       "id": "web-sessions-reconnecting-dark",
@@ -1388,10 +1805,7 @@
       "privacy": "fixture",
       "capture": "still",
       "route": "/",
-      "viewport": {
-        "width": 1024,
-        "height": 900
-      }
+      "viewport": { "width": 1024, "height": 900 }
     },
     {
       "id": "web-header-menu",
@@ -2737,6 +3151,9 @@
         "web-daemons-mobile",
         "web-daemons-org-attribution",
         "web-daemons-org-filter",
+        "web-daemons-filter-menu",
+        "web-daemons-filter-menu-mobile",
+        "web-daemons-filter-light",
         "web-session-expired",
         "web-sessions-daemons-give-up",
         "web-sessions-reconnecting-dark",

@@ -89,8 +89,8 @@ commit leaves loadedness exactly as it was, so "the last attempt I started finis
 resource is loaded" are different statements.
 
 Loadedness is reported by the resource, never derived by a consumer from the absence of an error.
-That rule exists because it is the gate on destructive follow-up work — pruning a persisted
-selection that no longer matches the fetched options — and a derived flag silently changes meaning at
+That rule exists because it is the gate on destructive follow-up work — pruning a remembered or
+URL-held filter selection that no longer matches the fetched options — and a derived flag silently changes meaning at
 every consumer the moment the producer gains a new state.
 
 ### Read give-up

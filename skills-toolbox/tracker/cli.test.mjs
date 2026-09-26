@@ -4,8 +4,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
 import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
+import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../skill-config.mjs'
 
 const won = '11111111111111111111111111111111'
@@ -897,6 +900,332 @@ test('list-planned fails closed — exit 2, empty stdout — on config, adapter,
   assert.equal(code, 2)
   assert.equal(out, '')
   assert.match(err, /states\.planned/)
+})
+
+// --- read-description (BOS-1303) -----------------------------------------------
+// The code-written read every stored-description gate compares against. The bytes on disk must be
+// exactly what the tracker stored, a failed read must never leave or alter a file at --out-file,
+// and every failure must be a non-zero exit with empty stdout — a caller that sees exit 0 trusts
+// the file.
+
+/** A scratch dir for one test, removed afterwards. */
+function withScratch(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-read-description-'))
+  return Promise.resolve(fn(dir)).finally(() => fs.rmSync(dir, { recursive: true, force: true }))
+}
+
+/** Run read-description against a stub adapter; resolves to what it printed and was asked. */
+async function readDescription(args, { adapter, resolveAdapter } = {}) {
+  const calls = []
+  let out = ''
+  let err = ''
+  const stub = adapter ?? {
+    readDescription: async (id) => {
+      calls.push(id)
+      return { id: 'u-1', identifier: 'BOS-1', description: 'a\nb' }
+    },
+  }
+  const pending = runCli(['read-description', ...args], {
+    write: (s) => (out += s),
+    errWrite: (s) => (err += s),
+    env: {},
+    resolveAdapter: resolveAdapter ?? (() => stub),
+  })
+  const code = await pending
+  return { pending, code, out, err, calls }
+}
+
+/** Every non-dotfile and dotfile entry left in `dir`, so a surviving temp sibling is visible. */
+const entries = (dir) => fs.readdirSync(dir).sort()
+
+test('read-description writes the stored bytes verbatim and prints one receipt line', async () => {
+  await withScratch(async (dir) => {
+    const outFile = path.join(dir, 'BOS-1.image-guard-orig.md')
+    const { pending, code, out, err, calls } = await readDescription([
+      '--id',
+      'u-1',
+      '--out-file',
+      outFile,
+    ])
+    assert.ok(pending instanceof Promise, 'read-description settles asynchronously')
+    assert.equal(code, 0)
+    assert.equal(err, '')
+    assert.deepEqual(calls, ['u-1'])
+    // Exactly the three stored bytes: no trailing newline appended.
+    assert.deepEqual(fs.readFileSync(outFile), Buffer.from('a\nb'))
+    assert.ok(out.endsWith('\n') && out.trim().split('\n').length === 1, 'one JSON line')
+    const receipt = JSON.parse(out)
+    assert.deepEqual(receipt, {
+      bytes: 3,
+      outcome: 'stored-description-written',
+      id: 'u-1',
+      identifier: 'BOS-1',
+    })
+    assert.equal(receipt.bytes, fs.statSync(outFile).size, 'bytes is the stat(2) size')
+    assert.deepEqual(entries(dir), ['BOS-1.image-guard-orig.md'], 'no temp sibling survives')
+  })
+})
+
+test('read-description reports the on-disk BYTE count for a multi-byte description', async () => {
+  await withScratch(async (dir) => {
+    const description = 'naïve — 日本語\n'
+    const outFile = path.join(dir, 'multi.md')
+    const { code, out } = await readDescription(['--id', 'u-1', '--out-file', outFile], {
+      adapter: { readDescription: async () => ({ id: 'u-1', identifier: 'BOS-1', description }) },
+    })
+    assert.equal(code, 0)
+    assert.equal(fs.readFileSync(outFile, 'utf8'), description)
+    assert.equal(JSON.parse(out).bytes, Buffer.byteLength(description, 'utf8'))
+  })
+})
+
+test('read-description writes a zero-byte file with the distinct empty outcome', async () => {
+  await withScratch(async (dir) => {
+    const outFile = path.join(dir, 'empty.md')
+    const { code, out } = await readDescription(['--id', 'u-1', '--out-file', outFile], {
+      adapter: {
+        readDescription: async () => ({ id: 'u-1', identifier: 'BOS-1', description: '' }),
+      },
+    })
+    assert.equal(code, 0)
+    assert.equal(fs.statSync(outFile).size, 0)
+    assert.deepEqual(JSON.parse(out), {
+      bytes: 0,
+      outcome: 'stored-description-empty',
+      id: 'u-1',
+      identifier: 'BOS-1',
+    })
+  })
+})
+
+test('read-description replaces a pre-existing out-file atomically on success', async () => {
+  await withScratch(async (dir) => {
+    const outFile = path.join(dir, 'stored.md')
+    fs.writeFileSync(outFile, 'an older, longer snapshot\n')
+    const { code } = await readDescription(['--id', 'u-1', '--out-file', outFile])
+    assert.equal(code, 0)
+    assert.equal(fs.readFileSync(outFile, 'utf8'), 'a\nb')
+    assert.deepEqual(entries(dir), ['stored.md'])
+  })
+})
+
+test('read-description exits 2 naming the getIssue fallback when the adapter lacks the capability', async () => {
+  await withScratch(async (dir) => {
+    const outFile = path.join(dir, 'x.md')
+    for (const adapter of [
+      {},
+      { readDescription: undefined },
+      { readDescription: null },
+      { readDescription: 'nope' },
+    ]) {
+      const { code, out, err } = await readDescription(['--id', 'u-1', '--out-file', outFile], {
+        adapter,
+      })
+      assert.equal(code, 2, JSON.stringify(adapter))
+      assert.equal(out, '')
+      assert.match(err, /^read-description: .*no readDescription capability/)
+      assert.match(err, /getIssue/, 'the diagnostic names the fallback')
+      assert.equal(err.trim().split('\n').length, 1, 'a one-line diagnostic')
+    }
+    assert.deepEqual(entries(dir), [], 'nothing is written without the capability')
+  })
+})
+
+test('read-description turns a missing tracker credential into exit 2, never 0, naming the fallback', async () => {
+  await withScratch(async (dir) => {
+    const outFile = path.join(dir, 'x.md')
+    // Keyed on the tracker-neutral code, not the message: any tracker's credential text qualifies.
+    const { code, out, err } = await readDescription(['--id', 'u-1', '--out-file', outFile], {
+      adapter: {
+        readDescription: async () => {
+          throw Object.assign(new Error('ACME_TOKEN is not set'), {
+            code: TRACKER_CREDENTIALS_MISSING,
+          })
+        },
+      },
+    })
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.match(err, /^read-description: tracker credential missing \(ACME_TOKEN is not set\)/)
+    assert.match(err, /getIssue/)
+    assert.equal(err.trim().split('\n').length, 1)
+    assert.doesNotMatch(err, /\n\s+at /, 'no stack frames reach stderr')
+    assert.deepEqual(entries(dir), [])
+  })
+})
+
+test('read-description fails closed — exit 2, empty stdout, one line — on any other read failure', async () => {
+  const cases = [
+    [
+      {
+        resolveAdapter: () => {
+          throw new Error('tracker adapter: trackerConfig.linear.mcpServer is required')
+        },
+      },
+      /could not resolve the tracker adapter/,
+    ],
+    [
+      {
+        adapter: {
+          readDescription: async () => {
+            throw new Error('Linear GraphQL error: Entity not found\nsecond line')
+          },
+        },
+      },
+      /Entity not found second line/,
+    ],
+    [
+      { adapter: { readDescription: () => Promise.reject(new Error('Linear API HTTP 500')) } },
+      /HTTP 500/,
+    ],
+    [{ adapter: { readDescription: async () => null } }, /unreadable/],
+    [
+      {
+        adapter: {
+          readDescription: async () => ({ id: 'u-1', identifier: 'B-1', description: 7 }),
+        },
+      },
+      /unreadable/,
+    ],
+    [
+      { adapter: { readDescription: async () => ({ identifier: 'B-1', description: 'x' }) } },
+      /unreadable/,
+    ],
+    [
+      {
+        adapter: {
+          readDescription: async () => ({ id: 'u-1', identifier: 'B-1', description: 'a\uD800b' }),
+        },
+      },
+      /well-formed/,
+    ],
+  ]
+  for (const [options, pattern] of cases) {
+    await withScratch(async (dir) => {
+      const outFile = path.join(dir, 'x.md')
+      const { code, out, err } = await readDescription(
+        ['--id', 'u-1', '--out-file', outFile],
+        options,
+      )
+      assert.equal(code, 2, String(pattern))
+      assert.equal(out, '')
+      assert.match(err, pattern)
+      assert.equal(err.trim().split('\n').length, 1, 'the diagnostic stays on one line')
+      assert.deepEqual(entries(dir), [], `${pattern}: nothing written, no temp sibling`)
+    })
+  }
+})
+
+test('read-description leaves a pre-existing out-file byte-unchanged when the read fails', async () => {
+  await withScratch(async (dir) => {
+    const outFile = path.join(dir, 'BOS-1.image-guard-stored.md')
+    const prior = Buffer.from('prior snapshot — keep me\n')
+    fs.writeFileSync(outFile, prior)
+    const { code, out } = await readDescription(['--id', 'u-1', '--out-file', outFile], {
+      adapter: {
+        readDescription: async () => {
+          throw new Error('Linear API HTTP 503')
+        },
+      },
+    })
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.deepEqual(fs.readFileSync(outFile), prior)
+    assert.deepEqual(entries(dir), ['BOS-1.image-guard-stored.md'])
+  })
+})
+
+test('read-description exits 2 and creates nothing when the out-file parent does not exist', async () => {
+  await withScratch(async (dir) => {
+    const outFile = path.join(dir, 'missing', 'x.md')
+    const { code, out, err, calls } = await readDescription(['--id', 'u-1', '--out-file', outFile])
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.match(err, /parent directory/)
+    assert.equal(calls.length, 0, 'a doomed write never spends a tracker read')
+    assert.deepEqual(entries(dir), [])
+  })
+})
+
+test('read-description exits 2 and leaves no temp sibling when the rename cannot land', async () => {
+  await withScratch(async (dir) => {
+    // A non-empty directory at --out-file: the temp write succeeds and the rename fails.
+    const outFile = path.join(dir, 'occupied')
+    fs.mkdirSync(outFile)
+    fs.writeFileSync(path.join(outFile, 'keep'), 'x')
+    const { code, out, err } = await readDescription(['--id', 'u-1', '--out-file', outFile])
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.match(err, /could not write --out-file/)
+    assert.deepEqual(entries(dir), ['occupied'], 'the temp sibling was removed')
+    assert.deepEqual(entries(outFile), ['keep'])
+  })
+})
+
+test('read-description usage errors exit 64 with empty stdout and never reach the adapter', async () => {
+  for (const args of [
+    [],
+    ['--out-file', 'x.md'],
+    ['--id', 'u-1'],
+    ['--id', 'u-1', '--out-file'],
+    ['--id', 'u-1', '--out-file', ''],
+    ['--id', '   ', '--out-file', 'x.md'],
+    ['--id', '--out-file', 'x.md'],
+    ['--id', 'u-1', '--out-file', 'x.md', '--body-file', 'y.md'],
+    ['--id', 'u-1', '--id', 'u-2', '--out-file', 'x.md'],
+    ['u-1', 'x.md'],
+  ]) {
+    let resolved = 0
+    const { code, out, err, calls } = await readDescription(args, {
+      resolveAdapter: () => {
+        resolved += 1
+        return { readDescription: async () => ({}) }
+      },
+    })
+    assert.equal(code, 64, JSON.stringify(args))
+    assert.equal(out, '', JSON.stringify(args))
+    assert.match(err, /^read-description: usage: /, JSON.stringify(args))
+    assert.equal(err.trim().split('\n').length, 1, JSON.stringify(args))
+    assert.equal(resolved + calls.length, 0, `${JSON.stringify(args)} must never reach the adapter`)
+  }
+})
+
+test('read-description through a real child process exits 2 when LINEAR_API_KEY is unset', async () => {
+  await withScratch(async (dir) => {
+    const cli = fileURLToPath(new URL('./cli.mjs', import.meta.url))
+    // A self-contained config, so the child resolves the real Linear adapter without depending on
+    // whichever repo config (if any) sits above the test's working directory.
+    fs.writeFileSync(
+      path.join(dir, '.boss-skills.json'),
+      JSON.stringify({
+        adapters: { tracker: 'linear' },
+        trackerConfig: { linear: { mcpServer: 'acme-tracker', team: 'Acme' } },
+      }),
+    )
+    const outDir = path.join(dir, 'out')
+    fs.mkdirSync(outDir)
+    const env = { ...process.env }
+    delete env.LINEAR_API_KEY
+    delete env.TRACKER
+    const child = spawnSync(
+      process.execPath,
+      [cli, 'read-description', '--id', 'BOS-1', '--out-file', path.join(outDir, 'x.md')],
+      { cwd: dir, env, encoding: 'utf8' },
+    )
+    assert.equal(child.status, 2, `process exit code, stderr: ${child.stderr}`)
+    assert.equal(child.stdout, '')
+    assert.match(child.stderr, /LINEAR_API_KEY is not set/)
+    assert.match(child.stderr, /getIssue/)
+    assert.equal(child.stderr.trim().split('\n').length, 1)
+    assert.deepEqual(entries(outDir), [])
+  })
+})
+
+test('every verb other than list-planned and read-description still returns synchronously', () => {
+  for (const argv of [['claim-token'], ['--help'], ['bogus']]) {
+    const code = runCli(argv, { write: () => {}, errWrite: () => {} })
+    assert.equal(typeof code, 'number', JSON.stringify(argv))
+  }
 })
 
 // --- help surface -------------------------------------------------------------

@@ -885,7 +885,20 @@ export const PROSE_PIN_BASELINE = {
   // avoid provoking is now a declared transform with its own near-miss coverage in
   // skills-toolbox/plan-writeback-verify.test.mjs. Both pins are a bolded rule name plus the
   // clause that bounds it, not a sentence, so a rewording that keeps the rule keeps them green.
-  'scripts/bs-plan-skill.test.mjs': 328,
+  // BOS-1303: 328 -> 331, one pin per question and no more. The behaviour of the new
+  // `read-description` verb (verbatim bytes, atomic write, receipt, exit 2 vs 64) is asserted over
+  // the helper in skills-toolbox/tracker/cli.test.mjs; what no helper can answer is WHICH published
+  // steps call it and what the reference tells an agent to do with its receipt. Three pins, each
+  // looped over its sites rather than one apiece: the three stored-description reads cite the
+  // verb, the safe-source original derives from the snapshot file, and plan-storage.md carries the
+  // invocation plus its three rules by bolded rule name, not by sentence.
+  // BOS-1304: 331 -> 332, one pin looped over both sites. The rule is the epic-parent flip's
+  // post-flip read-back (re-read the parent, compare its stored estimate with
+  // `epicParentEstimate(spec)`, warn on any difference), and the read is an agent-side tracker call
+  // no helper executes, so a helper could own only the `!==`. What no helper can answer is whether
+  // BOTH published copies of the flip (SKILL.md for the orchestrator, the headless drafting brief
+  // for the unattended subagent) still carry it; they drifted once, which is the defect fixed here.
+  'scripts/bs-plan-skill.test.mjs': 332,
   'scripts/bs-record-notes-skill.test.mjs': 2,
   'scripts/bs-sweep-debt-skill.test.mjs': 32,
   'scripts/bs-sweep-mutation-skill.test.mjs': 32,

@@ -254,17 +254,17 @@ for the Phase 4 secret gate.
    `.linear-plans/` directory. They are different identifiers with similar names — never substitute
    one for the other, or scratch lands in a directory Phase 5's removal does not name.
 
-2. Before dispatch, write the byte copy of the Phase 1 `get_issue` description to
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`. This is the single raw-description snapshot for
+2. Before dispatch, write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`, the single raw-description snapshot for
    the whole run: Phase 4 reuses it, and the worker receives this path as its **only** description
    source. Do not let the worker re-read the tracker description; signed upload URLs can rotate and
-   fail the parity gate.
+   fail the parity gate. Write it with
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id <Phase 1 UUID> --out-file <that path>`; this fixes the run's read route
+   (`references/plan-storage.md`): exit 2 → byte-copy the Phase 1 `get_issue` description, as every
+   later read must; exit 64, or a receipt `id` other than that UUID, stops the run.
 
-   The snapshot is the tracker's **stored** description, not a rendering of it, and it must carry
-   what the tracker stored and nothing added. Both halves are reasons, not ritual: a rendering is a
-   different document, so a run that snapshots one gates text the tracker never stored; and anything
-   this file adds is not in the stored description, so `--require-verbatim` rejects the write late in
-   Phase 4 for a reason that has nothing to do with content.
+   The snapshot is the tracker's **stored** description, not a rendering of it, with nothing added:
+   a rendering gates text the tracker never stored, and an added byte makes `--require-verbatim`
+   reject the write in Phase 4 for a reason unrelated to content.
 
 3. **Dispatch ONE awaited `general-purpose` subagent** (`subagent_type: general-purpose`,
    <!-- tier: opus --> plan drafting is judgment, so **tier: opus**; **await** the dispatch —
@@ -908,14 +908,14 @@ subagent → validate its envelope → fold or skip), against
 > Linear write. Reuse the raw snapshot Phase 2 already wrote at
 > `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`; do not rewrite it here. An **empty** or
 > whitespace-only original is refused (exit 1); pass `--allow-empty-original` only if it truly is
-> empty. Materialise `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md` by **copying
+> empty (on the `read-description` route: its receipt said `stored-description-empty`). Materialise `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md` by **copying
 > the `description` artifact `descriptionSummary` names** (the `cp` below), never from a returned
 > string: what these gates read, and what step 4 writes back, must be the bytes the drafter composed
-> (per-issue paths avoid clobbering). Also write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` as the same Phase 1
-> source with **only** the mandatory secret/PII redactions and upload-signature stripping applied;
+> (per-issue paths avoid clobbering). Also write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` from that
+> snapshot file with **only** the mandatory secret/PII redactions and upload-signature stripping applied;
 > do not derive it from either generated artifact. Both the composed description and the final
 > attachment must preserve this safe source under `## Original notes`. Set `EXPECTED_IMAGES`
-> to the number of distinct canonical upload identities observed in the Phase 1 description — the
+> to the number of distinct canonical upload identities observed in that snapshot file — the
 > `uploads.linear.app` origin plus pathname, ignoring query strings — then run the guard:
 >
 > ```bash
@@ -924,7 +924,7 @@ subagent → validate its envelope → fold or skip), against
 > BODY=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the path descriptionSummary returned
 > cp "$BODY" "$NEW" || { echo "descriptionSummary artifact unreadable — aborting" >&2; exit 1; }
 > PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
-> EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"
+> EXPECTED_IMAGES="<distinct canonical upload identities observed in the snapshot>"
 > cleanup_guard_scratch() {
 >   rm -f "$ORIG" "$SAFE_ORIG" "$NEW" || echo "warning: guard scratch cleanup failed" >&2
 > }
@@ -1228,7 +1228,8 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    set Step 4 saved, because `labels` **replaces** the whole set; this is the run's last save, so a
    label deferred past it is a label never applied): compose it from a **fresh read of the stored
    description**, never by re-sending Step 4's bytes: the tracker may have renormalized that write,
-   and re-sending reverts it. Put (d)'s notes and questions under the sections (d) named, each
+   and re-sending reverts it. Read it on the run's route (`read-description`) into
+   `<ISSUE-ID>.image-guard-final.md`, edit it in place, and send it with `write-description`. Put (d)'s notes and questions under the sections (d) named, each
    bullet **directly after the last existing bullet** of its section, with no blank line introduced
    before it and the blank line before the next heading left in place, plus — only when ≥1
    relation was written — `- Dependencies: blocks <BLOCKED-ID>; blocked by <BLOCKER-ID>` under
@@ -1250,10 +1251,9 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    act on. Anchoring on the stored form is also what lets a one-line addition land without retyping
    a whole description, leaving `## Original notes` untouched.
 
-   A `patch` sends anchors and fragments, never a whole description, so it produces no "bytes I
-   saved" for step 6 to compare against — and step 6's `--intended` input is mandatory. Materialize
-   it on this path: keep the stored read-back you just anchored on, apply the SAME patch operations
-   to that local copy, and the result is the intended bytes of this save.
+   A `patch` sends anchors and fragments, never a whole description, yet step 6's `--intended`
+   input is mandatory: apply the SAME patch operations to that read-back file in place, and it holds
+   the intended bytes of this save.
 
 6. **STOP — write-back verification (mandatory, mechanical, do not skip).** Every gate above is
    pre-write prevention read from local bytes; nothing has yet observed what actually landed on the
@@ -1264,14 +1264,11 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    intermediate state fails on text the run is about to replace, which is a false red on a correct
    run.
 
-   Write the exact bytes of that final save to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md`. On a
-   whole-description save those bytes are what you sent. On step 5(f)'s incremental `patch` path
-   there is no such payload, so use the bytes 5(f) materialized for exactly this purpose — the
-   stored read-back you anchored on, with the same patch operations applied locally. A `patch` save
-   whose intended bytes were never materialized cannot be verified, and an unverifiable write fails
-   the run; it is not a reason to skip this step. Then
-   read the issue's description back through the tracker adapter's `getIssue` capability and write
-   those bytes — the tracker's **stored** description, not a rendering of it — to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md` must hold the exact bytes of that final save: after
+   5(f) it already does; otherwise write the bytes step 4 sent. A save whose intended bytes are not in
+   that file cannot be verified, and an unverifiable write fails the run; it is not a reason to skip
+   this step. Then read, on the run's route (`read-description`, or the tracker adapter's `getIssue`
+   capability), the tracker's **stored** description, not a rendering of it, into
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md`. That is one extra read and no extra write.
 
    ```bash
@@ -1361,7 +1358,7 @@ the only surviving copy of the intended bytes and deleting it destroys the diff 
 Print a concise summary: issue id + title, the finalized native plan attachment's **id** and exact
 title `Implementation plan (<ISSUE-ID>)`, final labels, estimate, priority, the status change
 (unplanned → planned), and the Phase 4 step-6 write-back verdict (`byte-exact` or
-`normalized-equivalent`). When step 5 (e2) recorded any transitive-block warning, echo it
+`normalized-equivalent`) and the read route (`read-description` or `getIssue`). When step 5 (e2) recorded any transitive-block warning, echo it
 here too (e.g. `blocked by <BLOCKER-ID>, which is itself open and blocked by <UPSTREAM-BLOCKER-ID>`) so an unattended run
 leaves a visible trail before the operator opens Linear. The plan is attached natively with no local copy
 remaining (it is copied into `docs/plans/` at implementation time, per the plan's first dev step).

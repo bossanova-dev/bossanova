@@ -226,18 +226,23 @@ test('the authoring reference carries eight worked negatives, each with a counte
   assert.equal(count(/\*\*Measured with\.\*\*/g), 8, 'every negative names how it was measured')
 })
 
-test('docs/skills/README.md registers the authoring reference in Contents and Reference index', () => {
-  const readme = readRepoFile('docs/skills/README.md')
-  for (const heading of [/^## Contents/, /^## Reference index/]) {
-    const section = markdownSection(readme, heading)
-    assert.notEqual(section, '', `docs/skills/README.md has no ${heading} section`)
-    assert.match(
-      section,
-      /\(authoring\.md\)/,
-      `docs/skills/README.md must link authoring.md from ${heading}`,
+// Companions the overview must register in BOTH places: a Contents entry alone is invisible to a
+// reader scanning the normative index, and an index entry alone to one reading top-down.
+for (const companion of ['authoring.md', 'sweep-migration.md']) {
+  test(`docs/skills/README.md registers ${companion} in Contents and Reference index`, () => {
+    const readme = readRepoFile('docs/skills/README.md')
+    assert.ok(
+      fs.existsSync(path.join(repoRoot, 'docs/skills', companion)),
+      `docs/skills/${companion} is registered but does not exist`,
     )
-  }
-})
+    const link = new RegExp(`\\(${companion.replace('.', '\\.')}\\)`)
+    for (const heading of [/^## Contents/, /^## Reference index/]) {
+      const section = markdownSection(readme, heading)
+      assert.notEqual(section, '', `docs/skills/README.md has no ${heading} section`)
+      assert.match(section, link, `docs/skills/README.md must link ${companion} from ${heading}`)
+    }
+  })
+}
 
 test('the authoring rules did not leak into a published core', () => {
   // R6: everything under skillinstall/skills/ extracts into every user's GLOBAL skill directory,

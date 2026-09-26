@@ -150,3 +150,63 @@ tracker's **stored** description — asserting the section contract and the verb
 those bytes. Do not add a byte comparison against the buffer you sent: the tracker renormalizes
 markdown after every local gate has run (a `-` bullet stored as `*`), so such a check reds on every
 run for a purely cosmetic reason while proving nothing the stored-document check does not.
+
+## Reading the stored description into a file
+
+Every gate that compares the tracker's **stored** description reads a file, and that file must be
+written by code from the tracker's response — never retyped by a model from a tool result. A retyped
+copy is a rendering: one transcription slip either certifies bytes the tracker never stored or
+reports drift that is not there. `read-description` is the read half of `write-description`; it
+writes the stored bytes straight to disk and prints only a receipt:
+
+```bash
+BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"
+node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id "<PHASE-1-ISSUE-UUID>" --out-file "$ORIG"
+```
+
+The run reads three times, each into its own declared scratch file: Phase 2 step 2 into
+`<ISSUE-ID>.image-guard-orig.md` (the snapshot), Phase 4 step 5(f) into
+`<ISSUE-ID>.image-guard-final.md` (the base the second save is edited from, in place, and the
+`--intended` input step 6 then reads), and Phase 4 step 6 into `<ISSUE-ID>.image-guard-stored.md`
+(the `--stored` input). All three sit under `.linear-plans/run-<RUN-SCRATCH-ID>/`.
+
+The bytes are written to a temporary sibling that is renamed onto `--out-file`, so the only
+observable states are the prior file, no file, or the complete file — never a truncated one a gate
+would then compare. They are written **verbatim**: the tracker stores a description without a
+trailing newline, so append nothing to the file afterwards, or every comparison against it reports a
+difference the run introduced itself.
+
+On success the verb exits 0 and prints one JSON line:
+
+- `bytes` — the file's size **measured on disk** with `stat(2)` after the rename.
+- `outcome` — `stored-description-written`, or `stored-description-empty` for a zero-byte stored
+  description. The empty outcome is the evidence Phase 4's image-parity guard needs before it may
+  pass `--allow-empty-original`; a zero byte count alone is not.
+- `id` and `identifier` — the issue that actually answered.
+
+**Identity — the receipt `id` must be the Phase 1 UUID.** Pass the issue **UUID** from the Phase 1
+`getIssue` result as `--id`, never the human identifier, and treat a receipt whose `id` differs as a
+failed read. The direct read authenticates with the environment's API key, which may belong to a
+different workspace than the tracker's MCP server; a human identifier can collide across
+workspaces, and the wrong issue's description would become `## Original notes`. A UUID cannot
+collide.
+
+**Route — chosen once per run.** Phase 2 step 2 decides the route for the whole run:
+
+- Exit 0 there: every later read this run (5(f), step 6) uses `read-description` too, and a later
+  exit 2 **fails that step** — it is never a per-site fallback. The direct read returns upload URLs
+  unsigned while the tracker adapter's `getIssue` operation returns them signed, so a run that mixed
+  the two would compare two different byte forms and could report drift on a correct write.
+- Exit 2 there: the whole run takes the fallback — execute the tracker adapter's `getIssue`
+  operation and copy the returned description byte-for-byte to the same `--out-file` path, for every
+  read this run. Exit 2 covers an adapter without the `readDescription` capability and an unset API
+  key (both named on stderr) as well as a tracker or write failure; a read has no side effects, so
+  falling back from it is safe.
+
+**Usage error — exit 64 stops.** A missing, valueless, repeated or unknown flag exits 64 with nothing
+on stdout. It is a bug in the invocation, not a tracker condition: stop and fix the call. Falling
+back on it would silently route every run through the retyped path this verb exists to remove.
+
+Every failure — exit 2 or 64 — writes a one-line reason to **stderr** and **nothing to stdout**, and
+leaves a pre-existing `--out-file` byte-unchanged. Name the route the run took in the Phase 6 report.

@@ -1180,10 +1180,9 @@ ${accountsGiveUpStageScript(recipe)}
 // TWO organizations, and the fixture's sessions attributed across them, for the
 // same reason the shared fixture seeds TWO daemons and TWO repositories: a
 // filter only has something to narrow when the fixture spans more than one, and
-// FilterSelect renders NOTHING at all for a caller with fewer than two
+// the filter menu offers NO Organization facet to a caller with fewer than two
 // organizations -- so a single-organization fixture would silently drop the
-// third drop-down and every still promising it would capture the two-drop-down
-// row instead, with its own toBeVisible() gate satisfied by the wrong element.
+// facet and every recipe choosing an organization would have nothing to click.
 //
 // Recipe-SCOPED rather than folded into the shared fixture above, on purpose:
 //   - the shared web fixture is asserted to carry no `organizationId` for any
@@ -1206,13 +1205,17 @@ ${accountsGiveUpStageScript(recipe)}
 // signed-in organization, only a caller with two memberships.
 function sessionOrganizationStageScript(recipe) {
   const stagedRecipeIds = [
-    // Both .sub-header crops promise three drop-downs.
+    // The sub-header stills: a caller with a choice of organizations.
     'web-sessions-filters',
     'web-sessions-filters-mobile',
     // The organization filter's own flow.
     'web-sessions-org-filter-flow',
     'web-daemons-org-attribution',
     'web-daemons-org-filter',
+    // BOS-1305: the filter menu's own stills need a caller with a choice.
+    'web-daemons-filter-menu',
+    'web-daemons-filter-menu-mobile',
+    'web-daemons-filter-light',
   ]
   if (!stagedRecipeIds.includes(recipe?.id)) {
     return ''
@@ -1270,8 +1273,8 @@ function cronOrganizationStageScript(recipe) {
   });`
 }
 
-// Repository-list proof needs two memberships because FilterSelect renders no
-// organization control for a single membership. Stamp the same origins the API
+// Repository-list proof needs two memberships because the filter menu offers no
+// organization facet for a single membership. Stamp the same origins the API
 // fake synthesizes so the column and its shared filter map exercise real holder
 // values instead of false-greening on two blank cells.
 function repositoryOrganizationStageScript(recipe) {

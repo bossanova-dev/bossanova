@@ -107,6 +107,14 @@
  *           (identifier, title, priority, estimate, createdAt, state, label names, and attachments
  *           as a plain array). Must fail closed — throw — rather than widen: a missing state or
  *           team, or a payload it cannot read, is never answered with a broader or empty list.
+ * @property {(issueId: string) => Promise<{id: string, identifier: string, description: string}>} [readDescription]
+ *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). The executable read of an issue's STORED
+ *           description, accepting a UUID or a human identifier. Resolves to the resolved issue's
+ *           `id` and `identifier` plus the description exactly as stored — no trailing newline
+ *           added or stripped, `''` for an empty one. Must fail closed — throw — on a blank id, a
+ *           missing issue, a description it cannot read as a string, or a missing credential,
+ *           never answer with bytes it did not read. A missing credential's error carries
+ *           `code: TRACKER_CREDENTIALS_MISSING`.
  * @property {() => Record<string, string|null>} [states]
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). Synchronous — every caller on
  *           this path is. Returns a plain object mapping every role in
@@ -138,12 +146,13 @@ export const TRACKER_CAPABILITIES = [
   'operationMap',
 ]
 
-// Capabilities an adapter MAY expose: `states` (workflow-state names) and `selectPlanned`
-// (the executable filtered candidate read). Never fold these into TRACKER_CAPABILITIES —
+// Capabilities an adapter MAY expose: `states` (workflow-state names), `selectPlanned`
+// (the executable filtered candidate read) and `readDescription` (the executable
+// stored-description read). Never fold these into TRACKER_CAPABILITIES —
 // assertConforms requires every entry there, so promoting one would fail every
 // conforming adapter that legitimately omits it. assertConforms validates the SHAPE
 // of an optional capability when present, and ignores it when absent.
-export const OPTIONAL_TRACKER_CAPABILITIES = ['states', 'selectPlanned']
+export const OPTIONAL_TRACKER_CAPABILITIES = ['states', 'selectPlanned', 'readDescription']
 
 // Operations an adapter MAY declare. Two groups live here, for two different reasons:
 //
@@ -191,6 +200,10 @@ export const OPTIONAL_TRACKER_OPERATIONS = [
 // and MAY answer for more.
 export const TRACKER_STATE_ROLES = ['planned', 'inProgress', 'inReview']
 
+// The tracker-neutral `code` an executable capability sets on the error it throws when its
+// credential is absent, so a caller can name a fallback without matching tracker-specific text.
+export const TRACKER_CREDENTIALS_MISSING = 'TRACKER_CREDENTIALS_MISSING'
+
 // The operationMap keys every adapter must populate. This is the required
 // surface for the agent-driven capabilities the skills perform through the
 // tracker's MCP tools — in particular readComments + writeComment +
@@ -221,9 +234,9 @@ export const REQUIRED_TRACKER_OPERATIONS = [
  * calls this to prove conformance.
  *
  * OPTIONAL_TRACKER_CAPABILITIES are never *required* — omitting one conforms — but a
- * present one must be callable. A `states` or `selectPlanned` that is, say, a plain object
- * rather than a function would otherwise pass here and blow up at the call site as a raw
- * TypeError, defeating the fallback (or the fail-closed stop) the caller wrote.
+ * present one must be callable. A `states`, `selectPlanned` or `readDescription` that is, say,
+ * a plain object rather than a function would otherwise pass here and blow up at the call site
+ * as a raw TypeError, defeating the fallback (or the fail-closed stop) the caller wrote.
  * @param {TrackerAdapter} adapter
  */
 export function assertConforms(adapter) {

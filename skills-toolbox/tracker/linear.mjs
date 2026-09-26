@@ -23,7 +23,7 @@ import { normalizeTicket } from '../bs-epic-lib.mjs'
 import { loadSkillConfig, trackerConfigFor } from '../skill-config.mjs'
 // From adapter-core.mjs, not adapter.mjs: adapter.mjs imports THIS module to build
 // its registry, so reading the roles from there would make the pair circular.
-import { TRACKER_STATE_ROLES } from './adapter-core.mjs'
+import { TRACKER_CREDENTIALS_MISSING, TRACKER_STATE_ROLES } from './adapter-core.mjs'
 
 // The candidate read behind the OPTIONAL executable `selectPlanned` capability. It selects exactly
 // the fields Step 2's eligibility walk and ranking read — identity, title, priority, estimate,
@@ -150,6 +150,68 @@ export async function linearSelectPlanned({
       .filter((name) => typeof name === 'string' && name !== ''),
     attachments: connectionNodes(node?.attachments),
   }))
+}
+
+// The read behind the OPTIONAL executable `readDescription` capability. `issue(id:)` resolves a UUID
+// or a human identifier, so the id is forwarded as given; `id` and `identifier` come back so the
+// caller can confirm WHICH issue answered — a key scoped to another workspace can resolve a
+// colliding identifier to a different issue, and a UUID cannot collide.
+export const READ_DESCRIPTION_QUERY = `
+  query ReadDescription($id: String!) {
+    issue(id: $id) {
+      id
+      identifier
+      description
+    }
+  }
+`
+
+/**
+ * The executable `readDescription` capability: the issue's STORED description, verbatim. The
+ * string is returned exactly as the tracker sent it — Linear stores descriptions without a trailing
+ * newline, so adding one (or stripping one) would make every byte-compare against it report drift.
+ * A `null` description is the tracker's spelling of "empty" and maps to `''`.
+ *
+ * Fails CLOSED: a blank id throws before any request, an unset key throws before the network with
+ * `code: TRACKER_CREDENTIALS_MISSING`, and a missing issue or a payload whose `id`, `identifier` or `description` it
+ * cannot read throws rather than answering with a description it did not read.
+ */
+export async function linearReadDescription({ apiKey, fetchImpl, endpoint, issueId }) {
+  if (typeof issueId !== 'string' || issueId.trim() === '') {
+    throw new Error('tracker/linear readDescription: a non-empty issue id is required')
+  }
+  const id = issueId.trim()
+  if (!apiKey) {
+    throw Object.assign(new Error('LINEAR_API_KEY is not set'), {
+      code: TRACKER_CREDENTIALS_MISSING,
+    })
+  }
+  const data = await linearRequest({
+    apiKey,
+    query: READ_DESCRIPTION_QUERY,
+    variables: { id },
+    fetchImpl,
+    endpoint,
+  })
+  const issue = data?.issue
+  if (!issue || typeof issue !== 'object') {
+    throw new Error(`tracker/linear readDescription: no issue found for id ${JSON.stringify(id)}`)
+  }
+  if (typeof issue.id !== 'string' || issue.id === '') {
+    throw new Error('tracker/linear readDescription: the issue payload carries no id')
+  }
+  if (typeof issue.identifier !== 'string' || issue.identifier === '') {
+    throw new Error('tracker/linear readDescription: the issue payload carries no identifier')
+  }
+  const { description } = issue
+  if (description !== null && typeof description !== 'string') {
+    throw new Error(
+      `tracker/linear readDescription: the stored description is ${
+        description === undefined ? 'absent from the payload' : `a ${typeof description}`
+      }, not a string, so it cannot be written verbatim`,
+    )
+  }
+  return { id: issue.id, identifier: issue.identifier, description: description ?? '' }
 }
 
 // Declarative map of each agent-driven capability to the Linear MCP tool the
@@ -377,6 +439,10 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
         limit,
       })
     },
+    // The executable stored-description read behind `tracker/cli.mjs read-description`. Not an
+    // operationMap entry: it is a read the gate files are written from by code, so it never enters
+    // the MCP approval surface and its bytes never pass through model context.
+    readDescription: (issueId) => linearReadDescription({ apiKey, fetchImpl, endpoint, issueId }),
     operationMap: buildLinearOperationMap(mcpServer),
   }
 }

@@ -397,7 +397,12 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    through `labelName(config, 'epic')`, union it into the parent, and flip unplanned → planned with
    `estimate = epicParentEstimate(spec)` (the sum of its children's estimates) and
    `priority = parent.priority`. If the tracker rejects that non-Fibonacci sum, retry without estimate
-   and warn. The parent carries neither `agent-friendly` nor `needs-human`
+   and warn. Do not rely on rejection alone: Linear has been observed accepting an off-scale sum,
+   silently storing a different allowed value, and returning success. After the flip, re-read the
+   parent (`get_issue`) and compare its stored estimate with `epicParentEstimate(spec)`; warn on any
+   difference, whichever direction (it can round up as well as clamp down). The warning is a line in
+   this run's own output, not a tracker write or sentinel field. The parent carries neither
+   `agent-friendly` nor `needs-human`
    — the overview was already saved above. **Strip stale build metadata with this flip:** a
    headless sweep can pick an explicitly-named planned/in-progress ticket that was **already planned**,
    so the original may already carry `agent-friendly` **and** a single-ticket `Implementation plan (…)`

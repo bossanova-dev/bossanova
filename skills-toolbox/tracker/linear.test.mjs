@@ -9,10 +9,13 @@ import {
   buildLinearOperationMap,
   createLinearAdapter,
   LIST_PLANNED_QUERY,
+  READ_DESCRIPTION_QUERY,
+  linearReadDescription,
   linearSelectPlanned,
 } from './linear.mjs'
 import { buildIssueCountFilter } from '../linear-gate-lib.mjs'
 import { assertConforms, REQUIRED_TRACKER_OPERATIONS, TRACKER_STATE_ROLES } from './adapter.mjs'
+import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { formatClaimComment } from '../linear-claim.mjs'
 import { loadSkillConfig, plannedSelectionQuery, trackerConfigFor } from '../skill-config.mjs'
 
@@ -769,4 +772,119 @@ test('selectPlanned throws on an unreadable payload rather than answering empty'
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// BOS-1303: the executable stored-description read behind `tracker/cli.mjs read-description`. The
+// bytes it returns become the file every stored-description gate compares, so it must hand back
+// exactly what the tracker stored — no newline added or stripped — and throw rather than answer
+// with a description it did not read.
+function describeFetch(issue) {
+  const bodies = []
+  const impl = async (url, init) => {
+    bodies.push({ url, body: JSON.parse(init.body), headers: init.headers })
+    return { ok: true, json: async () => ({ data: { issue } }) }
+  }
+  impl.bodies = bodies
+  return impl
+}
+
+test('the Linear adapter declares a callable readDescription and still conforms (BOS-1303)', () => {
+  const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
+  assert.equal(typeof adapter.readDescription, 'function')
+  assert.doesNotThrow(() => assertConforms(adapter))
+  assert.equal(
+    adapter.operationMap.readDescription,
+    undefined,
+    'an executable read adds nothing to the MCP approval surface',
+  )
+})
+
+test('readDescription sends issue(id:) with the id as given, trimmed, for a UUID and an identifier (BOS-1303)', async () => {
+  for (const [given, sent] of [
+    ['6f1c2e9a-0b8d-4c55-9a1e-3f2b7c4d5e60', '6f1c2e9a-0b8d-4c55-9a1e-3f2b7c4d5e60'],
+    ['BOS-123', 'BOS-123'],
+    ['  BOS-123\n', 'BOS-123'],
+  ]) {
+    const impl = describeFetch({ id: 'u-1', identifier: 'BOS-123', description: 'x' })
+    const adapter = createLinearAdapter({ apiKey: 'raw-key', fetchImpl: impl })
+    await adapter.readDescription(given)
+    assert.equal(impl.bodies.length, 1)
+    assert.equal(impl.bodies[0].body.query, READ_DESCRIPTION_QUERY)
+    assert.deepEqual(impl.bodies[0].body.variables, { id: sent })
+    // Raw key, never a Bearer form — the same header every other linearRequest caller sends.
+    assert.equal(impl.bodies[0].headers.Authorization, 'raw-key')
+  }
+  assert.match(READ_DESCRIPTION_QUERY, /issue\(id: \$id\)/)
+  for (const field of ['id', 'identifier', 'description']) {
+    assert.match(READ_DESCRIPTION_QUERY, new RegExp(`\\b${field}\\b`))
+  }
+})
+
+test('readDescription returns the stored description byte-verbatim (BOS-1303)', async () => {
+  for (const description of ['a\nb', 'a\nb\n', 'naïve — 日本語 ✓\n\n', '']) {
+    const impl = describeFetch({ id: 'u-1', identifier: 'BOS-1', description })
+    const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: impl })
+    const got = await adapter.readDescription('BOS-1')
+    assert.deepEqual(got, { id: 'u-1', identifier: 'BOS-1', description })
+    assert.equal(Buffer.byteLength(got.description), Buffer.byteLength(description))
+  }
+})
+
+test('readDescription maps a null description to an empty string (BOS-1303)', async () => {
+  const impl = describeFetch({ id: 'u-1', identifier: 'BOS-1', description: null })
+  const got = await linearReadDescription({ apiKey: 'k', fetchImpl: impl, issueId: 'BOS-1' })
+  assert.deepEqual(got, { id: 'u-1', identifier: 'BOS-1', description: '' })
+})
+
+test('readDescription fails closed on a missing issue or an unreadable payload (BOS-1303)', async () => {
+  await assert.rejects(
+    linearReadDescription({ apiKey: 'k', fetchImpl: describeFetch(null), issueId: 'BOS-404' }),
+    /BOS-404/,
+  )
+  for (const issue of [
+    { id: 'u-1', identifier: 'BOS-1', description: 42 },
+    { id: 'u-1', identifier: 'BOS-1', description: { text: 'x' } },
+    { id: 'u-1', identifier: 'BOS-1' },
+    { identifier: 'BOS-1', description: 'x' },
+    { id: 'u-1', description: 'x' },
+  ]) {
+    await assert.rejects(
+      linearReadDescription({ apiKey: 'k', fetchImpl: describeFetch(issue), issueId: 'BOS-1' }),
+      /readDescription/,
+      JSON.stringify(issue),
+    )
+  }
+})
+
+test('readDescription throws before any request on a blank id or an unset key (BOS-1303)', async () => {
+  const calls = []
+  const fetchImpl = async (...args) => {
+    calls.push(args)
+    return { ok: true, json: async () => ({ data: { issue: null } }) }
+  }
+  for (const issueId of [undefined, null, '', '   ', 42]) {
+    await assert.rejects(
+      linearReadDescription({ apiKey: 'k', fetchImpl, issueId }),
+      /non-empty issue id/,
+      JSON.stringify(issueId),
+    )
+  }
+  const adapter = createLinearAdapter({ apiKey: undefined, fetchImpl })
+  await assert.rejects(adapter.readDescription('BOS-1'), (err) => {
+    assert.match(err.message, /LINEAR_API_KEY is not set/)
+    assert.equal(err.code, TRACKER_CREDENTIALS_MISSING, 'the CLI keys its fallback on this code')
+    return true
+  })
+  assert.equal(calls.length, 0, 'neither a blank id nor a missing key may reach the network')
+})
+
+test('readDescription surfaces a GraphQL error instead of answering (BOS-1303)', async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ errors: [{ message: 'Entity not found' }] }),
+  })
+  await assert.rejects(
+    linearReadDescription({ apiKey: 'k', fetchImpl, issueId: 'BOS-1' }),
+    /Linear GraphQL error: Entity not found/,
+  )
 })

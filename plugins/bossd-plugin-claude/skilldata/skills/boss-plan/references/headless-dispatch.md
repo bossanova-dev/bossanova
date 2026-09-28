@@ -26,6 +26,41 @@ orchestrator grants per run.
 Step 4's epic arm still re-verifies every one of those writes against the tracker before accepting
 the sentinel. Authority is not trust: the subagent may write, and the orchestrator must check.
 
+### Hydrate the epic reverify before step 4's block runs
+
+Step 4 accepts an epic only on `node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" epic-reverify`, and
+that verb reads files, never the tracker: tracker reads are tool calls, which cannot run inside a
+bash block and share no shell state with it. So once the sentinel reports `payload.epic == true`,
+and before the step-4 block runs:
+
+1. `get_issue` the parent; `list_issues parentId=<parent> limit=250`; `get_issue` each child it
+   returns.
+2. Write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify.json` as
+   `{parentId, childIds, parent, children}` — `parentId` and `childIds` from the sentinel payload,
+   `parent` and `children` carrying each issue's id, identifier, state, labels, attachments and
+   links, and **no descriptions**. The verb ignores any description it finds there and derives every
+   other path from the run directory itself, so nothing in the bundle can redirect a comparison.
+3. Read every description through `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description --id <UUID> --out-file <path>`
+   on the run's one route (`references/plan-storage.md`; on the `getIssue` fallback route, copy
+   the returned description byte-for-byte to the same path): the parent into
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md`, and **every live child
+   `list_issues` returned** — not only the `childIds` — into
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.image-guard-stored.md`, named by
+   its `identifier`, the key the sentinel's `childIds` and `image-guard-new` basenames use. Stop on
+   a read failure, or on a receipt `id` / `identifier` that is not the one requested.
+
+The verb prints one JSON verdict on stdout and exits by class:
+
+| Exit             | Class         | What it means for the sweep                                                                                                                                                                                              |
+| ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0`              | `pass`        | accepted — skip Phase 3.5–4                                                                                                                                                                                              |
+| `1`              | `resumable`   | the verdict on stdout says `resumable` — the parent was positively read unplanned: the next unplanned sweep re-picks it, so the run scratch is removed                                                                   |
+| `3` or any other | `needs-human` | the parent already left the unplanned state, or its state or an input was unreadable, or node crashed (a bare `1` with no `resumable` verdict): no sweep resumes it, so the run scratch is retained as the only evidence |
+
+A `needs-human` verdict writes nothing to the tracker — the Phase 4 step 6 precedent: the
+descriptions are already stored and a corrective rewrite is forbidden. Report the retained run
+scratch and the verdict's named blockers.
+
 ## A transport death is not a failed draft
 
 Two different things end a dispatch without a sentinel, and they take opposite remedies:

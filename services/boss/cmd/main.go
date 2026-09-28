@@ -1026,6 +1026,11 @@ func maybeInstallSkills() error {
 	}
 	settings, _ := config.Load()
 	settingsChanged := false
+	// An accepted prompt is operator consent, so it writes an explicit record;
+	// the same payload judged as an unattended refresh decides only whether a
+	// provably older payload is offered at all.
+	explicitRecord := skillPayloadRecord(payload, libskillinstall.WriterExplicit)
+	order := skillPayloadOrder()
 
 	for _, target := range skillInstallAgents {
 		if _, err := skillInstallLookPath(target.command); err != nil {
@@ -1054,6 +1059,13 @@ func maybeInstallSkills() error {
 		if skillPromptDeclined(settings, target.agent, installed, manifest) {
 			continue
 		}
+		if decision, older := skillPayloadProvablyOlder(dir, installed, explicitRecord, order); older {
+			// A stale binary must not offer a downgrade as an "Update". Nothing
+			// is recorded: this is not a decline of the payload, and a newer
+			// binary later offers its own update normally.
+			fmt.Fprintln(os.Stderr, skillRefreshHoldLine(target.name, decision, explicitRecord))
+			continue
+		}
 
 		action := "Install"
 		preposition := "to"
@@ -1077,7 +1089,7 @@ func maybeInstallSkills() error {
 			}
 			continue
 		}
-		if err := libskillinstall.Extract(dir, payload.fsys); err != nil {
+		if err := libskillinstall.ExtractRecorded(dir, payload.fsys, explicitRecord); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to install %s skills: %v\n", target.name, err)
 			continue
 		}
@@ -1192,6 +1204,17 @@ func selfHealSkills() error {
 	settingsChanged := false
 	refreshed := false
 	installedTargetsCurrent := true
+	// A trusted checkout is an explicit opt-in, so it keeps today's overwrite
+	// and stamps an explicit record. The embedded payload is the unattended
+	// case — any peer session calling an older boss — and goes through the
+	// no-downgrade guard.
+	guarded := !payload.fromSource
+	writer := libskillinstall.WriterExplicit
+	if guarded {
+		writer = libskillinstall.WriterUnattended
+	}
+	record := skillPayloadRecord(payload, writer)
+	order := skillPayloadOrder()
 	for _, target := range skillInstallAgents {
 		dir, err := libskillinstall.DirForAgent(target.agent)
 		if err != nil {
@@ -1217,10 +1240,16 @@ func selfHealSkills() error {
 			installedTargetsCurrent = false
 			continue
 		}
-		updated, err := libskillinstall.EnsureUpdated(dir, payload.fsys)
+		updated, held, err := selfHealAgentSkills(dir, payload, record, guarded, order, target.name)
 		if err != nil {
 			installedTargetsCurrent = false
 			fmt.Fprintf(os.Stderr, "Warning: failed to refresh %s skills: %v\n", target.name, err)
+			continue
+		}
+		if held {
+			// A held refresh left the tree as it was: it is neither current
+			// nor recorded as installed, so recordSkillInstall is not called.
+			installedTargetsCurrent = false
 			continue
 		}
 		if !updated {
@@ -1236,6 +1265,37 @@ func selfHealSkills() error {
 	}
 	warnBinarySkillsDrift(payload, refreshed && installedTargetsCurrent, manifest)
 	return nil
+}
+
+// selfHealAgentSkills refreshes one agent's tree for selfHealSkills. A guarded
+// (unattended) refresh that the no-downgrade rule refuses prints its hold line
+// and reports held; an explicit one overwrites on difference and stamps.
+func selfHealAgentSkills(dir string, payload selectedSkillPayload, record libskillinstall.PayloadRecord, guarded bool, order libskillinstall.OrderFunc, agentName string) (updated, held bool, err error) {
+	if !guarded {
+		updated, err = libskillinstall.EnsureUpdatedRecorded(dir, payload.fsys, record)
+		return updated, false, err
+	}
+	result, err := libskillinstall.EnsureUpdatedGuarded(dir, payload.fsys, record, order)
+	if err != nil {
+		return false, false, err
+	}
+	if result.Held {
+		fmt.Fprintln(os.Stderr, skillRefreshHoldLine(agentName, result.Decision, record))
+	}
+	return result.Updated, result.Held, nil
+}
+
+// skillPayloadProvablyOlder reports whether the tree at dir was stamped by a
+// payload the oracle proves newer than record. Unprovable order is not
+// "older": the interactive prompt still offers it, because the operator is
+// there to decide.
+func skillPayloadProvablyOlder(dir string, installed bool, record libskillinstall.PayloadRecord, order libskillinstall.OrderFunc) (libskillinstall.RefreshDecision, bool) {
+	if !installed {
+		return libskillinstall.RefreshDecision{}, false
+	}
+	decision, err := libskillinstall.InstalledRefreshDecision(dir, record, order)
+	older := err == nil && decision.Recorded && !decision.Refresh && decision.Ordering == libskillinstall.OrderOlder
+	return decision, older
 }
 
 func trashCmd() *cobra.Command {

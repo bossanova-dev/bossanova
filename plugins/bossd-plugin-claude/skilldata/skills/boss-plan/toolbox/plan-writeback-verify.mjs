@@ -51,6 +51,7 @@ import { findDroppedImages, originalNotesBodies } from './plan-image-guard.mjs'
 import {
   DESCRIPTION_NORMALIZATION_TRANSFORMS,
   loadSkillConfig,
+  mergedListItems,
   toleratedDescriptionTransforms,
   unattributedDriftSeverity,
   validatePlanDescription,
@@ -79,6 +80,7 @@ export const WRITEBACK_CAUSES = Object.freeze({
   UPLOADS: 'uploads',
   NOTES: 'notes',
   UNATTRIBUTED: 'unattributed',
+  MERGED_LIST_ITEM: 'merged-list-item',
 })
 
 /**
@@ -412,7 +414,29 @@ function locate(intendedText, storedText) {
  * need NOT index the stored document. `normalized-equivalent` carries the raw coordinate of a
  * difference it has just excused. `byte-exact` and the refusal report null.
  */
-export function verifyWriteback({
+export function verifyWriteback(options = {}) {
+  const result = compareWriteback(options)
+  // A merged Planning list item is a defect in the INTENDED bytes, not an inability to compare, so
+  // it never takes the `verdict: null` refusal channel (which would suppress the verdict line). It
+  // rides a distinct cause with exit 1 and leaves the measured verdict intact. This is the one point
+  // that sees the bullets the orchestrator inserts after the contract gate ran.
+  if (result.verdict === null) return result
+  const merged = mergedListItems(options.config, options.intendedText, {
+    mode: assertWritebackMode(options.mode ?? 'child-plan'),
+  })
+  if (merged.length === 0) return result
+  const where = merged.map(({ line, text }) => `line ${line} ("${text}")`).join(', ')
+  return {
+    ...result,
+    cause: WRITEBACK_CAUSES.MERGED_LIST_ITEM,
+    exitCode: 1,
+    reason:
+      `intended description merges a second \`## Planning\` list item mid-line at ${where} — ` +
+      `each inserted bullet needs its own line; the ${result.verdict} comparison itself: ${result.reason}`,
+  }
+}
+
+function compareWriteback({
   config,
   intendedText,
   storedText,

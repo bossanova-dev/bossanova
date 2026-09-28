@@ -318,3 +318,34 @@ test('BOS-1278: the dispatch heartbeat is a declared family in both spellings', 
     ['draft-metadata'],
   )
 })
+
+test('BOS-1335: the epic reverify bundle and child stored read-back are declared families', () => {
+  // The epic acceptance gate reads a hydrated bundle and one stored description per live child.
+  // Each must resolve to its own family in templated AND concrete form, and the child stored form
+  // must not be swallowed by — nor swallow — the parent `image-guard-stored` form it shares a
+  // suffix with.
+  for (const [family, templated, concrete, parts] of [
+    [
+      'epic-reverify',
+      '<ISSUE-ID>.epic-reverify.json',
+      'BOS-1.epic-reverify.json',
+      { issueId: 'BOS-1' },
+    ],
+    [
+      'child-image-guard-stored',
+      '<ISSUE-ID>.child-<CHILD-ID>.image-guard-stored.md',
+      'BOS-1.child-BOS-2.image-guard-stored.md',
+      { issueId: 'BOS-1', childId: 'BOS-2' },
+    ],
+  ]) {
+    for (const basename of [templated, concrete]) {
+      const result = planScratchToken(`.linear-plans/run-X/${basename}`)
+      assert.ok(result.ok, `${basename}: ${result.ok ? '' : result.reason}`)
+      assert.deepEqual(result.families, [family], `${basename} resolved to the wrong family`)
+    }
+    assert.equal(planScratchPath('X', family, parts), `.linear-plans/run-X/${concrete}`)
+  }
+  assert.deepEqual(planScratchToken('.linear-plans/run-X/BOS-1.image-guard-stored.md').families, [
+    'image-guard-stored',
+  ])
+})

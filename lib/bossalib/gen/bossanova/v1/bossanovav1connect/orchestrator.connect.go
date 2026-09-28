@@ -274,6 +274,12 @@ const (
 	// OrchestratorServiceRefreshCloudEntitlementsProcedure is the fully-qualified name of the
 	// OrchestratorService's RefreshCloudEntitlements RPC.
 	OrchestratorServiceRefreshCloudEntitlementsProcedure = "/bossanova.v1.OrchestratorService/RefreshCloudEntitlements"
+	// OrchestratorServiceGetNewsletterStatusProcedure is the fully-qualified name of the
+	// OrchestratorService's GetNewsletterStatus RPC.
+	OrchestratorServiceGetNewsletterStatusProcedure = "/bossanova.v1.OrchestratorService/GetNewsletterStatus"
+	// OrchestratorServiceSubscribeToNewsletterProcedure is the fully-qualified name of the
+	// OrchestratorService's SubscribeToNewsletter RPC.
+	OrchestratorServiceSubscribeToNewsletterProcedure = "/bossanova.v1.OrchestratorService/SubscribeToNewsletter"
 	// OrchestratorServiceListOrganizationsProcedure is the fully-qualified name of the
 	// OrchestratorService's ListOrganizations RPC.
 	OrchestratorServiceListOrganizationsProcedure = "/bossanova.v1.OrchestratorService/ListOrganizations"
@@ -532,6 +538,11 @@ type OrchestratorServiceClient interface {
 	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
 	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
 	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
+	// Weekly newsletter opt-in (BOS-1318). User-authenticated. The subscription
+	// goes through the Loops form endpoint, the only path Loops gates with double
+	// opt-in; see docs/analytics/newsletter.md.
+	GetNewsletterStatus(context.Context, *connect.Request[v1.GetNewsletterStatusRequest]) (*connect.Response[v1.GetNewsletterStatusResponse], error)
+	SubscribeToNewsletter(context.Context, *connect.Request[v1.SubscribeToNewsletterRequest]) (*connect.Response[v1.SubscribeToNewsletterResponse], error)
 	// Organizations. User-authenticated.
 	ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error)
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
@@ -1057,6 +1068,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("RefreshCloudEntitlements")),
 			connect.WithClientOptions(opts...),
 		),
+		getNewsletterStatus: connect.NewClient[v1.GetNewsletterStatusRequest, v1.GetNewsletterStatusResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetNewsletterStatusProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetNewsletterStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		subscribeToNewsletter: connect.NewClient[v1.SubscribeToNewsletterRequest, v1.SubscribeToNewsletterResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSubscribeToNewsletterProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SubscribeToNewsletter")),
+			connect.WithClientOptions(opts...),
+		),
 		listOrganizations: connect.NewClient[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse](
 			httpClient,
 			baseURL+OrchestratorServiceListOrganizationsProcedure,
@@ -1238,6 +1261,8 @@ type orchestratorServiceClient struct {
 	createCheckoutSession                *connect.Client[v1.CreateCheckoutSessionRequest, v1.CreateCheckoutSessionResponse]
 	createBillingPortalSession           *connect.Client[v1.CreateBillingPortalSessionRequest, v1.CreateBillingPortalSessionResponse]
 	refreshCloudEntitlements             *connect.Client[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse]
+	getNewsletterStatus                  *connect.Client[v1.GetNewsletterStatusRequest, v1.GetNewsletterStatusResponse]
+	subscribeToNewsletter                *connect.Client[v1.SubscribeToNewsletterRequest, v1.SubscribeToNewsletterResponse]
 	listOrganizations                    *connect.Client[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse]
 	getOrganization                      *connect.Client[v1.GetOrganizationRequest, v1.GetOrganizationResponse]
 	createOrganization                   *connect.Client[v1.CreateOrganizationRequest, v1.CreateOrganizationResponse]
@@ -1659,6 +1684,16 @@ func (c *orchestratorServiceClient) RefreshCloudEntitlements(ctx context.Context
 	return c.refreshCloudEntitlements.CallUnary(ctx, req)
 }
 
+// GetNewsletterStatus calls bossanova.v1.OrchestratorService.GetNewsletterStatus.
+func (c *orchestratorServiceClient) GetNewsletterStatus(ctx context.Context, req *connect.Request[v1.GetNewsletterStatusRequest]) (*connect.Response[v1.GetNewsletterStatusResponse], error) {
+	return c.getNewsletterStatus.CallUnary(ctx, req)
+}
+
+// SubscribeToNewsletter calls bossanova.v1.OrchestratorService.SubscribeToNewsletter.
+func (c *orchestratorServiceClient) SubscribeToNewsletter(ctx context.Context, req *connect.Request[v1.SubscribeToNewsletterRequest]) (*connect.Response[v1.SubscribeToNewsletterResponse], error) {
+	return c.subscribeToNewsletter.CallUnary(ctx, req)
+}
+
 // ListOrganizations calls bossanova.v1.OrchestratorService.ListOrganizations.
 func (c *orchestratorServiceClient) ListOrganizations(ctx context.Context, req *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error) {
 	return c.listOrganizations.CallUnary(ctx, req)
@@ -1949,6 +1984,11 @@ type OrchestratorServiceHandler interface {
 	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
 	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
 	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
+	// Weekly newsletter opt-in (BOS-1318). User-authenticated. The subscription
+	// goes through the Loops form endpoint, the only path Loops gates with double
+	// opt-in; see docs/analytics/newsletter.md.
+	GetNewsletterStatus(context.Context, *connect.Request[v1.GetNewsletterStatusRequest]) (*connect.Response[v1.GetNewsletterStatusResponse], error)
+	SubscribeToNewsletter(context.Context, *connect.Request[v1.SubscribeToNewsletterRequest]) (*connect.Response[v1.SubscribeToNewsletterResponse], error)
 	// Organizations. User-authenticated.
 	ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error)
 	GetOrganization(context.Context, *connect.Request[v1.GetOrganizationRequest]) (*connect.Response[v1.GetOrganizationResponse], error)
@@ -2470,6 +2510,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("RefreshCloudEntitlements")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceGetNewsletterStatusHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetNewsletterStatusProcedure,
+		svc.GetNewsletterStatus,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetNewsletterStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSubscribeToNewsletterHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSubscribeToNewsletterProcedure,
+		svc.SubscribeToNewsletter,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SubscribeToNewsletter")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceListOrganizationsHandler := connect.NewUnaryHandler(
 		OrchestratorServiceListOrganizationsProcedure,
 		svc.ListOrganizations,
@@ -2728,6 +2780,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceCreateBillingPortalSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceRefreshCloudEntitlementsProcedure:
 			orchestratorServiceRefreshCloudEntitlementsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetNewsletterStatusProcedure:
+			orchestratorServiceGetNewsletterStatusHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSubscribeToNewsletterProcedure:
+			orchestratorServiceSubscribeToNewsletterHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListOrganizationsProcedure:
 			orchestratorServiceListOrganizationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceGetOrganizationProcedure:
@@ -3087,6 +3143,14 @@ func (UnimplementedOrchestratorServiceHandler) CreateBillingPortalSession(contex
 
 func (UnimplementedOrchestratorServiceHandler) RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RefreshCloudEntitlements is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetNewsletterStatus(context.Context, *connect.Request[v1.GetNewsletterStatusRequest]) (*connect.Response[v1.GetNewsletterStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetNewsletterStatus is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SubscribeToNewsletter(context.Context, *connect.Request[v1.SubscribeToNewsletterRequest]) (*connect.Response[v1.SubscribeToNewsletterResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SubscribeToNewsletter is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ListOrganizations(context.Context, *connect.Request[v1.ListOrganizationsRequest]) (*connect.Response[v1.ListOrganizationsResponse], error) {

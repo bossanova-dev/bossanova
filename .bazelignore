@@ -38,3 +38,13 @@ services/docs/node_modules
 # with a codex account projected while CI (no `.config`) stays green. Safe to
 # ignore: the tree is gitignored local state and owns no repo build targets.
 .config
+
+# BOS-1317: the services/warehouse dbt project's gitignored local state. uv's
+# virtualenv holds whatever site-packages ship, and a stray BUILD file in any of
+# them would make `bazel query //...` fail the same silent way the node_modules
+# entries above describe. dbt's target/ and dbt_packages/ are build output. The
+# project itself owns no BUILD file and no Bazel target; `make test-warehouse` is
+# its gate.
+services/warehouse/.venv
+services/warehouse/target
+services/warehouse/dbt_packages

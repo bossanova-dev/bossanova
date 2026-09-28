@@ -1,6 +1,6 @@
-// Package migrate provides a shared migration runner using goose.
-// Both the daemon (bossd) and orchestrator (bosso) use this package
-// with their own embed.FS instances containing SQL migration files.
+// Package migrate provides a SQLite migration runner using goose.
+// The daemon (bossd) supplies its SQL migrations through an embed.FS;
+// test callers may supply other fs.FS implementations.
 package migrate
 
 import (

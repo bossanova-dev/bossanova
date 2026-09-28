@@ -65,6 +65,7 @@ import {
   requiredPlanSections,
   requiredSectionsForDescriptionMode,
   validatePlanDescription,
+  mergedListItems,
   parseAcceptanceCriteria,
   parsePremises,
   validateVerifyOnlyEvidence,
@@ -4396,4 +4397,128 @@ test('selection: this repo ships the seam INERT, so no registered job narrows ye
     assigneeOrCreator: null,
     labels: null,
   })
+})
+
+// BOS-1328: an orchestrator-inserted Planning bullet merged into its neighbour passed every gate.
+const planningDescription = (planning, { tail = '' } = {}) =>
+  [
+    ...requiredPlanSections(DEFAULT_CONFIG)
+      .filter((h) => h !== '## Planning' && h !== '## Original notes')
+      .map((h) => `${h}\n\nBody.`),
+    `## Planning\n\n${planning}`,
+    `## Original notes\n\nReporter text.${tail}`,
+  ].join('\n\n')
+
+test('mergedListItems finds a Planning bullet joined mid-line to its neighbour', () => {
+  const description = planningDescription(
+    '- Contract: v1\n- Atomic-5: epic DAG.- Agent-friendly: needs-human',
+  )
+  const hits = mergedListItems(DEFAULT_CONFIG, description)
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0].text, '- Agent-friendly:')
+  assert.equal(description.split('\n')[hits[0].line - 1].startsWith('- Atomic-5:'), true)
+})
+
+test('mergedListItems finds a Planning bullet joined to its neighbour by a space', () => {
+  const description = planningDescription('- Contract: v1 - Agent-friendly: needs-human')
+  const hits = mergedListItems(DEFAULT_CONFIG, description)
+  assert.deepEqual(
+    hits.map(({ text }) => text),
+    ['- Agent-friendly:'],
+  )
+  assert.equal(description.split('\n')[hits[0].line - 1].startsWith('- Contract:'), true)
+  // An indented nested bullet with a known key is its own list item, not a merge.
+  assert.deepEqual(
+    mergedListItems(DEFAULT_CONFIG, planningDescription('- Contract: v1\n  - Dependencies: x')),
+    [],
+  )
+})
+
+test('mergedListItems reads a blockquote prefix as part of the first bullet', () => {
+  assert.deepEqual(mergedListItems(DEFAULT_CONFIG, planningDescription('> - Contract: v1')), [])
+  assert.deepEqual(mergedListItems(DEFAULT_CONFIG, planningDescription('> > - Contract: v1')), [])
+  const hits = mergedListItems(
+    DEFAULT_CONFIG,
+    planningDescription('> - Contract: v1 - Agent-friendly: needs-human'),
+  )
+  assert.deepEqual(
+    hits.map(({ text }) => text),
+    ['- Agent-friendly:'],
+  )
+})
+
+test('mergedListItems passes separate bullets, code spans and hyphenated prose', () => {
+  for (const planning of [
+    '- Contract: v1\n- Atomic-5: epic DAG.\n- Agent-friendly: needs-human',
+    '- Contract: v1 with `- X: inside a span`',
+    '* Contract: v1\n* Triage: single-ticket SUBSTANTIAL fallback — parent BOS-1326',
+    '- Contract: v1\n\n```\n- A: b.- C: d\n```',
+    '- Estimate: 3 — split: backend - Frontend: later',
+  ]) {
+    assert.deepEqual(mergedListItems(DEFAULT_CONFIG, planningDescription(planning)), [], planning)
+  }
+})
+
+test('mergedListItems is scoped to ## Planning and stops at the verbatim section', () => {
+  const merged = 'epic DAG.- Agent-friendly: needs-human'
+  const inSummary = planningDescription('- Contract: v1').replace(
+    '## Summary\n\nBody.',
+    `## Summary\n\n- Atomic-5: ${merged}`,
+  )
+  assert.deepEqual(mergedListItems(DEFAULT_CONFIG, inSummary), [])
+  const inNotes = planningDescription('- Contract: v1', {
+    tail: `\n\n## Planning\n\n- Atomic-5: ${merged}`,
+  })
+  assert.deepEqual(mergedListItems(DEFAULT_CONFIG, inNotes), [])
+})
+
+test('mergedListItems is config-first like its siblings', () => {
+  assert.throws(() => mergedListItems('## Planning', DEFAULT_CONFIG), /arguments look swapped/)
+})
+
+// BOS-1328: `zero-selection-filter` is judged per segment. A plain enumeration grep that selects
+// zero files exits 1, so it cannot go green on nothing when its status is the command's.
+test('zero-selection-filter spares a non-negated grep whose exit status is the command', () => {
+  const blocks = (command) =>
+    classifyCheckCommand(command, { kind: 'criterion' }).blocking.some(
+      (finding) => finding.code === 'zero-selection-filter',
+    )
+  assert.equal(blocks("grep -rn scanFences skills-toolbox --include='*.mjs'"), false)
+  assert.equal(blocks("grep -rn scanFences skills-toolbox --include='*.mjs' && echo ok"), false)
+  // A negated search inverts exactly that status: zero files reads as success.
+  assert.equal(blocks("! grep -rq needle . --include='*.md'"), true)
+  // Test selectors keep today's behaviour.
+  assert.equal(blocks('node --test --test-name-pattern foo x.test.mjs'), true)
+  // Anything that hands the verdict to another command keeps the finding.
+  assert.equal(blocks("grep -rn scanFences skills-toolbox --include='*.mjs' || true"), true)
+  assert.equal(blocks("grep -rn scanFences skills-toolbox --include='*.mjs'; echo done"), true)
+  const piped = classifyCheckCommand(
+    "grep -rn scanFences skills-toolbox --include='*.mjs' | wc -l",
+    {
+      kind: 'criterion',
+    },
+  ).blocking.map((finding) => finding.code)
+  // `wc -l` is a count assertion over the whole command, so only the pipeline finding remains —
+  // and it still blocks: the tail's status is not the grep's.
+  assert.ok(piped.includes('pipe-without-pipefail'), piped.join(','))
+  const pipedPlain = classifyCheckCommand(
+    "grep -rn scanFences skills-toolbox --include='*.mjs' | sort",
+    { kind: 'criterion' },
+  ).blocking.map((finding) => finding.code)
+  assert.ok(pipedPlain.includes('zero-selection-filter'), pipedPlain.join(','))
+  assert.ok(pipedPlain.includes('pipe-without-pipefail'), pipedPlain.join(','))
+})
+
+test('path-operand-absent carries the operand path for a caller with more context', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'boss-skill-config-operand-'))
+  try {
+    mkdirSync(join(tmp, 'scripts'))
+    const finding = classifyCheckCommand('node --test scripts/new.test.mjs', {
+      cwd: tmp,
+      env: process.env,
+    }).advisory.find((f) => f.code === 'path-operand-absent')
+    assert.equal(finding.path, 'scripts/new.test.mjs')
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 })

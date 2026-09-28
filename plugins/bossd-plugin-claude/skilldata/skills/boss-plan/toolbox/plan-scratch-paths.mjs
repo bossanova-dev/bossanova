@@ -141,6 +141,13 @@ export const PLAN_SCRATCH_FAMILIES = [
     '^SEG\\.epic-spec\\.json$',
   ),
   fam(
+    'epic-reverify',
+    '<ISSUE-ID>.epic-reverify.json',
+    'the hydrated tracker bundle the epic reverify reads',
+    ({ issueId }) => `${issueId}.epic-reverify.json`,
+    '^SEG\\.epic-reverify\\.json$',
+  ),
+  fam(
     'attachment-headers',
     '<ISSUE-ID>.attachment-headers-<n>.json',
     'signed upload headers for one plan attachment PUT',
@@ -160,6 +167,13 @@ export const PLAN_SCRATCH_FAMILIES = [
     "a child's composed description, as the image-parity guard reads it",
     ({ issueId, childId }) => `${issueId}.child-${childId}.image-guard-new.md`,
     '^SEG\\.child-SEG\\.image-guard-new\\.md$',
+  ),
+  fam(
+    'child-image-guard-stored',
+    '<ISSUE-ID>.child-<CHILD-ID>.image-guard-stored.md',
+    "a child's description read back from the tracker for the epic reverify",
+    ({ issueId, childId }) => `${issueId}.child-${childId}.image-guard-stored.md`,
+    '^SEG\\.child-SEG\\.image-guard-stored\\.md$',
   ),
   fam(
     'child-attachment-guard-orig',

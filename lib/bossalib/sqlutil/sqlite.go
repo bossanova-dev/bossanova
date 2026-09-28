@@ -1,7 +1,6 @@
-// Package sqlutil provides shared SQLite database utilities used by both
-// the daemon (bossd) and orchestrator (bosso). Each service still registers
-// its own driver import (modernc.org/sqlite) and defines its own
-// DefaultDBPath function.
+// Package sqlutil provides database utilities, including SQLite connection
+// helpers used by the daemon (bossd). Callers register the SQLite driver
+// (modernc.org/sqlite) and define their own database paths.
 package sqlutil
 
 import (
@@ -33,7 +32,7 @@ const maxFilePoolConns = 8
 // read/write handle pattern is
 // the right fix only when writer concurrency is high enough that
 // busy_timeout would mask real contention; bossanova's workload (a handful
-// of daemon-side workers + batched orchestrator requests) does not warrant
+// of daemon-side workers) does not warrant
 // the extra complexity today. Revisit if SQLITE_BUSY surfaces under load.
 //
 // Why pragmas live in the DSN:

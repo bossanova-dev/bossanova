@@ -287,6 +287,30 @@ test('selectTargets routes the trial-enrolment source to test-scripts as well as
   ])
 })
 
+test('selectTargets routes the warehouse dbt project to test-warehouse alone', () => {
+  // BOS-1317: services/warehouse is a uv/dbt project, not a Go module, so without this
+  // rule it fell through to the whole-repo test-smoke fallback and never ran its own gate.
+  assert.deepEqual(selectTargets(['services/warehouse/dbt_project.yml']), [
+    { kind: 'make', target: 'test-warehouse', env: {} },
+  ])
+})
+
+test('selectTargets adds test-warehouse to bosso migrations WITHOUT dropping test-bosso', () => {
+  // The warehouse models read the migrated schema and the grant script reads the
+  // withheld-column list beside the migrations, so a migration change must run the
+  // warehouse gate as well as the bosso suite that owns the files.
+  assert.deepEqual(selectTargets(['services/bosso/migrations_postgres/000001_initial.sql']), [
+    { kind: 'make', target: 'test-warehouse', env: {} },
+    { kind: 'make', target: 'test-bosso', env: {} },
+  ])
+  assert.deepEqual(
+    selectTargets(['services/bosso/migrations_postgres/withheld_columns.json']).map(
+      ({ target }) => target,
+    ),
+    ['test-warehouse', 'test-bosso'],
+  )
+})
+
 test('selectTargets adds script tests to plugin skilldata WITHOUT dropping plugin and boss readers', () => {
   assert.deepEqual(
     selectTargets(['plugins/bossd-plugin-claude/skilldata/skills/boss-build/SKILL.md']),
@@ -508,6 +532,15 @@ for (const [file, pattern] of [
 
 test('selectBazelAffected treats the docusaurus site (services/docs/) as irrelevant', () => {
   const result = selectBazelAffected(['services/docs/docs/api.md'])
+  assert.equal(result.full, false)
+  assert.deepEqual(result.patterns, [])
+  assert.equal(result.reason, 'no go-relevant changes')
+})
+
+test('selectBazelAffected treats the warehouse dbt project (services/warehouse/) as irrelevant', () => {
+  // BOS-1317: before services/warehouse/ joined the irrelevant list, a warehouse-only
+  // change fell through to the `uncertain` fail-safe and ran the whole //... graph.
+  const result = selectBazelAffected(['services/warehouse/models/staging/bosso/x.sql'])
   assert.equal(result.full, false)
   assert.deepEqual(result.patterns, [])
   assert.equal(result.reason, 'no go-relevant changes')

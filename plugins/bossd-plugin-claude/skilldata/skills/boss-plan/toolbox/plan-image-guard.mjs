@@ -773,29 +773,128 @@ function credentialCandidateUrls(markdown) {
   return urls
 }
 
-function unredactedExternalCredentialCount(markdown) {
-  return credentialCandidateUrls(markdown).filter((url) => {
-    try {
-      const parsed = parseUrl(url)
-      const hasUserinfo = parsed.username !== '' || parsed.password !== ''
-      const redactedUserinfo =
-        parsed.username !== '' && isExplicitlyRedactedCredentialValue(parsed.password)
-      return (
-        (hasUserinfo && !redactedUserinfo) ||
-        (parsed.hostname.toLowerCase() !== 'uploads.linear.app' &&
-          [...parsed.searchParams].some(
-            ([key, value]) =>
-              isCredentialQueryKey(key) && !isExplicitlyRedactedCredentialValue(value),
-          )) ||
-        [...new URLSearchParams(parsed.hash.slice(1))].some(
-          ([key, value]) =>
-            isCredentialQueryKey(key) && !isExplicitlyRedactedCredentialValue(value),
-        )
-      )
-    } catch {
-      return false
+// A userinfo component that is wholly a shell-variable reference — `${GH_TOKEN}` or `$GH_TOKEN` —
+// is a TEMPLATE for a credential, not one. The WHATWG parser percent-encodes `{`/`}`, so the value
+// is decoded before the test.
+const USERINFO_TEMPLATE = /^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)$/
+
+function decodedUserinfo(value) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+/** Userinfo is a template only when EVERY non-empty component is one; a literal password fails. */
+function isTemplateUserinfo(parsed) {
+  const components = [parsed.username, parsed.password].filter((value) => value !== '')
+  return (
+    components.length > 0 &&
+    components.every((value) => USERINFO_TEMPLATE.test(decodedUserinfo(value)))
+  )
+}
+
+function unredactedCredentialKeys(entries) {
+  return entries
+    .filter(
+      ([key, value]) => isCredentialQueryKey(key) && !isExplicitlyRedactedCredentialValue(value),
+    )
+    .map(([key]) => key)
+}
+
+/**
+ * The URL with every credential value it carries replaced by `***`, so a failure message can name
+ * the offending URL without printing the secret it exists to keep out of the tracker.
+ */
+function maskedCredentialUrl(parsed, raw) {
+  const masked = new URL(parsed.toString())
+  // Mask each userinfo part on its own: a token is often the USERNAME (`ghp_…:x-oauth-basic@`).
+  if (masked.username !== '') masked.username = '***'
+  if (masked.password !== '') masked.password = '***'
+  if ([...masked.searchParams].some(([key]) => isCredentialQueryKey(key))) {
+    const parameters = [...masked.searchParams]
+    masked.search = ''
+    for (const [key, value] of parameters) {
+      masked.searchParams.append(key, isCredentialQueryKey(key) ? '***' : value)
     }
-  }).length
+  }
+  const fragment = [...new URLSearchParams(masked.hash.slice(1))]
+  if (fragment.some(([key]) => isCredentialQueryKey(key))) {
+    masked.hash = fragment
+      .map(([key, value]) => `${key}=${isCredentialQueryKey(key) ? '***' : value}`)
+      .join('&')
+  }
+  // A network-path reference was given a scheme only for inspection; do not print one it lacked.
+  return String(raw).trim().startsWith('//')
+    ? masked.toString().replace(/^[a-z]+:/, '')
+    : masked.toString()
+}
+
+/**
+ * 1-based lines of the RAW description carrying the offending URL's raw spelling: its host plus the
+ * userinfo or `key=` it leaks. Empty when only the entity-decoded view carries it (an encoded
+ * `&#61;` hides `key=` from the raw text) — the caller then says "line unknown" rather than guess.
+ */
+function credentialLines(markdown, parsed, { userinfo, keys }) {
+  const host = parsed.hostname.toLowerCase()
+  const needles = []
+  if (userinfo) {
+    // Both spellings: the parser percent-encodes what the author may have typed raw (`${VAR}`).
+    for (const decode of [(value) => value, decodedUserinfo]) {
+      const password = parsed.password === '' ? '' : `:${decode(parsed.password)}`
+      needles.push(`${decode(parsed.username)}${password}@`)
+    }
+  }
+  for (const key of keys) needles.push(`${key}=`)
+  const lines = []
+  String(markdown ?? '')
+    .split('\n')
+    .forEach((line, index) => {
+      if (!line.toLowerCase().includes(host)) return
+      if (needles.some((needle) => line.includes(needle))) lines.push(index + 1)
+    })
+  return lines
+}
+
+/**
+ * Every candidate URL carrying an unredacted credential, as `{ url, lines, components }`: `url`
+ * masked, `lines` the raw description lines that spell it (empty when unknown), `components` the
+ * parts that leak (`userinfo`, `query`, `fragment`). The fail-closed scope is the one this module
+ * always had — every URL `credentialCandidateUrls` extracts, not only images — plus one exemption:
+ * userinfo that is wholly a `${VAR}` / `$VAR` template.
+ */
+function unredactedExternalCredentials(markdown) {
+  const findings = []
+  for (const url of credentialCandidateUrls(markdown)) {
+    let parsed
+    try {
+      parsed = parseUrl(url)
+    } catch {
+      continue
+    }
+    const hasUserinfo = parsed.username !== '' || parsed.password !== ''
+    const redactedUserinfo =
+      parsed.username !== '' && isExplicitlyRedactedCredentialValue(parsed.password)
+    const userinfo = hasUserinfo && !redactedUserinfo && !isTemplateUserinfo(parsed)
+    const queryKeys =
+      parsed.hostname.toLowerCase() === 'uploads.linear.app'
+        ? []
+        : unredactedCredentialKeys([...parsed.searchParams])
+    const fragmentKeys = unredactedCredentialKeys([...new URLSearchParams(parsed.hash.slice(1))])
+    const components = [
+      ...(userinfo ? ['userinfo'] : []),
+      ...(queryKeys.length > 0 ? ['query'] : []),
+      ...(fragmentKeys.length > 0 ? ['fragment'] : []),
+    ]
+    if (components.length === 0) continue
+    findings.push({
+      url: maskedCredentialUrl(parsed, url),
+      lines: credentialLines(markdown, parsed, { userinfo, keys: [...queryKeys, ...fragmentKeys] }),
+      components,
+    })
+  }
+  return findings
 }
 
 // uploadIdentity(url) -> string: stable identity for Linear uploads; credential-redacted identity
@@ -1043,9 +1142,31 @@ function verifyVerbatimOriginalNotes(originalText, rewrittenText) {
   if (notes === null) {
     return 'plan-image-guard: ## Original notes section is missing from the rewritten description'
   }
-  const unsafeCredentials = unredactedExternalCredentialCount(rewrittenText)
-  if (unsafeCredentials > 0) {
-    return `plan-image-guard: rewritten description contains ${unsafeCredentials} external image URL(s) with unredacted credential query values`
+  // Heading cardinality, not content matching: `originalNotesBody` accepts whichever candidate
+  // matches, so a description whose whole tail from `## Original notes` was duplicated passed. The
+  // source may nest its own unfenced `## Original notes`; the composition adds exactly one wrapper.
+  const expectedHeadings = originalNotesBodies(originalText).length + 1
+  const actualHeadings = originalNotesBodies(rewrittenText).length
+  if (actualHeadings !== expectedHeadings) {
+    return (
+      `plan-image-guard: rewritten description carries ${actualHeadings} \`## Original notes\` ` +
+      `heading(s), expected ${expectedHeadings} (one wrapper plus the source's own ` +
+      `${expectedHeadings - 1}) — the tail after the wrapper was duplicated or truncated`
+    )
+  }
+  const unsafeCredentials = unredactedExternalCredentials(rewrittenText)
+  if (unsafeCredentials.length > 0) {
+    const listed = unsafeCredentials
+      .map(
+        ({ url, lines, components }) =>
+          `${url} (${lines.length > 0 ? `line ${lines.join(', ')}` : 'line unknown'}; ${components.join(', ')})`,
+      )
+      .join('; ')
+    return (
+      `plan-image-guard: rewritten description contains ${unsafeCredentials.length} URL(s) with ` +
+      `unredacted credentials: ${listed} — replace each value with [REDACTED], or reference it as a ` +
+      '${VAR} template'
+    )
   }
   // The safe source's credential redaction is itself meaningful. Only raw image parity erases
   // credential values; Original notes must keep redacted references verbatim.

@@ -26,7 +26,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,6 +37,7 @@ import {
   VIOLATION_CODES,
 } from '../skills-toolbox/plan-contract-guard.mjs'
 import { planScratchToken } from '../skills-toolbox/plan-scratch-paths.mjs'
+import { buildLinearOperationMap } from '../skills-toolbox/tracker/linear.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
 import {
   DEFAULT_CONFIG as GUARD_DEFAULT_CONFIG,
@@ -249,10 +250,6 @@ test('boss-plan resolves BOSS_PLAN_TOOLBOX through one canonical preamble', () =
   assert.match(SKILL, /self-edited/)
   assert.match(SKILL, /drift\s+helper\s+not\s+installed/)
   assert.match(SKILL, /loadSkillConfig\(\{ cwd \}\)/)
-  assert.match(
-    SKILL,
-    /conventional\s+tracker-adapter\s+operations\s+declared\s+in\s+the\s+adapter\s+`operationMap`/,
-  )
 
   for (const [needle, body] of [
     ['"${BOSS_PLAN_TOOLBOX:?}"` after running the toolbox preamble first', SKILL],
@@ -639,16 +636,87 @@ test('Phase 4 step 5 supplies the three inputs the library cannot derive for its
     /subjectAreas[\s\S]{0,120}\*\*before\s+any\s+edge\s+is\s+written\*\*/,
     'step 5(c) must require the printed subjectAreas line to be read BEFORE any edge write — a non-zero `compared` over an empty subjectAreas prints byte-identically to a clean scan',
   )
+  // BOS-1327 re-points this pin from the two arealess reasons to the verdict branch that now
+  // covers them and `no-candidate-areas` alike (`COULD_NOT_EVALUATE_REASONS`).
   assert.match(
     PHASE_4_SECTION,
-    /`no-subject-areas`\s+or\s+`subject-unresolved-areas`[\s\S]{0,200}could\s+not\s+evaluate/,
-    'step 5(d) must carry an imperative branch for both arealess warnings; a library warning that reaches no caller branch changes nothing',
+    /verdict\s+`could-not-evaluate`\s+→\s+report\s+_could\s+not\s+evaluate_,\s+never\s+_no\s+dependencies_/,
+    'step 5(d) must carry an imperative branch for the could-not-evaluate verdict; a library warning that reaches no caller branch changes nothing',
   )
   assert.match(
     PHASE_4_SECTION,
     /i\.subjectUnresolvedAreas=s\.unresolved/,
     'the step 5(c) invocation must FEED the unresolved list back to planDependencyEdges — naming the branch in prose while the runnable line drops the input is the same silent miss',
   )
+})
+
+test('BOS-1327: the step-5(c) one-liner refuses a defective payload and prints the verdict', () => {
+  // Behavioural, not a sentence pin: run the SHIPPED runnable line against the vendored toolbox.
+  const line = PHASE_4_SECTION.split('\n').find(
+    (entry) => entry.trim().startsWith("node -e '") && entry.includes('planDependencyEdges'),
+  )
+  assert.ok(line, 'step 5(c) must carry its runnable node -e line')
+  const script = line.match(/node -e '(.*)' "\$DEPS_IN"$/)?.[1] ?? ''
+  assert.ok(script.includes('planDependencyEdges'), 'the one-liner body must be extractable')
+  assert.ok(
+    script.indexOf('validateDependencyScanInput(i)') < script.indexOf('planDependencyEdges(i)'),
+    'the validator must run before classification',
+  )
+  const dir = mkdtempSync(join(tmpdir(), 'bos1327-deps-'))
+  const run = (payload) => {
+    const file = join(dir, `${Math.random().toString(36).slice(2)}.deps-in.json`)
+    writeFileSync(file, JSON.stringify(payload))
+    return spawnSync(process.execPath, ['-e', script, file], {
+      cwd: abs('..'),
+      encoding: 'utf8',
+      env: { ...process.env, BOSS_PLAN_TOOLBOX: abs(`${CORE}/toolbox`) },
+    })
+  }
+  const issue = (identifier, over = {}) => ({
+    id: `uuid-${identifier}`,
+    identifier,
+    priority: 3,
+    stateName: 'Todo',
+    stateType: 'unstarted',
+    labels: [],
+    parentId: null,
+    description: '## Key changes\n\n- `app/api/x.go`\n',
+    ...over,
+  })
+  // epicLabel and stateRoles are OMITTED: the block must default both from config.
+  const clean = run({ subject: issue('TCK-1'), candidates: [issue('TCK-2')], moduleRoots: ['app'] })
+  assert.equal(clean.status, 0, clean.stderr)
+  // Machine output, not prose: the single-space field separators ARE the stderr contract.
+  assert.match(
+    clean.stderr,
+    // prose-pin: literal-space ok
+    /^subjectAreas .* candidatesWithoutAreas 0 (linked|related-only|no-dependencies|could-not-evaluate) compared=1 edges=\d+/m,
+  )
+  const scan = JSON.parse(clean.stdout)
+  assert.equal(scan.candidatesWithoutAreas, 0)
+  // Step 5(f) gates its save on `verdict.recordToDescription`, so stdout must carry it: the
+  // balanced overlapping pair raises an orientation question, which earns the recording save.
+  assert.equal(typeof scan.verdict?.recordToDescription, 'boolean', 'stdout must carry the verdict')
+  assert.equal(scan.verdict.compared, scan.compared)
+  assert.equal(scan.questions.length, 1, 'the balanced overlapping fixture must raise a question')
+  assert.equal(scan.verdict.recordToDescription, true)
+  const bad = run({
+    subject: issue('TCK-1'),
+    candidates: [
+      issue('TCK-2', {
+        description: 'x (truncated, use get_issue for full description)',
+        parentId: undefined,
+      }),
+    ],
+  })
+  assert.equal(bad.status, 1, 'a defective payload must exit non-zero')
+  assert.equal(bad.stdout, '', 'nothing may be classified around a defect')
+  // prose-pin: literal-space ok
+  assert.match(bad.stderr, /^truncated-description TCK-2 /m)
+  // prose-pin: literal-space ok
+  assert.match(bad.stderr, /^missing-parent-field TCK-2 /m)
+  assert.doesNotMatch(bad.stderr, /subjectAreas/)
+  rmSync(dir, { recursive: true, force: true })
 })
 
 test('Phase 4 step 5 names its dependency library adjacent to the toolbox variable', () => {
@@ -767,10 +835,13 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   )
   // The run's only post-dependency save. Gated on relations alone it discards every zero-relation
   // outcome the library went to the trouble of raising.
+  // BOS-1327: the gate is the library's `recordToDescription`, which is true on a note or a
+  // question too, but not on the lone consolidated same-epic note. The (c) block prints it on
+  // stdout as `verdict`, which the one-liner test below asserts behaviourally.
   assert.match(
     flat,
-    /Record\s+what\s+step\s+5\s+found\s+—\s+\*\*whenever\s+\(d\)\s+produced\s+≥1\s+relation,\s+note,\s+or\s+question\*\*/,
-    'the recording save must fire on a note or a question too, not on relations alone',
+    /Record\s+what\s+step\s+5\s+found\s+—\s+\*\*only\s+when\s+stdout's\s+`verdict\.recordToDescription`\s+is\s+true\*\*/,
+    'the recording save must be gated on the verdict helper, not re-derived in prose',
   )
   assert.match(
     flat,
@@ -1002,23 +1073,114 @@ test('the resident body documents the config-first validatePlanDescription signa
   )
 })
 
-test('epic reverify decodes spec attachments and rejects missing childIds distinctly (BOS-755)', () => {
-  {
-    const copy = CANONICAL_PAYLOAD
+test('epic reverify is decided by the epic-reverify verb, not a hardcoded flag (BOS-755, BOS-1335)', () => {
+  // The childIds-vs-reconcile distinction BOS-755 pinned as prose is now a verdict code
+  // (`childids-missing` beside any reconcile code), asserted in plan-epic-phase25.test.mjs.
+  const copy = CANONICAL_PAYLOAD
+  assert.ok(
+    copy.skill.includes('plan-run-guards.mjs" epic-reverify'),
+    `${copy.name}: the epic branch must call the epic-reverify verb`,
+  )
+  assert.ok(
+    !copy.skill.includes('EPIC_REVERIFIED=false'),
+    `${copy.name}: the hardcoded EPIC_REVERIFIED placeholder must be gone`,
+  )
+  assert.ok(
+    copy.skill.includes(
+      'node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" decode <in-file> <out-file>',
+    ),
+    `${copy.name} must name the plan-attachment decode verb before parseEpicSpec`,
+  )
+})
+
+// The Phase 2 step 4 epic branch, lifted out of SKILL.md and EXECUTED against a stubbed `node`
+// that answers the epic-reverify call with a chosen exit code and stdout. Asserts what the branch
+// DOES with each: only exit 1 WITH a printed `resumable` verdict removes the run scratch; every other
+// non-zero exit — including a bare exit 1 from a node that crashed before printing a verdict —
+// retains it and exits non-zero, so the retain path cannot collapse into the cleanup path.
+function epicBranchScript() {
+  const lines = SKILL.split('\n')
+  const start = lines.findIndex((l) => l.trim() === 'if [ "$EPIC" = "true" ]; then')
+  assert.ok(start !== -1, 'the step-4 epic branch must exist')
+  const indent = lines[start].match(/^\s*/)[0]
+  const end = lines.findIndex((l, i) => i > start && l === `${indent}else`)
+  assert.ok(end !== -1, 'the step-4 epic branch must close with an else arm')
+  return [...lines.slice(start, end), `${indent}fi`]
+    .join('\n')
+    .replaceAll('<RUN-SCRATCH-ID>', 'r1')
+    .replaceAll('<ISSUE-ID>', 'BOS-1')
+}
+
+test('the epic branch removes scratch only on a verified resumable exit (BOS-1335)', () => {
+  const branch = epicBranchScript()
+  const shells = ['bash', 'zsh'].filter(
+    (sh) => spawnSync(sh, ['-c', 'exit 0'], { encoding: 'utf8' }).status === 0,
+  )
+  assert.ok(shells.includes('bash'), 'bash must be available to execute the branch')
+  for (const shell of shells) {
+    const resumable = '{"ok":false,"class":"resumable"}'
+    for (const [rc, stdout, wantExit, wantRetained] of [
+      [0, '{"ok":true,"class":"pass"}', 0, true],
+      [1, resumable, 1, false],
+      [1, '', 1, true], // node crashed (uncaught exception / ESM link error): no verdict printed
+      [1, 'SyntaxError: missing export', 1, true],
+      [3, '{"ok":false,"class":"needs-human"}', 1, true],
+      [2, resumable, 1, true],
+    ]) {
+      const dir = mkdtempSync(join(tmpdir(), 'bs-plan-epic-branch-'))
+      const scratch = join(dir, '.linear-plans', 'run-r1')
+      spawnSync('mkdir', ['-p', scratch])
+      writeFileSync(join(scratch, 'BOS-1.epic-reverify.json'), '{}')
+      const script = [
+        `node() { if [ "$2" = epic-reverify ]; then printf '%s' '${stdout}'; return ${rc}; fi; return 0; }`,
+        'EPIC=true',
+        'DISPATCH_FAILURE=dispatch-failure',
+        'RUN_SENTINEL=/toolbox/bs-run-sentinel.mjs',
+        'RUN_DIR=/nonexistent',
+        branch,
+      ].join('\n')
+      const res = spawnSync(shell, ['-c', script], { cwd: dir, encoding: 'utf8' })
+      const label = `${shell} rc=${rc} stdout=${JSON.stringify(stdout)}`
+      assert.equal(res.status, wantExit, `${label}: ${res.stderr}`)
+      assert.equal(
+        existsSync(scratch),
+        wantRetained,
+        `${label}: the run scratch must be ${wantRetained ? 'retained' : 'removed'}`,
+      )
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('the queue label is stripped in the final flip, never at stage 1 (BOS-1335)', () => {
+  const STRIP = 'planning-queue (`agentPlan`) label'
+  for (const [name, doc] of [
+    ['SKILL.md', SKILL],
+    ['references/headless-drafting-brief.md', BRIEF],
+  ]) {
+    const body = doc.replace(/\s+/g, ' ')
+    const at = body.indexOf('(`labelsToStrip` =')
+    assert.ok(at !== -1, `${name}: the stage-1 labelsToStrip definition must exist`)
+    const stage1 = body.slice(at, body.indexOf(')', at) + 1)
+    assert.ok(!stage1.includes('agentPlan'), `${name}: stage 1 must not strip the queue label`)
+    assert.ok(body.includes(STRIP), `${name}: the final flip must strip the queue label`)
     assert.ok(
-      copy.skill.includes(
-        'node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" decode <in-file> <out-file>',
-      ),
-      `${copy.name} must name the plan-attachment decode verb before parseEpicSpec`,
+      precedes(body, '(`labelsToStrip` =', STRIP, name) &&
+        precedes(body, 'epicParentEstimate(spec)', STRIP, name),
+      `${name}: the queue-label strip belongs to the final flip, after the stage-1 strip`,
     )
-    assert.ok(
-      copy.skill.includes('missing/empty childIds is a sentinel-shape failure'),
-      `${copy.name} must reject a sentinel that omits childIds`,
-    )
-    assert.ok(
-      copy.skill.includes('rejected separately from a child-reconciliation miss'),
-      `${copy.name} must name sentinel and child-reconciliation failures separately`,
-    )
+  }
+})
+
+test('the parent unplanned state is re-asserted immediately before the overview save (BOS-1335)', () => {
+  const REASSERT = 'immediately before the parent description save'
+  for (const [name, body, save] of [
+    ['SKILL.md', SKILL, 'save it onto the still-unplanned parent'],
+    ['references/headless-drafting-brief.md', BRIEF, 'save it onto the original ticket'],
+  ]) {
+    assert.ok(precedes(body, REASSERT, save, name), `${name}: re-assert must precede the save`)
+    const gap = body.indexOf(save) - body.indexOf(REASSERT)
+    assert.ok(gap < 120, `${name}: the re-assert must sit immediately before the save (${gap} B)`)
   }
 })
 
@@ -2238,18 +2400,25 @@ test('the shared drafting spec (plan-body requirements + template) lives in the 
   )
 })
 
+// BOS-1328 narrows the five rule assertions to the brief: the rule's single home is the brief's
+// Step 5 `### Sibling-class enumeration`, which both modes read, so the resident SKILL.md paragraph
+// that restated it became a one-line pointer (paying for four new Phase 4 violation codes under an
+// unchanged budget). SKILL.md is asserted to carry that pointer; the first brief pin also names the
+// home, so the narrowing adds one pin, not two.
 test('BOS-926: sibling-class enumeration and file-count cap rules are pinned', () => {
   {
     const payload = CANONICAL_PAYLOAD
-    for (const [label, body] of [
-      ['SKILL.md', payload.skill],
-      ['headless-drafting-brief.md', payload.brief],
-    ]) {
+    assert.match(
+      payload.skill,
+      /brief's\s+Step\s+5\s+`###\s+Sibling-class\s+enumeration`\s+\(under\s+`##\s+Approach`\)/,
+      `${payload.name} SKILL.md: must point at the brief's sibling-class enumeration home`,
+    )
+    for (const [label, body] of [['headless-drafting-brief.md', payload.brief]]) {
       const where = `${payload.name} ${label}`
       assert.match(
         body,
-        /specific\s+call\s+site,\s+construct,\s+literal\s+claim,\s+or\s+other\s+mechanism[\s\S]{0,220}repo-wide\s+sibling-class\s+enumeration/i,
-        `${where}: must require enumeration when a named mechanism could recur`,
+        /specific\s+call\s+site,\s+construct,\s+literal\s+claim,\s+or\s+other\s+mechanism[\s\S]{0,220}repo-wide\s+sibling-class\s+enumeration[\s\S]{0,120}Its\s+home\s+is\s+an\s+`###\s+Sibling-class\s+enumeration`\s+table\s+under\s+`##\s+Approach`/i,
+        `${where}: must require enumeration, in its named home, when a named mechanism could recur`,
       )
       assert.match(
         body,
@@ -2996,7 +3165,7 @@ test('BOS-1193: the payload never instructs an agent to invent a scratch filenam
 // BOS-1198 — the description is WRITTEN from the file the gates validated.
 // ---------------------------------------------------------------------------
 
-test('BOS-1198: step 4 writes the description from the gated file, never retyped inline', () => {
+test('BOS-1198: step 4 writes the description from the gated file, never recomposed', () => {
   // The defect this pins shut: the description is composed and mechanically gated as a FILE
   // and was then re-emitted into an inline tool argument, so the bytes the guards validated
   // and the bytes that reached the tracker stopped being provably the same object.
@@ -3006,8 +3175,8 @@ test('BOS-1198: step 4 writes the description from the gated file, never retyped
   assert.ok(step4, "step 4's description bullet must exist")
   assert.match(
     step4,
-    /written\s+from\s+the\s+file\s+the\s+gates\s+above\s+just\s+validated,\s+never\s+retyped\s+into\s+this[\s\S]{0,20}argument/,
-    'step 4 must say the description is written FROM the gated file and not retyped into the argument',
+    /the\s+bytes\s+of\s+the\s+file\s+the\s+gates\s+above\s+just\s+validated,\s+never\s+recomposed/,
+    "step 4 must say the description is the gated file's bytes, never recomposed",
   )
   assert.match(
     step4,
@@ -3098,6 +3267,70 @@ test('BOS-1286: step 5(f) states where an appended bullet goes and what stays pu
     /\*\*directly\s+after\s+the\s+last\s+existing\s+bullet\*\*[\s\S]{0,120}no\s+blank\s+line\s+introduced[\s\S]{0,60}blank\s+line\s+before\s+the\s+next\s+heading\s+left\s+in\s+place/,
     'step 5(f) must place the bullet after the last one, adding no blank line and moving none',
   )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1333 — tracker-operation prose an agent can follow literally to the adapter's real contract.
+// ---------------------------------------------------------------------------
+
+const PLAN_ATTACHMENT_OPS = [
+  'preparePlanAttachment',
+  'finalizePlanAttachment',
+  'readPlanAttachment',
+  'deletePlanAttachment',
+]
+
+test('BOS-1333: Phase 0 probes the plan-attachment ops with the operations verb, and it passes', () => {
+  // A probe read off the repo config found every op absent on a healthy adapter. The pin extracts
+  // the op list the step actually runs and executes it through the vendored helper the skill ships,
+  // so a list that drifts, misspells an op or names a verb the helper lacks reds here.
+  const probe = PHASE_0_SECTION.match(/tracker\/cli\.mjs" operations --require ([A-Za-z,]+)/)
+  assert.ok(probe, 'Phase 0 must invoke tracker/cli.mjs operations --require')
+  const required = probe[1].split(',')
+  assert.deepEqual([...required].sort(), [...PLAN_ATTACHMENT_OPS].sort())
+  const run = spawnSync(
+    process.execPath,
+    [abs(`${CORE}/toolbox/tracker/cli.mjs`), 'operations', '--require', probe[1]],
+    { cwd: REPO_ROOT, encoding: 'utf8', env: { ...process.env, TRACKER: 'linear' } },
+  )
+  assert.equal(run.status, 0, run.stderr)
+  const parsed = JSON.parse(run.stdout)
+  assert.equal(parsed.outcome, 'operations-present')
+  assert.deepEqual(Object.keys(parsed.operationMap), required)
+})
+
+test('BOS-1333: the epic-spec contract read row names the mode the adapter declares as content', () => {
+  // Cross-checked against the adapter contract rather than a sentence: the mode the row cites must
+  // be the one the readPlanAttachment op itself declares, so the two cannot drift apart.
+  const row = SKILL.split('\n').find((line) => /^\|\s*read\s*\|/.test(line))
+  assert.ok(row, 'the epic-spec attachment contract must carry a read row')
+  const cited = row.match(/`readPlanAttachment`\s+`format="(\w+)"`/)
+  assert.ok(cited, 'the read row must cite readPlanAttachment with its format mode')
+  const declared =
+    buildLinearOperationMap('x').readPlanAttachment.summary.match(/^\{id, format="(\w+)"\}/)
+  assert.ok(declared, 'readPlanAttachment must declare its content mode in its argument list')
+  assert.equal(cited[1], declared[1])
+})
+
+test('BOS-1333: plan-storage names the write-back check as the description round-trip measure', () => {
+  const section = sectionBetween(
+    PLAN_STORAGE,
+    '## Writing the description from a file',
+    '\n## Reading the stored description into a file',
+  )
+  // Every helper the section cites must be one the skill actually ships.
+  const cited = [...new Set(section.match(/[\w-]+\.mjs/g) ?? [])]
+  assert.ok(
+    cited.includes('plan-writeback-verify.mjs'),
+    'the section must cite the write-back check',
+  )
+  for (const helper of cited) {
+    const shipped = [`${CORE}/toolbox/${helper}`, `${CORE}/toolbox/tracker/${helper}`]
+    assert.ok(
+      shipped.some((rel) => existsSync(abs(rel))),
+      `${helper} is not in the boss-plan toolbox`,
+    )
+  }
 })
 
 test('BOS-1198: plan-storage.md carries the file-based write mechanics', () => {
@@ -3584,7 +3817,27 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // references/headless-dispatch.md, leaving the body a pointer shorter than the blanket
   // dispatch-failure paragraph it replaced. Situational by the reference test: each is read on a
   // transport death, an EPIC triage or a metadata refusal, never on the happy path.
-  const RATCHET = 126636 // re-measured for BOS-1278; see raise.justification
+  // BOS-1327 banks 126636 -> 126125 (-511 B), leaving PRE_SPLIT_BASELINE where it is, as every
+  // down-bank does. Phase 4 step 5 gained an input-refusal branch, a merged-PR `landed` check, a
+  // two-direction transitive warning and a verdict-gated save, and paid for all of it by deleting
+  // the prose the new plan-deps-lib helpers now own: the `epicParentId`-when-exposed and
+  // `stateRoles`-omission paragraphs, the separate `compared === 0` and arealess bullets, and the
+  // (e2) and (f) rule bodies.
+  // BOS-1327 review round 1 banks 126125 -> 126084 (-41 B): step 5(c) now prints the verdict on
+  // stdout so (f) can read `verdict.recordToDescription`, paid for by dropping (f)'s prose
+  // restatement of what that helper field means.
+  // BOS-1335 banks 126084 -> 125200 (-884 B), leaving PRE_SPLIT_BASELINE where it is. The Phase 2
+  // step 4 epic branch's `EPIC_REVERIFIED=false` placeholder and its comment-described tracker reads
+  // became one `plan-run-guards.mjs epic-reverify` call with an exit-class `case` (hydration moved to
+  // references/headless-dispatch.md), which paid for the step 6 before-save re-assert and the step 7
+  // queue-label strip.
+  // BOS-1328 banks 125200 -> 124842 (-358 B; the file itself shrank 125198 -> 124842). The Phase 4
+  // violation-code list gained four codes (`duplicate-section`, `enumeration-dropped`,
+  // `merged-list-item`, `stale-risk-citation`) and the write-back verdict sentence names the new
+  // `merged-list-item` cause; both were paid for by replacing the resident sibling-class-enumeration
+  // paragraph with a one-line pointer to the drafting brief's Step 5 `### Sibling-class enumeration`,
+  // the rule's single home, which both modes read.
+  const RATCHET = 124842 // re-measured for BOS-1328 (down-bank); see the ledger above
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({

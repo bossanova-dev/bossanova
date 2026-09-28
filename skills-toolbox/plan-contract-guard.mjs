@@ -36,7 +36,7 @@ import { relative, resolve } from 'node:path'
 // (bs-dispatch-claims.mjs, bs-review-triage.mjs) imports it alone instead of dragging this
 // guard's whole closure into three published skill payloads. It is imported here, not
 // re-exported: a second import path for one module is the drift R1 exists to close.
-import { resolveCitationCoordinate, resolveCitationPath } from './citation-coordinate.mjs'
+import { resolveCitationCoordinate } from './citation-coordinate.mjs'
 import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
@@ -46,6 +46,7 @@ import {
   hasCountAssertion,
   loadSkillConfig,
   markdownH2Heading,
+  mergedListItems,
   parseAcceptanceCriteria,
   parsePremises,
   planFileFloor,
@@ -115,6 +116,7 @@ const PLAN_FILE_EXEMPTIONS = new Set(['epic-parent-overview', 'adopted-child-red
 const PREMISES_HEADING = '## Premises'
 const ACCEPTANCE_HEADING = '## Acceptance criteria'
 const KEY_CHANGES_HEADING = '## Key changes'
+const RISKS_HEADING = '## Risks / unknowns'
 
 // The sections whose `file:line` coordinates are resolved against the tree. `## Key changes` joined
 // the list because a plan pins call sites there as often as it pins them in a criterion, and
@@ -122,12 +124,33 @@ const KEY_CHANGES_HEADING = '## Key changes'
 // citation pattern requires a `:<digits>` suffix, so a `## Key changes` bullet naming a file the
 // ticket will CREATE is not a citation at all and cannot false-positive.
 //
-// Deliberately NOT scanned: `## Summary`, `## Approach`, `## Testing`, `## Risks / unknowns` and
-// every other section. Those are narrative, and a coordinate there is illustrative rather than
-// load-bearing; scanning them would make the guard's blast radius the whole document for no
-// measured defect. `## Original notes` stays out for the stronger reason that it is reporter text
-// required to survive byte-for-byte — see the module header.
-const CITATION_SECTIONS = [KEY_CHANGES_HEADING, PREMISES_HEADING, ACCEPTANCE_HEADING]
+// `## Risks / unknowns` joined too: a fabricated symbol reached a published plan through
+// a Risks line nothing read. It gets existence plus an OPPORTUNISTIC anchor rule
+// (`stale-risk-citation`, see `riskAnchorTokens`); `## Key changes` stays existence-only, because it
+// legitimately names symbols the PR will create beside the file it cites.
+//
+// SURVEYED before the Risks rule landed, against the authoring repo's whole archive of past plan
+// bodies, each resolved against the tree at the first parent of the commit that ADDED the plan
+// (HEAD already holds the symbols a plan announced, and would hide exactly the "names a symbol the
+// PR will create" false-positive class). 879 documents carry `## Risks / unknowns`. Existence:
+// 131 unresolvable Risks citations, 130 of them a bare basename the tree cannot resolve (the
+// already-required repo-relative rule, not a new class) and 1 a line past EOF. Anchor rule: the
+// first cut (any backticked identifier on the line, ±`ANCHOR_WINDOW`) raised 16 findings in 14
+// documents and every finding was inspected — 12 were false positives, because a Risks bullet is a
+// paragraph pairing several claims, so its identifiers describe other locations, name a qualified
+// symbol, or name the declaration enclosing a cited body line. Narrowed to an ADJACENT anchor, the
+// last segment of a qualified name, and a region widened to the enclosing column-0 declaration, it
+// raises 3 findings in 2 documents: two coordinates that point into an unrelated function (true
+// stale — re-checked at the PR's own base too), and one whose symbol the same PR's earlier commits
+// had moved (it resolves at the PR base, so the drafting-time guard would not have raised it).
+// Zero false positives remain. Re-run that survey before widening the rule.
+//
+// Deliberately NOT scanned: `## Summary`, `## Approach`, `## Testing` and every other section.
+// Those are narrative, and a coordinate there is illustrative rather than load-bearing; scanning
+// them would make the guard's blast radius the whole document for no measured defect.
+// `## Original notes` stays out for the stronger reason that it is reporter text required to
+// survive byte-for-byte — see the module header.
+const CITATION_SECTIONS = [KEY_CHANGES_HEADING, PREMISES_HEADING, ACCEPTANCE_HEADING, RISKS_HEADING]
 
 // How far either side of a cited line a premise anchor may have drifted and still count as
 // resolved. Five lines absorbs the ordinary churn of an edit above the cited symbol without
@@ -158,7 +181,10 @@ function violation(code, message) {
  * coverage test asserts a subset relation, not equality.
  */
 export const VIOLATION_CODES = [
+  'duplicate-section',
+  'enumeration-dropped',
   'line-spanning-emphasis',
+  'merged-list-item',
   'missing-sections',
   'not-a-description',
   'placeholder-residue',
@@ -170,6 +196,7 @@ export const VIOLATION_CODES = [
   'section-order',
   'self-falsified-literal-search',
   'stale-premise-citation',
+  'stale-risk-citation',
   'subject-areas-unresolved',
   'unanchored-premise-citation',
   'unknown-section',
@@ -520,6 +547,66 @@ function scanPremiseCitations(config, description) {
   return hits
 }
 
+// An identifier-shaped backticked token: a code identifier, optionally dotted and optionally
+// followed by `()`. A token carrying `/` or ending in a short lowercase file extension is a PATH,
+// never an anchor — a Risks line that backticks the file it cites has named WHERE, not WHAT.
+const IDENTIFIER_TOKEN = /^[A-Za-z_$][\w$.]*(?:\(\))?$/
+const FILE_EXTENSION_TAIL = /\.[a-z0-9]{1,5}$/
+// What may sit BETWEEN an anchor and the citation it anchors: "`sym` at `f:1`", "`sym` (`f:1`)",
+// "`sym`, `f:1`", "`f:1` is `sym()`", "`f:1` (`sym`)". Anything longer is a second clause, and a
+// token there describes something other than the cited location.
+const ANCHOR_BEFORE_GAP = /^\s*(?:\(|,|:|—|at|in)?\s*\(?\s*$/i
+const ANCHOR_AFTER_GAP = /^\)?\s*(?:\(|,|:|—|=|is)?\s*\(?\s*$/i
+
+function identifierAnchor(span) {
+  const token = span.replace(/^`+/, '').replace(/`+$/, '').trim()
+  if (!IDENTIFIER_TOKEN.test(token)) return null
+  if (token.includes('/') || FILE_EXTENSION_TAIL.test(token)) return null
+  // A qualified name (`client.BossClient.UpdateSession`) is how prose NAMES a symbol, not how the
+  // source spells it, so it anchors on its last segment. The `()` goes for the same reason.
+  return token.replace(/\(\)$/, '').split('.').pop() || null
+}
+
+// The anchors of one citation on a `## Risks / unknowns` line. Unlike a premise, a Risks line is
+// not REQUIRED to carry an anchor, and a Risks bullet is routinely a paragraph pairing several
+// claims — so only an identifier-shaped span ADJACENT to the citation (see the gap patterns) makes
+// a claim about WHAT sits at that coordinate. A line with no adjacent anchor is existence-only.
+function riskCitationAnchors(line) {
+  const spans = [...line.matchAll(INLINE_CODE_SPAN)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    text: match[0],
+  }))
+  const hits = []
+  for (const match of line.matchAll(CITATION)) {
+    const inside = spans.find((span) => span.start <= match.index && match.index < span.end)
+    const start = inside ? inside.start : match.index
+    const end = inside ? inside.end : match.index + match[0].length
+    const before = spans.filter((span) => span.end <= start).pop()
+    const after = spans.find((span) => span.start >= end)
+    const anchors = []
+    if (before && ANCHOR_BEFORE_GAP.test(line.slice(before.end, start))) {
+      const anchor = identifierAnchor(before.text)
+      if (anchor) anchors.push(anchor)
+    }
+    if (after && ANCHOR_AFTER_GAP.test(line.slice(end, after.start))) {
+      const anchor = identifierAnchor(after.text)
+      if (anchor) anchors.push(anchor)
+    }
+    if (anchors.length > 0) {
+      hits.push({ anchors, citation: match[0], file: match[1], line: Number(match[2]) })
+    }
+  }
+  return hits
+}
+
+// `## Risks / unknowns` citations that carry an adjacent identifier anchor.
+function scanRiskCitations(config, description, mode) {
+  return linesOutsideFences(sectionText(config, description, RISKS_HEADING, mode)).flatMap(
+    ({ line }) => riskCitationAnchors(line),
+  )
+}
+
 function fixedStringNeedle(command) {
   const tokens = tokenizeSimpleShell(command)
   const commandIndex = tokens.findIndex((token) => token === 'rg' || token === 'grep')
@@ -544,6 +631,37 @@ function fixedStringNeedle(command) {
     return fixed ? token : null
   }
   return null
+}
+
+/** The cited line plus `ANCHOR_WINDOW` lines either side, joined. `line` is 1-based. */
+function anchorWindow(lines, line) {
+  return lines.slice(Math.max(0, line - 1 - ANCHOR_WINDOW), line + ANCHOR_WINDOW).join('\n')
+}
+
+const COLUMN_ZERO_COMMENT = /^(?:\/\/|\/\*|\*|#|--)/
+const COLUMN_ZERO_CLOSER = /^[}\])]/
+const ENCLOSING_LOOKBACK = 400
+
+/**
+ * The lines from the cited line up to the column-0 declaration that encloses it, inclusive, with
+ * any column-0 comment block met on the way. A Risks line routinely cites a line INSIDE a symbol —
+ * the `domains` list of a resource, the advisory push inside a function, a paragraph of the
+ * symbol's own doc comment — and names the symbol, which sits more than `ANCHOR_WINDOW` lines up.
+ * Stops at a column-0 closer (the cited line is past that block) and after `ENCLOSING_LOOKBACK`.
+ */
+function enclosingDeclaration(lines, line) {
+  const region = []
+  for (let index = line - 1; index >= 0 && index >= line - ENCLOSING_LOOKBACK; index -= 1) {
+    const text = lines[index]
+    if (text.trim() === '' || /^\s/.test(text) || COLUMN_ZERO_COMMENT.test(text)) {
+      region.push(text)
+      continue
+    }
+    if (COLUMN_ZERO_CLOSER.test(text)) break
+    region.push(text)
+    break
+  }
+  return region.join('\n')
 }
 
 export function checkPlanCitations(
@@ -587,6 +705,13 @@ export function checkPlanCitations(
     }
     return bodyCache.get(resolved)
   }
+  // The cited file's lines when the coordinate RESOLVED (file readable, line in 1..length), else
+  // null. Both anchor passes below skip on null because the existence pass has already reported
+  // that coordinate — one defect, one violation.
+  const resolvedCitationLines = (hit) => {
+    const resolved = resolveCitationCoordinate(root, hit.file, hit.line, { readBody })
+    return resolved.ok ? resolved.body.split('\n') : null
+  }
 
   for (const hit of scanCitationSections(config, description, mode)) {
     const resolved = resolveCitationCoordinate(root, hit.file, hit.line, { readBody })
@@ -599,10 +724,18 @@ export function checkPlanCitations(
           : resolved.code === 'unreadable'
             ? `could not be read: ${resolved.error.message}`
             : `has only ${resolved.lineCount} line(s)`
+    // A `## Premises` coordinate is often stale ON PURPOSE: a premise warning that a ticket's
+    // coordinates have rotted quotes the rotted `name:number`. There is no heuristic that tells
+    // that apart from a fabrication, so the message names the two spellings that are not a citation.
+    const remedy =
+      hit.heading === PREMISES_HEADING
+        ? ` — if the coordinate is quoted rather than cited, cite ${hit.file} without a line ` +
+          `number, or spell it as prose ("line ${hit.line} of ${hit.file}")`
+        : ''
     violations.push(
       violation(
         'unresolvable-citation',
-        `${hit.heading} cites ${hit.citation}, but ${hit.file} ${detail}`,
+        `${hit.heading} cites ${hit.citation}, but ${hit.file} ${detail}${remedy}`,
       ),
     )
   }
@@ -629,12 +762,8 @@ export function checkPlanCitations(
   // description about to be authored, so a tightened rule cannot retroactively reject a published
   // plan. Re-run that survey before widening the rule, and argue against the new numbers.
   for (const hit of scanPremiseCitations(config, description)) {
-    const resolved = resolveCitationPath(root, hit.file)
-    if (!resolved) continue
-    const { body, error } = readBody(resolved)
-    if (error) continue
-    const lines = body.split('\n')
-    if (hit.line > lines.length) continue
+    const lines = resolvedCitationLines(hit)
+    if (!lines) continue
     if (hit.anchors.length === 0) {
       violations.push(
         violation(
@@ -645,16 +774,32 @@ export function checkPlanCitations(
       )
       continue
     }
-    const window = lines
-      .slice(Math.max(0, hit.line - 1 - ANCHOR_WINDOW), hit.line + ANCHOR_WINDOW)
-      .join('\n')
-    if (hit.anchors.some((anchor) => window.includes(anchor))) continue
+    if (hit.anchors.some((anchor) => anchorWindow(lines, hit.line).includes(anchor))) continue
     violations.push(
       violation(
         'stale-premise-citation',
         `${PREMISES_HEADING} cites ${hit.citation}, but no line within ${ANCHOR_WINDOW} of line ` +
           `${hit.line} in ${hit.file} contains its anchor ` +
           `${hit.anchors.map((anchor) => `"${anchor}"`).join(' or ')}`,
+      ),
+    )
+  }
+
+  // The Risks anchor pass: the same window test, run only for coordinates that already resolved
+  // (file readable, line in range) so a nonexistent line raises `unresolvable-citation` alone.
+  for (const hit of scanRiskCitations(config, description, mode)) {
+    const lines = resolvedCitationLines(hit)
+    if (!lines) continue
+    const region = `${anchorWindow(lines, hit.line)}\n${enclosingDeclaration(lines, hit.line)}`
+    if (hit.anchors.some((anchor) => region.includes(anchor))) continue
+    violations.push(
+      violation(
+        'stale-risk-citation',
+        `${RISKS_HEADING} cites ${hit.citation} beside ` +
+          `${hit.anchors.map((anchor) => `"${anchor}"`).join(', ')}, but no line within ` +
+          `${ANCHOR_WINDOW} of line ${hit.line} in ${hit.file}, nor its enclosing declaration, ` +
+          `contains any of them — re-read the ` +
+          `location and fix the coordinate or the symbol, or drop the line number`,
       ),
     )
   }
@@ -666,9 +811,16 @@ export function checkPlanCitations(
 // across a hard wrap would reject correct prose. The observed corrupting shape is `**…**`.
 const EMPHASIS_RUN = /\*+/g
 
-/** Replace every inline code span with same-length spaces, preserving column offsets. */
+/**
+ * Replace every inline code span with a same-length run of `!`, preserving column offsets.
+ *
+ * NOT spaces: a delimiter's neighbour in the source is a backtick, which CommonMark counts as
+ * punctuation, never whitespace. A space mask made the `**` closing `**run the \`x\`**` look
+ * whitespace-preceded, so it could not close, and the next span's closer paired with it one line
+ * early. Any non-`*` ASCII punctuation keeps the flanking a renderer would compute.
+ */
 function maskInlineCodeSpans(line) {
-  return line.replace(INLINE_CODE_SPAN, (span) => ' '.repeat(span.length))
+  return line.replace(INLINE_CODE_SPAN, (span) => '!'.repeat(span.length))
 }
 
 /** Blank out a leading unordered-list marker so `* item` is not read as an emphasis delimiter. */
@@ -815,6 +967,13 @@ export function checkPrBodyOnlyEvidence(config, description) {
 export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
   const violations = []
   const advisories = []
+  // A check command naming a file this plan CREATES is absent today by design. The classifier is
+  // context-free and cannot know that; this guard holds the plan, so it drops `path-operand-absent`
+  // for an operand its own `## Key changes` names. Accepted residual: a path mistyped identically
+  // in both places gets no signal — the finding was advisory anyway.
+  const keyChanges = sectionText(config, description, KEY_CHANGES_HEADING, 'child-plan')
+  const plannedPath = (path) =>
+    typeof path === 'string' && keyChanges.includes(path.replace(/^\.\//, ''))
   const checkItem = (kind, item) => {
     if (!item.check) return
     const classified = classifyCheckCommand(item.check, { ...opts, kind })
@@ -827,6 +986,7 @@ export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
       )
     }
     for (const finding of classified.advisory) {
+      if (finding.code === 'path-operand-absent' && plannedPath(finding.path)) continue
       advisories.push({
         code: `advisory: ${finding.code}`,
         message: `plan-contract-guard: ${kind} "${item.text}" has an advisory check command risk: ${finding.message}`,
@@ -941,6 +1101,102 @@ export function checkUnmeasuredCountClaim(config, description) {
   for (const criterion of parseAcceptanceCriteria(config, description))
     inspect('criterion', criterion)
   for (const premise of parsePremises(config, description)) inspect('premise', premise)
+  violations.push(...unmeasuredNarrativeByteFigures(config, description))
+  return violations
+}
+
+// A `<digits> bytes` figure, thousands separators included so `58,499 bytes` is one figure and not
+// `499 bytes`. The lookbehind is the same token-boundary idea `assertedNumericQuantity` uses.
+const BYTE_FIGURE = /(?<![\w:.#+\-−/v,])(\d{1,3}(?:[, ]\d{3})+|\d+)\s+bytes\b/g
+// Figures written as a TARGET, LIMIT, DELTA or ESTIMATE rather than a measurement of the tree: a cap
+// ("capped at 512 bytes", "≤ 400 bytes"), a comparison ("longer than 80 bytes"), a change ("frees
+// 190 bytes", "by 81, 80 and 82 bytes"), an approximation ("~250 bytes"). The number run between
+// the keyword and the figure lets one keyword govern a list of figures.
+const BYTE_FIGURE_BEFORE =
+  /(?:\b(?:cap(?:ped|s)?|limit(?:ed|s)?)(?:\s+[\w-]+){0,3}\s+(?:at|to)|\b(?:capped|caps?|limit(?:ed)?|max(?:imum)?|at most|no more than|up to|under|below|above|over|within|longer than|shorter than|more than|less than|fewer than|greater than|exceeds?|exceeding|by|frees?|freed|trims?|trimmed|saves?|saved|shrinks?|grows?|adds?|added|costs?|cuts?|about|around|roughly|approximately|nearly|near|headroom(?:\s+(?:is|was|of|therefore|now|only))*)\b|[~≈≤≥<>±+−-])(?:\s*(?:at|to|of|near|by))?[\s*(]*(?:[\d,.]+\s*(?:,|and|or)?\s*)*$/i
+// ...or followed by what makes it a margin rather than a size ("98 bytes of headroom", "30 bytes
+// away", "5 bytes under it").
+const BYTE_FIGURE_AFTER =
+  /^\**\s*(?:(?:of\s+)?(?:[\w-]+\s+)?(?:headroom|budget|slack|margin|room|leeway)|(?:remain(?:s|ing)?\s+)?(?:below|under|above|over)|away|short|separate|spare|left|remaining|free|less|more|smaller|larger|bigger)\b/i
+// A single-digit figure is an encoding fact ("`…` is 3 bytes in UTF-8"), not a measured file size.
+const MIN_BYTE_FIGURE = 10
+const withoutThousandsSeparators = (text) => text.replace(/(\d)[, ](?=\d{3}(?!\d))/g, '$1')
+
+/**
+ * A byte figure stated in NARRATIVE prose that nothing re-measures.
+ *
+ * A load-bearing size in `## Approach` ("the body is N bytes") was read downstream as fact while
+ * only Premises and criteria rows were judged. Any pre-terminal contract section other than
+ * `## Premises` and `## Acceptance criteria` is now scanned for the literal `<digits> bytes` shape,
+ * code spans stripped, and each figure must recur in a `## Premises` bullet whose check counts
+ * (`hasCountAssertion`). `## Original notes` is reporter text and is never scanned. Same code as
+ * the row rule, `unmeasured-count-claim`: one defect class, one code.
+ *
+ * SURVEYED before landing, against the authoring repo's whole archive of past plan bodies (1291
+ * documents). The first cut raised 76 findings in 42 documents; every one was inspected, and 44 were
+ * not measurements at all — a cap or limit ("capped at 512 bytes", "≤ 400 bytes"), a delta or
+ * margin ("frees roughly 190 bytes", "98 bytes of headroom", "3097 bytes remain below"), an estimate
+ * ("~250 bytes"), an encoding fact ("3 bytes in UTF-8"), a blockquote quoting the stale claim a plan
+ * corrects, or a thousands-separated size split in two. The before/after context patterns, the
+ * single-digit floor, blockquote skipping and paragraph joining (so a margin word survives a hard
+ * wrap) narrow those out. What remains is 32 findings in 21 documents, and every one is a stated
+ * current size ("is exactly 88851 bytes", "measures 145464 bytes") with no counting premise — most
+ * predate `## Premises` itself. Zero false positives remain. Re-run that survey before widening it.
+ */
+/**
+ * The prose paragraphs of a section body, each joined onto one line so a figure and the word that
+ * makes it a margin survive a hard wrap between them. Fenced code is not prose, and a blockquote is
+ * QUOTED text (a plan quoting the stale claim it corrects), so both are skipped.
+ */
+function narrativeParagraphs(body) {
+  const paragraphs = []
+  let current = []
+  const flush = () => {
+    if (current.length > 0) paragraphs.push(current.join(' '))
+    current = []
+  }
+  for (const { line } of scanFences(body).lines) {
+    if (line.trim() === '' || /^\s*>/.test(line)) {
+      flush()
+      continue
+    }
+    current.push(line.trim())
+  }
+  flush()
+  return paragraphs
+}
+
+function unmeasuredNarrativeByteFigures(config, description) {
+  const contract = planSectionsForDescriptionMode(config, 'child-plan')
+  const recognised = new Set(contract.map((section) => section.heading))
+  const terminalHeading = contract[contract.length - 1]?.heading
+  const measured = parsePremises(config, description)
+    .filter((premise) => premise.check && hasCountAssertion(premise.check))
+    .map((premise) => withoutThousandsSeparators(premise.text))
+  const violations = []
+  for (const section of planDescriptionSections(config, description)) {
+    if (!recognised.has(section.heading) || section.heading === terminalHeading) continue
+    if (section.heading === PREMISES_HEADING || section.heading === ACCEPTANCE_HEADING) continue
+    const seen = new Set()
+    for (const paragraph of narrativeParagraphs(section.bodyLines.join('\n'))) {
+      const prose = paragraph.replace(INLINE_CODE_SPAN, ' ')
+      for (const match of prose.matchAll(BYTE_FIGURE)) {
+        const figure = withoutThousandsSeparators(match[1])
+        if (seen.has(figure) || Number(figure) < MIN_BYTE_FIGURE) continue
+        if (BYTE_FIGURE_BEFORE.test(prose.slice(0, match.index))) continue
+        if (BYTE_FIGURE_AFTER.test(prose.slice(match.index + match[0].length))) continue
+        const repeated = new RegExp(`(?<!\\d)${figure}(?!\\d)`)
+        if (measured.some((text) => repeated.test(text))) continue
+        seen.add(figure)
+        violations.push(
+          violation(
+            'unmeasured-count-claim',
+            `${section.heading} states "${figure} bytes", but no ${PREMISES_HEADING} bullet with a counting check (wc -c, grep -c, …) repeats that figure — add a premise that measures it, or drop the number`,
+          ),
+        )
+      }
+    }
+  }
   return violations
 }
 
@@ -1035,7 +1291,22 @@ export function checkPlanContract({
   }
 
   const emitted = unterminated ? [] : emittedContractHeadings(config, description, { mode })
-  if (!unterminated && !isContractOrdered(config, emitted, { mode })) {
+  // A contract heading emitted twice is ONE defect — usually a duplicated block — and reporting it
+  // as `section-order` ("emitted A → B → A") sends the reader hunting for a transposition. Name the
+  // repeat instead, and keep `section-order` only when the first occurrences are themselves out
+  // of order.
+  const firstOccurrences = emitted.filter((heading, index) => emitted.indexOf(heading) === index)
+  for (const heading of firstOccurrences) {
+    const count = emitted.filter((h) => h === heading).length
+    if (count < 2) continue
+    violations.push(
+      violation(
+        'duplicate-section',
+        `contract section "${heading}" is emitted ${count} times — keep exactly one copy`,
+      ),
+    )
+  }
+  if (!unterminated && !isContractOrdered(config, firstOccurrences, { mode })) {
     violations.push(
       violation(
         'section-order',
@@ -1085,6 +1356,14 @@ export function checkPlanContract({
     violations.push(...structure.violations)
   }
 
+  for (const { line, text } of unterminated ? [] : mergedListItems(config, description, { mode })) {
+    violations.push(
+      violation(
+        'merged-list-item',
+        `## Planning line ${line} starts a second list item mid-line ("${text}") — put each bullet on its own line, directly after the previous one`,
+      ),
+    )
+  }
   violations.push(...checkLineSpanningEmphasis(config, description, { mode }))
   violations.push(...checkSelfFalsifiedLiteralSearch(config, description))
   const citation = checkPlanCitations(config, description, {
@@ -1099,16 +1378,53 @@ export function checkPlanContract({
   violations.push(...commandVacuity.violations)
   violations.push(...checkPremiseReusedAsCriterion(config, description))
   violations.push(...checkUnmeasuredCountClaim(config, description))
+  const advisories = [...commandVacuity.advisories]
   if (!unterminated) {
-    violations.push(...checkSubjectAreas(config, description, { mode, moduleRoots }))
+    const subjectAreas = checkSubjectAreas(config, description, { mode, moduleRoots })
+    violations.push(...subjectAreas.violations)
+    advisories.push(...subjectAreas.advisories)
+  }
+  if (plan !== null && plan !== undefined) {
+    violations.push(...checkEnumerationCarried(config, description, plan, { mode }))
   }
 
   return {
     ok: violations.length === 0 && couldNotEvaluateResults.length === 0,
     violations,
-    advisories: commandVacuity.advisories,
+    advisories,
     couldNotEvaluate: couldNotEvaluateResults,
   }
+}
+
+const ENUMERATION_HEADING = '### Sibling-class enumeration'
+const APPROACH_HEADING = '## Approach'
+
+/** True when `text` carries `heading` as a line of its own outside fenced code. */
+function carriesHeading(text, heading) {
+  return linesOutsideFences(text).some(({ line }) => line.trim() === heading)
+}
+
+/**
+ * The plan file's sibling-class enumeration must survive into the description's `## Approach`.
+ *
+ * The drafting brief names `### Sibling-class enumeration` under `## Approach` as the table's one
+ * home, and Step 7 carries it into the description. A derived description that drops it drops the
+ * only scope evidence the implementer reads, silently — so the gate keys on the EXACT heading the
+ * brief names. Accepted residual: a differently titled table escapes it.
+ */
+function checkEnumerationCarried(config, description, plan, { mode }) {
+  if (!carriesHeading(plan, ENUMERATION_HEADING)) return []
+  if (
+    carriesHeading(sectionText(config, description, APPROACH_HEADING, mode), ENUMERATION_HEADING)
+  ) {
+    return []
+  }
+  return [
+    violation(
+      'enumeration-dropped',
+      `the plan file carries "${ENUMERATION_HEADING}" but the description's ${APPROACH_HEADING} does not — carry the same block after the ${APPROACH_HEADING} bullets`,
+    ),
+  ]
 }
 
 /**
@@ -1139,11 +1455,26 @@ export function checkPlanContract({
  */
 function checkSubjectAreas(config, description, { mode, moduleRoots }) {
   const required = planSectionsForDescriptionMode(config, mode).map((section) => section.heading)
-  if (!required.includes(KEY_CHANGES_HEADING)) return []
-  if (!emittedContractHeadings(config, description, { mode }).includes(KEY_CHANGES_HEADING)) {
-    return []
+  // Exactly one non-blocking advisory whenever the check runs, naming what it read — an unexamined
+  // description used to read exactly like a clean one. A description missing a REQUIRED
+  // `## Key changes` gets none: `missing-sections` already reports it.
+  if (!required.includes(KEY_CHANGES_HEADING)) {
+    return {
+      violations: [],
+      advisories: [
+        subjectAreasAdvisory(`skipped — ${mode} mode has no ${KEY_CHANGES_HEADING} section`),
+      ],
+    }
   }
-  const { areas, unresolved } = extractKeyChangeAreas(config, description, { moduleRoots })
+  if (!emittedContractHeadings(config, description, { mode }).includes(KEY_CHANGES_HEADING)) {
+    return { violations: [], advisories: [] }
+  }
+  const { areas, unresolved, source } = extractKeyChangeAreas(config, description, { moduleRoots })
+  const advisories = [
+    subjectAreasAdvisory(
+      `read ${source}: ${areas.length} area(s), ${unresolved.length} unresolved token(s)`,
+    ),
+  ]
   const faults = []
   if (areas.length === 0) {
     faults.push(
@@ -1158,15 +1489,25 @@ function checkSubjectAreas(config, description, { mode, moduleRoots }) {
         `leading directory in the dependency scan's \`moduleRoots\``,
     )
   }
-  if (faults.length === 0) return []
-  return [
-    violation(
-      'subject-areas-unresolved',
-      `${KEY_CHANGES_HEADING} cannot be resolved into change areas: ${faults.join('; ')}. ` +
-        'Fix it now, before the attachment is finalized: after the upload the same remedy costs a ' +
-        'delete plus a re-upload of bytes that were meant to be frozen.',
-    ),
-  ]
+  if (faults.length === 0) return { violations: [], advisories }
+  return {
+    violations: [
+      violation(
+        'subject-areas-unresolved',
+        `${KEY_CHANGES_HEADING} cannot be resolved into change areas: ${faults.join('; ')}. ` +
+          'Fix it now, before the attachment is finalized: after the upload the same remedy costs a ' +
+          'delete plus a re-upload of bytes that were meant to be frozen.',
+      ),
+    ],
+    advisories,
+  }
+}
+
+function subjectAreasAdvisory(detail) {
+  return {
+    code: 'advisory: subject-areas-source',
+    message: `plan-contract-guard: subject-area check ${detail}`,
+  }
 }
 
 export function parseContractGuardArgs(argv) {

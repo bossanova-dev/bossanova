@@ -74,8 +74,12 @@ const requiredFiles = [
 // 442 bytes and was tightened back until the file came out one byte smaller than it started. The
 // measurements, counter-forms and the three new gate rules live in `docs/skills/README.md`
 // § "Shell portability"; only the decision an agent needs in the moment is resident here.
+// Re-banked 27078 -> 27077 bytes by the stale-plugin clause correction (lines unchanged at 180):
+// once installed trees carry a payload record, a stale plugin restores its embed only to
+// non-explicit installs, and the corrected clause came out one byte shorter than the one it
+// replaced. The restorer mechanism itself lives in docs/solutions/, not here.
 const CLAUDE_MD_MAX_LINES = 180
-const CLAUDE_MD_MAX_BYTES = 27078
+const CLAUDE_MD_MAX_BYTES = 27077
 
 // The seven authoring rules, pinned by NAME rather than by the sentence that states them. That is
 // the point of rule 4 applied to this file: a rule name is what a reader cites and what the two

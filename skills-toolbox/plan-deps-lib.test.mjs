@@ -19,15 +19,20 @@ import { DEFAULT_CONFIG, stateRolesFor } from './skill-config.mjs'
 import { BLOCKER_CLEARED_STATE_TYPES } from './linear-deps-lib.mjs'
 import { buildGraph, readyTickets } from './dag-scheduler.mjs'
 import {
+  COULD_NOT_EVALUATE_REASONS,
   DEFAULT_CANCELED_STATE_TYPES,
   DEFAULT_CLEARED_STATE_TYPES,
   DEFAULT_PRIORITY_ORDER,
   DEPENDENCY_REASONS,
   areasOverlap,
   classifyDependencyEdge,
+  dependencyScanVerdict,
   extractKeyChangeAreas,
   planDependencyEdges,
+  transitiveBlockWarnings,
+  validateDependencyScanInput,
 } from './plan-deps-lib.mjs'
+import { descriptionAppearsTruncated } from './plan-epic-lib.mjs'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1540,15 +1545,16 @@ test('same-epic siblings and the epic parent are planning notes, not external ed
     result.skipped.map((entry) => entry.reason),
     ['same-epic-member', 'same-epic-member'],
   )
-  assert.equal(result.notes.length, 2)
+  // BOS-1327: the per-candidate records stay, but they share ONE consolidated note
+  // naming every member in sorted order — N siblings used to record N near-identical lines.
+  assert.equal(result.notes.length, 1)
+  const [only] = result.notes
+  assert.equal(only.destination, 'planning')
+  assert.equal(only.severity, 'info')
+  assert.equal(only.reason, 'same-epic-member')
   assert.ok(
-    result.notes.every(
-      (entry) =>
-        entry.destination === 'planning' &&
-        entry.reason === 'same-epic-member' &&
-        entry.text.includes('epic'),
-    ),
-    'internal epic coordination must surface as planning context rather than a dependency write',
+    only.text.startsWith('TCK-P, TCK-S ') && only.text.includes('epic'),
+    'internal epic coordination must surface as ONE planning note naming every member, not a dependency write',
   )
 })
 
@@ -1916,6 +1922,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
         subject: subject({ priority: 1 }),
         candidate: candidate({ priority: 3, stateName: '?' }),
       }),
+      classify({ candidate: candidate({ ...started, landed: { evidence: 'abc123' } }) }),
     ].map((row) => row.reason),
   )
   for (const reason of produced) {
@@ -1935,6 +1942,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
     'no-candidates-compared',
     'no-subject-areas',
     'subject-unresolved-areas',
+    'no-candidate-areas',
     'all-pairs-downgraded-unknown-state',
     'same-epic-member',
   ]
@@ -2399,4 +2407,548 @@ test('DEFAULT_CLEARED_STATE_TYPES / DEFAULT_CANCELED_STATE_TYPES stay frozen ARR
     assert.ok(Object.isFrozen(value), `${name} must remain frozen`)
     assert.equal(typeof value.has, 'undefined', `${name}.has() must keep raising at the call site`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1327 — refuse bad input, report a vacuous result honestly
+// ---------------------------------------------------------------------------
+
+// The tracker's list-truncation sentinel, asserted against its single owner so this
+// fixture cannot drift from the rule the validator imports.
+const TRUNCATED = 'intro (truncated, use get_issue for full description)'
+
+/** A payload the validator must accept: every field the ladder reads, present and consistent. */
+function scanPayload(over = {}) {
+  return {
+    subject: { ...subject(), parentId: null, description: planBody('- `app/api/x.go`') },
+    candidates: [{ ...candidate(), parentId: null, description: planBody('- `app/web/y.go`') }],
+    declaredRelatedIds: ['TCK-2'],
+    epicLabel: 'Epic',
+    stateRoles: STATE_ROLES,
+    ...over,
+  }
+}
+
+function defectCodes(payload) {
+  return validateDependencyScanInput(payload).defects.map((entry) => entry.code)
+}
+
+test('BOS-1327 validator: a clean payload is ok with no defects', () => {
+  assert.deepEqual(validateDependencyScanInput(scanPayload()), { ok: true, defects: [] })
+})
+
+test('BOS-1327 validator: truncated-description fires on a list-truncated body, subject or candidate', () => {
+  assert.equal(descriptionAppearsTruncated(TRUNCATED), true, 'fixture must carry the real sentinel')
+  const report = validateDependencyScanInput(
+    scanPayload({
+      candidates: [{ ...candidate(), parentId: null, description: TRUNCATED }],
+    }),
+  )
+  assert.equal(report.ok, false)
+  assert.deepEqual(
+    report.defects.map((entry) => [entry.code, entry.id]),
+    [['truncated-description', 'TCK-2']],
+  )
+  assert.match(report.defects[0].remedy, /getIssue/)
+  assert.deepEqual(
+    defectCodes(scanPayload({ subject: { ...scanPayload().subject, description: TRUNCATED } })),
+    ['truncated-description'],
+  )
+})
+
+test('BOS-1327 validator: declared-related-not-fetched fires before classification, not after', () => {
+  const report = validateDependencyScanInput(
+    scanPayload({ declaredRelatedIds: ['TCK-2', 'TCK-77'] }),
+  )
+  assert.deepEqual(
+    report.defects.map((entry) => [entry.code, entry.id]),
+    [['declared-related-not-fetched', 'tck-77']],
+  )
+  assert.match(report.defects[0].remedy, /regardless of state/)
+  // A declared id held under a supplied epic parent's children resolves in the same call.
+  assert.deepEqual(
+    defectCodes(
+      scanPayload({
+        declaredRelatedIds: ['TCK-77'],
+        childrenByParentId: { 'uuid-p': [candidate({ id: 'uuid-77', identifier: 'TCK-77' })] },
+      }),
+    ),
+    [],
+  )
+})
+
+test('BOS-1327 validator: missing-state-type fires when no state-type field resolves', () => {
+  const bare = { ...candidate(), parentId: null }
+  delete bare.stateType
+  assert.deepEqual(defectCodes(scanPayload({ candidates: [bare] })), ['missing-state-type'])
+  // The nested detail-read shape resolves just as well as the flat list shape.
+  const nested = { ...bare, state: { name: 'Planned', type: 'unstarted' } }
+  delete nested.stateName
+  assert.deepEqual(defectCodes(scanPayload({ candidates: [nested] })), [])
+})
+
+test('BOS-1327 validator: conflicting-state-fields catches a nested-only overlay the flat field hides', () => {
+  // The list snapshot said started; a live overlay refreshed only the nested object.
+  const stale = {
+    ...candidate({ stateName: 'In Progress', stateType: 'started' }),
+    parentId: null,
+    state: { name: 'Done', type: 'completed' },
+  }
+  const report = validateDependencyScanInput(scanPayload({ candidates: [stale] }))
+  assert.deepEqual(
+    report.defects.map((entry) => entry.code),
+    ['conflicting-state-fields', 'conflicting-state-fields'],
+    'both the type and the name disagree',
+  )
+  assert.match(report.defects[0].remedy, /flat stateType/)
+  const agreeing = { ...stale, stateName: 'Done', stateType: 'completed' }
+  assert.deepEqual(defectCodes(scanPayload({ candidates: [agreeing] })), [])
+})
+
+test('BOS-1327 validator: missing-parent-field requires the KEY, and accepts an explicit null', () => {
+  const noParent = candidate()
+  assert.deepEqual(defectCodes(scanPayload({ candidates: [noParent] })), ['missing-parent-field'])
+  assert.deepEqual(defectCodes(scanPayload({ candidates: [{ ...noParent, parentId: null }] })), [])
+  assert.deepEqual(
+    defectCodes(scanPayload({ candidates: [{ ...noParent, epicParentId: 'uuid-epic' }] })),
+    [],
+  )
+})
+
+test('BOS-1327 validator: supplied epic children are validated, because they reach the classifier', () => {
+  const parent = candidate({ id: 'uuid-p', identifier: 'TCK-9', labels: ['Epic'] })
+  const child = (over) => candidate({ id: 'uuid-c', identifier: 'TCK-30', ...over })
+  const bare = child()
+  delete bare.stateType
+  const expand = (kid) =>
+    scanPayload({
+      candidates: [{ ...parent, parentId: null }],
+      declaredRelatedIds: [],
+      childrenByParentId: { 'uuid-p': [kid] },
+    })
+  // Premise: an expanded child is classified like any candidate — a logical verdict on it
+  // writes an edge — so a defect the validator skipped would ship on that edge.
+  const run = planDependencyEdges({
+    ...expand(child()),
+    subjectAreas: ['app/api'],
+    logicalDependencies: { 'TCK-30': true },
+  })
+  assert.deepEqual(
+    run.edges.map((entry) => entry.identifier),
+    ['TCK-30'],
+  )
+  assert.deepEqual(defectCodes(expand(bare)), ['missing-state-type'])
+  assert.deepEqual(defectCodes(expand(child({ description: TRUNCATED }))), [
+    'truncated-description',
+  ])
+  assert.deepEqual(defectCodes(expand(child({ state: { name: 'Done', type: 'completed' } }))), [
+    'conflicting-state-fields',
+    'conflicting-state-fields',
+  ])
+  assert.equal(validateDependencyScanInput(expand(bare)).defects[0].id, 'TCK-30')
+  // A child's parent is its childrenByParentId key, so it needs no parent field of its own.
+  assert.deepEqual(defectCodes(expand(child())), [])
+  // A child that is also a candidate is reported once, under the candidate's stricter checks.
+  const twice = scanPayload({
+    candidates: [{ ...parent, parentId: null }, bare],
+    declaredRelatedIds: [],
+    childrenByParentId: { 'uuid-p': [bare] },
+  })
+  assert.deepEqual(defectCodes(twice), ['missing-state-type', 'missing-parent-field'])
+})
+
+test('BOS-1327 validator: missing-epic-label and missing-state-roles are payload-level defects', () => {
+  const report = validateDependencyScanInput(scanPayload({ epicLabel: '  ', stateRoles: {} }))
+  assert.deepEqual(report.defects, [
+    {
+      code: 'missing-epic-label',
+      id: 'payload',
+      remedy: "set epicLabel to labelName(config, 'epic')",
+    },
+    {
+      code: 'missing-state-roles',
+      id: 'payload',
+      remedy: 'set stateRoles to stateRolesFor(config)',
+    },
+  ])
+  const omitted = scanPayload()
+  delete omitted.epicLabel
+  delete omitted.stateRoles
+  assert.deepEqual(defectCodes(omitted), ['missing-epic-label', 'missing-state-roles'])
+})
+
+test('BOS-1327 validator: never throws, and a garbage payload is refused rather than accepted', () => {
+  for (const garbage of [undefined, null, 'x', 7, [], { candidates: 'nope' }]) {
+    const report = validateDependencyScanInput(garbage)
+    assert.equal(report.ok, false, `${JSON.stringify(garbage)} must not validate`)
+  }
+})
+
+test('BOS-1327 shared: every classifier result carries a shared array', () => {
+  const overlapping = classify({
+    candidate: candidate({ priority: 1 }),
+    subjectAreas: ['app/api'],
+    candidateAreas: ['app/api/x.go'],
+  })
+  assert.deepEqual(overlapping.shared, ['app/api/x.go'])
+  assert.notEqual(overlapping.write, null)
+  for (const row of [
+    classify({ subjectAreas: ['app/api'], candidateAreas: ['app/web'] }),
+    classify({ subject: subject({ labels: ['Epic'] }) }),
+    classify({ candidate: candidate({ id: 'uuid-subject', identifier: 'TCK-1' }) }),
+    classify({ candidate: candidate({ labels: ['Epic'] }) }),
+    classify({ candidate: candidate({ stateName: 'Backlog' }) }),
+  ]) {
+    assert.deepEqual(row.shared, [], `${row.reason} must still carry shared: []`)
+  }
+  const set = planDependencyEdges({
+    subject: { ...subject({ epicParentId: 'uuid-epic' }), areas: ['app/api'] },
+    candidates: [
+      { ...candidate({ priority: 1 }), areas: ['app/api'] },
+      { ...candidate({ id: 'uuid-s', identifier: 'TCK-S' }), epicParentId: 'uuid-epic' },
+    ],
+    declaredRelatedIds: ['TCK-99'],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  for (const entry of [...set.edges, ...set.skipped]) {
+    assert.ok(Array.isArray(entry.shared), `${entry.reason} record must carry a shared array`)
+  }
+  assert.deepEqual(set.edges[0].shared, ['app/api'])
+})
+
+test('BOS-1327 no-candidate-areas: an all-arealess candidate set could not evaluate', () => {
+  const result = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'] },
+    candidates: [
+      { ...candidate(), areas: [] },
+      { ...candidate({ id: 'uuid-3', identifier: 'TCK-3' }), areas: [] },
+    ],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(result.compared, 2)
+  assert.equal(result.candidatesWithoutAreas, 2)
+  assert.deepEqual(result.edges, [])
+  const warning = result.notes.find((entry) => entry.reason === 'no-candidate-areas')
+  assert.ok(warning, 'an all-arealess set must not read as a clean scan')
+  assert.equal(warning.severity, 'warning')
+  assert.equal(warning.destination, 'risks')
+  assert.match(warning.text, /could not evaluate/)
+  const verdict = dependencyScanVerdict(result)
+  assert.equal(verdict.verdict, 'could-not-evaluate')
+  assert.deepEqual(verdict.reasons, ['no-candidate-areas'])
+})
+
+test('BOS-1327 no-candidate-areas stands down when one candidate has areas or a logical edge exists', () => {
+  const partly = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'] },
+    candidates: [
+      { ...candidate(), areas: [] },
+      { ...candidate({ id: 'uuid-3', identifier: 'TCK-3' }), areas: ['app/web'] },
+    ],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(partly.candidatesWithoutAreas, 1)
+  assert.equal(
+    partly.notes.some((entry) => entry.reason === 'no-candidate-areas'),
+    false,
+  )
+  // AC: compared > 0, zero edges, no could-not-evaluate reason -> an explicit no-dependencies.
+  assert.deepEqual(dependencyScanVerdict(partly), {
+    verdict: 'no-dependencies',
+    compared: 2,
+    edges: 0,
+    relatedTo: 0,
+    reasons: [],
+    recordToDescription: false,
+  })
+  const logical = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'] },
+    candidates: [{ ...candidate(), areas: [] }],
+    logicalDependencies: { 'TCK-2': true },
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(logical.edges.length, 1)
+  assert.equal(
+    logical.notes.some((entry) => entry.reason === 'no-candidate-areas'),
+    false,
+  )
+  assert.equal(dependencyScanVerdict(logical).verdict, 'linked')
+})
+
+test('BOS-1327 same-epic: three siblings produce exactly one note, and no second save', () => {
+  const siblings = ['TCK-C', 'TCK-A', 'TCK-B'].map((identifier) => ({
+    ...candidate({ id: `uuid-${identifier}`, identifier }),
+    epicParentId: 'uuid-epic',
+    areas: ['app/api'],
+  }))
+  const result = planDependencyEdges({
+    subject: { ...subject({ epicParentId: 'uuid-epic' }), areas: ['app/api'] },
+    candidates: siblings,
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(result.skipped.filter((entry) => entry.reason === 'same-epic-member').length, 3)
+  const sameEpic = result.notes.filter((entry) => entry.reason === 'same-epic-member')
+  assert.equal(sameEpic.length, 1)
+  assert.equal(result.notes.length, 1)
+  assert.ok(
+    sameEpic[0].text.startsWith('TCK-A, TCK-B, TCK-C share '),
+    'members named in sorted order',
+  )
+  const verdict = dependencyScanVerdict(result)
+  assert.equal(verdict.verdict, 'no-dependencies')
+  assert.equal(verdict.recordToDescription, false, 'the consolidated note alone earns no save')
+})
+
+test('BOS-1327 landed: a started candidate with merged-PR evidence writes no blocking edge', () => {
+  const started = { stateName: 'In Review', stateType: 'started' }
+  const overlap = classify({
+    subject: subject({ priority: 3 }),
+    candidate: candidate({ priority: 1, ...started, landed: { evidence: 'merge 9f3c2e1' } }),
+  })
+  assert.equal(overlap.reason, 'candidate-landed')
+  assert.equal(overlap.write, null)
+  assert.equal(overlap.edge, 'none')
+  assert.equal(overlap.note.destination, 'planning')
+  assert.match(overlap.note.text, /merge 9f3c2e1/)
+  const logical = classify({
+    subjectAreas: ['app/api'],
+    candidateAreas: ['app/web'],
+    candidate: candidate({ ...started, landed: { evidence: 'merge 9f3c2e1' } }),
+    logicalDependency: true,
+  })
+  assert.equal(logical.reason, 'prerequisite-satisfied')
+  assert.equal(logical.write, null)
+  assert.match(logical.note.text, /merge 9f3c2e1/)
+  const blocks = classify({
+    subjectAreas: ['app/api'],
+    candidateAreas: ['app/web'],
+    candidate: candidate({ ...started, landed: { evidence: 'merge 9f3c2e1' } }),
+    logicalDependency: { direction: 'blocks' },
+  })
+  assert.equal(blocks.reason, 'candidate-landed')
+  // An unschedulable tracker state no longer rejects a candidate whose work merged.
+  assert.equal(
+    classify({ candidate: candidate({ stateName: 'Backlog', landed: { evidence: 'x' } }) }).reason,
+    'candidate-landed',
+  )
+  // The tracker's own cleared answer still wins over the evidence.
+  assert.equal(
+    classify({
+      candidate: candidate({
+        stateName: 'Done',
+        stateType: 'completed',
+        landed: { evidence: 'x' },
+      }),
+    }).reason,
+    'candidate-cleared',
+  )
+})
+
+test('BOS-1327 landed: blank or missing evidence changes nothing', () => {
+  const plain = classify({
+    subject: subject({ priority: 3 }),
+    candidate: candidate({ priority: 1 }),
+  })
+  for (const landed of [{ evidence: '   ' }, { evidence: '' }, {}, { evidence: 42 }, null]) {
+    const row = classify({
+      subject: subject({ priority: 3 }),
+      candidate: candidate({ priority: 1, landed }),
+    })
+    assert.equal(row.reason, plain.reason, `${JSON.stringify(landed)} must be ignored`)
+    assert.deepEqual(row.write, plain.write)
+  }
+  assert.equal(
+    classify({ candidate: candidate({ stateName: 'Backlog', landed: { evidence: ' ' } }) }).reason,
+    'candidate-not-schedulable',
+  )
+})
+
+test('BOS-1327 verdict: each outcome, and could-not-evaluate outranks everything', () => {
+  assert.deepEqual(COULD_NOT_EVALUATE_REASONS, [
+    'no-candidates-compared',
+    'no-subject-areas',
+    'subject-unresolved-areas',
+    'no-candidate-areas',
+  ])
+  for (const reason of COULD_NOT_EVALUATE_REASONS) {
+    assert.ok(DEPENDENCY_REASONS.includes(reason), `${reason} must be in the reason enum`)
+  }
+  const empty = planDependencyEdges({ subject: subject(), candidates: [] })
+  assert.equal(dependencyScanVerdict(empty).verdict, 'could-not-evaluate')
+  assert.deepEqual(dependencyScanVerdict(empty).reasons, ['no-candidates-compared'])
+  const arealessSubject = planDependencyEdges({
+    subject: { ...subject(), areas: [] },
+    candidates: [{ ...candidate(), areas: ['app/api'] }],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.deepEqual(dependencyScanVerdict(arealessSubject).reasons, ['no-subject-areas'])
+  const linked = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'] },
+    candidates: [{ ...candidate({ priority: 1 }), areas: ['app/api'] }],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.deepEqual(dependencyScanVerdict(linked), {
+    verdict: 'linked',
+    compared: 1,
+    edges: 1,
+    relatedTo: 0,
+    reasons: [],
+    recordToDescription: true,
+  })
+  const related = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'] },
+    candidates: [
+      {
+        ...candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
+        areas: ['app/api'],
+      },
+    ],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+    priorityOrder: [1, 2, 3, 4, 0],
+  })
+  // Equal priority and equal createdAt would be ambiguous; make the subject the blocker.
+  const relatedOnly = planDependencyEdges({
+    subject: { ...subject({ priority: 1 }), areas: ['app/api'] },
+    candidates: [
+      {
+        ...candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
+        areas: ['app/api'],
+      },
+    ],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(related.edges.length, 0, 'the balanced pair asks a question instead')
+  assert.equal(
+    dependencyScanVerdict(related).recordToDescription,
+    true,
+    'a question earns the save',
+  )
+  assert.equal(dependencyScanVerdict(relatedOnly).verdict, 'related-only')
+  assert.equal(dependencyScanVerdict(relatedOnly).relatedTo, 1)
+  // Never throws on a result it cannot read; an unreadable result could not evaluate.
+  for (const garbage of [undefined, null, 'x', {}]) {
+    assert.equal(dependencyScanVerdict(garbage).verdict, 'could-not-evaluate')
+  }
+})
+
+test('BOS-1327 transitive warnings: upstream reproduces the blocked-side rule', () => {
+  const warnings = transitiveBlockWarnings({
+    subjectId: ['uuid-subject', 'TCK-1'],
+    writes: [{ id: 'uuid-subject', blockedBy: ['TCK-2'] }],
+    relationsById: {
+      'tck-2': {
+        stateType: 'started',
+        blockedBy: [{ identifier: 'TCK-9', stateType: 'unstarted' }, 'TCK-8'],
+      },
+      'TCK-8': { stateType: 'completed' },
+    },
+  })
+  assert.deepEqual(warnings, [
+    {
+      direction: 'upstream',
+      severity: 'warning',
+      blockerId: 'TCK-2',
+      blockedId: 'uuid-subject',
+      via: ['TCK-9'],
+      text: 'blocked by TCK-2, which is itself open and blocked by TCK-9',
+    },
+  ])
+  assert.ok(
+    warnings.every((entry) => !('write' in entry)),
+    'detection only — never a write',
+  )
+})
+
+test('BOS-1327 transitive warnings: a cleared or canceled intermediate produces nothing', () => {
+  const base = { subjectId: 'TCK-1', writes: [{ id: 'TCK-1', blockedBy: ['TCK-2'] }] }
+  assert.deepEqual(
+    transitiveBlockWarnings({
+      ...base,
+      relationsById: {
+        'TCK-2': { stateType: 'started', blockedBy: [{ id: 'TCK-9', stateType: 'canceled' }] },
+      },
+    }),
+    [],
+  )
+  assert.deepEqual(
+    transitiveBlockWarnings({
+      ...base,
+      relationsById: { 'TCK-2': { stateType: 'completed', blockedBy: ['TCK-9'] } },
+    }),
+    [],
+    'a cleared blocker is not itself open',
+  )
+})
+
+test('BOS-1327 transitive warnings: downstream fires, and escalates for a needs-human subject', () => {
+  const input = {
+    subjectId: 'TCK-1',
+    writes: [{ id: 'TCK-2', blockedBy: ['TCK-1'] }],
+    relationsById: {
+      'TCK-2': {
+        stateType: 'unstarted',
+        blocks: ['TCK-7', { id: 'TCK-6', stateType: 'completed' }],
+      },
+    },
+  }
+  assert.deepEqual(transitiveBlockWarnings(input), [
+    {
+      direction: 'downstream',
+      severity: 'warning',
+      blockerId: 'TCK-1',
+      blockedId: 'TCK-2',
+      via: ['TCK-7'],
+      text: 'blocks TCK-2, which itself blocks open TCK-7',
+    },
+  ])
+  const [escalated] = transitiveBlockWarnings({ ...input, subjectAgentFriendly: false })
+  assert.equal(escalated.severity, 'escalated')
+  assert.deepEqual(
+    transitiveBlockWarnings({ ...input, relationsById: { 'TCK-2': { blocks: [] } } }),
+    [],
+    'a blocked ticket that blocks nothing open raises nothing',
+  )
+  for (const garbage of [undefined, null, 'x', { writes: 'nope' }]) {
+    assert.deepEqual(transitiveBlockWarnings(garbage), [])
+  }
+})
+
+test('BOS-1327 integration: validated payload -> edges -> verdict -> transitive warnings', () => {
+  const payload = scanPayload({
+    subject: { ...scanPayload().subject, areas: undefined },
+    candidates: [
+      { ...candidate({ priority: 1 }), parentId: null, description: planBody('- `app/api/x.go`') },
+    ],
+  })
+  assert.equal(validateDependencyScanInput(payload).ok, true)
+  const withAreas = {
+    ...payload,
+    subjectAreas: areas(payload.subject.description).areas,
+    candidates: payload.candidates.map((entry) => ({
+      ...entry,
+      areas: areas(entry.description).areas,
+    })),
+  }
+  const result = planDependencyEdges(withAreas)
+  assert.equal(dependencyScanVerdict(result).verdict, 'linked')
+  const writes = result.edges.map((entry) => entry.write).filter(Boolean)
+  assert.deepEqual(writes, [{ id: 'uuid-subject', blockedBy: ['uuid-candidate'] }])
+  const warnings = transitiveBlockWarnings({
+    subjectId: ['uuid-subject', 'TCK-1'],
+    writes,
+    relationsById: { 'uuid-candidate': { stateType: 'unstarted', blockedBy: ['TCK-40'] } },
+  })
+  assert.deepEqual(
+    warnings.map((entry) => [entry.direction, entry.blockerId, entry.via]),
+    [['upstream', 'uuid-candidate', ['TCK-40']]],
+  )
 })

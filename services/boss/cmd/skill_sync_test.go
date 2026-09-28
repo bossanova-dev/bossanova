@@ -865,9 +865,10 @@ func captureStderr(t *testing.T, fn func()) string {
 
 // assertNamesFullSkillRebuildRemedy pins the *complete* remedy at every site that
 // surfaces the stale-embed warning. Naming only `make build` is not enough:
-// bin/bossd-plugin-claude embeds its own mirror of the skill payload and calls
-// EnsureUpdated on the installed tree at daemon startup, so rebuilding the CLI
-// alone lets a later daemon start restore the old skills. Nor is a bare
+// bin/bossd-plugin-claude embeds its own mirror of the skill payload and runs a
+// guarded refresh of the installed tree at daemon startup that still rewrites a
+// non-explicit install, so rebuilding the CLI alone lets a later daemon start
+// restore the old skills. Nor is a bare
 // `boss skills install` enough for the handoff: the warning can be emitted by a
 // globally installed binary, which `make build plugins` does not replace, so the
 // unqualified command would not exercise the rebuilt CLI. Asserting all three
@@ -1079,7 +1080,8 @@ func TestRunSkillCheck(t *testing.T) {
 		if !strings.Contains(out.String(), "payload: stale") {
 			t.Fatalf("output = %q, want stale against checkout payload %q", out.String(), srcRoot)
 		}
-		wantRemedy := "run `BOSS_TRUST_CHECKOUT_SKILLS=1 " + filepath.Join(repoRootFromSourceRoot(srcRoot), "bin", "boss") + " skills install`"
+		repoRoot := repoRootFromSourceRoot(srcRoot)
+		wantRemedy := "run `make -C " + repoRoot + " build plugins && BOSS_TRUST_CHECKOUT_SKILLS=1 " + filepath.Join(repoRoot, "bin", "boss") + " skills install`"
 		if !strings.Contains(out.String(), wantRemedy) {
 			t.Fatalf("output = %q, want checkout-selecting install remedy %q", out.String(), wantRemedy)
 		}
@@ -1524,6 +1526,57 @@ func TestRunSkillGate(t *testing.T) {
 		}
 	})
 
+	t.Run("each tree header states its own count and the run line builds first", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		t.Setenv("BOSS_SKILLS_HOME", "")
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, gateSkillFS())
+		commitCheckoutAsOriginHead(t, root)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		codexDir := filepath.Join(home, ".codex", "skills")
+		// claude keeps the first revision of both files: two behind rows.
+		if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		for _, rel := range []string{"boss/SKILL.md", "boss-build/SKILL.md"} {
+			if err := os.WriteFile(filepath.Join(srcRoot, "skills", filepath.FromSlash(rel)), []byte(rel+" second revision\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runGit(t, root, "add", ".")
+		runGit(t, root, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "second revision")
+		runGit(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
+		// codex is current except for one missing file: one row.
+		if err := libskillinstall.Extract(codexDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(codexDir, libskillinstall.Namespace, "boss-build", "SKILL.md")); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+
+		var out bytes.Buffer
+		if err := runSkillGate(&out, ""); err == nil {
+			t.Fatalf("runSkillGate returned nil, want drift\n%s", out.String())
+		}
+		got := out.String()
+		t.Logf("gate output:\n%s", got)
+		assertGateOutputHidesGateFlag(t, got)
+		for _, want := range []string{
+			"boss skills gate: claude skill drift detected — 2 path(s) in this agent tree\n",
+			"boss skills gate: codex skill drift detected — 1 path(s) in this agent tree\n",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("output = %q, want header %q", got, want)
+			}
+		}
+		repoRoot := repoRootFromSourceRoot(srcRoot)
+		wantRun := "  run `make -C " + repoRoot + " build plugins && BOSS_TRUST_CHECKOUT_SKILLS=1 " + filepath.Join(repoRoot, "bin", "boss") + " skills install`"
+		if !strings.Contains(got, wantRun) {
+			t.Fatalf("output = %q, want the run line to build before installing: %q", got, wantRun)
+		}
+	})
+
 	t.Run("unqualified gate scopes to current skills home", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		root := t.TempDir()
@@ -1854,9 +1907,19 @@ func TestSkillInstallRemedyKeepsCheckoutTrustAndUsesCheckoutBinary(t *testing.T)
 		fromSource: true,
 	}
 
-	const want = "BOSS_TRUST_CHECKOUT_SKILLS=1 /repo/bin/boss skills install"
+	// bin/ is gitignored, so the install is runnable in a fresh worktree only
+	// after the build step that creates bin/boss (and rebuilds the plugins).
+	const want = "make -C /repo build plugins && BOSS_TRUST_CHECKOUT_SKILLS=1 /repo/bin/boss skills install"
 	if got := skillInstallRemedy(payload); got != want {
 		t.Fatalf("skillInstallRemedy() = %q, want %q", got, want)
+	}
+	quoted := selectedSkillPayload{srcRoot: filepath.Join("/home/me/Boss Nova", libskillinstall.SourceRelPath), fromSource: true}
+	const wantQuoted = "make -C '/home/me/Boss Nova' build plugins && BOSS_TRUST_CHECKOUT_SKILLS=1 '/home/me/Boss Nova/bin/boss' skills install"
+	if got := skillInstallRemedy(quoted); got != wantQuoted {
+		t.Fatalf("skillInstallRemedy() = %q, want %q", got, wantQuoted)
+	}
+	if got := skillInstallRemedy(selectedSkillPayload{}); got != "boss skills install" {
+		t.Fatalf("embedded remedy = %q, want the unchanged boss skills install", got)
 	}
 }
 

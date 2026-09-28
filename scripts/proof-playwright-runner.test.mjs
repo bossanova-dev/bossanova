@@ -116,6 +116,40 @@ test('buildSpec stages a signed-in organization only for the recipes that name o
 // scripts that write `bossanovaE2e` alone (sessionOrganizationStageScript and
 // its siblings, which explain their own reason) and the ones that stage no
 // fixture global at all.
+test('buildSpec stages the newsletter opt-in only for its own recipe', () => {
+  function specFor(id) {
+    return buildSpec({
+      recipe: { id, surface: 'web', route: '/sessions' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  }
+
+  const staged = specFor('web-newsletter-opt-in')
+  // All three fields are the subject: the card renders only in the empty
+  // first-run state, behind an available newsletter, for an active account.
+  assert.match(
+    staged,
+    /const staged = \{ sessions: \[\], cloudAccessState: 'active', newsletter: \{ available: true \} \}/,
+  )
+  assert.match(staged, /window\.bossanovaE2e = \{ \.\.\.window\.bossanovaE2e, \.\.\.staged \}/)
+
+  // Recipe-scoped: every other sessions capture keeps its seeded rows and the
+  // fake's unavailable default, so none of them shows the card.
+  for (const id of ['web-sessions', 'web-sessions-reorder-flow', 'web-subscribe']) {
+    assert.doesNotMatch(specFor(id), /newsletter:/)
+  }
+
+  // The catalog recipe the staging serves exists and validates.
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((candidate) => candidate.id === 'web-newsletter-opt-in')
+  assert.ok(recipe, 'web-newsletter-opt-in recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+})
+
 test('the runner assigns the mirror fixture global in exactly one place', () => {
   const source = fs.readFileSync(new URL('./proof-playwright-runner.mjs', import.meta.url), 'utf8')
 

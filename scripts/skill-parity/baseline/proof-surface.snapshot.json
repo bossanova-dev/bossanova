@@ -41,6 +41,10 @@
       "surface": "marketing"
     },
     {
+      "id": "marketing-newsletter-signup",
+      "surface": "marketing"
+    },
+    {
       "id": "marketing-pricing",
       "surface": "marketing"
     },

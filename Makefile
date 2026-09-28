@@ -5,7 +5,7 @@
 	debt-knip \
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
-	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-docs test-integration-bossd test-manifest test-manifest-update \
+	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-warehouse grant-warehouse-reads bootstrap-posthog-raw deploy-warehouse-flow test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
@@ -848,6 +848,54 @@ postgres-test-up:
 ## postgres-test-down: Remove the throwaway Postgres container started above.
 postgres-test-down:
 	@docker rm -f $(BOSSO_TEST_PG_CONTAINER) >/dev/null 2>&1 || true
+
+# BOS-1317: the warehouse dbt project's throwaway-Postgres run. The admin URL is
+# built exactly like BOSSO_TEST_DATABASE_URL above (same user, host and port) but
+# names the `postgres` maintenance database, because the run drops and recreates
+# its own `warehouse_test` database. Same `origin` switch as BOSSO_TEST_PG_PREREQS:
+# the container starts only when nobody supplied a server. These lines sit below
+# BOSSO_TEST_PG_PORT for the same read-time expansion reason test-bosso-scale does.
+WAREHOUSE_TEST_ADMIN_URL ?= postgres://postgres:postgres@localhost:$(BOSSO_TEST_PG_PORT)/postgres?sslmode=disable
+ifeq ($(origin WAREHOUSE_TEST_ADMIN_URL),file)
+WAREHOUSE_TEST_PG_PREREQS := postgres-test-up
+else
+WAREHOUSE_TEST_PG_PREREQS :=
+endif
+
+## test-warehouse: Run the services/warehouse dbt project against a throwaway
+## Postgres (starts the test container unless WAREHOUSE_TEST_ADMIN_URL already
+## points at a server): real goose migrations, the grant script, the warehouse-role
+## denial probes, `dbt parse`, `dbt build` and the schema-placement check. Needs
+## uv and Go. Fail-closed: the database-backed tests fail rather than skip.
+test-warehouse: $(WAREHOUSE_TEST_PG_PREREQS)
+	WAREHOUSE_TEST_ADMIN_URL='$(WAREHOUSE_TEST_ADMIN_URL)' bash services/warehouse/scripts/test.sh
+
+## grant-warehouse-reads: Owner step. Apply the warehouse role's read grants, minus
+## withheld credential columns, as the app-table owner. Needs WAREHOUSE_ADMIN_URL
+## (the app user's URL, e.g. through `make db-production`) and WAREHOUSE_ROLE.
+## Re-run after a migration adds a table dbt reads or the withheld list changes.
+grant-warehouse-reads:
+	@: "$${WAREHOUSE_ADMIN_URL:?set WAREHOUSE_ADMIN_URL to the app user's database URL}"
+	@: "$${WAREHOUSE_ROLE:?set WAREHOUSE_ROLE, e.g. bossanova_warehouse_production}"
+	cd services/warehouse && uv run --frozen python scripts/grant_warehouse_reads.py
+
+## bootstrap-posthog-raw: Owner step. Create the app-owned raw_posthog landing
+## tables and grant the PostHog export role and the warehouse role on them, as the
+## app user. Needs POSTHOG_ADMIN_URL (the app user's URL, e.g. through
+## `make db-production`), POSTHOG_EXPORT_ROLE and WAREHOUSE_ROLE. With
+## POSTHOG_PROBE_EXPORT_URL (the export user's URL) it then probes that user's
+## privileges and fails unless every probe passes. Idempotent.
+bootstrap-posthog-raw:
+	@: "$${POSTHOG_ADMIN_URL:?set POSTHOG_ADMIN_URL to the database URL of the app user}"
+	@: "$${POSTHOG_EXPORT_ROLE:?set POSTHOG_EXPORT_ROLE, e.g. bossanova_posthog_export_production}"
+	@: "$${WAREHOUSE_ROLE:?set WAREHOUSE_ROLE, e.g. bossanova_warehouse_production}"
+	cd services/warehouse && uv run --frozen python scripts/bootstrap_posthog_raw.py
+
+## deploy-warehouse-flow: Owner step. Create or update the bossanova.production
+## warehouse-dbt-build flow on the shared Kestra instance. Needs KESTRA_API_URL,
+## KESTRA_USERNAME and KESTRA_PASSWORD; refuses any non-bossanova.* namespace.
+deploy-warehouse-flow:
+	cd services/warehouse && uv run --frozen python scripts/kestra_deploy.py
 endif
 
 # Auto-generate per-plugin test targets from detected modules. Same bazel-facade

@@ -23,6 +23,7 @@ const defaultRootTargets = [
   'test-readme',
   'test-public-mirror',
   'test-web-e2e',
+  'test-warehouse',
 ]
 
 // Hand-curated: the web suite is npm-script driven and cannot be derived from go.mod layout.
@@ -162,6 +163,12 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '',
     '`codex-skills-check` (the `.codex` mirror staleness check) is a prerequisite of `make test-smoke` and `make test-all`, but **not** of `make test` / `make test-affected` — those run only the commands `scripts/select-affected-tests.mjs` picked, and reach `test-smoke` only when the selection is empty. A change that leaves a `.codex` mirror stale can therefore pass `make test`. The per-skill `assertMirrorRegenerated` checks in the `bs-sweep-*` suites close this for those skills by regenerating the mirror in memory and comparing exactly; size is never the discriminator, because the generated header makes a healthy mirror larger than its source.',
     '',
+    '### `make test-scripts` has a non-zero skipped baseline (BOS-1328)',
+    '',
+    // Same rule as the BOS-768 block above: this file is byte-for-byte generated, so
+    // prose belongs here and nowhere else.
+    '`scripts/proof-brief.test.mjs` gates its model-backed evals on `RUN_PROOF_EVAL=1` (each is declared `{ skip: !EVAL }`), so an ordinary `make test-scripts` run reports them as `# SKIP` and prints a non-zero `# skipped` count. Do not write a plan criterion that requires `make test-scripts` to report `# skipped 0` — it is unachievable without that variable, so it ships as a guaranteed departure. Pin the test names you expect instead, and read a `# SKIP` marker only on the tests the change added.',
+    '',
     '`scripts/select-affected-routing.test.mjs` compares workflow `paths:` filters with the local affected selector and keeps intentional divergences in its `workflowRouteExemptions` ledger. This is the mechanical guard for the false-green class described in `CLAUDE.md` § "Commands whose result lies"; update the ledger when a workflow path is intentionally broader than the local edit loop.',
     '',
     '### Where `-race` actually runs (BOS-1022)',
@@ -203,7 +210,7 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '',
     // Same rule as the BOS-768 block above: this file is byte-for-byte generated, so
     // prose belongs here and nowhere else.
-    'Most of `services/bosso` now tests against a real Postgres and nothing else: BOS-1083 deleted the SQLite server-side path, so `internal/db`, `internal/dbtest`, `internal/billing`, `internal/webhook`, `internal/loadtest`, `cmd`, and every `internal/server` suite built on `internal/testharness` need a database. Without one they **skip** — they no longer fall back to an in-process dialect. Two environment variables decide, read by `services/bosso/internal/dbtest`:',
+    'Most of `services/bosso` now tests against a real Postgres and nothing else: BOS-1083 deleted the SQLite server-side path, so `internal/db`, `internal/dbtest`, `migrations_postgres` (the withheld-column guard), `internal/billing`, `internal/webhook`, `internal/loadtest`, `cmd`, and every `internal/server` suite built on `internal/testharness` need a database. Without one they **skip** — they no longer fall back to an in-process dialect. Two environment variables decide, read by `services/bosso/internal/dbtest`:',
     '',
     '- `BOSSO_TEST_DATABASE_URL` — a Postgres connection string for a server the run may freely create and drop schemas on (each test gets its own throwaway schema). Set: the Postgres legs run. Unset: they **skip**.',
     '- `BOSSO_REQUIRE_POSTGRES_TESTS` — fail-closed switch. When it is set to anything other than an explicit off value (`0`, `false`, `no`, `off`, or empty) **and** `BOSSO_TEST_DATABASE_URL` is empty, the Postgres legs **fail** instead of skipping. A typo therefore still means "required", which is the direction that fails loudly.',
@@ -213,6 +220,12 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     'Bazel injects no environment into tests, so both names are passed through by `--test_env` lines in `.bazelrc`. Without those the suites would skip under every `bazel test`, CI included.',
     '',
     'Locally, `make test-bosso` alone skips every suite listed above, which since BOS-1083 is the bulk of the module rather than a side leg. `make test-bosso-postgres` re-invokes `make test-bosso` with both variables set, and `make test-bosso-scale` does the same for the `internal/loadtest` scale smoke. It starts (or reuses) a throwaway `postgres:16` docker container via `make postgres-test-up` and waits for `pg_isready` **only when `BOSSO_TEST_DATABASE_URL` is not already supplied**; `make postgres-test-down` removes the container. Point it at a server you already run with `make test-bosso-postgres BOSSO_TEST_DATABASE_URL=postgres://...` and no container is started at all, so that invocation works on a machine without Docker. Override `BOSSO_TEST_PG_PORT` if 5432 is taken. Both variables are passed as sub-make overrides on purpose: `MAKEOVERRIDES` is part of the gate-cache fingerprint, so a Postgres run can never read a cache stamp recorded by a `make test-bosso` that skipped them.',
+    '',
+    '### The warehouse dbt project (BOS-1317)',
+    '',
+    // Same rule as the BOS-768 block above: this file is byte-for-byte generated, so
+    // prose belongs here and nowhere else.
+    '`services/warehouse` is a uv-managed dbt-postgres project, not a Go module, so no module target covers it. `make test-warehouse` runs `services/warehouse/scripts/test.sh` against a throwaway Postgres: it applies the real bosso goose migrations, grants the `warehouse_ci` role its reads minus the withheld credential columns, runs the Python unit and denial-probe tests with `WAREHOUSE_REQUIRE_DB=1` (so they fail rather than skip without a database), then `dbt parse`, `dbt build` as that role, and the schema-placement check. Like `make test-bosso-postgres`, it starts the test container only when `WAREHOUSE_TEST_ADMIN_URL` is not already supplied, and `BOSSO_TEST_PG_PORT` moves it off a taken 5432. The database-free unit tests alone are `cd services/warehouse && uv run python -m unittest discover -s tests/unit -t . -v`. `.github/workflows/test-warehouse.yml` runs the same script on a push touching the project, the bosso migrations or the withheld-column list, and the affected selector routes those paths to `test-warehouse` locally.',
     '',
   ]
 

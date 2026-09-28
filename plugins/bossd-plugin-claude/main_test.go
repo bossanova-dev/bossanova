@@ -53,7 +53,7 @@ func TestEnsureSkillsInstalled_NoOpWhenNotInstalled(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	// No skills/ dir: BossSkillsInstalled returns false; ensureSkillsInstalled is a no-op.
-	if err := ensureSkillsInstalled(); err != nil {
+	if _, err := ensureSkillsInstalled(); err != nil {
 		t.Fatalf("ensureSkillsInstalled: %v", err)
 	}
 	skillsDir := filepath.Join(tmpHome, ".claude", "skills")
@@ -79,7 +79,7 @@ func TestEnsureSkillsInstalled_UpdatesWhenInstalled(t *testing.T) {
 		t.Skip("IsInstalled returned false after pre-seed; sentinel logic differs from assumption")
 	}
 
-	if err := ensureSkillsInstalled(); err != nil {
+	if _, err := ensureSkillsInstalled(); err != nil {
 		t.Fatalf("ensureSkillsInstalled: %v", err)
 	}
 	matches, _ := filepath.Glob(filepath.Join(skillsDir, "*", "SKILL.md"))
@@ -114,7 +114,7 @@ func TestEnsureSkillsInstalled_NoOpWhenAlreadyUpToDate(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	if err := ensureSkillsInstalled(); err != nil {
+	if _, err := ensureSkillsInstalled(); err != nil {
 		t.Fatalf("ensureSkillsInstalled: %v", err)
 	}
 
@@ -125,6 +125,117 @@ func TestEnsureSkillsInstalled_NoOpWhenAlreadyUpToDate(t *testing.T) {
 	if !infoAfter.ModTime().Equal(old) {
 		t.Errorf("ensureSkillsInstalled rewrote probe (mtime %v → %v) when on-disk already matched embed",
 			old, infoAfter.ModTime())
+	}
+}
+
+func seedStaleSkillTree(t *testing.T, record *libskillinstall.PayloadRecord) (string, string) {
+	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	skillsDir, err := libskillinstall.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil {
+		err = libskillinstall.Extract(skillsDir, skilldata.SkillsFS)
+	} else {
+		err = libskillinstall.ExtractRecorded(skillsDir, skilldata.SkillsFS, *record)
+	}
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	probe := filepath.Join(skillsDir, libskillinstall.Namespace, "boss-finalize", "SKILL.md")
+	if err := os.WriteFile(probe, []byte("installed by a different payload\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return skillsDir, probe
+}
+
+func stubPluginBuildInfo(t *testing.T, commit, version string) {
+	t.Helper()
+	orig := pluginSkillBuildInfo
+	t.Cleanup(func() { pluginSkillBuildInfo = orig })
+	pluginSkillBuildInfo = func() (string, string) { return commit, version }
+}
+
+// A dev-build plugin restarting under a tree a trusted checkout install wrote
+// is the observed restorer: it must leave every installed byte alone.
+func TestEnsureSkillsInstalled_NoDowngradeHoldsOverCheckoutStampedTree(t *testing.T) {
+	stubPluginBuildInfo(t, "abc1234", "v1.0.0-staging.19-11868-gabc1234")
+	checkout := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginCheckout, Revision: "0123456789abcdef0123456789abcdef01234567", Writer: libskillinstall.WriterExplicit}
+	_, probe := seedStaleSkillTree(t, &checkout)
+
+	result, err := ensureSkillsInstalled()
+	if err != nil {
+		t.Fatalf("ensureSkillsInstalled: %v", err)
+	}
+	if !result.Held || result.Updated {
+		t.Fatalf("result = %+v, want held", result)
+	}
+	data, err := os.ReadFile(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "installed by a different payload\n" {
+		t.Fatalf("held refresh rewrote the installed tree: %q", data)
+	}
+}
+
+func TestEnsureSkillsInstalled_NoDowngradeRefreshesUnstampedTree(t *testing.T) {
+	stubPluginBuildInfo(t, "abc1234", "v1.0.0-staging.19-11868-gabc1234")
+	skillsDir, probe := seedStaleSkillTree(t, nil)
+
+	result, err := ensureSkillsInstalled()
+	if err != nil {
+		t.Fatalf("ensureSkillsInstalled: %v", err)
+	}
+	if !result.Updated {
+		t.Fatalf("result = %+v, want a legacy refresh", result)
+	}
+	data, err := os.ReadFile(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "installed by a different payload\n" {
+		t.Fatal("unstamped tree was not refreshed")
+	}
+	record, recorded, err := libskillinstall.ReadPayloadRecord(skillsDir)
+	if err != nil || !recorded || record != pluginSkillPayloadRecord() {
+		t.Fatalf("record = %+v (recorded %t, err %v), want the plugin payload stamped", record, recorded, err)
+	}
+}
+
+func TestEnsureSkillsInstalled_NoDowngradeRefreshesStrictlyNewerRelease(t *testing.T) {
+	stubPluginBuildInfo(t, "def5678", "v1.3.0")
+	older := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginEmbedded, Revision: "abc1234", Version: "v1.2.9", Writer: libskillinstall.WriterExplicit}
+	_, probe := seedStaleSkillTree(t, &older)
+
+	result, err := ensureSkillsInstalled()
+	if err != nil {
+		t.Fatalf("ensureSkillsInstalled: %v", err)
+	}
+	if !result.Updated {
+		t.Fatalf("result = %+v, want a newer release to refresh", result)
+	}
+	if data, _ := os.ReadFile(probe); string(data) == "installed by a different payload\n" {
+		t.Fatal("newer release did not refresh the tree")
+	}
+}
+
+func TestEnsureSkillsInstalled_NoDowngradeHoldsOverNewerRelease(t *testing.T) {
+	stubPluginBuildInfo(t, "abc1234", "v1.2.9")
+	newer := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginEmbedded, Revision: "def5678", Version: "v1.3.0", Writer: libskillinstall.WriterUnattended}
+	_, probe := seedStaleSkillTree(t, &newer)
+
+	result, err := ensureSkillsInstalled()
+	if err != nil {
+		t.Fatalf("ensureSkillsInstalled: %v", err)
+	}
+	if !result.Held {
+		t.Fatalf("result = %+v, want an older release to hold", result)
+	}
+	if data, _ := os.ReadFile(probe); string(data) != "installed by a different payload\n" {
+		t.Fatal("older release rewrote the tree")
 	}
 }
 

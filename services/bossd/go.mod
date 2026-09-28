@@ -19,7 +19,7 @@ require (
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a
-	google.golang.org/grpc v1.83.2
+	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.59.0
 )
@@ -48,7 +48,7 @@ require (
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/posthog/posthog-go v1.25.2 // indirect
+	github.com/posthog/posthog-go v1.27.0 // indirect
 	github.com/pressly/goose/v3 v3.28.0 // indirect
 	github.com/qmuntal/stateless v1.8.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

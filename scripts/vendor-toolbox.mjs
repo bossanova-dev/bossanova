@@ -273,8 +273,8 @@ export const VENDOR_MAP = {
   // consuming repo has no repo-root skills-toolbox/), plan-deps-lib.mjs (BOS-776: the entire Phase 4
   // step 5 dependency decision — key-change area extraction, the overlap predicate and the
   // seven-rung edge ladder — lifted out of prose an agent could skip; it imports skill-config.mjs
-  // and nothing else, which is what keeps this published payload's import closure inside
-  // itself) and plan-slug.mjs (the plan-path slug) are boss-plan's
+  // and the import-free plan-epic-lib.mjs, both vendored here, which is what keeps this published
+  // payload's import closure inside itself) and plan-slug.mjs (the plan-path slug) are boss-plan's
   // deterministic planning core: pure, node-builtin-only helpers the SKILL invokes by
   // path. They ship in the toolbox so a consuming repo never has to re-derive them.
   // Their *.test.mjs / *.demo.mjs siblings are never vendored.
@@ -289,6 +289,10 @@ export const VENDOR_MAP = {
     'plan-attachment.mjs',
     'plan-epic-lib.mjs',
     'plan-epic-phase25.mjs',
+    // plan-epic-reverify.mjs (BOS-1335) is the post-write epic acceptance gate. plan-epic-phase25.mjs
+    // re-exports it and it imports phase25 back, so the two must ship together or the installed
+    // toolbox fails at ESM link time.
+    'plan-epic-reverify.mjs',
     'plan-image-guard.mjs',
     // citation-coordinate.mjs is plan-contract-guard.mjs's citation resolver, extracted so the
     // claim adjudicator can reuse it without dragging this whole closure into three more cores.

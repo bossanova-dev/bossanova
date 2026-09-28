@@ -225,6 +225,12 @@ service OrchestratorService {
   rpc CreateBillingPortalSession(CreateBillingPortalSessionRequest) returns (CreateBillingPortalSessionResponse);
   rpc RefreshCloudEntitlements(RefreshCloudEntitlementsRequest) returns (RefreshCloudEntitlementsResponse);
 
+  // Weekly newsletter opt-in (BOS-1318). User-authenticated. The subscription
+  // goes through the Loops form endpoint, the only path Loops gates with double
+  // opt-in; see docs/analytics/newsletter.md.
+  rpc GetNewsletterStatus(GetNewsletterStatusRequest) returns (GetNewsletterStatusResponse);
+  rpc SubscribeToNewsletter(SubscribeToNewsletterRequest) returns (SubscribeToNewsletterResponse);
+
   // Organizations. User-authenticated.
   rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse);
   rpc GetOrganization(GetOrganizationRequest) returns (GetOrganizationResponse);
@@ -1418,6 +1424,49 @@ message RefreshCloudEntitlementsRequest {}
 
 message RefreshCloudEntitlementsResponse {
   CloudAccessStatus status = 1;
+}
+
+// --- Newsletter ---
+
+// NewsletterConsent is the caller's recorded in-app newsletter opt-in. It is
+// written only after Loops accepted the form submission; the subscription is
+// still pending until the user clicks the double opt-in confirmation link.
+message NewsletterConsent {
+  // When the user asked to subscribe.
+  google.protobuf.Timestamp consented_at = 1;
+  // Where the opt-in came from; always "onboarding" for this path.
+  string source = 2;
+  // The app path the opt-in was shown on, with no query or fragment.
+  string source_page = 3;
+  // The version of the consent wording the user was shown.
+  string wording_version = 4;
+}
+
+message GetNewsletterStatusRequest {}
+
+message GetNewsletterStatusResponse {
+  // False when bosso has no Loops newsletter form configured; the web app then
+  // shows no opt-in and the wording fields are empty.
+  bool is_available = 1;
+  // The current consent wording's version, echoed back on subscribe.
+  string wording_version = 2;
+  // The current consent wording, rendered verbatim next to the opt-in.
+  string wording_text = 3;
+  // The caller's existing consent, absent when they never opted in.
+  NewsletterConsent consent = 4;
+}
+
+message SubscribeToNewsletterRequest {
+  // The wording version the user was shown. bosso rejects a version that is
+  // not current with INVALID_ARGUMENT so the client re-reads the status.
+  string wording_version = 1;
+  // The app path the opt-in was shown on. Must start with "/"; any query or
+  // fragment is dropped, and it is at most 256 characters.
+  string source_page = 2;
+}
+
+message SubscribeToNewsletterResponse {
+  NewsletterConsent consent = 1;
 }
 
 // --- Organizations ---

@@ -2,10 +2,9 @@ package sqlutil
 
 import "testing"
 
-// Note: Open() and OpenInMemory() are tested indirectly via the service
-// packages (bossd/internal/db, bosso/internal/db) which register the SQLite
-// driver. We cannot test them here without adding a driver dependency to
-// bossalib's go.mod.
+// Note: Open() and OpenInMemory() are tested indirectly via bossd/internal/db,
+// which registers the SQLite driver. We cannot test them here without adding
+// a driver dependency to bossalib's go.mod.
 
 func TestScannerInterface(t *testing.T) {
 	// Verify Scanner is a usable interface type at compile time.

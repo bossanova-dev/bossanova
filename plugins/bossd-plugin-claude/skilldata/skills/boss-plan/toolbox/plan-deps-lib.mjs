@@ -37,7 +37,8 @@
 // non-vendored toolbox modules. They are copied rather than imported because
 // importing either would drag a tracker-named, network-capable module into this
 // project-agnostic payload's import closure (this module may import
-// `skill-config.mjs` and nothing else). A silent second copy is exactly the
+// `skill-config.mjs` and `plan-epic-lib.mjs` — the list-truncation sentinel's
+// single owner, itself import-free — and nothing else). A silent second copy is exactly the
 // "prose and gate diverge" failure those modules exist to prevent, so the test
 // file — which is never vendored and may import anything — imports the
 // originals and asserts the copies still agree with them.
@@ -74,7 +75,25 @@
 // feature" is not a function of two strings, so the caller supplies it as a
 // per-candidate `logicalDependencies` verdict. The agent makes the judgment;
 // this module makes the decision.
+//
+// ---------------------------------------------------------------------------
+// Refusing bad input, and reporting a vacuous result honestly
+// ---------------------------------------------------------------------------
+// The classifier classifies anything, so a hand-assembled payload with a
+// truncated description, a stale state overlay, an unfetched declared relation
+// or a missing `epicLabel` came back as `{edges: []}` — byte-identical to a clean
+// "no dependencies". Three exports close that, each pure and never-throwing:
+//   - `validateDependencyScanInput(input)` lists every input defect BEFORE
+//     classification; the caller refuses to classify when `ok` is false. Kept
+//     separate from `planDependencyEdges` so that function's classify-anything
+//     contract still holds for every other caller.
+//   - `dependencyScanVerdict(result)` names the outcome — `linked`,
+//     `related-only`, `no-dependencies` or `could-not-evaluate` (any note reason
+//     in `COULD_NOT_EVALUATE_REASONS`) — and whether it is worth a description save.
+//   - `transitiveBlockWarnings(input)` detects, in BOTH directions, a surviving
+//     blocking write whose other side is itself entangled in open blocking work.
 
+import { descriptionAppearsTruncated } from './plan-epic-lib.mjs'
 import { planDescriptionSections, planSections, scanFences } from './skill-config.mjs'
 
 // ---------------------------------------------------------------------------
@@ -104,6 +123,8 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'declared-related-no-conflict',
   // Rung 4 — cleared state.
   'candidate-cleared',
+  // A started candidate whose own merged PR is caller-supplied `landed` evidence.
+  'candidate-landed',
   'prerequisite-satisfied',
   'prerequisite-canceled',
   // Rung 5 — orientation.
@@ -122,7 +143,20 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'no-candidates-compared',
   'no-subject-areas',
   'subject-unresolved-areas',
+  'no-candidate-areas',
   'all-pairs-downgraded-unknown-state',
+])
+
+/**
+ * The set-level note reasons that mean the scan COULD NOT EVALUATE — it compared
+ * nothing, or compared candidates on a basis that could never have matched. A
+ * result carrying any of them is never a clean "no dependencies".
+ */
+export const COULD_NOT_EVALUATE_REASONS = Object.freeze([
+  'no-candidates-compared',
+  'no-subject-areas',
+  'subject-unresolved-areas',
+  'no-candidate-areas',
 ])
 
 /**
@@ -388,6 +422,12 @@ function stateRole(issue, stateRoles) {
   const hit = map[name] ?? map[name.toLowerCase()]
   const role = text(hit).trim()
   return role === '' ? null : role
+}
+
+/** The caller-supplied merged-PR evidence string, or `null` when absent or blank. */
+function landedEvidence(issue) {
+  const value = text(issue?.landed?.evidence).trim()
+  return value === '' ? null : value
 }
 
 function priorityValue(priority) {
@@ -882,11 +922,15 @@ export function areasOverlap(a, b, options = {}) {
 // The decision ladder
 // ---------------------------------------------------------------------------
 
+// `shared` is ALWAYS an array: `[]` before rung 3 computes an overlap, else the
+// regions the decision was made on. Without it a fabricated-edge guard reading
+// `edge.shared` printed `undefined` for every edge and passed vacuously.
 function result(fields) {
   return {
     edge: 'none',
     basis: null,
     source: 'backlog-scan',
+    shared: [],
     reason: null,
     note: null,
     question: null,
@@ -956,7 +1000,9 @@ function normalizeLogical(verdict) {
  *
  * @param {object} input
  * @param {object} input.subject the ticket being planned
- * @param {object} input.candidate the ticket it is being compared against
+ * @param {object} input.candidate the ticket it is being compared against. A
+ *   `landed: {evidence}` (a non-blank merged-PR reference) clears it at rung 4
+ *   unless its state type is already cleared or canceled; blank evidence is ignored.
  * @param {string[]} [input.subjectAreas] areas from `extractKeyChangeAreas`
  * @param {string[]} [input.candidateAreas]
  * @param {'backlog-scan'|'declared-related'} [input.source]
@@ -970,7 +1016,7 @@ function normalizeLogical(verdict) {
  * @param {string[]} [input.excludeIds] ids that must never become edges
  * @param {Record<string,string>} [input.stateRoles] state name -> role
  * @returns {{edge: 'none'|'blockedBy'|'blocks'|'relatedTo', basis: 'overlap'|'logical'|null,
- *   source: string, reason: string, note: object|null, question: object|null,
+ *   source: string, shared: string[], reason: string, note: object|null, question: object|null,
  *   write: {id: string, blockedBy: string[]}|null}}
  */
 export function classifyDependencyEdge(input = {}) {
@@ -1043,12 +1089,18 @@ export function classifyDependencyEdge(input = {}) {
   const candidateType = stateType(candidate)
   const candidateCompleted = cleared.has(candidateType)
   const candidateCanceled = canceled.has(candidateType)
+  // Merged-PR evidence clears a candidate whose tracker state lags its work — a
+  // ticket left `In Review` after its PR merged would otherwise strand the subject
+  // behind shipped work. Only where the state is not ALREADY cleared or canceled:
+  // there the tracker already answered, and its answer stays authoritative.
+  const landed = candidateCompleted || candidateCanceled ? null : landedEvidence(candidate)
   const candidateRole = stateRole(candidate, stateRoles)
   if (
     candidateRole !== null &&
     !SCHEDULABLE_ROLES.includes(candidateRole) &&
     !candidateCompleted &&
-    !candidateCanceled
+    !candidateCanceled &&
+    landed === null
   ) {
     return result({ ...base, reason: 'candidate-not-schedulable' })
   }
@@ -1067,6 +1119,7 @@ export function classifyDependencyEdge(input = {}) {
     Array.isArray(candidateAreas) ? candidateAreas : [],
     { repoWideTokens, areaAliases },
   )
+  base.shared = overlap.shared
   const logical = normalizeLogical(logicalDependency)
   // Logical outranks overlap: rung 4 keeps a cleared logical prerequisite and
   // drops a cleared overlap, so a pair holding both must take the logical path.
@@ -1084,15 +1137,30 @@ export function classifyDependencyEdge(input = {}) {
   }
 
   // Rung 4 — cleared state, applied to an OVERLAP basis only.
-  if (candidateCompleted || candidateCanceled) {
+  if (candidateCompleted || candidateCanceled || landed !== null) {
     // A cleared candidate on an OVERLAP basis is dropped quietly — and so is one the
     // SUBJECT is the prerequisite for: there the dependent side is the one that
     // landed, so no ordering is left to enforce, and reporting it as a satisfied or
-    // canceled prerequisite would name the wrong side as the prerequisite.
+    // canceled prerequisite would name the wrong side as the prerequisite. A
+    // candidate cleared only by `landed` evidence is NOT dropped quietly: the tracker
+    // still says otherwise, so the note cites the evidence the decision rests on.
     if (basis === 'overlap' || logical.direction === 'blocks') {
-      return result({ ...base, basis, reason: 'candidate-cleared' })
+      if (landed === null) return result({ ...base, basis, reason: 'candidate-cleared' })
+      return result({
+        ...base,
+        basis,
+        reason: 'candidate-landed',
+        note: note(
+          'info',
+          'planning',
+          candidateName,
+          'candidate-landed',
+          `${candidateName} still reads ${stateName(candidate) || 'uncleared'} in the tracker, but its work has merged (${landed}), so no edge is written against it.`,
+        ),
+      })
     }
-    if (candidateCompleted) {
+    if (candidateCompleted || landed !== null) {
+      const evidence = landed === null ? '' : ` (merged: ${landed}; the tracker state lags)`
       return result({
         ...base,
         basis,
@@ -1102,7 +1170,7 @@ export function classifyDependencyEdge(input = {}) {
           'planning',
           candidateName,
           'prerequisite-satisfied',
-          `${candidateName} is the logical prerequisite for ${subjectName} and has already landed; the prerequisite is satisfied, no edge is needed.`,
+          `${candidateName} is the logical prerequisite for ${subjectName} and has already landed${evidence}; the prerequisite is satisfied, no edge is needed.`,
         ),
       })
     }
@@ -1268,6 +1336,26 @@ function sameEpicMember(subject, candidate) {
 }
 
 /**
+ * The ONE planning note every same-epic member shares, as a zero- or one-element
+ * array. Names the members in the sorted order `skipped` already holds.
+ */
+function sameEpicNote(subject, skipped) {
+  const names = skipped
+    .filter((entry) => entry.reason === 'same-epic-member')
+    .map((entry) => entry.identifier || entry.id || entry.key)
+  if (names.length === 0) return []
+  return [
+    note(
+      'info',
+      'planning',
+      names.join(', '),
+      'same-epic-member',
+      `${names.join(', ')} share${names.length === 1 ? 's' : ''} ${issueLabel(subject)}'s epic parent or ${names.length === 1 ? 'is' : 'are'} that parent, so the external dependency linker records this one planning note instead of adding edges inside the epic. Intra-epic ordering belongs to the epic DAG.`,
+    ),
+  ]
+}
+
+/**
  * Classify a whole candidate set against one subject.
  *
  * Declared relations are seeded as candidates BEFORE any text-overlap test —
@@ -1289,7 +1377,12 @@ function sameEpicMember(subject, candidate) {
  * @param {Record<string, object[]>} [input.childrenByParentId] children of an epic
  *   parent, when the caller has already fetched them: supplying them expands the
  *   parent in place; omitting them reports the parent for expansion instead
- * @returns {{edges: object[], skipped: object[], notes: object[], questions: object[], compared: number}}
+ * @returns {{edges: object[], skipped: object[], notes: object[], questions: object[], compared: number,
+ *   candidatesWithoutAreas: number}}
+ *   `candidatesWithoutAreas` counts the classified candidates (same-epic members and
+ *   rung-1 rejections excluded) that contributed no area; when it equals every
+ *   classified candidate, a `no-candidate-areas` warning says the scan could not
+ *   evaluate. Same-epic members share ONE consolidated `same-epic-member` note.
  *   `compared` is a LOWER BOUND on the candidates actually evaluated — rung-1
  *   rejections (the subject itself, a caller-excluded id) are not counted — so a
  *   set holding nothing else reports "could not evaluate" (compared 0, plus a
@@ -1359,6 +1452,7 @@ export function planDependencyEdges(input = {}) {
         edge: 'none',
         basis: null,
         source: 'declared-related',
+        shared: [],
         write: null,
         question: null,
         expandChildren: false,
@@ -1377,6 +1471,11 @@ export function planDependencyEdges(input = {}) {
   const edges = []
   let compared = 0
   const comparedReasons = []
+  // Candidates that reached the classifier (same-epic and rung-1 rejections never
+  // do) and how many of them contributed no area. All of them arealess is a scan
+  // that could not evaluate overlap at all — see `no-candidate-areas` below.
+  let classifiedCount = 0
+  let candidatesWithoutAreas = 0
   for (let index = 0; index < queue.length; index += 1) {
     const { issue, depth } = queue[index]
     const aliases = issueAliases(issue)
@@ -1389,7 +1488,8 @@ export function planDependencyEdges(input = {}) {
     if (sameEpicMember(subject, issue)) {
       compared += 1
       comparedReasons.push('same-epic-member')
-      const candidateName = issueLabel(issue)
+      // No per-record note: every same-epic member shares ONE consolidated planning
+      // note (`sameEpicNote`), so N siblings no longer record N near-identical lines.
       skipped.push({
         id: text(issue?.id).trim() || null,
         identifier: text(issue?.identifier).trim() || null,
@@ -1397,14 +1497,9 @@ export function planDependencyEdges(input = {}) {
         edge: 'none',
         basis: null,
         source: aliases.some((alias) => declared.has(alias)) ? 'declared-related' : 'backlog-scan',
+        shared: [],
         reason: 'same-epic-member',
-        note: note(
-          'info',
-          'planning',
-          candidateName,
-          'same-epic-member',
-          `${candidateName} shares ${issueLabel(subject)}'s epic parent or is that parent, so the external dependency linker records a planning note instead of adding an edge inside the epic. Intra-epic ordering belongs to the epic DAG.`,
-        ),
+        note: null,
         question: null,
         write: null,
         expandChildren: false,
@@ -1429,6 +1524,8 @@ export function planDependencyEdges(input = {}) {
     if (classified.reason !== 'self' && classified.reason !== 'excluded') {
       compared += 1
       comparedReasons.push(classified.reason)
+      classifiedCount += 1
+      if (expandAreas(issue?.areas, input.areaAliases).length === 0) candidatesWithoutAreas += 1
     }
     const record = {
       id: text(issue?.id).trim() || null,
@@ -1447,9 +1544,13 @@ export function planDependencyEdges(input = {}) {
       return {
         edges: [],
         skipped,
-        notes: skipped.map((entry) => entry.note).filter(Boolean),
+        notes: [
+          ...skipped.map((entry) => entry.note).filter(Boolean),
+          ...sameEpicNote(subject, skipped),
+        ],
         questions: [],
         compared,
+        candidatesWithoutAreas,
       }
     }
     if (classified.reason === 'epic-parent') {
@@ -1486,7 +1587,10 @@ export function planDependencyEdges(input = {}) {
   reconcileDeclared()
   edges.sort(compareByKey)
   skipped.sort(compareByKey)
-  const notes = [...edges, ...skipped].map((entry) => entry.note).filter(Boolean)
+  const notes = [
+    ...[...edges, ...skipped].map((entry) => entry.note).filter(Boolean),
+    ...sameEpicNote(subject, skipped),
+  ]
   const questions = [...edges, ...skipped].map((entry) => entry.question).filter(Boolean)
   if (compared === 0) {
     notes.push(
@@ -1532,6 +1636,24 @@ export function planDependencyEdges(input = {}) {
         `${issueLabel(subject)} contributed no comparable change areas, so overlap was never testable against any of the ${compared} candidates compared. This run found no dependencies because it had nothing to compare them on — not because none exist. Give the subject a \`## Key changes\` section naming concrete paths, or judge each candidate logically, before treating the dependency line as complete.`,
       ),
     )
+  } else if (
+    // The mirror image of `no-subject-areas`: the subject has areas, but not one
+    // candidate that reached the classifier contributed any, so every pair stopped
+    // at the note-free `no-areas` rung — typically a list read whose descriptions
+    // came back truncated or empty. Same silence, same warning.
+    classifiedCount > 0 &&
+    candidatesWithoutAreas === classifiedCount &&
+    !edges.some((entry) => entry.basis === 'logical')
+  ) {
+    notes.push(
+      note(
+        'warning',
+        'risks',
+        issueLabel(subject),
+        'no-candidate-areas',
+        `None of the ${classifiedCount} candidate(s) classified for ${issueLabel(subject)} contributed a comparable change area, so overlap was never testable and this scan could not evaluate — it found no dependencies because it had nothing to compare, not because none exist. Re-read each candidate's full description (a list read truncates it) before treating the dependency line as complete.`,
+      ),
+    )
   }
   // Deliberately its OWN `if`, not another rung of the chain above: a subject can
   // both contribute zero areas and carry tokens that were dropped for being
@@ -1549,5 +1671,262 @@ export function planDependencyEdges(input = {}) {
       ),
     )
   }
-  return { edges, skipped, notes, questions, compared }
+  return { edges, skipped, notes, questions, compared, candidatesWithoutAreas }
+}
+
+// ---------------------------------------------------------------------------
+// Input refusal, result verdict, transitive-block detection
+// ---------------------------------------------------------------------------
+
+function issueEntries(input) {
+  const candidates = Array.isArray(input?.candidates) ? input.candidates : []
+  return [input?.subject, ...candidates]
+}
+
+// The flat and nested spellings of one state fact. `stateType()` reads the FLAT
+// field first, so an overlay that refreshed only the nested one is ignored in
+// silence — which is why a disagreement is a defect rather than a tie to break.
+function flatNested(issue) {
+  const state = issue?.state
+  const status = issue?.status
+  const first = (...values) =>
+    values.map((value) => text(value).trim().toLowerCase()).find((value) => value !== '') ?? ''
+  return [
+    [first(issue?.stateType, issue?.statusType), first(state?.type, status?.type), 'stateType'],
+    [
+      first(issue?.stateName, issue?.statusName, state, status),
+      first(state?.name, status?.name),
+      'stateName',
+    ],
+  ]
+}
+
+/**
+ * Refuse a dependency-scan payload with a detectable input defect, BEFORE
+ * `planDependencyEdges` classifies it. Pure, never throws, and deliberately not
+ * folded into `planDependencyEdges`, whose classify-anything contract other
+ * callers rely on — the refusal is the caller's to enforce on `ok: false`.
+ *
+ * @param {object} input the same payload `planDependencyEdges` takes
+ * @returns {{ok: boolean, defects: {code: string, id: string, remedy: string}[]}}
+ *   `id` names the issue (identifier, else id), the declared id, or `payload` for
+ *   a payload-level field. Codes: `truncated-description`,
+ *   `declared-related-not-fetched`, `missing-state-type`, `conflicting-state-fields`,
+ *   `missing-parent-field`, `missing-epic-label`, `missing-state-roles`.
+ */
+export function validateDependencyScanInput(input) {
+  const defects = []
+  const push = (code, id, remedy) => defects.push({ code, id, remedy })
+  const payload = input && typeof input === 'object' ? input : {}
+  const known = new Set()
+  // A supplied epic child owes a candidate's checks — except the parent field: its
+  // parent is its childrenByParentId key, and a parent sharing the subject's epic is
+  // skipped before it is expanded. EVERY supplied child is checked, including ones
+  // expansion never reaches (same-epic or depth-capped parent, unmatched key): a
+  // deliberate over-approximation, since only planDependencyEdges' own ladder knows
+  // what expands, and the cost is a re-read. A child that is also a candidate was
+  // already checked under the stricter rule.
+  const children = (
+    payload.childrenByParentId && typeof payload.childrenByParentId === 'object'
+      ? Object.values(payload.childrenByParentId)
+      : []
+  ).flatMap((list) => (Array.isArray(list) ? list : []))
+  const entries = [
+    ...issueEntries(payload).map((issue) => [issue, true]),
+    ...children.map((child) => [child, false]),
+  ]
+  for (const [issue, needsParentField] of entries) {
+    const id = issueLabel(issue)
+    const aliases = issueAliases(issue)
+    if (!needsParentField && aliases.some((alias) => known.has(alias))) continue
+    for (const alias of aliases) known.add(alias)
+    if (descriptionAppearsTruncated(issue?.description)) {
+      push('truncated-description', id, `re-read ${id} with op getIssue for its full description`)
+    }
+    if (stateType(issue) === '') {
+      push('missing-state-type', id, `include the adapter's state-type field (stateType) on ${id}`)
+    }
+    for (const [flat, nested, field] of flatNested(issue)) {
+      if (flat !== '' && nested !== '' && flat !== nested) {
+        push(
+          'conflicting-state-fields',
+          id,
+          `${id}'s flat ${field} (${flat}) disagrees with its nested one (${nested}); write the flat stateType and stateName when overlaying live state`,
+        )
+      }
+    }
+    const isObject = issue !== null && typeof issue === 'object'
+    if (needsParentField && (!isObject || (!('epicParentId' in issue) && !('parentId' in issue)))) {
+      push(
+        'missing-parent-field',
+        id,
+        `write ${id}'s parentId from the tracker parent field, null when it has none`,
+      )
+    }
+  }
+  // `known` holds the supplied children too: a declared relation under an epic
+  // parent is resolved by the expansion inside the same call.
+  for (const id of idSet(payload.declaredRelatedIds)) {
+    if (!known.has(id)) {
+      push(
+        'declared-related-not-fetched',
+        id,
+        `fetch ${id} by id regardless of state and add it to candidates`,
+      )
+    }
+  }
+  if (text(payload.epicLabel).trim() === '') {
+    push('missing-epic-label', 'payload', "set epicLabel to labelName(config, 'epic')")
+  }
+  const roles = payload.stateRoles
+  if (!roles || typeof roles !== 'object' || Object.keys(roles).length === 0) {
+    push('missing-state-roles', 'payload', 'set stateRoles to stateRolesFor(config)')
+  }
+  return { ok: defects.length === 0, defects }
+}
+
+/**
+ * Name what a `planDependencyEdges` result means, so "evaluated, no dependencies"
+ * is never read off a result that could not evaluate.
+ *
+ * @param {object} result a `planDependencyEdges` return value
+ * @returns {{verdict: 'could-not-evaluate'|'linked'|'related-only'|'no-dependencies',
+ *   compared: number, edges: number, relatedTo: number, reasons: string[],
+ *   recordToDescription: boolean}}
+ *   `edges` counts every edge, `relatedTo` the non-blocking ones. `reasons` lists
+ *   the could-not-evaluate reasons present, sorted. `compared` of 0 is always
+ *   could-not-evaluate. `recordToDescription` is false when nothing but the
+ *   consolidated same-epic planning note came back — that note alone does not
+ *   earn a second description save.
+ */
+export function dependencyScanVerdict(result) {
+  const r = result && typeof result === 'object' ? result : {}
+  const list = (value) => (Array.isArray(value) ? value.filter(Boolean) : [])
+  const edges = list(r.edges)
+  const notes = list(r.notes)
+  const questions = list(r.questions)
+  const compared = Number.isFinite(r.compared) ? r.compared : 0
+  const reasons = new Set(
+    notes
+      .map((entry) => entry.reason)
+      .filter((reason) => COULD_NOT_EVALUATE_REASONS.includes(reason)),
+  )
+  if (compared <= 0) reasons.add('no-candidates-compared')
+  const relatedTo = edges.filter((entry) => entry.edge === 'relatedTo').length
+  const verdict =
+    reasons.size > 0
+      ? 'could-not-evaluate'
+      : edges.some((entry) => entry.write)
+        ? 'linked'
+        : relatedTo > 0
+          ? 'related-only'
+          : 'no-dependencies'
+  const substantive = notes.some(
+    (entry) => !(entry.reason === 'same-epic-member' && entry.severity === 'info'),
+  )
+  return {
+    verdict,
+    compared,
+    edges: edges.length,
+    relatedTo,
+    reasons: [...reasons].sort(),
+    recordToDescription: edges.length > 0 || questions.length > 0 || substantive,
+  }
+}
+
+function entryKey(entry) {
+  return typeof entry === 'string' ? entry.trim() : issueKey(entry) || ''
+}
+
+/**
+ * Detect a surviving blocking write whose OTHER side is itself entangled in open
+ * blocking work, in both directions. Detection only: never returns a write.
+ *
+ * - `upstream`: a write makes the subject `blockedBy` X, and X is open with ≥1
+ *   blocker that is not cleared or canceled — the subject waits on a chain.
+ * - `downstream`: a write makes Y `blockedBy` the subject, and Y itself blocks ≥1
+ *   open ticket — the subject now gates that work too. `escalated` when the
+ *   subject is needs-human (`subjectAgentFriendly === false`), because nothing
+ *   unattended will ever clear the chain.
+ *
+ * "Cleared" is the `DEFAULT_CLEARED_STATE_TYPES` / `DEFAULT_CANCELED_STATE_TYPES`
+ * rule; an entry whose state is unknown is still blocking.
+ *
+ * @param {object} input
+ * @param {string|string[]} input.subjectId the subject's id and/or identifier
+ * @param {{id: string, blockedBy: string[]}[]} input.writes the surviving writes
+ * @param {Record<string, {stateType?: string, blockedBy?: (string|object)[], blocks?: (string|object)[]}>} input.relationsById
+ *   the relations read per id; list entries are ids or issue objects carrying state
+ * @returns {{direction: 'upstream'|'downstream', severity: 'warning'|'escalated',
+ *   blockerId: string, blockedId: string, via: string[], text: string}[]}
+ */
+export function transitiveBlockWarnings(input) {
+  const {
+    subjectId,
+    writes = [],
+    relationsById = {},
+    subjectAgentFriendly,
+    clearedStateTypes = DEFAULT_CLEARED_STATE_TYPES,
+    canceledStateTypes = DEFAULT_CANCELED_STATE_TYPES,
+  } = input && typeof input === 'object' ? input : {}
+  const settled = new Set([
+    ...(Array.isArray(clearedStateTypes) ? clearedStateTypes : DEFAULT_CLEARED_STATE_TYPES),
+    ...(Array.isArray(canceledStateTypes) ? canceledStateTypes : DEFAULT_CANCELED_STATE_TYPES),
+  ])
+  const relations = new Map()
+  for (const [key, value] of Object.entries(
+    relationsById && typeof relationsById === 'object' ? relationsById : {},
+  )) {
+    relations.set(key.trim().toLowerCase(), value)
+  }
+  const relationOf = (id) => relations.get(text(id).trim().toLowerCase()) ?? null
+  const isOpen = (entry) => {
+    const own = typeof entry === 'object' && entry !== null ? stateType(entry) : ''
+    return !settled.has(own || stateType(relationOf(entryKey(entry))))
+  }
+  const openKeys = (list) =>
+    (Array.isArray(list) ? list : [])
+      .filter((entry) => entryKey(entry) !== '' && isOpen(entry))
+      .map(entryKey)
+      .sort()
+  const subject = idSet(Array.isArray(subjectId) ? subjectId : [subjectId])
+  const isSubject = (id) => subject.has(text(id).trim().toLowerCase())
+  const warnings = []
+  for (const write of Array.isArray(writes) ? writes : []) {
+    const blockedId = text(write?.id).trim()
+    const blockers = (Array.isArray(write?.blockedBy) ? write.blockedBy : [])
+      .map((id) => text(id).trim())
+      .filter((id) => id !== '')
+    if (isSubject(blockedId)) {
+      for (const blockerId of blockers) {
+        const via = openKeys(relationOf(blockerId)?.blockedBy)
+        if (via.length === 0 || !isOpen(blockerId)) continue
+        warnings.push({
+          direction: 'upstream',
+          severity: 'warning',
+          blockerId,
+          blockedId,
+          via,
+          text: `blocked by ${blockerId}, which is itself open and blocked by ${via.join(', ')}`,
+        })
+      }
+    } else if (blockers.some(isSubject) && blockedId !== '') {
+      const via = openKeys(relationOf(blockedId)?.blocks)
+      if (via.length === 0 || !isOpen(blockedId)) continue
+      const blockerId = blockers.find(isSubject)
+      warnings.push({
+        direction: 'downstream',
+        severity: subjectAgentFriendly === false ? 'escalated' : 'warning',
+        blockerId,
+        blockedId,
+        via,
+        text: `blocks ${blockedId}, which itself blocks open ${via.join(', ')}`,
+      })
+    }
+  }
+  return warnings.sort((a, b) =>
+    `${a.direction}\0${a.blockerId}\0${a.blockedId}`.localeCompare(
+      `${b.direction}\0${b.blockerId}\0${b.blockedId}`,
+    ),
+  )
 }

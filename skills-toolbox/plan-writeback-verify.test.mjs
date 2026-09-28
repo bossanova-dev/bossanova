@@ -1320,3 +1320,41 @@ test('a drift cause still reports the RAW first-difference coordinate', () => {
   )
   assert.ok(result.reason.includes(`first difference at line ${result.line}`))
 })
+
+// BOS-1328: the writeback verifier is the one gate that reads the intended bytes AFTER the
+// orchestrator's Planning-bullet insertions, so it is where a merged bullet is caught.
+const MERGED_PLANNING = '- Contract: v1\n- Atomic-5: epic DAG.- Agent-friendly: needs-human'
+
+test('a merged Planning list item fails with its own cause and names the line', () => {
+  const intended = description({ sections: { '## Planning': MERGED_PLANNING } })
+  const stored = intended.replace(/^- /gm, '* ')
+  const result = verify(intended, stored, ['unordered-list-marker-substitution'])
+  assert.equal(result.exitCode, 1)
+  assert.equal(result.cause, WRITEBACK_CAUSES.MERGED_LIST_ITEM)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  const line = intended.split('\n').findIndex((l) => l.includes('.- Agent-friendly:')) + 1
+  assert.match(result.reason, new RegExp(`line ${line} \\("- Agent-friendly:"\\)`))
+})
+
+test('a merged Planning list item keeps the byte-exact verdict when stored equals intended', () => {
+  const text = description({ sections: { '## Planning': MERGED_PLANNING } })
+  const result = verify(text, text)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.BYTE_EXACT)
+  assert.equal(result.exitCode, 1)
+  assert.equal(result.cause, WRITEBACK_CAUSES.MERGED_LIST_ITEM)
+
+  // The CLI still prints the verdict line — a merged bullet is not a refusal.
+  const { res } = runCli(text, text)
+  assert.equal(res.status, 1)
+  assert.match(res.stdout, /^writeback-verdict: byte-exact$/m)
+  assert.match(res.stderr, /merges a second `## Planning` list item/)
+})
+
+test('separate Planning bullets raise no merged-list-item cause', () => {
+  const text = description({
+    sections: { '## Planning': '- Contract: v1\n- Atomic-5: epic DAG.\n- Agent-friendly: yes' },
+  })
+  const result = verify(text, text)
+  assert.equal(result.exitCode, 0)
+  assert.equal(result.cause, WRITEBACK_CAUSES.EQUAL)
+})

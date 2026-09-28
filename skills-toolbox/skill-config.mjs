@@ -2015,6 +2015,84 @@ export function validatePlanDescription(config, description, { mode = 'child-pla
   }
 }
 
+// A `- Key:` / `* Key:` list item GLUED to the preceding text: a marker directly after
+// non-whitespace, one space, and a capitalised key of up to four words ending in a colon — the
+// shape of every `## Planning` bullet (`Contract:`, `Agent-friendly:`, `Premise drift:`,
+// `Plan attachment:`). A hyphen inside prose (`self-falsified`, `step-4`) is followed by no space,
+// a spaced dash in prose (`backend - Frontend: later`) is preceded by whitespace, and an em dash
+// is not a list marker, so none of them matches.
+const PLANNING_LIST_ITEM = /(?<=\S)[-*] ([A-Z][A-Za-z0-9]*(?:[- ][A-Za-z0-9]+){0,3}):(?= |$)/g
+// The keys boss-plan writes under `## Planning` — the drafted template's bullets plus the ones the
+// orchestrator inserts after the contract gate. A merge that joined two bullets with a SPACE
+// (`- Contract: v1 - Agent-friendly: needs-human`) is told apart from spaced prose
+// (`backend - Frontend: later`) only by the key, so the space-joined form is flagged for these
+// keys alone.
+const PLANNING_BULLET_KEYS = Object.freeze([
+  'Contract',
+  'Agent-friendly',
+  'Atomic-5',
+  'Plan attachment',
+  'On implementation',
+  'Dependencies',
+  'Transitive-block warning',
+  'Premise drift',
+  'Triage',
+])
+const SPACED_PLANNING_LIST_ITEM = new RegExp(
+  `(?<=\\s)[-*] (${PLANNING_BULLET_KEYS.join('|')}):(?= |$)`,
+  'g',
+)
+const PLANNING_HEADING = '## Planning'
+
+/**
+ * Every `## Planning` line on which a SECOND `- Key:` / `* Key:` item begins glued to a preceding
+ * non-whitespace character, or after a space when the key is a known Planning bullet key — the shape an orchestrator-inserted bullet takes when it is joined to
+ * its neighbour without a newline (`- Atomic-5: epic DAG.- Agent-friendly: needs-human`). The
+ * contract gate and the writeback verifier both call this, so the two cannot drift: the contract
+ * gate sees the drafted description, the verifier sees the intended bytes after the run's final
+ * save — the only point that sees the Planning bullets the orchestrator inserts after the contract
+ * gate ran.
+ *
+ * Scoped to `## Planning` (the only section anything inserts into), outside fenced code, with
+ * inline code spans masked, and stopping at the terminal verbatim section. A leading blockquote
+ * prefix (`> `, `> > `) is part of the line's first item, not a separator before a second one.
+ *
+ * @returns {{ line: number, text: string }[]} 1-based description line and the merged item's key.
+ */
+export function mergedListItems(config, description, { mode = 'child-plan' } = {}) {
+  assertConfigFirst(config, 'mergedListItems')
+  const contractSections = planSectionsForDescriptionMode(
+    config,
+    normalisePlanDescriptionMode(mode),
+  )
+  const terminalHeading = contractSections[contractSections.length - 1]?.heading
+  const lines = String(description ?? '').split('\n')
+  const outside = new Set(scanFences(description).lines.map(({ index }) => index))
+  const hits = []
+  let inPlanning = false
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!outside.has(index)) continue
+    const line = lines[index].replace(/\r$/, '')
+    const heading = markdownH2Heading(line)
+    if (heading) {
+      if (heading === terminalHeading) break
+      inPlanning = heading === PLANNING_HEADING
+      continue
+    }
+    if (!inPlanning) continue
+    const masked = line.replace(/`+[^`\n]*`+/g, (span) => '!'.repeat(span.length))
+    const first = masked.match(/^[\s>]*/)[0].length
+    const matches = [
+      ...masked.matchAll(PLANNING_LIST_ITEM),
+      ...[...masked.matchAll(SPACED_PLANNING_LIST_ITEM)].filter((match) => match.index > first),
+    ].sort((a, b) => a.index - b.index)
+    for (const match of matches) {
+      hits.push({ line: index + 1, text: match[0] })
+    }
+  }
+  return hits
+}
+
 // --- Verify-only acceptance criteria ---------------------------------------
 //
 // A criterion whose correct outcome is "this file needed no change" produces no diff, so every gate
@@ -2497,6 +2575,10 @@ function operandPathFinding(path, cwd) {
   return {
     blocking: false,
     code: 'path-operand-absent',
+    // The operand rides along so a caller holding more context (the contract guard can see the
+    // plan's own `## Key changes`) can drop the advisory for a file the plan itself creates. The
+    // classifier stays context-free.
+    path,
     message: `the command path operand is absent but its parent directory exists: ${path}`,
   }
 }
@@ -2633,6 +2715,44 @@ function rawCommandSegments(tokens) {
   return segments
 }
 
+/** The separator following each segment (`null` for the last), aligned with the segment lists. */
+function segmentSeparators(tokens) {
+  const separators = []
+  let current = 0
+  for (const token of tokens) {
+    if (SHELL_COMMAND_SEPARATORS.has(token.value)) {
+      if (current > 0) separators.push(token.value)
+      current = 0
+    } else {
+      current += 1
+    }
+  }
+  if (current > 0) separators.push(null)
+  return separators
+}
+
+const SELECTION_FILTER =
+  /^(-run|--test-name-pattern|--test-only|--test-skip-pattern|--include)(=|$)/
+
+/**
+ * Whether ONE segment carries a selection filter that can select zero and still exit 0.
+ *
+ * Judged per segment, not over the whole command: a plain `grep … --include='*.mjs'`
+ * that selects zero files exits 1, so it cannot go green on nothing — as long as its exit status
+ * IS the command's. That holds for the final segment and for one joined onward only by `&&`. A
+ * segment followed by `||` (`grep … || true`), `;` or `|` hands the verdict to something else and
+ * keeps the finding. A NEGATED search inverts exactly that exit status, so zero files reads as
+ * success and keeps the finding too. Test selectors are unchanged: a runner that selects zero
+ * tests routinely exits 0.
+ */
+function zeroSelectionRisk(segment, rawSegment, separatorAfter) {
+  if (!segment.some((token) => SELECTION_FILTER.test(token))) return false
+  const search = searchPatternAndPaths(segment)
+  const negated = rawSegment?.[0] === '!'
+  const ownsExitStatus = separatorAfter === null || separatorAfter === '&&'
+  return !(search && !negated && ownsExitStatus)
+}
+
 function searchPatternAndPaths(segment) {
   if (!['rg', 'grep'].includes(segment[0])) return null
   const paths = []
@@ -2749,6 +2869,7 @@ export function classifyCheckCommand(
   const detailedTokens = tokenizeSimpleShellDetailed(command)
   const segments = commandSegments(detailedTokens)
   const rawSegments = rawCommandSegments(detailedTokens)
+  const separatorsAfter = segmentSeparators(detailedTokens)
   const tokens = commandTokens(command)
   const blocking = []
   const advisoryFindings = []
@@ -2807,7 +2928,7 @@ export function classifyCheckCommand(
       const finding = operandPathFinding(path, cwd)
       if (!finding) continue
       if (finding.blocking) blocking.push({ code: finding.code, message: finding.message })
-      else advisoryFindings.push(advisory(finding.code, finding.message))
+      else advisoryFindings.push({ ...advisory(finding.code, finding.message), path: finding.path })
     }
   }
 
@@ -2853,8 +2974,8 @@ export function classifyCheckCommand(
     )
   }
   if (
-    tokens.some((token) =>
-      /^(-run|--test-name-pattern|--test-only|--test-skip-pattern|--include)(=|$)/.test(token),
+    segments.some((segment, index) =>
+      zeroSelectionRisk(segment, rawSegments[index], separatorsAfter[index]),
     ) &&
     !hasCountAssertion(trimmed)
   ) {

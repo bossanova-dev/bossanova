@@ -662,6 +662,28 @@ ${original}`
   assert.equal(res.stderr.trim(), '')
 })
 
+// BOS-1328: both guards passed a description whose whole tail from `## Original notes` had been
+// duplicated, because the wrapper was chosen by content match rather than counted.
+test('CLI: --require-verbatim rejects a description whose Original notes tail is duplicated', () => {
+  const original = 'Reporter context.\n'
+  const tail = `## Original notes\n\n${original}`
+  const rewritten = `# Plan\n\n${tail}\n${tail}`
+  const res = runCli(original, rewritten, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /carries 2 `## Original notes` heading\(s\), expected 1/)
+})
+
+test('CLI: --require-verbatim counts the source own nested heading before the wrapper', () => {
+  const original = 'Reporter context.\n\n## Original notes\n\nNested source text.\n'
+  const composed = `# Plan\n\n## Original notes\n\n${original}`
+  assert.equal(runCli(original, composed, ['--require-verbatim']).status, 0)
+  // ...and the same source composed twice is caught: 4 headings where 2 are expected.
+  const doubled = `${composed}\n## Original notes\n\n${original}`
+  const res = runCli(original, doubled, ['--require-verbatim'])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /carries 4 `## Original notes` heading\(s\), expected 2/)
+})
+
 test('CLI: --require-verbatim preserves leading indentation in Original notes', () => {
   const original = '  indentation is significant\n'
   const rewritten = `## Original notes\n\n${original}`
@@ -817,7 +839,7 @@ test('CLI: --require-verbatim rejects an unredacted external credential query va
   const rewritten = `## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('demo-credential'), 'the guard must not print credential values')
 })
 
@@ -827,7 +849,7 @@ test('CLI: mandatory guards reject a multiline entity-encoded reference credenti
   const rewritten = `## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -836,7 +858,7 @@ test('CLI: mandatory guards reject an entity-encoded blockquote reference creden
   const rewritten = `## Screenshots\n\n> ![build][asset]\n> [asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -845,7 +867,7 @@ test('CLI: mandatory guards reject an indented list continuation reference crede
   const rewritten = `## Screenshots\n\n-    supporting context\n     [asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -854,7 +876,7 @@ test('CLI: mandatory guards reject a tab-indented list continuation reference cr
   const rewritten = `## Screenshots\n\n-\t![shot][asset]\n\t[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1009,7 +1031,7 @@ test('CLI: --require-verbatim rejects an unredacted external credential in an es
   const rewritten = `## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
 })
 
 test('CLI: --require-verbatim rejects an unredacted external credential in a titled angle destination', () => {
@@ -1025,10 +1047,7 @@ test('CLI: --require-verbatim rejects an unredacted external credential in a tit
 ${original}`
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 1)
-  assert.match(
-    res.stderr,
-    /rewritten description contains 1 external image URL\(s\) with unredacted credential query values/,
-  )
+  assert.match(res.stderr, /rewritten description contains 1 URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('demo-credential'), 'the guard must not print credential values')
 })
 
@@ -1038,7 +1057,7 @@ test('CLI: mandatory guards reject an escaped angle destination with a token cre
   const rewritten = `# Plan\n\n## Screenshots\n\n![a](<https://cdn.example.test/x\\>?token=LIVESECRET>)\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1048,7 +1067,7 @@ test('CLI: mandatory guards reject an unredacted reference-style image credentia
   const rewritten = `# Plan\n\n## Screenshots\n\n![build][reporter-shot]\n\n[reporter-shot]: <https://cdn.example.test/build.png?token=LIVESECRET>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1057,7 +1076,7 @@ test('CLI: mandatory guards reject an unredacted HTML srcset credential', () => 
   const rewritten = `## Original notes\n\n<img srcset="https://cdn.example.test/build.png?token=LIVESECRET 2x">\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1067,7 +1086,7 @@ test('CLI: mandatory guards reject an entity-encoded HTML <source srcset> creden
   const rewritten = `## Original notes\n\n<picture><source srcset="https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET 2x"></picture>\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1076,7 +1095,7 @@ test('CLI: mandatory guards reject an entity-encoded HTML image-input credential
   const rewritten = `## Screenshots\n\n<input name="save" src="https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET" type="image">\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1085,7 +1104,7 @@ test('CLI: mandatory guards reject credentials in an entity-encoded non-image HT
   const rewritten = `## Screenshots\n\n<input type="text" value="https&colon;//cdn.example.test/build.png?token&equals;LIVESECRET">\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1094,7 +1113,7 @@ test('CLI: mandatory guards reject an entity-encoded video poster credential', (
   const rewritten = `## Screenshots\n\n<video poster="https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET">\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1103,7 +1122,7 @@ test('CLI: mandatory guards reject an unquoted entity-encoded HTML srcset creden
   const rewritten = `## Original notes\n\n<img srcset=https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET>\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1112,7 +1131,7 @@ test('CLI: mandatory guards reject an unquoted HTML srcset credential with liter
   const rewritten = `## Original notes\n\n<img srcset=https://cdn.example.test/build.png?token=LIVESECRET>\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1121,7 +1140,7 @@ test('CLI: mandatory guards reject a srcset credential after data-srcset', () =>
   const rewritten = `## Original notes\n\n<img data-srcset="https://safe.example.test/build.png" srcset="https&colon;//cdn.example.test/build.png?token&equals;LIVESECRET 2x">\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1130,7 +1149,7 @@ test('CLI: mandatory guards reject a reference credential after a raw HTML defin
   const rewritten = `## Original notes\n\n<div>\n[asset]: https://safe.example.test/build.png\n</div>\n\n![build][asset]\n\n[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1144,7 +1163,7 @@ for (const [name, inertDefinition] of [
     const rewritten = `## Screenshots\n\n${inertDefinition}\n\n[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n## Original notes\n\n${original}`
     const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
     assert.equal(res.status, 1)
-    assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+    assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
     assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
   })
 }
@@ -1154,7 +1173,7 @@ test('CLI: mandatory guards scan a credential in a duplicate reference definitio
   const rewritten = `## Screenshots\n\n[asset]: https://safe.example.test/build.png\n[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1168,7 +1187,7 @@ for (const [name, opener, closer] of [
     const rewritten = `## Original notes\n\n${opener}\n[asset]: https://safe.example.test/build.png\n${closer}\n\n![build][asset]\n\n[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n${original}`
     const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
     assert.equal(res.status, 1)
-    assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+    assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
     assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
   })
 }
@@ -1178,7 +1197,7 @@ test('CLI: mandatory guards ignore a type-7 custom HTML definition before an act
   const rewritten = `## Screenshots\n\n<x-widget>\n[asset]: https://safe.example.test/build.png\n\n[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1187,7 +1206,7 @@ test('CLI: mandatory guards reject a named-entity HTML credential URL', () => {
   const rewritten = `## Original notes\n\n<img src="https&colon;//cdn.example.test/build.png?token&equals;LIVESECRET">\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1196,7 +1215,7 @@ test('CLI: mandatory guards reject a Markdown character-reference credential', (
   const rewritten = `## Original notes\n\n![build](https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET)\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1205,7 +1224,7 @@ test('CLI: mandatory guards reject a Markdown-escaped scheme credential', () => 
   const rewritten = `## Original notes\n\n![build](https\\://cdn.example.test/build.png?token=LIVESECRET)\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1214,7 +1233,7 @@ test('CLI: mandatory guards reject an encoded ordinary Markdown-link credential'
   const rewritten = `## Original notes\n\n${original}\nA [leaked link](https&#58;//cdn.example.test/docs?token=LIVESECRET)\n`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1223,7 +1242,7 @@ test('CLI: mandatory guards reject an encoded reference-style ordinary-link cred
   const rewritten = `## Screenshots\n\n[download][asset]\n\n[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1232,7 +1251,7 @@ test('CLI: mandatory guards reject an entity-encoded HTML anchor credential', ()
   const rewritten = `## Screenshots\n\n<a href="https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET">download</a>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1241,7 +1260,7 @@ test('CLI: mandatory guards reject an HTML anchor credential after a URL parser 
   const rewritten = `## Screenshots\n\n<a href="https://cdn.example.test/build.png\n?token=LIVESECRET">download</a>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1250,7 +1269,7 @@ test('CLI: mandatory guards reject entity-encoded SVG image href credentials', (
   const rewritten = `## Screenshots\n\n<svg><image href="https&colon;//cdn.example.test/build.png?token&equals;LIVESECRET"></image><image xlink:href="https&colon;//cdn.example.test/legacy.png?token&equals;LIVESECRET"></image></svg>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1268,7 +1287,7 @@ test('CLI: mandatory guards reject an unredacted bare external credential URL', 
   const rewritten = `## Screenshots\n\nhttps://cdn.example.test/build.png?token=LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1277,7 +1296,7 @@ test('CLI: mandatory guards reject an entity-encoded bare external credential UR
   const rewritten = `## Screenshots\n\nhttps&colon;//cdn.example.test/build.png?token&equals;LIVESECRET\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1286,7 +1305,7 @@ test('CLI: mandatory guards reject a CSS-escaped external credential URL', () =>
   const rewritten = `## Screenshots\n\n<style>img { background-image: url(https\\3a\\2f\\2f cdn.example.test/build.png?token=LIVESECRET) }</style>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1297,7 +1316,7 @@ test('CLI: mandatory guards reject a CSS credential URL behind an ESCAPED url() 
   const rewritten = `## Screenshots\n\n<style>img { background-image: u\\72 l(https\\3a\\2f\\2f cdn.example.test/build.png?token=LIVESECRET) }</style>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1315,7 +1334,7 @@ test('CLI: mandatory guards reject a bare credential URL split by entity-encoded
   const rewritten = `## Screenshots\n\n<object data="ht&#9;tps:&#9;/&#9;/cdn.example.test/build.png?token=LIVESECRET"></object>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1324,7 +1343,7 @@ test('CLI: mandatory guards reject an unredacted scheme-relative image credentia
   const rewritten = `## Original notes\n\n![a](//cdn.example.test/build.png?token=LIVESECRET)\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1333,7 +1352,7 @@ test('CLI: mandatory guards reject a scheme-relative credential in an unsupporte
   const rewritten = `## Screenshots\n\n<object data="//cdn.example.test/build.png?token=LIVESECRET"></object>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1350,7 +1369,7 @@ test('CLI: mandatory guards reject credential fields in URL fragments', () => {
   const rewritten = `## Screenshots\n\n![build](https://cdn.example.test/build.png#access_token=LIVESECRET)\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1359,7 +1378,7 @@ test('CLI: mandatory guards reject a reference credential after an invalid backt
   const rewritten = `![build][asset]\n\n\`\`\`markdown\`oops\n[asset]: <https://cdn.example.test/build.png?token=LIVESECRET>\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1368,7 +1387,7 @@ test('CLI: mandatory guards reject an HTML credential after a quoted greater-tha
   const rewritten = `## Screenshots\n\n<img title="a > b" src="https://cdn.example.test/build.png?token=LIVESECRET">\n\n## Original notes\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1377,7 +1396,7 @@ test('CLI: mandatory guards reject an HTML-entity-encoded credential query key',
   const rewritten = `## Original notes\n\n<img src="https://cdn.example.test/build.png?to&#107;en=LIVESECRET">\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1386,7 +1405,7 @@ test('CLI: mandatory guards reject a semicolonless numeric HTML-entity credentia
   const rewritten = `## Original notes\n\n<img src="https://cdn.example.test/build.png?to&#107en=LIVESECRET">\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1395,7 +1414,7 @@ test('CLI: mandatory guards reject an unquoted HTML credential URL', () => {
   const rewritten = `## Original notes\n\n<img src=https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET>\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1405,7 +1424,7 @@ test('CLI: mandatory guards reject an unredacted escaped-label reference credent
   const rewritten = `## Original notes\n\n![build][asset\\]id]\n\n[asset\\]id]: <https://cdn.example.test/build.png?token=LIVESECRET>\n\n${original}`
   const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
   assert.equal(res.status, 1)
-  assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+  assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
   assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
 })
 
@@ -1415,7 +1434,7 @@ for (const key of ['jwt', 'sessionid']) {
     const rewritten = `## Original notes\n\n![a](https://cdn.example.test/image.png?${key}=LIVESECRET)\n`
     const res = runCli(original, rewritten, ['--require-verbatim', '--require-unsigned-uploads'])
     assert.equal(res.status, 1)
-    assert.match(res.stderr, /external image URL\(s\) with unredacted credential query values/)
+    assert.match(res.stderr, /URL\(s\) with unredacted credentials/)
     assert.ok(!res.stderr.includes('LIVESECRET'), 'the guard must not print credential values')
   })
 }
@@ -1739,4 +1758,85 @@ test('records exactly one gate-outcome line per invocation without changing the 
     ['plan-image-guard', 'pass'],
     ['plan-image-guard', 'fire'],
   ])
+})
+
+// BOS-1328: the credential failure names each URL (masked), its line and the leaking component,
+// and a `${VAR}` / `$VAR` userinfo template is not a credential. Credential-shaped fixtures are
+// ASSEMBLED FROM PARTS so no literal one sits in a committed file this guard would itself reject.
+const credentialRun = (urlLine) => {
+  const original = 'Reporter context.\n'
+  const rewritten = `# Plan\n\n## Screenshots\n\n${urlLine}\n\n## Original notes\n\n${original}`
+  return runCli(original, rewritten, ['--require-verbatim'])
+}
+const PASSWORD = ['hun', 'ter', '2'].join('')
+
+test('CLI: a connection string with a literal userinfo password is one masked userinfo finding', () => {
+  const url = ['postgres:', '//app', ':', PASSWORD, '@db.internal:5432/app'].join('')
+  const res = credentialRun(`Connect with ${url} locally.`)
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /contains 1 URL\(s\) with unredacted credentials/)
+  assert.match(res.stderr, /\/\/\*\*\*:\*\*\*@db\.internal:5432\/app \(line 5; userinfo\)/)
+  assert.ok(!res.stderr.includes(PASSWORD), 'the guard must not print the password')
+  assert.doesNotMatch(res.stderr, /image URL/)
+})
+
+test('CLI: a token used as the userinfo username is masked even when a password is present', () => {
+  const token = ['ghp', '_', 'SECRET', '123'].join('')
+  const cases = [
+    ['https:', '//', token, ':x-oauth-basic@github.com/o/r'].join(''),
+    ['postgres:', '//', token, ':', PASSWORD, '@db.internal/app'].join(''),
+  ]
+  for (const url of cases) {
+    const res = credentialRun(`Use ${url} here.`)
+    assert.equal(res.status, 1, url)
+    assert.match(res.stderr, /\/\/\*\*\*:\*\*\*@/)
+    assert.ok(!res.stderr.includes(token), 'the guard must not print a token-as-username')
+    assert.ok(!res.stderr.includes(PASSWORD), 'the guard must not print the password')
+  }
+})
+
+test('CLI: userinfo that is wholly a ${VAR} or $VAR template is not a credential', () => {
+  for (const template of ['${GH_TOKEN}', '$GH_TOKEN']) {
+    const url = ['https:', '//', template, '@github.com/o/r.git'].join('')
+    const res = credentialRun(`Clone ${url} in CI.`)
+    assert.equal(res.status, 0, `${template}: ${res.stderr}`)
+  }
+})
+
+test('CLI: a template username beside a literal password still fails, password masked', () => {
+  const url = ['postgres:', '//${DB_USER}', ':', PASSWORD, '@db.internal/app'].join('')
+  const res = credentialRun(url)
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /\(line 5; userinfo\)/)
+  assert.ok(!res.stderr.includes(PASSWORD))
+})
+
+test('CLI: query and fragment credentials name their component with the value masked', () => {
+  const query = credentialRun(['https:', '//cdn.example.test/a.png?', 'token=', 'abc123'].join(''))
+  assert.equal(query.status, 1)
+  assert.match(query.stderr, /token=\*\*\* \(line 5; query\)/)
+  assert.ok(!query.stderr.includes('abc123'))
+
+  const fragment = credentialRun(
+    ['https:', '//app.example.test/cb#', 'access_token=', 'abc123'].join(''),
+  )
+  assert.equal(fragment.status, 1)
+  assert.match(fragment.stderr, /access_token=\*\*\* \(line 5; fragment\)/)
+  assert.ok(!fragment.stderr.includes('abc123'))
+
+  const redacted = credentialRun('![a](https://cdn.example.test/a.png?token=[REDACTED])')
+  assert.equal(redacted.status, 0, redacted.stderr)
+})
+
+test('CLI: an entity-encoded credential is reported as line unknown rather than guessed', () => {
+  const res = credentialRun('[asset]: https&#58;//cdn.example.test/build.png?token&#61;LIVESECRET')
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /\(line unknown; query\)/)
+  assert.ok(!res.stderr.includes('LIVESECRET'))
+})
+
+test('CLI: --require-unsigned-uploads still fails on a signed Linear upload', () => {
+  const signed = `${UPLOAD}?signature=abc&expires=1`
+  const res = runCli(`![a](${UPLOAD})\n`, `![a](${signed})\n`, ['--require-unsigned-uploads'])
+  assert.equal(res.status, 1)
 })

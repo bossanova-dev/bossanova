@@ -287,6 +287,10 @@ test('buildLinearOperationMap writeDescription names the description argument ke
     /from a file/,
     'the summary must state that the bytes come from a file — that is the capability, not a detail',
   )
+  // BOS-1333: save_issue takes the description inline, so executing the descriptor re-emits the
+  // bytes. The summary must not promise a retype-free write that the tool cannot give.
+  assert.doesNotMatch(operationMap.writeDescription.summary, /never retyped/)
+  assert.match(operationMap.writeDescription.summary, /read back/)
 })
 
 test('buildLinearOperationMap contains the single-comment progress protocol trio', () => {

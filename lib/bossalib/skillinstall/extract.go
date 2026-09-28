@@ -514,48 +514,104 @@ func executableModeDrift(path string, file embeddedFile) (bool, error) {
 
 // EnsureUpdated refreshes installed boss skills only when the installed tree
 // differs from the embedded payload. It does not install into an empty target.
+// It overwrites on any difference and leaves the tree unstamped (a legacy tree
+// to the no-downgrade rule); callers that know their payload use
+// EnsureUpdatedRecorded or, when unattended, EnsureUpdatedGuarded.
 func EnsureUpdated(dir string, fsys fs.FS) (updated bool, err error) {
+	result, err := ensureUpdated(dir, fsys, nil, nil)
+	return result.Updated, err
+}
+
+// refreshPolicy decides, under the update lock, whether a tree that differs
+// from the payload may be rewritten. installed and recorded are the tree's
+// payload record as ReadPayloadRecord returned it.
+type refreshPolicy func(installed PayloadRecord, recorded bool) RefreshDecision
+
+// ensureUpdated is the one locked refresh pipeline behind EnsureUpdated,
+// EnsureUpdatedRecorded and EnsureUpdatedGuarded. It never installs into an
+// empty target. A nil decide is an explicit writer: it overwrites on any
+// difference and, when record is non-nil, stamps record even over a tree that
+// already matches. A non-nil decide is an unattended writer: a matching tree
+// is stamped only when it carries no record, a differing tree is rewritten
+// only when decide allows it, and the decision and the write
+// happen under one hold of the lock so concurrent writers cannot interleave
+// one's check with the other's write.
+func ensureUpdated(dir string, fsys fs.FS, record *PayloadRecord, decide refreshPolicy) (result GuardedResult, err error) {
 	// Check only that the target directory exists before acquiring the lock:
 	// acquireUpdateLock creates it, while a concurrent Extract can temporarily
 	// remove Namespace. Recheck installation after the lock serializes that gap.
 	if _, statErr := os.Stat(dir); statErr != nil {
 		if os.IsNotExist(statErr) {
-			return false, nil
+			return GuardedResult{}, nil
 		}
-		return false, statErr
+		return GuardedResult{}, statErr
 	}
 
 	if !IsInstalled(dir) {
 		if _, lockErr := os.Stat(filepath.Join(dir, updateLockFile)); lockErr != nil {
 			if os.IsNotExist(lockErr) {
-				return false, nil
+				return GuardedResult{}, nil
 			}
-			return false, lockErr
+			return GuardedResult{}, lockErr
 		}
 	}
 
 	lock, err := acquireUpdateLock(dir)
 	if err != nil {
-		return false, err
+		return GuardedResult{}, err
 	}
 	defer func() {
 		if unlockErr := lock.Unlock(); err == nil && unlockErr != nil {
-			updated = false
+			result = GuardedResult{}
 			err = fmt.Errorf("release skill update lock: %w", unlockErr)
 		}
 	}()
 	if !IsInstalled(dir) {
-		return false, nil
+		return GuardedResult{}, nil
 	}
 
 	needs, err := needsUpdateLocked(dir, fsys)
-	if err != nil || !needs {
-		return false, err
+	if err != nil {
+		return GuardedResult{}, err
 	}
-	if err := extract(dir, fsys); err != nil {
-		return false, err
+	if !needs {
+		// An explicit writer over a tree that already matches its payload still
+		// claims the tree: without the stamp, a trusted reinstall that found
+		// nothing to change would leave an unstamped tree any older unattended
+		// writer may overwrite.
+		if record != nil && decide == nil {
+			return GuardedResult{}, stampPayloadRecordLocked(dir, *record)
+		}
+		// An unattended writer claims only an unstamped (legacy) matching tree:
+		// overwriting an existing record would erase the explicit or checkout
+		// floor that recorded who wrote these same bytes.
+		if record != nil {
+			if _, recorded, err := ReadPayloadRecord(dir); err != nil || recorded {
+				return GuardedResult{}, err
+			}
+			return GuardedResult{}, writePayloadRecord(dir, *record)
+		}
+		return GuardedResult{}, nil
 	}
-	return true, nil
+	if decide != nil {
+		installed, recorded, err := ReadPayloadRecord(dir)
+		if err != nil {
+			return GuardedResult{}, err
+		}
+		result.Decision = decide(installed, recorded)
+		if !result.Decision.Refresh {
+			return GuardedResult{Held: true, Decision: result.Decision}, nil
+		}
+		if record != nil {
+			stamp := guardedStamp(*record, result.Decision)
+			record = &stamp
+		}
+	}
+	if err := extract(dir, fsys, record); err != nil {
+		return GuardedResult{}, err
+	}
+	result.Updated = true
+	return result, nil
 }
 
 type embeddedFile struct {
@@ -618,7 +674,8 @@ func executableSkillFile(path string) bool {
 // discovers them as top-level skills.
 //
 // It removes stale boss-* symlinks and the bossanova/ directory first so
-// that renamed or deleted skills don't persist across upgrades.
+// that renamed or deleted skills don't persist across upgrades. It leaves the
+// tree unstamped; ExtractRecorded is the stamping form.
 func Extract(dir string, fsys fs.FS) (err error) {
 	lock, err := acquireUpdateLock(dir)
 	if err != nil {
@@ -630,7 +687,7 @@ func Extract(dir string, fsys fs.FS) (err error) {
 		}
 	}()
 
-	return extract(dir, fsys)
+	return extract(dir, fsys, nil)
 }
 
 // acquireUpdateLock serializes all destructive skill-tree rewrites for one
@@ -668,8 +725,16 @@ func acquireExistingUpdateLock(dir string) (*flock.Flock, bool, error) {
 	return lock, true, nil
 }
 
-func extract(dir string, fsys fs.FS) error {
+// extract rewrites the tree and, when record is non-nil, stamps it once the
+// tree is complete. The previous record is removed first, so a record only ever
+// describes a tree some writer finished: an interrupted extract leaves an
+// unstamped (legacy) tree rather than one claiming the old payload.
+func extract(dir string, fsys fs.FS, record *PayloadRecord) error {
 	nsDir := filepath.Join(dir, Namespace)
+
+	if err := removePayloadRecord(dir); err != nil {
+		return err
+	}
 
 	// Remove stale boss-* entries (symlinks or real directories) in the parent directory.
 	entries, err := os.ReadDir(dir)
@@ -741,5 +806,8 @@ func extract(dir string, fsys fs.FS) error {
 		}
 	}
 
+	if record != nil {
+		return writePayloadRecord(dir, *record)
+	}
 	return nil
 }

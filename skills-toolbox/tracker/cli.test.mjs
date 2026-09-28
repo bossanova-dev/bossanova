@@ -1228,6 +1228,166 @@ test('every verb other than list-planned and read-description still returns sync
   }
 })
 
+// --- operations ---------------------------------------------------------------
+// BOS-1333: the Phase 0 attachment-op probe. It must read the RESOLVED adapter's operationMap
+// (a probe off the repo config found every op absent on a healthy adapter), and a misspelt op
+// name must never read as an absent capability — that is the false abort the verb removes.
+
+const ATTACHMENT_OPS = [
+  'preparePlanAttachment',
+  'finalizePlanAttachment',
+  'readPlanAttachment',
+  'deletePlanAttachment',
+]
+
+function operations(args, io = {}) {
+  let out = ''
+  let err = ''
+  let resolved = 0
+  const code = runCli(['operations', ...args], {
+    write: (s) => (out += s),
+    errWrite: (s) => (err += s),
+    env: { LINEAR_API_KEY: 'k' },
+    ...io,
+    ...(io.resolveAdapter
+      ? {
+          resolveAdapter: (opts) => {
+            resolved += 1
+            return io.resolveAdapter(opts)
+          },
+        }
+      : {}),
+  })
+  return { code, out, err, resolved }
+}
+
+function stubOperationMap(omit = [], override = {}) {
+  const map = {}
+  for (const key of ATTACHMENT_OPS) {
+    if (!omit.includes(key)) map[key] = { tool: `mcp__t__${key}`, summary: `${key} summary` }
+  }
+  return { tracker: 'stub', operationMap: { ...map, ...override } }
+}
+
+test('operations with no flags lists the real Linear adapter operation map', () => {
+  const { code, out, err } = operations([])
+  assert.equal(code, 0, err)
+  assert.equal(err, '')
+  assert.ok(out.endsWith('\n'))
+  const parsed = JSON.parse(out)
+  assert.equal(parsed.outcome, 'operations-listed')
+  for (const key of [...ATTACHMENT_OPS, 'getIssue', 'writeDescription']) {
+    assert.equal(typeof parsed.operationMap[key]?.tool, 'string', key)
+    assert.ok(parsed.operationMap[key].tool.length > 0, key)
+    assert.equal(typeof parsed.operationMap[key].summary, 'string', key)
+  }
+})
+
+test('operations --require over the four attachment ops exits 0 against the real Linear adapter', () => {
+  const { code, out, err } = operations(['--require', ATTACHMENT_OPS.join(',')])
+  assert.equal(code, 0, err)
+  assert.equal(err, '')
+  const parsed = JSON.parse(out)
+  assert.equal(parsed.outcome, 'operations-present')
+  assert.deepEqual(Object.keys(parsed.operationMap), ATTACHMENT_OPS)
+  assert.match(parsed.operationMap.readPlanAttachment.tool, /__get_attachment$/)
+  assert.match(parsed.operationMap.deletePlanAttachment.tool, /__delete_attachment$/)
+})
+
+test('operations --require is repeatable and comma-joined, and de-duplicates names', () => {
+  const { code, out } = operations(
+    ['--require', 'readPlanAttachment', '--require', 'deletePlanAttachment,readPlanAttachment'],
+    { resolveAdapter: () => stubOperationMap() },
+  )
+  assert.equal(code, 0)
+  assert.deepEqual(Object.keys(JSON.parse(out).operationMap), [
+    'readPlanAttachment',
+    'deletePlanAttachment',
+  ])
+})
+
+test('operations --require exits 2 naming an absent op, with EMPTY stdout', () => {
+  const { code, out, err } = operations(['--require', ATTACHMENT_OPS.join(',')], {
+    resolveAdapter: () => stubOperationMap(['deletePlanAttachment']),
+  })
+  assert.equal(code, 2)
+  assert.equal(out, '')
+  assert.match(err, /^operations: .*deletePlanAttachment/)
+  assert.equal(err.trim().split('\n').length, 1)
+  assert.doesNotMatch(err, /preparePlanAttachment/)
+})
+
+test('operations --require names EVERY absent op in one line, not just the first', () => {
+  const { code, out, err } = operations(['--require', ATTACHMENT_OPS.join(',')], {
+    resolveAdapter: () => stubOperationMap(['preparePlanAttachment', 'deletePlanAttachment']),
+  })
+  assert.equal(code, 2)
+  assert.equal(out, '')
+  assert.match(err, /preparePlanAttachment, deletePlanAttachment/)
+})
+
+test('operations --require counts an entry with an empty or non-string tool as absent', () => {
+  for (const bad of [{ tool: '' }, { tool: '   ' }, { tool: 7 }, {}, null]) {
+    const { code, out, err } = operations(['--require', 'readPlanAttachment'], {
+      resolveAdapter: () => stubOperationMap([], { readPlanAttachment: bad }),
+    })
+    assert.equal(code, 2, JSON.stringify(bad))
+    assert.equal(out, '')
+    assert.match(err, /readPlanAttachment/)
+  }
+})
+
+test('operations exits 2 with EMPTY stdout when the adapter cannot be resolved or has no map', () => {
+  const cases = [
+    () => {
+      throw new Error('boom')
+    },
+    () => ({ tracker: 'stub' }),
+    () => ({ tracker: 'stub', operationMap: [] }),
+  ]
+  for (const resolveAdapter of cases) {
+    for (const args of [[], ['--require', 'readPlanAttachment']]) {
+      const { code, out, err } = operations(args, { resolveAdapter })
+      assert.equal(code, 2)
+      assert.equal(out, '')
+      assert.match(err, /^operations: /)
+    }
+  }
+})
+
+test('operations usage errors exit 64 with EMPTY stdout and never reach the adapter', () => {
+  for (const args of [
+    ['--require', 'preparePlanAtachment'],
+    ['--require', 'readPlanAttachment,constructor'],
+    ['--require'],
+    ['--require', ''],
+    ['--require', 'readPlanAttachment,,deletePlanAttachment'],
+    ['--require', '--bogus'],
+    ['--bogus', 'x'],
+    ['readPlanAttachment'],
+  ]) {
+    const { code, out, err, resolved } = operations(args, {
+      resolveAdapter: () => stubOperationMap(),
+    })
+    assert.equal(code, 64, JSON.stringify(args))
+    assert.equal(out, '', JSON.stringify(args))
+    assert.match(err, /^operations: usage: /, JSON.stringify(args))
+    assert.equal(resolved, 0, `${JSON.stringify(args)} reached the adapter`)
+  }
+})
+
+test('operations names a misspelt op as not-a-tracker-operation, never as absent', () => {
+  const { code, err } = operations(['--require', 'deletePlanAtachment'])
+  assert.equal(code, 64)
+  assert.match(err, /deletePlanAtachment is not a tracker operation/)
+  assert.doesNotMatch(err, /does not declare/)
+})
+
+test('operations returns synchronously', () => {
+  const code = runCli(['operations'], { write: () => {}, errWrite: () => {}, env: {} })
+  assert.equal(typeof code, 'number')
+})
+
 // --- help surface -------------------------------------------------------------
 
 // The capability names are derived from this module's OWN dispatch literals, so a new

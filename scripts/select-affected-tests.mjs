@@ -177,6 +177,10 @@ const bazelIrrelevantPrefixes = [
   'proof/',
   'skills-toolbox/',
   'infra/',
+  // BOS-1317: the uv-managed dbt project. No Go code, no go_test `data` dep and no
+  // BUILD file (its venv/target dirs are in .bazelignore); `make test-warehouse` is
+  // its gate.
+  'services/warehouse/',
 ]
 
 const bazelIrrelevantFiles = new Set([
@@ -565,6 +569,26 @@ export function selectTargets(files) {
     // test the guide cites.
     if (file === 'services/bosso/cmd/trial_enrollment.go') {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+    }
+
+    // BOS-1317: the warehouse dbt project is not a Go module, so no module rule claims
+    // it; `make test-warehouse` (migrate, grant, deny-probe, dbt parse/build) is its whole
+    // gate. Terminal: nothing else reads these files.
+    if (file.startsWith('services/warehouse/')) {
+      selectWholeTarget(selections, 'test-warehouse')
+      selectedPrimaryTarget = true
+      continue
+    }
+
+    // The bosso Postgres migrations are the schema the warehouse models read and the
+    // grant script walks, and the withheld-column list beside them decides what the
+    // warehouse role may read. A migration can therefore break `dbt build` or the grant
+    // run with no services/warehouse change at all. Deliberately NOT terminal: the
+    // moduleRules lookup below must still add test-bosso, which owns these files' own
+    // tests. Mirrors test-warehouse.yml's `services/bosso/migrations_postgres/**` path.
+    if (file.startsWith('services/bosso/migrations_postgres/')) {
+      selectWholeTarget(selections, 'test-warehouse')
       selectedPrimaryTarget = true
     }
 

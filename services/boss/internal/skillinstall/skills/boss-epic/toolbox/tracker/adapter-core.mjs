@@ -169,8 +169,9 @@ export const OPTIONAL_TRACKER_CAPABILITIES = ['states', 'selectPlanned', 'readDe
 //      failing the run, so requiring it would reject adapters over a capability whose
 //      absence is already handled at CALL time.
 //   4. writeDescription, the file-based description write. It replaces an issue's whole
-//      description with bytes read from disk, so a caller never retypes an already-gated
-//      body into a tool argument. It is optional because no control flow depends on it
+//      description with bytes read from disk (the already-gated body). It pins WHICH bytes
+//      are sent, not that they stay out of the caller's context: an inline-only save re-emits
+//      them, so what landed is read back. It is optional because no control flow depends on it
 //      yet: a caller that finds it absent falls back to sending the description inline on
 //      the existing moveState/setPriorityEstimate save, exactly as every caller does today.
 //      Its summary is where the argument shape lives, since TrackerOperation has no
@@ -228,6 +229,18 @@ export const REQUIRED_TRACKER_OPERATIONS = [
 ]
 
 /**
+ * The single home of the "usable op tool" rule: an operationMap entry names an MCP tool only
+ * when its `tool` is a non-empty trimmed string. A whitespace-only `tool` is as unusable as an
+ * absent one. Used by assertConforms and by `tracker/cli.mjs operations`, so the probe verdict
+ * and the conformance check cannot drift.
+ * @param {unknown} op
+ * @returns {boolean}
+ */
+export function operationHasTool(op) {
+  return Boolean(op) && typeof op.tool === 'string' && op.tool.trim() !== ''
+}
+
+/**
  * Throw if `adapter` is missing any capability in TRACKER_CAPABILITIES, or if
  * its operationMap is missing any REQUIRED_TRACKER_OPERATIONS entry (or that
  * entry lacks a non-empty string tool/summary). Every adapter's own test
@@ -266,9 +279,7 @@ export function assertConforms(adapter) {
     if (!op) {
       throw new Error(`tracker adapter operationMap missing operation: ${key}`)
     }
-    // Trimmed: a whitespace-only `tool` is exactly as unusable as an absent one
-    // (it names no MCP tool), and `=== ''` alone would let `" "` claim conformance.
-    if (typeof op.tool !== 'string' || op.tool.trim() === '') {
+    if (!operationHasTool(op)) {
       throw new Error(`tracker adapter operation ${key} missing tool`)
     }
     if (typeof op.summary !== 'string' || op.summary.trim() === '') {
@@ -278,7 +289,7 @@ export function assertConforms(adapter) {
   for (const key of OPTIONAL_TRACKER_OPERATIONS) {
     if (!(key in adapter.operationMap)) continue
     const op = adapter.operationMap[key]
-    if (!op || typeof op.tool !== 'string' || op.tool.trim() === '') {
+    if (!operationHasTool(op)) {
       throw new Error(`tracker adapter operation ${key} missing tool`)
     }
     if (typeof op.summary !== 'string' || op.summary.trim() === '') {
@@ -304,12 +315,32 @@ export function assertConforms(adapter) {
  * object literal, so `TRACKER=constructor` would otherwise resolve to `Object` —
  * truthy — and `Object({env, fetchImpl})` would return a plain object that silently
  * impersonates an adapter.
+ *
+ * A MISSING registry is refused before the name lookup, by its own message. `adapter.mjs`
+ * exports a resolver of the same name that takes `{env, fetchImpl}` and supplies the registry
+ * itself; handing that shape (or a loaded config) to THIS export used to throw
+ * `unknown tracker: linear`, which reads as "the tracker is not registered" when the fault is the
+ * wrong module. `unknown tracker: <name>` is reserved for a registry that lacks the name.
  * @param {{builders: Record<string, (opts: {env: object, fetchImpl: typeof fetch}) => TrackerAdapter>,
  *   env?: object, fetchImpl?: typeof fetch}} opts
  * @returns {TrackerAdapter}
  */
 export function resolveTrackerAdapter({ builders, env = process.env, fetchImpl = fetch } = {}) {
+  if (!isBuilderRegistry(builders)) {
+    throw new Error(
+      'resolveTrackerAdapter (tracker/adapter-core.mjs) needs a {builders} registry of tracker ' +
+        'builder functions; to resolve the configured tracker, import resolveTrackerAdapter from ' +
+        'tracker/adapter.mjs, which supplies the registry and takes {env, fetchImpl}',
+    )
+  }
   const name = env.TRACKER ?? 'linear'
-  if (!builders || !Object.hasOwn(builders, name)) throw new Error(`unknown tracker: ${name}`)
+  if (!Object.hasOwn(builders, name)) throw new Error(`unknown tracker: ${name}`)
   return builders[name]({ env, fetchImpl })
+}
+
+// A registry is a plain (non-array) object carrying at least one builder FUNCTION. A loaded config
+// (`{tracker: {...}}`) or an empty object is not one, and must not reach the name lookup.
+function isBuilderRegistry(builders) {
+  if (!builders || typeof builders !== 'object' || Array.isArray(builders)) return false
+  return Object.values(builders).some((builder) => typeof builder === 'function')
 }

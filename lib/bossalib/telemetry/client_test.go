@@ -33,6 +33,8 @@ type fakePostHogClient struct {
 
 func (f *fakePostHogClient) Close() error                           { return f.closeErr }
 func (f *fakePostHogClient) CloseWithContext(context.Context) error { return f.closeErr }
+func (f *fakePostHogClient) Flush() error                           { return nil }
+func (f *fakePostHogClient) FlushWithContext(context.Context) error { return nil }
 func (f *fakePostHogClient) Enqueue(message posthog.Message) error {
 	f.message = message
 	return nil
@@ -320,6 +322,134 @@ func TestCaptureStampsAppVersionThatCallersCannotForge(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCaptureUsesOccurredAtFromContext(t *testing.T) {
+	occurredAt := time.Date(2026, time.September, 20, 12, 30, 0, 0, time.FixedZone("JST", 9*60*60))
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want time.Time
+	}{
+		{name: "context carries an occurred-at time", ctx: WithOccurredAt(context.Background(), occurredAt), want: occurredAt.UTC()},
+		{name: "bare context", ctx: context.Background(), want: time.Time{}},
+		{name: "zero occurred-at time", ctx: WithOccurredAt(context.Background(), time.Time{}), want: time.Time{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &fakePostHogClient{}
+			client := &postHogClient{inner: inner, cfg: Config{App: "bosso", Environment: "test"}}
+
+			client.Capture(tt.ctx, EventSignupUserCreated, "user:sub_1", map[string]any{"step": "user_created"})
+
+			capture, ok := inner.message.(posthog.Capture)
+			if !ok {
+				t.Fatalf("Enqueue message = %T, want posthog.Capture", inner.message)
+			}
+			if !capture.Timestamp.Equal(tt.want) {
+				t.Fatalf("Timestamp = %v, want %v", capture.Timestamp, tt.want)
+			}
+			if !tt.want.IsZero() && capture.Timestamp.Location() != time.UTC {
+				t.Fatalf("Timestamp location = %v, want UTC", capture.Timestamp.Location())
+			}
+		})
+	}
+}
+
+func TestConversionLadderMatchesDocumentation(t *testing.T) {
+	documentation, err := os.ReadFile(filepath.Join(telemetryRepoRoot(t), "docs", "analytics", "events.md"))
+	if err != nil {
+		t.Fatalf("read telemetry documentation: %v", err)
+	}
+	items := conversionLadderItems(t, string(documentation))
+
+	gotIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		gotIDs = append(gotIDs, item.id)
+	}
+	wantIDs := make([]string, 0, len(ConversionLadder))
+	for _, stage := range ConversionLadder {
+		wantIDs = append(wantIDs, stage.ID)
+	}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("documented ladder stages = %v, want %v", gotIDs, wantIDs)
+	}
+
+	for i, stage := range ConversionLadder {
+		if stage.Derived {
+			if stage.Event != "" {
+				t.Errorf("derived stage %q names event %q, want none", stage.ID, stage.Event)
+			}
+			continue
+		}
+		if stage.Event == "" {
+			t.Errorf("emitted stage %q names no event", stage.ID)
+			continue
+		}
+		if !strings.Contains(items[i].body, "`"+stage.Event+"`") {
+			t.Errorf("documented stage %q does not name its event `%s`", stage.ID, stage.Event)
+		}
+		if stage.Event == "$pageview" {
+			continue
+		}
+		spec, ok := Registry[Event(stage.Event)]
+		if !ok {
+			t.Errorf("stage %q event %q is not registered", stage.ID, stage.Event)
+			continue
+		}
+		if spec.Surface != "cloud" {
+			t.Errorf("stage %q event %q has surface %q, want cloud", stage.ID, stage.Event, spec.Surface)
+		}
+	}
+}
+
+type conversionLadderItem struct {
+	id   string
+	body string
+}
+
+// conversionLadderItems parses the numbered list under "## Conversion ladder".
+// Each item opens with "N. `<stage id>`"; continuation lines belong to the item
+// above them, and the section ends at the next level-two heading.
+func conversionLadderItems(t *testing.T, documentation string) []conversionLadderItem {
+	t.Helper()
+	var items []conversionLadderItem
+	inSection := false
+	for _, line := range strings.Split(documentation, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			if inSection {
+				break
+			}
+			inSection = strings.TrimSpace(line) == "## Conversion ladder"
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if id, ok := conversionLadderItemID(line); ok {
+			items = append(items, conversionLadderItem{id: id, body: line})
+			continue
+		}
+		if len(items) > 0 && strings.HasPrefix(line, " ") {
+			items[len(items)-1].body += "\n" + line
+		}
+	}
+	if !inSection && len(items) == 0 {
+		t.Fatal("documentation has no \"## Conversion ladder\" section")
+	}
+	return items
+}
+
+func conversionLadderItemID(line string) (string, bool) {
+	number, rest, ok := strings.Cut(line, ". `")
+	if !ok || number == "" {
+		return "", false
+	}
+	if _, err := strconv.Atoi(number); err != nil {
+		return "", false
+	}
+	id, _, ok := strings.Cut(rest, "`")
+	return id, ok && id != ""
 }
 
 func TestConstructorsPopulateAppVersion(t *testing.T) {
@@ -816,7 +946,7 @@ func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
 		{EventCloudCheckoutReturned, billingTelemetryProperties()},
 		{EventCloudTrialStarted, map[string]any{"product_area": "billing", "cloud_access_state": "trialing", "entry_point": "stripe_webhook_trial_enrollment", "can_create_checkout": false, "checkout_started": false, "source": "server"}},
 		{EventCloudTrialEnrollmentFailed, billingTelemetryProperties()},
-		{EventCloudSubscriptionActivated, map[string]any{"product_area": "billing", "cloud_access_state": "active", "entry_point": "stripe_webhook_subscription_activated", "source": "server"}},
+		{EventCloudSubscriptionActivated, map[string]any{"product_area": "billing", "cloud_access_state": "active", "entry_point": "stripe_webhook_subscription_activated", "workos_org_id": "org_123", "source": "server"}},
 		{EventSignupUserCreated, map[string]any{"source": "auth_jit", "step": "user_created"}},
 		{EventBillingAccountProvisioned, map[string]any{"product_area": "billing", "source": "server", "step": "provisioned", "workos_org_id": "org_123"}},
 		{EventCloudActionInvoked, map[string]any{"command": "ProxyStopSession", "error_code": "unavailable", "product_area": "sessions", "source": "cloud", "status": "error"}},
@@ -825,6 +955,7 @@ func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
 		{EventPRCallbackDelivered, map[string]any{"trigger": "checks_passed", "status": "delivered", "attempt_count": 1, "source": "daemon"}},
 		{EventBroadcastDelivered, map[string]any{"status": "delivered", "attempt_count": 1, "source": "daemon"}},
 		{EventSessionFinalized, map[string]any{"outcome": "pr_opened", "agent": "claude", "unattended": true, "source": "daemon"}},
+		{EventAgentSessionCompleted, map[string]any{"session_state": "green_draft", "agent": "claude", "organization_id": "org_1", "source": "server"}},
 		{EventFeatureViewed, map[string]any{"feature": "sessions", "source": "web"}},
 		{EventFeatureInteraction, map[string]any{"feature": "sessions", "action": "filter_changed", "source": "web"}},
 		{EventTUIAction, map[string]any{"feature": "accounts", "action": "account_removed", "status": "success", "source": "tui"}},

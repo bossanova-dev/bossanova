@@ -1164,6 +1164,7 @@ ${cronOrganizationStageScript(recipe)}
 ${repositoryOrganizationStageScript(recipe)}
 ${daemonLabelCollisionStageScript(recipe)}
 ${subscribeStageScript(recipe)}
+${newsletterOptInStageScript(recipe)}
 ${accountsProbeStageScript(recipe)}
 ${sessionExpiredStageScript(recipe)}
 ${sessionsDaemonFailureStageScript(recipe)}
@@ -1411,6 +1412,24 @@ function subscribeStageScript(recipe) {
   const eligibility = recipe.id === 'web-subscribe-trial-used' ? 'ineligible' : 'eligible'
   return stageFixtureScript(
     `{ cloudAccessState: 'needs_subscription', cloudTrialEligibility: '${eligibility}' }`,
+  )
+}
+
+// newsletterOptInStageScript stages the in-app newsletter opt-in's subject
+// (BOS-1318): a first-run user with no sessions, an active cloud account, and a
+// newsletter bosso reports as available. The card renders only in the Sessions
+// first-run empty state, so the shared web fixture's seeded sessions have to go.
+//
+// Recipe-SCOPED: an empty session list in the shared fixture would blank every
+// other sessions recipe, and the fake's default (newsletter unavailable) is what
+// keeps every other web capture free of the card.
+function newsletterOptInStageScript(recipe) {
+  // Declared INSIDE the function for the same temporal-dead-zone reason as
+  // accountsProbeStageScript below.
+  const stagedRecipeIds = new Set(['web-newsletter-opt-in'])
+  if (!stagedRecipeIds.has(recipe?.id)) return ''
+  return stageFixtureScript(
+    `{ sessions: [], cloudAccessState: 'active', newsletter: { available: true } }`,
   )
 }
 

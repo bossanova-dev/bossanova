@@ -935,9 +935,10 @@ func skillsCmd() *cobra.Command {
 // optional.
 //
 // `plugins`: bin/bossd-plugin-claude carries its own mirror of the skill payload
-// and calls EnsureUpdated on the installed tree at daemon startup. Rebuilding and
-// reinstalling only the CLI therefore looks fixed until the next daemon start,
-// which restores the old skills from the stale plugin binary.
+// and runs a guarded refresh of the installed tree at daemon startup. The guard
+// holds over a stamped explicit or checkout install, but an unstamped (legacy)
+// tree or a provably newer plugin release is still rewritten from that mirror,
+// so rebuilding only the CLI leaves the plugin able to restore stale skills.
 //
 // `./bin/boss`: this warning fires whenever the RUNNING binary's payload is older
 // than the source tree, and that binary is often a globally installed one (say
@@ -1221,7 +1222,10 @@ func runSkillGate(out io.Writer, only string) error {
 		}
 		if len(unexplained) > 0 {
 			gateErr = errors.Join(gateErr, fmt.Errorf("skill drift detected"))
-			_, _ = fmt.Fprintf(out, "boss skills gate: %s skill drift detected", target.command)
+			// The count is this agent tree's own, stated as such: the gate
+			// prints one section per tree, so a count taken over the whole
+			// output is a multiple of any one tree's.
+			_, _ = fmt.Fprintf(out, "boss skills gate: %s skill drift detected — %d path(s) in this agent tree", target.command, len(unexplained))
 			if fallback {
 				_, _ = fmt.Fprint(out, " (origin/HEAD unavailable; used git status fallback)")
 			}
@@ -1303,10 +1307,16 @@ func currentStale(stale bool, current, outdated string) string {
 	return current
 }
 
+// skillInstallRemedy is the reinstall command every drift surface prints. For a
+// from-source payload it builds first, the same `make -C <root> build plugins`
+// step formatBinarySkillsDriftWarning names: bin/ is gitignored, so a freshly
+// provisioned worktree has no bin/boss to invoke, and rebuilding the plugins in
+// the same step keeps a stale plugin embed from restoring the old payload.
 func skillInstallRemedy(payload selectedSkillPayload) string {
 	if payload.fromSource {
 		root := repoRootFromSourceRoot(payload.srcRoot)
-		return trustCheckoutSkillSourcesEnv + "=1 " + shellQuote(filepath.Join(root, "bin", "boss")) + " skills install"
+		return "make -C " + shellQuote(root) + " build plugins && " +
+			trustCheckoutSkillSourcesEnv + "=1 " + shellQuote(filepath.Join(root, "bin", "boss")) + " skills install"
 	}
 	return "boss skills install"
 }
@@ -1674,6 +1684,9 @@ func runSkillSync(out io.Writer, mode skillSyncMode, only string) error {
 	var targetErr error
 	refreshed := false
 	installedTargetsCurrent := true
+	// Every mode here is an explicit operator command, so it keeps its
+	// overwrite contract and stamps an explicit payload record.
+	record := skillPayloadRecord(payload, libskillinstall.WriterExplicit)
 
 	recordErr := func(err error) {
 		if only != "" {
@@ -1681,7 +1694,7 @@ func runSkillSync(out io.Writer, mode skillSyncMode, only string) error {
 		}
 	}
 	extract := func(target skillInstallAgent, dir, verb string) {
-		if err := libskillinstall.Extract(dir, payload.fsys); err != nil {
+		if err := libskillinstall.ExtractRecorded(dir, payload.fsys, record); err != nil {
 			installedTargetsCurrent = false
 			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to %s %s skills: %v\n", verb, target.command, err)
 			recordErr(err)
@@ -1723,7 +1736,7 @@ func runSkillSync(out io.Writer, mode skillSyncMode, only string) error {
 		default:
 			// Update-only: refresh a stale tree, no-op when current. sync never
 			// fresh-installs (falls through to the not-installed hint below).
-			updated, err := libskillinstall.EnsureUpdated(dir, payload.fsys)
+			updated, err := libskillinstall.EnsureUpdatedRecorded(dir, payload.fsys, record)
 			if err != nil {
 				installedTargetsCurrent = false
 				_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to update %s skills: %v\n", target.command, err)

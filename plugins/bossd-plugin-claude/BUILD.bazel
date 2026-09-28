@@ -26,6 +26,7 @@ go_library(
     deps = [
         "//lib/bossalib/agenterr",
         "//lib/bossalib/agentruntime",
+        "//lib/bossalib/buildinfo",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/loginshell",
         "//lib/bossalib/plugin",

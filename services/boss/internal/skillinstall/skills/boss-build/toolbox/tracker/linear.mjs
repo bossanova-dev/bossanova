@@ -294,7 +294,8 @@ export function buildLinearOperationMap(mcpServer) {
       tool: `mcp__${mcpServer}__save_issue`,
       summary:
         '{id, description} -> replace the issue description wholesale with bytes read from a ' +
-        'file, so an already-gated body is never retyped into a tool argument',
+        'file (the already-gated body); the argument is inline-only, so executing it re-emits ' +
+        'those bytes and the stored description must be read back to confirm what landed',
     },
     // `size` carries a UNIT, because the unit is the contract: it is the file's BYTE count,
     // measured on the exact file about to be PUT. A character count, or a count taken from the

@@ -5,15 +5,20 @@
 // violations and keep the CLI shape small enough for skill bash blocks.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, dirname } from 'node:path'
 
 import { checkPlanContract } from './plan-contract-guard.mjs'
 import { selectImplementationPlanAttachment } from './plan-attachment.mjs'
-import { planScratchToken } from './plan-scratch-paths.mjs'
+import { parseEpicSpec } from './plan-epic-lib.mjs'
+import { EPIC_REVERIFY_CLASS, epicReverifyVerdict } from './plan-epic-phase25.mjs'
+import { RUN_SCRATCH_DIR_PREFIX, planScratchPath, planScratchToken } from './plan-scratch-paths.mjs'
 import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import {
   DEFAULT_CONFIG,
+  labelName,
   loadSkillConfig,
+  optionalLabelName,
   stateName,
   validatePlanDescription,
 } from './skill-config.mjs'
@@ -426,6 +431,146 @@ function assertBareIssuePayload(value, file) {
   }
 }
 
+// A role the config cannot resolve is handed to the verdict as null, which reports it as
+// `unresolved-role` for the roles it requires — a named blocker instead of an opaque throw.
+function resolveRole(resolve, config, role) {
+  try {
+    return resolve(config, role)
+  } catch {
+    return null
+  }
+}
+
+const readIfPresent = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : null)
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const childKey = (issue) =>
+  typeof issue?.identifier === 'string' && issue.identifier !== '' ? issue.identifier : issue?.id
+
+/**
+ * The `epic-reverify` boundary. The bundle carries tracker payloads only — ids, states, labels,
+ * attachments, links. Every other input is a file whose path is DERIVED here, from the bundle's own
+ * run directory and ids through `planScratchPath`, so the thing being checked can never choose what
+ * it is compared against; and every description the verdict judges is replaced by the stored
+ * read-back file, so a retyped or abbreviated description in the bundle is never read.
+ */
+function runEpicReverify(bundlePath, { config = loadSkillConfig() } = {}) {
+  const bundle = JSON.parse(readFileSync(bundlePath, 'utf8'))
+  if (!plainObject(bundle)) throw new Error(`${bundlePath} is not a JSON object`)
+  const { parentId, childIds } = bundle
+  if (typeof parentId !== 'string' || parentId.trim() === '') {
+    throw new Error(`${bundlePath} carries no parentId`)
+  }
+  const runDir = dirname(bundlePath)
+  const runDirName = basename(runDir)
+  if (!runDirName.startsWith(RUN_SCRATCH_DIR_PREFIX)) {
+    throw new Error(`${bundlePath} does not sit in a ${RUN_SCRATCH_DIR_PREFIX}<RUN-ID> directory`)
+  }
+  const runId = runDirName.slice(RUN_SCRATCH_DIR_PREFIX.length)
+  const root = dirname(runDir)
+  const at = (family, parts) =>
+    planScratchPath(runId, family, { issueId: parentId, ...parts }, root)
+  if (basename(bundlePath) !== basename(at('epic-reverify'))) {
+    throw new Error(`${bundlePath} is not this parent's declared ${basename(at('epic-reverify'))}`)
+  }
+
+  const fileBlockers = []
+  const need = (path, code, what) => {
+    const text = readIfPresent(path)
+    if (text === null) fileBlockers.push({ code, message: `${what} is missing: ${path}` })
+    return text
+  }
+
+  const specText = need(at('epic-spec'), 'intended-missing', 'the epic spec scratch')
+  const intendedOverview = need(at('epic-overview'), 'intended-missing', 'the intended overview')
+  const storedOverview = need(at('image-guard-stored'), 'stored-missing', 'the stored overview')
+
+  // Copies with the bundle's own descriptions dropped: only stored read-back files are judged.
+  const parent = plainObject(bundle.parent) ? { ...bundle.parent } : bundle.parent
+  if (plainObject(parent)) {
+    delete parent.description
+    if (storedOverview !== null) parent.description = storedOverview
+  }
+
+  const children = Array.isArray(bundle.children)
+    ? bundle.children.map((child) => {
+        if (!plainObject(child)) return child
+        const fields = { ...child }
+        delete fields.description
+        const key = childKey(child)
+        const stored =
+          typeof key === 'string' && key !== ''
+            ? need(
+                at('child-image-guard-stored', { childId: key }),
+                'stored-missing',
+                `${key}'s stored description`,
+              )
+            : null
+        return stored === null ? fields : { ...fields, description: stored }
+      })
+    : bundle.children
+
+  const childBodies = {}
+  for (const childId of Array.isArray(childIds) ? childIds : []) {
+    if (typeof childId !== 'string' || childId === '') continue
+    const intended = need(
+      at('child-image-guard-new', { childId }),
+      'intended-missing',
+      `${childId}'s intended description`,
+    )
+    const live = Array.isArray(children)
+      ? children.find((c) => plainObject(c) && (c.identifier === childId || c.id === childId))
+      : undefined
+    childBodies[childId] = { intended: intended ?? undefined, stored: live?.description }
+  }
+
+  const verdict = epicReverifyVerdict({
+    parentId,
+    childIds,
+    parent,
+    children,
+    spec: specText === null ? null : parseEpicSpec(specText),
+    roles: {
+      planned: resolveRole(stateName, config, 'planned'),
+      unplanned: resolveRole(stateName, config, 'unplanned'),
+      inProgress: resolveRole(stateName, config, 'inProgress'),
+      inReview: resolveRole(stateName, config, 'inReview'),
+      epic: resolveRole(labelName, config, 'epic'),
+      agentFriendly: resolveRole(labelName, config, 'agentFriendly'),
+      needsHuman: resolveRole(labelName, config, 'needsHuman'),
+      agentQuestion: resolveRole(optionalLabelName, config, 'agentQuestion'),
+      agentPlan: resolveRole(optionalLabelName, config, 'agentPlan'),
+    },
+    config,
+    parentOverview: {
+      intended: intendedOverview ?? undefined,
+      stored: storedOverview ?? undefined,
+    },
+    childBodies,
+  })
+  if (fileBlockers.length === 0) return verdict
+  // A missing file always surfaces in the verdict too (a missing body or spec is itself a
+  // blocker), so the class is already decided; the fallback only guards that invariant.
+  const decidedClass = verdict.ok ? EPIC_REVERIFY_CLASS.needsHuman : verdict.class
+  return {
+    ...verdict,
+    ok: false,
+    class: decidedClass,
+    blockers: [...fileBlockers, ...verdict.blockers],
+  }
+}
+
+// An unreadable input cannot prove the parent is still resumable, so it takes the retain class.
+function unreadableEpicReverify(error) {
+  return {
+    ok: false,
+    class: EPIC_REVERIFY_CLASS.needsHuman,
+    notices: [],
+    blockers: [
+      { code: 'unreadable-input', message: `plan-run-guards: ${error?.message ?? error}` },
+    ],
+  }
+}
+
 function printViolations(result) {
   for (const field of result.missing ?? []) {
     process.stderr.write(`plan-run-guards: missing ${field}\n`)
@@ -530,6 +675,26 @@ function runGuardVerb(argv) {
       // fire that the caller never saw.
       return { verb, code: 0, reason: result.action === 'noop' ? 'noop' : 'plan' }
     }
+    if (command === 'epic-reverify' && first) {
+      verb = 'epic-reverify'
+      // This branch owns its read/parse/config errors: the shared catch below exits 1, and exit 1 is
+      // the ONE code whose skill branch deletes the run scratch. An unreadable input proves nothing
+      // about the parent, so it must retain that evidence (exit 3), never take the resumable exit.
+      let decided
+      try {
+        decided = runEpicReverify(first)
+      } catch (error) {
+        decided = unreadableEpicReverify(error)
+      }
+      for (const b of decided.blockers) process.stderr.write(`${b.code}: ${b.message}\n`)
+      process.stdout.write(`${JSON.stringify(decided)}\n`)
+      if (decided.ok) return { verb, code: 0, reason: 'ok' }
+      return {
+        verb,
+        code: decided.class === EPIC_REVERIFY_CLASS.resumable ? 1 : 3,
+        reason: decided.blockers[0]?.code ?? 'blocked',
+      }
+    }
     if (command === 'premises' && first && second) {
       verb = 'premises'
       const premises = readJSON(first)
@@ -566,7 +731,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json>\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> | epic-reverify <bundle.json>\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

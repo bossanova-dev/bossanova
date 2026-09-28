@@ -149,13 +149,11 @@ names generically everywhere else:
    A `boss-toolbox-drift:` line is the no-CLI fallback signal: warning-only, because that helper may
    itself be stale and cannot see drift kinds at all. Re-vendor and reinstall the skills to clear it.
    A drift row on the recording side still decides no terminal state.
-3. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`,
-   `readPlanAttachment`, and `deletePlanAttachment` operations now. If any is absent, stop before
-   drafting or tracker writes. These names are conventional tracker-adapter operations declared in
-   the adapter `operationMap` (`OPTIONAL_TRACKER_OPERATIONS` in `tracker/adapter-core.mjs`), not
-   toolbox exports or greppable helper symbols; for a tool-backed adapter, each op's `tool` field is
-   the concrete capability to probe. `deletePlanAttachment` is required here, not at its first use:
-   every upload site reads its artifact back and deletes a confirmed-unreadable orphan
+3. Require the tracker's optional plan-attachment ops now: after the toolbox preamble, run
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" operations --require preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment`.
+   Exit 0 proceeds; exit 2 names every absent op, so stop before drafting or tracker writes; exit 64
+   is a malformed probe to fix, never an absent op. `deletePlanAttachment` is required here, not at
+   its first use: every upload site reads its artifact back and deletes a confirmed-unreadable orphan
    (`references/plan-storage.md` step 5), so a missing op must fail with nothing written.
    Native tracker attachments are the only implementation-plan store and never change proof storage.
 4. Confirm the tracker adapter is reachable with a cheap read (its status-list capability scoped to
@@ -327,33 +325,25 @@ for the Phase 4 secret gate.
    EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
    PREMISES="$(printf '%s' "$READ" | jq -c '.payload.premises // []')"
    if [ "$EPIC" = "true" ]; then
-     # EPIC outcome: the subagent claims it performed ALL tracker writes itself (children
-     # created + wired, parent repurposed with the parent-label exception, moved
-     # unplanned → planned). BEFORE accepting, RE-VERIFY the epic against Linear (never trust
-     # the sentinel alone — the subagent may have written `ok` too early / with partial
-     # tracker writes, mirroring the single-ticket plan-file re-verify below):
-     EPIC_PARENT="$(printf '%s' "$READ" | jq -r '.payload.epicParentId // empty')"
-     # Run BOTH Linear MCP reads NOW and promote only from their actual results.
-     EPIC_REVERIFIED=false
-     # (a) get_issue "$EPIC_PARENT": parent planned, epic-labeled, not unplanned.
-     # (b) list_issues parentId="$EPIC_PARENT" limit=250; hydrate each child with get_issue; require
-     # payload `childIds` match, every child planned + canonical-plan attached, and
-     # `reconcileEpicChildren(spec, hydratedLiveChildren)` passes. missing/empty childIds is a sentinel-shape failure, not a silent fallback.
-     # Both true ⇒ EPIC_REVERIFIED=true; otherwise SAFE branch — NO success report.
-     if [ "$EPIC_REVERIFIED" != "true" ]; then
-       echo "$DISPATCH_FAILURE: epic sentinel ok but reverify failed (parent still unplanned, or children missing/short) — no success report, aborting" >&2
+     # EPIC: inputs hydrated before this block (headless-dispatch.md).
+     RC=0; RV="$(node "${RUN_SENTINEL%/*}/plan-run-guards.mjs" epic-reverify .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify.json)" || RC=$?
+     # A crashed node exits 1 too: only a printed resumable verdict deletes scratch.
+     case "$RC:$(printf '%s' "$RV" | jq -r .class 2>/dev/null)" in
+       0:*) ;;
+       1:resumable)
+       echo "$DISPATCH_FAILURE: epic reverify failed, parent still unplanned — next sweep resumes it" >&2
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-       # Reverify-fail also skips Phase 5; remove the same scratch families.
        CLEANUP_RC=0
        rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
        if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
        if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
-       exit 1
-     fi
-     # reverify PASSED: there is NO single-ticket plan file, and the single-ticket
-     # metadata (labels/agentFriendly/estimate/…) does NOT apply. SKIP Phase 3.5 and
-     # Phase 4 entirely and go straight to Phase 5 (cleanup) + Phase 6 (report), using
-     # the bounded epic metadata (epicParentId, childIds) for the report.
+       exit 1 ;;
+       *)
+       echo "$DISPATCH_FAILURE: epic reverify exit $RC — needs a human; run scratch kept" >&2
+       node "$RUN_SENTINEL" cleanup "$RUN_DIR"
+       exit 1 ;;
+     esac
+     # PASSED: no single-ticket plan/metadata — SKIP Phase 3.5-4; Phase 5 + 6 report epicParentId, childIds.
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
    else
      PLAN_FILE_RAW="$(printf '%s' "$READ" | jq -r '.payload.planPath // empty')"
@@ -370,13 +360,9 @@ for the Phase 4 secret gate.
    ```
 
    **Branch on the `ok` payload.** An **epic** outcome (`payload.epic == true`, no `planPath`) means
-   the subagent already did every Phase 2.5 tracker write. Re-read Linear before accepting: its parent
-   must be planned and its children must match required `childIds` / `parseEpicSpec`; a sentinel that
-   omits `childIds` is rejected separately from a child-reconciliation miss. Recovery is to decode the
-   spec attachment body with `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" decode <in-file> <out-file>`
-   and re-run reconciliation, never to accept the sentinel alone. Otherwise safe-abort so the next
-   sweep resumes it. On success skip Phase 3.5–4; re-running them would turn the parent into a
-   `boss-build` target. A single-ticket `ok` sentinel proceeds only when its metadata `planPath`
+   the subagent already did every Phase 2.5 tracker write; accept it only on `epic-reverify` exit 0
+   (hydration and exit classes: `references/headless-dispatch.md`); only a `resumable` exit 1 is
+   resumed. On success skip Phase 3.5–4, which would make the parent a `boss-build` target. A single-ticket `ok` sentinel proceeds only when its metadata `planPath`
    resolves to `PLAN_PATH` and names a non-empty plan file. Its `descriptionSummary` names the
    `description` artifact whose bytes become the Linear description; read the plan file only for the
    secret gate.
@@ -390,7 +376,7 @@ for the Phase 4 secret gate.
    if ! node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" adopt-metadata "$METADATA" "$RETURNED_METADATA"; then
      echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs adopt-metadata — no Linear write, aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-     # Read before discard, most sharply here: the plan already PASSED re-verify.
+     # Read before discard: the plan already PASSED re-verify.
      node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" guard-discard "$PLAN_PATH" || exit 1
      # Abort skips Phase 5; remove this run's whole scratch directory, as every sibling abort does.
      CLEANUP_RC=0
@@ -481,7 +467,7 @@ plain JSON**, never a description marker:
 | MIME type        | `application/json` (`SPEC_ATTACHMENT_MIME`)                                                                   |
 | title            | `Epic spec (<ISSUE-ID>)` (`specAttachmentTitle(<ISSUE-ID>)`) — **must NOT start with `Implementation plan`**  |
 | body             | `serializeEpicSpec(spec)` — plain JSON `{ schemaVersion, parentId, parent, children }`                        |
-| read             | `readPlanAttachment` (the Phase 0 attachment-read op), by attachment id from `get_issue`                      |
+| read             | `readPlanAttachment` `format="content"`, by attachment id from `get_issue`                                    |
 | duplicate policy | exactly one is valid; **two or more ⇒ abort loudly**, never guess — a human deletes all but one, then re-runs |
 | identity         | `validateSpecIdentity(spec, <ISSUE-ID>)` — `schemaVersion` + `parentId` must match, **not title alone**       |
 
@@ -668,7 +654,8 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    longer find a partial epic. Then compose the parent overview, run step 7's
    three gates (secret + image-parity + plan-contract with `--mode epic-parent`), then attach it natively — **reading the finalized parent
    overview back before the save** (`references/plan-storage.md` step 5; deleting a
-   confirmed-unreadable overview strands no spec store, which lives in its own attachment) — and
+   confirmed-unreadable overview strands no spec store, which lives in its own attachment) —
+   re-assert that state again immediately before the parent description save, and
    save it onto the still-unplanned parent** (description-only; an **attachment-sourced** spec lives outside the description, so this
    description-replacing save cannot lose it — the old re-append-the-marker requirement is obsolete
    there, not dropped by accident. **A LEGACY-sourced resume is the exception:** that parent's spec
@@ -738,7 +725,10 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    (**per its own plan's agent-friendliness call**), but **applied only after wiring** (step 6 deferred
    exposure), never at child-create time. **Strip stale build metadata as part of this flip**, for the step-4
    stage-1 reason (a state-only flip would leave an already-planned parent `boss-build`-selectable,
-   defeating the parent-label exception): **remove any pre-existing
+   defeating the parent-label exception). **Queue label:** this flip's `labels` (read-modify-write:
+   `save_issue` replaces the set; the estimate-less retry too) also drops the planning-queue
+   (`agentPlan`) label when one is configured, never at stage 1 — a partial epic must stay in the
+   queue sweep's input. **Remove any pre-existing
    `agent-friendly`/`needs-human` label from the parent and drop any stale single-ticket
    `Implementation plan (…)` link. For `tracker-attachment`, read the parent attachments and invoke
    `deletePlanAttachment` on exactly the ids
@@ -804,7 +794,7 @@ parent stays unplanned (the planned flip is step 7), a crash in that window re-p
 parent whose description is **already the composed overview** (`## Original notes` + child checklist),
 not the reporter's raw notes; on resume **detect this and reuse the saved overview verbatim** —
 never recompose `## Original notes` from the transformed description (which would nest the overview or
-trip image parity) — then **run the deferred step-6 external conflict links BEFORE stamping any child
+trip image parity) — then re-assert the unplanned state (no save runs here) and **run the deferred step-6 external conflict links BEFORE stamping any child
 buildable** (a crash could have landed after the parent save but before that pass, so the normal-flow
 ordering — parent commit → external links → exposure — must hold on resume too, else an agent-friendly
 root child is exposed without blocking overlapping active backlog work; the links are append-only, so
@@ -849,12 +839,7 @@ description heading is off-contract: drop it, or register it in `planContract.se
 epic-parent overview uses explicit `validatePlanDescription(config, description, {mode:'epic-parent'})`
 with `## Summary`, `## Child tickets`, `## Planning`, and `## Original notes`. Unknown modes warn and fall back to child-plan.
 
-When a ticket names a specific call site, construct, literal claim, or other mechanism that could
-recur, record a repo-wide sibling-class enumeration before fixing scope. List every
-site the search returns with verdict (`fix` or `not a defect`) and reason; adjudicate the class per
-site rather than sweeping every match wholesale. The reason names the discriminator, such as where
-the branch actually lives. A one-row "only named site found" table discharges it. An acceptance
-criterion must not cap the number of changed files; scope comes from enumeration, not file count.
+A mechanism that could recur needs the brief's Step 5 `### Sibling-class enumeration` (under `## Approach`).
 
 **config-first** order; the natural-reading `(description, config)` call throws a named
 argument-order error. It returns `{ ok, version, missing, unknown, unsupportedVersion }`; `ok` covers
@@ -1022,10 +1007,11 @@ subagent → validate its envelope → fold or skip), against
 > the reporter's source copies, never the drafted plan — no failing gate in Phase 4 deletes
 > `$PLAN_FILE`.
 >
-> One stderr line per violation tagged `line-spanning-emphasis`, `missing-sections`,
-> `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
+> One stderr line per violation tagged `duplicate-section`, `enumeration-dropped`, `line-spanning-emphasis`,
+> `merged-list-item`,
+> `missing-sections`, `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
 > `plan-file-structure-exemption`, `pr-body-only-evidence`, `premise-reused-as-criterion`, `section-order`,
-> `self-falsified-literal-search`, `stale-premise-citation`, `subject-areas-unresolved`,
+> `self-falsified-literal-search`, `stale-premise-citation`, `stale-risk-citation`, `subject-areas-unresolved`,
 > `unanchored-premise-citation`,
 > `unknown-section`, `unmeasured-count-claim`, `unresolvable-citation`, any `vacuous-*` code, or
 > `unreadable-input`; a missing
@@ -1074,8 +1060,8 @@ subagent → validate its envelope → fold or skip), against
    - **priority** (`1-4`): honor a reporter-set priority. Otherwise rank against the current config-resolved planned (`stateName(config, 'planned')`) backlog, considering urgency, simplicity, positive/business impact, and security (security concerns bias toward Urgent/High). A planned ticket should not stay `0=None`.
 4. Single tracker save op (ops `moveState`/`setPriorityEstimate`; Linear uses `save_issue`) updating the issue by
    `id`:
-   - `description`: **written from the file the gates above just validated, never retyped into this
-     argument.** Re-derive the toolbox preamble (blocks inherit nothing), then run
+   - `description`: **the bytes of the file the gates above just validated, never recomposed by
+     hand.** Re-derive the toolbox preamble (blocks inherit nothing), then run
      `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md >.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.write-description.json`
      and branch on the emitted record's explicit `outcome`, never on exit status alone:
      `descriptor-emitted` means execute the returned `{tool, args}` as this save, folding in the
@@ -1112,7 +1098,8 @@ subagent → validate its envelope → fold or skip), against
    a. **Fetch.** Op `selectPlanned` (planned — `trackerConfigFor(config).team`, `limit=250` — then
    in-progress and in-review) with an **explicit field list**: `description, labels, priority,
 createdAt` plus the adapter's workflow-state/status fields (`stateName`/`stateType`,
-   `state.{name,type}`, `status`/`statusType`, or equivalent). The default field set omits those, and an all-empty-description run returns
+   `state.{name,type}`, `status`/`statusType`, or equivalent) and `parentId`, written on the subject and
+   every candidate (`null` when none). The default field set omits those, and an all-empty-description run returns
    zero links with no error, indistinguishable from a clean result. Prefilter on title + labels
    before reading 250 descriptions — but that prefilter is a **context-scale measure only, never an
    overlap decision**. Keep it inclusive: a candidate whose title and labels look unrelated can still
@@ -1137,40 +1124,37 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    manufactures a blocking edge against work neither ticket touches.
 
    c. **Classify once.** Build `subject`, `candidates`, `declaredRelatedIds`, `logicalDependencies`,
-   `epicLabel` (`labelName(config, 'epic')`), `moduleRoots`, `repoWideTokens`, `areaAliases` and
-   `stateRoles` (`stateRolesFor(config)`). `repoWideTokens` EXTENDS the shipped suppression defaults
+   `moduleRoots`, `repoWideTokens`, `areaAliases` (`epicLabel` and `stateRoles` default from
+   config). `repoWideTokens` EXTENDS the shipped suppression defaults
    (name this repo's append-only registries and generated mirror directories; a token carrying a
    slash suppresses everything beneath it), and `areaAliases` maps a path onto the generated mirrors
-   of it.
-   Include `epicParentId` on the subject and every candidate when exposed: the library keeps epic
-   parents/siblings on the planning-note path instead of adding external dependency edges. `moduleRoots` is this
+   of it. `moduleRoots` is this
    repo's top-level module/package/`.dotted` names: area extraction drops every slash-free token
    without it, so a plan whose `## Key changes` names bare module names contributes no areas and its
    overlaps are missed in silence — the missed-prerequisite defect re-entering through the glue.
    `subject` needs the SAME fields as a candidate, including workflow state/status: it is blocked on
    inbound edges and blocks outbound ones, so missing state downgrades **every** edge rather than
-   some. `stateRolesFor(config)` returns that role map. Omitting it is SILENT, not loud: every state
-   resolves to unknown, every blocking edge downgrades to `relatedTo` under an `info` note, and a
-   run that linked nothing reads exactly like one that found nothing to link. **Write that payload
+   some. **Write that payload
    to this run's declared dependency-scan input** — `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json`,
    the `deps-input` family — rather than to a name you invent; the block does not create the file,
-   because an empty `mktemp` file parses as nothing and throws. The block prints `subjectAreas` and the
-   path-shaped tokens it could not resolve to stderr **before any edge is written**; read that line
-   first. A non-zero `compared` over an empty `subjectAreas` evaluated nothing and prints
-   byte-identically to a clean scan.
+   because an empty `mktemp` file parses as nothing and throws. It refuses a defective payload
+   (`validateDependencyScanInput`) before classifying, and prints `subjectAreas`, the unresolved
+   tokens and the verdict to stderr **before any edge is written**; read that line first.
 
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    DEPS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json"
-   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});i.stateRoles=i.stateRoles||c.stateRolesFor(g);const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved));console.log(JSON.stringify(d.planDependencyEdges(i)))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
+   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});i.stateRoles=i.stateRoles||c.stateRolesFor(g);i.epicLabel=i.epicLabel||c.labelName(g,"epic");const v=d.validateDependencyScanInput(i);if(!v.ok){for(const f of v.defects)console.error(f.code,f.id,f.remedy);process.exitCode=1;return}const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));const r=d.planDependencyEdges(i),V=d.dependencyScanVerdict(r);console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved)+" candidatesWithoutAreas "+r.candidatesWithoutAreas+" "+V.verdict+" compared="+V.compared+" edges="+V.edges+" "+V.reasons);console.log(JSON.stringify({...r,verdict:V}))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
    # Removing it here keeps the scan's input from outliving the scan; it is inside this run's
    # scratch directory either way, so an abort between the write and this line still leaves it
    # for Phase 5's single `rm -rf` rather than stranding a file nothing names.
    rm -f "$DEPS_IN"
    ```
 
-   d. **Act on `{ edges, skipped, notes, questions, compared }`** — imperative branches, no implicit
+   d. **Act on `{ edges, skipped, notes, questions, compared, verdict }`** — imperative branches, no implicit
    fallthrough:
+   - (c) exited non-zero printing `code id remedy` lines → apply each remedy, re-run (c); never
+     classify around them.
    - edge with `write` non-null → save exactly that `{id, blockedBy}` with op `appendDependency`.
      Relations are **append-only**: only add, never clobber; v1 does not auto-prune.
    - edge with `edge: 'relatedTo'` → save it with op `appendRelatedTo`. Best-effort on BOTH branches,
@@ -1179,8 +1163,7 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
      continue.
    - `notes[]` → `destination: 'planning'` under `## Planning`, `'risks'` under `## Risks / unknowns`.
      Never drop a `severity: 'warning'` note.
-   - `skipped[]` `reason: 'same-epic-member'` → record the planning note; do not add an external
-     edge. Intra-epic ordering is owned by the epic DAG.
+   - `same-epic-member` → record its one consolidated note; no edge (the epic DAG orders the epic).
    - `questions[]` → record under `## Open Questions` and add `agent-question`. Headless never asks;
      interactive mode may ask via AskUserQuestion.
    - `skipped[]` `expandChildren: true` → an epic parent, which never produces a PR of its own: fetch
@@ -1189,10 +1172,8 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
      a re-run loop that resets it walks a malformed parent/child graph forever.
    - `skipped[]` `reason: 'declared-related-unresolved'` → fetch that id and re-run (c), or record an
      Open Question. Never drop it silently.
-   - `compared === 0` → nothing was evaluated. Report _could not evaluate_, never _no dependencies_.
-   - a `notes[]` `reason` of `no-subject-areas` or `subject-unresolved-areas` → the scan compared
-     candidates it could never have matched. Report _could not evaluate_, never _no dependencies_.
-     Per unresolved token: only if its leading segment is a source root, declare it, re-run (c);
+   - verdict `could-not-evaluate` → report _could not evaluate_, never _no dependencies_. On
+     `subject-unresolved-areas`, per unresolved token: only if its leading segment is a source root, declare it, re-run (c);
      else (a root file, `origin/main`, `../x`) hand-compare under `## Planning`.
 
    e. **Cycle safety — after (d)'s downgrade, over blocking writes only.** For each surviving
@@ -1200,16 +1181,18 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    already exists (a 2-cycle) or the proposed blocker is already blocked by the proposed blocked
    ticket. `relatedTo` is symmetric and non-blocking and cannot form a cycle — never gate it here,
    and never run this ahead of (d): a 2-cycle check before the downgrade skips the pair outright and
-   silently suppresses the `relatedTo` edge and note the downgrade would have produced.
+   silently suppresses the `relatedTo` edge and note the downgrade would have produced. Where the
+   blocker is a started candidate whose read lists a GitHub PR that
+   `gh pr view <url> --json state,mergeCommit` reports `MERGED`, set `landed: {evidence: <merge oid>}`
+   on it and re-run (c) instead of writing (no `gh` or no GitHub PR: skip this check).
 
-   e2. **Transitive-block warning** — only where a surviving `write` puts THIS ticket on the blocked
-   side. Reuse (e)'s relations read on the blocker to inspect its own inverse `blocks` relations, and
-   treat a blocker's blocker as **still blocking** unless its state type is cleared or canceled — the
+   e2. **Transitive-block warning** — pass (e)'s relations reads to `transitiveBlockWarnings` (fetch
+   a nested ticket's missing state by id). Both directions; it must treat a blocker's blocker as
+   **still blocking** unless its state type is cleared or canceled — the
    `DEFAULT_CLEARED_STATE_TYPES` / `DEFAULT_CANCELED_STATE_TYPES` rule in
-   `toolbox/plan-deps-lib.mjs`, the single source of that definition (so prose and gate never
-   diverge). If that payload lacks a nested blocker's own state, fetch it by id. When the blocker is
-   itself open **AND** has ≥1 uncleared blocker, record a Transitive-block warning naming it and the
-   immediate open ticket(s) blocking it. Detection only — never auto-prune, never via AskUserQuestion.
+   `toolbox/plan-deps-lib.mjs`, the single source of that definition. `upstream` → the
+   `- Transitive-block warning:` line; `downstream` → `## Risks / unknowns`, and `escalated` also
+   under `## Open Questions` with `agent-question`. Detection only — never auto-prune, never via AskUserQuestion.
 
    e3. **Landed relation check — read both sides.** `appendDependency` and `appendRelatedTo` both
    map to a save that returns the full issue payload with **no confirmation that the edge exists**.
@@ -1218,13 +1201,10 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    one side landing is not evidence the edge did. A missing edge is **recorded** under `## Planning`,
    never re-written — an append that already landed would duplicate it.
 
-   f. Record what step 5 found — **whenever (d) produced ≥1 relation, note, or question**; skip only
-   when it produced none of the three. A zero-relation run is not a quiet run: an arealess subject, an
-   unresolved declared relation, an ambiguous orientation and a canceled prerequisite each write no
-   edge and each raise a warning or a question, so gating this save on the relations alone throws away
-   exactly the outcomes the plan's reader most needs — and `agent-question` never reaches the ticket.
+   f. Record what step 5 found — **only when stdout's `verdict.recordToDescription` is true**;
+   otherwise the verdict goes to the Phase 6 report only.
    Step 4 saved the description first, so send a second tracker save with `id` + `description`
-   (adding `labels` only to carry `agent-question`, when (d) produced a question — union it into the
+   (adding `labels` only to carry `agent-question`, when (d) or (e2) produced a question — union it into the
    set Step 4 saved, because `labels` **replaces** the whole set; this is the run's last save, so a
    label deferred past it is a label never applied): compose it from a **fresh read of the stored
    description**, never by re-sending Step 4's bytes: the tracker may have renormalized that write,
@@ -1285,7 +1265,7 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    Phase 6 report** — all four are reportable outcomes, not just the failing one. Exit zero for
    `byte-exact` (the transport round-trips) and `normalized-equivalent` (every difference is a
    declared, meaning-preserving transform); which of the two a run observes is **measured, never
-   configured**. Exit zero also for `unattributed`, and non-zero only for `drift`.
+   configured**. Exit zero also for `unattributed`; non-zero for `drift` or a `merged-list-item` cause.
 
    `unattributed` — a difference the transform vocabulary cannot name, on bytes whose contract,
    verbatim block and upload identities are all intact — is deliberately **not** fatal: the
@@ -1358,8 +1338,8 @@ the only surviving copy of the intended bytes and deleting it destroys the diff 
 Print a concise summary: issue id + title, the finalized native plan attachment's **id** and exact
 title `Implementation plan (<ISSUE-ID>)`, final labels, estimate, priority, the status change
 (unplanned → planned), and the Phase 4 step-6 write-back verdict (`byte-exact` or
-`normalized-equivalent`) and the read route (`read-description` or `getIssue`). When step 5 (e2) recorded any transitive-block warning, echo it
-here too (e.g. `blocked by <BLOCKER-ID>, which is itself open and blocked by <UPSTREAM-BLOCKER-ID>`) so an unattended run
+`normalized-equivalent`) and the read route (`read-description` or `getIssue`). Echo step 5's
+verdict (`<verdict> compared=N edges=M`) and any (e2) warning, so an unattended run
 leaves a visible trail before the operator opens Linear. The plan is attached natively with no local copy
 remaining (it is copied into `docs/plans/` at implementation time, per the plan's first dev step).
 

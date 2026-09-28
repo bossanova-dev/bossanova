@@ -120,3 +120,17 @@ test('manifest states where -race runs and points at the budget ratchet', () => 
   assert.match(manifest, /summed, never maxed/)
   assert.match(manifest, /`services\/bossd\/internal\/dbtest`/)
 })
+
+// BOS-1328: a plan pinned `# skipped 0` for `make test-scripts`, which no ordinary run can report.
+// The manifest documents the baseline, and this test keeps the documentation TRUE: it reds if the
+// gated evals it describes disappear, which is the moment the paragraph must go too.
+test('manifest documents the make test-scripts skipped baseline while one exists', () => {
+  const manifest = renderManifest({ rootTargets: ['test-scripts'], modules: [] })
+  assert.match(manifest, /### `make test-scripts` has a non-zero skipped baseline \(BOS-1328\)/)
+  const source = fs.readFileSync(new URL('./proof-brief.test.mjs', import.meta.url), 'utf8')
+  assert.match(source, /process\.env\.RUN_PROOF_EVAL === '1'/)
+  assert.ok(
+    (source.match(/\{ skip: !EVAL \}/g) ?? []).length > 0,
+    'no RUN_PROOF_EVAL-gated eval remains; drop the skipped-baseline paragraph',
+  )
+})

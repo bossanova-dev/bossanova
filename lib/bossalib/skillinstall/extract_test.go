@@ -721,7 +721,7 @@ func TestNeedsUpdateFalseAfterExtract(t *testing.T) {
 
 func TestInstalledNeedsUpdateDoesNotCreateLockForLegacyInstall(t *testing.T) {
 	dest := t.TempDir()
-	if err := extract(dest, testFS()); err != nil {
+	if err := extract(dest, testFS(), nil); err != nil {
 		t.Fatalf("extract legacy install: %v", err)
 	}
 	lockPath := filepath.Join(dest, updateLockFile)

@@ -42,6 +42,7 @@ const (
 	EventPRCallbackDelivered        Event = "pr_callback_delivered"
 	EventBroadcastDelivered         Event = "broadcast_delivered"
 	EventSessionFinalized           Event = "session_finalized"
+	EventAgentSessionCompleted      Event = "agent_session_completed"
 	EventFeatureViewed              Event = "feature_viewed"
 	EventFeatureInteraction         Event = "feature_interaction"
 	EventTUIAction                  Event = "tui_action"
@@ -162,7 +163,7 @@ var Registry = map[Event]EventSpec{
 	EventCloudCheckoutReturned:      {Surface: "cloud, tui", Description: "Cloud checkout return was processed", Properties: billingProperties()},
 	EventCloudTrialStarted:          {Surface: "cloud", Description: "Stripe trial enrollment started", Properties: propertySet("product_area", "cloud_access_state", "entry_point", "can_create_checkout", "checkout_started")},
 	EventCloudTrialEnrollmentFailed: {Surface: "cloud", Description: "Stripe trial enrollment failed after checkout return", Properties: billingProperties()},
-	EventCloudSubscriptionActivated: {Surface: "cloud", Description: "Stripe subscription became active", Properties: propertySet("product_area", "cloud_access_state", "entry_point")},
+	EventCloudSubscriptionActivated: {Surface: "cloud", Description: "Stripe subscription became active", Properties: propertySet("product_area", "cloud_access_state", "entry_point", "workos_org_id")},
 	EventSignupUserCreated:          {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
 	EventBillingAccountProvisioned:  {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
 	EventCloudActionInvoked:         {Surface: "cloud", Description: "A user-initiated cloud action completed; passive polling reads are excluded", Properties: propertySet("command", "status", "product_area", "error_code")},
@@ -171,9 +172,32 @@ var Registry = map[Event]EventSpec{
 	EventPRCallbackDelivered:        {Surface: "daemon", Description: "A PR callback reached a terminal delivery outcome", Properties: propertySet("trigger", "status", "attempt_count")},
 	EventBroadcastDelivered:         {Surface: "daemon", Description: "A broadcast delivery reached a terminal outcome", Properties: propertySet("status", "attempt_count")},
 	EventSessionFinalized:           {Surface: "daemon", Description: "A session finalize reached an outcome", Properties: propertySet("outcome", "agent", "unattended")},
+	EventAgentSessionCompleted:      {Surface: "cloud", Description: "A cloud-connected session entered green_draft, ready_for_review or merged", Properties: propertySet("session_state", "agent", "organization_id")},
 	EventFeatureViewed:              {Surface: "web", Description: "A product surface was viewed", Properties: propertySet("feature")},
 	EventFeatureInteraction:         {Surface: "web", Description: "A client-only product interaction occurred", Properties: propertySet("feature", "action")},
 	EventTUIAction:                  {Surface: "tui", Description: "A TUI feature action reached an outcome", Properties: propertySet("feature", "action", "status")},
+}
+
+// LadderStage is one stage of the Bossanova conversion ladder. ID is the stage
+// value the growth warehouse consumes. Event names the PostHog event that marks
+// the stage; a Derived stage has no event and is computed in the warehouse.
+type LadderStage struct {
+	ID      string
+	Event   string
+	Derived bool
+}
+
+// ConversionLadder is the ordered conversion ladder documented under
+// "## Conversion ladder" in docs/analytics/events.md. The visit stage is the
+// marketing site's client-side $pageview; every other emitted stage names a
+// cloud event in Registry, and retained_30d is derived, never emitted.
+// Callers must not mutate it.
+var ConversionLadder = []LadderStage{
+	{ID: "visit", Event: "$pageview"},
+	{ID: "signup", Event: string(EventSignupUserCreated)},
+	{ID: "first_agent_session", Event: string(EventAgentSessionCompleted)},
+	{ID: "paid_subscription", Event: string(EventCloudSubscriptionActivated)},
+	{ID: "retained_30d", Derived: true},
 }
 
 func propertySet(properties ...string) map[string]struct{} {

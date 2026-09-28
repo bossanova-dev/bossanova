@@ -105,14 +105,19 @@ On every terminal failure path, remove any retained attachment-header scratch fi
 
 ## Writing the description from a file
 
-The description is composed and gated as a file, so it is written to the tracker as a file too.
-Retyping those bytes into an inline argument is what defeats the gate: a block the guards proved
-byte-verbatim stops being provably the same object the moment a model re-emits it, and a measured
-incident recorded a two-character drift surviving every gate that way.
+The description is composed and gated as a file, so the save takes its bytes from that file.
+Recomposing them by hand is what defeats the gate: a block the guards proved byte-verbatim stops
+being provably the same object the moment a model re-emits it, and a measured incident recorded a
+two-character drift surviving every gate that way.
 
 The write reuses the descriptor-emission pattern the comment path already proves. `write-description`
 reads the body, validates it, and prints a `{tool, args}` record for you to execute through the
-tracker's own interface — no raw API call, and the bytes never enter your context:
+tracker's own interface, with no raw API call. The descriptor fixes **which** bytes are sent (the
+gated file) and their measured size. It does **not** keep them out of your context: on a tracker
+whose save takes the description only inline (Linear `save_issue`), executing the descriptor
+re-emits those bytes through you as the tool argument. What measures whether they survived that
+round trip is the Phase 4 step 6 write-back check (`plan-writeback-verify.mjs`), which compares the
+tracker's stored description with the gated file:
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
@@ -145,8 +150,8 @@ split decides whether a fallback is legitimate:
   notes, and the tracker exposes no description history to recover them from. Fix what the run
   composed, or take the SAFE branch.
 
-Verification of what landed belongs to the write-back check after the final save, and it reads the
-tracker's **stored** description — asserting the section contract and the verbatim block against
+Verification of what landed belongs to the step 6 write-back check (`plan-writeback-verify.mjs`)
+after the final save, and it reads the tracker's **stored** description — asserting the section contract and the verbatim block against
 those bytes. Do not add a byte comparison against the buffer you sent: the tracker renormalizes
 markdown after every local gate has run (a `-` bullet stored as `*`), so such a check reds on every
 run for a purely cosmetic reason while proving nothing the stored-document check does not.

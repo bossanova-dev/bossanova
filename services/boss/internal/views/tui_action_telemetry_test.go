@@ -350,9 +350,13 @@ func TestTelemetryTUIActionCancelledConfirmationEmitsNothing(t *testing.T) {
 		{Code: 'n', Text: "n"},
 		{Code: tea.KeyEscape},
 	}
-	neverRun := func() tea.Msg {
+	// Typed as tea.Cmd: the signature is fixed by the prompt, so its always-nil
+	// result is not a parameter to prune.
+	var neverRun tea.Cmd = func() tea.Msg {
 		t.Fatal("the confirm action ran on a cancel keystroke")
-		return nil
+		// Unreachable after t.Fatal. A non-constant result keeps unparam from
+		// reporting "always nil", which it does on the CI linux runner only.
+		return t.Name()
 	}
 
 	t.Run("accounts_remove", func(t *testing.T) {

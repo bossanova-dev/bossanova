@@ -26,8 +26,17 @@
 // is a non-zero gate whose output carries no parseable drift row at all — the shape that a
 // failed comparison or an unevaluable tree produces. A verdict allowlist whose default arm is the
 // benign one is not a default, it is a hole.
+//
+// Scope: the verdict is about the tree THIS RUN executes, not the whole installed tree. Rows under
+// the running core, and under the sibling cores it loads in-run, decide; rows under any other core
+// are still reported, but decide nothing. The running core is read from where this module sits —
+// a vendored copy lives at `<skills>/<core>/toolbox/` — or given by `--core`. That location and the
+// flag are the only inputs besides the gate's own output; no checkout is read. An unrecognised or
+// unlocatable core falls back to whole-tree scope, which is the fail-closed direction.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { basename, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // The direct-invocation predicate has exactly one definition repo-wide (enforced by
 // main-module.test.mjs), so this module shares it rather than inlining a second copy — every
@@ -89,6 +98,64 @@ const SEVERITY = Object.freeze({
 // the recording side is still reported as work-state-neutral, so it lives in one constant and is
 // reachable from the advisory renders alone.
 export const SKILL_DRIFT_ADVISORY_SENTENCE = 'bookkeeping only, work state unaffected'
+
+// The cores each consumer loads during its own run, itself included. A core missing from this table
+// — or no core at all — is judged on the whole installed tree, so a forgotten entry fails closed.
+// A consumer that starts loading another sibling core must add it here.
+export const SKILL_DRIFT_CORE_CLOSURE = Object.freeze({
+  'boss-plan': Object.freeze(['boss-plan']),
+  'boss-repair': Object.freeze(['boss-repair']),
+  // boss-build invokes boss-review for its review stack and boss-finalize to ship.
+  'boss-build': Object.freeze(['boss-build', 'boss-review', 'boss-finalize']),
+})
+
+// A published core directory name. A first path segment that is not one — the gate keys a missing
+// install root on the namespace directory itself — belongs to no single core, so it stays in scope.
+const CORE_NAME = /^boss(-[a-z0-9-]+)?$/
+
+// The running core, read from this module's own location: a `toolbox/` directory whose parent is a
+// published core. Symlinks are resolved first, because installed cores are reached through a
+// top-level link into the namespaced payload. Anything else — the canonical source copy, a test
+// fixture, an unreadable path — infers no core.
+export function inferRunningCore(moduleUrl = import.meta.url) {
+  let file
+  try {
+    file = fileURLToPath(moduleUrl)
+  } catch {
+    return null
+  }
+  try {
+    file = realpathSync(file)
+  } catch {
+    // Keep the unresolved path; inference then reads the link's own location.
+  }
+  const toolbox = dirname(file)
+  if (basename(toolbox) !== 'toolbox') return null
+  const core = basename(dirname(toolbox))
+  return core.startsWith('boss-') && CORE_NAME.test(core) ? core : null
+}
+
+// The set of cores in scope for the given core names, or null for whole-tree scope. Any name the
+// closure table does not know widens to the whole tree rather than narrowing to nothing.
+export function scopeForCores(cores = []) {
+  const names = [...cores].filter((name) => name !== null && name !== undefined)
+  if (names.length === 0) return null
+  const scope = new Set()
+  for (const name of names) {
+    if (!Object.hasOwn(SKILL_DRIFT_CORE_CLOSURE, name)) return null
+    for (const core of SKILL_DRIFT_CORE_CLOSURE[name]) scope.add(core)
+  }
+  return scope
+}
+
+// Whether a gate path belongs to the tree this run executes. The gate prints paths relative to the
+// namespace, so the first segment is the core.
+export function rowInScope(path, scope) {
+  if (scope === null || scope === undefined) return true
+  const head = String(path).split('/')[0]
+  if (!CORE_NAME.test(head)) return true
+  return scope.has(head)
+}
 
 // `  - <path> (<kind>, <direction>)`. The two-space indent is what separates a drift row from the
 // gate's own headers (`boss skills gate: …`, which are flush left) and from the indented entries
@@ -158,15 +225,29 @@ export function parseSkillGateOutput(output = '') {
   return { rows, remedy: { command, withheld } }
 }
 
-// The verdict on one gate observation: its exit status and its captured output, nothing else.
-export function classifySkillDrift({ exitStatus = 0, output = '' } = {}) {
+// An out-of-scope row can raise the aggregate no higher than this: it is reported, never decisive.
+const OUT_OF_SCOPE_CEILING = SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD
+
+// The verdict on one gate observation: its exit status and its captured output, plus the cores
+// whose rows decide (`cores`; empty or absent means the whole tree).
+export function classifySkillDrift({ exitStatus = 0, output = '', cores = [] } = {}) {
   const parsed = parseSkillGateOutput(output)
-  const rows = parsed.rows.map((row) => ({
-    ...row,
-    verdict: verdictForDriftRow(row.kind, row.direction),
-  }))
+  const scope = scopeForCores(cores)
+  const rows = parsed.rows.map((row) => {
+    const verdict = verdictForDriftRow(row.kind, row.direction)
+    return {
+      ...row,
+      verdict,
+      // An unreadable row — unparseable, or parsed with a kind or direction outside the gate's
+      // vocabulary — stays in scope whatever its path: what it names cannot be trusted, and the
+      // out-of-scope ceiling would otherwise demote its `undecided` to advisory.
+      inScope: verdict === SKILL_DRIFT_VERDICTS.UNDECIDED || rowInScope(row.path, scope),
+    }
+  })
   const base = {
     rows,
+    scope: scope === null ? null : [...scope].sort(),
+    outOfScope: rows.filter((row) => !row.inScope),
     kinds: [...new Set(rows.map((row) => row.kind).filter(Boolean))].sort(),
     directions: [...new Set(rows.map((row) => row.direction).filter(Boolean))].sort(),
     remedy: parsed.remedy,
@@ -185,8 +266,14 @@ export function classifySkillDrift({ exitStatus = 0, output = '' } = {}) {
   }
   if (rows.length === 0) return decided(SKILL_DRIFT_VERDICTS.UNDECIDED, 'no-drift-row')
 
+  const effective = (row) => {
+    if (row.inScope) return row.verdict
+    if (SEVERITY[row.verdict] <= SEVERITY[OUT_OF_SCOPE_CEILING]) return row.verdict
+    // A capability row under a core this run never loads is reported, not a stop.
+    return SKILL_DRIFT_VERDICTS.ADVISORY
+  }
   let verdict = rows.reduce(
-    (worst, row) => (SEVERITY[row.verdict] > SEVERITY[worst] ? row.verdict : worst),
+    (worst, row) => (SEVERITY[effective(row)] > SEVERITY[worst] ? effective(row) : worst),
     SKILL_DRIFT_VERDICTS.CLEAN,
   )
   // The gate can withhold its remedy on a report whose own rows all read as recoverable. Take it
@@ -195,7 +282,7 @@ export function classifySkillDrift({ exitStatus = 0, output = '' } = {}) {
   if (parsed.remedy.withheld && verdict === SKILL_DRIFT_VERDICTS.ADVISORY) {
     verdict = SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD
   }
-  const matching = rows.filter((row) => row.verdict === verdict)
+  const matching = rows.filter((row) => row.inScope && row.verdict === verdict)
   const evidence = matching.length > 0 ? matching : rows
   const reason = {
     blocking: 'absent-capability',
@@ -209,13 +296,58 @@ export function classifySkillDrift({ exitStatus = 0, output = '' } = {}) {
 // The lines a consumer prints. The advisory renders carry the contract sentence; the blocking and
 // undecided renders must not, because that sentence is the claim this whole module exists to stop
 // making about an absent capability.
+// Each drifted path once, however many agent trees reported it.
+const uniqueLabels = (rows) => [
+  ...new Set(rows.map((row) => `${row.path} (${row.kind}, ${row.direction})`)),
+]
+
+// Kinds whose stale copy is one the run reads or executes: the claim that the work state is
+// unaffected is exactly what cannot be made about them when they are in scope.
+const EXECUTED_STALE_KINDS = new Set(['content', 'unexpected'])
+
+// The warning for capability rows under cores this run does not load. Reported, never dropped:
+// they are real drift, just not this run's.
+function outOfScopeCapabilityLines(result) {
+  const rows = (result.outOfScope ?? []).filter((row) => CAPABILITY_KINDS.has(row.kind))
+  if (rows.length === 0) return []
+  const labels = uniqueLabels(rows)
+  return [
+    `warning: ${labels.length} installed path(s) are missing from cores this run does not load ` +
+      `(${[...new Set(rows.map((row) => row.path.split('/')[0]))].sort().join(', ')}); they decide nothing ` +
+      `here: ${labels.join(', ')}`,
+  ]
+}
+
 export function renderSkillDriftVerdict(result) {
-  const { verdict, remedy, evidence = [], reason } = result
+  const { verdict, remedy, evidence = [], reason, rows = [] } = result
   if (verdict === SKILL_DRIFT_VERDICTS.CLEAN) return []
+  const executedStale = rows.filter((row) => row.inScope && EXECUTED_STALE_KINDS.has(row.kind))
+  if (
+    (verdict === SKILL_DRIFT_VERDICTS.ADVISORY ||
+      verdict === SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD) &&
+    executedStale.length > 0
+  ) {
+    // Not "work state unaffected": these are copies this run executes, and they lag the source
+    // whose behaviour the run is expected to have.
+    const labels = uniqueLabels(executedStale)
+    const where =
+      verdict === SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD
+        ? 'the gate withheld its reinstall remedy, so there is no command to offer — read the gate output above for the next action'
+        : remedy.command
+          ? `run: ${remedy.command}`
+          : 'see gate output above'
+    return [
+      `warning: installed boss skills drift from checkout source; this run executes ${labels.length} ` +
+        `installed path(s) that lag checkout source, so its behaviour can differ from the checkout's: ` +
+        `${labels.join(', ')} — ${where}`,
+      ...outOfScopeCapabilityLines(result),
+    ]
+  }
   if (verdict === SKILL_DRIFT_VERDICTS.ADVISORY) {
     const where = remedy.command ? `run: ${remedy.command}` : 'see gate output above'
     return [
       `warning: installed boss skills drift from checkout source; ${where} — ${SKILL_DRIFT_ADVISORY_SENTENCE}`,
+      ...outOfScopeCapabilityLines(result),
     ]
   }
   if (verdict === SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD) {
@@ -225,6 +357,7 @@ export function renderSkillDriftVerdict(result) {
       'warning: installed boss skills drift from checkout source; the gate withheld its reinstall ' +
         'remedy, so there is no command to offer — read the gate output above for the next action ' +
         `— ${SKILL_DRIFT_ADVISORY_SENTENCE}`,
+      ...outOfScopeCapabilityLines(result),
     ]
   }
   if (verdict === SKILL_DRIFT_VERDICTS.UNDECIDED) {
@@ -237,8 +370,8 @@ export function renderSkillDriftVerdict(result) {
   // The gate reports per agent tree, so the same path arrives once per installed agent. Name
   // each one once and carry both counts: a list that repeats a path reads as more distinct
   // missing files than there are, and a count that drops the duplicates understates the report.
-  const labels = [...new Set(evidence.map((row) => `${row.path} (${row.kind}, ${row.direction})`))]
-  return [
+  const labels = uniqueLabels(evidence)
+  const lines = [
     `BLOCKED: installed boss skills are missing ${labels.length} capability file(s) a later step invokes by path` +
       `${evidence.length === labels.length ? '' : ` (${evidence.length} drift rows across the installed agent trees)`}: ${labels.join(', ')}`,
     '  this is an absent capability, not a stale record: the run does not fail here, it fails at' +
@@ -247,10 +380,17 @@ export function renderSkillDriftVerdict(result) {
       ? `  repair: ${remedy.command}`
       : '  repair: the gate withheld its reinstall command — move or delete the paths it named as' +
         ' unrecoverable first, then re-run it.',
-    '  the reinstall alone does not hold for a whole run: an agent plugin binary that still embeds' +
-      ' the old payload restores it at daemon start, so rebuild the plugin binaries from the same' +
-      ' source first (in a make-driven checkout: make build plugins).',
   ]
+  // Only when the gate's own command lacks the build step: a command that already rebuilds the
+  // plugins needs no second instruction to do so.
+  if (!remedy.command || !remedy.command.includes('build plugins')) {
+    lines.push(
+      '  the reinstall alone does not hold for a whole run: an agent plugin binary that still embeds' +
+        ' the old payload restores it at daemon start, so rebuild the plugin binaries from the same' +
+        ' source first (in a make-driven checkout: make build plugins).',
+    )
+  }
+  return [...lines, ...outOfScopeCapabilityLines(result)]
 }
 
 function readStdin() {
@@ -263,7 +403,22 @@ function readStdin() {
   }
 }
 
-export function main(argv, { stdin, stdout = process.stdout } = {}) {
+// The cores named by every `--core <name>`, or null when none was given. A `--core` with no value
+// widens to the whole tree (an unknown name) rather than falling back to inference, which could
+// only narrow it.
+function coreFlags(argv) {
+  const cores = []
+  let given = false
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] !== '--core') continue
+    given = true
+    const value = argv[i + 1]
+    cores.push(value === undefined || value.startsWith('--') ? '' : value)
+  }
+  return given ? cores : null
+}
+
+export function main(argv, { stdin, stdout = process.stdout, moduleUrl = import.meta.url } = {}) {
   const command = argv[0]
   if (command !== 'classify') {
     stdout.write(
@@ -278,6 +433,7 @@ export function main(argv, { stdin, stdout = process.stdout } = {}) {
   const result = classifySkillDrift({
     exitStatus: status,
     output: stdin !== undefined ? stdin : readStdin(),
+    cores: coreFlags(argv) ?? [inferRunningCore(moduleUrl)],
   })
   for (const line of renderSkillDriftVerdict(result)) stdout.write(`${line}\n`)
   return result.blocking ? 1 : 0

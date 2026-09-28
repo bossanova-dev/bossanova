@@ -400,6 +400,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.GetGitHubAppInstallURLResponse'
+  /bossanova.v1.OrchestratorService/GetNewsletterStatus:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetNewsletterStatus
+      description: |-
+        Weekly newsletter opt-in (BOS-1318). User-authenticated. The subscription
+         goes through the Loops form endpoint, the only path Loops gates with double
+         opt-in; see docs/analytics/newsletter.md.
+      operationId: bossanova.v1.OrchestratorService.GetNewsletterStatus
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetNewsletterStatusRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetNewsletterStatusResponse'
   /bossanova.v1.OrchestratorService/GetOrganization:
     post:
       tags:
@@ -3264,6 +3303,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.SetRepoOrganizationResponse'
+  /bossanova.v1.OrchestratorService/SubscribeToNewsletter:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SubscribeToNewsletter
+      operationId: bossanova.v1.OrchestratorService.SubscribeToNewsletter
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SubscribeToNewsletterRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SubscribeToNewsletterResponse'
   /bossanova.v1.OrchestratorService/SwitchActiveOrganization:
     post:
       tags:
@@ -7618,6 +7692,33 @@ components:
           title: install_url
       title: GetGitHubAppInstallURLResponse
       additionalProperties: false
+    bossanova.v1.GetNewsletterStatusRequest:
+      type: object
+      title: GetNewsletterStatusRequest
+      additionalProperties: false
+    bossanova.v1.GetNewsletterStatusResponse:
+      type: object
+      properties:
+        isAvailable:
+          type: boolean
+          title: is_available
+          description: |-
+            False when bosso has no Loops newsletter form configured; the web app then
+             shows no opt-in and the wording fields are empty.
+        wordingVersion:
+          type: string
+          title: wording_version
+          description: The current consent wording's version, echoed back on subscribe.
+        wordingText:
+          type: string
+          title: wording_text
+          description: The current consent wording, rendered verbatim next to the opt-in.
+        consent:
+          title: consent
+          description: The caller's existing consent, absent when they never opted in.
+          $ref: '#/components/schemas/bossanova.v1.NewsletterConsent'
+      title: GetNewsletterStatusResponse
+      additionalProperties: false
     bossanova.v1.GetNoteCommand:
       type: object
       properties:
@@ -9553,6 +9654,31 @@ components:
              re-render.
       title: MoveSessionResponse
       additionalProperties: false
+    bossanova.v1.NewsletterConsent:
+      type: object
+      properties:
+        consentedAt:
+          title: consented_at
+          description: When the user asked to subscribe.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        source:
+          type: string
+          title: source
+          description: Where the opt-in came from; always "onboarding" for this path.
+        sourcePage:
+          type: string
+          title: source_page
+          description: The app path the opt-in was shown on, with no query or fragment.
+        wordingVersion:
+          type: string
+          title: wording_version
+          description: The version of the consent wording the user was shown.
+      title: NewsletterConsent
+      additionalProperties: false
+      description: |-
+        NewsletterConsent is the caller's recorded in-app newsletter opt-in. It is
+         written only after Loops accepted the form submission; the subscription is
+         still pending until the user clicks the double opt-in confirmation link.
     bossanova.v1.NoOpAction:
       type: object
       properties:
@@ -15865,6 +15991,31 @@ components:
       title: StreamEventsResponse
       additionalProperties: false
       description: StreamEventsResponse wraps a single event notification from a plugin.
+    bossanova.v1.SubscribeToNewsletterRequest:
+      type: object
+      properties:
+        wordingVersion:
+          type: string
+          title: wording_version
+          description: |-
+            The wording version the user was shown. bosso rejects a version that is
+             not current with INVALID_ARGUMENT so the client re-reads the status.
+        sourcePage:
+          type: string
+          title: source_page
+          description: |-
+            The app path the opt-in was shown on. Must start with "/"; any query or
+             fragment is dropped, and it is at most 256 characters.
+      title: SubscribeToNewsletterRequest
+      additionalProperties: false
+    bossanova.v1.SubscribeToNewsletterResponse:
+      type: object
+      properties:
+        consent:
+          title: consent
+          $ref: '#/components/schemas/bossanova.v1.NewsletterConsent'
+      title: SubscribeToNewsletterResponse
+      additionalProperties: false
     bossanova.v1.SuggestPRTitleRequest:
       type: object
       properties:

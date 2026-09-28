@@ -35,6 +35,10 @@ const intentionallyBranchIgnored = new Map([
     'pinned because proto generated artifacts are owned end-to-end by one PR rather than by repo-wide glob inputs',
   ],
   [
+    'test-warehouse.yml',
+    'pinned because warehouse dbt inputs are PR-scoped; the models run hourly from production, not main',
+  ],
+  [
     'test-web.yml',
     'pinned because web inputs are PR-scoped and the full web tier is rerun on release PRs',
   ],

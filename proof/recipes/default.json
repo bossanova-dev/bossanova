@@ -62,7 +62,7 @@
       "id": "web-sessions-filters-mobile",
       "surface": "web",
       "title": "Web Sessions Filters (mobile)",
-      "description": "Sessions sub-header at 390px opened from a shared URL with two filters active: the 'Sessions' crumb, the square filter trigger and the '+' New session button share the breadcrumb row, and beneath it inside the same pinned sub-header the Daemon chip ('Standby daemon') and the Repository chip ('Proof web repository') stack one per line, the '+' after the last chip and a Clear button on its own row at the right. Every control is fully on screen. (Absence of horizontal overflow and the pinning on scroll are asserted by mobile-layout.spec.ts, not by this crop.)",
+      "description": "Sessions sub-header at 390px opened from a shared URL with two filters active: the 'Sessions' crumb, the square filter trigger and the '+' New session button share the breadcrumb row, and beneath it inside the same pinned sub-header the Daemon chip ('Standby daemon') and the Repository chip ('Proof web repository') stack one per line, the '+' after the last chip and the Clear button at the top right, on the first chip's row. Every control is fully on screen. (Absence of horizontal overflow and the pinning on scroll are asserted by mobile-layout.spec.ts, not by this crop.)",
       "privacy": "fixture",
       "capture": "still",
       "route": "/sessions?daemon=daemon-proof-standby&repo=github.com/e2e/repo-proof-web",
@@ -239,6 +239,42 @@
           "selector": "[data-testid='sessions-filter-chip-repo']",
           "label": "Selection survived",
           "caption": "Both repositories and the same rows survive the reload"
+        }
+      ]
+    },
+    {
+      "id": "web-newsletter-opt-in",
+      "surface": "web",
+      "title": "Web Newsletter Opt-In",
+      "description": "BOS-1318: the first-run Sessions state ('No sessions are registered') shows the 'Weekly product updates' opt-in under Getting started, with the consent wording bosso returns and Subscribe / No thanks buttons. Clicking Subscribe submits the opt-in and the card confirms with 'Check your inbox and click the confirmation link to start receiving updates.'",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions",
+          "label": "Open sessions",
+          "caption": "Open the empty Sessions list of a new user"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"newsletter-opt-in\"]",
+          "label": "Opt-in card",
+          "caption": "The weekly product-updates opt-in sits under Getting started"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"newsletter-opt-in\"] button:has-text(\"Subscribe\")",
+          "label": "Subscribe",
+          "caption": "Subscribe with the consent wording shown"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"newsletter-opt-in\"] [role=\"status\"]:has-text(\"Check your inbox\")",
+          "label": "Confirmation copy",
+          "caption": "The card asks the user to confirm from the email Loops sends"
         }
       ]
     },
@@ -1719,7 +1755,7 @@
           "action": "wait",
           "selector": "[data-testid='daemons-filter-chip-org']",
           "label": "Filter bar",
-          "caption": "The chip stacks with + after it and Clear beneath"
+          "caption": "The chip stacks with + after it and Clear at the right of the chip row"
         },
         {
           "action": "click",
@@ -2380,6 +2416,16 @@
       "viewport": { "width": 1440, "height": 1400 }
     },
     {
+      "id": "marketing-newsletter-signup",
+      "surface": "marketing",
+      "title": "Marketing Newsletter Signup",
+      "description": "BOS-1318: the weekly newsletter signup at the bottom of /changelog, showing the 'Weekly product updates' heading, the email field, the consent statement ('I will get a confirmation email first, and I can unsubscribe at any time.') and the Subscribe button. The form posts to the Loops newsletter-form endpoint, the double opt-in path.",
+      "privacy": "fixture",
+      "route": "/changelog",
+      "selector": "#newsletter-signup",
+      "viewport": { "width": 1024, "height": 768 }
+    },
+    {
       "id": "web-new-session-flow",
       "surface": "web",
       "title": "Web New Session Flow",
@@ -2767,6 +2813,17 @@
       ]
     },
     {
+      "id": "marketing-privacy-attribution",
+      "surface": "marketing",
+      "title": "Marketing Privacy - Signup Attribution Cookie",
+      "description": "BOS-1313: the /privacy page's signup-attribution paragraph disclosing the first-party bossanova_ft cookie, what it records, its 90-day lifetime, and that Global Privacy Control is honoured.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/privacy",
+      "selector": "#signup-attribution-cookie",
+      "viewport": { "width": 1024, "height": 900 }
+    },
+    {
       "id": "docs-home",
       "surface": "docs",
       "title": "Docs — Home",
@@ -3116,6 +3173,7 @@
         "web-sessions-filter-persist",
         "web-sessions-org-filter-flow",
         "web-sessions-reorder-flow",
+        "web-newsletter-opt-in",
         "web-session-detail",
         "web-session-detail-no-pr",
         "web-session-detail-rotation",
@@ -3193,6 +3251,23 @@
       ]
     },
     {
+      "name": "Marketing signup attribution",
+      "patterns": [
+        "services/marketing/src/pages/privacy.astro",
+        "services/marketing/src/lib/attribution.ts"
+      ],
+      "recipeIds": ["marketing-privacy-attribution"]
+    },
+    {
+      "name": "Newsletter signup",
+      "patterns": [
+        "services/marketing/src/components/NewsletterSignup.astro",
+        "services/marketing/src/lib/newsletter.ts",
+        "services/web/src/components/NewsletterOptIn.tsx"
+      ],
+      "recipeIds": ["marketing-newsletter-signup", "web-newsletter-opt-in"]
+    },
+    {
       "name": "Marketing site",
       "patterns": ["services/marketing/", "lib/ui-tokens/"],
       "recipeIds": [
@@ -3200,6 +3275,7 @@
         "marketing-pricing",
         "marketing-cloud",
         "marketing-changelog",
+        "marketing-newsletter-signup",
         "marketing-home-scroll",
         "marketing-theme-toggle",
         "marketing-agent-coordination",

@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.0.9
+	charm.land/bubbletea/v2 v2.0.10
 	charm.land/huh/v2 v2.0.3
 	charm.land/lipgloss/v2 v2.0.6
 	connectrpc.com/connect v1.21.0
@@ -56,7 +56,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/posthog/posthog-go v1.25.2 // indirect
+	github.com/posthog/posthog-go v1.27.0 // indirect
 	github.com/qmuntal/stateless v1.8.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect

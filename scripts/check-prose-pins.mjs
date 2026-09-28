@@ -898,6 +898,15 @@ export const PROSE_PIN_BASELINE = {
   // no helper executes, so a helper could own only the `!==`. What no helper can answer is whether
   // BOTH published copies of the flip (SKILL.md for the orchestrator, the headless drafting brief
   // for the unattended subagent) still carry it; they drifted once, which is the defect fixed here.
+  // BOS-1328: 332 -> 333, one pin. The sibling-class enumeration rule moved out of the resident
+  // SKILL.md into its single home, the drafting brief's Step 5 `### Sibling-class enumeration`, and
+  // SKILL.md now carries only a one-line pointer to it. The five rule pins were narrowed to the brief
+  // (the first also names the home), and what no helper can answer is whether the resident body
+  // still POINTS there — the pointer is the only route an orchestrator reading SKILL.md has to it.
+  // BOS-1333: 333 -> 332, one pin. The Phase 0 "conventional tracker-adapter operations declared in
+  // the adapter operationMap" pin went with the paragraph it pinned; the replacement probe, the
+  // epic-spec read-row mode and the plan-storage write-back citation are asserted executably (the
+  // probe is run, the mode is cross-checked against the adapter, cited helpers must ship).
   'scripts/bs-plan-skill.test.mjs': 332,
   'scripts/bs-record-notes-skill.test.mjs': 2,
   'scripts/bs-sweep-debt-skill.test.mjs': 32,

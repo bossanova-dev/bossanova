@@ -17,6 +17,17 @@
 //     is an OPTIONAL capability: an adapter without it exits 2 with a diagnostic on stderr
 //     and NOTHING on stdout, which is why callers invoke it as `... states 2>/dev/null ||
 //     true` and fall back to their own `.boss-skills.json` read.
+//   node tracker/cli.mjs operations [--require <op>[,<op>...]]...
+//     -> stdout: {"operationMap":{<op>:{"tool","summary"}},"outcome":"operations-listed"}
+//     The presence probe for the RESOLVED adapter's operationMap — the one place optional ops
+//     such as the plan-attachment set are declared. Reading `trackerConfigFor(config)` instead
+//     finds nothing: that is the repo config, not the adapter, so every op probes as absent on a
+//     healthy adapter. With --require, exit 0 prints the same line narrowed to the named ops
+//     (outcome `operations-present`) only when each has a non-empty string `tool`; otherwise exit
+//     2 with one stderr line naming EVERY absent op and nothing on stdout. An op name in neither
+//     operation manifest, a valueless --require or an unknown flag exits 64 (EX_USAGE) with
+//     nothing on stdout: a misspelt name is a caller bug, never an absent capability, because an
+//     absent capability aborts a healthy run.
 //   node tracker/cli.mjs update-comment --id <commentId> --body-file <path>
 //     -> stdout: {"tool":"<adapter operationMap.updateComment.tool>","args":{"id":<commentId>,"body":<file contents>}}
 //     The descriptor is emitted for the driver to execute through the tracker MCP —
@@ -25,8 +36,11 @@
 //     -> stdout: {"tool":"<adapter operationMap.writeDescription.tool>","args":{"id":<issueId>,
 //        "description":<file contents>},"bytes":<size of the file ON DISK>,"outcome":"descriptor-emitted"}
 //     The file-based description write: the caller composes and gates the description as a
-//     file, and those same bytes reach the tracker without ever being retyped into a tool
-//     argument. `bytes` is measured here with stat(2) rather than counted from the decoded
+//     file, and the descriptor pins WHICH bytes are sent (that file) and their size. It does not
+//     keep them out of the caller's context: when the save takes the description only inline
+//     (Linear `save_issue`), executing the descriptor re-emits the bytes as the tool argument, so
+//     what landed is measured afterwards against the STORED description (boss-plan Phase 4 step
+//     6, plan-writeback-verify.mjs), never assumed. `bytes` is measured here with stat(2) rather than counted from the decoded
 //     string, so a multi-byte body reports its true size; a caller must never report a size
 //     it derived itself. `outcome` is the explicit success token the caller branches on, so
 //     a write that changed nothing cannot read as success.
@@ -76,7 +90,12 @@ import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync }
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { resolveTrackerAdapter } from './adapter.mjs'
-import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
+import {
+  OPTIONAL_TRACKER_OPERATIONS,
+  REQUIRED_TRACKER_OPERATIONS,
+  TRACKER_CREDENTIALS_MISSING,
+  operationHasTool,
+} from './adapter-core.mjs'
 import { loadSkillConfig, plannedSelectionQuery, trackerConfigFor } from '../skill-config.mjs'
 import { TRACKER_VERDICTS, classifyTrackerOutcome, formatOutcomeLine } from './outcome.mjs'
 
@@ -143,6 +162,13 @@ capabilities:
   states
       Print {"planned":...,"inProgress":...,"inReview":...} for the resolved adapter.
       OPTIONAL: an adapter without it exits 2 with a diagnostic and no stdout.
+
+  operations [--require <op>[,<op>...]]...
+      Print {"operationMap":{...},"outcome":"operations-listed"} for the resolved
+      adapter. With --require: exit 0 with the map narrowed to those ops (outcome
+      "operations-present") when each declares a non-empty tool, else exit 2 naming
+      every absent op. An undeclared op name or a bad flag exits 64. No stdout on
+      any failure.
 
   update-comment --id <commentId> --body-file <path>
       Print the MCP tool descriptor for a single-comment progress update.
@@ -414,6 +440,98 @@ async function runReadDescription(rest, { write, errWrite, env, resolveAdapter }
   return 0
 }
 
+// Every op name the adapter contract knows. `operations --require` validates against THIS set, not
+// against the resolved map: a name the map lacks may be a genuinely absent optional op (exit 2), but
+// a name no manifest declares is a typo, and reporting it as absent would abort a healthy run.
+const KNOWN_TRACKER_OPERATIONS = new Set([
+  ...REQUIRED_TRACKER_OPERATIONS,
+  ...OPTIONAL_TRACKER_OPERATIONS,
+])
+
+// operations' own closed flag parser: only --require, repeatable and comma-joined like
+// list-planned's --label. Returns `required: null` when no --require was given (list mode).
+function parseOperationsFlags(rest) {
+  let required = null
+  for (let i = 0; i < rest.length; i += 2) {
+    const token = rest[i]
+    if (token !== '--require') return { error: `unknown flag ${JSON.stringify(token)}` }
+    const value = rest[i + 1]
+    if (typeof value !== 'string' || value.trim() === '' || value.startsWith('--')) {
+      return { error: '--require requires a non-empty value' }
+    }
+    const names = value.split(',').map((entry) => entry.trim())
+    if (names.some((entry) => entry === '')) {
+      return { error: `--require ${JSON.stringify(value)} carries an empty operation name` }
+    }
+    const unknown = names.filter((entry) => !KNOWN_TRACKER_OPERATIONS.has(entry))
+    if (unknown.length > 0) {
+      return {
+        error: `${unknown.join(', ')} ${unknown.length === 1 ? 'is' : 'are'} not a tracker operation (known: ${[...KNOWN_TRACKER_OPERATIONS].join(', ')})`,
+      }
+    }
+    required ??= []
+    for (const entry of names) if (!required.includes(entry)) required.push(entry)
+  }
+  return { required }
+}
+
+// operationHasTool is the shared predicate assertConforms uses: an entry with no usable `tool`
+// names no MCP tool, so it is as absent as a missing key. `Object.hasOwn` keeps `constructor`
+// & co. out.
+function declaredOperation(operationMap, key) {
+  if (!Object.hasOwn(operationMap, key)) return null
+  const op = operationMap[key]
+  if (typeof op !== 'object' || !operationHasTool(op)) return null
+  return { tool: op.tool, summary: typeof op.summary === 'string' ? op.summary : null }
+}
+
+function runOperations(rest, { write, errWrite, env, resolveAdapter }) {
+  const fail = (message, code = 2) => {
+    errWrite(`operations: ${oneLine(message)}\n`)
+    return code
+  }
+  const parsed = parseOperationsFlags(rest)
+  if (parsed.error) {
+    return fail(
+      `usage: ${parsed.error}; expected operations [--require <op>[,<op>...]]...`,
+      EX_USAGE,
+    )
+  }
+  let adapter
+  try {
+    adapter = resolveAdapter({ env })
+  } catch (err) {
+    return fail(`could not resolve the tracker adapter: ${err?.message ?? err}`)
+  }
+  const operationMap = adapter?.operationMap
+  if (!operationMap || typeof operationMap !== 'object' || Array.isArray(operationMap)) {
+    return fail('resolved tracker adapter has no operationMap object')
+  }
+  const { required } = parsed
+  const listed = {}
+  if (required === null) {
+    for (const key of Object.keys(operationMap)) {
+      const op = declaredOperation(operationMap, key)
+      if (op) listed[key] = op
+    }
+    write(JSON.stringify({ operationMap: listed, outcome: 'operations-listed' }) + '\n')
+    return 0
+  }
+  const absent = []
+  for (const key of required) {
+    const op = declaredOperation(operationMap, key)
+    if (op) listed[key] = op
+    else absent.push(key)
+  }
+  if (absent.length > 0) {
+    return fail(
+      `resolved tracker adapter (${adapter.tracker ?? 'unnamed'}) does not declare ${absent.join(', ')} with a non-empty tool`,
+    )
+  }
+  write(JSON.stringify({ operationMap: listed, outcome: 'operations-present' }) + '\n')
+  return 0
+}
+
 /**
  * Dispatch one tracker capability. Returns the process exit code; never calls
  * process.exit directly so it is unit-testable. Every verb is synchronous except
@@ -557,6 +675,9 @@ export function runCli(
     }
     write(JSON.stringify(states) + '\n')
     return 0
+  }
+  if (cmd === 'operations') {
+    return runOperations(rest, { write, errWrite, env, resolveAdapter })
   }
   if (cmd === 'update-comment') {
     const { id, 'body-file': bodyFile } = parseFlags(rest)

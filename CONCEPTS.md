@@ -888,6 +888,13 @@ tools. The adapter supplies the tool's name and a one-line summary of its use ra
 anything itself, which is what distinguishes an operation from a Tracker capability — code for a
 capability, a tool name for an operation.
 
+The set of operations an adapter offers belongs to the **resolved** Tracker adapter, not to the
+repo's tracker configuration. The configuration selects and parameterises an adapter but never lists
+its operations, so presence can only be established by asking the adapter that resolution produced.
+An operation counts as present only when it names a usable tool. A requested operation name that the
+contract does not know at all is a caller error, which is distinct from an optional operation that
+this adapter simply does not offer: only the latter is a real capability gap.
+
 ### Planned selection
 
 A repo's configured narrowing of which planned tickets its scheduled build is allowed to take — for
@@ -960,6 +967,12 @@ uploaded asset survived the write — a conjunction, not a resemblance, because 
 what the others cover. **Drift**: anything else. A comparison that could not meaningfully be
 performed at all — an empty stored description, an unreadable input — is a refusal rather than a
 tier, and is neither a pass nor drift; conflating the two is what makes a fidelity check vacuous.
+
+The tiers rank fidelity, not validity. Byte-exact proves the stored text is what was intended, never
+that what was intended satisfies the Plan contract — only the normalized-equivalent tier consults
+the contract, because only it must show that a reshaped text is still the same plan. A gate that
+needs a stored description to be both faithful and well-formed judges the contract on the stored
+text separately, since a malformed intent written faithfully comes back byte-exact.
 
 ### Tolerated transform
 
@@ -2665,6 +2678,46 @@ no mirror, because precedence means the incomplete half is what the fake resolve
 a given run installs the winning name, the mirror is **latent** — written as a guard against a
 future writer rather than as a fix for a live defect. That distinction is stated wherever the mirror
 is written, so the guard is neither deleted as dead code nor over-claimed as a live fix.
+
+## Warehouse access
+
+### Withheld column
+
+A column of the cloud application database that holds credential material — something that would
+let its reader act as a user, as Bossanova, or as a payment instrument — and that every read-only
+analytics role is therefore denied, while every other column stays readable.
+
+Withholding is expressed only by what is granted, never by what is revoked: privileges are a union,
+so a table holding a withheld column is never granted as a whole, only its other columns one by
+one. Each withheld column carries a recorded credential class, and a column that merely looks like a
+credential must instead carry a recorded reason it is harmless, so a new candidate cannot go
+undecided. A missing privilege alone does not make a column withheld: a view runs with its owner's
+privileges, so any view a denied role can read that references the column, by name or as a whole row,
+re-exposes it and counts as a breach.
+
+### Warehouse role
+
+The database identity the transformation project builds as, granted exactly the reads a **Withheld
+column** policy permits and nothing more, and granted identically in continuous integration and in
+production so the same model fails the same way in both.
+
+Its grants are the enforcement: a model that reads a withheld column is meant to fail its own build
+with a permission error rather than be caught by inspecting its SQL. That only holds if the build
+actually reads through every relation it creates — a view is created without checking the columns it
+selects, so each built relation is read once as this role before the build counts as passed. New
+source tables stay unreadable to it until its grants are re-applied, so a model over a new table
+fails closed rather than silently widening access.
+
+### Claw reader
+
+The per-claw database identity through which an external agent reads the cloud application database:
+a login of its own on the shared database instance that can read every column the **Withheld column**
+policy permits and nothing else, and that can connect to no other database on that instance.
+
+Its contract is asserted from inside the database as a whole — withheld columns refused, every other
+column readable, no view that re-exposes a withheld column, no connection path elsewhere — rather than
+inferred from the grants that were applied. Any exemption from that assertion is named individually;
+a property a database's own owner can set is never trusted to exempt it.
 
 ## Flagged ambiguities
 

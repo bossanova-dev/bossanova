@@ -1,10 +1,18 @@
 // skills-toolbox/plan-epic-phase25.mjs
 //
 // The deterministic core of boss-plan Phase 2.5 — the epic-parent preconditions
-// and the first-write sequence of step 4. Everything here is PURE:
-// each function inspects caller-supplied payloads and returns a decision or an
-// ordered write plan; nothing reads a file, opens a socket, loads config, or
-// throws. The caller executes.
+// and the first-write sequence of step 4. Four decision exports:
+// `detectEpicParent`, `epicSpecRecoveryGate`, `stalePlanAttachmentSweep` and
+// `epicPhase25WritePlan`. Four shared issue-shape exports that the post-write
+// gate reuses rather than re-deriving: `readState`, `readLabels`,
+// `hasPlanArtifact` and `PLAN_ARTIFACT_TITLE_PREFIX`. And two re-exports of that
+// gate, which lives in `./plan-epic-reverify.mjs` (the Phase 2 step 4
+// acceptance gate an epic outcome must pass, judged AFTER the write):
+// `epicReverifyVerdict` and `EPIC_REVERIFY_CLASS`, re-exported here so callers
+// keep one import site for the epic path. Everything here is PURE: each function inspects
+// caller-supplied payloads (a loaded config is one of them) and returns a
+// decision or an ordered write plan; nothing reads a file, opens a socket, loads
+// config, or throws. The caller executes.
 //
 // PROJECT-AGNOSTIC BY CONSTRUCTION. This module ships inside the published
 // `boss-plan` core, which is installed into every user's global skill directory
@@ -48,6 +56,8 @@ import {
   descriptionAppearsTruncated,
 } from './plan-epic-lib.mjs'
 
+export { epicReverifyVerdict, EPIC_REVERIFY_CLASS } from './plan-epic-reverify.mjs'
+
 // The legacy inline spec marker's PREFIX only — enough to tell "the description
 // mentions the marker" from "the description carries a readable spec". The two
 // full marker grammars (base64 and raw-JSON) live in plan-epic-lib.mjs and are
@@ -59,10 +69,10 @@ const EPIC_SPEC_MARKER_MENTION_RE = /<!--\s*boss-plan-epic-spec:/
 // A plan artifact — attachment or link — is identified by this title PREFIX and
 // by nothing else. See `stalePlanAttachmentSweep` for why the prefix is the
 // whole rule.
-const PLAN_ARTIFACT_TITLE_PREFIX = 'Implementation plan'
+export const PLAN_ARTIFACT_TITLE_PREFIX = 'Implementation plan'
 
-// The three ops of the spec upload, in execution order. Exported nowhere: the
-// acceptance criterion pins this module's export set to the four functions.
+// The three ops of the spec upload, in execution order. Not exported: the
+// exported constants are the ones named in the header.
 const SPEC_UPLOAD_OPS = ['preparePlanAttachment', 'putPlanAttachment', 'finalizePlanAttachment']
 
 const isPlainObject = (value) =>
@@ -88,7 +98,7 @@ const asArray = (value) => (Array.isArray(value) ? value : [])
 //            the caller-supplied `plannedState`.
 //   labels — `{nodes: [{name}]}` (raw GraphQL), `[{name}]` (MCP), or bare
 //            strings (already normalized).
-const readState = (issue) => {
+export const readState = (issue) => {
   if (!isPlainObject(issue)) return null
   const raw = isPlainObject(issue.state) ? issue.state.name : issue.state
   for (const candidate of [raw, issue.status, issue.stateName]) {
@@ -97,7 +107,7 @@ const readState = (issue) => {
   return null
 }
 
-const readLabels = (issue) => {
+export const readLabels = (issue) => {
   if (!isPlainObject(issue)) return []
   const list = Array.isArray(issue.labels?.nodes)
     ? issue.labels.nodes
@@ -383,7 +393,7 @@ function isNotAnEpicChild(childIssue) {
  * True when the issue carries a plan artifact in either collection. Tolerates
  * the same `{nodes: […]}` wrapping `readLabels` does, for the same reason.
  */
-function hasPlanArtifact(issue) {
+export function hasPlanArtifact(issue) {
   const isPlanTitled = (entry) =>
     isPlainObject(entry) &&
     typeof entry.title === 'string' &&

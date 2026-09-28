@@ -31,6 +31,7 @@ export const workflowRouteRules = [
   { workflow: 'test-plugin-distribution.yml', requiredTarget: null },
   { workflow: 'test-proto.yml', requiredTarget: null },
   { workflow: 'test-scripts.yml', requiredTarget: 'test-scripts' },
+  { workflow: 'test-warehouse.yml', requiredTarget: 'test-warehouse' },
   { workflow: 'test-web.yml', requiredTarget: 'test-web' },
 ]
 

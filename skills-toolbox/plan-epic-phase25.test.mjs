@@ -12,6 +12,7 @@ import {
   epicSpecRecoveryGate,
   stalePlanAttachmentSweep,
   epicPhase25WritePlan,
+  epicReverifyVerdict,
 } from './plan-epic-phase25.mjs'
 import {
   serializeEpicSpec,
@@ -26,6 +27,11 @@ import {
   assertWritePlanEntryExecutable,
 } from './tracker/adapter.mjs'
 import { buildLinearOperationMap } from './tracker/linear.mjs'
+import {
+  DEFAULT_CONFIG,
+  DESCRIPTION_NORMALIZATION_TRANSFORMS,
+  mergeConfig,
+} from './skill-config.mjs'
 
 const PARENT_ID = 'BOS-999'
 
@@ -916,4 +922,394 @@ test('S5: a non-array or absent attachments collection never throws', () => {
   assert.deepEqual(stalePlanAttachmentSweep([{ id: '#a', title: 'Implementation plan' }], null), [
     '#a',
   ])
+})
+
+// ---------------------------------------------------------------------------
+// S6 — epicReverifyVerdict: the epic-outcome acceptance gate (BOS-1335)
+// ---------------------------------------------------------------------------
+
+const RV_PARENT = 'BOS-900'
+const RV_ROLES = {
+  planned: 'Todo',
+  unplanned: 'Unplanned',
+  inProgress: 'In Progress',
+  inReview: 'In Review',
+  epic: 'epic',
+  agentFriendly: 'agent-friendly',
+  needsHuman: 'needs-human',
+  agentQuestion: 'agent-question',
+  agentPlan: 'agent-plan',
+}
+const rvConfig = (tolerated = DESCRIPTION_NORMALIZATION_TRANSFORMS) =>
+  mergeConfig(DEFAULT_CONFIG, {
+    adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
+    trackerConfig: {
+      demo: {
+        mcpServer: 'demo-tracker',
+        team: 'Demo',
+        descriptionNormalization: { tolerated: [...tolerated] },
+      },
+    },
+  })
+
+const RV_NOTES = 'Reporter context.\n\n- first observation\n- second observation\n'
+
+// A description satisfying the DEFAULT_CONFIG child-plan contract, carrying the epic-child marker
+// immediately before `## Original notes` (where the skill places it).
+const rvChildBody = (key, { drop = null, notes = RV_NOTES } = {}) =>
+  [
+    `## Summary\n\nChild ${key}.`,
+    '## Approach\n\n- do the thing',
+    '## Key changes\n\n- `skills-toolbox/x.mjs`',
+    '## Testing\n\n- unit coverage',
+    '## Risks / unknowns\n\n- none',
+    '## Acceptance criteria\n\n- [ ] it works',
+    '## Required proof\n\n- [ ] (backend-only) no screenshot applicable',
+    '## Planning\n\n- Contract: v1',
+    `${epicChildMarker(key)}\n\n## Original notes\n\n${notes}`,
+  ]
+    .filter((section) => drop == null || !section.startsWith(drop))
+    .join('\n\n')
+
+const rvOverview = (extra = '') =>
+  [
+    `## Summary\n\nDecompose the epic into shippable children.${extra}`,
+    '## Child tickets\n\n- BOS-901\n- BOS-902',
+    '## Planning\n\n- Contract: v1',
+    `## Original notes\n\n${RV_NOTES}`,
+  ].join('\n\n')
+
+const rvSpec = () =>
+  parseEpicSpec(
+    serializeEpicSpec({
+      parentId: RV_PARENT,
+      parent: { title: 'Epic', goal: 'g', keyChanges: ['x'], priority: 2 },
+      children: [
+        child('c1', { agentFriendly: true }),
+        child('c2', { agentFriendly: false, openQuestions: ['why?'], blockedByKeys: ['c1'] }),
+      ],
+    }),
+  )
+
+const rvChild = (n, key, labels, over = {}) => ({
+  id: `uuid-${n}`,
+  identifier: `BOS-${n}`,
+  title: `title ${key}`,
+  state: { name: 'Todo' },
+  labels: labels.map((name) => ({ name })),
+  attachments: [{ id: `plan-${n}`, title: `Implementation plan (BOS-${n})` }],
+  links: [],
+  description: rvChildBody(key),
+  ...over,
+})
+
+// The conforming epic: one agent-friendly child, one needs-human + agent-question child, both
+// byte-identical to their intended bodies, an attachment-sourced spec and a single overview artifact.
+function rvInput(mutate = () => {}) {
+  const children = [
+    rvChild(901, 'c1', ['agent-friendly']),
+    rvChild(902, 'c2', ['needs-human', 'agent-question']),
+  ]
+  const input = {
+    parentId: RV_PARENT,
+    childIds: ['BOS-901', 'BOS-902'],
+    parent: {
+      id: 'uuid-900',
+      identifier: RV_PARENT,
+      state: { name: 'Todo' },
+      labels: [{ name: 'epic' }],
+      attachments: [
+        { id: 'att-spec', title: specAttachmentTitle(RV_PARENT) },
+        { id: 'att-plan', title: `Implementation plan (${RV_PARENT})` },
+      ],
+      links: [],
+    },
+    children,
+    spec: rvSpec(),
+    roles: { ...RV_ROLES },
+    config: rvConfig(),
+    parentOverview: { intended: rvOverview(), stored: rvOverview() },
+    childBodies: Object.fromEntries(
+      children.map((c) => [c.identifier, { intended: c.description, stored: c.description }]),
+    ),
+  }
+  mutate(input)
+  return input
+}
+
+const codes = (verdict) => verdict.blockers.map((b) => b.code)
+const noticeCodes = (verdict) => verdict.notices.map((n) => n.code)
+const childOf = (input, identifier) => input.children.find((c) => c.identifier === identifier)
+// Change a child's stored description everywhere the verb would have filled it.
+const setStored = (input, identifier, text) => {
+  childOf(input, identifier).description = text
+  input.childBodies[identifier].stored = text
+}
+
+test('S6: a conforming epic passes with no blockers', () => {
+  const verdict = epicReverifyVerdict(rvInput())
+  assert.deepEqual(codes(verdict), [])
+  assert.equal(verdict.ok, true)
+  assert.equal(verdict.class, 'pass')
+  // The passing overview is an epic-parent shape: no `## Acceptance criteria`, so a child-plan
+  // comparison would have failed it — the mode is threaded through.
+  assert.doesNotMatch(rvOverview(), /## Acceptance criteria/)
+  assert.match(rvOverview(), /## Child tickets/)
+})
+
+test('S6: missing or empty childIds is its own code, reported ALONGSIDE a reconcile code', () => {
+  for (const childIds of [undefined, []]) {
+    const verdict = epicReverifyVerdict(
+      rvInput((input) => {
+        input.childIds = childIds
+        input.children = input.children.slice(0, 1) // c2 never created ⇒ reconcile-missing
+      }),
+    )
+    assert.ok(codes(verdict).includes('childids-missing'), JSON.stringify(codes(verdict)))
+    assert.ok(codes(verdict).includes('reconcile-missing'), JSON.stringify(codes(verdict)))
+    assert.equal(verdict.ok, false)
+  }
+})
+
+test('S6: the marked child set must equal childIds; unmarked children are notices', () => {
+  const extra = epicReverifyVerdict(rvInput((input) => (input.childIds = ['BOS-901'])))
+  assert.ok(codes(extra).includes('child-set-mismatch'))
+
+  const ghost = epicReverifyVerdict(rvInput((input) => input.childIds.push('BOS-999')))
+  assert.ok(codes(ghost).includes('child-set-mismatch'))
+
+  const handAdded = epicReverifyVerdict(
+    rvInput((input) =>
+      input.children.push({
+        id: 'uuid-950',
+        identifier: 'BOS-950',
+        state: { name: 'Unplanned' },
+        labels: [],
+        description: 'A sub-issue a human added by hand.',
+      }),
+    ),
+  )
+  assert.deepEqual(codes(handAdded), [])
+  assert.ok(noticeCodes(handAdded).includes('child-unmarked'))
+
+  const truncated = epicReverifyVerdict(
+    rvInput((input) => {
+      childOf(input, 'BOS-902').description =
+        '## Summary\n\n…(truncated, use get_issue for full description)'
+    }),
+  )
+  assert.ok(codes(truncated).includes('child-description-truncated'))
+})
+
+test('S6: childIds match on identifier OR id — UUID sentinels and identifier sentinels both work', () => {
+  const byUuid = epicReverifyVerdict(
+    rvInput((input) => {
+      input.childIds = ['uuid-901', 'uuid-902']
+      input.childBodies = {
+        'uuid-901': input.childBodies['BOS-901'],
+        'uuid-902': input.childBodies['BOS-902'],
+      }
+    }),
+  )
+  assert.deepEqual(codes(byUuid), [])
+})
+
+test('S6: the parent state decides the failure class', () => {
+  const unplanned = epicReverifyVerdict(
+    rvInput((input) => (input.parent.state = { name: 'Unplanned' })),
+  )
+  assert.ok(codes(unplanned).includes('parent-unplanned'))
+  assert.equal(unplanned.class, 'resumable')
+
+  const rolledUp = epicReverifyVerdict(
+    rvInput((input) => (input.parent.state = { name: 'In Progress' })),
+  )
+  assert.deepEqual(codes(rolledUp), [])
+  assert.ok(noticeCodes(rolledUp).includes('parent-state'))
+
+  const noEpic = epicReverifyVerdict(rvInput((input) => (input.parent.labels = [])))
+  assert.ok(codes(noEpic).includes('parent-epic-label-missing'))
+  assert.equal(noEpic.class, 'needs-human')
+
+  const noState = epicReverifyVerdict(rvInput((input) => delete input.parent.state))
+  assert.ok(codes(noState).includes('parent-state-unreadable'))
+  assert.equal(noState.class, 'needs-human')
+})
+
+test('S6: every forbidden parent label is named; an unmapped agentPlan forbids nothing', () => {
+  const all = epicReverifyVerdict(
+    rvInput((input) =>
+      input.parent.labels.push(
+        { name: 'agent-friendly' },
+        { name: 'needs-human' },
+        { name: 'agent-plan' },
+      ),
+    ),
+  )
+  assert.equal(codes(all).filter((c) => c === 'parent-forbidden-label').length, 3)
+
+  const unmapped = epicReverifyVerdict(
+    rvInput((input) => {
+      input.roles.agentPlan = null
+      input.parent.labels.push({ name: 'agent-plan' })
+    }),
+  )
+  assert.deepEqual(codes(unmapped), [])
+})
+
+test('S6: the parent holds exactly one spec store and exactly one plan artifact', () => {
+  const twoSpecs = epicReverifyVerdict(
+    rvInput((input) =>
+      input.parent.attachments.push({ id: 'att-spec-2', title: specAttachmentTitle(RV_PARENT) }),
+    ),
+  )
+  assert.ok(codes(twoSpecs).includes('parent-spec-ambiguous'))
+
+  const stalePlan = epicReverifyVerdict(
+    rvInput((input) =>
+      input.parent.attachments.push({ id: 'att-old', title: `Implementation plan (${RV_PARENT})` }),
+    ),
+  )
+  assert.ok(codes(stalePlan).includes('parent-plan-artifact-count'))
+
+  const staleLink = epicReverifyVerdict(
+    rvInput((input) =>
+      input.parent.links.push({ id: 'lnk', title: `Implementation plan (${RV_PARENT})`, url: 'x' }),
+    ),
+  )
+  assert.ok(codes(staleLink).includes('parent-plan-artifact-count'))
+
+  const foreignSpec = epicReverifyVerdict(rvInput((input) => (input.spec.parentId = 'BOS-1')))
+  assert.ok(codes(foreignSpec).includes('spec-identity'))
+})
+
+test('S6: a legacy inline-spec parent passes only while its stored overview kept the marker', () => {
+  const legacy = (keep) =>
+    rvInput((input) => {
+      input.parent.attachments = input.parent.attachments.filter((a) => a.id !== 'att-spec')
+      // A legacy spec may predate parentId binding: identity is not checked on this store.
+      delete input.spec.parentId
+      const marker = keep ? `\n\n${legacyInlineDescription(input.spec).trim()}` : ''
+      const text = rvOverview(marker)
+      input.parentOverview = { intended: text, stored: text }
+    })
+  assert.deepEqual(codes(epicReverifyVerdict(legacy(true))), [])
+  assert.ok(codes(epicReverifyVerdict(legacy(false))).includes('parent-spec-store-missing'))
+})
+
+test('S6: reconcile refusals and unapplied repairs are named blockers', () => {
+  const duplicate = epicReverifyVerdict(
+    rvInput((input) => setStored(input, 'BOS-902', rvChildBody('c1'))),
+  )
+  assert.ok(codes(duplicate).includes('reconcile-refused'))
+
+  const renamed = epicReverifyVerdict(
+    rvInput((input) => setStored(input, 'BOS-902', rvChildBody('c2-old'))),
+  )
+  assert.ok(codes(renamed).includes('reconcile-unrepaired'), JSON.stringify(codes(renamed)))
+})
+
+test('S6: per-child state, artifact and label conjuncts', () => {
+  const blockerOf = (mutate) => codes(epicReverifyVerdict(rvInput(mutate)))
+  assert.ok(
+    blockerOf((i) => (childOf(i, 'BOS-901').state = { name: 'Unplanned' })).includes(
+      'child-unplanned',
+    ),
+  )
+  for (const state of ['In Progress', 'Done', 'Canceled']) {
+    const verdict = epicReverifyVerdict(
+      rvInput((i) => (childOf(i, 'BOS-901').state = { name: state })),
+    )
+    assert.deepEqual(codes(verdict), [], state)
+    assert.ok(noticeCodes(verdict).includes('child-state'), state)
+  }
+  const extraQuestion = epicReverifyVerdict(
+    rvInput((i) => childOf(i, 'BOS-901').labels.push({ name: 'agent-question' })),
+  )
+  assert.deepEqual(codes(extraQuestion), [])
+  assert.ok(noticeCodes(extraQuestion).includes('child-agent-question-extra'))
+
+  assert.ok(
+    blockerOf((i) => (childOf(i, 'BOS-901').attachments = [])).includes(
+      'child-plan-artifact-missing',
+    ),
+  )
+  assert.ok(
+    blockerOf((i) => childOf(i, 'BOS-901').labels.push({ name: 'needs-human' })).includes(
+      'child-exposure-label',
+    ),
+  )
+  assert.ok(blockerOf((i) => (childOf(i, 'BOS-901').labels = [])).includes('child-exposure-label'))
+  assert.ok(
+    blockerOf(
+      (i) =>
+        (childOf(i, 'BOS-902').labels = [{ name: 'agent-friendly' }, { name: 'agent-question' }]),
+    ).includes('child-exposure-mismatch'),
+  )
+  assert.ok(
+    blockerOf((i) => (childOf(i, 'BOS-902').labels = [{ name: 'needs-human' }])).includes(
+      'child-agent-question-missing',
+    ),
+  )
+  assert.ok(
+    blockerOf((i) => childOf(i, 'BOS-901').labels.push({ name: 'agent-plan' })).includes(
+      'child-forbidden-label',
+    ),
+  )
+})
+
+test('S6: child bodies are contract-checked and write-back verified against the intended bytes', () => {
+  const drifted = epicReverifyVerdict(
+    rvInput((i) => setStored(i, 'BOS-901', rvChildBody('c1', { notes: 'A different note.\n' }))),
+  )
+  assert.ok(codes(drifted).includes('child-body-drift'), JSON.stringify(codes(drifted)))
+
+  const empty = epicReverifyVerdict(rvInput((i) => (i.childBodies['BOS-901'].stored = '  ')))
+  assert.ok(codes(empty).includes('child-body-unverified'))
+
+  // A difference that is only a declared transform (bullet-marker substitution) passes.
+  const tolerated = epicReverifyVerdict(
+    rvInput((i) => setStored(i, 'BOS-901', rvChildBody('c1').replace(/^- /gm, '* '))),
+  )
+  assert.deepEqual(codes(tolerated), [])
+
+  // Byte-identical, so the write-back comparison is tier 1 — only the contract check catches it.
+  const malformed = epicReverifyVerdict(
+    rvInput((i) => {
+      const body = rvChildBody('c1', { drop: '## Testing' })
+      setStored(i, 'BOS-901', body)
+      i.childBodies['BOS-901'].intended = body
+    }),
+  )
+  assert.deepEqual(codes(malformed), ['child-body-contract'])
+})
+
+test('S6: the parent overview is write-back verified in epic-parent mode', () => {
+  const drifted = epicReverifyVerdict(
+    rvInput((i) => (i.parentOverview.stored = rvOverview().replace(/## Child tickets[^#]*/, ''))),
+  )
+  assert.ok(codes(drifted).includes('parent-overview-drift'), JSON.stringify(codes(drifted)))
+})
+
+test('S6: a malformed overview that round-trips byte-identically still fails its contract', () => {
+  const malformed = rvOverview().replace(/## Child tickets[^#]*/, '')
+  const verdict = epicReverifyVerdict(
+    rvInput((i) => (i.parentOverview = { intended: malformed, stored: malformed })),
+  )
+  assert.deepEqual(codes(verdict), ['parent-overview-contract'])
+  assert.equal(verdict.class, 'needs-human')
+})
+
+test('S6: malformed input yields blockers, never a throw', () => {
+  for (const input of [undefined, null, 'x', 42, []]) {
+    const verdict = epicReverifyVerdict(input)
+    assert.equal(verdict.ok, false)
+    assert.equal(verdict.class, 'needs-human')
+  }
+  const nullChildren = epicReverifyVerdict(rvInput((i) => (i.children = null)))
+  assert.ok(codes(nullChildren).includes('children-unreadable'))
+  const noConfig = epicReverifyVerdict(rvInput((i) => delete i.config))
+  assert.ok(codes(noConfig).includes('config-missing'))
+  const noRole = epicReverifyVerdict(rvInput((i) => delete i.roles.planned))
+  assert.ok(codes(noRole).includes('unresolved-role'))
 })

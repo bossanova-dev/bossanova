@@ -206,6 +206,7 @@ go_library(
         "skills/boss-repair/toolbox/bs-mutation-obligations.mjs",
         "skills/boss-review/toolbox/bs-mutation-obligations.mjs",
         "skills/boss-plan/references/headless-dispatch.md",
+        "skills/boss-plan/toolbox/plan-epic-reverify.mjs",
     ],
     importpath = "github.com/recurser/bossd-plugin-claude/skilldata",
     visibility = ["//visibility:public"],

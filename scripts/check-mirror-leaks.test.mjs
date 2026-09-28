@@ -191,6 +191,16 @@ test('fails when tree contains services/mcp-gateway (private hosted gateway)', (
   assert.match(result.stderr, /forbidden path: services\/mcp-gateway\//)
 })
 
+test('fails when tree contains services/warehouse (private dbt project, BOS-1317)', () => {
+  const { dir, base } = initRepo()
+  commit(dir, { 'services/warehouse/dbt_project.yml': 'name: bossanova_warehouse\n' }, 'leak dbt')
+
+  const result = runGuard(dir, base)
+
+  assert.equal(result.code, 1, result.stderr)
+  assert.match(result.stderr, /forbidden path: services\/warehouse\//)
+})
+
 test('passes when tree contains services/mcp and lib/bossalib/bossmcp (both public)', () => {
   const { dir, base } = initRepo()
   commit(

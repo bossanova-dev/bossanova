@@ -2,20 +2,26 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   SKILL_DRIFT_ADVISORY_SENTENCE,
+  SKILL_DRIFT_CORE_CLOSURE,
   SKILL_DRIFT_DIRECTIONS,
   SKILL_DRIFT_KINDS,
   SKILL_DRIFT_VERDICTS,
   classifySkillDrift,
+  inferRunningCore,
   isUnsupportedFlagOutput,
   main,
   parseSkillGateOutput,
   renderSkillDriftVerdict,
+  rowInScope,
+  scopeForCores,
   verdictForDriftRow,
 } from './skill-drift-verdict.mjs'
 
@@ -207,9 +213,9 @@ test('a mode row and a broken-symlink row each block', () => {
   }
 })
 
-test('a content/behind row is advisory and keeps the greppable advisory sentence', () => {
+test('a content/behind row under a core the run does not load keeps the greppable advisory sentence', () => {
   const output = gate(row('boss-epic/SKILL.md', 'content', 'behind'), '  run `boss skills install`')
-  const result = classify(output)
+  const result = classifySkillDrift({ exitStatus: 1, output, cores: ['boss-plan'] })
   assert.equal(result.verdict, 'advisory')
   assert.equal(result.blocking, false)
   const text = renderSkillDriftVerdict(result).join('\n')
@@ -224,12 +230,44 @@ test('a content/behind row is advisory and keeps the greppable advisory sentence
 })
 
 test('an advisory report with no run line falls back to the see-gate-output wording', () => {
-  const text = render(gate(row('a/b.mjs', 'content', 'behind')))
+  const result = classifySkillDrift({
+    exitStatus: 1,
+    output: gate(row('boss-epic/b.mjs', 'content', 'behind')),
+    cores: ['boss-plan'],
+  })
   assert.equal(
-    text,
+    renderSkillDriftVerdict(result).join('\n'),
     'warning: installed boss skills drift from checkout source; see gate output above — ' +
       'bookkeeping only, work state unaffected',
   )
+})
+
+test('an in-scope content/behind row is advisory, named, and never called work-state-neutral', () => {
+  for (const kind of ['content', 'unexpected']) {
+    const output = gate(
+      row('boss-plan/SKILL.md', kind, 'behind'),
+      row('boss-epic/SKILL.md', 'content', 'behind'),
+      '  run `boss skills install`',
+    )
+    const result = classifySkillDrift({ exitStatus: 1, output, cores: ['boss-plan'] })
+    assert.equal(result.verdict, 'advisory', kind)
+    assert.equal(result.blocking, false, kind)
+    const text = renderSkillDriftVerdict(result).join('\n')
+    assert.ok(!text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
+    assert.ok(text.includes(`boss-plan/SKILL.md (${kind}, behind)`), text)
+    assert.ok(
+      !text.includes('boss-epic/SKILL.md'),
+      `only in-scope paths are named as executed: ${text}`,
+    )
+    assert.match(text, /this run executes 1 installed path\(s\) that lag checkout source/)
+    assert.match(text, /run: boss skills install/)
+  }
+})
+
+test('whole-tree scope treats every content row as executed, so the sentence is withheld', () => {
+  const text = render(gate(row('boss-epic/SKILL.md', 'content', 'behind')))
+  assert.ok(!text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
+  assert.match(text, /boss-epic\/SKILL\.md \(content, behind\)/)
 })
 
 test('a content/unrecoverable row is advisory-withheld and its render carries no runnable command', () => {
@@ -247,7 +285,21 @@ test('a content/unrecoverable row is advisory-withheld and its render carries no
   const text = renderSkillDriftVerdict(result).join('\n')
   assert.ok(!/run: /.test(text), text)
   assert.ok(!text.includes('`'), text)
-  assert.ok(text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
+  // Whole-tree scope: the row is one this run may execute, so it is named and not called neutral.
+  assert.ok(!text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
+  assert.match(text, /a\/b\.mjs \(content, unrecoverable\)/)
+  assert.match(text, /withheld its reinstall remedy/)
+
+  // Out of scope, the same withheld report keeps today's sentence-bearing line.
+  const outOfScope = renderSkillDriftVerdict(
+    classifySkillDrift({
+      exitStatus: 1,
+      output: output.replaceAll('a/b.mjs', 'boss-epic/b.mjs'),
+      cores: ['boss-plan'],
+    }),
+  ).join('\n')
+  assert.ok(!/run: /.test(outOfScope), outOfScope)
+  assert.ok(outOfScope.includes(SKILL_DRIFT_ADVISORY_SENTENCE), outOfScope)
 })
 
 test('a withheld lead suppresses a run line offered for the other agent', () => {
@@ -414,8 +466,8 @@ test('the live fixture is the real thing: two agent sections and trailing CLI er
 test('the CLI classifies stdin, prints the render and exits 1 only when blocking', () => {
   const out = []
   const stdout = { write: (s) => out.push(s) }
-  const advisory = main(['classify', '--status', '1'], {
-    stdin: gate(row('a/b.mjs', 'content', 'behind')),
+  const advisory = main(['classify', '--status', '1', '--core', 'boss-plan'], {
+    stdin: gate(row('boss-epic/b.mjs', 'content', 'behind')),
     stdout,
   })
   assert.equal(advisory, 0)
@@ -466,12 +518,227 @@ test('the CLI runs as a real subprocess over the live output and exits 1', () =>
 })
 
 // ---------------------------------------------------------------------------
+// Scope: the cores this run executes
+
+// Captured from the updated Go gate (`TestRunSkillGate/each tree header states its own count and
+// the run line builds first`, run with -v), with its temp checkout root replaced by /repo. It
+// carries the shapes that test pins on the producer side: a per-tree count on each header and a
+// run line that builds before it installs.
+const GO_GATE_OUTPUT = `boss skills gate: claude skill drift detected — 2 path(s) in this agent tree
+  - boss-build/SKILL.md (content, behind)
+  - boss/SKILL.md (content, behind)
+  run \`make -C /repo build plugins && BOSS_TRUST_CHECKOUT_SKILLS=1 /repo/bin/boss skills install\`
+boss skills gate: codex skill drift detected — 1 path(s) in this agent tree
+  - boss-build/SKILL.md (absent, lossless)
+  run \`make -C /repo build plugins && BOSS_TRUST_CHECKOUT_SKILLS=1 /repo/bin/boss skills install\`
+`
+
+const withCores = (output, cores) => classifySkillDrift({ exitStatus: 1, output, cores })
+
+test('the closure table names each consumer and the cores it invokes in-run', () => {
+  assert.deepEqual(Object.keys(SKILL_DRIFT_CORE_CLOSURE).sort(), [
+    'boss-build',
+    'boss-plan',
+    'boss-repair',
+  ])
+  assert.deepEqual([...SKILL_DRIFT_CORE_CLOSURE['boss-plan']], ['boss-plan'])
+  assert.deepEqual([...SKILL_DRIFT_CORE_CLOSURE['boss-repair']], ['boss-repair'])
+  assert.deepEqual([...SKILL_DRIFT_CORE_CLOSURE['boss-build']].sort(), [
+    'boss-build',
+    'boss-finalize',
+    'boss-review',
+  ])
+  assert.ok(Object.isFrozen(SKILL_DRIFT_CORE_CLOSURE))
+})
+
+test('an unknown, empty or absent core widens to whole-tree scope', () => {
+  assert.equal(scopeForCores([]), null)
+  assert.equal(scopeForCores([null]), null)
+  assert.equal(scopeForCores(['boss-epic']), null)
+  assert.equal(scopeForCores(['boss-plan', 'boss-epic']), null)
+  assert.equal(scopeForCores(['']), null)
+  assert.deepEqual([...scopeForCores(['boss-plan', 'boss-repair'])].sort(), [
+    'boss-plan',
+    'boss-repair',
+  ])
+})
+
+test('a row is in scope by its first path segment; a non-core segment stays in scope', () => {
+  const scope = scopeForCores(['boss-plan'])
+  assert.equal(rowInScope('boss-plan/toolbox/x.mjs', scope), true)
+  assert.equal(rowInScope('boss-plan', scope), true)
+  assert.equal(rowInScope('boss-epic/SKILL.md', scope), false)
+  assert.equal(rowInScope('boss-old/', scope), false)
+  assert.equal(rowInScope('boss/SKILL.md', scope), false)
+  // The gate keys a wholly missing install on the namespace directory, which is no one core's.
+  assert.equal(rowInScope('ns/', scope), true)
+  assert.equal(rowInScope('boss-epic/SKILL.md', null), true)
+})
+
+test('an out-of-scope absent row exits 0 with a warning naming it', () => {
+  const output = gate(row('boss-epic/toolbox/epic-driver.mjs', 'absent', 'lossless'))
+  const result = withCores(output, ['boss-plan'])
+  assert.equal(result.blocking, false)
+  assert.equal(result.verdict, 'advisory')
+  assert.equal(result.outOfScope.length, 1)
+  const text = renderSkillDriftVerdict(result).join('\n')
+  assert.ok(!/^BLOCKED/m.test(text), text)
+  assert.match(
+    text,
+    /warning: 1 installed path\(s\) are missing from cores this run does not load \(boss-epic\); they decide nothing here: boss-epic\/toolbox\/epic-driver\.mjs \(absent, lossless\)/,
+  )
+  // Every advisory row is out of scope, so the work state really is unaffected.
+  assert.ok(text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
+})
+
+test('scoping is load-bearing: the same absent row blocks in scope and in whole-tree mode', () => {
+  const output = gate(row('boss-epic/toolbox/epic-driver.mjs', 'absent', 'lossless'))
+  assert.equal(withCores(output, ['boss-epic']).verdict, 'blocking') // unknown consumer
+  assert.equal(withCores(output, []).verdict, 'blocking')
+  const inScope = withCores(gate(row('boss-plan/toolbox/x.mjs', 'absent', 'lossless')), [
+    'boss-plan',
+  ])
+  assert.equal(inScope.verdict, 'blocking')
+  assert.equal(inScope.blocking, true)
+})
+
+test('an unparseable row stays undecided whatever core its path names', () => {
+  const result = withCores(gate('  - boss-epic/b.mjs'), ['boss-plan'])
+  assert.equal(result.verdict, 'undecided')
+  assert.equal(result.blocking, true)
+})
+
+test('a row with an unknown kind or direction stays undecided under an out-of-scope core', () => {
+  for (const line of [
+    row('boss-epic/x', 'new-kind', 'behind'),
+    row('boss-epic/x', 'content', 'new-direction'),
+  ]) {
+    const result = withCores(gate(line), ['boss-plan'])
+    assert.equal(result.verdict, 'undecided', line)
+    assert.equal(result.reason, 'unreadable-drift-row', line)
+    assert.equal(result.blocking, true, line)
+    assert.equal(result.outOfScope.length, 0, line)
+  }
+})
+
+test('the boss-build closure puts boss-review and boss-finalize rows in scope', () => {
+  for (const core of ['boss-review', 'boss-finalize', 'boss-build']) {
+    assert.equal(
+      withCores(gate(row(`${core}/toolbox/x.mjs`, 'absent', 'lossless')), ['boss-build']).verdict,
+      'blocking',
+      core,
+    )
+  }
+  assert.equal(
+    withCores(gate(row('boss-epic/toolbox/x.mjs', 'absent', 'lossless')), ['boss-build']).blocking,
+    false,
+  )
+})
+
+test('the Go gate output blocks boss-build, names only in-scope rows, and drops the redundant rebuild line', () => {
+  const result = withCores(GO_GATE_OUTPUT, ['boss-build'])
+  assert.equal(result.rows.length, 3)
+  assert.equal(result.verdict, 'blocking')
+  assert.deepEqual(
+    result.evidence.map((r) => r.path),
+    ['boss-build/SKILL.md'],
+  )
+  const text = renderSkillDriftVerdict(result).join('\n')
+  assert.match(
+    text,
+    /^ {2}repair: make -C \/repo build plugins && BOSS_TRUST_CHECKOUT_SKILLS=1 \/repo\/bin\/boss skills install$/m,
+  )
+  // The command already rebuilds the plugins, so the daemon-start instruction is not repeated.
+  assert.ok(!text.includes('restores it at daemon start'), text)
+  assert.ok(!text.includes('boss/SKILL.md'), text)
+})
+
+test('the Go gate output is advisory for boss-plan, with its foreign absent row warned about', () => {
+  const result = withCores(GO_GATE_OUTPUT, ['boss-plan'])
+  assert.equal(result.blocking, false)
+  const text = renderSkillDriftVerdict(result).join('\n')
+  assert.ok(text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
+  assert.match(text, /missing from cores this run does not load \(boss-build\)/)
+  assert.match(text, /run: make -C \/repo build plugins && /)
+})
+
+// A vendored copy laid out the way the installer lays it out: the namespaced payload plus a
+// top-level link to it. main-module.mjs travels with the helper, exactly as vendoring ships it.
+function vendoredCopy(core) {
+  const root = mkdtempSync(path.join(tmpdir(), 'skill-drift-verdict-'))
+  const toolbox = path.join(root, 'ns', core, 'toolbox')
+  mkdirSync(toolbox, { recursive: true })
+  const here = path.dirname(SCRIPT_PATH)
+  for (const file of ['skill-drift-verdict.mjs', 'main-module.mjs']) {
+    copyFileSync(path.join(here, file), path.join(toolbox, file))
+  }
+  const skills = path.join(root, 'skills')
+  mkdirSync(skills)
+  symlinkSync(path.join(root, 'ns', core), path.join(skills, core))
+  return {
+    root,
+    direct: path.join(toolbox, 'skill-drift-verdict.mjs'),
+    viaLink: path.join(skills, core, 'toolbox', 'skill-drift-verdict.mjs'),
+  }
+}
+
+test('the running core is inferred from the vendored location, through a symlink too', (t) => {
+  const copy = vendoredCopy('boss-plan')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  assert.equal(inferRunningCore(pathToFileURL(copy.direct).href), 'boss-plan')
+  assert.equal(inferRunningCore(pathToFileURL(copy.viaLink).href), 'boss-plan')
+  // The canonical source copy sits in no core's toolbox.
+  assert.equal(inferRunningCore(pathToFileURL(SCRIPT_PATH).href), null)
+  assert.equal(inferRunningCore('not a url'), null)
+
+  const foreignAbsent = gate(row('boss-epic/toolbox/epic-driver.mjs', 'absent', 'lossless'))
+  for (const script of [copy.direct, copy.viaLink]) {
+    const run = spawnSync(process.execPath, [script, 'classify', '--status', '1'], {
+      input: foreignAbsent,
+      encoding: 'utf8',
+    })
+    assert.equal(run.status, 0, run.stdout + run.stderr)
+    assert.match(run.stdout, /missing from cores this run does not load \(boss-epic\)/)
+  }
+  const ownAbsent = spawnSync(process.execPath, [copy.viaLink, 'classify', '--status', '1'], {
+    input: gate(row('boss-plan/toolbox/x.mjs', 'absent', 'lossless')),
+    encoding: 'utf8',
+  })
+  assert.equal(ownAbsent.status, 1, ownAbsent.stdout)
+  assert.match(ownAbsent.stdout, /^BLOCKED: /)
+})
+
+test('--core overrides inference, repeats, and a valueless --core widens to the whole tree', (t) => {
+  const copy = vendoredCopy('boss-plan')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  const reviewAbsent = gate(row('boss-review/toolbox/x.mjs', 'absent', 'lossless'))
+  const status = (args) =>
+    spawnSync(process.execPath, [copy.direct, 'classify', '--status', '1', ...args], {
+      input: reviewAbsent,
+      encoding: 'utf8',
+    }).status
+  // Inferred boss-plan: boss-review is foreign.
+  assert.equal(status([]), 0)
+  // Overridden to boss-build, whose closure loads boss-review.
+  assert.equal(status(['--core', 'boss-build']), 1)
+  assert.equal(status(['--core', 'boss-plan', '--core', 'boss-build']), 1)
+  // A dropped value must not quietly keep the narrower inferred scope.
+  assert.equal(status(['--core']), 1)
+  assert.equal(status(['--core', 'boss-unknown']), 1)
+})
+
+// ---------------------------------------------------------------------------
 // Published-core portability
 
 test('the helper stays publishable: node builtins and main-module.mjs only, no project identity', () => {
   const source = readFileSync(SCRIPT_PATH, 'utf8')
   const imports = [...source.matchAll(/^import .*? from '([^']+)'$/gm)].map((m) => m[1])
-  assert.deepEqual([...new Set(imports)].sort(), ['./main-module.mjs', 'node:fs'])
+  assert.deepEqual([...new Set(imports)].sort(), [
+    './main-module.mjs',
+    'node:fs',
+    'node:path',
+    'node:url',
+  ])
   // A vendored core ships into every repo on the machine, so a tracker id, a project MCP server
   // or a repo path here would leak out of this project entirely.
   assert.ok(!/bossanova|mcp__|Internal Bossanova/i.test(source), 'project identity leaked')

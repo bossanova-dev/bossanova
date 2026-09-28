@@ -12,6 +12,7 @@ import {
   REQUIRED_TRACKER_OPERATIONS,
   resolveTrackerAdapter,
   assertConforms,
+  operationHasTool,
 } from './adapter-core.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -504,7 +505,50 @@ test('an inherited Object.prototype member is NOT a tracker', () => {
   }
 })
 
-test('resolveTrackerAdapter throws rather than crashing when no builders are supplied', () => {
-  assert.throws(() => resolveTrackerAdapter({ env: {} }), /unknown tracker: linear/)
-  assert.throws(() => resolveTrackerAdapter(), /unknown tracker/)
+// BOS-1333: `adapter.mjs` exports a same-name resolver taking `{env, fetchImpl}`. Handing that
+// shape — or a loaded config — to THIS export must name the missing registry and the right module,
+// never read as an unregistered tracker.
+function assertNamesMissingRegistry(fn, label) {
+  assert.throws(
+    fn,
+    (err) => {
+      assert.match(err.message, /builders/, label)
+      assert.match(err.message, /tracker\/adapter\.mjs/, label)
+      assert.doesNotMatch(err.message, /unknown tracker/, label)
+      return true
+    },
+    label,
+  )
+}
+
+test('resolveTrackerAdapter names the missing builders registry when none is supplied', () => {
+  assertNamesMissingRegistry(() => resolveTrackerAdapter({ env: {} }), '{env} only')
+  assertNamesMissingRegistry(() => resolveTrackerAdapter(), 'no args')
+  assertNamesMissingRegistry(() => resolveTrackerAdapter(undefined), 'undefined args')
+  assertNamesMissingRegistry(
+    () => resolveTrackerAdapter({ env: {}, fetchImpl: fetch }),
+    'the adapter.mjs argument shape',
+  )
+})
+
+test('resolveTrackerAdapter handed a config-shaped object names the registry, not the tracker', () => {
+  const config = { tracker: { kind: 'linear' } }
+  assertNamesMissingRegistry(() => resolveTrackerAdapter(config), 'config as the argument')
+  assertNamesMissingRegistry(
+    () => resolveTrackerAdapter({ builders: config, env: {} }),
+    'config as the registry',
+  )
+  for (const bad of [{}, [], 'linear', null, { linear: 'not-a-function' }]) {
+    assertNamesMissingRegistry(
+      () => resolveTrackerAdapter({ builders: bad, env: {} }),
+      `builders=${JSON.stringify(bad)}`,
+    )
+  }
+})
+
+test('operationHasTool accepts only a non-empty trimmed string tool', () => {
+  for (const op of [null, undefined, {}, { tool: '' }, { tool: '  ' }, { tool: 3 }]) {
+    assert.equal(operationHasTool(op), false, JSON.stringify(op))
+  }
+  assert.equal(operationHasTool({ tool: 'mcp__x__y' }), true)
 })

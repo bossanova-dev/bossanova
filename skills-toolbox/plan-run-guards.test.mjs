@@ -931,3 +931,264 @@ test('adopt-metadata CLI writes the returned object, and leaves a diverged file 
   assert.equal(invalid.status, 1)
   assert.match(invalid.stderr, /estimate/)
 })
+
+// ---------------------------------------------------------------------------
+// BOS-1335: the epic-reverify verb — the run-boundary CLI over epicReverifyVerdict. Every path it
+// reads is derived from the bundle's own run directory; every description it judges is a stored
+// read-back file, never a field of the bundle.
+// ---------------------------------------------------------------------------
+
+const RV_STATES = {
+  unplanned: 'Unplanned',
+  planned: 'Todo',
+  inProgress: 'In Progress',
+  inReview: 'In Review',
+}
+const RV_LABELS = {
+  agentPlan: 'agent-plan',
+  agentFriendly: 'agent-friendly',
+  needsHuman: 'needs-human',
+  agentQuestion: 'agent-question',
+  epic: 'epic',
+}
+const RV_NOTES = 'Reporter context.\n\n- one observation\n'
+const rvChildBody = (key) =>
+  [
+    `## Summary\n\nChild ${key}.`,
+    '## Approach\n\n- do the thing',
+    '## Key changes\n\n- `skills-toolbox/x.mjs`',
+    '## Testing\n\n- unit coverage',
+    '## Risks / unknowns\n\n- none',
+    '## Acceptance criteria\n\n- [ ] it works',
+    '## Required proof\n\n- [ ] (backend-only) no screenshot applicable',
+    '## Planning\n\n- Contract: v1',
+    `<!-- boss-plan-epic-child:${key} -->\n\n## Original notes\n\n${RV_NOTES}`,
+  ].join('\n\n')
+const RV_OVERVIEW = [
+  '## Summary\n\nDecompose the epic.',
+  '## Child tickets\n\n- BOS-11\n- BOS-12',
+  '## Planning\n\n- Contract: v1',
+  `## Original notes\n\n${RV_NOTES}`,
+].join('\n\n')
+
+/**
+ * A passing epic on disk: a temp repo with a config, and a run directory holding the bundle plus
+ * every derived file. `edit(ctx)` mutates before writing; returns the paths the test pokes at.
+ */
+function writeEpicFixture(edit = () => {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-epic-'))
+  const runDir = path.join(dir, '.linear-plans', 'run-r1')
+  mkdirSync(runDir, { recursive: true })
+  const ctx = {
+    labels: { ...RV_LABELS },
+    parentState: 'Todo',
+    childIds: ['BOS-11', 'BOS-12'],
+    childBodyStored: { 'BOS-11': rvChildBody('c1'), 'BOS-12': rvChildBody('c2') },
+    extraBundle: {},
+    bundleChildDescription: null,
+    skip: new Set(),
+  }
+  edit(ctx)
+  writeFileSync(
+    path.join(dir, '.boss-skills.json'),
+    JSON.stringify({
+      trackerConfig: {
+        linear: { mcpServer: 'demo', team: 'Demo', states: RV_STATES, labels: ctx.labels },
+      },
+    }),
+  )
+  const spec = {
+    schemaVersion: 1,
+    parentId: 'BOS-10',
+    parent: { title: 'Epic', goal: 'g', keyChanges: ['x'], priority: 2 },
+    children: [
+      {
+        key: 'c1',
+        title: 't1',
+        goal: 'g',
+        keyChanges: ['x'],
+        blockedByKeys: [],
+        estimate: 2,
+        priority: 2,
+        agentFriendly: true,
+        agentQuestion: false,
+      },
+      {
+        key: 'c2',
+        title: 't2',
+        goal: 'g',
+        keyChanges: ['x'],
+        blockedByKeys: ['c1'],
+        estimate: 2,
+        priority: 2,
+        agentFriendly: true,
+        agentQuestion: false,
+      },
+    ],
+  }
+  const child = (n, key) => ({
+    id: `uuid-${n}`,
+    identifier: `BOS-${n}`,
+    title: `t ${key}`,
+    state: { name: 'Todo' },
+    labels: [{ name: 'agent-friendly' }],
+    attachments: [{ id: `p${n}`, title: `Implementation plan (BOS-${n})` }],
+    links: [],
+    ...(ctx.bundleChildDescription === null ? {} : { description: ctx.bundleChildDescription }),
+  })
+  const bundle = {
+    parentId: 'BOS-10',
+    childIds: ctx.childIds,
+    parent: {
+      id: 'uuid-10',
+      identifier: 'BOS-10',
+      state: { name: ctx.parentState },
+      labels: [{ name: 'epic' }],
+      attachments: [
+        { id: 'spec', title: 'Epic spec (BOS-10)' },
+        { id: 'plan', title: 'Implementation plan (BOS-10)' },
+      ],
+      links: [],
+    },
+    children: [child(11, 'c1'), child(12, 'c2')],
+    ...ctx.extraBundle,
+  }
+  const files = {
+    'BOS-10.epic-reverify.json': JSON.stringify(bundle),
+    'BOS-10.epic-spec.json': JSON.stringify(spec),
+    'BOS-10.epic-overview.md': RV_OVERVIEW,
+    'BOS-10.image-guard-stored.md': RV_OVERVIEW,
+    'BOS-10.child-BOS-11.image-guard-new.md': rvChildBody('c1'),
+    'BOS-10.child-BOS-12.image-guard-new.md': rvChildBody('c2'),
+    'BOS-10.child-BOS-11.image-guard-stored.md': ctx.childBodyStored['BOS-11'],
+    'BOS-10.child-BOS-12.image-guard-stored.md': ctx.childBodyStored['BOS-12'],
+  }
+  for (const [name, text] of Object.entries(files)) {
+    if (!ctx.skip.has(name)) writeFileSync(path.join(runDir, name), text)
+  }
+  return { dir, bundle: '.linear-plans/run-r1/BOS-10.epic-reverify.json', runDir }
+}
+
+function runEpicReverifyCli(fixture, extraEnv = {}) {
+  const res = spawnSync(process.execPath, [GUARD, 'epic-reverify', fixture.bundle], {
+    cwd: fixture.dir,
+    encoding: 'utf8',
+    env: { ...process.env, ...extraEnv },
+  })
+  const lines = res.stdout.split('\n').filter((line) => line !== '')
+  return { ...res, lines, verdict: lines.length === 1 ? JSON.parse(lines[0]) : null }
+}
+const blockerCodes = (verdict) => verdict.blockers.map((b) => b.code)
+
+test('epic-reverify: a conforming epic on disk exits 0 with one JSON verdict line on stdout', () => {
+  const res = runEpicReverifyCli(writeEpicFixture())
+  assert.equal(res.status, 0, res.stderr)
+  assert.equal(res.lines.length, 1)
+  assert.equal(res.verdict.ok, true)
+  assert.equal(res.verdict.class, 'pass')
+})
+
+test('epic-reverify: a missing child stored read-back is a named stored-missing blocker', () => {
+  const res = runEpicReverifyCli(
+    writeEpicFixture((ctx) => ctx.skip.add('BOS-10.child-BOS-12.image-guard-stored.md')),
+  )
+  assert.notEqual(res.status, 0)
+  const missing = res.verdict.blockers.filter((b) => b.code === 'stored-missing')
+  assert.equal(missing.length, 1)
+  assert.match(missing[0].message, /BOS-12/)
+})
+
+test('epic-reverify: a malformed bundle exits 3 as needs-human with unreadable-input', () => {
+  const fixture = writeEpicFixture()
+  writeFileSync(path.join(fixture.runDir, 'BOS-10.epic-reverify.json'), '{not json')
+  const res = runEpicReverifyCli(fixture)
+  assert.equal(res.status, 3)
+  assert.equal(res.verdict.class, 'needs-human')
+  assert.deepEqual(blockerCodes(res.verdict), ['unreadable-input'])
+})
+
+test('epic-reverify: UUID children resolve their files under the identifier the sentinel uses', () => {
+  // The fixture's children carry `id: uuid-N` beside `identifier: BOS-N`, and every file is named
+  // with the identifier — the passing run above already proves resolution; this pins it directly.
+  const res = runEpicReverifyCli(writeEpicFixture())
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!blockerCodes(res.verdict).includes('stored-missing'))
+})
+
+test('epic-reverify: a bundle description is ignored in favour of the stored file', () => {
+  const res = runEpicReverifyCli(
+    writeEpicFixture((ctx) => {
+      ctx.bundleChildDescription = '## Summary\n\n…(truncated, use get_issue for full description)'
+    }),
+  )
+  assert.equal(res.status, 0, res.stderr)
+})
+
+test('epic-reverify: the class — and the exit code — follow the parent state', () => {
+  const drift = (ctx) =>
+    (ctx.childBodyStored['BOS-11'] = rvChildBody('c1').replace(RV_NOTES, 'Changed.\n'))
+  const planned = runEpicReverifyCli(writeEpicFixture(drift))
+  assert.equal(planned.status, 3, planned.stderr)
+  assert.equal(planned.verdict.class, 'needs-human')
+  assert.ok(blockerCodes(planned.verdict).includes('child-body-drift'))
+
+  const unplanned = runEpicReverifyCli(
+    writeEpicFixture((ctx) => {
+      drift(ctx)
+      ctx.parentState = 'Unplanned'
+    }),
+  )
+  assert.equal(unplanned.status, 1, unplanned.stderr)
+  assert.equal(unplanned.verdict.class, 'resumable')
+})
+
+test('epic-reverify: a paths field in the bundle cannot redirect a comparison', () => {
+  const fixture = writeEpicFixture((ctx) => {
+    ctx.extraBundle = {
+      paths: { intendedOverview: '/nonexistent', storedOverview: '/nonexistent' },
+    }
+  })
+  const res = runEpicReverifyCli(fixture)
+  assert.equal(res.status, 0, res.stderr)
+})
+
+test('epic-reverify: a config with no agentPlan or agentQuestion mapping runs and forbids nothing extra', () => {
+  const res = runEpicReverifyCli(
+    writeEpicFixture((ctx) => {
+      ctx.labels = { agentFriendly: 'agent-friendly', needsHuman: 'needs-human', epic: 'epic' }
+    }),
+  )
+  assert.equal(res.status, 0, res.stderr)
+})
+
+test('epic-reverify: a queue label on the parent is a parent-forbidden-label blocker', () => {
+  const fixture = writeEpicFixture()
+  const bundlePath = path.join(fixture.runDir, 'BOS-10.epic-reverify.json')
+  const bundle = JSON.parse(readFileSync(bundlePath, 'utf8'))
+  bundle.parent.labels.push({ name: 'agent-plan' })
+  writeFileSync(bundlePath, JSON.stringify(bundle))
+  const res = runEpicReverifyCli(fixture)
+  assert.equal(res.status, 3)
+  assert.ok(blockerCodes(res.verdict).includes('parent-forbidden-label'))
+})
+
+test('epic-reverify: the usage line names the verb, and the gate records under its own id', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const outcomes = path.join(dir, 'outcomes.tsv')
+  const usage = runGuardRecording(['epic-reverify'], outcomes)
+  assert.equal(usage.status, 2)
+  assert.match(usage.stderr, /epic-reverify <bundle\.json>/)
+
+  const pass = runEpicReverifyCli(writeEpicFixture(), { BOSS_GATE_OUTCOME_FILE: outcomes })
+  assert.equal(pass.status, 0, pass.stderr)
+  const fire = runEpicReverifyCli(
+    writeEpicFixture((ctx) => (ctx.parentState = 'Unplanned')),
+    { BOSS_GATE_OUTCOME_FILE: outcomes },
+  )
+  assert.equal(fire.status, 1)
+  assert.deepEqual(recordedOutcomes(outcomes), [
+    ['plan-run-guards.usage', 'fire', 'unknown-verb'],
+    ['plan-run-guards.epic-reverify', 'pass', 'ok'],
+    ['plan-run-guards.epic-reverify', 'fire', 'parent-unplanned'],
+  ])
+})

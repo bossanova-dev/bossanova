@@ -2684,7 +2684,7 @@ func TestBossBuildPayloadReadsNativePlanAttachmentsOnly(t *testing.T) {
 // files, so a transcription slip at the save step survived all of them — and the tracker exposes no
 // description history to an agent, which makes the written text the only surviving copy.
 //
-// A stale plugin mirror can transiently restore its embedded payload at daemon start, so the gate is
+// A stale plugin mirror restores its embedded payload at daemon start to non-explicit installs, so the gate is
 // asserted in both payloads rather than only in the skillinstall home. The drift branch is asserted
 // by BEHAVIOUR, not by helper name: a name-exact pin stays green while the prose has stopped saying
 // the description is already stored and must not be rewritten, which is the whole point of the

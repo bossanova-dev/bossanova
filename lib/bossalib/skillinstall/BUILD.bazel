@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "doc.go",
         "extract.go",
+        "record.go",
     ],
     importpath = "github.com/recurser/bossalib/skillinstall",
     visibility = ["//visibility:public"],
@@ -16,6 +17,11 @@ go_test(
     srcs = [
         "extract_test.go",
         "perms_unix_test.go",
+        "record_test.go",
     ],
     embed = [":skillinstall"],
+    deps = [
+        "//lib/bossalib/safego",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
 )

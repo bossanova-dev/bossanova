@@ -251,6 +251,37 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.ok(!codes(result).includes('unknown-section'))
   })
 
+  test('duplicate-section names a repeated contract heading instead of section-order', () => {
+    const description = conformant().replace(
+      '## Risks / unknowns',
+      '## Testing\n\nThe duplicated testing block, long enough to be real.\n\n## Risks / unknowns',
+    )
+    const result = checkPlanContract({ description })
+    assert.deepEqual(codes(result), ['duplicate-section'])
+    assert.match(result.violations[0].message, /"## Testing" is emitted 2 times/)
+  })
+
+  test('a genuine reorder with no repeat is still section-order, not duplicate-section', () => {
+    const body = 'Substantive body prose for this section, long enough to be a real plan.'
+    const description = conformant().replace(
+      `## Approach\n\n${body}\n\n${KEY_CHANGES_BLOCK}`,
+      `${KEY_CHANGES_BLOCK}\n\n## Approach\n\n${body}`,
+    )
+    assert.notEqual(description, conformant(), 'the fixture must actually reorder')
+    const found = codes(checkPlanContract({ description }))
+    assert.ok(found.includes('section-order'))
+    assert.ok(!found.includes('duplicate-section'))
+  })
+
+  test('merged-list-item fires on a Planning bullet joined mid-line, and not on separate ones', () => {
+    const merged = conformant('- Contract: v1\n- Atomic-5: epic DAG.- Agent-friendly: needs-human')
+    const result = checkPlanContract({ description: merged })
+    assert.deepEqual(codes(result), ['merged-list-item'])
+    assert.match(result.violations[0].message, /"- Agent-friendly:"/)
+    const separate = conformant('- Contract: v1\n- Atomic-5: epic DAG.\n- Agent-friendly: yes')
+    assert.deepEqual(codes(checkPlanContract({ description: separate })), [])
+  })
+
   test('section-order names the epic-parent order when mode is epic-parent', () => {
     const description = epicParentConformant().replace(
       '## Child tickets',
@@ -427,6 +458,61 @@ describe('checkPlanContract — each violation code fires', () => {
 
     // The negative half of the criterion: repo-relative paths raise nothing.
     assert.deepEqual(checkPlanContract({ description: conformant() }).violations, [])
+  })
+
+  test('the subject-area check emits exactly one source advisory whenever it runs', () => {
+    const sourceAdvisories = (result) =>
+      result.advisories.filter((a) => a.code === 'advisory: subject-areas-source')
+    const child = checkPlanContract({ description: conformant() })
+    assert.equal(child.ok, true)
+    assert.deepEqual(
+      sourceAdvisories(child).map((a) => a.message),
+      [
+        'plan-contract-guard: subject-area check read key-changes: 2 area(s), 0 unresolved token(s)',
+      ],
+    )
+
+    const parent = checkPlanContract({ description: epicParentConformant(), mode: 'epic-parent' })
+    assert.equal(parent.ok, true)
+    const skipped = sourceAdvisories(parent)
+    assert.equal(skipped.length, 1)
+    assert.match(skipped[0].message, /skipped — epic-parent mode has no ## Key changes section/)
+
+    // Suppressed where another code already reports the defect.
+    const missing = conformant().replace(KEY_CHANGES_BLOCK, '')
+    assert.ok(codes(checkPlanContract({ description: missing })).includes('missing-sections'))
+    assert.deepEqual(sourceAdvisories(checkPlanContract({ description: missing })), [])
+    const unterminated = conformant().replace('## Testing', '```\n## Testing')
+    assert.deepEqual(sourceAdvisories(checkPlanContract({ description: unterminated })), [])
+  })
+
+  test('enumeration-dropped fires when the plan file carries the enumeration and Approach does not', () => {
+    const enumeration =
+      '### Sibling-class enumeration\n\n| Site | Verdict |\n| --- | --- |\n| a | fix |'
+    const planWith = documentingPlan.replace(
+      '## Approach\n\nUse the existing guard.',
+      `## Approach\n\nUse the existing guard.\n\n${enumeration}`,
+    )
+    assert.notEqual(planWith, documentingPlan, 'the fixture must carry the heading')
+    const body = 'Substantive body prose for this section, long enough to be a real plan.'
+    const carried = conformant().replace(
+      `## Approach\n\n${body}`,
+      `## Approach\n\n- ${body}\n\n${enumeration}`,
+    )
+
+    const dropped = checkPlanContract({ description: conformant(), plan: planWith })
+    assert.deepEqual(codes(dropped), ['enumeration-dropped'])
+    assert.deepEqual(codes(checkPlanContract({ description: carried, plan: planWith })), [])
+    assert.deepEqual(
+      codes(checkPlanContract({ description: conformant(), plan: documentingPlan })),
+      [],
+    )
+    // A heading only inside a fenced example in the plan is documentation, not the table.
+    const fenced = documentingPlan.replace(
+      '## Approach\n\nUse the existing guard.',
+      `## Approach\n\nUse the existing guard.\n\n\`\`\`md\n${enumeration}\n\`\`\``,
+    )
+    assert.deepEqual(codes(checkPlanContract({ description: conformant(), plan: fenced })), [])
   })
 
   test('subject-areas-unresolved names the path-shaped tokens it could not resolve', () => {
@@ -708,6 +794,22 @@ describe('checkPlanContract — each violation code fires', () => {
       assert.match(result.violations[0].message, /"GONE_TOKEN"/)
     })
 
+    test('a line-zero premise citation raises only the unresolvable-citation violation', () => {
+      for (const bullet of [
+        '- [ ] target.mjs:0 still pins the token — check: `sed -n 3p target.mjs`',
+        '- [ ] the `GONE_TOKEN` at `target.mjs:0` — check: `sed -n 3p target.mjs`',
+      ]) {
+        const result = checkPlanCitations(DEFAULT_CONFIG, premises(bullet), {
+          cwd: anchorFixture(),
+        })
+        assert.deepEqual(
+          result.violations.map((v) => v.code),
+          ['unresolvable-citation'],
+          bullet,
+        )
+      }
+    })
+
     test('a premise whose anchor resolves in the window raises neither violation', () => {
       const result = checkPlanCitations(
         DEFAULT_CONFIG,
@@ -756,6 +858,131 @@ describe('checkPlanContract — each violation code fires', () => {
         result.violations.map((v) => v.code),
         ['unresolvable-citation'],
       )
+    })
+  })
+
+  describe('Risks citations (BOS-1328)', () => {
+    const riskFixture = () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-risks-'))
+      writeFileSync(
+        path.join(dir, 'target.mjs'),
+        [
+          'export function realSymbol() {',
+          '  const a = 1',
+          '  const b = 2',
+          '  const c = 3',
+          '  const d = 4',
+          '  const e = 5',
+          '  const f = 6',
+          '  return a + b + c + d + e + f',
+          '}',
+          '',
+          'const TAIL = 1',
+          'const TAIL2 = 2',
+          'const TAIL3 = 3',
+          'const TAIL4 = 4',
+          'const TAIL5 = 5',
+        ].join('\n') + '\n',
+      )
+      return dir
+    }
+    const risks = (bullet) =>
+      conformant().replace(
+        '## Risks / unknowns\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        `## Risks / unknowns\n\n${bullet}`,
+      )
+    const riskCodes = (bullet, dir = riskFixture()) =>
+      checkPlanCitations(DEFAULT_CONFIG, risks(bullet), { cwd: dir }).violations.map((v) => v.code)
+
+    test('a Risks line citing a line past EOF is unresolvable', () => {
+      assert.deepEqual(riskCodes('- the loop at `target.mjs:99` may regress'), [
+        'unresolvable-citation',
+      ])
+    })
+
+    test('a Risks citation beside an identifier absent from its window is stale', () => {
+      const result = checkPlanCitations(
+        DEFAULT_CONFIG,
+        risks('- `fabricatedSymbol` at `target.mjs:14` may regress'),
+        { cwd: riskFixture() },
+      )
+      assert.deepEqual(
+        result.violations.map((v) => v.code),
+        ['stale-risk-citation'],
+      )
+      assert.match(result.violations[0].message, /"fabricatedSymbol"/)
+      assert.match(result.violations[0].message, /target\.mjs:14/)
+    })
+
+    test('the same Risks line with the symbol 4 lines away passes', () => {
+      assert.deepEqual(riskCodes('- `TAIL5` at `target.mjs:11` may regress'), [])
+      assert.deepEqual(riskCodes('- `target.mjs:15` is `TAIL()` and may regress'), [])
+    })
+
+    test('a citation INTO a symbol body anchors on its enclosing declaration', () => {
+      // `realSymbol` is declared 7 lines above the cited `return`, outside the ±5 window.
+      assert.deepEqual(riskCodes('- `realSymbol` (`target.mjs:8`) sums the constants'), [])
+      // ...and a qualified name anchors on its last segment.
+      assert.deepEqual(riskCodes('- `mod.realSymbol()` (`target.mjs:8`) sums them'), [])
+    })
+
+    test('a Risks citation with only a backticked path, or no backticks, passes', () => {
+      assert.deepEqual(riskCodes('- `target.mjs` at `target.mjs:14` may regress'), [])
+      assert.deepEqual(riskCodes('- the tail at target.mjs:14 may regress'), [])
+      assert.deepEqual(riskCodes('- `lib/other/thing` at `target.mjs:14` may regress'), [])
+    })
+
+    test('an identifier that is not ADJACENT to the citation describes something else', () => {
+      assert.deepEqual(
+        riskCodes('- deletion happens (`target.mjs:14`). But `fabricatedSymbol` is not unique'),
+        [],
+      )
+    })
+
+    test('a Key changes line naming a new symbol beside a citation still passes', () => {
+      const description = conformant().replace(
+        KEY_CHANGES_BLOCK,
+        '## Key changes\n\n- `brandNewSymbol` at `target.mjs:14`: added by this ticket',
+      )
+      assert.deepEqual(
+        checkPlanCitations(DEFAULT_CONFIG, description, { cwd: riskFixture() }).violations,
+        [],
+      )
+    })
+
+    test('a nonexistent line with an absent identifier raises only unresolvable-citation', () => {
+      assert.deepEqual(riskCodes('- `fabricatedSymbol` at `target.mjs:99` may regress'), [
+        'unresolvable-citation',
+      ])
+    })
+
+    test('a Premises unresolvable-citation names both remedies', () => {
+      const description = conformant().replace(
+        '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        [
+          '## Premises',
+          '',
+          '- [ ] the ticket quotes target.mjs:99, which has rotted',
+          '',
+          '## Acceptance criteria',
+          '',
+          '- [ ] the criterion is unrelated',
+        ].join('\n'),
+      )
+      const result = checkPlanCitations(DEFAULT_CONFIG, description, { cwd: riskFixture() })
+      assert.deepEqual(
+        result.violations.map((v) => v.code),
+        ['unresolvable-citation'],
+      )
+      assert.match(result.violations[0].message, /cite target\.mjs without a line number/)
+      assert.match(result.violations[0].message, /"line 99 of target\.mjs"/)
+      // The remedy is Premises-only: the same stale coordinate in Risks gets no remedy text.
+      const risk = checkPlanCitations(
+        DEFAULT_CONFIG,
+        risks('- the ticket quotes target.mjs:99, which has rotted'),
+        { cwd: riskFixture() },
+      )
+      assert.doesNotMatch(risk.violations[0].message, /without a line number/)
     })
   })
 
@@ -975,6 +1202,29 @@ describe('checkPlanContract — each violation code fires', () => {
     )
   })
 
+  test('path-operand-absent is dropped for a file the plan Key changes creates', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-operand-'))
+    mkdirSync(path.join(dir, 'skills-toolbox'))
+    const withCriterion = (keyChanges) =>
+      conformant()
+        .replace(KEY_CHANGES_BLOCK, `## Key changes\n\n${keyChanges}`)
+        .replace(
+          '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+          '## Acceptance criteria\n\n- [ ] the helper works — check: `node --test skills-toolbox/new-helper.test.mjs`',
+        )
+    const codesFor = (keyChanges) =>
+      checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, withCriterion(keyChanges), {
+        cwd: dir,
+      }).advisories.map((finding) => finding.code)
+    assert.deepEqual(
+      codesFor('- `skills-toolbox/new-helper.test.mjs`: new coverage added by this ticket'),
+      [],
+    )
+    assert.deepEqual(codesFor('- `skills-toolbox/other.mjs`: unrelated change'), [
+      'advisory: path-operand-absent',
+    ])
+  })
+
   test('a criterion cannot reuse a premise check command', () => {
     const description = conformant().replace(
       '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
@@ -1076,6 +1326,81 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.ok(finding, JSON.stringify(result.violations))
     assert.match(finding.message, /^plan-contract-guard: premise /)
     assert.match(finding.message, /78926 bytes/)
+  })
+
+  describe('byte figures in narrative prose (BOS-1328)', () => {
+    const body = 'Substantive body prose for this section, long enough to be a real plan.'
+    const withApproach = (approach, premise = null) => {
+      let description = conformant().replace(`## Approach\n\n${body}`, `## Approach\n\n${approach}`)
+      if (premise) {
+        description = description.replace(
+          '## Acceptance criteria',
+          `## Premises\n\n${premise}\n\n## Acceptance criteria`,
+        )
+      }
+      return description
+    }
+    const narrative = (description) =>
+      checkPlanContract({ description }).violations.filter(
+        (v) => v.code === 'unmeasured-count-claim' && / states "/.test(v.message),
+      )
+
+    test('an unrepeated byte figure in Approach is unmeasured-count-claim naming the section', () => {
+      const found = narrative(withApproach('- The resident body is 126586 bytes today.'))
+      assert.equal(found.length, 1)
+      assert.match(found[0].message, /## Approach states "126586 bytes"/)
+    })
+
+    test('the same figure repeated by a premise checked with wc -c passes', () => {
+      assert.deepEqual(
+        narrative(
+          withApproach(
+            '- The resident body is 126,586 bytes today.',
+            '- [ ] The resident body measures 126586 bytes — check: `wc -c skills-toolbox/plan-contract-guard.mjs`',
+          ),
+        ),
+        [],
+      )
+      // ...but a premise whose check counts nothing does not discharge it.
+      assert.equal(
+        narrative(
+          withApproach(
+            '- The resident body is 126586 bytes today.',
+            '- [ ] The resident body measures 126586 bytes — check: `ls skills-toolbox/plan-contract-guard.mjs`',
+          ),
+        ).length,
+        1,
+      )
+    })
+
+    test('a figure only inside a code span, or only in Original notes, passes', () => {
+      assert.deepEqual(
+        narrative(withApproach('- The constant is `126586 bytes` in the fixture.')),
+        [],
+      )
+      const notes = conformant().replace(
+        `## Original notes\n\n${body}`,
+        '## Original notes\n\nThe reporter says the body is 126586 bytes.',
+      )
+      assert.deepEqual(narrative(notes), [])
+    })
+
+    test('a target, limit, delta or margin is not a measurement', () => {
+      for (const approach of [
+        '- Cap the payload at 3800 bytes.',
+        '- The message is capped at 512 bytes.',
+        '- This trims 466 bytes from the resident body.',
+        '- The change frees roughly 190 bytes.',
+        '- There are 98 bytes of headroom.',
+        '- Only 20 bytes of resident\n  headroom remain.',
+        '- An input longer than 80 bytes is truncated.',
+        '- The body grew by 81, 80 and 82 bytes.',
+        '> | quoted | "measures exactly 77719 bytes" |',
+        '- An ellipsis is 3 bytes in UTF-8.',
+      ]) {
+        assert.deepEqual(narrative(withApproach(approach)), [], approach)
+      }
+    })
   })
 
   test('unmeasured-count-claim stays quiet when there is no check command to judge', () => {
@@ -1352,10 +1677,14 @@ describe('CLI', () => {
     return spawnSync(process.execPath, args, { encoding: 'utf8', ...spawnOptions })
   }
 
-  test('a conformant description exits 0 and says nothing', () => {
+  // Not silent since BOS-1328: the subject-area check names what it read on every run, so a
+  // conformant description prints exactly that one advisory line and nothing else.
+  test('a conformant description exits 0 and says only the subject-area source', () => {
     const res = runCli(conformant(), documentingPlan)
     assert.equal(res.status, 0, `expected a clean exit, got ${res.status}: ${res.stderr}`)
-    assert.equal(res.stderr.trim(), '')
+    assert.deepEqual(res.stderr.trim().split('\n'), [
+      'plan-contract-guard: subject-area check read key-changes: 2 area(s), 0 unresolved token(s) [advisory: subject-areas-source]',
+    ])
   })
 
   test('the CLI exemption flag suppresses only the plan-file structure floor', () => {
@@ -1443,7 +1772,12 @@ describe('CLI', () => {
 
     const pass = runCli(conformant(), documentingPlan, null, withRecording)
     assert.equal(pass.status, 0, `expected a clean exit, got ${pass.status}: ${pass.stderr}`)
-    assert.equal(pass.stderr.trim(), '', 'recording must not add stderr output')
+    assert.equal(
+      pass.stderr.trim().split('\n').length,
+      1,
+      'recording must not add stderr output beyond the one subject-area advisory',
+    )
+    assert.match(pass.stderr, /\[advisory: subject-areas-source\]/)
     assert.deepEqual(
       read().map((line) => line.split('\t').slice(1, 3)),
       [['plan-contract-guard', 'pass']],
@@ -1670,6 +2004,28 @@ describe('line-spanning emphasis lint (BOS-1199)', () => {
       spans(withSummary('An ***emphatic*** phrase plus **bold *inner* bold** text.')),
       [],
     )
+  })
+
+  // BOS-1328: a code span masked with SPACES made the `**` that closes right after it look
+  // whitespace-preceded, so it could not close and the NEXT span's closer paired with it instead.
+  test('a bold run closing right after an inline code span reports the true opening line', () => {
+    const found = spans(withSummary('- **run the `x`** first\n- a **real span\ncloses** here'))
+    assert.deepEqual(
+      found.map((f) => f.line),
+      [4],
+    )
+  })
+
+  test('a bold run opening right before a code span flanks, and is reported when it spans', () => {
+    const found = spans(withSummary('**`code` opens the run\nand it closes** on the next line.'))
+    assert.deepEqual(
+      found.map((f) => f.line),
+      [3],
+    )
+  })
+
+  test('an intraword bold wrapped around a code span pairs on its own line', () => {
+    assert.deepEqual(spans(withSummary('foo**`code`**baz here\nthen **an unrelated** bold.')), [])
   })
 
   test('arithmetic prose across a hard wrap does not pair into a phantom span', () => {

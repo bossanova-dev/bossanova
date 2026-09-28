@@ -352,7 +352,9 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    outward edges mutate **non-epic** backlog tickets, so writing them before the parent gate would
    strand existing backlog work behind a child that a deterministic parent-gate failure leaves
    unexposed. **Gate, then
-   SAVE the parent overview BEFORE exposing any child:** compose the parent overview now — write it to
+   SAVE the parent overview BEFORE exposing any child:** re-assert the parent's configured unplanned
+   state first — the tracker's sub-issue rollup can advance it on its own, and a partial epic the
+   unplanned sweep cannot find is stranded — then compose the parent overview now — write it to
    this run's declared `epic-overview` scratch, `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-overview.md`,
    rather than to a path you invent, so the gates below read it from disk and Phase 5's single
    `rm -rf` reaches it — and run its three
@@ -365,7 +367,7 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    drop, no parent write, abort) and **plan-contract gate** (`$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs --mode epic-parent`
    — validate the parent overview's epic-parent sections before attachment finalize or parent save; on
    a violation, no parent write, abort) run here. Only after all three parent gates pass, attach the parent overview
-   natively + save it onto the original ticket,
+   natively, re-assert that state again immediately before the parent description save, and save it onto the original ticket,
    but keep it unplanned** (a description-only save — defer the unplanned → planned repurpose flip to the
    very last write below). This is the durable **parent commit**, and it runs **before any child is
    exposed**: because attachment finalization and saving to Linear are the failure-prone writes, doing them here
@@ -403,7 +405,10 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    difference, whichever direction (it can round up as well as clamp down). The warning is a line in
    this run's own output, not a tracker write or sentinel field. The parent carries neither
    `agent-friendly` nor `needs-human`
-   — the overview was already saved above. **Strip stale build metadata with this flip:** a
+   — the overview was already saved above. **Queue label:** this flip's `labels` (read-modify-write:
+   `save_issue` replaces the set; the estimate-less retry too) also drops the planning-queue
+   (`agentPlan`) label when one is configured, never at stage 1 — a partial epic must stay in the
+   queue sweep's input. **Strip stale build metadata with this flip:** a
    headless sweep can pick an explicitly-named planned/in-progress ticket that was **already planned**,
    so the original may already carry `agent-friendly` **and** a single-ticket `Implementation plan (…)`
    link or attachment; a bare state flip would leave the epic parent `boss-build`-selectable, so **remove any
@@ -488,7 +493,22 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    resume too, else an agent-friendly root child is exposed without blocking overlapping active backlog
    work; the links are append-only, so re-running them is a safe no-op for edges already written), and
    finally finish the missing child exposure and the unplanned → planned flip. Complete only what is
-   missing from the original spec, never duplicate.
+   missing from the original spec, never duplicate. On that resume no parent save runs, so
+   re-assert the unplanned state before the deferred external links instead.
+   **Intended bytes (the orchestrator's epic reverify reads these).** Phase 2 step 4 write-back-verifies
+   every description this run saved against a scratch file holding exactly the body of that
+   description's **last** save. The parent overview save's body is
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-overview.md` (make any secret-gate redaction in
+   that file before finalize). Each child's description save's body, marker included, is its
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.image-guard-new.md`; when the
+   external-link pass re-saves a child's description (the Phase 4 step-5(f) notes /
+   `- Dependencies:` save), write that later save's bytes to the same file after it. On the
+   already-saved-overview resume, write the reused stored overview to the `epic-overview` scratch;
+   for an adopted child whose description this run did not rewrite, write its current stored
+   description to its `image-guard-new` scratch through
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description` — the route the orchestrator reads
+   back with, so upload-URL signing cannot fabricate drift. A body edited after its intended file was
+   written (a marker inserted late, say) reports as drift, and that verdict is not resumable.
 
 ## Step 2 — Codebase recon
 
@@ -676,8 +696,9 @@ Include, in the plan body, all of the following (scaled to triage):
   level. This is plan-file structure, not part of `descriptionSummary`.
 - When the ticket names a specific call site, construct, literal claim, or other mechanism that could
   recur elsewhere, record a repo-wide sibling-class enumeration before fixing implementation scope.
-  List every site the search returns, give each row a verdict (`fix` or `not a defect`) and a
-  reason, and adjudicate the class per site rather than sweeping every match wholesale. The row's
+  Its home is an `### Sibling-class enumeration` table under `## Approach`. List every site the
+  search returns, give each row a verdict (`fix` or `not a defect`) and a reason, and adjudicate the
+  class per site rather than sweeping every match wholesale. The row's
   reason should name the discriminator that makes the site equivalent or different, such as where the
   branch actually lives. A one-row table saying the search found only the named site is a complete
   discharge. Do not write an acceptance criterion that caps the number of changed files. Examples:
@@ -833,7 +854,9 @@ outside that allow-list as `unknown-section`, so inventing a section — `## Ver
 `## Notes` — blocks the plan outright however useful the content is. When the plan needs structure
 the contract does not name, put it **one level down, as an `###` under `## Approach`**. That is the
 shape that satisfies both the section guard and the dependency extractor, which reads `## Approach`
-for its area candidates. Do not reach for a new `##` and do not omit the content: demote it.
+for its area candidates. Do not reach for a new `##` and do not omit the content: demote it. The
+sibling-class enumeration is the named case: it is always `### Sibling-class enumeration` under
+`## Approach`.
 
 The Phase 4 contract gate also enforces a producer-side plan-file floor for single-ticket plans:
 the plan file must carry every required description-contract heading, the configured plan-file
@@ -865,6 +888,10 @@ Assemble the Linear description block the orchestrator will write back **verbati
 **byte-identical external contract** boss-build and
 bs-sweep-plan consume — do not rename or drop sections. Do NOT add the `- Dependencies:` line — the
 orchestrator appends that itself when it links conflicting dependencies.
+
+When the plan file carries an `### Sibling-class enumeration` block, the description's
+`## Approach` carries the same `###` block after its bullets; the contract gate reports
+`enumeration-dropped` when the plan file has it and the description does not.
 
 The `- Contract: v<N>` bullet under `## Planning` stamps the version of this description-section
 contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Keep it equal to
@@ -1090,10 +1117,12 @@ NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the same 
 node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH"
 ```
 
-It prints one stderr line per violation, tagged `line-spanning-emphasis`, `missing-sections`,
+It prints one stderr line per violation, tagged `duplicate-section`, `enumeration-dropped`, `line-spanning-emphasis`, `merged-list-item`,
+`missing-sections`,
 `not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
 `plan-file-structure-exemption`,
 `pr-body-only-evidence`, `premise-reused-as-criterion`, `section-order`, `self-falsified-literal-search`, `stale-premise-citation`,
+`stale-risk-citation`,
 `subject-areas-unresolved`,
 `unanchored-premise-citation`, `unknown-section`, `unmeasured-count-claim`, `unresolvable-citation`, any `vacuous-*` code
 (the dynamic `vacuous-<kind>-command-<reason>` family), or `unreadable-input`. **A non-zero exit

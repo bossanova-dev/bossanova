@@ -8,6 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/buildinfo"
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd-plugin-claude/skilldata"
@@ -21,8 +22,14 @@ func main() {
 
 	logger.Info().Msg("starting Claude agent plugin")
 
-	if err := ensureSkillsInstalled(); err != nil {
+	if result, err := ensureSkillsInstalled(); err != nil {
 		logger.Warn().Err(err).Msg("failed to update boss skills")
+	} else if result.Held {
+		logger.Warn().
+			Str("installed", result.Decision.Installed.String()).
+			Str("payload", pluginSkillPayloadRecord().String()).
+			Str("reason", result.Decision.Reason).
+			Msg("held boss skill refresh: this plugin's embedded payload is not provably newer than the installed one; run `boss skills install` to replace it explicitly")
 	}
 
 	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, &agentRunnerPlugin{
@@ -54,20 +61,36 @@ func runnerOptsFromEnv() []RunnerOption {
 	return opts
 }
 
+// pluginSkillBuildInfo reads this plugin binary's stamped revision and
+// version. A seam so tests can stand in for an older or newer plugin.
+var pluginSkillBuildInfo = func() (commit, version string) {
+	return buildinfo.Commit, buildinfo.Version
+}
+
+// pluginSkillPayloadRecord describes the plugin's embedded payload for the
+// no-downgrade rule. The plugin writes unattended, at every daemon start.
+func pluginSkillPayloadRecord() libskillinstall.PayloadRecord {
+	commit, version := pluginSkillBuildInfo()
+	return libskillinstall.EmbeddedPayloadRecord(commit, version, libskillinstall.WriterUnattended)
+}
+
 // ensureSkillsInstalled refreshes the boss skills under ~/.claude/skills/*
-// only when the installed tree differs from the embedded payload. No-op if
-// the user never installed boss skills via the CLI, and no-op when the
-// payload already matches — which prevents the plugin from clobbering an
-// up-to-date install on every daemon restart and ping-ponging with the
-// CLI's startup prompt.
-func ensureSkillsInstalled() error {
+// only when the installed tree differs from the embedded payload and the
+// no-downgrade rule allows it. No-op if the user never installed boss skills
+// via the CLI, and no-op when the payload already matches — which prevents the
+// plugin from clobbering an up-to-date install on every daemon restart and
+// ping-ponging with the CLI's startup prompt.
+//
+// The plugin runs outside any checkout, so its only ordering evidence is a
+// release-version comparison: over a tree an explicit install or a checkout
+// wrote, a dev or unstamped plugin holds rather than restoring its older embed.
+func ensureSkillsInstalled() (libskillinstall.GuardedResult, error) {
 	skillsDir, err := libskillinstall.DefaultDir()
 	if err != nil {
-		return err
+		return libskillinstall.GuardedResult{}, err
 	}
 	if !libskillinstall.IsInstalled(skillsDir) {
-		return nil
+		return libskillinstall.GuardedResult{}, nil
 	}
-	_, err = libskillinstall.EnsureUpdated(skillsDir, skilldata.SkillsFS)
-	return err
+	return libskillinstall.EnsureUpdatedGuarded(skillsDir, skilldata.SkillsFS, pluginSkillPayloadRecord(), libskillinstall.ReleaseVersionOrder)
 }

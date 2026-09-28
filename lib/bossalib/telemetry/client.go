@@ -115,8 +115,29 @@ func (postHogLogger) Errorf(format string, args ...interface{}) {
 	log.Error().Str("component", "posthog").Msg(fmt.Sprintf(format, args...))
 }
 
+type occurredAtKey struct{}
+
+// WithOccurredAt returns a context that stamps a Capture made with it at t, the
+// moment the event actually happened, rather than the moment it was captured.
+// A zero t leaves Capture on PostHog's default of the enqueue time.
+func WithOccurredAt(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, occurredAtKey{}, t)
+}
+
+// OccurredAt reports the occurred-at time carried by ctx, if a non-zero one was
+// set with WithOccurredAt.
+func OccurredAt(ctx context.Context) (time.Time, bool) {
+	if ctx == nil {
+		return time.Time{}, false
+	}
+	t, ok := ctx.Value(occurredAtKey{}).(time.Time)
+	if !ok || t.IsZero() {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
 func (c *postHogClient) Capture(ctx context.Context, event Event, distinctID string, properties map[string]any) {
-	_ = ctx
 	if !IsAllowed(event) || distinctID == "" {
 		return
 	}
@@ -124,11 +145,15 @@ func (c *postHogClient) Capture(ctx context.Context, event Event, distinctID str
 	props["app"] = c.cfg.App
 	props["environment"] = c.cfg.Environment
 	props["app_version"] = c.cfg.AppVersion
-	if err := c.inner.Enqueue(posthog.Capture{
+	capture := posthog.Capture{
 		DistinctId: distinctID,
 		Event:      string(event),
 		Properties: posthog.Properties(props),
-	}); err != nil {
+	}
+	if occurredAt, ok := OccurredAt(ctx); ok {
+		capture.Timestamp = occurredAt.UTC()
+	}
+	if err := c.inner.Enqueue(capture); err != nil {
 		log.Warn().Err(err).Str("event", string(event)).Msg("posthog capture enqueue failed")
 	}
 }

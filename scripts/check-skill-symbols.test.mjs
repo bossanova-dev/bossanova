@@ -11,7 +11,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
+import { CONTENT_LABEL_ROLES } from '../skills-toolbox/skill-config.mjs'
 import {
+  CONTENT_LABELS,
   assertTaxonomySplit,
   buildExportIndex,
   buildVerbIndex,
@@ -173,6 +175,14 @@ test('the taxonomy split self-check fires when a content label becomes a configu
       }),
     /CONTENT_LABELS\s+overlaps\s+configured\s+trackerConfig\s+label\s+roles: docs/,
   )
+})
+
+// The lint-time denylist and the runtime content taxonomy the metadata guard enforces must not
+// drift: every label the lint treats as content taxonomy must be one the guard accepts. (`bug` is
+// in the runtime list but deliberately absent from the lint list — see CONTENT_LABELS.)
+test('CONTENT_LABELS is a subset of the runtime CONTENT_LABEL_ROLES', () => {
+  const extra = CONTENT_LABELS.filter((label) => !CONTENT_LABEL_ROLES.includes(label))
+  assert.deepEqual(extra, [], `CONTENT_LABELS names labels the runtime taxonomy lacks: ${extra}`)
 })
 
 // ---------------------------------------------------------------------------

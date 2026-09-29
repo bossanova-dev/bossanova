@@ -43,7 +43,7 @@ MCP tool surface, and not over the `boss callback` CLI, is treated as callbacks-
 polls.
 
 When the gate is **false**, **skip `registerWatch` entirely and use `fallbackPoll`** — the clean,
-documented no-op below, run as Protocol step 5's bounded loop and never as a bare `--watch`, never a
+documented no-op below, run as Protocol step 5's bounded wait and never as a bare `--watch`, never a
 failed wait — and **report why**: `callbacksUnavailableReason(env)` returns the failing conjunct
 (`BOSS_SESSION_ID is unset`, or the binary rejection naming `BOSS_BIN`/`PATH`/`./bin/boss`). When it
 is **true**, arm the per-trigger watches as described.
@@ -63,8 +63,8 @@ generic `boss callback` CLI and carries the watch policy:
 wait set: `checks_passed`, `checks_failed`, `merged`. `policy.defaultExpiresIn` = `24h`.
 `policy.fallbackPoll` = `gh pr checks --watch --fail-fast`. That value names the **command** the
 adapter reports, not the wait protocol, and the raw form has **no timeout of its own** — so never
-run it unwrapped. Run the fallback poll as the bounded loop in Protocol step 5, which is the only
-form this reference sanctions; every `fallbackPoll` mention below means that loop.
+run it unwrapped. Run the fallback poll as the bounded wait in Protocol step 5, which is the only
+form this reference sanctions; every `fallbackPoll` mention below means that wait.
 
 ## Protocol
 
@@ -177,86 +177,43 @@ form this reference sanctions; every `fallbackPoll` mention below means that loo
    missed/expired delivery; when they are not, it is the sole wait mechanism.
 
    Do **not** reach for `gh pr checks "$PR" --watch --fail-fast` here. It has **no timeout of its
-   own**; the bound has to come from the caller, which is what this loop is:
+   own**, and a shell `sleep` loop cannot supply one either: its budget outlives one tool call, it
+   keeps nothing between calls, and a harness can neuter its delay. The bound is
+   `$BOSS_BUILD_TOOLBOX/ci-wait.mjs run`, one foreground tool call per chunk:
 
    ```bash
-   CI_WAIT_ATTEMPTS=${CI_WAIT_ATTEMPTS:-60}     # outer cap on READS, not on wall time — see below
-   CI_WAIT_INTERVAL=${CI_WAIT_INTERVAL:-30}     # seconds between reads
-   CI_WAIT_STATE=timeout
-   CI_WAIT_DIR="$(mktemp -d)"
-   i=0
-   while [ "$i" -lt "$CI_WAIT_ATTEMPTS" ]; do
-     # Keep the raw payload: the `*UNKNOWN*` arm reconciles it through the shared classifier, which
-     # needs the nodes, not the joined token string.
-     gh pr view "$PR" --json statusCheckRollup > "$CI_WAIT_DIR/rollup.json" 2>/dev/null \
-       || : > "$CI_WAIT_DIR/rollup.json"
-     # Emit BOTH the node's `status` and its conclusion/state: `.status` is what makes an
-     # in-progress node visible, and `"UNKNOWN"` keeps an unreadable node out of an empty token.
-     ROLLUP=$(jq -r \
-       '[.statusCheckRollup[]|(.status//empty),(.conclusion//.state//"UNKNOWN")]|join(" ")' \
-       < "$CI_WAIT_DIR/rollup.json" 2>/dev/null) || ROLLUP=""
-     case "$ROLLUP" in
-       "")                                   : ;;                       # unreadable: keep waiting
-       *PENDING*|*IN_PROGRESS*|*QUEUED*|*EXPECTED*|*REQUESTED*|*WAITING*) : ;;
-       *FAILURE*|*ERROR*|*CANCELLED*|*TIMED_OUT*|*ACTION_REQUIRED*) CI_WAIT_STATE=failed; break ;;
-       *UNKNOWN*)
-         # A null-shaped node — one whose conclusion is absent — lands here. RECONCILE it against
-         # the named contexts before it may terminate the wait: the rollup can carry such a node
-         # while `gh pr checks` reports the same named context as successful. The classifier owns
-         # that rule; this loop does not restate it.
-         gh pr checks "$PR" --json name,state,bucket > "$CI_WAIT_DIR/checks.json" 2>/dev/null \
-           || : > "$CI_WAIT_DIR/checks.json"
-         RECONCILED=$(node "$BOSS_BUILD_TOOLBOX/pr-check-state.mjs" classify \
-           --rollup "$CI_WAIT_DIR/rollup.json" --checks "$CI_WAIT_DIR/checks.json" \
-           2>/dev/null | jq -r .state) || RECONCILED=""
-         case "$RECONCILED" in
-           green)   CI_WAIT_STATE=settled; break ;;
-           failing) CI_WAIT_STATE=failed;  break ;;
-           pending) : ;;                    # still in flight: nothing terminated, keep waiting
-           *)       CI_WAIT_STATE=unknown; break ;;
-         esac ;;
-       *SUCCESS*)                            CI_WAIT_STATE=settled; break ;;
-       *)                                    CI_WAIT_STATE=unknown; break ;;
-     esac
-     i=$(( i + 1 ))
-     sleep "$CI_WAIT_INTERVAL"
-   done
+   PR="$PR_NUMBER"
+   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+   if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+   BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
+   node "$BOSS_BUILD_TOOLBOX/ci-wait.mjs" run --pr "$PR"
    ```
 
-   Two reasons this reads the rollup rather than filtering `gh pr checks` output: that output has
-   summary header lines a filter misreads as check rows, and `gh pr checks` collapses same-named
-   checks, so a `FAILURE` can hide behind a `SUCCESS` of the same name. Read the rollup states.
+   - **`continue` means call again.** Each `run` reads before any delay, takes its own delay
+     in-process and proves it elapsed, bounds every `gh` read, and returns inside one tool call (it
+     refuses, exit 2, any `--chunk-ms` plus `--read-timeout-ms` over 570000). `state: continue` is
+     the only non-terminal verdict: issue the same command in a **new** tool call, and never assign
+     it to `CI_WAIT_STATE`. Never loop over `run` inside one call or background it. Any other
+     `state` is the verdict — `CI_WAIT_STATE=<state>`.
+   - **The budget lives on disk.** The helper keys a wall-clock budget (default 60 minutes,
+     `--budget-ms`) to the PR and the head SHA it reads itself, so carry nothing between calls; a
+     new head is a fresh wait (`headChanged: true`). Relay its stderr lines — the first read names
+     the red signal or the pending count.
+   - **No verdict line is no reading.** A call killed or timed out before printing its JSON line is
+     neither `timeout` nor `unknown`: issue `run` again. The next `run` counts the interrupted chunk
+     and ends the wait as `unknown` (`repeated-interruption`) after three in a row.
+   - **The state file is a latch of the last read, not the current condition.** The `status` verb
+     (`--pr "$PR" --head-sha "$SHA"`) returns that reading with `fresh: false` and its `ageMs`; only
+     `run` probes.
 
-   **The catch-all is fail-CLOSED, and that is the point.** Read the arms as what they are: they
-   match the **whole joined string**, in order, not each node separately. So a rollup reaches
-   `settled` exactly when it carries a `SUCCESS` token and no pending, failure or `UNKNOWN` token —
-   the pending arm is matched first, so a single still-running node holds the whole rollup at
-   _keep waiting_ however many `SUCCESS` tokens sit beside it — and it still does when other nodes
-   are `SKIPPED`, `NEUTRAL` or `STALE` beside that `SUCCESS`. What fails closed is the shape with
-   **no `SUCCESS` at all** — an all-`SKIPPED` or all-`NEUTRAL` set where no gate ran, a state this
-   list does not classify, a node whose state was unreadable — every one of which lands on
-   `unknown`. Route `timeout` and `unknown` **exactly as each other**: neither is green, neither may
-   satisfy a green-branch check, and both take the same unknown route a missing reading takes.
-
-   **The one arm that does not terminate on sight is `*UNKNOWN*`.** A rollup node whose conclusion is
-   absent is null-shaped, not unreadable, and treating the rollup as authoritative on its own
-   misclassifies a merge-ready PR and stalls terminal settlement. That arm therefore hands the raw
-   rollup and the named-context payload to `$BOSS_BUILD_TOOLBOX/pr-check-state.mjs classify`, which
-   reconciles the two and owns the verdict; this loop restates none of its rules. Its `green`,
-   `failing` and `pending` answers map onto `settled`, `failed` and _keep waiting_; anything else is
-   still `unknown`, so the fail-closed default survives the reconcile rather than being widened by
-   it.
-
-   **What the outer cap bounds, stated honestly.** `CI_WAIT_ATTEMPTS` x `CI_WAIT_INTERVAL` bounds the
-   **sleeping**, not the whole wait: each `gh` read is itself unbounded, so the true worst case is
-   that product **plus** the time those reads take, and a single hung read still blocks this loop
-   indefinitely. At the shipped defaults the sleeping is 60 x 30s = 30 minutes. Where `timeout` /
-   `gtimeout` is present, wrapping the `gh` call (`timeout 60 gh pr view …`) is what closes that
-   residual; it is absent on a stock macOS, so this loop must not be described as a hard wall-clock
-   bound on hosts that lack it.
+   The verdict is `classifyChecks` from `$BOSS_BUILD_TOOLBOX/pr-check-state.mjs`, and the helper
+   restates none of its rules: a null-shaped rollup node is reconciled against the named contexts
+   of `gh pr checks` before it may terminate the wait; `green` is `settled`, `failing` is `failed`,
+   pending and an empty or unreadable rollup keep waiting, and every other shape — `absent-gate`,
+   no gate ran, a delay that did not elapse (`delay-inert`) — is `unknown`.
 
    On `CI_WAIT_STATE=timeout` the wait expired with the checks still unsettled; on
-   `CI_WAIT_STATE=unknown` a read landed on a rollup this loop will not call green. **Both are
+   `CI_WAIT_STATE=unknown` a read landed on a rollup this wait will not call green. **Both are
    unknown, never green, and both route identically**: do not ready the PR, do not report green, and
    do not silently loop again. Route them the way the caller's step routes an unreadable check set —
    Step 8 to `policy.repairCap`, Step 10 to `policy.settleCap`, and a cap reached with the state

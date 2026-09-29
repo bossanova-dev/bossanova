@@ -947,6 +947,18 @@ escape — a citation that cannot be anchored drops the precision it cannot supp
 asserting it. The check is deliberately textual. It establishes that the cited token is still there,
 never that the token is the right one for the claim, and never that the claim itself is true.
 
+### Referent
+
+A path or symbol that a planned ticket cites as the thing its work acts on, which the plan sweep
+checks against the code to decide whether the ticket's premise has gone stale.
+
+A ticket is judged stale only when every referent is absent from the code **and** has history showing
+it once existed there, because absence alone is also what a typo or a paraphrase looks like, and a
+referent moved by a rename still exists. The judgement is destructive — a stale ticket loses its
+planning signal — so any doubt resolves to unknown rather than stale. Documentation is excluded when
+asking whether a referent's text is still used, since plans quote what their changes removed, but a
+referent that is itself a tracked documentation path is present and therefore live.
+
 ### Description write-back
 
 The measured comparison of what a tracker actually stored for an issue description against the bytes
@@ -1547,9 +1559,22 @@ because it reports a duration for work this run did not do.
 
 ### Stamp
 
-A content-hash gate over a step's inputs: the step is skipped when the hash is unchanged. Used for cached lint/gen layers (e.g. `GEN_STAMP`, the cached-lint stamp) so unchanged inputs don't re-trigger expensive work.
+A content-hash gate over a step's inputs: the step is skipped when the hash is unchanged. Used for cached generation and lint layers, and for whole test gates declared cache-eligible, so unchanged inputs don't re-trigger expensive work.
 
 A stamped step is a caching decision, not an enforcement point. A correctness check mounted on one inherits the skip, and it inherits it precisely for changes outside the hashed input set — so a check that reads a tree the key does not cover goes silently non-gating on exactly the change class it exists to police. The same reasoning governs a CI path filter, a Make prerequisite, and the local affected-test selector: whatever triggers a check must be keyed on everything the check reads, not on where it lives. These are separate routing tables, not mirrors of one another — a path added to one does not follow into the others, and an input can be covered on one surface and absent from the next.
+
+### Forced-uncached run
+
+A gate run that must execute its tests rather than be answered from any cache — neither a **Stamp**
+nor the build tool's own cached test results. It is required wherever the run is evidence for a
+readiness decision, and wherever a branch adds or renames an input, because a cached pass can predate
+that input entirely.
+
+The request to force can arrive written into the command itself or inherited from the environment of
+a parent that forces every command it launches, and a cache must honor both: a refusal that checks
+only one of the two forms serves cached passes to the other. Deciding whether to force is fail-closed —
+only a definite "nothing was added or renamed" answer keeps the cache, and an undecidable answer, a
+crashed probe, or an answer whose parts disagree all force the run.
 
 ### Disk cache
 
@@ -1579,6 +1604,28 @@ the authoring repository's own layout is neither. Note also what a green portabi
 does not establish: these gates recognise an unportable reference by enumerating the spellings they
 know, so passing is evidence about the enumerated spellings rather than about portability at large,
 and a reference spelled a way nobody listed passes unremarked.
+
+### Skill extension
+
+A repo-local skill that attaches repository-specific behavior to a **published skill core** by
+declaring, in a marker in its own frontmatter, which core it extends and which role it fills there;
+the core finds it by discovery at run time and never names it.
+
+Anything that decides whether an extension may run in a given context, and that the core cannot
+observe without reading the extension's body — such as whether it fans out its own subagents or can
+ask the user, and therefore whether it is safe in an unattended run — is declared on the marker and
+applied by discovery, never judged afresh by the running agent. An absent declaration keeps the
+behavior the extension had before the declaration existed; a declaration that is present but
+unusable excludes the extension as broken rather than being read as permission for everything.
+
+### Deliberate skip
+
+A discovery exclusion that is the extension contract working as designed — a same-prefix skill that
+is not an extension of this core, or an extension that declared it does not run in the caller's
+mode — as opposed to a broken declaration that someone should fix. Every skip carries this
+classification with it, decided once alongside the skip's stable code, so a core's run record can
+stay silent about deliberate skips and reserve its warnings for the broken ones; a record that
+reports a structural exclusion as a recoverable miss on every run teaches its readers to ignore it.
 
 ### Authoring root
 
@@ -1663,6 +1710,11 @@ clear the red; the named step-down is a target in the failure message, and the d
 carried by the recurring prompt plus review. A budget claiming more than that in its own prose is
 claiming enforcement the code does not perform. The date arm also fails on the calendar rather than
 on a code change, so it can red a branch that never touched the artifact, and its message says so.
+
+A plan or ticket that quotes a budget's number quotes a moment, and a sibling change can lower the
+budget between planning and building. When the quoted number and the tree disagree, the invariant
+governs — never raise the bound — and the artifact is shrunk to fit the lower budget actually in
+force rather than the bound being restored to the quoted figure.
 
 Because only one direction is priced, the whole mechanism rests on a single comparison between the
 proposed bound and the bound recorded before the change. Those two operands have to be independent:
@@ -2718,6 +2770,54 @@ Its contract is asserted from inside the database as a whole — withheld column
 column readable, no view that re-exposes a withheld column, no connection path elsewhere — rather than
 inferred from the grants that were applied. Any exemption from that assertion is named individually;
 a property a database's own owner can set is never trusted to exempt it.
+
+## Improvement notes
+
+### Improvement note
+
+A short, repo-scoped observation a completed run records about a defect or friction in the project's own tooling — one problem at one code pointer — held in a local backlog until a **Notes sweep** either files it into a tracker ticket or retires it.
+
+A note is evidence, not work: it is never implemented directly, and it leaves the backlog in exactly one of two ways — deleted once a filed ticket carries it, or retagged out of the active backlog as retired. Duplicates are judged against the note's code pointer, not its whole body, because many unrelated notes mention the same skill or file in passing.
+
+### Theme
+
+A group of **Improvement notes** judged to describe the same underlying problem, and the unit a **Notes sweep** ranks, judges, and files as one ticket. Themes are re-authored on every sweep, so a theme has no identity that survives from one run to the next; anything that must persist across runs has to be keyed on the notes, never on the theme.
+
+A theme's age is its newest member's, which makes theme age a measure of whether the problem is still recurring rather than of how old its evidence is. Rules about stale evidence therefore apply per note: an old member of a theme that is not being filed retires on its own while the theme's fresh members stay.
+
+### Notes sweep
+
+The scheduled pass that groups the **Improvement note** backlog into **Themes**, judges each theme's currency against the code, files the highest-ranked live themes as tickets, and retires notes that are demonstrably fixed or have aged past the stale window without being filed.
+
+### Drain
+
+The number of **Improvement notes** a single **Notes sweep** removes from the active backlog — deleted notes plus retired notes, with each note counted once. A note that is both being deleted and eligible for retirement is only deleted, so the drain is never inflated by overlap, and it is the figure compared against the arrival rate of new notes to say whether the backlog converges.
+
+## Plan dependency scan
+
+### Dependency scan
+
+The step of planning a ticket that compares its **Areas** against every other open planned ticket and decides, for each pair, whether to write a blocking edge, a non-blocking relation, or nothing — then orients any blocking edge so the prerequisite lands first.
+
+A blocking edge has one of two bases: a _logical_ basis (one ticket needs something the other produces) or an _overlap_ basis (both change the same thing). Only a **Same-file overlap** can give an overlap basis a blocking edge; everything weaker is at most a **Directory overlap**.
+
+### Area
+
+A repo-relative path a ticket's key-changes section says it will touch — a file or a directory — after tracker escapes are stripped and declared aliases are expanded. Areas are the only evidence the overlap basis of a **Dependency scan** reads, so an area written too coarsely (a bare module prefix, a slash-less word in prose) over-matches and fabricates edges.
+
+### Same-file overlap
+
+Two tickets whose **Areas** both name the same file. It is the only overlap that implies a textual conflict and therefore a merge order, so it is the only overlap a **Dependency scan** may turn into a blocking edge.
+
+### Directory overlap
+
+Two tickets whose **Areas** overlap only because one names a directory containing a path the other names. It is merge-order surface, not a prerequisite, so the scan records it as a non-blocking relation and never orients it or asks which lands first.
+
+_Avoid:_ "overlap" unqualified, which had meant both this and a **Same-file overlap**.
+
+### Repo-wide token
+
+A path a repo declares shared by nearly every ticket — an append-only index, a large prose test suite — so it never counts toward any overlap. Declared once in the repo's skill config and unioned with anything a single run adds; the published default is empty, since which files are shared is a property of the repo, not of the planner.
 
 ## Flagged ambiguities
 

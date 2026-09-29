@@ -350,8 +350,12 @@ git fetch origin "$BASE_BRANCH"
 git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD || { echo "origin/$BASE_BRANCH is not in HEAD; rebase before push"; exit 1; }
 MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
 test "$MERGE_COUNT" = 0 || { echo "Merge commit(s) on this branch; linearize before pushing"; exit 1; }
-git push --force-with-lease
-git status  # Verify "up to date with origin"
+git push --force-with-lease || { echo "push rejected or failed; the branch did not land"; exit 1; }
+# A rejected push leaves `@{push}` as it was, so the exit check above comes first. Then HEAD must
+# equal the ref it updated (`@{push}`), by object id. Each capture fails loud: empty never equals empty.
+LOCAL_HEAD="$(git rev-parse HEAD)" || exit 1
+PUSHED_HEAD="$(git rev-parse '@{push}')" || exit 1
+test -n "$LOCAL_HEAD" && test "$LOCAL_HEAD" = "$PUSHED_HEAD" || { echo "HEAD is not what @{push} holds; the push did not land"; exit 1; }
 ```
 
 Capture the count and compare it as a string — `test "$(…)" -eq 0` fails **open**, because an
@@ -485,8 +489,14 @@ gh pr view --json mergeable -q .mergeable
 ```bash
 git stash list        # Note any stashes (don't auto-clear without asking)
 git remote prune origin
-git status            # Confirm clean state
+BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
+if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+node "$BOSS_FINALIZE_TOOLBOX/worktree-state.mjs"   # Confirm clean state: must print verdict: clean
 ```
+
+Act on the printed verdict, never on `git status` output — the helper validates git's porcelain, so
+a command-rewriting shell hook cannot fabricate a clean tree. `dirty` lists what is left to commit
+or report; `unknown` (or no verdict line) is never clean — stop and report it.
 
 ### Step 8: Provide Handoff
 

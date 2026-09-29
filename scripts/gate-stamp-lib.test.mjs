@@ -165,6 +165,42 @@ test('eligibleGate is opt-in', () => {
   assert.equal(eligibleGate(config, 'make test-web-e2e').eligible, false)
 })
 
+test('eligibleGate refuses a command that forces an uncached run (BOS-1339)', () => {
+  // `normalizeGateSite` reduces every row below to an eligible make target, so only the
+  // token-anchored env assignment can decide - a readiness receipt must never be a stamp hit.
+  const config = {
+    gateCache: {
+      eligible: {
+        'test-full': { cacheable: true, reason: 'iterative full decisions' },
+        'test-boss': { cacheable: true, reason: 'module target' },
+      },
+    },
+  }
+  const refused = [
+    'BOSS_GATE_FORCE_UNCACHED=1 make test-full',
+    'FOO=1 BOSS_GATE_FORCE_UNCACHED=1 make test-boss',
+    "BOSS_GATE_FORCE_UNCACHED='1' make test-full",
+  ]
+  for (const site of refused) {
+    const verdict = eligibleGate(config, site)
+    assert.equal(verdict.eligible, false, site)
+    assert.match(verdict.reason, /forces an uncached run; never served from a stamp/, site)
+  }
+  const accepted = [
+    'make test-full',
+    'BOSS_GATE_FORCE_UNCACHED=0 make test-full',
+    'XBOSS_GATE_FORCE_UNCACHED=1 make test-full',
+    'BOSS_GATE_FORCE_UNCACHED=10 make test-full',
+  ]
+  for (const site of accepted) {
+    assert.equal(eligibleGate(config, site).eligible, true, site)
+  }
+  // A caller that names the site separately still cannot smuggle the forced command past it.
+  const split = eligibleGate(config, 'test-full', 'BOSS_GATE_FORCE_UNCACHED=1 make test-full')
+  assert.equal(split.eligible, false)
+  assert.equal(split.site, 'test-full')
+})
+
 test('resolveBaseCommit uses the merge-base, not the base tip', (t) => {
   const root = fixture(t)
   const defaultBranch = git(root, ['branch', '--show-current'])

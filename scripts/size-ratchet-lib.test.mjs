@@ -17,6 +17,7 @@ import path from 'node:path'
 import {
   MOVE_TO_REFERENCE_REMEDY,
   NO_REFERENCE_REMEDY,
+  REPORT_DIR_ENV,
   assertArtifactSet,
   assertDescendingBudget,
   assertExactSize,
@@ -616,4 +617,119 @@ test('an empty source is refused rather than compared', () => {
     }),
   )
   assert.match(message, /is empty, so regeneration proves nothing/)
+})
+
+// ── The measurement recorder (BOS-1341): reports, never decides ────────────────────────────
+
+/** Run `fn` with the report variable set to `value` (or deleted when undefined), then restore. */
+function withReportDir(value, fn) {
+  const saved = process.env[REPORT_DIR_ENV]
+  if (value === undefined) delete process.env[REPORT_DIR_ENV]
+  else process.env[REPORT_DIR_ENV] = value
+  try {
+    return fn()
+  } finally {
+    if (saved === undefined) delete process.env[REPORT_DIR_ENV]
+    else process.env[REPORT_DIR_ENV] = saved
+  }
+}
+
+function readRows(dir) {
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith('.jsonl'))
+    .flatMap((name) =>
+      fs
+        .readFileSync(path.join(dir, name), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    )
+}
+
+test('recorder unset: both primitives decide as before and write nothing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  withReportDir(undefined, () => {
+    assert.doesNotThrow(() => assertExactSize(base()))
+    assert.doesNotThrow(() => assertDescendingBudget(budgetBase()))
+    assert.throws(() => assertExactSize(base({ measured: 101 })), /over by 1/)
+    assert.throws(() => assertDescendingBudget(budgetBase({ measured: 101 })), /over by 1/)
+  })
+  assert.deepEqual(fs.readdirSync(dir), [])
+})
+
+test('recorder set: a passing budget and a passing exact pin each write one full row', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  withReportDir(dir, () => {
+    assertDescendingBudget(budgetBase({ measured: 90 })) // call-site: budget
+    assertExactSize(base()) // call-site: exact
+  })
+  // Each row names the calling line in this file, not a frame inside the library.
+  const lines = fs.readFileSync(import.meta.filename, 'utf8').split('\n')
+  const lineOf = (tag) => lines.findIndex((line) => line.endsWith(`// call-site: ${tag}`)) + 1
+  assert.deepEqual(fs.readdirSync(dir), [`${process.pid}.jsonl`])
+  assert.deepEqual(readRows(dir), [
+    {
+      kind: 'budget',
+      label: 'resident body budget',
+      path: 'skills/demo/SKILL.md',
+      constName: 'RATCHET',
+      constFile: 'scripts/demo-skill.test.mjs',
+      unit: 'bytes',
+      measured: 90,
+      pinned: 100,
+      suite: process.argv[1],
+      callSite: `${import.meta.filename}:${lineOf('budget')}`,
+    },
+    {
+      kind: 'exact',
+      label: 'resident body ratchet',
+      path: 'skills/demo/SKILL.md',
+      constName: 'RATCHET',
+      constFile: 'scripts/demo-skill.test.mjs',
+      unit: 'bytes',
+      measured: 100,
+      pinned: 100,
+      suite: process.argv[1],
+      callSite: `${import.meta.filename}:${lineOf('exact')}`,
+    },
+  ])
+  // The recording process's entry script is this suite, whatever constFile the caller typed.
+  assert.ok(process.argv[1].endsWith(`${path.sep}size-ratchet-lib.test.mjs`), process.argv[1])
+})
+
+test('recorder set: a throwing over-budget or mismatched call still leaves its row on disk', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  withReportDir(dir, () => {
+    assert.throws(() => assertDescendingBudget(budgetBase({ measured: 137 })), /over by 37/)
+    assert.throws(() => assertExactSize(base({ measured: 90, unit: 'lines' })), /under by 10/)
+  })
+  assert.deepEqual(
+    readRows(dir).map(({ kind, unit, measured, pinned }) => ({ kind, unit, measured, pinned })),
+    [
+      { kind: 'budget', unit: 'bytes', measured: 137, pinned: 100 },
+      { kind: 'exact', unit: 'lines', measured: 90, pinned: 100 },
+    ],
+  )
+})
+
+test('recorder set: a wiring error is thrown before anything is recorded', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  withReportDir(dir, () => {
+    assert.throws(() => assertExactSize(base({ residual: '' })), /blind spot/)
+    assert.throws(() => assertDescendingBudget(budgetBase({ raise: undefined })), /wiring error/i)
+  })
+  assert.deepEqual(fs.readdirSync(dir), [])
+})
+
+test('recorder set to an unwritable path throws a wiring error naming that path', () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  const notADir = path.join(scratch, 'regular-file')
+  fs.writeFileSync(notADir, 'x')
+  for (const call of [() => assertExactSize(base()), () => assertDescendingBudget(budgetBase())]) {
+    const message = withReportDir(notADir, () => messageOf(call))
+    assert.ok(message, 'an append that cannot land must throw rather than drop the row')
+    assert.ok(message.includes(notADir), `the message must name ${notADir}: ${message}`)
+    assert.ok(message.includes('Wiring error'), message)
+  }
 })

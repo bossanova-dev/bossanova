@@ -160,3 +160,93 @@ test('an ambient forced-uncached variable does not leak into the default contrac
     else process.env.BOSS_GATE_FORCE_UNCACHED = original
   }
 })
+
+// BOS-1339: the readiness receipt runs `BOSS_GATE_FORCE_UNCACHED=1 make test-full`
+// (commands.testReadiness). The //... line must then carry --nocache_test_results as a
+// flag make itself appended, and the default iterative `make test-full` must not.
+test('forced-uncached test-full puts --nocache_test_results on the //... bazel line', () => {
+  const bazelAllLine = (out) =>
+    out.split('\n').find((line) => /\btest\b.*--test_output=errors.*\s\/\/\.\.\.\s*$/.test(line))
+
+  const forced = bazelAllLine(makeDryRun(['BOSS_GATE_FORCE_UNCACHED=1', 'test-full']))
+  assert.ok(forced, 'forced dry run must emit the //... bazel line')
+  assert.match(forced, /--nocache_test_results/)
+
+  const cached = bazelAllLine(makeDryRun(['test-full']))
+  assert.ok(cached, 'default dry run must emit the //... bazel line')
+  assert.doesNotMatch(cached, /--nocache_test_results/)
+})
+
+// BOS-1339: `make test-affected` re-runs its SELECTED commands uncached when the branch adds or
+// renames a file, using the gate cache's own predicate. Asserted over the recipe text for the
+// reason given above for `test:` - a real `make -n test-affected` executes the selector.
+test('test-affected asks gate-cache adds-or-renames in the selected branch only, before its loop', () => {
+  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const start = makefile.search(/^test-affected:/m)
+  assert.ok(start >= 0, 'test-affected target must exist')
+  const rest = makefile.slice(start)
+  // The recipe runs to the first following line that is not tab-indented recipe text.
+  const bodyStart = rest.indexOf('\n') + 1
+  const end = rest.slice(bodyStart).search(/^(?!\t)/m)
+  const recipe = end >= 0 ? rest.slice(0, bodyStart + end) : rest
+
+  const probe = recipe.indexOf('gate-cache.mjs adds-or-renames')
+  assert.ok(probe >= 0, 'recipe must consult gate-cache.mjs adds-or-renames')
+  assert.equal(
+    recipe.indexOf('gate-cache.mjs adds-or-renames', probe + 1),
+    -1,
+    'the probe must appear exactly once (never in the smoke fallback)',
+  )
+  const smoke = recipe.search(/\$\(MAKE\) test-smoke/)
+  const loop = recipe.search(/while\s+IFS=/)
+  assert.ok(smoke >= 0 && loop >= 0, recipe)
+  assert.ok(smoke < probe, 'the probe must sit after the smoke-fallback branch, not inside it')
+  assert.ok(probe < loop, 'the probe must run before the selected-commands loop')
+  assert.match(
+    recipe.slice(probe, loop),
+    /BOSS_GATE_FORCE_UNCACHED=1;\s*export BOSS_GATE_FORCE_UNCACHED/,
+  )
+
+  // Only the printed `no` verdict with exit 1 keeps the cache. Execute the recipe's own probe lines with the
+  // probe stubbed, so a crash (exit 1 on a throw, 127 with node missing) or an empty answer
+  // cannot pass for `no` the way exit-code polarity would let it.
+  const snippet = recipe
+    .slice(recipe.lastIndexOf('\n', probe) + 1, recipe.lastIndexOf('\n', loop) + 1)
+    .split('\n')
+    .map((line) => line.replace(/\\\s*$/, '').trim())
+    .join('\n')
+    .replaceAll('$$', '$')
+    .replace('node scripts/gate-cache.mjs adds-or-renames', 'sh -c "$PROBE"')
+  assert.ok(snippet.includes('sh -c "$PROBE"'), `probe stub did not land:\n${snippet}`)
+  const forced = (probeScript) =>
+    execFileSync('sh', ['-c', `${snippet}\nprintf 'FORCE=%s' "\${BOSS_GATE_FORCE_UNCACHED:-}"`], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, PROBE: probeScript },
+    }).match(/FORCE=(.*)$/)[1]
+  assert.equal(forced("echo 'adds-or-renames: no (modify-only)'; exit 1"), '', 'no keeps the cache')
+  // `no` is exit 1 (gate-cache AC10); a printed `no` under any other status is not a clean verdict.
+  assert.equal(
+    forced("echo 'adds-or-renames: no (modify-only)'; exit 0"),
+    '1',
+    'no + exit 0 forces',
+  )
+  assert.equal(
+    forced("echo 'adds-or-renames: no (modify-only)'; exit 2"),
+    '1',
+    'no + exit 2 forces',
+  )
+  assert.equal(forced("echo 'adds-or-renames: no (m)'; exit 134"), '1', 'no + abort forces')
+  assert.equal(forced("echo 'adds-or-renames: yes (adds)'; exit 0"), '1', 'yes forces')
+  assert.equal(forced("echo 'adds-or-renames: unknown (x)'; exit 0"), '1', 'unknown forces')
+  assert.equal(forced('echo boom >&2; exit 1'), '1', 'a crash (exit 1, no verdict) forces')
+  assert.equal(forced('exit 127'), '1', 'a missing node (exit 127) forces')
+})
+
+// BOS-1339: --bes_timeout defaults to 0s (wait forever for the BES upload after tests finish),
+// which let a green full gate idle for minutes. A committed, non-zero bound must exist.
+test('.bazelrc bounds the BES upload tail with a non-zero build --bes_timeout', () => {
+  const rc = fs.readFileSync(path.join(repoRoot, '.bazelrc'), 'utf8')
+  const match = rc.match(/^build\s+--bes_timeout=(\d+)(ms|s|m|h)?\s*$/m)
+  assert.ok(match, 'expected a `build --bes_timeout=<N><unit>` line in .bazelrc')
+  assert.ok(Number(match[1]) > 0, `bes_timeout must be non-zero, got ${match[0]}`)
+})

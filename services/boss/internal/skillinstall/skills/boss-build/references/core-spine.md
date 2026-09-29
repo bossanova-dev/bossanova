@@ -60,8 +60,8 @@ A brand-new file needs `git add <path>` first or git dies with
 working-tree bytes for those paths while the repo's husky staged-file formatter can re-stage its
 formatted output, leaving an `MM` index/working-tree split; if formatting is the only delta, the
 commit can become empty. The stable contract is therefore: `git add` exactly the owned files first,
-then `git commit --only -m "..." -- <same files>`, and inspect `git status --porcelain` after the
-hook.
+then `git commit --only -m "..." -- <same files>`, and re-check the tree with the toolbox's
+`worktree-state.mjs` after the hook — its `unknown` verdict is never clean.
 
 **A prose task's blast radius is wider than the lines the plan quotes.** When a task edits a skill
 body, a contract doc, or any other prose the repo gates on, the brief carries these three rules:

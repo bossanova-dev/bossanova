@@ -83,10 +83,26 @@ function configuredUncachedCommand(config) {
   return command || ''
 }
 
+// An exported BOSS_GATE_FORCE_UNCACHED=1 asks for an executed run exactly as the inline command
+// spelling does, which eligibleGate refuses. It is read here, not in eligibleGate, so that function
+// stays a pure function of its arguments.
+function gateEligibility(config, args, env = process.env) {
+  const eligibility = eligibleGate(config, args.site || args.command, args.command)
+  if (eligibility.eligible && env.BOSS_GATE_FORCE_UNCACHED === '1') {
+    return {
+      ...eligibility,
+      eligible: false,
+      reason:
+        'inherited BOSS_GATE_FORCE_UNCACHED=1 forces an executed run; never served from a stamp',
+    }
+  }
+  return eligibility
+}
+
 function evaluate(args) {
   const root = repoRoot()
   const config = loadConfig(root)
-  const eligibility = eligibleGate(config, args.site || args.command)
+  const eligibility = gateEligibility(config, args)
   if (!eligibility.eligible) {
     return { status: 'not-eligible', code: NOT_ELIGIBLE, eligibility }
   }
@@ -215,8 +231,37 @@ function run(args) {
   return status
 }
 
+// `adds-or-renames`: the gate cache's own forced-uncached predicate, exposed so a narrow runner
+// that never reaches a stamp miss (make test-affected over Bazel's test cache) can still re-run
+// uncached when the branch adds or renames an input. Exit 0 means "force uncached": `yes`, and
+// also `unknown`, because an undecidable answer must never let a cached pass through. Exit 1 is
+// `no` (modify-only) and the only answer that keeps the cache.
+export function addsOrRenamesVerdict(args) {
+  let baseRef = args.baseRef || ''
+  try {
+    const root = repoRoot()
+    baseRef ||= defaultBaseRef(root)
+    return branchAddsOrRenames(root, baseRef)
+      ? { answer: 'yes', code: 0, reason: `the branch adds or renames an input vs ${baseRef}` }
+      : { answer: 'no', code: 1, reason: `modify-only vs ${baseRef}` }
+  } catch (err) {
+    const detail = String(err?.message || err).split('\n')[0]
+    return {
+      answer: 'unknown',
+      code: 0,
+      reason: `cannot diff against ${baseRef || 'the base ref'}: ${detail}; forcing uncached`,
+    }
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv)
+  if (args.mode === 'adds-or-renames') {
+    const verdict = addsOrRenamesVerdict(args)
+    console.log(`adds-or-renames: ${verdict.answer} (${verdict.reason})`)
+    process.exitCode = verdict.code
+    return
+  }
   if (args.mode === 'check') {
     const verdict = evaluate(args)
     printVerdict(verdict)
@@ -226,7 +271,7 @@ function main() {
   if (args.mode === 'record') {
     const root = repoRoot()
     const config = loadConfig(root)
-    const eligibility = eligibleGate(config, args.site || args.command)
+    const eligibility = gateEligibility(config, args)
     if (!eligibility.eligible) return
     if (process.env.GATE_EXIT_STATUS !== '0') return
     const baseRef = args.baseRef || defaultBaseRef(root)

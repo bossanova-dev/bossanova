@@ -276,11 +276,14 @@ test('write mode files one epic parent before any child', () => {
   assert.ok(SKILL.includes('`labels: ["agent-plan"]`'))
   assert.ok(SKILL.includes('`title`: `cluster.title`'))
   assert.match(SKILL, /failed\s+or\s+ambiguous\s+create\s+stops\s+further\s+writes/)
-  // The pre-create recheck must be a complete snapshot scanned locally, never a
+  // The pre-create recheck must be a paginated marker fetch scanned locally, never a
   // fuzzy list_issues query: that query returns unmarked issues AND truncated
   // descriptions, which makes the exact line-anchored match impossible to evaluate.
+  // It fetches only the delta since the Phase 2 snapshot (BOS-1332); the delta filter
+  // itself is asserted over fetchMarkedLinearIssues in sweep-notes-gate.test.mjs.
   assert.ok(SKILL.includes('>"$RECHECK_JSON"'))
-  assert.match(SKILL, /re-fetch\s+the \*\*complete\*\* marker\s+snapshot\s+once/)
+  assert.ok(SKILL.includes('updatedAfter: process.env.MARKER_SNAPSHOT_AT'))
+  assert.ok(SKILL.includes('>"$RUN_DIR/marker-snapshot-at"'))
   assert.match(SKILL, /Do \*\*not\*\* use `mcp__bossanova-linear__list_issues` for\s+this/)
   assert.match(SKILL, /returns\s+each `description` \*\*truncated\*\*/)
   assert.match(SKILL, /every `cluster\.sourceKeys` alias/)
@@ -299,9 +302,11 @@ test('a live theme can still retire individually fixed member notes', () => {
   assert.match(SKILL, /ids\s+must\s+belong\s+to\s+this\s+theme/)
   assert.match(SKILL, /a\s+non-empty\s+list\s+requires `evidence`/)
   // The retirement set must come from the gate, not from prose unioning buckets.
-  assert.ok(SKILL.includes('node "$GATE" retired "$BUCKETS_JSON"'))
   assert.match(SKILL, /rather\s+than\s+unioning\s+buckets\s+by\s+hand/)
   assert.ok(SKILL.includes('node "$GATE" retired "$BUCKETS_JSON" "$SEL_FILE"'))
+  // BOS-1332: both Phase 4 loops and the Phase 5 drain come from one gate call.
+  assert.ok(SKILL.includes('node "$GATE" retire-plan "$BUCKETS_JSON" "$SEL_FILE" "$DELETE_JSON"'))
+  assert.ok(SKILL.includes('`counts.drain`'))
   assert.match(
     SKILL,
     /can\s+be\s+both\s+filed\s+as\s+a\s+child\s+and\s+have\s+some\s+of\s+its\s+notes\s+retired/,
@@ -309,7 +314,10 @@ test('a live theme can still retire individually fixed member notes', () => {
 })
 
 test('every child carries its verbatim source notes, and deletion depends on it', () => {
-  assert.ok(SKILL.includes('`title`: exactly `Source notes (<issue-id>)`'))
+  // BOS-1332: the upload leg is one helper call; its title, size and header rules are
+  // asserted over attachSourceNotes in sweep-notes-gate.test.mjs.
+  assert.ok(SKILL.includes('core.attachSourceNotes({'))
+  assert.ok(SKILL.includes('await import(process.env.PLAN_ATTACHMENT)'))
   assert.match(SKILL, /every\s+member\s+note's \*\*unmodified\*\* `body`/)
   // Deleting the notes is only safe once the evidence exists on the ticket.
   assert.match(SKILL, /\*\*The\s+attachment\s+is\s+the\s+precondition\s+for\s+deletion\.\*\*/)
@@ -319,9 +327,17 @@ test('every child carries its verbatim source notes, and deletion depends on it'
   assert.match(SKILL, /`attachmentCreate` is \*\*not\s+idempotent\*\*/)
   // A bare note id in a filed description is a dead reference after Phase 4.
   assert.match(SKILL, /Never\s+cite\s+a\s+bare\s+note\s+id\s+as\s+if\s+it\s+were\s+a\s+lookup/)
-  // The tools must be declared.
-  assert.match(SKILL, /allowed-tools:.*prepare_attachment_upload/)
-  assert.match(SKILL, /allowed-tools:.*create_attachment_from_upload/)
+  // The helper owns the upload, so the MCP attachment tools are no longer declared.
+  const allowedTools = SKILL.split('\n').find((line) => line.startsWith('allowed-tools:'))
+  assert.ok(allowedTools, 'frontmatter must declare allowed-tools')
+  assert.ok(!allowedTools.includes('prepare_attachment_upload'))
+  assert.ok(!allowedTools.includes('create_attachment_from_upload'))
+})
+
+test('BOS-1332: theming, description and filing are wired onto the gate helpers', () => {
+  assert.ok(SKILL.includes('node "$GATE" digest "$CLUSTERS_JSON" >"$DIGEST_JSONL"'))
+  assert.ok(SKILL.includes('node "$GATE" describe "$SEL_FILE" "<cluster-key>"'))
+  assert.ok(SKILL.includes('export GATE LIB PLAN_ATTACHMENT'))
 })
 
 test('fixed themes are retagged rather than deleted, and nothing else is touched', () => {
@@ -333,12 +349,8 @@ test('fixed themes are retagged rather than deleted, and nothing else is touched
   assert.match(SKILL, /Do\s+not\s+use `boss\s+notes\s+rm` on\s+an\s+expired\s+note/)
   assert.match(SKILL, /Every\s+id\s+must\s+appear\s+in `snapshot-ids`/)
   assert.match(SKILL, /every\s+initial `dropped` theme\s+whose\s+reason\s+is `already-tracked`/)
-  // Deliberately narrower than the old blanket rule: an `unverifiable` theme may
-  // still retire a member the gate named, so the guard is per-note, not per-bucket.
-  assert.match(
-    SKILL,
-    /Never\s+touch\s+a `deferred` theme, nor\s+any\s+note\s+the\s+gate\s+did\s+not\s+name/,
-  )
+  // BOS-1332: old members of a deferred or unverifiable theme now expire per note; which
+  // notes that reaches is asserted over retiredNoteIds/retirePlan in sweep-notes-gate.test.mjs.
   // Delete and retag sets overlap heavily; precedence must be stated, not left to loop order.
   assert.match(
     SKILL,
@@ -502,7 +514,7 @@ test('live gate falls back to PATH when BOSS_BIN names a deleted worktree', () =
   }
 })
 
-test('BOS-1245: Phase 3 pins the measured size rule and routes evidence through the defang helper', () => {
+test('BOS-1245: Phase 3 calls the attach helper and routes evidence through the defang helper', () => {
   // Behaviour-shaped pins -- a rule name and a structural lead, not a transcribed sentence. Both
   // are rules whose absence let an upload report a value its artifact never carried.
   for (const [label, skill] of [
@@ -510,11 +522,9 @@ test('BOS-1245: Phase 3 pins the measured size rule and routes evidence through 
     ['.codex', CODEX],
   ]) {
     const flat = skill.replace(/\s+/g, ' ')
-    assert.match(
-      flat,
-      /a\s+\*\*BYTE\*\*\s+count\s+measured\s+on\s+the\s+exact\s+file\s+about\s+to\s+be\s+PUT[\s\S]{0,80}`wc\s+-c\s+[\s\S]{0,200}Never\s+a\s+character\s+count,\s+and\s+never\s+a\s+count\s+taken\s+from\s+the\s+buffer/,
-      `${label}: the attach step must name the measuring command AND forbid both wrong size sources`,
-    )
+    // BOS-1332: the byte-size rule moved into attachSourceNotes, whose test declares a
+    // multi-byte file and asserts the byte count; the skill only has to call the helper.
+    assert.ok(flat.includes('core.attachSourceNotes({'), `${label}: attach step calls the helper`)
     assert.match(
       flat,
       /`sanitizeEvidenceText\(value\)`/,

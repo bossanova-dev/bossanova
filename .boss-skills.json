@@ -59,6 +59,7 @@
     "testSmoke": "make test-smoke",
     "testAffected": "make test-affected",
     "testFull": "make test-full",
+    "testReadiness": "BOSS_GATE_FORCE_UNCACHED=1 make test-full",
     "testModule": "make test-{module}",
     "testUncached": "BOSS_GATE_FORCE_UNCACHED=1 make test-affected",
     "postRebase": "make post-rebase-check"
@@ -67,7 +68,7 @@
     "eligible": {
       "test-full": {
         "cacheable": true,
-        "reason": "the configured full suite is deterministic over tracked repo content"
+        "reason": "iterative full decisions only: deterministic over tracked repo content and served from Bazel/Go caches; the readiness receipt runs commands.testReadiness instead, which disables Bazel test-result and Go test caching (turbo's content-hashed test-web cache deliberately stays on)"
       },
       "test-bossalib": {
         "cacheable": true,
@@ -97,7 +98,6 @@
     "ineligible": {
       "test-smoke": "checks installed skill mirrors and toolboxes outside the hashed corpus",
       "test-affected": "a selection-dependent narrow run cannot satisfy the readiness full-gate receipt",
-      "test-readiness-full": "the final-tree readiness receipt requires an executed full gate, not a cached result",
       "test-race": "race-detector verdicts can differ between runs over identical content",
       "test-web-e2e": "browser and network state are outside the hashed corpus",
       "build-drift-check": "reads generated-artifact and checkout state beyond a declared test gate",
@@ -444,6 +444,27 @@
   },
   "reviewLedger": {
     "dir": ".git/boss-review-ledgers"
+  },
+  "planDependencies": {
+    "moduleRoots": [
+      "docs",
+      "infra",
+      "lib",
+      "mk",
+      "plans",
+      "plugins",
+      "proof",
+      "proto",
+      "scripts",
+      "services",
+      "skills-toolbox"
+    ],
+    "repoWideTokens": [
+      "docs/skills/README.md",
+      "scripts/bs-plan-skill.test.mjs",
+      "proof/recipes/default.json"
+    ],
+    "areaAliases": {}
   },
   "planContract": {
     "version": 1,

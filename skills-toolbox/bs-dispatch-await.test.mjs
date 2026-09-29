@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,8 @@ import {
   DEFAULT_AWAIT_TIMEOUT_MULTIPLIER,
   DEFAULT_DISPATCH_LEG_TIMEOUT_MS,
   DEFAULT_OPEN_DISPATCH_STALE_MS,
+  DEFAULT_POLL_INTERVAL_MS,
+  DEFAULT_WAIT_BUDGET_MS,
   DISPATCH_AWAIT_RESULTS,
   HEARTBEAT_ABSENT,
   HEARTBEAT_LIVE,
@@ -21,7 +23,9 @@ import {
   MESSAGE_RETURNED,
   STILL_RUNNING,
   TIMED_OUT,
+  WAIT_EXIT_CODES,
   awaitAll,
+  awaitDispatch,
   awaitDeadlineMs,
   classifyDispatch,
   dispatchDisposition,
@@ -35,6 +39,7 @@ import {
   readHeartbeat,
   toSentinelRouting,
   touchHeartbeat,
+  waitExitCode,
 } from './bs-dispatch-await.mjs'
 import { DISPATCH_FAILURE, makeRunContext, writeSentinel } from './bs-run-sentinel.mjs'
 
@@ -897,4 +902,310 @@ test('BOS-1278: openDispatches shares `seedAgeMs` with classifyDispatch, and `ag
   assert.equal(classified.seedAgeMs, 10 * 60 * 1000)
   assert.equal(classified.ageMs, 1_000, '`ageMs` follows the beat once one is consulted')
   assert.notEqual(classified.ageMs, classified.seedAgeMs)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1338: `wait` / `awaitDispatch` — the bounded, re-armable in-turn hold.
+// ---------------------------------------------------------------------------
+
+const STALE_AGO_MS = DEFAULT_OPEN_DISPATCH_STALE_MS + 60_000
+
+function backdate(path, agoMs) {
+  const at = (Date.now() - agoMs) / 1000
+  utimesSync(path, at, at)
+}
+
+function waitCli(ctx, name, flags = []) {
+  const res = runCli(['wait', ctx.dir, ctx.runId, name, ...flags])
+  return { ...res, json: res.stdout ? JSON.parse(res.stdout) : null }
+}
+
+// A fake clock the injected sleep advances, so budget and interval are exercised without real time.
+function fakeTime(start = Date.now()) {
+  let t = start
+  const sleeps = []
+  return {
+    now: () => t,
+    sleeps,
+    sleep: async (ms) => {
+      sleeps.push(ms)
+      t += ms
+    },
+    advance: (ms) => {
+      t += ms
+    },
+  }
+}
+
+test('wait: budget, interval and exit codes are fixed and distinct', () => {
+  assert.equal(DEFAULT_WAIT_BUDGET_MS, 110_000, 'must stay under the 120 s default Bash timeout')
+  assert.deepEqual(WAIT_EXIT_CODES, { completed: 0, 'timed-out': 96, abandoned: 97, budget: 98 })
+  assert.equal(new Set(Object.values(WAIT_EXIT_CODES)).size, 4)
+  assert.equal(waitExitCode({ outcome: 'completed' }), 0)
+  assert.equal(waitExitCode({ outcome: 'budget', held: 'heartbeat-live' }), 98)
+})
+
+test('wait: completed on a landed sentinel — exit 0 and one JSON line carrying waitedMs', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'draft', 'ok', { provisional: false })
+  const res = waitCli(ctx, 'draft')
+  assert.equal(res.status, 0)
+  assert.equal(res.stdout.split('\n').length, 1, 'exactly one stdout line')
+  assert.equal(res.json.status, COMPLETED)
+  assert.equal(res.json.kind, 'ok')
+  assert.equal(typeof res.json.waitedMs, 'number')
+})
+
+test('awaitDispatch: a sentinel that lands mid-wait completes it', async () => {
+  const ctx = context()
+  const clock = fakeTime()
+  let polls = 0
+  const result = await awaitDispatch(ctx, 'draft', {
+    dispatchedAt: clock.now() - 1_000,
+    now: clock.now,
+    sleep: async (ms) => {
+      polls += 1
+      if (polls === 1) writeSentinel(ctx, 'draft', 'ok', {})
+      await clock.sleep(ms)
+    },
+  })
+  assert.equal(result.status, COMPLETED)
+  assert.equal(result.outcome, 'completed')
+  assert.equal(polls, 1, 'completed on the second poll')
+  assert.equal(clock.sleeps[0], DEFAULT_POLL_INTERVAL_MS, 'default interval')
+})
+
+test('awaitDispatch: a provisional seed keeps waiting until it is upgraded', async () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'blocked', { provisional: true })
+  const clock = fakeTime()
+  let sleeps = 0
+  const result = await awaitDispatch(ctx, 'review', {
+    now: clock.now,
+    sleep: async (ms) => {
+      sleeps += 1
+      if (sleeps === 2) writeSentinel(ctx, 'review', 'clean', { provisional: false })
+      await clock.sleep(ms)
+    },
+  })
+  assert.equal(sleeps, 2, 'polls 1 and 2 saw the provisional seed and kept waiting')
+  assert.equal(result.status, COMPLETED)
+  assert.equal(result.kind, 'clean')
+})
+
+test('wait: a never-upgraded provisional seed exits 98 at budget (caller re-arms)', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'blocked', { provisional: true })
+  const res = waitCli(ctx, 'review', ['--budget', '60', '--interval', '10'])
+  assert.equal(res.status, 98)
+  assert.equal(res.json.status, STILL_RUNNING)
+  assert.ok(res.json.waitedMs >= 60)
+})
+
+test('wait --while-live holds a completed sentinel while the heartbeat is live (exit 98, held)', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', { provisional: false })
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb)
+  const res = waitCli(ctx, 'review', [
+    '--heartbeat',
+    hb,
+    '--while-live',
+    '--budget',
+    '50',
+    '--interval',
+    '10',
+  ])
+  assert.equal(res.status, 98)
+  assert.equal(res.json.status, COMPLETED)
+  assert.equal(res.json.held, 'heartbeat-live')
+})
+
+test('wait --while-live releases a completed sentinel once the heartbeat is stale or absent', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', { provisional: false })
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: Date.now() - STALE_AGO_MS })
+  const stale = waitCli(ctx, 'review', ['--heartbeat', hb, '--while-live', '--budget', '50'])
+  assert.equal(stale.status, 0)
+  assert.equal(stale.json.held, undefined)
+  const absent = waitCli(ctx, 'review', [
+    '--heartbeat',
+    join(ctx.dir, 'nobody.heartbeat'),
+    '--while-live',
+    '--budget',
+    '50',
+  ])
+  assert.equal(absent.status, 0)
+})
+
+test('awaitDispatch --while-live releases the hold when the worker stops beating mid-wait', async () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', { provisional: false })
+  const hb = join(ctx.dir, 'review.heartbeat')
+  const clock = fakeTime()
+  touchHeartbeat(hb, { now: clock.now() })
+  let sleeps = 0
+  const result = await awaitDispatch(ctx, 'review', {
+    heartbeatPath: hb,
+    whileLive: true,
+    budgetMs: 10 * DEFAULT_OPEN_DISPATCH_STALE_MS,
+    intervalMs: 60_000,
+    now: clock.now,
+    sleep: async (ms) => {
+      sleeps += 1
+      await clock.sleep(ms)
+    },
+  })
+  assert.equal(result.outcome, 'completed')
+  assert.ok(result.waitedMs >= DEFAULT_OPEN_DISPATCH_STALE_MS, 'held until the beat went stale')
+  assert.ok(sleeps > 1)
+})
+
+test('wait: abandoned exit 97 on a stale seed and a stale or absent heartbeat', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'blocked', { provisional: true })
+  backdate(ctx.sentinelPath('review'), STALE_AGO_MS)
+  const absent = waitCli(ctx, 'review', ['--budget', '50'])
+  assert.equal(absent.status, 97)
+  assert.equal(absent.json.status, ABANDONED)
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: Date.now() - STALE_AGO_MS })
+  const stale = waitCli(ctx, 'review', ['--heartbeat', hb, '--budget', '50'])
+  assert.equal(stale.status, 97)
+})
+
+test('wait: a live heartbeat suppresses abandoned on a stale seed (budget exit 98)', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'blocked', { provisional: true })
+  backdate(ctx.sentinelPath('review'), STALE_AGO_MS)
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb)
+  const res = waitCli(ctx, 'review', ['--heartbeat', hb, '--budget', '50', '--interval', '10'])
+  assert.equal(res.status, 98)
+  assert.equal(res.json.status, STILL_RUNNING)
+  assert.equal(res.json.heartbeat.status, HEARTBEAT_LIVE)
+})
+
+test('wait: timed-out exit 96 on a passed --deadline over a fresh seed', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'blocked', { provisional: true })
+  const res = waitCli(ctx, 'review', ['--deadline', '1', '--budget', '50'])
+  assert.equal(res.status, 96)
+  assert.equal(res.json.status, TIMED_OUT)
+})
+
+test('wait: a missing sentinel without --dispatched-at refuses exit 2 and polls nothing', async () => {
+  const ctx = context()
+  const res = waitCli(ctx, 'draft', ['--budget', '50'])
+  assert.equal(res.status, 2)
+  assert.equal(res.stdout, '')
+  assert.match(res.stderr, /--dispatched-at/)
+  let slept = false
+  await assert.rejects(
+    awaitDispatch(ctx, 'draft', {
+      sleep: async () => {
+        slept = true
+      },
+    }),
+    /--dispatched-at/,
+  )
+  assert.equal(slept, false, 'refused before polling')
+})
+
+test('wait: an empty, zero or future --dispatched-at refuses exit 2', () => {
+  const ctx = context()
+  for (const bad of ['', '0', `${Date.now() + 10 * 60_000}`, '-5']) {
+    const res = waitCli(ctx, 'draft', ['--dispatched-at', bad, '--budget', '50'])
+    assert.equal(res.status, 2, `--dispatched-at ${JSON.stringify(bad)} must refuse`)
+    assert.equal(res.stdout, '')
+  }
+})
+
+test('wait: a backdated --dispatched-at over a missing sentinel is abandoned (the clock survives re-arms)', () => {
+  const ctx = context()
+  const dispatchedAt = `${Date.now() - STALE_AGO_MS}`
+  for (let rearm = 0; rearm < 2; rearm += 1) {
+    const res = waitCli(ctx, 'draft', ['--dispatched-at', dispatchedAt, '--budget', '50'])
+    assert.equal(res.status, 97, `re-arm ${rearm} reads the same clock`)
+    assert.equal(res.json.status, ABANDONED)
+  }
+})
+
+test('disposition --dispatched-at agrees with wait on a backdated clock (discard, not a timed-out resume)', () => {
+  const ctx = context()
+  const dispatchedAt = `${Date.now() - STALE_AGO_MS}`
+  const waited = waitCli(ctx, 'draft', ['--dispatched-at', dispatchedAt, '--budget', '50'])
+  assert.equal(waited.json.status, ABANDONED)
+  const withClock = runCli([
+    'disposition',
+    ctx.dir,
+    ctx.runId,
+    'draft',
+    '--dispatched-at',
+    dispatchedAt,
+  ])
+  assert.equal(withClock.status, 0)
+  const decided = JSON.parse(withClock.stdout)
+  assert.equal(decided.status, ABANDONED)
+  assert.equal(decided.disposition, 'discard')
+  // Without the shared clock the same missing sentinel re-classifies as a resumable timeout.
+  const without = JSON.parse(runCli(['disposition', ctx.dir, ctx.runId, 'draft']).stdout)
+  assert.equal(without.disposition, 'resume')
+  assert.equal(without.reason, 'timed-out')
+  assert.equal(
+    dispatchDisposition(ctx, 'draft', { dispatchedAt: Number(dispatchedAt) }).disposition,
+    'discard',
+  )
+  for (const bad of ['', '0', `${Date.now() + 10 * 60_000}`]) {
+    const res = runCli(['disposition', ctx.dir, ctx.runId, 'draft', '--dispatched-at', bad])
+    assert.equal(res.status, 2, `disposition --dispatched-at ${JSON.stringify(bad)} must refuse`)
+  }
+})
+
+test('wait: a non-finite or non-positive numeric flag refuses exit 2, and unknown flags fail', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'draft', 'ok', {})
+  for (const flags of [
+    ['--budget', '1l0'],
+    ['--interval', 'NaN'],
+    ['--dispatched-at', 'soon'],
+    ['--deadline', 'x'],
+    ['--budget', '0'],
+    ['--interval', '-1'],
+    ['--budget'],
+    ['--bogus', '1'],
+    ['--while-live'],
+  ]) {
+    const res = waitCli(ctx, 'draft', flags)
+    assert.equal(res.status, 2, `wait ${flags.join(' ')} must refuse`)
+  }
+})
+
+test('wait with no arguments exits 2 and its usage text names wait', () => {
+  const res = runCli(['wait'])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /\| wait <dir> <runId> <name>/)
+})
+
+test('wait never writes the heartbeat it reads: bytes and mtime unchanged', () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', { provisional: false })
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: Date.now() - 1_000 })
+  backdate(hb, 5_000)
+  const bytes = readFileSync(hb, 'utf8')
+  const mtimeMs = statSync(hb).mtimeMs
+  const res = waitCli(ctx, 'review', [
+    '--heartbeat',
+    hb,
+    '--while-live',
+    '--budget',
+    '40',
+    '--interval',
+    '10',
+  ])
+  assert.equal(res.status, 98, 'the wait consulted the heartbeat (held on it)')
+  assert.equal(readFileSync(hb, 'utf8'), bytes)
+  assert.equal(statSync(hb).mtimeMs, mtimeMs)
 })

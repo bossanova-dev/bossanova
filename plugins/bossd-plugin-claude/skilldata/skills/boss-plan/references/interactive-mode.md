@@ -22,8 +22,15 @@ wrong ticket, confirm the head of the ranked queue:
   - **pick a different one** → ask which ticket (ID or "show me the list") and select that one
     instead.
 
-When the user gave a ticket ID and it is already planned/in-progress/`Done`/`Canceled`, warn and
-ask (AskUserQuestion) whether to re-plan before continuing.
+**Re-plan rule.** When the user gave a ticket ID that is already past unplanned, the idempotence
+precheck (SKILL.md, before Phase 2) decides first, and for a planned ticket its verdict **is** the
+re-plan confirmation — asking again after it has decided only repeats it:
+
+- planned and `action: "plan"` → proceed **without asking**, logging the verdict's `reasons[]`
+  (they name what is wrong with the stored plan, which is why a re-plan is due);
+- `action: "noop"` → exit per SKILL.md, zero tracker writes; there is nothing to confirm;
+- in-progress, `Done` or `Canceled` → warn and ask (AskUserQuestion) whether to re-plan before
+  continuing.
 
 ## Phase 2 — Triage triviality (interactive)
 
@@ -154,7 +161,7 @@ arbitrary machines, so it may only write where it owns the ground.
 
 ## Phase 4 — Resolve the draft/review step (interactive only)
 
-Run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --json`
+Run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --mode interactive --json`
 after running the toolbox preamble first, and read both `extensions` and `skipped`; record every
 `skipped` entry whose `deliberate` is `false` as
 `extension <name>: skipped (<reason>)` in the autonomous decisions. Key that on the entry's own
@@ -223,8 +230,10 @@ manufacture complexity.
 
 Phase 2.5 step 2 selects this shape when the approved spec has **≥ `BATCH_DRAFT_MIN_CHILDREN`=3**
 children, or whenever the operator asks. Dispatch **one** drafting subagent for the whole epic and
-await it, resolving the tier for that single dispatch exactly as above — Tier 1 with a discovered
-draft extension, else Tier 2, else Tier 3.
+await it. **Tier 1 is unavailable to this dispatch:** a draft extension's envelope carries one
+`planPath`, so it cannot express N children. Resolve Tier 2, else Tier 3, and record
+`batch draft: tier 1 unavailable (single-plan draft envelope)` once in the autonomous decisions — a
+structural line, not a per-extension skip.
 
 Brief the worker with the **same** shared drafting spec the headless epic path uses: point it at
 `references/headless-drafting-brief.md` **Steps 5–7** for the plan body, and at that file's "Epic
@@ -248,13 +257,22 @@ the approved spec:
   stay out of the JSON on purpose: this file is read whole, and inlining N descriptions is what makes
   a bounded artifact unbounded in exactly the runs that have the most children.
 
+**The worker self-verifies, and its prose is never evidence.** Require the worker to run the
+plan-contract guard (`plan-contract-guard.mjs --description <key>.description.md --plan <key>.md`,
+both under `<runTmp>/batch-draft/`) per child before it returns, and never to report success while any run exits non-zero. Do not read
+its claim of validation ("all N validated") either way: the orchestrator's own per-child gate run
+below stays the verdict.
+
 **Per-child validation reuses the existing gate — do not write a second one.** Every command below
 dereferences `$BOSS_PLAN_TOOLBOX`, so run each in a block that begins with the toolbox preamble —
 each Bash call is a fresh shell, and an unset `$BOSS_PLAN_TOOLBOX` turns these gates into
 module-not-found errors at the one step whose whole point is that they run. For each child, compose
 its draft-metadata object from its `children[<key>]` entry plus `planPath` (its plan file) and
-`descriptionSummary` (its description file's contents), write that to a scratch file, and run
-`node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata <file>` — the same bounded-metadata guard the
+`descriptionSummary` — the description file's contents as an **inline string**, never the
+`{"path": …}` form, which the guard accepts only for a declared `description` artifact under
+`.linear-plans/run-<RUN-SCRATCH-ID>/` and these drafts live under `runTmp` — write it to
+`<runTmp>/batch-draft/<key>.draft-metadata.json`, and run
+`node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata <runTmp>/batch-draft/<key>.draft-metadata.json` — the same bounded-metadata guard the
 single-ticket path runs, so an unknown key, a non-boolean `agentFriendly` or a non-single-ticket
 estimate fails identically here. Then run the plan-contract guard
 (`node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <desc> --plan <plan>`), the image

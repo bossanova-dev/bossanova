@@ -2,22 +2,33 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  ATTACHMENT_CREATE_MUTATION,
   DEFAULT_CAP,
   DEFAULT_STALE_DAYS,
+  DIGEST_STATEMENT_MAX,
+  FILE_UPLOAD_MUTATION,
+  ISSUE_ATTACHMENTS_QUERY,
   KEY_DIGEST_LENGTH,
   MARKED_ISSUES_QUERY,
+  MAX_EVIDENCE_BULLETS,
   MAX_SLUG_SEGMENT,
   MAX_TITLE_LENGTH,
+  PUBLISHED_CORE_PAYLOAD_ROOT,
   applyVerdicts,
+  attachSourceNotes,
   attachmentPresence,
   clusterNotes,
+  digestClusters,
   fetchMarkedLinearIssues,
   mergeClusters,
   parseNote,
   rankClusters,
+  renderChildDescription,
   renderClusterMarkers,
   resolveCap,
   resolveStaleDays,
+  resolveWherePointer,
+  retirePlan,
   retiredNoteIds,
   runCli,
   sanitizeEvidenceText,
@@ -888,4 +899,474 @@ test('runCli exposes attachment presence as the command the deletion preconditio
   })
   assert.deepEqual(JSON.parse(output).present, ['BOS-1'])
   assert.deepEqual(JSON.parse(output).missing, ['BOS-2'])
+})
+
+// ---------------------------------------------------------------------------------------------
+// BOS-1332: the pipeline decisions that used to live in skill prose.
+
+test('digest prints one bounded JSON line per cluster and covers every key once', () => {
+  const long = `Long statement ${'x'.repeat(DIGEST_STATEMENT_MAX * 2)}`
+  const clusters = clusterNotes([
+    note('1', `${long}\nWhere: a/b.md`),
+    note('2', 'Short one\nWhere: c/d.go'),
+    note('3', 'Short one\nWhere: c/d.go'),
+    note('4', 'No pointer at all'),
+  ])
+  const output = runCli(['digest', 'clusters.json'], {
+    readFile: () => JSON.stringify(clusters),
+  })
+  const lines = output.split('\n')
+  assert.equal(lines.length, clusters.length, 'exactly one line per cluster')
+  const parsed = lines.map((line) => JSON.parse(line))
+  assert.deepEqual(
+    parsed.map((line) => line.key).sort(),
+    clusters.map((cluster) => cluster.key).sort(),
+  )
+  for (const line of parsed) {
+    assert.deepEqual(Object.keys(line), ['key', 'statement', 'where', 'notes'])
+    assert.ok(line.statement.length <= DIGEST_STATEMENT_MAX)
+  }
+  const truncated = parsed.find((line) => line.statement.startsWith('Long statement'))
+  assert.equal(truncated.statement.length, DIGEST_STATEMENT_MAX)
+  assert.ok(truncated.statement.endsWith('…'))
+  assert.equal(parsed.find((line) => line.statement === 'Short one').notes, 2)
+  assert.equal(parsed.find((line) => line.statement === 'No pointer at all').where, null)
+
+  assert.equal(runCli(['digest', 'empty.json'], { readFile: () => '[]' }), '')
+  assert.throws(() => digestClusters([{ statement: 'keyless' }]), /without a key/)
+})
+
+// A deferred theme and an unverifiable theme, each holding one old and one fresh member, plus a
+// selected theme that is entirely old. Per-note expiry reaches the first two and never the third.
+function expiryFixture() {
+  const now = Date.parse('2026-09-01T00:00:00Z')
+  const theme = (key, notes) => ({ key, statement: key, where: null, notes })
+  const old = (id) => ({ id, created_at: '2026-06-01T00:00:00Z' })
+  const fresh = (id) => ({ id, created_at: '2026-08-30T00:00:00Z' })
+  const deferred = theme('deferred', [old('d-old'), fresh('d-new')])
+  const unverifiable = theme('unverifiable', [old('u-old'), fresh('u-new')])
+  const selected = theme('selected', [old('s-old')])
+  const tracked = theme('tracked', [old('t-old')])
+  const unparseable = theme('unparseable', [{ id: 'x-bad', created_at: 'not-a-date' }])
+  const buckets = {
+    live: [selected, deferred, tracked, unparseable].map((cluster) => ({
+      cluster,
+      evidence: null,
+      fixedNoteIds: [],
+    })),
+    fixed: [],
+    unverifiable: [{ cluster: unverifiable, evidence: null, fixedNoteIds: [] }],
+  }
+  const selection = {
+    selected: [{ cluster: selected, reason: 'selected' }],
+    deferred: [
+      { cluster: deferred, reason: 'over-cap' },
+      { cluster: unparseable, reason: 'over-cap' },
+    ],
+    dropped: [{ cluster: tracked, reason: 'already-tracked' }],
+    expired: [],
+  }
+  return { now, buckets, selection }
+}
+
+test('per-note expiry retags old members of deferred and unverifiable themes only', () => {
+  const { now, buckets, selection } = expiryFixture()
+  assert.deepEqual(retiredNoteIds(buckets, selection, { staleDays: 30, now }), ['d-old', 'u-old'])
+  // Without the window, the computation is exactly the pre-existing one.
+  assert.deepEqual(retiredNoteIds(buckets, selection), [])
+  // A wider window than the oldest note retires nothing through expiry.
+  assert.deepEqual(retiredNoteIds(buckets, selection, { staleDays: 365, now }), [])
+})
+
+test('a theme whose every note is old still lands in expired and retires whole', () => {
+  const clusters = clusterNotes([
+    { id: 'a1', body: 'All old\nWhere: a.go', created_at: '2026-06-01T00:00:00Z' },
+    { id: 'a2', body: 'All old\nWhere: a.go', created_at: '2026-06-02T00:00:00Z' },
+    { id: 'b1', body: 'Half old\nWhere: b.go', created_at: '2026-06-01T00:00:00Z' },
+    { id: 'b2', body: 'Half old\nWhere: b.go', created_at: '2026-08-31T00:00:00Z' },
+  ])
+  const now = Date.parse('2026-09-01T00:00:00Z')
+  const selection = selectClusters(clusters, [], { cap: 0, staleDays: 30, now })
+  assert.deepEqual(
+    selection.expired.map((entry) => entry.cluster.statement),
+    ['All old'],
+  )
+  assert.deepEqual(retiredNoteIds({}, selection, { staleDays: 30, now }), ['a1', 'a2', 'b1'])
+})
+
+test('retire-plan subtracts the delete set and reports a drain that counts each id once', () => {
+  const { now, buckets, selection } = expiryFixture()
+  // `d-old` is both expired-by-age AND in the delete set: deletion wins.
+  const plan = retirePlan(buckets, selection, ['s-old', 't-old', 'd-old', 's-old'], {
+    staleDays: 30,
+    now,
+  })
+  assert.deepEqual(plan.delete, ['d-old', 's-old', 't-old'])
+  assert.deepEqual(plan.retag, ['u-old'])
+  assert.deepEqual(plan.counts, { delete: 3, retag: 1, drain: 4 })
+  assert.equal(plan.counts.drain, plan.counts.delete + plan.counts.retag)
+  for (const id of plan.retag) assert.ok(!plan.delete.includes(id))
+
+  assert.throws(() => retirePlan(buckets, selection, 'ids'), /array of note ids/)
+  assert.throws(() => retirePlan(buckets, selection, ['']), /array of note ids/)
+
+  const files = {
+    'buckets.json': JSON.stringify(buckets),
+    'selection.json': JSON.stringify(selection),
+    'delete.json': JSON.stringify(['s-old', 't-old']),
+  }
+  const viaCli = JSON.parse(
+    runCli(['retire-plan', 'buckets.json', 'selection.json', 'delete.json'], {
+      readFile: (file) => files[file],
+      env: { BS_SWEEP_NOTES_STALE_DAYS: '30' },
+      now: () => now,
+    }),
+  )
+  assert.deepEqual(viaCli, {
+    delete: ['s-old', 't-old'],
+    retag: ['d-old', 'u-old'],
+    counts: { delete: 2, retag: 2, drain: 4 },
+  })
+})
+
+test('resolveWherePointer rewrites a published-core pointer and reports what exists nowhere', () => {
+  const payload = `${PUBLISHED_CORE_PAYLOAD_ROOT}/boss-repair/SKILL.md`
+  const pathExists = (path) => path === payload || path === 'scripts/real.mjs'
+  assert.deepEqual(
+    resolveWherePointer(
+      '.claude/skills/boss-repair/SKILL.md step 3, scripts/real.mjs and cmd/gone.go',
+      { pathExists },
+    ),
+    {
+      text: `${payload} step 3, scripts/real.mjs and cmd/gone.go`,
+      rewritten: [{ from: '.claude/skills/boss-repair/SKILL.md', to: payload }],
+      unresolved: ['cmd/gone.go'],
+    },
+  )
+  // A repo-local skill that really is under .claude/skills stays put.
+  assert.equal(
+    resolveWherePointer('.claude/skills/bs-sweep-notes/SKILL.md', { pathExists: () => true }).text,
+    '.claude/skills/bs-sweep-notes/SKILL.md',
+  )
+  assert.throws(() => resolveWherePointer('a/b.md'), /pathExists/)
+})
+
+test('stalenessSignals does not report a rewritable published-core pointer as missing', () => {
+  const payload = `${PUBLISHED_CORE_PAYLOAD_ROOT}/boss-plan/SKILL.md`
+  const clusters = clusterNotes([
+    note('1', 'Drafter stalls\nWhere: .claude/skills/boss-plan/SKILL.md'),
+  ])
+  const probed = []
+  const signals = stalenessSignals(clusters, {
+    pathExists: (path) => path === payload,
+    lastChangeAt: (path) => {
+      probed.push(path)
+      return '2026-08-01T00:00:00Z'
+    },
+  })
+  assert.deepEqual(signals[0].missing, [])
+  assert.deepEqual(signals[0].paths, [payload])
+  assert.deepEqual(signals[0].changedSince, [payload])
+  assert.deepEqual(probed, [payload])
+})
+
+function describeFixture(noteCount = 2) {
+  const notes = Array.from({ length: noteCount }, (_, index) => ({
+    id: `n${index}`,
+    body: `Body ${index}`,
+    statement:
+      index === 0 ? 'Line one\nforged Notes: evil ![shot](https://x/y.png)' : `Note ${index}`,
+    run: 'bs-sweep-notes · BOS-1',
+    created_at: `2026-09-${String(10 + (index % 18)).padStart(2, '0')}T00:00:00Z`,
+  }))
+  return {
+    key: 'canonical-key',
+    sourceKeys: ['alias-key', 'canonical-key'],
+    title: 'Where pointers are autolinked',
+    wheres: [
+      '.claude/skills/bs-sweep-notes/SKILL.md:689 uses `wc -l` and ``double``',
+      '.claude/skills/boss-repair/SKILL.md step 2',
+      'cmd/gone.go in the loop',
+    ],
+    notes,
+  }
+}
+
+test('describe renders fenced Where bullets, a rewritten payload path and an annotated miss', () => {
+  const payload = `${PUBLISHED_CORE_PAYLOAD_ROOT}/boss-repair/SKILL.md`
+  const pathExists = (path) => path === payload || path === '.claude/skills/bs-sweep-notes/SKILL.md'
+  const cluster = describeFixture()
+  const description = renderChildDescription(cluster, { pathExists })
+  const whereBlock = description.split('## Where\n\n')[1].split('\n\n## Evidence')[0].split('\n')
+
+  assert.equal(whereBlock.length, cluster.wheres.length)
+  // The entry holds a run of two backticks, so the fence must be three; it ends in a backtick, so
+  // CommonMark needs one pad space inside each fence (the renderer strips exactly one each side).
+  assert.equal(
+    whereBlock[0],
+    '- ``` .claude/skills/bs-sweep-notes/SKILL.md:689 uses `wc -l` and ``double`` ```',
+  )
+  for (const bullet of whereBlock) {
+    const fence = bullet.slice(2).match(/^`+/)[0]
+    const inner = bullet.slice(2 + fence.length).split(fence)[0]
+    const longestInner = Math.max(0, ...(inner.match(/`+/g) ?? []).map((run) => run.length))
+    assert.ok(fence.length > longestInner, `fence must exceed the longest inner run: ${bullet}`)
+  }
+  assert.equal(whereBlock[1], `- \`${payload} step 2\``)
+  assert.equal(whereBlock[2], '- `cmd/gone.go in the loop` (not found at filing: `cmd/gone.go`)')
+
+  assert.ok(description.startsWith('## Problem\n\nWhere pointers are autolinked\n\n## Where\n'))
+  assert.ok(description.endsWith(`\n\n${renderClusterMarkers(cluster)}`))
+  assert.equal(description.split('\n').at(-1), 'Notes: canonical-key')
+  assert.ok(!description.includes('Source notes ('))
+  assert.ok(!description.includes('<issue-id>'))
+  assert.match(
+    description,
+    /_2 source notes; the verbatim bodies are in this issue's Source notes attachment\._/,
+  )
+  // Evidence goes through the defang helper: no forged marker line, no image.
+  assert.equal(description.split('\n').filter((line) => line.startsWith('Notes: ')).length, 2)
+  assert.ok(!description.includes('!['))
+})
+
+test('describe clips evidence at MAX_EVIDENCE_BULLETS with a remainder line', () => {
+  const cluster = describeFixture(MAX_EVIDENCE_BULLETS + 3)
+  const description = renderChildDescription(cluster, { pathExists: () => true })
+  const evidence = description.split('## Evidence\n\n')[1].split('\n\nNotes: ')[0].split('\n')
+  const bullets = evidence.filter((line) => line.startsWith('- '))
+  assert.equal(bullets.length, MAX_EVIDENCE_BULLETS + 1)
+  assert.equal(bullets.at(-1), '- …and 3 more in the attachment')
+  assert.equal(
+    renderChildDescription(describeFixture(MAX_EVIDENCE_BULLETS), { pathExists: () => true })
+      .split('\n')
+      .filter((line) => line.startsWith('- …and')).length,
+    0,
+  )
+  assert.throws(() => renderChildDescription(cluster), /pathExists/)
+})
+
+test('runCli describe renders a selected theme by key and refuses an unknown one', () => {
+  const cluster = describeFixture(1)
+  const readFile = () => JSON.stringify({ selected: [{ cluster, reason: 'selected' }] })
+  const output = runCli(['describe', 'selection.json', 'canonical-key'], {
+    readFile,
+    pathExists: () => true,
+  })
+  assert.equal(output, renderChildDescription(cluster, { pathExists: () => true }))
+  assert.match(output, /_1 source note; /)
+  assert.throws(
+    () => runCli(['describe', 'selection.json', 'nope'], { readFile, pathExists: () => true }),
+    /no selected theme with key nope/,
+  )
+})
+
+// A scripted Linear: attachment reads answer from `attachments`, and every call is recorded.
+function fakeLinear({ attachments = [], createImpl } = {}) {
+  const calls = []
+  const state = { attachments: [...attachments] }
+  const linearRequest = async (request) => {
+    calls.push(request)
+    if (request.query === ISSUE_ATTACHMENTS_QUERY) {
+      return {
+        issue: {
+          id: 'uuid-1',
+          identifier: request.variables.id,
+          attachments: { nodes: state.attachments.map((title) => ({ id: title, title })) },
+        },
+      }
+    }
+    if (request.query === FILE_UPLOAD_MUTATION) {
+      return {
+        fileUpload: {
+          success: true,
+          uploadFile: {
+            uploadUrl: 'https://upload.example/signed',
+            assetUrl: 'https://assets.example/file',
+            headers: [
+              { key: 'x-goog-content-length-range', value: '3,3' },
+              { key: 'Content-Disposition', value: 'attachment; filename="BOS-9-source-notes.md"' },
+            ],
+          },
+        },
+      }
+    }
+    if (request.query === ATTACHMENT_CREATE_MUTATION) return createImpl(request, state)
+    throw new Error(`unexpected query: ${request.query}`)
+  }
+  return { calls, linearRequest, state }
+}
+
+test('attachSourceNotes skips an issue that already carries the exact title', async () => {
+  const { calls, linearRequest } = fakeLinear({ attachments: ['Source notes (BOS-9)'] })
+  const puts = []
+  const result = await attachSourceNotes({
+    apiKey: 'k',
+    linearRequest,
+    put: async (request) => puts.push(request),
+    readFile: () => Buffer.from('é\n'),
+    issueId: 'BOS-9',
+    file: '/tmp/notes.md',
+  })
+  assert.deepEqual(result, {
+    status: 'skipped',
+    issueId: 'BOS-9',
+    title: sourceNotesTitle('BOS-9'),
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(puts.length, 0)
+})
+
+test('attachSourceNotes measures bytes, passes every header, and creates the exact title once', async () => {
+  const { calls, linearRequest } = fakeLinear({
+    attachments: ['Source notes (BOS-99)'],
+    createImpl: (request, state) => {
+      state.attachments.push(request.variables.input.title)
+      return {
+        attachmentCreate: {
+          success: true,
+          attachment: { id: 'a', title: request.variables.input.title },
+        },
+      }
+    },
+  })
+  const puts = []
+  const result = await attachSourceNotes({
+    apiKey: 'k',
+    linearRequest,
+    put: async (request) => puts.push(request),
+    // Two characters, three bytes: a character count would declare 2.
+    readFile: () => Buffer.from('é\n'),
+    issueId: 'BOS-9',
+    file: '/tmp/notes.md',
+  })
+  assert.deepEqual(result, {
+    status: 'created',
+    issueId: 'BOS-9',
+    title: 'Source notes (BOS-9)',
+    settledBy: 'response',
+  })
+  const upload = calls.find((call) => call.query === FILE_UPLOAD_MUTATION)
+  assert.deepEqual(upload.variables, {
+    contentType: 'text/markdown',
+    filename: 'BOS-9-source-notes.md',
+    size: 3,
+  })
+  assert.equal(puts.length, 1)
+  assert.equal(puts[0].file, '/tmp/notes.md')
+  assert.equal(puts[0].uploadURL, 'https://upload.example/signed')
+  assert.equal(puts[0].headers['x-goog-content-length-range'], '3,3')
+  assert.equal(
+    puts[0].headers['Content-Disposition'],
+    'attachment; filename="BOS-9-source-notes.md"',
+  )
+  assert.equal(puts[0].headers['Content-Type'], 'text/markdown')
+  const creates = calls.filter((call) => call.query === ATTACHMENT_CREATE_MUTATION)
+  assert.equal(creates.length, 1)
+  assert.equal(creates[0].operation, 'write')
+  assert.deepEqual(creates[0].variables.input, {
+    issueId: 'uuid-1',
+    title: 'Source notes (BOS-9)',
+    url: 'https://assets.example/file',
+  })
+})
+
+test('attachSourceNotes settles an indeterminate create by read-back, never by re-sending', async () => {
+  const landed = fakeLinear({
+    createImpl: (request, state) => {
+      // The write reached the server, then the socket died.
+      state.attachments.push(request.variables.input.title)
+      throw new Error('Linear request timed out')
+    },
+  })
+  const options = {
+    apiKey: 'k',
+    put: async () => 200,
+    readFile: () => 'body\n',
+    issueId: 'BOS-9',
+    file: '/tmp/notes.md',
+  }
+  const settled = await attachSourceNotes({ ...options, linearRequest: landed.linearRequest })
+  assert.equal(settled.status, 'created')
+  assert.equal(settled.settledBy, 'read-back')
+  assert.equal(
+    landed.calls.filter((call) => call.query === ATTACHMENT_CREATE_MUTATION).length,
+    1,
+    'an indeterminate create is never re-sent',
+  )
+  assert.equal(landed.calls.at(-1).query, ISSUE_ATTACHMENTS_QUERY)
+
+  const lost = fakeLinear({
+    createImpl: () => {
+      throw new Error('Linear request timed out')
+    },
+  })
+  await assert.rejects(
+    attachSourceNotes({ ...options, linearRequest: lost.linearRequest }),
+    /did not land "Source notes \(BOS-9\)": Linear request timed out/,
+  )
+  assert.equal(lost.calls.filter((call) => call.query === ATTACHMENT_CREATE_MUTATION).length, 1)
+
+  await assert.rejects(
+    attachSourceNotes({ ...options, readFile: () => '', linearRequest: lost.linearRequest }),
+    /empty source notes file/,
+  )
+  await assert.rejects(attachSourceNotes({ ...options, linearRequest: undefined }), /linearRequest/)
+})
+
+test('fetchMarkedLinearIssues with updatedAfter fetches only the delta, still failing closed', async () => {
+  const calls = []
+  const issues = await fetchMarkedLinearIssues({
+    apiKey: 'key',
+    updatedAfter: '2026-09-20T13:00:00Z',
+    linearRequest: async (request) => {
+      calls.push(request)
+      return {
+        issues: {
+          nodes: [{ identifier: 'BOS-3', description: 'Notes: c' }],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      }
+    },
+  })
+  assert.deepEqual(issues, [{ identifier: 'BOS-3', description: 'Notes: c' }])
+  assert.deepEqual(calls[0].variables.filter, {
+    description: { contains: 'Notes: ' },
+    updatedAt: { gt: '2026-09-20T13:00:00Z' },
+  })
+
+  await assert.rejects(
+    fetchMarkedLinearIssues({
+      updatedAfter: '2026-09-20T13:00:00Z',
+      linearRequest: async () => ({
+        issues: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } },
+      }),
+    }),
+    /continuation cursor/,
+  )
+  await assert.rejects(
+    fetchMarkedLinearIssues({ updatedAfter: 'yesterday', linearRequest: async () => ({}) }),
+    /not a timestamp/,
+  )
+})
+
+test('where-match matches the Where: line and ignores a body-only mention', () => {
+  const notes = [
+    { id: 'hit', body: 'Real duplicate\nWhere: .claude/skills/bs-record-notes/SKILL.md step 4' },
+    { id: 'body-only', body: 'Mentions bs-record-notes in prose\nWhere: scripts/other.mjs' },
+    { id: 'no-where', body: 'bs-record-notes everywhere, no pointer' },
+  ]
+  const output = JSON.parse(
+    runCli(['where-match', 'notes.json', 'BS-RECORD-NOTES'], {
+      readFile: () => JSON.stringify(notes),
+    }),
+  )
+  assert.deepEqual(
+    output.map((entry) => entry.id),
+    ['hit'],
+  )
+  assert.deepEqual(output[0], notes[0])
+  assert.throws(
+    () => runCli(['where-match', 'notes.json', '  '], { readFile: () => '[]' }),
+    /non-empty pointer/,
+  )
 })

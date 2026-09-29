@@ -19,7 +19,7 @@ import { insideStringLiteral } from './check-vacuous-regions.mjs'
 // compares for equality, so a shrink reds too and the only way to clear it is to bank the
 // saving in the constant.
 //
-// THREE RULES, ALL STRUCTURAL. The first two flag the MEASUREMENT, not the comparison. That
+// FOUR RULES, ALL STRUCTURAL. The first two flag the MEASUREMENT, not the comparison. That
 // is a deliberate narrowing: a detector for the comparison itself — an assertion whose operand
 // is compared against a SCREAMING_SNAKE constant — was prototyped over this exact scope and
 // produced eight false positives, none of them size gates. They were string fixtures
@@ -57,6 +57,12 @@ import { insideStringLiteral } from './check-vacuous-regions.mjs'
 // the scan balances parens instead. Its blind spot is the mirror of that narrowness, and is
 // recorded in RESIDUAL.
 //
+// Rule 4, `ratchet-ledger-arithmetic` (BOS-1341): every written `A -> B (±N)` ledger triple in a
+// scanned file — comment or string literal alike, since `raise.justification` is a string — must
+// satisfy B − A = ±N. A rebase that merges two re-banks of one budget tends to leave a figure
+// nobody re-derived, and a descending budget stays green over it. Unlike rules 1-3 this rule has
+// NO `size-ratchet-ok:` exemption: a wrong figure has no legitimate reason to stay wrong.
+//
 // Parser-free, so prose is scanned too. Neither pattern is spelled verbatim anywhere in this
 // file's own comments, and the scope below excludes this file and its test regardless — see
 // SCAN_EXCLUSIONS.
@@ -82,6 +88,11 @@ const MEASURE_CALL = ['measure', 'File'].join('')
 const COMPARE_AFTER = /^\s*(===|==|<=|>=|<|>)/
 const COMPARE_BEFORE = /(===|!==|==|!=|<=|>=|=>|<|>)$/
 const NOT_A_COMPARISON = new Set(['=>', '!=', '!=='])
+
+// `A -> B (±N)` with either arrow and any of `+`, `-`, `−`. Each number refuses a neighbouring
+// digit group (`1.5`, `4,640`) so a decimal or comma-grouped figure is skipped, never misread.
+const LEDGER_TRIPLE =
+  /(?<![\w.,])(\d+)(?![.,]?\d)\s*(?:->|→)\s*(\d+)(?![.,]?\d)\s*\(\s*([+\-−])\s*(\d+)(?![.,]?\d)/g
 
 /** Index of the `)` closing the `(` at `openIndex`, or -1 if the source is unbalanced. */
 function closingParen(contents, openIndex) {
@@ -133,6 +144,46 @@ function findBudgetCompares(contents) {
   return hits
 }
 
+/**
+ * Every written `A -> B (±N)` ledger triple in `contents`, parsed, consistent or not.
+ *
+ * @param {string} contents Whole file text.
+ * @returns {{index: number, from: number, to: number, sign: string, amount: number,
+ *   written: number, derived: number}[]} Triples, in source order.
+ */
+export function ledgerTriples(contents) {
+  LEDGER_TRIPLE.lastIndex = 0
+  return [...contents.matchAll(LEDGER_TRIPLE)].map((match) => {
+    const [, from, to, sign, amount] = match
+    return {
+      index: match.index,
+      from: Number(from),
+      to: Number(to),
+      sign,
+      amount: Number(amount),
+      written: (sign === '+' ? 1 : -1) * Number(amount),
+      derived: Number(to) - Number(from),
+    }
+  })
+}
+
+/**
+ * Find every written `A -> B (±N)` triple whose delta disagrees with its endpoints.
+ *
+ * @param {string} contents Whole file text.
+ * @returns {{index: number, text: string}[]} Hits, in source order.
+ */
+export function findLedgerArithmetic(contents) {
+  return ledgerTriples(contents)
+    .filter((triple) => triple.written !== triple.derived)
+    .map(({ index, from, to, sign, amount, derived }) => ({
+      index,
+      text:
+        `${from} -> ${to} (${sign}${amount}): B − A is ` +
+        (derived >= 0 ? `+${derived}` : `−${-derived}`),
+    }))
+}
+
 // A rule carries EITHER a `pattern` (a global regex) or a `scan` (a function returning the
 // same hit shape). The budget rule cannot be a regex — its operand nests parentheses — and
 // `findRawSizeRatchets` normalises both into the one `{line, rule, remedy, text}` offender.
@@ -153,6 +204,14 @@ const RULES = [
       'pass the measurement to assertDescendingBudget() (or assertExactSize()) from ' +
       'scripts/size-ratchet-lib.mjs rather than comparing it by hand',
     scan: findBudgetCompares,
+  },
+  {
+    name: 'ratchet-ledger-arithmetic',
+    remedy:
+      're-derive the written delta from its two endpoints (or the endpoints from a fresh ' +
+      'measurement — scripts/ratchet-report.mjs prints one); there is no opt-out',
+    scan: findLedgerArithmetic,
+    optOutExempt: true,
   },
 ]
 
@@ -210,14 +269,21 @@ export const SCAN_EXCLUSIONS = [
 //      invisible here, with no opt-out marker to make the omission visible either. This is the
 //      same failure mode the ticket exists to remove, one level up: a structural detector's
 //      verdict is bounded by the shapes it enumerates, so read the rule list, not the headline.
+//   6. Rule 4 checks only the parenthesised `A -> B (±N)` spelling. A cross-referenced figure
+//      ("the same +N"), an unparenthesised delta (`A -> B. +N`, the prose-pin ledger's form), a
+//      decimal or comma-grouped number, and whether A or B is itself a true measurement are all
+//      unchecked.
 export const RESIDUAL =
   'a green run means no gate in scope measures bytes or lines by hand, and none compares a ' +
-  'measurement directly against a budget, IN THE THREE SPELLINGS these rules match — not ' +
+  'measurement directly against a budget, IN THE THREE SPELLINGS the measurement rules match — not ' +
   'that any pin is correct, not that a budget actually descends, not that a comparison over ' +
   'an intermediate variable holding a measureFile() result is routed through the library, ' +
   'not that a size ratchet outside SCANNED_NAME exists at all, and not that another ' +
   'measurement spelling (statSync().size, readFileSync().length, split(/\\r?\\n/).length, or ' +
-  'a wrapper around them) is absent'
+  'a wrapper around them) is absent; and the ledger-arithmetic rule checks only the ' +
+  'parenthesised `A -> B (±N)` spelling, not a cross-referenced figure ("the same +N"), an ' +
+  'unparenthesised delta, a decimal or comma-grouped number, or whether either endpoint is a ' +
+  'true measurement'
 
 function hasOptOut(lines, lineNumber) {
   for (const offset of [1, 2]) {
@@ -246,7 +312,7 @@ export function findRawSizeRatchets(contents) {
     const hits = rule.scan ? rule.scan(contents) : regexHits(rule.pattern, contents)
     for (const hit of hits) {
       const line = contents.slice(0, hit.index).split(String.fromCharCode(10)).length
-      if (hasOptOut(lines, line)) continue
+      if (!rule.optOutExempt && hasOptOut(lines, line)) continue
       offenders.push({ line, remedy: rule.remedy, rule: rule.name, text: hit.text })
     }
   }
@@ -285,15 +351,14 @@ function main() {
   const offenders = findRawSizeRatchetsInRepo(repoRoot)
   if (offenders.length > 0) {
     console.error(
-      'Hand-rolled size measurement found in a size-ratchet test. A gate that measures for ' +
-        'itself cannot fail closed on a missing or empty artifact, and the comparison that ' +
-        'follows is invariably one-sided. Route it through scripts/size-ratchet-lib.mjs, or ' +
-        'add `// size-ratchet-ok: <reason>`:',
+      'Size-ratchet gate offenders in scope. Each line names its rule, what matched, and the ' +
+        'remedy; the three measurement rules accept a `// size-ratchet-ok: <reason>` opt-out, ' +
+        'ratchet-ledger-arithmetic accepts none:',
     )
     for (const offender of offenders) {
       console.error(
         `  - ${path.relative(repoRoot, offender.file)}:${offender.line} [${offender.rule}] ` +
-          `${offender.remedy}`,
+          `${offender.text} — ${offender.remedy}`,
       )
     }
     process.exit(1)
@@ -301,7 +366,8 @@ function main() {
   // Qualified with the scope on purpose: an unqualified "none found" reads as a whole-tree
   // verdict, and this gate looked at a named subset. See SCANNED_DIR / SCANNED_NAME / RESIDUAL.
   console.log(
-    `No hand-rolled size measurements in ${files.length} scanned file(s) ` +
+    `No hand-rolled size measurements and no inconsistent ledger triples ` +
+      `(ratchet-ledger-arithmetic) in ${files.length} scanned file(s) ` +
       `(${SCANNED_DIR}/ matching ${SCANNED_NAME.source}, plus ${SCANNED_EXTRA.join(', ')}). ` +
       `Not covered: ${RESIDUAL}.`,
   )

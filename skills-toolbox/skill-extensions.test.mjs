@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
+  EXTENSION_MODES,
   EXTENSION_ROLES,
   ROLE_SCHEMAS,
   SKIP_REASONS,
@@ -909,10 +910,28 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  role: lens',
     '  lens: 42',
   ])
+  // invalid-modes
+  writeSkill(root, 'bs-review-badmodes', [
+    'name: bs-review-badmodes',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+    '  modes: sometimes',
+  ])
+  // mode-not-declared (reached only by the headless pass below)
+  writeSkill(root, 'bs-review-attended', [
+    'name: bs-review-attended',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+    '  modes: interactive',
+  ])
 
   const emitted = new Set()
-  for (const { core, role } of [
+  for (const { core, role, mode } of [
     { core: 'bs-review', role: 'lens' },
+    // A requested MODE is a property of the caller's argument, like the requested role below.
+    { core: 'bs-review', role: 'lens', mode: 'headless' },
     // 'lenz' is an unknown REQUESTED role; it is a property of the caller's argument rather than
     // of any fixture, so it needs its own pass.
     { core: 'bs-review', role: 'lenz' },
@@ -922,7 +941,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     // named `bs-plan` can ever enumerate a `bs-review-*` directory, so it stays reportable.
     { core: 'bs', role: 'lens' },
   ]) {
-    const { skipped } = discoverExtensions({ core, root, role })
+    const { skipped } = discoverExtensions({ core, root, role, mode })
     for (const entry of skipped) {
       assert.ok(
         entry.code in SKIP_REASONS,
@@ -951,7 +970,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
   )
 })
 
-test('exactly the two non-extension skips are classified deliberate', () => {
+test('exactly the non-extension and mode-not-declared skips are classified deliberate', () => {
   // A `deliberate: true` skip is the contract working: the directory is a same-prefix skill that is
   // not an extension of THIS core, so reporting it would cry wolf on every run. Everything else is a
   // misconfiguration a core MUST record. This partition is the whole point of the field, so it is
@@ -960,14 +979,16 @@ test('exactly the two non-extension skips are classified deliberate', () => {
     .filter(([, spec]) => spec.deliberate)
     .map(([code]) => code)
     .sort()
-  assert.deepEqual(deliberate, ['extends-other-core', 'missing-marker'])
+  assert.deepEqual(deliberate, ['extends-other-core', 'missing-marker', 'mode-not-declared'])
   assert.deepEqual(Object.keys(SKIP_REASONS).sort(), [
     'extends-other-core',
     'extends-unrelated-core',
     'incomplete-marker',
     'invalid-lens-binding',
+    'invalid-modes',
     'malformed-frontmatter',
     'missing-marker',
+    'mode-not-declared',
     'no-skill-md',
     'unknown-requested-role',
     'unreadable-frontmatter',
@@ -1410,4 +1431,167 @@ test('--help exits 0 and prints both subcommands with their accepted flags', () 
   assert.equal(unknown.status, 2)
   assert.match(unknown.stderr, /unknown subcommand: bogus/)
   assert.match(unknown.stderr, /^usage: skill-extensions\.mjs/m)
+})
+
+// ---------------------------------------------------------------------------
+// Run-mode eligibility (BOS-1329 R1): whether a draft extension may run headlessly is a declared
+// property of the extension, read by discovery, never a per-run judgement.
+// ---------------------------------------------------------------------------
+
+function writeModeFixtures(root) {
+  writeSkill(root, 'bs-plan-attended', [
+    'name: bs-plan-attended',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+    '  modes: interactive',
+  ])
+  writeSkill(root, 'bs-plan-anywhere', [
+    'name: bs-plan-anywhere',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+    '  order: 50',
+  ])
+  writeSkill(root, 'bs-plan-both', [
+    'name: bs-plan-both',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+    '  modes: headless, interactive',
+  ])
+}
+
+test('discoverExtensions skips an extension that does not declare the requested mode', () => {
+  const root = scratchRoot()
+  writeModeFixtures(root)
+  const { extensions, skipped } = discoverExtensions({
+    core: 'bs-plan',
+    root,
+    role: 'draft',
+    mode: 'headless',
+  })
+  assert.deepEqual(
+    extensions.map((e) => e.name),
+    ['bs-plan-anywhere', 'bs-plan-both'],
+  )
+  assert.deepEqual(skipped, [
+    {
+      name: 'bs-plan-attended',
+      reason: 'declares modes "interactive", not "headless"',
+      code: 'mode-not-declared',
+      deliberate: true,
+    },
+  ])
+})
+
+test('discoverExtensions admits a declared mode and carries modes on the descriptor', () => {
+  const root = scratchRoot()
+  writeModeFixtures(root)
+  const { extensions, skipped } = discoverExtensions({
+    core: 'bs-plan',
+    root,
+    role: 'draft',
+    mode: 'interactive',
+  })
+  assert.deepEqual(skipped, [])
+  const byName = Object.fromEntries(extensions.map((e) => [e.name, e]))
+  assert.deepEqual(byName['bs-plan-attended'].modes, ['interactive'])
+  assert.deepEqual(byName['bs-plan-both'].modes, ['headless', 'interactive'])
+  // An undeclared descriptor stays byte-identical to its pre-`modes` shape.
+  assert.equal('modes' in byName['bs-plan-anywhere'], false)
+})
+
+test('discoverExtensions without a mode applies no mode filter', () => {
+  const root = scratchRoot()
+  writeModeFixtures(root)
+  const { extensions, skipped } = discoverExtensions({ core: 'bs-plan', root, role: 'draft' })
+  assert.deepEqual(
+    extensions.map((e) => e.name),
+    ['bs-plan-anywhere', 'bs-plan-attended', 'bs-plan-both'],
+  )
+  assert.deepEqual(skipped, [])
+})
+
+test('discoverExtensions skips an unusable modes value as invalid-modes, in every mode', () => {
+  for (const declared of [
+    '  modes:',
+    '  modes: ""',
+    '  modes: sometimes',
+    '  modes: interactive,',
+    '  modes: 42',
+  ]) {
+    const root = scratchRoot()
+    writeSkill(root, 'bs-plan-badmodes', [
+      'name: bs-plan-badmodes',
+      'x-boss-extension:',
+      '  extends: bs-plan',
+      '  role: draft',
+      declared,
+    ])
+    for (const mode of [undefined, 'headless', 'interactive']) {
+      const { extensions, skipped } = discoverExtensions({
+        core: 'bs-plan',
+        root,
+        role: 'draft',
+        mode,
+      })
+      assert.deepEqual(extensions, [], `${declared}/${mode}: never reaches .extensions`)
+      assert.equal(skipped.length, 1, `${declared}/${mode}: ${JSON.stringify(skipped)}`)
+      assert.equal(skipped[0].code, 'invalid-modes')
+      assert.equal(skipped[0].deliberate, false)
+      assert.match(skipped[0].reason, /invalid "modes"/)
+    }
+  }
+})
+
+test('extensionMarker reads modes and omits the field when absent or unusable', () => {
+  const marker = (modes) =>
+    extensionMarker({ 'x-boss-extension': { extends: 'a', role: 'draft', modes } })
+  assert.deepEqual(marker('interactive').modes, ['interactive'])
+  assert.deepEqual(marker(' headless ,headless').modes, ['headless'])
+  assert.equal('modes' in marker(undefined), false)
+  assert.equal('modes' in marker('bogus'), false)
+  assert.deepEqual(EXTENSION_MODES, ['interactive', 'headless'])
+})
+
+test('discoverExtensions throws on an unknown requested mode', () => {
+  const root = scratchRoot()
+  writeModeFixtures(root)
+  assert.throws(
+    () => discoverExtensions({ core: 'bs-plan', root, role: 'draft', mode: 'bogus' }),
+    /unknown mode "bogus"/,
+  )
+})
+
+test('CLI discover --mode filters, and an unknown --mode exits 2 before scanning', () => {
+  const root = scratchRoot()
+  writeModeFixtures(root)
+  const ok = runCli([
+    'discover',
+    '--core',
+    'bs-plan',
+    '--root',
+    root,
+    '--role',
+    'draft',
+    '--mode',
+    'headless',
+    '--json',
+  ])
+  assert.equal(ok.status, 0, ok.stderr)
+  const parsed = JSON.parse(ok.stdout)
+  assert.deepEqual(
+    parsed.skipped.map((s) => [s.name, s.code]),
+    [['bs-plan-attended', 'mode-not-declared']],
+  )
+  for (const bad of [['--mode', 'bogus'], ['--mode']]) {
+    const run = runCli(['discover', '--core', 'bs-plan', '--root', root, ...bad])
+    assert.equal(run.status, 2, `${bad.join(' ')} must exit 2`)
+    assert.match(run.stderr, /unknown --mode/)
+    for (const mode of EXTENSION_MODES) assert.ok(run.stderr.includes(mode))
+    assert.equal(run.stdout, '')
+  }
+  const help = runCli(['--help'])
+  assert.ok(help.stdout.includes('--mode'), 'usage must document --mode')
 })

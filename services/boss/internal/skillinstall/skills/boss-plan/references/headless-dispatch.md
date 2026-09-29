@@ -1,9 +1,47 @@
 # Headless dispatch contract (read by the orchestrator)
 
 The Phase 2 headless path dispatches one awaited drafting subagent. `SKILL.md` carries the steps
-that run on every run; this reference carries the three rules that decide a run only when something
-is unusual — an EPIC triage, a transport death, or a metadata object that does not match the file at
-its declared path. Read it at those three points, not on the happy path.
+that run on every run; this reference carries the in-turn hold every run uses (read it at step 3),
+then the three rules that decide a run only when something is unusual — an EPIC triage, a transport
+death, or a metadata object that does not match the file at its declared path. Read those at those
+three points, not on the happy path.
+
+## Hold the dispatch in-turn with `wait`
+
+The Agent tool backgrounds every dispatch, so "await" needs a mechanism, and ending the turn is not
+one: a still-armed Stop hook finalizes the run mid-draft. The mechanism is the toolbox `wait` verb.
+It settles on the `draft` run-file sentinel and the drafter's own heartbeat — never on the Agent task
+output file (a symlink or a stub whose mtime and size never move), and never through a shell `sleep`.
+
+1. **Record the dispatch clock** immediately before each dispatch attempt, the one transport-death
+   retry included: `printf '%s000' "$(date +%s)" > "$RUN_DIR/draft.dispatched-at"`. The `draft`
+   sentinel is written only when the drafter finishes, so without a caller-held clock every re-armed
+   call would restart the seed age at zero and `abandoned` could never fire. Shell variables do not
+   survive between Bash calls; the run dir does, its non-`.json` name keeps it out of the sentinel
+   set, and `cleanup` removes it with the dir.
+2. **Re-arm as a foreground Bash call.** One call blocks at most `--budget` (default 110000 ms,
+   under the 120 s default Bash timeout), so the harness never backgrounds the hold itself:
+
+   ```bash
+   node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait "$RUN_DIR" "$RUN_ID" draft \
+     --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json \
+     --dispatched-at "$(cat "$RUN_DIR/draft.dispatched-at")" --while-live
+   ```
+
+3. **Route on the `wait` exit code.** Each re-arm is also the tool-call boundary at which the
+   dispatch's returned object can arrive; once it is in hand, stop re-arming and run step 4.
+
+| `wait` exit | Meaning                                                                                   | Next                                                                  |
+| ----------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `98`        | budget spent: the draft is still open, or its sentinel landed and the drafter still beats | re-arm                                                                |
+| `0`         | a non-provisional sentinel landed and the drafter stopped beating                         | step 4 with the returned object; without it, the transport-death rule |
+| `96` / `97` | timed out / abandoned (a stale clock and no live beat)                                    | step 4 — its `disposition` classifies the dispatch failure            |
+| `2`         | the call itself is wrong (a missing, empty or future clock; a bad flag)                   | fix the call; never read it as a death                                |
+| any other   | the harness killed the call                                                               | unknown — re-arm; never read it as a death class                      |
+
+Step 4's `disposition` passes the same `--dispatched-at`, so it cannot re-classify a draft `wait`
+called abandoned as a resumable timeout. Under Codex, `wait_agent` is the hold; call `wait` once
+after it returns (a landed sentinel with a non-live heartbeat exits 0 immediately).
 
 ## The subagent holds Phase 2.5 tracker-write authority
 

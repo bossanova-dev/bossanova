@@ -323,8 +323,8 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    literal role word `unplanned`), each child spec's validated `estimate` and `priority`, an
    `epicChildMarker(key)` resume marker — its canonical emitter, never a hand-written literal
    comment, so the writer here and the resume-side reader share one definition — embedded in its
-   description, and its content
-   labels (**plus `agent-question` when that child's `openQuestions` is non-empty** — the Phase 4
+   description, and its content labels, drawn from the same allow-list as Step 9's `labels`
+   (**plus `agent-question` when that child's `openQuestions` is non-empty** — the Phase 4
    contract, unioned in), but **neither** `agent-friendly` nor `needs-human`. A repo may map the role
    to a differently-named workflow state, so passing `unplanned` verbatim can make the tracker reject
    the child or land it in the wrong state. **The child plan attachment's title MUST be exactly
@@ -596,7 +596,7 @@ noise defeats the signal). These become the `openQuestions` you return and the p
 
 ## Step 5 — Resolve drafting, then write the polished plan
 
-First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --json`
+First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --mode headless --json`
 after running the toolbox preamble first. If that helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
 
@@ -632,6 +632,17 @@ runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath`
   `disable-model-invocation: true`, and the Skill tool refuses such a skill.
   The extension works the dimensions and writes the plan inside this single awaited
   drafting context.
+
+  **Headless Tier 1 runs inline — never a nested dispatch.** On this path "dispatch" means you
+  follow the extension's `SKILL.md` yourself, in this context, never as a further Agent or subagent
+  dispatch: a nested dispatch inside this one awaited drafting context is the recorded
+  double-stall. `--mode headless` is what keeps that safe — an extension whose work fans out its
+  own subagents or can ask the user declares `modes: interactive`, and discovery skips it as
+  `mode-not-declared` (`deliberate: true`, so never a ledger line). **Wrapper ownership:** the
+  extension owns only the plan at its per-dispatch `planPath` and its envelope; you, the drafting
+  subagent running it, own promotion to `PLAN_PATH`, the Step 7 description artifact, the Step 8
+  terminal sentinel and the Step 9 bounded metadata — an extension envelope stands in for none of
+  them.
 
   **Per-dispatch plan target.** The `planPath` you pass is **not** `PLAN_PATH` itself: give each
   dispatch its own path under `runTmp` (`<runTmp>/draft-<extension-name>/<basename of PLAN_PATH>`),
@@ -1147,17 +1158,35 @@ caller, defeating the isolation). Every value here is bounded by construction, `
 included: it travels as the **path** of the `description` artifact Step 7 assembled, so no drafted
 text crosses this channel at all.
 
-```
+The object is **strict JSON** — double-quoted keys and strings, no comments, no trailing commas —
+never a JavaScript object literal: the orchestrator adopts it byte-for-byte and the metadata guard
+parses it, so a literal forces a hand conversion. Every path in it is **repo-relative** (the guard
+normalizes an absolute or `./` spelling under the working tree, and refuses one outside it).
+
+```json
 {
-  planPath:      "<PLAN_PATH>",              // path only, never content
-  labels:        ["improvement", ...],       // relevant content labels to union (NOT agent-friendly/needs-human/agent-question)
-  agentFriendly: true | false,               // false => needs-human; drives the mutually-exclusive label
-  estimate:      <fib 0|1|2|3; a bare 5 ONLY for a recorded atomic & un-splittable single ticket — an 8 is never a single ticket, it becomes an epic or needs-human>,
-  priority:      <1|2|3|4>,
-  openQuestions: ["<one line per recorded controversial fork>", ...],  // may be empty
-  descriptionSummary: {path: ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"}  // the Step 7 artifact, BY REFERENCE — this is the form to send
+  "planPath": ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md",
+  "labels": ["improvement"],
+  "agentFriendly": true,
+  "estimate": 3,
+  "priority": 3,
+  "openQuestions": [],
+  "descriptionSummary": { "path": ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md" }
 }
 ```
+
+- `planPath` — `PLAN_PATH`, the path only, never content.
+- `labels` — the relevant **content labels** to union, and only those: `bug`, `feature`,
+  `improvement`, `docs`, each spelled as the repo's `optionalLabelName` mapping resolves it (the
+  literal when unmapped). Never `agent-friendly`, `needs-human` or `agent-question`, and never a
+  label outside that allow-list — the guard refuses it as `unknown-label`.
+- `agentFriendly` — `true` or `false`; `false` means needs-human and drives the mutually-exclusive
+  label.
+- `estimate` — Fibonacci `0`, `1`, `2` or `3`; a bare `5` ONLY for a recorded atomic and
+  un-splittable single ticket. An `8` is never a single ticket: it becomes an epic or needs-human.
+- `priority` — `1` to `4`.
+- `openQuestions` — one line per recorded controversial fork; may be empty.
+- `descriptionSummary` — the Step 7 artifact, BY REFERENCE: this is the form to send.
 
 `descriptionSummary` is a union the guard accepts in two forms: the by-reference object above, and a
 legacy inline string carrying the composed `## Summary … ## Original notes` block. **Send the
@@ -1176,10 +1205,13 @@ Phase 6.
 shape (the single-ticket metadata does not apply: you already applied the per-child labels/estimate
 on each child and left the parent deliberately unlabeled):
 
-```
+```json
 {
-  outcome:      "epic",
-  epicParentId: "<ISSUE-ID>",          // the repurposed original ticket
-  childIds:     ["<ISSUE-ID>", ...]    // REQUIRED: the created children, in topo order
+  "outcome": "epic",
+  "epicParentId": "<ISSUE-ID>",
+  "childIds": ["<ISSUE-ID>"]
 }
 ```
+
+- `epicParentId` — the repurposed original ticket.
+- `childIds` — **REQUIRED**: every created child, in topo order.

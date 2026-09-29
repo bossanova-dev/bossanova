@@ -148,7 +148,7 @@ body carries the decision skeleton; every moved instruction is still reachable h
   API-compatibility lens role; or the plan demands something unsafe (Decide vs ABORT). That list is
   exhaustive — open review findings are **not** on it.
 - Never merge. Terminal success is review-ready, never "Done".
-- Never `run_in_background`; use `toolbox/bs-dispatch-await.mjs` (`Task`/`spawn_agent`+`wait_agent`).
+- Never `run_in_background`; use `toolbox/bs-dispatch-await.mjs` (`wait`, `Task`/`spawn_agent`+`wait_agent`).
 - Never `boss cron` to wait for anything. A cron job starts a **new session** on every fire; fires
   overlap, each starts blind, and the schedule outlives the run it was pointed at. It schedules
   work, it does not watch it. To wait, arm a callback; to observe, read the session directly
@@ -610,12 +610,13 @@ symbols claimed missing; exclude `## Original notes`. False premise: merged-work
 departure; else comment refutation and stop BLOCKED.
 
 **Re-verify by symbol or predicate, never by line number alone.** A `path:line` is a locator, and
-locators rot between planning and building. Resolve the premise's **anchor token** — the backticked
-symbol copied from that location — or re-run its own `— check: ` command. A line-number miss whose
-anchor is still present in the file is **locator drift**: record the corrected coordinate in the PR
-body and carry on. Only a missing anchor or a failing predicate is a refutation. Reporting drift as
-refutation stops a sound build on a premise that still holds, which is the commoner failure of the
-two.
+locators rot. Resolve the premise's **anchor token** — the backticked symbol at that location — or
+re-run its own `— check: ` command. A line-number miss whose anchor is still present in the file is
+**locator drift**: record the corrected coordinate in the PR body and carry on. Only a missing anchor
+or a failing predicate is a refutation — and an anchor is missing only once the cited file was
+**read**, a `!`-negated check passes only once its positive form was shown able to fire: an empty
+search may be a rewriting shell hook's fabrication. Drift reported as refutation stops a sound
+build, the commoner failure.
 
 ## Step 5: Implement — methodology resolution (strict precedence)
 
@@ -639,13 +640,13 @@ whichever tier resolves — carries this verbatim in substance:
 - After completing **each discrete task** (or each logical unit for a single-task dispatch),
   `git add` the files changed and commit with a conventional-commit message scoped to that task,
   path-scoping the commit to those same files: `git commit --only -m "…" -- <files>`; add a new
-  file first so the pathspec is known to git. A plain
-  `git commit` commits the whole index, sweeping in anything staged before you started — the
-  orchestrator's plan deliverable or a host artifact — which is not yours to commit.
+  file first so the pathspec is known to git. A plain `git commit` commits the whole index,
+  sweeping in anything staged earlier — the plan deliverable or a host artifact — not yours.
   Never batch the whole assignment into one end-of-run commit.
 - **Never return with uncommitted work.** The final act before returning is
-  `git status --porcelain` → nothing left from **your own** changes: commit whatever remains,
-  staging only the paths you touched — never `git add -A`. Anything else the status lists is not
+  `node <toolbox>/worktree-state.mjs` (orchestrator-resolved path) → nothing left from **your
+  own** changes (`unknown` is not clean: report it): commit whatever remains, staging
+  only the paths you touched — never `git add -A`. Anything else it lists is not
   yours to commit: the run's plan deliverable under `docs/plans/` and host artifacts such as
   `.claude/settings.local.json` belong to the orchestrator. If a commit hook rejects the message,
   adapt the subject to exactly what the hook's own error names — never a value you invented — and
@@ -665,8 +666,8 @@ whichever tier resolves — carries this verbatim in substance:
   confirm it carries what you meant and nothing more.
 - **A tree-writing gate runs before the commit it belongs to.** Any formatter or codegen step
   rewrites files: run it, stage its output, then commit. Run after the commit and the rewrite
-  stays outside it — the local gate passes while the published tree is the unformatted one. Re-read
-  `git status --porcelain` after the gates and before any push is declared done.
+  stays outside it — the local gate passes while the published tree is the unformatted one. Re-run
+  `worktree-state.mjs` after the gates and before any push is declared done.
 - **The last read before a push is the commit messages.** Re-read the range for a claim this run
   later disproved — a fix the review reverted, a gate reported green and then re-run red.
   Correcting one is free while the commits are unpublished and means rewriting published history
@@ -851,7 +852,7 @@ the returned contract. Tests assert the same premise cannot falsify that premise
 Honour the **commit-before-return contract** above inside this loop: `git add` and commit each task
 with a conventional-commit message scoped to that task before starting the next one, never batching
 the whole assignment into one end-of-run commit, and never return with uncommitted work — the final
-act before returning is `git status --porcelain` → nothing left from your own changes, staging only
+act before returning is `worktree-state.mjs` → nothing left from your own changes, staging only
 the paths you touched and never `git add -A`. Commit messages need no PR tag.
 Return only the fixed short task-contract: task id, files touched, tests added/passing, interface
 signatures, residual risks cross-checked against the prior art the subagent itself cited, decisions
@@ -868,26 +869,22 @@ reported.
 - **resume**: `REVIEW_BASE="$BASE_REF"` — the work to ship is the whole branch vs base, including a
   prior run's commits.
 
-**Change-detection gate.** Detect real changes against that baseline plus working-tree changes,
+**Change-detection gate.** Detect committed and working-tree changes since that baseline,
 excluding daemon artifacts:
 
 ```bash
-git diff --name-only "$REVIEW_BASE"...HEAD -- . \
-  ':(exclude).claude/scheduled_tasks.lock' ':(exclude).claude/settings.local.json'
-git status --porcelain --untracked-files=all -- . \
-  ':(exclude).claude/scheduled_tasks.lock' ':(exclude).claude/settings.local.json'
+node "$BOSS_BUILD_TOOLBOX/worktree-state.mjs" --base "$REVIEW_BASE" \
+  --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 ```
 
-If both are empty → no committable change: restore the ticket to its entry state, delete the claim comment,
-go to **Stop cleanly** with `NO_CHANGE`. Otherwise stage **only the paths this run's work touched —
-never a blanket `git add -A`**, commit tagless, and ensure all work to review is committed. The plan
-deliverable was committed at the **end of Step 4**; assert it tracked before dispatching — every
-Step 6 route below passes here, so no route can reach review with an untracked deliverable:
+`verdict: clean` → no committable change: restore the ticket to its entry state, delete the claim
+comment, go to **Stop cleanly** with `NO_CHANGE`; `unknown` → BLOCKED, never clean. On `dirty` stage
+**only the uncommitted paths this run's work touched — never a blanket `git add -A`**, commit
+tagless, and ensure all work to review is committed. The plan deliverable was committed at the **end
+of Step 4**; assert it tracked before dispatching — every Step 6 route passes here:
 
 ```bash
-# Re-derive: Step 4 assigned $PLAN_DOC in an EARLIER Bash call and shell state does not survive
-# between them. Unset, this checks the EMPTY path, `git ls-files` exits 128, and every run BLOCKS
-# on a false cause with an empty path in the message.
+# Re-derive: Step 4 set $PLAN_DOC in an earlier Bash call; unset, every run BLOCKS falsely.
 PLAN_DOC="${PLAN_DOC:-$(git diff --name-only --diff-filter=A \
   "$(git merge-base "${BASE_REF:-origin/HEAD}" HEAD)"..HEAD -- 'docs/plans/*.md' | head -1)}"
 git ls-files --error-unmatch "$PLAN_DOC" >/dev/null 2>&1 \
@@ -923,6 +920,10 @@ plan/acceptance-criteria (the pass certifies against them), (on a resume) the St
 `RUN_DIR` / `RUN_ID`. **Lead that prompt with exactly `[bs-reviewer-dispatch]` on a line of its
 own** — an inert marker, not an instruction to the subagent, that run-cost telemetry matches at the
 head of a dispatched prompt to count reviewer subagents.
+
+**Hold it in-turn:** re-arm
+`node "${RUN_SENTINEL%/*}/bs-dispatch-await.mjs" wait "$RUN_DIR" "$RUN_ID" review --heartbeat "$RUN_DIR/review.heartbeat" --while-live`
+in the foreground until the report is in hand or it exits 0, 96 or 97, then classify below.
 
 **The review tier is picked from the diff, not from a clock.** The reference decides quick vs full at
 Step 6 entry from the branch diff alone: the configured lens globs plus the changed-file count
@@ -962,17 +963,14 @@ readied PR behind an undetermined verdict.
 **What comes back (thin, non-routing).** The subagent RETURNS only the rendered `boss-review` report
 (leading with `<!-- bs-review -->`, for Step 7), the `## Cross-model review` token
 (boss-review's Phase D `second-voice` round), the `## Review coverage` outcome token, the drift
-note, and the finding ledger. Bulk stays in the subagent's context,
-**NOT pasted back**.
+note, and the finding ledger.
 
-**Classify from the run file only** — and do it through `toolbox/bs-dispatch-await.mjs`, which owns
-the decision, rather than re-deriving it here. Its `disposition` verb answers one question the four
-hand-rolled arms below used to answer four different ways: **is this verdict publishable?** A
-provisional payload demotes **every** kind, `clean` included, so a seed nobody upgraded can never
-route onward as a verdict:
+**Classify from the run file only**, through `toolbox/bs-dispatch-await.mjs` `disposition`, which
+owns **is this verdict publishable?** A provisional payload demotes **every** kind, `clean`
+included, so a seed nobody upgraded can never route onward as a verdict:
 
 ```bash
-DISP="$(node "${RUN_SENTINEL%/*}/bs-dispatch-await.mjs" disposition "$RUN_DIR" "$RUN_ID" review)"
+DISP="$(node "${RUN_SENTINEL%/*}/bs-dispatch-await.mjs" disposition "$RUN_DIR" "$RUN_ID" review --heartbeat "$RUN_DIR/review.heartbeat")"
 if [ "$(printf '%s' "$DISP" | jq -r '.publishable')" = "true" ]; then
   # matchSentinel classifies the byte-stable `bs-review clean:` / `bs-review capped:` prefixes.
   VERDICT="$(node "${RUN_SENTINEL%/*}/bs-review-caps.mjs" match "$(printf '%s' "$DISP" | jq -r '.kind')" | jq -r '.status // empty')"
@@ -1182,14 +1180,14 @@ Each bullet is a summary, never the instruction — follow its link and do the s
 
 ## Verification selection
 
-For every implementation verification before readiness, load the resolved skill config and call
-`decideTestSelection` from this core's `toolbox/test-selection.mjs` with the current repo-relative
-changed-file set and the test-file universe when available. Log its `report` verbatim. A usable
-`narrow` decision runs the configured `commands.testAffected`; `full`, an unavailable helper, an
-error, or any result that cannot be interpreted runs `commands.testFull`. Never substitute an empty
-or missing selection for a passing gate. The final readiness transition is different: it runs
-`commands.testFull` exactly once over the final tree and requires that pass before readying; no
-earlier narrow or full result satisfies that receipt.
+For every implementation verification before readiness, call `decideTestSelection` (this core's
+`toolbox/test-selection.mjs`) with the resolved skill config, the repo-relative changed files and,
+when available, the test-file universe. Log its `report` verbatim. A usable `narrow` decision runs
+`commands.testAffected`; `full`, an unavailable helper, an error, or any result that cannot be
+interpreted runs `commands.testFull`. Never substitute an empty or missing selection for a passing
+gate. Readiness instead runs `commands.testReadiness` (else `commands.testFull`) once over the final
+tree, never through the gate cache, and requires that pass; no earlier narrow or full result
+satisfies it.
 
 Ambiguous terminal state ⇒ [`references/troubleshooting.md`](references/troubleshooting.md)
 (status-rollback table + red-flags catalog).

@@ -47,6 +47,11 @@
 // nothing here polices the resident-vs-references split — content moved into a reference stops
 // being measured at all. Per-call-site residuals are the `residual` parameter's job.
 //
+// THE MEASUREMENT RECORDER (BOS-1341) reports, it never decides. With `SIZE_RATCHET_REPORT_DIR`
+// set, both primitives append one JSON row per call before their verdict so
+// `scripts/ratchet-report.mjs` can print pinned beside measured after a rebase; unset, it writes
+// nothing and changes no verdict.
+//
 // WHY A SECOND PRIMITIVE, AND WHY IT IS ASYMMETRIC (BOS-1208). `assertExactSize` prices a
 // deletion and an addition identically: both red, and both clear by the same one-line repin.
 // That is not a ratchet against ceremony, it is a toll on movement in either direction — which
@@ -78,6 +83,8 @@
 // forbidden comparison verbatim; that is what lets both files pass the gate with no opt-out.
 
 import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** Remedy sentence for an artifact that has somewhere to extract content to. */
 export const MOVE_TO_REFERENCE_REMEDY =
@@ -89,6 +96,57 @@ export const NO_REFERENCE_REMEDY =
   'to come out of the body itself, or the growth has to be justified and the pin re-measured.'
 
 const UNITS = new Set(['bytes', 'lines'])
+
+/** Environment variable naming the directory `recordMeasurement` appends rows under. */
+export const REPORT_DIR_ENV = 'SIZE_RATCHET_REPORT_DIR'
+
+const LIB_FILE = import.meta.filename
+const STACK_FRAME = /(?:\(|at )((?:file:\/\/|\/)[^()]*?):(\d+):\d+\)?$/
+
+/**
+ * `<absolute file>:<line>` of the first stack frame outside this library — the code that called
+ * a primitive — or null when no such frame can be read. Never throws.
+ */
+function callerSite() {
+  try {
+    for (const frame of String(new Error().stack).split('\n').slice(1)) {
+      const match = STACK_FRAME.exec(frame.trim())
+      if (!match) continue
+      const file = match[1].startsWith('file://') ? fileURLToPath(match[1]) : match[1]
+      if (file !== LIB_FILE) return `${file}:${match[2]}`
+    }
+  } catch {
+    // An unreadable stack records null, which the report counts as no call site.
+  }
+  return null
+}
+
+/**
+ * Append one measurement row to `<SIZE_RATCHET_REPORT_DIR>/<pid>.jsonl`, or do nothing when the
+ * variable is unset or empty. Per-process files, because `node --test` runs each suite in its own
+ * process and concurrent appends to one file could interleave. Each row carries `suite`, the
+ * recording process's entry script, so the report attributes it to the suite that actually ran,
+ * and `callSite`, the calling line, so a loop counts as one call site. A failed append throws: a
+ * report that silently dropped a row would read as a gate that never ran.
+ */
+function recordMeasurement(row) {
+  const dir = process.env[REPORT_DIR_ENV]
+  if (typeof dir !== 'string' || dir === '') return
+  const file = path.join(dir, `${process.pid}.jsonl`)
+  try {
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({ ...row, suite: process.argv[1], callSite: callerSite() })}\n`,
+    )
+  } catch (cause) {
+    throw new Error(
+      `size-ratchet: cannot record a measurement under ${REPORT_DIR_ENV}=${dir} (${file}). ` +
+        'The report directory must be a writable directory; a report that dropped this row ' +
+        'would read as a gate that never ran. Wiring error.',
+      { cause },
+    )
+  }
+}
 
 function residualSuffix(residual) {
   return ` Not covered by this check: ${residual}.`
@@ -176,6 +234,27 @@ export function assertExactSize(options) {
         'size-ratchet: assertExactSize `previous.delta` must be an integer when `previous` is supplied. Wiring error.',
       )
     }
+  }
+  if (!UNITS.has(unit)) {
+    throw new Error(
+      `size-ratchet: assertExactSize \`unit\` must be one of ${[...UNITS].join(', ')}, got ` +
+        `${String(unit)}. Wiring error.`,
+    )
+  }
+
+  // Recorded after wiring and before every verdict, so a run that then throws is still reported.
+  recordMeasurement({
+    kind: 'exact',
+    label,
+    path: artifactPath,
+    constName,
+    constFile,
+    unit,
+    measured,
+    pinned: expected,
+  })
+
+  if (previous !== undefined) {
     const derivedDelta = expected - previous.value
     if (previous.delta !== derivedDelta) {
       throw new Error(
@@ -185,12 +264,6 @@ export function assertExactSize(options) {
           residualSuffix(residual),
       )
     }
-  }
-  if (!UNITS.has(unit)) {
-    throw new Error(
-      `size-ratchet: assertExactSize \`unit\` must be one of ${[...UNITS].join(', ')}, got ` +
-        `${String(unit)}. Wiring error.`,
-    )
   }
 
   const tail = residualSuffix(residual)
@@ -364,6 +437,18 @@ export function assertDescendingBudget(options) {
     )
   }
   requireCount('raise.from', raise?.from, 'assertDescendingBudget')
+
+  // Recorded after wiring and before every verdict, so an over-budget run is still reported.
+  recordMeasurement({
+    kind: 'budget',
+    label,
+    path: artifactPath,
+    constName,
+    constFile,
+    unit,
+    measured,
+    pinned: budget,
+  })
 
   const tail = residualSuffix(residual)
 

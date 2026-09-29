@@ -78,8 +78,12 @@ const requiredFiles = [
 // once installed trees carry a payload record, a stale plugin restores its embed only to
 // non-explicit installs, and the corrected clause came out one byte shorter than the one it
 // replaced. The restorer mechanism itself lives in docs/solutions/, not here.
+// Re-banked 27077 -> 26865 bytes by BOS-1330 (lines unchanged at 180). The local-state bullet now
+// states the command-rewriting-hook rule (an empty/`0`/`ok`/"identical" result is unknown) and the
+// `go test -run` bullet stops naming `rtk proxy` as a raw mode; both are paid for by compressing the
+// bare-glob bullet, whose measurements already live in scripts/check-skill-shell.mjs's header.
 const CLAUDE_MD_MAX_LINES = 180
-const CLAUDE_MD_MAX_BYTES = 27077
+const CLAUDE_MD_MAX_BYTES = 26865
 
 // The seven authoring rules, pinned by NAME rather than by the sentence that states them. That is
 // the point of rule 4 applied to this file: a rule name is what a reader cites and what the two

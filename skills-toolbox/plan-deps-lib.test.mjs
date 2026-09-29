@@ -31,6 +31,7 @@ import {
   planDependencyEdges,
   transitiveBlockWarnings,
   validateDependencyScanInput,
+  withScanDefaults,
 } from './plan-deps-lib.mjs'
 import { descriptionAppearsTruncated } from './plan-epic-lib.mjs'
 
@@ -96,8 +97,10 @@ function classify(over = {}) {
   return classifyDependencyEdge({
     subject: subject(),
     candidate: candidate(),
-    subjectAreas: ['app/api'],
-    candidateAreas: ['app/api'],
+    // A same FILE on both sides: only that overlap may block (BOS-1337). A bare
+    // shared directory is `directory-overlap`, pinned by its own tests below.
+    subjectAreas: ['app/api/x.go'],
+    candidateAreas: ['app/api/x.go'],
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
     ...over,
@@ -1811,15 +1814,15 @@ test('an arealess SUBJECT warns, rather than reporting a clean no-dependencies r
 
 test('a run where every compared pair downgrades on unknown state gets an aggregate warning', () => {
   const allUnknown = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api'] },
+    subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [
       {
         ...candidate({ id: 'a', identifier: 'TCK-A', priority: 1, stateName: 'Mystery' }),
-        areas: ['app/api'],
+        areas: ['app/api/x.go'],
       },
       {
         ...candidate({ id: 'b', identifier: 'TCK-B', priority: 1, stateName: 'Pending-ish' }),
-        areas: ['app/api'],
+        areas: ['app/api/x.go'],
       },
     ],
     stateRoles: STATE_ROLES,
@@ -1836,10 +1839,13 @@ test('a run where every compared pair downgrades on unknown state gets an aggreg
   )
 
   const withWrite = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api'] },
+    subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [
-      { ...candidate({ id: 'a', identifier: 'TCK-A', stateName: 'Mystery' }), areas: ['app/api'] },
-      { ...candidate({ id: 'b', identifier: 'TCK-B', priority: 1 }), areas: ['app/api'] },
+      {
+        ...candidate({ id: 'a', identifier: 'TCK-A', stateName: 'Mystery' }),
+        areas: ['app/api/x.go'],
+      },
+      { ...candidate({ id: 'b', identifier: 'TCK-B', priority: 1 }), areas: ['app/api/x.go'] },
     ],
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
@@ -1923,6 +1929,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
         candidate: candidate({ priority: 3, stateName: '?' }),
       }),
       classify({ candidate: candidate({ ...started, landed: { evidence: 'abc123' } }) }),
+      classify({ subjectAreas: ['app/api'], candidateAreas: ['app/api/x.go'] }),
     ].map((row) => row.reason),
   )
   for (const reason of produced) {
@@ -2079,8 +2086,8 @@ test('edges are ordered by candidate identifier regardless of input order', () =
 test('a question surfaces in questions and never in notes', () => {
   const stamp = '2026-06-06T00:00:00.000Z'
   const result = planDependencyEdges({
-    subject: { ...subject({ priority: 2, createdAt: stamp }), areas: ['app/api'] },
-    candidates: [{ ...candidate({ priority: 2, createdAt: stamp }), areas: ['app/api'] }],
+    subject: { ...subject({ priority: 2, createdAt: stamp }), areas: ['app/api/x.go'] },
+    candidates: [{ ...candidate({ priority: 2, createdAt: stamp }), areas: ['app/api/x.go'] }],
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
   })
@@ -2331,8 +2338,8 @@ test('caller-supplied tuning that is not a list degrades instead of throwing', (
   const decided = classifyDependencyEdge({
     subject: subject({ priority: 1 }),
     candidate: candidate({ priority: 3 }),
-    subjectAreas: ['app/api'],
-    candidateAreas: ['app/api'],
+    subjectAreas: ['app/api/x.go'],
+    candidateAreas: ['app/api/x.go'],
     stateRoles: STATE_ROLES,
     priorityOrder: null,
     clearedStateTypes: undefined,
@@ -2587,7 +2594,7 @@ test('BOS-1327 validator: never throws, and a garbage payload is refused rather 
 test('BOS-1327 shared: every classifier result carries a shared array', () => {
   const overlapping = classify({
     candidate: candidate({ priority: 1 }),
-    subjectAreas: ['app/api'],
+    subjectAreas: ['app/api/x.go'],
     candidateAreas: ['app/api/x.go'],
   })
   assert.deepEqual(overlapping.shared, ['app/api/x.go'])
@@ -2789,8 +2796,8 @@ test('BOS-1327 verdict: each outcome, and could-not-evaluate outranks everything
   })
   assert.deepEqual(dependencyScanVerdict(arealessSubject).reasons, ['no-subject-areas'])
   const linked = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api'] },
-    candidates: [{ ...candidate({ priority: 1 }), areas: ['app/api'] }],
+    subject: { ...subject(), areas: ['app/api/x.go'] },
+    candidates: [{ ...candidate({ priority: 1 }), areas: ['app/api/x.go'] }],
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
   })
@@ -2803,11 +2810,11 @@ test('BOS-1327 verdict: each outcome, and could-not-evaluate outranks everything
     recordToDescription: true,
   })
   const related = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api'] },
+    subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [
       {
         ...candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
-        areas: ['app/api'],
+        areas: ['app/api/x.go'],
       },
     ],
     stateRoles: STATE_ROLES,
@@ -2816,11 +2823,11 @@ test('BOS-1327 verdict: each outcome, and could-not-evaluate outranks everything
   })
   // Equal priority and equal createdAt would be ambiguous; make the subject the blocker.
   const relatedOnly = planDependencyEdges({
-    subject: { ...subject({ priority: 1 }), areas: ['app/api'] },
+    subject: { ...subject({ priority: 1 }), areas: ['app/api/x.go'] },
     candidates: [
       {
         ...candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
-        areas: ['app/api'],
+        areas: ['app/api/x.go'],
       },
     ],
     stateRoles: STATE_ROLES,
@@ -2951,4 +2958,322 @@ test('BOS-1327 integration: validated payload -> edges -> verdict -> transitive 
     warnings.map((entry) => [entry.direction, entry.blockerId, entry.via]),
     [['upstream', 'uuid-candidate', ['TCK-40']]],
   )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1337 — directory overlap never blocks; escapes; shared evidence
+// ---------------------------------------------------------------------------
+
+test('BOS-1337 escapes: a tracker backslash escape is stripped before classification', () => {
+  const escaped = areas(planBody('- services/marketing/public/\\_redirects: add rule\n'), {
+    moduleRoots: ['services'],
+  })
+  assert.deepEqual(escaped.areas, ['services/marketing/public/_redirects'])
+  assert.deepEqual(escaped.unresolved, [])
+  // An escaped glob star behaves exactly as the unescaped glob.
+  for (const moduleRoots of [[], ['services']]) {
+    assert.deepEqual(
+      areas(planBody('- `dir/\\*.ext` placeholder\n'), { moduleRoots }),
+      areas(planBody('- `dir/*.ext` placeholder\n'), { moduleRoots }),
+      `moduleRoots=${JSON.stringify(moduleRoots)}`,
+    )
+  }
+})
+
+test('BOS-1337 fileShared: only a same FILE is file-shared; containment is shared only', () => {
+  const same = areasOverlap(['app/api/x.go'], ['app/api/x.go'])
+  assert.deepEqual(same, { overlap: true, shared: ['app/api/x.go'], fileShared: ['app/api/x.go'] })
+  for (const [a, b] of [
+    [['app/api'], ['app/api/x.go']],
+    [['app/api/x.go'], ['app/api']],
+  ]) {
+    const contained = areasOverlap(a, b)
+    assert.equal(contained.overlap, true, 'containment still reports overlap')
+    assert.deepEqual(contained.shared, ['app/api/x.go'])
+    assert.deepEqual(contained.fileShared, [], `${a} vs ${b} is directory-level`)
+  }
+  // The same DIRECTORY on both sides names no file, so it is directory-level too.
+  assert.deepEqual(areasOverlap(['app/api'], ['app/api']).fileShared, [])
+  // An aliased mirror of one file is the same file.
+  const aliased = areasOverlap(['app/api/x.go', 'app/b.ts'], ['gen/api/x.go', 'app/b.ts'], {
+    areaAliases: { 'app/api/x.go': 'gen/api/x.go' },
+  })
+  assert.deepEqual(aliased.fileShared, ['app/b.ts', 'gen/api/x.go'], 'sorted, alias-expanded')
+  // Repo-wide exclusion applies to fileShared exactly as to shared.
+  const wide = areasOverlap(['docs/x.md'], ['docs/x.md'], { repoWideTokens: ['docs/x.md'] })
+  assert.deepEqual(wide, { overlap: false, shared: [], fileShared: [] })
+})
+
+test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every direction', () => {
+  const prose = areas(
+    '## Planning\n\n- Contract: v1\n\nThe callback dispatcher in services/boss drops the retry when the chat closes.\n',
+    { moduleRoots: ['services'] },
+  )
+  assert.equal(prose.source, 'fallback-text')
+  assert.deepEqual(prose.areas, ['services/boss'])
+  for (const [label, subjectAreas, candidateAreas, shared] of [
+    [
+      'subject directory',
+      ['services/bosso/internal/server'],
+      ['services/bosso/internal/server/billing.go'],
+      'services/bosso/internal/server/billing.go',
+    ],
+    [
+      'candidate directory',
+      ['services/bosso/internal/server/billing.go'],
+      ['services/bosso/internal/server'],
+      'services/bosso/internal/server/billing.go',
+    ],
+    ['prose fallback', ['services/boss/cmd/x.go'], prose.areas, 'services/boss/cmd/x.go'],
+    ['extensionless file', ['Makefile'], ['Makefile'], 'makefile'],
+  ]) {
+    const row = classify({ subjectAreas, candidateAreas })
+    assert.equal(row.edge, 'relatedTo', label)
+    assert.equal(row.reason, 'directory-overlap', label)
+    assert.equal(row.basis, 'overlap', label)
+    assert.equal(row.write, null, label)
+    assert.equal(row.question, null, `${label}: never reaches orientation`)
+    assert.deepEqual(row.shared, [shared], label)
+    assert.equal(row.note.severity, 'info', label)
+    assert.equal(row.note.destination, 'planning', label)
+    assert.equal(row.note.reason, 'directory-overlap', label)
+    assert.ok(row.note.text.includes(`(shared: ${shared})`), `${label}: the note names shared`)
+    assert.ok(row.note.text.includes('TCK-1') && row.note.text.includes('TCK-2'), label)
+  }
+  // Non-vacuity: the pre-change shape (same fixture, age-ordered) oriented a blocking edge.
+  const byAge = classify({
+    subject: subject({ createdAt: '2026-05-02T00:00:00.000Z' }),
+    candidate: candidate({ createdAt: '2026-05-01T00:00:00.000Z' }),
+    subjectAreas: ['services/bosso/internal/server/billing.go'],
+    candidateAreas: ['services/bosso/internal/server/billing.go'],
+  })
+  assert.equal(byAge.reason, 'oriented-by-age', 'a same-file pair still orients by age')
+  assert.deepEqual(byAge.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
+  const byPriority = classify({ candidate: candidate({ priority: 1 }) })
+  assert.equal(byPriority.reason, 'oriented-by-priority')
+  assert.notEqual(byPriority.write, null)
+})
+
+test('BOS-1337 directory-overlap: cleared state and a logical basis both take precedence', () => {
+  const cleared = classify({
+    candidate: candidate({ stateName: 'Done', stateType: 'completed' }),
+    subjectAreas: ['app/api'],
+    candidateAreas: ['app/api/x.go'],
+  })
+  assert.equal(
+    cleared.reason,
+    'candidate-cleared',
+    'rung 4 still drops a cleared candidate quietly',
+  )
+  assert.equal(cleared.note, null)
+  const logical = classify({
+    subject: subject({ priority: 1 }),
+    candidate: candidate({ priority: 4 }),
+    subjectAreas: ['app/api'],
+    candidateAreas: ['app/api/x.go'],
+    logicalDependency: true,
+  })
+  assert.equal(logical.reason, 'oriented-by-logical', 'a logical basis is untouched')
+  assert.deepEqual(logical.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
+  // The relation still needs both ids: an id-less side stops it, as it stops a blocking write.
+  const idless = classify({
+    candidate: { priority: 3, stateName: 'Planned', stateType: 'unstarted', labels: [] },
+    subjectAreas: ['app/api'],
+    candidateAreas: ['app/api/x.go'],
+  })
+  assert.equal(idless.reason, 'unidentifiable-issue')
+  assert.equal(idless.edge, 'none')
+})
+
+test('BOS-1337 question: ambiguous orientation names the shared file', () => {
+  const stamp = '2026-06-06T00:00:00.000Z'
+  const row = classify({
+    subject: subject({ createdAt: stamp }),
+    candidate: candidate({ createdAt: stamp }),
+    subjectAreas: ['proof/recipes/default.json'],
+    candidateAreas: ['proof/recipes/default.json'],
+  })
+  assert.equal(row.reason, 'ambiguous-orientation')
+  assert.ok(
+    row.question.text.endsWith('(shared: proof/recipes/default.json)'),
+    'a human must be able to tell merge-conflict surface from a prerequisite at a glance',
+  )
+})
+
+test('BOS-1337 set level: a directory-only pair lands in edges as a related-only verdict', () => {
+  const result = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api/x.go'] },
+    candidates: [{ ...candidate(), areas: ['app/api'] }],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(result.edges.length, 1)
+  assert.equal(result.edges[0].reason, 'directory-overlap')
+  assert.equal(result.questions.length, 0)
+  assert.equal(dependencyScanVerdict(result).verdict, 'related-only')
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1337 — the extractor control corpus
+// ---------------------------------------------------------------------------
+//
+// Every fabricating shape the dependency-scan notes have recorded, pinned to its
+// EXACT `{areas, unresolved}`. A change that widens or narrows the extractor
+// fails a row here, and editing that row's expected value IS the added/removed
+// report a widening must carry. Edit a failing row deliberately, with the reason
+// in the commit — never delete one to make the table pass.
+const EXTRACTOR_CONTROL_CORPUS = [
+  {
+    name: 'prose fallback: a slashed directory in a sentence is an area (U2 makes it relatedTo)',
+    description:
+      '## Planning\n\n- Contract: v1\n\nThe callback dispatcher in services/boss drops the retry when the chat closes.\n',
+    moduleRoots: ['services'],
+    source: 'fallback-text',
+    expected: { areas: ['services/boss'], unresolved: [] },
+  },
+  {
+    name: 'a bare directory bullet is an area',
+    body: '- `services/bosso/internal/server` — the billing handlers\n',
+    moduleRoots: ['services'],
+    expected: { areas: ['services/bosso/internal/server'], unresolved: [] },
+  },
+  {
+    name: 'a `dir/*.ext` placeholder is unresolved, never an area (note 44aed9b0)',
+    body: '- `dir/*.ext` — one per fixture\n',
+    moduleRoots: ['services'],
+    expected: { areas: [], unresolved: ['dir'] },
+  },
+  {
+    name: 'a one-level glob under an undeclared root is unresolved',
+    body: '- `skills-toolbox/*.mjs` are regenerated\n',
+    moduleRoots: ['services'],
+    expected: { areas: [], unresolved: ['skills-toolbox'] },
+  },
+  {
+    name: 'the same glob under a declared root collapses to its directory area',
+    body: '- `skills-toolbox/*.mjs` are regenerated\n',
+    moduleRoots: ['services', 'skills-toolbox'],
+    expected: { areas: ['skills-toolbox'], unresolved: [] },
+  },
+  {
+    name: 'a tracker backslash escape resolves to the real path',
+    body: '- services/marketing/public/\\_redirects: add rule\n',
+    moduleRoots: ['services'],
+    expected: { areas: ['services/marketing/public/_redirects'], unresolved: [] },
+  },
+  {
+    name: 'a git ref quoted in prose is unresolved, never an area',
+    body: '- Regenerate the fixtures — verified on `origin/main` `6a2b25eaa`\n',
+    moduleRoots: ['services'],
+    expected: { areas: [], unresolved: ['origin/main'] },
+  },
+  {
+    name: 'an unmarked English module word contributes nothing',
+    body: '- so the web and services teams share one shape\n',
+    moduleRoots: ['web', 'services'],
+    expected: { areas: [], unresolved: [] },
+  },
+  {
+    name: 'a `file:12-20` line locator still names the file',
+    body: '- `services/boss/internal/run.go:12-20` — tighten the check\n',
+    moduleRoots: ['services'],
+    expected: { areas: ['services/boss/internal/run.go'], unresolved: [] },
+  },
+  {
+    name: 'a `<run-dir>/log` runtime placeholder contributes nothing',
+    body: '- the verdict line is at `<run-dir>/log`\n',
+    moduleRoots: ['services'],
+    expected: { areas: [], unresolved: [] },
+  },
+]
+
+test('extractor control corpus: every fabricating shape extracts exactly as pinned', () => {
+  for (const row of EXTRACTOR_CONTROL_CORPUS) {
+    const result = areas(row.description ?? planBody(row.body), { moduleRoots: row.moduleRoots })
+    assert.equal(result.source, row.source ?? 'key-changes', row.name)
+    assert.deepEqual(
+      { areas: result.areas, unresolved: result.unresolved },
+      row.expected,
+      `${row.name} — a changed row is the added/removed report; edit it deliberately`,
+    )
+  }
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1337 — withScanDefaults: the repo declares its scan tuning once
+// ---------------------------------------------------------------------------
+
+const CONFIG_WITH_PLAN_DEPENDENCIES = {
+  ...CONFIG_WITH_STATES,
+  trackerConfig: {
+    linear: { ...CONFIG_WITH_STATES.trackerConfig.linear, labels: { epic: 'Epic' } },
+  },
+  planDependencies: {
+    moduleRoots: ['app', 'docs'],
+    repoWideTokens: ['docs/index.md'],
+    areaAliases: { 'app/api/x.go': 'gen/api/x.go', 'app/web/y.ts': 'gen/web/y.ts' },
+  },
+}
+
+test('BOS-1337 withScanDefaults: unions arrays config-first, payload aliases win per key', () => {
+  const input = {
+    subject: subject(),
+    candidates: [],
+    moduleRoots: ['lib', 'app'],
+    repoWideTokens: ['CHANGELOG.md'],
+    areaAliases: { 'app/web/y.ts': ['mirror/web/y.ts'] },
+  }
+  const frozen = JSON.stringify(input)
+  const out = withScanDefaults(CONFIG_WITH_PLAN_DEPENDENCIES, input)
+  assert.deepEqual(out.moduleRoots, ['app', 'docs', 'lib'])
+  assert.deepEqual(out.repoWideTokens, ['docs/index.md', 'CHANGELOG.md'])
+  assert.deepEqual(out.areaAliases, {
+    'app/api/x.go': 'gen/api/x.go',
+    'app/web/y.ts': ['mirror/web/y.ts'],
+  })
+  assert.equal(JSON.stringify(input), frozen, 'pure: the payload is never mutated')
+  assert.notEqual(out, input)
+  assert.equal(out.subject, input.subject, 'every other field passes through')
+})
+
+test('BOS-1337 withScanDefaults: fills epicLabel and stateRoles only when absent', () => {
+  const filled = withScanDefaults(CONFIG_WITH_PLAN_DEPENDENCIES, { candidates: [] })
+  assert.equal(filled.epicLabel, 'Epic')
+  assert.deepEqual(filled.stateRoles, stateRolesFor(CONFIG_WITH_STATES))
+  const explicit = withScanDefaults(CONFIG_WITH_PLAN_DEPENDENCIES, {
+    epicLabel: 'Initiative',
+    stateRoles: { Doing: 'inProgress' },
+  })
+  assert.equal(explicit.epicLabel, 'Initiative')
+  assert.deepEqual(explicit.stateRoles, { Doing: 'inProgress' })
+  // An unconfigured repo: empty tuning, and an unresolvable role is left for the
+  // validator to name rather than thrown.
+  const bare = withScanDefaults(CONFIG, { candidates: [] })
+  assert.deepEqual(
+    [bare.moduleRoots, bare.repoWideTokens, bare.areaAliases, bare.epicLabel],
+    [[], [], {}, undefined],
+  )
+  const codes = validateDependencyScanInput(bare).defects.map((entry) => entry.code)
+  assert.ok(codes.includes('missing-epic-label') && codes.includes('missing-state-roles'))
+  // Only the role-resolution error is absorbed: a malformed config (no `adapters`)
+  // is a programming fault, and it must surface rather than become a payload defect.
+  assert.throws(
+    () => withScanDefaults({ ...CONFIG, adapters: undefined }, { candidates: [] }),
+    TypeError,
+  )
+  // Config-first, like every config-reading export; a garbage payload passes through.
+  assert.throws(() => withScanDefaults({ candidates: [] }, CONFIG), /withScanDefaults/)
+  assert.equal(withScanDefaults(CONFIG, 'x'), 'x')
+})
+
+test('BOS-1337 withScanDefaults: config-declared repoWideTokens suppress a shared file end to end', () => {
+  const payload = withScanDefaults(CONFIG_WITH_PLAN_DEPENDENCIES, {})
+  const shared = (repoWideTokens) =>
+    classify({
+      subjectAreas: ['docs/index.md'],
+      candidateAreas: ['docs/index.md'],
+      repoWideTokens,
+    }).reason
+  assert.equal(shared(payload.repoWideTokens), 'no-overlap')
+  assert.equal(shared([]), 'ambiguous-orientation', 'non-vacuity: undeclared, the file overlaps')
 })

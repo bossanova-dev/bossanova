@@ -706,6 +706,14 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
       `${core} must vendor pr-check-state.mjs`,
     )
   }
+  // Asserted BY NAME for each consuming core: ci-wait.mjs is the bounded fallback CI wait the
+  // routed skill bodies run by path, and it imports pr-check-state.mjs, so both must ship together.
+  for (const core of ['boss-build', 'boss-repair']) {
+    assert.ok(
+      VENDOR_MAP[core].includes('ci-wait.mjs') && VENDOR_MAP[core].includes('pr-check-state.mjs'),
+      `${core} must vendor ci-wait.mjs beside pr-check-state.mjs`,
+    )
+  }
   // Asserted BY NAME for each consuming core, and exclusively: ci-watch.mjs is the verdict the
   // terminal/exit gate reads before a run may stop observing a PR. An installed tree without it is
   // a gate that cannot RUN rather than one that decides wrongly — which is the exact shape of the

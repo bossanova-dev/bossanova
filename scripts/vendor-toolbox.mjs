@@ -95,6 +95,11 @@ export const VENDOR_MAP = {
     // detector must resolve inside an installed boss-build toolbox — the review stack runs in
     // user repos that have no repo-root skills-toolbox/ to reach back into.
     'base-drift.mjs',
+    // worktree-state.mjs (BOS-1330) is the clean/dirty/unknown verdict every cleanliness decision in
+    // this core asks instead of reading `git status` typed into the agent's shell, which a
+    // command-rewriting hook can replace with `ok` or nothing. The sites run in user repos with no
+    // repo-root skills-toolbox/, so it ships here; its only import is main-module.mjs.
+    'worktree-state.mjs',
     // skill-config.mjs (BOS-204) exposes validatePlanDescription, invoked in Step 4's
     // plan-contract check. boss-build ships to user repos via the embedded skillinstall
     // payload, which has no repo-root skills-toolbox/, so the helper must be co-located in
@@ -158,6 +163,10 @@ export const VENDOR_MAP = {
     // callback-watch references cite by path. Those steps run in user repos with no repo-root
     // skills-toolbox/ and cannot reach into another core's copy, so it must be co-located here.
     'pr-check-state.mjs',
+    // ci-wait.mjs (BOS-1334) is the bounded fallback CI wait callback-watches.md Protocol step 5
+    // runs by path, one tool call per chunk. It imports pr-check-state.mjs and main-module.mjs,
+    // both already here; an installed toolbox has no repo-root skills-toolbox/ to reach back into.
+    'ci-wait.mjs',
     'remove-bossd-stop-hooks.mjs',
     'cron-gates/boss-build.mjs',
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
@@ -343,6 +352,11 @@ export const VENDOR_MAP = {
     // main-module.mjs, already vendored here.
     'plan-scratch-paths.mjs',
     'plan-scratch-reap.mjs',
+    // plan-secret-scan.mjs (BOS-1330) is the mechanical floor under Phase 4's secret gate: a node
+    // file read, so a command-rewriting shell hook cannot satisfy the gate with a fabricated empty
+    // grep. The gate runs it by path from a consuming repo with no repo-root skills-toolbox/; its
+    // only import is main-module.mjs, already vendored here.
+    'plan-secret-scan.mjs',
     'plan-slug.mjs',
     'skill-extensions.mjs',
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
@@ -388,6 +402,9 @@ export const VENDOR_MAP = {
     // assuming a binary a published core cannot assume) and main-module.mjs, both already vendored
     // here.
     'bs-repair-derivations.mjs',
+    // worktree-state.mjs (BOS-1330) — the shape-validated cleanliness verdict; see boss-build's
+    // entry. boss-repair decides cleanliness by path from its own installed toolbox.
+    'worktree-state.mjs',
     'dag-scheduler.mjs',
     // bs-dispatch-claims.mjs (BOS-1243) is the single adjudicator of a dispatch report's
     // mechanically checkable claims — a cited path, a quoted object name, a tree hash offered as
@@ -428,6 +445,10 @@ export const VENDOR_MAP = {
     // Watch Mode interpretation step — which previously restated their own bucket-only rule in
     // prose. Both run in a user repo with no repo-root skills-toolbox/, so the verdict ships here.
     'pr-check-state.mjs',
+    // ci-wait.mjs (BOS-1334) is the bounded poll Watch Mode step 6 falls back to. boss-repair
+    // cannot reach into boss-build's copy, which may not be installed at all; its imports
+    // (pr-check-state.mjs, main-module.mjs) already ship here.
+    'ci-wait.mjs',
     // BOS-1106: the Phase-3 monitoring loop waits on pending checks. That wait is
     // callback-first — arm the one-shot watches when callbacksAvailable(env) is true and
     // fall back to a bounded poll when it is not — so the callback seam and its transitive
@@ -466,6 +487,9 @@ export const VENDOR_MAP = {
     // decide green from the bucket payload alone. Same co-location reason as the other cores: an
     // installed boss-finalize has no repo-root skills-toolbox/ to reach back into.
     'pr-check-state.mjs',
+    // worktree-state.mjs (BOS-1330) — the shape-validated cleanliness verdict; see boss-build's
+    // entry. boss-finalize decides cleanliness by path from its own installed toolbox.
+    'worktree-state.mjs',
   ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],

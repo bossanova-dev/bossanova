@@ -41,6 +41,34 @@ func TestBossFinalizeSkillAssertsZeroMergeCommitsBeforePush(t *testing.T) {
 	assertContains(t, failures, "--merges --count")
 }
 
+// TestBossFinalizeSkillCleanlinessChecksCannotBeFabricated pins BOS-1330. A command-rewriting shell
+// hook can replace `git status` output with a summary that drops the "up to date with origin" line
+// and prints nothing (or `ok`) for a dirty tree, so neither Step 6's push-destination check nor Step 7's
+// clean-state assertion may rest on it: the first compares object ids from command substitutions,
+// the second asks the shape-validating worktree-state.mjs verdict vendored into this core.
+func TestBossFinalizeSkillCleanlinessChecksCannotBeFabricated(t *testing.T) {
+	skill := readEmbeddedBossFinalizeSkill(t)
+
+	push := sectionBetween(t, skill, "### Step 6: Push to Remote", "### Step 6b")
+	assertNotContains(t, push, "git status  # Verify")
+	assertContains(t, push, `LOCAL_HEAD="$(git rev-parse HEAD)" || exit 1`)
+	assertContains(t, push, `PUSHED_HEAD="$(git rev-parse '@{push}')" || exit 1`)
+	assertContains(t, push, `test -n "$LOCAL_HEAD" && test "$LOCAL_HEAD" = "$PUSHED_HEAD"`)
+	assertContains(t, push, "git push --force-with-lease || {")
+	if strings.Index(push, "git push --force-with-lease") > strings.Index(push, "LOCAL_HEAD=") {
+		t.Fatalf("the push-destination comparison must follow the push it verifies")
+	}
+
+	cleanup := sectionBetween(t, skill, "### Step 7: Clean Up and Verify", "### Step 8")
+	assertNotContains(t, cleanup, "git status            # Confirm clean state")
+	assertContains(t, cleanup, `node "$BOSS_FINALIZE_TOOLBOX/worktree-state.mjs"`)
+	assertContains(t, cleanup, "`unknown` (or no verdict line) is never clean")
+
+	if _, err := SkillsFS.ReadFile("skills/boss-finalize/toolbox/worktree-state.mjs"); err != nil {
+		t.Fatalf("worktree-state.mjs must be vendored into boss-finalize: %v", err)
+	}
+}
+
 func TestBossFinalizeEmbeddedSkillCopiesStayIdentical(t *testing.T) {
 	serviceSkill := readEmbeddedBossFinalizeSkill(t)
 

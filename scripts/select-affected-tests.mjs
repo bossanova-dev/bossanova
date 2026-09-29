@@ -661,6 +661,43 @@ export function renderMakeCommands(targets) {
   })
 }
 
+// BOS-1336: the drift gate's own inputs — the two registries it compares against the live
+// graph, the script that does the comparing, and the ignore list that bounds the graph.
+const BUILD_DRIFT_INPUTS = new Set([
+  '.bazelignore',
+  'scripts/bazel/ledger.json',
+  'scripts/bazel/binary-inventory.json',
+  'scripts/bazel/check-build-drift.sh',
+])
+
+// BOS-1336: true when any changed path can move gazelle output (srcs / deps / embedsrcs) or
+// the two bazel registries, so the affected run must include `make build-drift-check`.
+// Anything under a Go module root counts — not only `.go` — because every embedsrcs package
+// (skill payloads, migrations) sits under one and a non-Go file there changes gazelle output.
+export function needsBuildDriftCheck(files) {
+  return files.some((rawFile) => {
+    const file = normalizePath(rawFile)
+    if (file === '') return false
+    const basename = file.slice(file.lastIndexOf('/') + 1)
+    return (
+      bazelGoModuleRules.some(({ root }) => file.startsWith(root)) ||
+      basename === 'BUILD.bazel' ||
+      basename === 'BUILD' ||
+      file.endsWith('.bzl') ||
+      isBazelGraphWideTrigger(file) ||
+      BUILD_DRIFT_INPUTS.has(file)
+    )
+  })
+}
+
+// BOS-1336: the default CLI output. The drift gate is printed FIRST so this cheap
+// generated-artifact check fails before minutes of module suites; it stays beside
+// selectTargets rather than inside it so that return shape is unchanged.
+export function renderAffectedCommands(files) {
+  const drift = needsBuildDriftCheck(files) ? ['make build-drift-check'] : []
+  return [...drift, ...renderMakeCommands(selectTargets(files))]
+}
+
 function selectModuleTarget(selections, moduleRule, file) {
   if (
     !file.endsWith('.go') ||
@@ -789,6 +826,6 @@ if (isMainModule(import.meta.url)) {
     console.log(all ? 'ALL' : modules.length === 0 ? 'NONE' : modules.join(' '))
   } else {
     const files = args.length > 0 ? args : changedFilesFromGit()
-    console.log(renderMakeCommands(selectTargets(files)).join('\n'))
+    console.log(renderAffectedCommands(files).join('\n'))
   }
 }

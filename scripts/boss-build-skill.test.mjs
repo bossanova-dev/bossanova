@@ -686,7 +686,9 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // same brief" with no instruction to carry forward what the dead pass verified, and Step 6.5 had
   // no way to record in-dispatch work that left no commit. Both are resident by necessity: they
   // are the remedy and the handoff an orchestrator applies at exactly those two steps.
-  const RATCHET = 81985 // re-measured for BOS-1278; see raise.justification
+  // BOS-1330 banks 81985 -> 81910 (-75 B): cleanliness checks now name worktree-state.mjs (one
+  // helper call replaces Step 6's two-command block), paying for the Step 4.6 absence rule.
+  const RATCHET = 81910 // re-measured for BOS-1330 (down-bank)
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   // When this reds upward, the fix is a trim somewhere in an 80 KB body, not in whatever file you
@@ -770,7 +772,8 @@ test('BOS-1216: the always-read review-stack reference stays under a descending 
   // `@{u}`, that push was a no-op whose assertion passed, readying untagged commits with every
   // signal green. Making the injection executable, and gating the push on a HEAD that actually
   // moved, is this ticket's own defect class removed from its own fix; a citation cannot execute.
-  const REVIEW_STACK_RATCHET = 162843
+  // BOS-1330 banks 162843 -> 162640 (-203 B): the rebase pre/post-conditions name worktree-state.mjs.
+  const REVIEW_STACK_RATCHET = 162640
   assertDescendingBudget({
     budget: REVIEW_STACK_RATCHET,
     constFile: 'scripts/boss-build-skill.test.mjs',
@@ -3624,21 +3627,26 @@ test('BOS-1021: Step 8 documents the portable test-gate cache contract', () => {
 test('BOS-1265: iterative verification selects fail-safely and readiness runs the final full gate', () => {
   const skill = claudeBody()
   const selection = region(skill, '## Verification selection', '## Cron gate')
-  assert.match(selection, /decideTestSelection/)
-  assert.match(selection, /Log\s+its\s+`report`\s+verbatim/)
+  assert.match(selection, /decideTestSelection[\s\S]{0,300}Log\s+its\s+`report`\s+verbatim/)
   assert.match(selection, /`narrow`[\s\S]{0,100}`commands\.testAffected`/)
+  // BOS-1339: the readiness sentence names the configured readiness command (falling back to
+  // testFull) and keeps it out of the gate cache - never a repo make target or runner flag.
   assert.match(
     selection,
-    /`full`,\s+an\s+unavailable\s+helper,\s+an\s+error,\s+or\s+any\s+result\s+that\s+cannot\s+be\s+interpreted[\s\S]{0,100}`commands\.testFull`/,
+    /`full`,\s+an\s+unavailable\s+helper,\s+an\s+error,\s+or\s+any\s+result\s+that\s+cannot\s+be\s+interpreted[\s\S]{0,100}`commands\.testFull`[\s\S]{0,300}`commands\.testReadiness`\s+\(else\s+`commands\.testFull`\)[\s\S]{0,80}never\s+through\s+the\s+gate\s+cache/,
   )
   const step9 = region(finalizeAndStop(), '## Step 9:', '## Step 10:')
+  const readiness = region(step9, 'Before the ready transition', '```bash')
   assert.match(
-    step9,
-    /`commands\.testFull`\s+once\s+against\s+the\s+final\s+tree\s+through\s+the\s+cache-ineligible\s+`test-readiness-full`\s+gate/,
+    readiness,
+    /`commands\.testReadiness`\s+\(`commands\.testFull`\s+when\s+the\s+repo\s+declares\s+none\)\s+once\s+against\s+the\s+final\s+tree,\s+directly\s+and\s+never\s+through\s+the\s+gate\s+cache[\s\S]{0,300}narrow\s+gate,\s+or\s+a\s+full\s+gate\s+over\s+any\s+earlier\s+tree,\s+cannot\s+satisfy\s+it/,
   )
-  assert.match(
-    step9,
-    /narrow\s+gate,\s+or\s+a\s+full\s+gate\s+over\s+any\s+earlier\s+tree,\s+cannot\s+satisfy\s+it/,
+  // The retired site name was keyed on no make target anywhere; it must not come back in either file.
+  assert.doesNotMatch(`${skill}\n${finalizeAndStop()}`, /\btest-readiness-full\b/)
+  assert.doesNotMatch(
+    `${selection}\n${readiness}`,
+    /--nocache_test_results|make\s+test|BOS-\d+/,
+    'published readiness prose must not name repo-specific runner flags, make targets, or tickets',
   )
 })
 
@@ -4620,12 +4628,34 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
     /Graceful\s+degradation/i,
     'reference must state graceful degradation to the poll',
   )
-  // The fallback poll must be the BOUNDED loop, never the raw `--watch` form. Matching the
+  // The fallback poll must be the BOUNDED wait, never the raw `--watch` form. Matching the
   // command alone proves nothing here: the reference names it precisely in order to REFUSE it,
   // so that pin stayed green while the policy table still defined `fallbackPoll` as the
-  // unbounded command. Pin the loop's own identifiers and the refusal instead.
-  assert.match(ref, /CI_WAIT_ATTEMPTS/, 'reference must carry the bounded fallback-poll loop')
-  assert.match(ref, /CI_WAIT_INTERVAL/, 'reference must bound the fallback-poll interval')
+  // unbounded command. Pin the helper invocation and the refusal instead.
+  //
+  // BOS-1334: the bound is the resumable `ci-wait.mjs run`, one tool call per chunk. A shell
+  // `sleep` loop cannot back this wait — its budget outlives one tool call, it keeps nothing
+  // between calls, and a harness can neuter the delay — so step 5's fences run no `sleep`, no
+  // `read -t` stand-in, and nothing in the background.
+  const step5 = region(ref, '5. **Bounded fallback poll', '6. **Clean up on wait exit.**')
+  // One pin: the `$BOSS_BUILD_TOOLBOX/<file>` spelling is what the shipped-toolbox gate matches,
+  // so naming the helper this way also proves it ships. What `run` does — chunking, the on-disk
+  // budget, the verified delay, the no-reading rule — is specified by skills-toolbox/ci-wait.test.mjs.
+  assert.match(
+    step5,
+    /\$BOSS_BUILD_TOOLBOX\/ci-wait\.mjs"?\s+run\b/,
+    'step 5 must run the ci-wait helper',
+  )
+  assert.ok(!step5.includes('sleep "$CI_WAIT_INTERVAL"'), 'step 5 must not carry the sleep loop')
+  const step5Fences = [...step5.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1])
+  assert.ok(step5Fences.length > 0, 'step 5 must carry its invocation fence')
+  for (const fence of step5Fences) {
+    assert.doesNotMatch(
+      fence,
+      /(^|[\s;|&(])sleep\s|\bread\s+-t\b|&\s*$|\b(while|until|for)\b/m,
+      'step 5 must not take its delay in the shell, background the wait, or loop over run',
+    )
+  }
   assert.match(
     ref,
     /never\s+run\s+it\s+unwrapped/,
@@ -5209,13 +5239,15 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths', 
     // be empty, commit whatever remains" would make task 1 of every run commit the Step 4 plan
     // deliverable — and, in any repo where the host artifacts are not gitignored, sweep those
     // onto the branch too. Pin the scoping at both subagent-facing sites (overlay + tier 3).
+    // BOS-1330: the check is the shape-validating helper, never a bare `git status` a
+    // command-rewriting shell hook can answer with `ok` or nothing.
     for (const [name, section] of [
       ['overlay', overlay()],
       ['tier 3', tier3Section()],
     ]) {
       assert.match(
         section,
-        /`git\s+status --porcelain` → nothing\s+left\s+from[\s\S]{0,12}(\*\*)?your\s+own(\*\*)? changes/,
+        /worktree-state\.mjs`[^→]{0,40}→\s+nothing\s+left\s+from\s+(\*\*)?your\s+own(\*\*)?\s+changes/,
         `${dir}/SKILL.md ${name} must bound the return-time status check to the subagent's own changes`,
       )
       assert.match(
@@ -5773,7 +5805,7 @@ test('BOS-519/BOS-1215: dispatch work is committed before the run advances, and 
     )
     assert.match(
       ref,
-      /Keep\s+`--untracked-files=all`[\s\S]{0,240}no\s+per-file\s+exclusion\s+matches/i,
+      /Keep\s+the\s+helper's\s+default\s+`--untracked\s+all`[\s\S]{0,240}no\s+per-file\s+exclusion\s+matches/i,
       `${dir}/references/resume-assessment.md must explain why --untracked-files=all is load-bearing`,
     )
     // The recovery commit: path-scoped, and explicitly NOT a whole-index `git commit`.
@@ -5972,14 +6004,17 @@ test('BOS-519: resume dispatches only the remainder from committed state', () =>
     // The resume residue probe must be scoped exactly like the Step 5 check — an unscoped
     // status here would classify the plan deliverable and host artifacts as dead-subagent
     // residue and produce a spurious `chore(task-N)` recovery commit on every resume.
-    assert.ok(
-      ref.includes('git status --porcelain --untracked-files=all -- .'),
-      `${dir}/references/resume-assessment.md residue probe must be scoped like the Step 5 check`,
+    // BOS-1330: every probe asks worktree-state.mjs (three blocks), and none decides from a
+    // bare `git status` line typed into the shell.
+    assert.equal(
+      ref.split('node "$T/worktree-state.mjs"').length - 1,
+      3,
+      `${dir}/references/resume-assessment.md: all three probes must run worktree-state.mjs`,
     )
     for (const excluded of [
-      '":(exclude)${PLAN_DOC:?',
-      "':(exclude).claude/scheduled_tasks.lock'",
-      "':(exclude).claude/settings.local.json'",
+      '--exclude "${PLAN_DOC:?',
+      '--exclude .claude/scheduled_tasks.lock',
+      '--exclude .claude/settings.local.json',
     ]) {
       assert.ok(
         ref.includes(excluded),
@@ -5987,7 +6022,7 @@ test('BOS-519: resume dispatches only the remainder from committed state', () =>
       )
     }
     assert.ok(
-      !ref.includes("':(exclude)docs/plans'"),
+      !ref.includes("':(exclude)docs/plans'") && !/--exclude\s+['"]?docs\/plans['"]?\s/.test(ref),
       `${dir}/references/resume-assessment.md must not exclude the whole docs/plans directory`,
     )
     assert.doesNotMatch(
@@ -12088,7 +12123,7 @@ test('BOS-1020: a drift hit rebases, re-binds REVIEW_BASE, and is capped', () =>
     )
     assert.match(
       section,
-      /`git\s+rev-parse\s+--verify\s+--quiet\s+REBASE_HEAD`\s+prints\s+nothing[\s\S]{0,120}`git\s+status\s+--porcelain`\s+is\s*\n?\s*empty/i,
+      /`git\s+rev-parse\s+--verify\s+--quiet\s+REBASE_HEAD`\s+prints\s+nothing[\s\S]{0,120}`worktree-state\.mjs`\s+prints\s*\n?\s*`verdict:\s+clean`/i,
       `${dir}/references/review-stack.md: the abort must be confirmed by both post-conditions`,
     )
     // A base branch under traffic can move every round; an uncapped rule never converges.
@@ -12107,12 +12142,12 @@ test('BOS-1020: a drift hit rebases, re-binds REVIEW_BASE, and is capped', () =>
     // started. Loop step 5 says fix churn is expected, so a dirty tree is an ordinary round-2 state.
     assert.match(
       section,
-      /`git\s+status\s+--porcelain\s+--untracked-files=no`\s+must\s+be\s+empty/,
+      /worktree-state\.mjs"\s+--untracked\s+no`\s+must\s+print\s+`verdict:\s+clean`/,
       `${dir}/references/review-stack.md: the rebase must check the tree before it starts`,
     )
     precedes(
       section,
-      '--untracked-files=no',
+      '--untracked no',
       '`git rebase "$BASE_REF"`',
       `${dir}/references/review-stack.md: the tree check must precede the rebase itself`,
     )
@@ -12446,7 +12481,7 @@ test('an allowance is a skip line — the four pinned sentences, and a curated e
     {
       site: 'boss-build/references/callback-watches.md bounded fallback poll',
       discriminator:
-        'routes on the check state, not elapsed time — an unsettled or unreadable rollup is genuinely not green, and `timeout` and `unknown` route identically; the cap is on READS, not wall time',
+        'routes on the check state, not elapsed time — an unsettled or unreadable rollup is genuinely not green, and `timeout` and `unknown` route identically; the wall-clock budget only decides when to stop waiting, and a budget-expired wait is `timeout`, never green',
     },
     {
       site: 'boss-build/references/finalize-and-stop.md green gate',
@@ -12568,7 +12603,7 @@ test('BOS-1284: the commit contract budgets the authored message against the fin
   )
   assert.match(
     contract,
-    /git\s+status\s+--porcelain[\s\S]{0,120}before\s+any\s+push\s+is\s+declared\s+done/,
+    /worktree-state\.mjs[\s\S]{0,120}before\s+any\s+push\s+is\s+declared\s+done/,
   )
   // U2's other caller: the recipe is written ONCE in the finalize reference and named from here.
   assert.match(
@@ -12661,4 +12696,156 @@ test('BOS-1284: PUSHED is set from a push status no pipeline can substitute', ()
   assert.doesNotMatch(pushBlock, /git[ ]push[^\n]*\|[^|][^\n]*then PUSHED=yes/)
   // And the reason is next to the code, naming the zsh spelling that actually reads the head.
   assert.match(pushBlock, /\$pipestatus\[1\]/)
+})
+
+// BOS-1338: the Step 6 review dispatch is HELD by the toolbox `wait` verb on a heartbeat the
+// reviewer beats. The orchestrator's documented hold, its disposition call and the reviewer's
+// documented beats are EXECUTED against the real helper, so the two sides provably agree on one
+// path and one flag set. One prose pin remains: which publication commands the beat must cover.
+function bos1338Step6() {
+  const b1338Skill = readSkill(`${CORE}/SKILL.md`)
+  const b1338Step6 = region(
+    b1338Skill,
+    '## Step 6: Whole-branch review',
+    '## Step 6.5: Knowledge extensions',
+  )
+  const b1338WaitMatch = b1338Step6.match(
+    /node "\$\{RUN_SENTINEL%\/\*\}\/bs-dispatch-await\.mjs" wait "\$RUN_DIR" "\$RUN_ID" review [^`\n]*/,
+  )
+  const b1338DispMatch = b1338Step6.match(
+    /^(DISP="\$\(node "\$\{RUN_SENTINEL%\/\*\}\/bs-dispatch-await\.mjs" disposition [^\n]*)$/m,
+  )
+  assert.ok(b1338WaitMatch, 'Step 6 names the bs-dispatch-await wait hold for the review sentinel')
+  assert.ok(b1338DispMatch, 'Step 6 classifies through the disposition verb')
+  return { wait: b1338WaitMatch[0], disp: b1338DispMatch[1] }
+}
+
+function bos1338Sandbox() {
+  const run = fs.mkdtempSync(path.join(os.tmpdir(), 'bos1338-bb-'))
+  const runDir = path.join(run, 'ctx')
+  fs.mkdirSync(runDir)
+  const toolbox = path.join(rootDir, 'skills-toolbox')
+  const env = {
+    ...process.env,
+    RUN_DIR: runDir,
+    RUN_ID: 'rid-1338',
+    RUN_SENTINEL: path.join(toolbox, 'bs-run-sentinel.mjs'),
+    BOSS_BUILD_TOOLBOX: toolbox,
+  }
+  const sh = (script) => spawnSync('bash', ['-c', script], { encoding: 'utf8', env })
+  const writeReview = (runId, provisional) =>
+    fs.writeFileSync(
+      path.join(runDir, 'review.json'),
+      JSON.stringify({ runId, kind: 'bs-review clean:', payload: { provisional } }),
+    )
+  return { run, runDir, sh, writeReview }
+}
+
+test('BOS-1338: the documented Step 6 hold releases on a landed verdict and holds on a live beat', () => {
+  const { wait: b1338Wait } = bos1338Step6()
+  const b1338Box = bos1338Sandbox()
+  try {
+    b1338Box.writeReview('rid-1338', false)
+    // No beat on disk: the landed verdict releases the hold.
+    const b1338Released = b1338Box.sh(b1338Wait)
+    assert.equal(b1338Released.status, 0, `documented hold failed: ${b1338Released.stderr}`)
+    assert.equal(JSON.parse(b1338Released.stdout.trim()).status, 'completed')
+    // A live beat on the documented path: the reviewer is still publishing, so it keeps holding.
+    fs.writeFileSync(
+      path.join(b1338Box.runDir, 'review.heartbeat'),
+      JSON.stringify({ at: Date.now() }),
+    )
+    const b1338Held = b1338Box.sh(`${b1338Wait} --budget 50 --interval 10`)
+    assert.equal(b1338Held.status, 98, b1338Held.stderr)
+    assert.equal(JSON.parse(b1338Held.stdout.trim()).held, 'heartbeat-live')
+  } finally {
+    fs.rmSync(b1338Box.run, { recursive: true, force: true })
+  }
+})
+
+test("BOS-1338: Step 6's documented disposition reads the reviewer's heartbeat", () => {
+  const { disp: b1338Disp } = bos1338Step6()
+  const b1338Box = bos1338Sandbox()
+  try {
+    // A foreign leftover sentinel aged past the stale window: dead on the seed clock alone...
+    b1338Box.writeReview('someone-else', false)
+    const b1338Aged = (Date.now() - 31 * 60 * 1000) / 1000
+    fs.utimesSync(path.join(b1338Box.runDir, 'review.json'), b1338Aged, b1338Aged)
+    const b1338Dead = JSON.parse(b1338Box.sh(`${b1338Disp}\nprintf '%s' "$DISP"`).stdout)
+    assert.equal(b1338Dead.disposition, 'discard')
+    // ...but a live reviewer beat on the documented path vetoes `abandoned`.
+    fs.writeFileSync(
+      path.join(b1338Box.runDir, 'review.heartbeat'),
+      JSON.stringify({ at: Date.now() }),
+    )
+    const b1338Alive = JSON.parse(b1338Box.sh(`${b1338Disp}\nprintf '%s' "$DISP"`).stdout)
+    assert.notEqual(b1338Alive.status, 'abandoned')
+    assert.equal(b1338Alive.disposition, 'resume')
+  } finally {
+    fs.rmSync(b1338Box.run, { recursive: true, force: true })
+  }
+})
+
+test('BOS-1338: the reviewer beats the path the orchestrator holds on, through publication', () => {
+  const reviewStack = reviewStackFor(CORE)
+  const b1338Heartbeat = reviewStack.match(
+    /node "\$BOSS_BUILD_TOOLBOX\/bs-dispatch-await\.mjs" heartbeat "\$RUN_DIR\/review\.heartbeat"/,
+  )
+  const b1338Beat = reviewStack.match(/`… (beat "\$RUN_DIR\/review\.heartbeat" -- )<cmd>`/)
+  assert.ok(
+    b1338Heartbeat && b1338Beat,
+    'review-stack.md names both the heartbeat and the beat wrapper',
+  )
+  const { wait: b1338Wait } = bos1338Step6()
+  const b1338Box = bos1338Sandbox()
+  try {
+    b1338Box.writeReview('rid-1338', false)
+    // The wrapper runs a command and exits with ITS status, beating the documented path.
+    const b1338Wrapped = b1338Box.sh(
+      `node "$BOSS_BUILD_TOOLBOX/bs-dispatch-await.mjs" ${b1338Beat[1]}sh -c 'exit 3'`,
+    )
+    assert.equal(b1338Wrapped.status, 3, b1338Wrapped.stderr)
+    // The reviewer's documented beat keeps the orchestrator's documented hold holding.
+    assert.equal(b1338Box.sh(b1338Heartbeat[0]).status, 0)
+    const b1338Held = b1338Box.sh(`${b1338Wait} --budget 50 --interval 10`)
+    assert.equal(b1338Held.status, 98, b1338Held.stderr)
+    assert.equal(JSON.parse(b1338Held.stdout.trim()).held, 'heartbeat-live')
+  } finally {
+    fs.rmSync(b1338Box.run, { recursive: true, force: true })
+  }
+  const b1338Obligation = reviewStack.slice(
+    reviewStack.lastIndexOf('\n\n', b1338Beat.index),
+    reviewStack.indexOf('\n\n', b1338Beat.index),
+  )
+  for (const scope of [
+    'fix-loop',
+    'nested dispatches',
+    'cross-model',
+    'push',
+    'tag injection',
+    'ready',
+  ]) {
+    assert.match(b1338Obligation, new RegExp(scope), `the beat obligation covers ${scope}`)
+  }
+})
+
+// BOS-1330: a command-rewriting shell hook can answer a bare `git status` with `ok` or nothing, and a
+// bare search with fabricated absence. The pins below are structural leads (the helper name plus the
+// verdict word in the deciding region), each red against the pre-BOS-1330 body.
+test('BOS-1330: cleanliness and absence decisions cannot rest on a rewritten command', () => {
+  const skill = fs.readFileSync(path.join(rootDir, CORE, 'SKILL.md'), 'utf8')
+  const step6 = region(skill, '**Change-detection gate.**', '**Provision the run-file sentinel.**')
+  // One structural lead: the helper call, then the clean/unknown verdict routing, then the staging
+  // rule that skips `--base`'s `committed ` entries (only the uncommitted paths are staged).
+  assert.match(
+    step6,
+    /worktree-state\.mjs"\s+--base\s+"\$REVIEW_BASE"[\s\S]{0,300}`verdict:\s+clean`\s+→\s+no\s+committable\s+change[\s\S]{0,200}`unknown`\s+→\s+BLOCKED[\s\S]{0,80}only\s+the\s+uncommitted\s+paths/,
+    'Step 6 change detection must decide from the worktree-state.mjs verdict',
+  )
+
+  const reverify = region(skill, '## Step 4.6:', '## Step 5:')
+  assert.match(reverify, /refutation[\s\S]{0,120}\*\*read\*\*[\s\S]{0,120}able\s+to\s+fire/)
+
+  const spine = fs.readFileSync(path.join(rootDir, CORE, 'references/core-spine.md'), 'utf8')
+  assert.match(spine, /worktree-state\.mjs`\s+after\s+the\s+hook[\s\S]{0,40}`unknown`/)
 })

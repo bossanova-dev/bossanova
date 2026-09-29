@@ -18,6 +18,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
+
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 const DRAFT_NAME = 'boss-plan-compound-engineering'
 const DRAFT_SKILL = join(REPO_ROOT, '.claude', 'skills', DRAFT_NAME, 'SKILL.md')
@@ -1191,4 +1193,40 @@ test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () =
     }
     runGate(contractGuard, ['--description', paths.description, '--plan', paths.plan])
   })
+})
+
+// BOS-1329 R1/R3: headless Tier 1 runs inline inside the one drafting subagent, and this
+// extension's pipeline path nests ce-doc-review's persona fan-out and permits AskUserQuestion — so
+// it declares `modes: interactive`, and headless discovery skips it deliberately rather than
+// leaving a per-run judgement to record a structural gap as a recoverable miss.
+test('BOS-1329: the CE draft extension is interactive-only by declaration', () => {
+  const headless = discoverExtensions({
+    core: 'boss-plan',
+    root: REPO_ROOT,
+    role: 'draft',
+    mode: 'headless',
+  })
+  assert.equal(
+    headless.extensions.some((e) => e.name === DRAFT_NAME),
+    false,
+    'headless discovery must not return the CE draft extension',
+  )
+  const skip = headless.skipped.find((entry) => entry.name === DRAFT_NAME)
+  assert.ok(skip, JSON.stringify(headless.skipped))
+  assert.equal(skip.code, 'mode-not-declared')
+  assert.equal(skip.deliberate, true)
+
+  const interactive = discoverExtensions({
+    core: 'boss-plan',
+    root: REPO_ROOT,
+    role: 'draft',
+    mode: 'interactive',
+  })
+  const found = interactive.extensions.find((e) => e.name === DRAFT_NAME)
+  assert.ok(found, 'interactive discovery must return the CE draft extension')
+  assert.deepEqual(found.modes, ['interactive'])
+  assert.equal(
+    interactive.skipped.some((entry) => entry.name === DRAFT_NAME),
+    false,
+  )
 })

@@ -617,3 +617,73 @@ test('the repo-authored knowledge extension reports failures as unsuccessful env
   assert.match(skill, /"items": \[\]/)
   assert.match(skill, /"error": "<reason>"/)
 })
+
+// ── Extension names in the docs must exist on disk (BOS-1341) ─────────────────────────────
+//
+// The contract used to hand-count and hand-list the repo-local extensions, and the list went
+// stale against .claude/skills while every sibling rename conflicted on it. The list is gone; this
+// ties every extension NAME the two docs still mention to a directory, so a rename that forgets a
+// doc reds here instead of leaving a dangling name.
+
+const EXTENSION_CORES = ['plan', 'build', 'review', 'epic', 'repair', 'finalize', 'verify', 'proof']
+const EXTENSION_NAME = new RegExp(
+  String.raw`(?<![\w-])boss-(${EXTENSION_CORES.join('|')})-([a-z0-9-]*)(?:\{([a-z0-9,-]*)\})?([a-z0-9-]*)`,
+  'g',
+)
+
+// Names the docs use to illustrate the naming rule, which no extension is meant to carry.
+const ILLUSTRATIVE_EXTENSION_NAMES = new Set(['boss-review-x', 'boss-review-helper'])
+
+/** Every `boss-<core>-<suffix>` token in `markdown`, brace forms (`prefix-{a,b}`) expanded. */
+function extensionNameTokens(markdown) {
+  const names = []
+  for (const [, core, head, alternatives, tail] of markdown.matchAll(EXTENSION_NAME)) {
+    const suffixes =
+      alternatives === undefined
+        ? [`${head}${tail}`]
+        : alternatives.split(',').map((alt) => `${head}${alt}${tail}`)
+    for (const suffix of suffixes) {
+      const trimmed = suffix.replace(/-+$/, '')
+      if (trimmed !== '') names.push(`boss-${core}-${trimmed}`)
+    }
+  }
+  return [...new Set(names)]
+}
+
+function missingExtensionNames(markdown, root) {
+  return extensionNameTokens(markdown).filter(
+    (name) =>
+      !ILLUSTRATIVE_EXTENSION_NAMES.has(name) &&
+      !fs.existsSync(path.join(root, '.claude', 'skills', name, 'SKILL.md')),
+  )
+}
+
+test('extensionNameTokens expands brace forms and skips placeholder names', () => {
+  assert.deepEqual(
+    extensionNameTokens(
+      'see `boss-proof-{docs,tui}`, `.claude/skills/boss-build-ce/`, `boss-plan-<reviewer>` ' +
+        'and `x-boss-extension`; `boss-build-ce` again',
+    ),
+    ['boss-proof-docs', 'boss-proof-tui', 'boss-build-ce'],
+  )
+})
+
+test('every extension name in the contract and the docs-site guide exists on disk', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+  for (const doc of [
+    path.join('docs', 'skills', 'extension-contract.md'),
+    path.join('services', 'docs', 'docs', 'skills', 'extensions.md'),
+  ]) {
+    const markdown = fs.readFileSync(path.join(root, doc), 'utf8')
+    assert.ok(extensionNameTokens(markdown).length > 0, `${doc} must still name an extension`)
+    assert.deepEqual(missingExtensionNames(markdown, root), [], doc)
+  }
+})
+
+test('a renamed extension still named in a doc is reported as missing', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+  assert.deepEqual(
+    missingExtensionNames('lens example: `boss-review-golang-renamed`, `boss-review-x`', root),
+    ['boss-review-golang-renamed'],
+  )
+})

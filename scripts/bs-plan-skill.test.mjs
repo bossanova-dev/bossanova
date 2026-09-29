@@ -26,7 +26,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,15 +44,17 @@ import {
   DYNAMIC_VIOLATION_CODE_PREFIXES,
   VIOLATION_CODES,
 } from '../skills-toolbox/plan-contract-guard.mjs'
+import { validateDraftMetadata } from '../skills-toolbox/plan-run-guards.mjs'
 import { planScratchToken } from '../skills-toolbox/plan-scratch-paths.mjs'
 import { buildLinearOperationMap } from '../skills-toolbox/tracker/linear.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
 import {
   DEFAULT_CONFIG as GUARD_DEFAULT_CONFIG,
+  contentLabelNames,
   requiredPlanSections,
 } from '../skills-toolbox/skill-config.mjs'
 import { scratchTokensIn } from './plan-scratch-token-scan.mjs'
-import { precedes, regionUntilNext } from './gate-region-lib.mjs'
+import { precedes, regionUntilNext, sectionRegion } from './gate-region-lib.mjs'
 import { assertDescendingBudget, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
@@ -255,11 +265,11 @@ test('boss-plan resolves BOSS_PLAN_TOOLBOX through one canonical preamble', () =
     ['"${BOSS_PLAN_TOOLBOX:?}"` after running the toolbox preamble first', SKILL],
     ['"${BOSS_PLAN_TOOLBOX:?}"`\n  after running the toolbox preamble first', BRIEF],
     [
-      'discover --core boss-plan --role draft --json`\nafter running the toolbox preamble first',
+      'discover --core boss-plan --role draft --mode headless --json`\nafter running the toolbox preamble first',
       BRIEF,
     ],
     [
-      'discover --core boss-plan --role draft --json`\nafter running the toolbox preamble first',
+      'discover --core boss-plan --role draft --mode interactive --json`\nafter running the toolbox preamble first',
       INTERACTIVE,
     ],
     ['<headers-json-file>` after running the toolbox preamble first', PLAN_STORAGE],
@@ -313,6 +323,122 @@ test('the drafting dispatch is awaited, never backgrounded', () => {
     'must forbid run_in_background for the drafting dispatch',
   )
   assert.ok(HEADLESS_SECTION.includes('await'), 'the dispatch must say it is awaited')
+})
+
+// BOS-1338: the drafting dispatch is HELD by the toolbox `wait` verb, and step 4 cannot run on a
+// live draft. The documented commands are EXECUTED against the real helper — a flag it does not
+// accept, a clock it cannot read, or a heartbeat it never consults reds here, not in a cron run.
+// Two prose pins remain, both for rules that are prose by nature: the step 3 -> step 4 ordering and
+// the exit-code routing table.
+const HEADLESS_DISPATCH = read(`${CORE}/references/headless-dispatch.md`)
+const BOS1338_STALE_MS = 31 * 60 * 1000
+
+function bos1338Run(bos1338Script, bos1338Dir) {
+  return spawnSync('bash', ['-c', `set -e\nmkdir -p "$RUN_DIR"\n${bos1338Script}`], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      RUN_DIR: bos1338Dir,
+      RUN_ID: 'rid-1338',
+      BOSS_PLAN_TOOLBOX: abs('../skills-toolbox'),
+      AWAIT: abs('../skills-toolbox/bs-dispatch-await.mjs'),
+    },
+  })
+}
+
+test('BOS-1338: step 3 names the wait hold and step 4 opens with its precondition', () => {
+  assert.match(
+    HEADLESS_SECTION,
+    /\$RUN_DIR\/draft\.dispatched-at[\s\S]{0,200}bs-dispatch-await\.mjs" wait\b[\s\S]{0,300}references\/headless-dispatch\.md[\s\S]*?^4\. \*\*Precondition:\*\*/m,
+  )
+})
+
+test("BOS-1338: step 4's documented disposition call shares the hold's clock", () => {
+  const b1338Disp = HEADLESS_SECTION.match(/^\s*(DISP="\$\(node "\$AWAIT" disposition [^\n]*)$/m)
+  assert.ok(b1338Disp, 'step 4 classifies through the disposition verb')
+  const b1338Run = mkdtempSync(join(tmpdir(), 'bos1338-disp-'))
+  const b1338RunDir = join(b1338Run, 'ctx')
+  const b1338Scratch = join(b1338Run, 'scratch')
+  const b1338Line = b1338Disp[1]
+    .replaceAll('.linear-plans/run-<RUN-SCRATCH-ID>', b1338Scratch)
+    .replaceAll('<ISSUE-ID>', 'BOS-1')
+  try {
+    // A draft dispatched past the stale window whose sentinel never landed and that never beat:
+    // `wait` calls it abandoned, so step 4 must discard it, never resume it as a timeout.
+    const b1338Res = bos1338Run(
+      `printf '%s' "${Date.now() - BOS1338_STALE_MS}" > "$RUN_DIR/draft.dispatched-at"\n${b1338Line}\nprintf '%s' "$DISP"`,
+      b1338RunDir,
+    )
+    assert.equal(b1338Res.status, 0, b1338Res.stderr)
+    const b1338Decided = JSON.parse(b1338Res.stdout)
+    assert.equal(b1338Decided.status, 'abandoned')
+    assert.equal(b1338Decided.disposition, 'discard')
+  } finally {
+    rmSync(b1338Run, { recursive: true, force: true })
+  }
+})
+
+test('BOS-1338: headless-dispatch.md routes every wait exit code, 98 re-arming', () => {
+  for (const [code, next] of [
+    ['98', 're-arm'],
+    ['0', 'step 4'],
+    ['96', 'step 4'],
+    ['97', 'step 4'],
+    ['2', 'never read it as a death'],
+  ]) {
+    assert.match(
+      HEADLESS_DISPATCH,
+      new RegExp(`^\\|[^|\\n]*\`${code}\`[^|\\n]*\\|[^\\n]*\\|[^|\\n]*${next}[^|\\n]*\\|$`, 'm'),
+      `wait exit ${code} routes to ${next}`,
+    )
+  }
+})
+
+test('BOS-1338: the documented clock + wait call run against the real helper', () => {
+  const b1338Block = HEADLESS_DISPATCH.match(
+    /```bash\n\s*(node "\$BOSS_PLAN_TOOLBOX\/bs-dispatch-await\.mjs" wait[\s\S]*?)\n\s*```/,
+  )
+  const b1338ClockLine = HEADLESS_DISPATCH.match(
+    /`(printf [^`]*> "\$RUN_DIR\/draft\.dispatched-at")`/,
+  )
+  assert.ok(b1338Block && b1338ClockLine, 'both the clock write and the wait call are documented')
+  const b1338Run = mkdtempSync(join(tmpdir(), 'bos1338-'))
+  const b1338RunDir = join(b1338Run, 'ctx')
+  const b1338Scratch = join(b1338Run, 'scratch')
+  const b1338Substitute = (text) =>
+    text
+      .replaceAll('.linear-plans/run-<RUN-SCRATCH-ID>', b1338Scratch)
+      .replaceAll('<ISSUE-ID>', 'BOS-1')
+  const b1338Heartbeat = join(b1338Scratch, 'BOS-1.dispatch-heartbeat.json')
+  try {
+    // A landed, non-provisional sentinel and no heartbeat: the hold releases (exit 0).
+    const b1338Released = bos1338Run(
+      [
+        b1338Substitute(b1338ClockLine[1]),
+        `node "$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs" write "$RUN_DIR" "$RUN_ID" draft ok >/dev/null`,
+        b1338Substitute(b1338Block[1]),
+      ].join('\n'),
+      b1338RunDir,
+    )
+    assert.equal(b1338Released.status, 0, `documented hold failed: ${b1338Released.stderr}`)
+    assert.equal(JSON.parse(b1338Released.stdout.trim()).status, 'completed')
+    const b1338Clock = Number(readFileSync(join(b1338RunDir, 'draft.dispatched-at'), 'utf8'))
+    assert.ok(
+      b1338Clock > 0 && b1338Clock <= Date.now(),
+      'the documented clock write is an epoch in ms',
+    )
+    // The drafter still beats its documented heartbeat: the same call keeps holding (98).
+    mkdirSync(b1338Scratch, { recursive: true })
+    writeFileSync(b1338Heartbeat, JSON.stringify({ at: Date.now() }))
+    const b1338Held = bos1338Run(
+      `${b1338Substitute(b1338Block[1])} --budget 50 --interval 10`,
+      b1338RunDir,
+    )
+    assert.equal(b1338Held.status, 98, b1338Held.stderr)
+    assert.equal(JSON.parse(b1338Held.stdout.trim()).held, 'heartbeat-live')
+  } finally {
+    rmSync(b1338Run, { recursive: true, force: true })
+  }
 })
 
 test('headless mode has no inline drafting fallback', () => {
@@ -650,19 +776,22 @@ test('Phase 4 step 5 supplies the three inputs the library cannot derive for its
   )
 })
 
-test('BOS-1327: the step-5(c) one-liner refuses a defective payload and prints the verdict', () => {
-  // Behavioural, not a sentence pin: run the SHIPPED runnable line against the vendored toolbox.
+// The SHIPPED step-5(c) runnable line, extracted from the resident body so a test runs what an
+// agent runs rather than a copy of it.
+function depsOneLiner() {
   const line = PHASE_4_SECTION.split('\n').find(
     (entry) => entry.trim().startsWith("node -e '") && entry.includes('planDependencyEdges'),
   )
   assert.ok(line, 'step 5(c) must carry its runnable node -e line')
   const script = line.match(/node -e '(.*)' "\$DEPS_IN"$/)?.[1] ?? ''
   assert.ok(script.includes('planDependencyEdges'), 'the one-liner body must be extractable')
-  assert.ok(
-    script.indexOf('validateDependencyScanInput(i)') < script.indexOf('planDependencyEdges(i)'),
-    'the validator must run before classification',
-  )
-  const dir = mkdtempSync(join(tmpdir(), 'bos1327-deps-'))
+  return script
+}
+
+// Runs the one-liner from the REPO ROOT against the vendored toolbox, so this repo's own
+// `.boss-skills.json` is the config it loads.
+function depsRunner(script, prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
   const run = (payload) => {
     const file = join(dir, `${Math.random().toString(36).slice(2)}.deps-in.json`)
     writeFileSync(file, JSON.stringify(payload))
@@ -672,7 +801,11 @@ test('BOS-1327: the step-5(c) one-liner refuses a defective payload and prints t
       env: { ...process.env, BOSS_PLAN_TOOLBOX: abs(`${CORE}/toolbox`) },
     })
   }
-  const issue = (identifier, over = {}) => ({
+  return { run, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+function depsIssue(identifier, over = {}) {
+  return {
     id: `uuid-${identifier}`,
     identifier,
     priority: 3,
@@ -682,7 +815,18 @@ test('BOS-1327: the step-5(c) one-liner refuses a defective payload and prints t
     parentId: null,
     description: '## Key changes\n\n- `app/api/x.go`\n',
     ...over,
-  })
+  }
+}
+
+test('BOS-1327: the step-5(c) one-liner refuses a defective payload and prints the verdict', () => {
+  // Behavioural, not a sentence pin: run the SHIPPED runnable line against the vendored toolbox.
+  const script = depsOneLiner()
+  assert.ok(
+    script.indexOf('validateDependencyScanInput(i)') < script.indexOf('planDependencyEdges(i)'),
+    'the validator must run before classification',
+  )
+  const { run, cleanup } = depsRunner(script, 'bos1327-deps-')
+  const issue = depsIssue
   // epicLabel and stateRoles are OMITTED: the block must default both from config.
   const clean = run({ subject: issue('TCK-1'), candidates: [issue('TCK-2')], moduleRoots: ['app'] })
   assert.equal(clean.status, 0, clean.stderr)
@@ -716,7 +860,47 @@ test('BOS-1327: the step-5(c) one-liner refuses a defective payload and prints t
   // prose-pin: literal-space ok
   assert.match(bad.stderr, /^missing-parent-field TCK-2 /m)
   assert.doesNotMatch(bad.stderr, /subjectAreas/)
-  rmSync(dir, { recursive: true, force: true })
+  cleanup()
+})
+
+test('BOS-1337: the step-5(c) one-liner applies this repo’s planDependencies and the directory rung', () => {
+  const script = depsOneLiner()
+  assert.ok(
+    script.includes('withScanDefaults(g,'),
+    'the payload must pass through withScanDefaults so the repo config seam applies',
+  )
+  const { run, cleanup } = depsRunner(script, 'bos1337-deps-')
+  const scan = (subjectPath, candidatePath) => {
+    const result = run({
+      subject: depsIssue('TCK-1', { description: `## Key changes\n\n- \`${subjectPath}\`\n` }),
+      candidates: [
+        depsIssue('TCK-2', { description: `## Key changes\n\n- \`${candidatePath}\`\n` }),
+      ],
+      // `app` is a fixture root this repo's config does not declare; the shared files come from it.
+      moduleRoots: ['app'],
+    })
+    assert.equal(result.status, 0, result.stderr)
+    return JSON.parse(result.stdout)
+  }
+  for (const shared of ['docs/skills/README.md', 'scripts/bs-plan-skill.test.mjs']) {
+    const result = scan(shared, shared)
+    assert.deepEqual(result.edges, [], `${shared} is a declared repo-wide token, never a conflict`)
+    assert.deepEqual(result.questions, [])
+    assert.equal(result.verdict.verdict, 'no-dependencies', shared)
+    assert.equal(result.compared, 1, `${shared}: the pair was compared, not skipped`)
+  }
+  const directory = scan('app/api/x.go', 'app/api')
+  assert.equal(directory.edges.length, 1)
+  assert.equal(directory.edges[0].edge, 'relatedTo')
+  assert.equal(directory.edges[0].reason, 'directory-overlap')
+  assert.equal(directory.edges[0].write, null)
+  assert.deepEqual(directory.questions, [])
+  assert.equal(directory.verdict.verdict, 'related-only')
+  // Non-vacuity: the same FILE on both sides still raises the orientation question.
+  const sameFile = scan('app/api/x.go', 'app/api/x.go')
+  assert.equal(sameFile.questions.length, 1)
+  assert.match(sameFile.questions[0].text, /\(shared: app\/api\/x\.go\)$/)
+  cleanup()
 })
 
 test('Phase 4 step 5 names its dependency library adjacent to the toolbox variable', () => {
@@ -1237,7 +1421,8 @@ test('epic sentinel childIds are required in the drafting brief (BOS-755)', () =
   {
     const copy = CANONICAL_PAYLOAD
     assert.ok(
-      copy.brief.includes('childIds:     ["<ISSUE-ID>", ...]    // REQUIRED'),
+      copy.brief.includes('"childIds": ["<ISSUE-ID>"]') &&
+        copy.brief.includes('- `childIds` — **REQUIRED**'),
       `${copy.name} drafting brief must declare childIds required`,
     )
   }
@@ -2542,7 +2727,7 @@ test('the brief Step 7 recipe returns the assembled file BY REFERENCE, never its
   )
   assert.match(
     BRIEF,
-    /descriptionSummary: \{path: "\.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>\.description\.md"\}[\s\S]{0,400}union\s+the\s+guard\s+accepts\s+in\s+two\s+forms[\s\S]{0,240}Send\s+the\s*\n?\s*reference/,
+    /"descriptionSummary": \{ "path": "\.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>\.description\.md" \}[\s\S]{0,1600}union\s+the\s+guard\s+accepts\s+in\s+two\s+forms[\s\S]{0,240}Send\s+the\s*\n?\s*reference/,
     "Step 9's shape must show the by-reference form, document the union, and name the reference as the form to send",
   )
   assert.doesNotMatch(
@@ -3063,7 +3248,7 @@ test('BOS-1193: the body records the scratch-concurrency hazards the notes paid 
     ['shared mutable state', 'that `.linear-plans/` is shared across concurrent runs'],
     ['is _not_ sufficient', 'that an issue-scoped pattern is not sufficient'],
     ['belongs to a peer', "that a peer's untracked file is never deleted"],
-    ["-name 'PREFIX*' -delete", 'the load-bearing find spelling'],
+    ['assert each is gone with `[ -e', 'that only a post-condition proves a pattern deletion'],
     ['aborts the **whole command line**', 'why a bare shell glob is unsafe under zsh and fish'],
     ['never by grepping a ticket id', 'that a sentinel run dir is selected from the handed RUN_ID'],
   ]) {
@@ -3072,6 +3257,43 @@ test('BOS-1193: the body records the scratch-concurrency hazards the notes paid 
       `the skill body must record ${why} (missing ${JSON.stringify(needle)})`,
     )
   }
+})
+
+test('BOS-1330: the Phase 5 hazards recommend no delete that a rewriting hook can drop', () => {
+  // A command-rewriting shell hook drops `find`'s delete action and still exits 0, so a
+  // `find … -delete` recommendation is exactly the shape that deletes nothing while reading as done.
+  // Absence pin, shown able to fire: it is red against the pre-BOS-1330 body, which called that
+  // spelling load-bearing.
+  const hazards = regionUntilNext(
+    SKILL,
+    '**Why the removal names a run directory and nothing else',
+    '- **A sentinel run directory is selected',
+  )
+  assert.ok(hazards, 'the Phase 5 hazards region must exist')
+  // The positive half (a post-condition proves removal) is the BOS-1193 needle list above.
+  assert.doesNotMatch(hazards, /-delete\b/, 'the hazards must not recommend find … -delete')
+})
+
+test('BOS-1330: the secret gate runs a mechanical node floor before the judgement read', () => {
+  // A shell grep in the gate can be satisfied by a hook's fabricated empty result. The floor is a
+  // vendored node file scan; it runs first, fails closed on exit 2, and never replaces the read.
+  const gate = regionUntilNext(SKILL, '> **STOP — secret gate', '> **STOP — image-parity gate')
+  assert.ok(gate, 'the secret gate region must exist')
+  assert.match(
+    gate,
+    /plan-secret-scan\.mjs"\s+"\$PLAN_FILE"\s+<the\s+description\s+artifact>`[\s\S]{0,80}exit\s+2\s+⇒\s+the\s+gate\s+fails\s+closed[\s\S]{0,40}clean\s+scan\s+never[\s>]+replaces\s+the\s+read/i,
+    'the floor scans plan + description, fails closed on exit 2, and never replaces the read',
+  )
+  precedes(
+    gate,
+    'plan-secret-scan.mjs',
+    'read the whole plan file',
+    'the floor must run before the read',
+  )
+  assert.ok(
+    existsSync(abs(`${CORE}/toolbox/plan-secret-scan.mjs`)),
+    'plan-secret-scan.mjs must be vendored into boss-plan',
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -3606,9 +3828,9 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // REBASE HAZARD: RATCHET is a MEASUREMENT of the resident body at this branch's base, never a
   // value to merge. Any concurrent branch that touches the body re-measures it too, so this file
   // conflicts by construction — and resolving that conflict by picking a side banks a number
-  // nothing measured, which reds the gate or quietly moves the pin UP. Re-run this test after the
-  // rebase, bank the size it reports here, and keep every prior re-baseline entry above: the
-  // history is why the pin is allowed to move only down. PRE_SPLIT_BASELINE is NOT the same kind
+  // nothing measured, which reds the gate or quietly moves the pin UP. After the rebase,
+  // re-measure with scripts/ratchet-report.mjs, bank the size it reports here, and keep every
+  // prior re-baseline entry above: the history is why the pin is allowed to move only down. PRE_SPLIT_BASELINE is NOT the same kind
   // of number and must not be set to that measurement — it is the rolling upper bound described at
   // its own declaration, so re-baseline it ABOVE the new RATCHET with the existing margin intact.
   // Collapsing that margin disables the one check that catches both numbers sliding up together.
@@ -3837,7 +4059,17 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // `merged-list-item` cause; both were paid for by replacing the resident sibling-class-enumeration
   // paragraph with a one-line pointer to the drafting brief's Step 5 `### Sibling-class enumeration`,
   // the rule's single home, which both modes read.
-  const RATCHET = 124842 // re-measured for BOS-1328 (down-bank); see the ledger above
+  // BOS-1337 banks 124842 -> 124784 (-58 B), leaving PRE_SPLIT_BASELINE where it is. Step 5(c)'s
+  // one-liner now passes its payload through `withScanDefaults`, which owns the two inline
+  // `epicLabel`/`stateRoles` defaults it deleted and adds the repo's `planDependencies`; the prose
+  // names that config seam in place of the "name this repo's append-only registries" clause.
+  // BOS-1329 banks 124784 -> 124703 (-81 B), leaving PRE_SPLIT_BASELINE where it is. The Phase 1
+  // interactive bullet and the Edge cases bullet stopped restating an unconditional re-plan
+  // confirmation and now point at the precheck-gated rule in references/interactive-mode.md.
+  // BOS-1330 banks 124703 -> 124696 (-7 B), leaving PRE_SPLIT_BASELINE where it is. The Phase 5
+  // hazard bullet stopped recommending `find … -delete`, and the Phase 4 secret gate gained its
+  // plan-secret-scan.mjs floor, paid for by tightening the same gate paragraph.
+  const RATCHET = 124696 // re-measured for BOS-1330 (down-bank); see the ledger above
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -4161,4 +4393,93 @@ test('BOS-1186: the drafting brief requires anchored premises and re-measured co
       `${copy.name}: Step 2 recon must re-read ticket-supplied coordinates and constants`,
     )
   }
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1329 — drafting and interactive flow contract gaps. The guard behaviour (path normalization,
+// label allow-list, mode discovery) is asserted over the helpers in skills-toolbox/; what only the
+// documents can carry is pinned once per rule, by its bold lead or rule token.
+// ---------------------------------------------------------------------------
+
+test('BOS-1329: every fenced json block under the brief Step 9 parses, and the single-ticket keys are the guard keys', () => {
+  const step9 = sectionRegion(BRIEF, '## Step 9', 'brief Step 9')
+  assert.ok(step9.startsWith('## Step 9'), 'the brief must keep its Step 9')
+  const blocks = [...step9.matchAll(/^```json\n([\s\S]*?)^```$/gm)].map((match) => match[1])
+  assert.equal(blocks.length, 2, 'Step 9 carries the single-ticket and the epic return examples')
+  assert.equal(
+    [...step9.matchAll(/^```\n\{/gm)].length,
+    0,
+    'Step 9 return examples must be fenced as json, never as an untyped literal',
+  )
+  const parsed = blocks.map((block, index) => {
+    try {
+      return JSON.parse(block)
+    } catch (error) {
+      return assert.fail(`Step 9 json block ${index + 1} is not strict JSON: ${error.message}`)
+    }
+  })
+  // `missing` on an empty object lists every key the guard allows — so the example and the guard
+  // cannot drift without this going red.
+  assert.deepEqual(Object.keys(parsed[0]).sort(), [...validateDraftMetadata({}).missing].sort())
+  // The example is not merely parseable: the guard accepts every field it can judge without the
+  // referenced bytes (the description reference is resolved by the caller at run time).
+  const verdict = validateDraftMetadata(parsed[0], {
+    resolveDescription: () => {
+      throw new Error('example only')
+    },
+  })
+  assert.deepEqual(verdict.invalid, [], JSON.stringify(verdict))
+  assert.deepEqual(
+    verdict.violations.map((violation) => violation.code),
+    ['description-summary-unreadable'],
+  )
+  assert.equal(parsed[1].outcome, 'epic')
+  assert.ok(Array.isArray(parsed[1].childIds))
+  assert.match(step9, /\*\*strict\s+JSON\*\*[\s\S]{0,400}\*\*repo-relative\*\*/)
+  // The allow-list the brief states is the one the guard enforces, by rule token.
+  for (const label of contentLabelNames(GUARD_DEFAULT_CONFIG)) {
+    assert.ok(step9.includes(`\`${label}\``), `Step 9 must name the content label ${label}`)
+  }
+  assert.ok(step9.includes('`unknown-label`'), 'Step 9 must name the guard code it trips')
+})
+
+test('BOS-1329: headless Tier 1 runs inline, and the drafting subagent owns the wrapper', () => {
+  const step5 = sectionBetween(BRIEF, '## Step 5', '## Step 6')
+  assert.ok(step5.includes('discover --core boss-plan --role draft --mode headless --json'))
+  assert.ok(step5.includes('`mode-not-declared`'))
+  assert.match(
+    step5,
+    /\*\*Headless\s+Tier\s+1\s+runs\s+inline[\s\S]{0,800}\*\*Wrapper\s+ownership:\*\*[\s\S]{0,500}Step\s+9\s+bounded\s+metadata/,
+  )
+})
+
+test('BOS-1329: a planned user-named ticket with a plan verdict re-plans without asking', () => {
+  const phase1 = sectionBetween(INTERACTIVE, '## Phase 1', '## Phase 2')
+  assert.match(
+    phase1,
+    /\*\*Re-plan\s+rule\.\*\*[\s\S]{0,500}`action: "plan"`\s+→\s+proceed\s+\*\*without\s+asking\*\*[\s\S]{0,400}in-progress,\s+`Done`\s+or\s+`Canceled`\s+→\s+warn\s+and\s+ask/,
+  )
+  // Both resident sites point at the rule instead of restating an unconditional confirmation.
+  const edge = sectionRegion(SKILL, '## Edge cases', 'SKILL.md Edge cases')
+  for (const site of [sectionBetween(SKILL, '## Phase 1', '## Phase 2'), edge]) {
+    assert.match(site, /rule\s+in\s+`references\/interactive-mode\.md`/)
+  }
+})
+
+test('BOS-1329: batch child drafting skips Tier 1, self-verifies, and validates inline', () => {
+  const batch = sectionBetween(INTERACTIVE, '### Batch child drafting', '## Phase 5')
+  assert.match(
+    batch,
+    /\*\*Tier\s+1\s+is\s+unavailable\s+to\s+this\s+dispatch:\*\*[\s\S]{0,300}Resolve\s+Tier\s+2,\s+else\s+Tier\s+3/,
+  )
+  assert.ok(batch.includes('`batch draft: tier 1 unavailable (single-plan draft envelope)`'))
+  assert.match(
+    batch,
+    /\*\*The\s+worker\s+self-verifies,\s+and\s+its\s+prose\s+is\s+never\s+evidence\.\*\*/,
+  )
+  assert.match(batch, /\*\*inline\s+string\*\*,\s+never\s+the\s+`\{"path": …\}`\s+form/)
+  assert.ok(batch.includes('<runTmp>/batch-draft/<key>.draft-metadata.json'))
+  assert.ok(
+    INTERACTIVE.includes('discover --core boss-plan --role draft --mode interactive --json'),
+  )
 })

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import test, { after } from 'node:test'
 
 import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './env-failure-lib.mjs'
-import { VERDICTS } from './gate-run.mjs'
+import { STOPPED_EXIT_CODE, VERDICTS } from './gate-run.mjs'
 import { CACHE_STATES } from './gate-log-lib.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -313,10 +313,12 @@ test('stop reclaims a live gate and guarantees a terminal non-zero status', () =
   assert.equal(stopped.code, 0, stopped.stderr)
   waitForDeadPid(childPid)
   assert.notEqual(statusOf(runDir), '0')
+  assert.ok(firstLine(stopped.stdout).startsWith(VERDICTS.stoppedPrefix), stopped.stdout)
 
   const after = waitGate(runDir, 2_000)
   assert.notEqual(firstLine(after.stdout), VERDICTS.stillRunning)
-  assert.equal(after.code, 1)
+  assert.equal(firstLine(after.stdout), firstLine(stopped.stdout))
+  assert.equal(after.code, STOPPED_EXIT_CODE)
 })
 
 // The motivating case for `stop`: the supervisor is gone and the child ignores SIGTERM, so nothing
@@ -356,11 +358,70 @@ test('stop writes a durable verdict on the path where it forces the status itsel
   const stopped = nodeGate(['stop', runDir])
   assert.equal(stopped.code, 0, stopped.stderr)
   waitForDeadPid(childPid)
+  assert.equal(firstLine(stopped.stdout), `${VERDICTS.stoppedPrefix}143)`)
   assert.equal(
     fs.readFileSync(path.join(runDir, 'verdict'), 'utf8').trim(),
     firstLine(stopped.stdout),
   )
   assert.match(stopped.stdout, new RegExp(`log: ${escapeRegExp(path.join(runDir, 'log'))}`))
+})
+
+// --- BOS-1339: a deliberate teardown is GATE STOPPED, never shape-identical to a red gate --------
+
+test('wait on a stopped run dir prints GATE STOPPED (exit 143), exits 96 and records it durably', () => {
+  const script = fixtureScript('setTimeout(() => {}, 30000)\n')
+  const { runDir } = startGate([process.execPath, script])
+  waitForFile(path.join(runDir, 'child-pid'))
+
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  assert.equal(firstLine(stopped.stdout), `${VERDICTS.stoppedPrefix}143)`)
+  assert.ok(fs.existsSync(path.join(runDir, 'stopped')), 'stop must leave the stopped marker')
+
+  const waited = waitGate(runDir, 2_000)
+  assert.equal(firstLine(waited.stdout), `${VERDICTS.stoppedPrefix}143)`)
+  assert.equal(waited.code, STOPPED_EXIT_CODE)
+  assert.equal(STOPPED_EXIT_CODE, 96)
+  assert.match(waited.stdout, new RegExp(`log: ${escapeRegExp(path.join(runDir, 'log'))}`))
+  assert.equal(
+    fs.readFileSync(path.join(runDir, 'verdict'), 'utf8'),
+    `${VERDICTS.stoppedPrefix}143)\n`,
+  )
+  assert.doesNotMatch(waited.stdout, /GATE FAILED/)
+})
+
+test('a gate that exits non-zero with no stop still reads GATE FAILED', () => {
+  const { runDir } = startGate([process.execPath, '-e', 'process.exit(5)'])
+  const waited = waitGate(runDir)
+  assert.equal(firstLine(waited.stdout), `${VERDICTS.failedPrefix}5)`)
+  assert.equal(waited.code, 1)
+  assert.equal(fs.existsSync(path.join(runDir, 'stopped')), false)
+})
+
+test('a gate that exited 0 before the stop took effect still reads GATE PASSED', () => {
+  const { runDir } = startGate([process.execPath, '-e', 'process.exit(0)'])
+  assert.equal(statusOf(runDir), '0')
+  // The marker lands before the first signal, so a child that finishes green in that window leaves
+  // marker + status 0. The status is the outcome; the marker only re-labels a non-zero one.
+  fs.writeFileSync(path.join(runDir, 'stopped'), 'fixture\n')
+
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  assert.equal(firstLine(stopped.stdout), VERDICTS.passed)
+  const waited = waitGate(runDir)
+  assert.equal(firstLine(waited.stdout), VERDICTS.passed)
+  assert.equal(waited.code, 0)
+})
+
+test('stop on an already-terminal run dir with no marker still reads GATE FAILED and writes nothing', () => {
+  const { runDir } = startGate([process.execPath, '-e', 'process.exit(4)'])
+  assert.equal(statusOf(runDir), '4')
+  const before = runDirSnapshot(runDir)
+  const stopped = nodeGate(['stop', runDir])
+  assert.equal(stopped.code, 0, stopped.stderr)
+  assert.equal(firstLine(stopped.stdout), `${VERDICTS.failedPrefix}4)`)
+  assert.equal(fs.existsSync(path.join(runDir, 'stopped')), false)
+  assert.deepEqual(runDirSnapshot(runDir), before)
 })
 
 test('a transport phrase inside a reported test failure stays a red gate', () => {
@@ -495,6 +556,7 @@ test('the backgrounded-gate doc carries the verdicts, stop, and the live hazards
     `${VERDICTS.environmentPrefix}N)`,
     VERDICTS.vanished,
     VERDICTS.stillRunning,
+    `${VERDICTS.stoppedPrefix}N)`,
   ]) {
     assert.match(
       doc,
@@ -503,6 +565,12 @@ test('the backgrounded-gate doc carries the verdicts, stop, and the live hazards
   }
   assert.match(doc, /node\s+scripts\/gate-run\.mjs\s+stop\s+<run-dir>/)
   assert.match(doc, /<run-dir>\/verdict/)
+  // The stopped verdict names its own exit code, and the marker is in the run-dir file list.
+  assert.match(
+    doc,
+    new RegExp(`GATE\\s+STOPPED\\s+\\(exit\\s+N\\)[^\\n]*\\b${STOPPED_EXIT_CODE}\\b`),
+  )
+  assert.match(doc, /`stopped`/)
   // The three new live hazards.
   assert.match(doc, /no\s+matches\s+found/)
   assert.match(doc, /nothing\s+to\s+run/)

@@ -314,13 +314,21 @@ for the head SHA, emit the `DEGRADED_READ` line, and continue.
 
 **1.1a Read any work already in the tree**
 
-When `git status` is not clean, read the actual change before authoring anything:
+When `git status` is not clean, read the actual change before authoring anything. Decide
+"not clean" from the verdict helper, never from `git status` output itself — it validates git's
+porcelain, so a command-rewriting shell hook cannot fabricate a clean tree:
 
 ```bash
-git status --porcelain
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"   # first line: verdict: clean|dirty|unknown
 git diff
 git diff --cached
 ```
+
+`verdict: clean` ⇒ nothing to read, go to 1.2. `dirty` ⇒ the listed paths are the pre-existing work;
+read them in the two diffs. `unknown` (or no verdict line) ⇒ stop and report it — never proceed as
+if the tree were clean.
 
 An interrupted earlier round routinely leaves a complete, coherent fix behind, so for each
 unresolved review thread you are about to repair, check whether that pre-existing diff **already
@@ -785,6 +793,13 @@ newer commit.** Report it as a **residual** naming both SHAs, and do not claim t
    - If the conflict is additive-vs-additive in an append-only registry, keep
      BOTH sides unless a documented uniqueness rule says one entry supersedes
      the other.
+   - If the conflict is over a pinned measurement (a size budget, a count
+     baseline) and its recorded reasons, keep both sides' reasons, but
+     never pick a side of the number or add the two deltas: set it from a
+     measurement taken once the rebase completes (step 5's post-rebase check).
+   - If two prose texts on one subject collide add/add, verify the
+     claims the two texts dispute against the current tree before merging,
+     and keep only what the tree confirms.
    - Resolve by:
      - Keeping both changes if they're independent
      - Choosing the correct version if they conflict
@@ -1247,8 +1262,11 @@ After applying the repair:
 1. Check that local state is clean:
 
    ```bash
-   git status     # Should show clean working tree
+   node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"   # Should print verdict: clean
    ```
+
+   Act on the printed verdict, re-resolving `BOSS_REPAIR_TOOLBOX` as in step 1.1a if this is a
+   fresh shell: `clean` passes, `dirty` lists what is left, and `unknown` is never clean.
 
    One case legitimately leaves the tree dirty: the pre-existing work
    [Phase 1](#phase-1-assess-current-state) step 1.1a found and deliberately did not touch. That step
@@ -1937,11 +1955,25 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    still reads false. When the gate is **false**, log `callbacksUnavailableReason(process.env)` — an unavailable gate is a clean
    degrade, never a failed wait — and drive the wait from the bounded poll alone.
 
-   Either way the poll is what bounds the wait: a fixed number of reads at a fixed interval, with a
-   cap on the reads rather than on wall time, routing an exhausted cap and an unresolvable rollup
-   **identically** and never as green. The short interval between two reads of that bounded loop is
-   pacing inside a wait that is already running, not a stand-in for the wait, and stays well under a
-   minute. Do not wait on checks without probing reviews and mergeability first. Remove the live watches
+   Either way the bounded poll is `$BOSS_REPAIR_TOOLBOX/ci-wait.mjs run`, one foreground tool call
+   per chunk — never a shell `sleep` or `read -t` loop, which cannot fit one tool call, keeps nothing
+   between calls, and can be neutered by the harness:
+
+   ```bash
+   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr "$PR_NUMBER"
+   ```
+
+   The helper reads before any delay, takes and verifies its own delay, and keeps a wall-clock budget
+   on disk keyed to the PR and head, so while it returns `state: continue` re-issue the same command
+   in a **new** tool call, and route its first other state. Relay the first-read line it prints on
+   stderr — the red signal, or `no red signal; polling <p> pending of <t> checks` — instead of
+   polling silently. A call that printed no JSON line is **no reading**, not a timeout: issue `run`
+   again. `settled` is step 3's green; `failed` is step 7. A `timeout` carrying `trend: converging`
+   earns exactly one `run --extend`; `timeout` on any other trend, and `unknown`, are not green —
+   routing an exhausted cap and an unresolvable rollup **identically** and never as green.
+   Do not wait on checks without probing reviews and mergeability first. Remove the live watches
    once this loop reaches its terminal state in step 8.
 
 7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll.

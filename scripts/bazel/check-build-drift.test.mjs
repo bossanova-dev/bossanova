@@ -102,6 +102,34 @@ test('the root Makefile has a build-drift-check target that runs the script', ()
   )
 })
 
+// BOS-1336: the gate also runs the cross-tree `data`-dep coverage test, so a BUILD-only
+// `data` edit is checked wherever the gate runs. The leg must be an executed run-gate.mjs
+// recipe line inside the BAZEL_USABLE branch, so the public-mirror fallback stays a no-op.
+const INVOKES_EXTERNAL_INPUTS_TEST =
+  /^[ \t]*@?node scripts\/run-gate\.mjs\b[^\n]*--[ \t]+node --test scripts\/select-affected-external-inputs\.test\.mjs[ \t]*$/
+
+test('the build-drift-check recipe runs the external-inputs coverage leg inside its BAZEL_USABLE branch', () => {
+  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const block = makeTargetBlock(makefile, 'build-drift-check')
+  assert.ok(block, 'the root Makefile must declare a build-drift-check target')
+
+  const lines = block.split('\n')
+  const ifeq = lines.findIndex((line) => /^ifeq \(\$\(BAZEL_USABLE\),1\)\s*$/.test(line))
+  const elseLine = lines.findIndex((line, i) => i > ifeq && /^else\s*$/.test(line))
+  const leg = lines.findIndex((line) => INVOKES_EXTERNAL_INPUTS_TEST.test(line))
+
+  assert.ok(ifeq !== -1, 'build-drift-check must guard its recipe with ifeq ($(BAZEL_USABLE),1)')
+  assert.ok(elseLine !== -1, 'build-drift-check must keep its public-mirror else branch')
+  assert.ok(
+    leg !== -1,
+    'build-drift-check must run node --test scripts/select-affected-external-inputs.test.mjs through scripts/run-gate.mjs',
+  )
+  assert.ok(
+    ifeq < leg && leg < elseLine,
+    'the external-inputs leg must sit inside the BAZEL_USABLE branch',
+  )
+})
+
 test('the build-drift-check ratchet rejects mention without invocation', () => {
   const invoker = '\tnode scripts/run-gate.mjs --label "x" -- ./scripts/bazel/check-build-drift.sh'
 

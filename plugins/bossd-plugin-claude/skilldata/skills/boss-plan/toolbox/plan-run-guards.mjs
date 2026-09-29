@@ -4,8 +4,8 @@
 // untrusted drafting output and tracker writeback, so they return structured
 // violations and keep the CLI shape small enough for skill bash blocks.
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 import { checkPlanContract } from './plan-contract-guard.mjs'
 import { selectImplementationPlanAttachment } from './plan-attachment.mjs'
@@ -16,6 +16,7 @@ import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import {
   DEFAULT_CONFIG,
+  contentLabelNames,
   labelName,
   loadSkillConfig,
   optionalLabelName,
@@ -71,7 +72,32 @@ function hasAtomic5Justification(descriptionSummary) {
 // written. Binding the reference here would need an expected-artifact input this CLI does not
 // have today; do not "fix" it by making Phase 4 consume the returned path instead, which would
 // move the gates OFF the run-scoped artifact and turn a bounded residual into a live one.
-function readDescriptionSummary(value, resolveDescription) {
+//
+// The returned path is normalized to its repo-relative spelling before the family check: an
+// absolute path under the working tree, or a `./`-prefixed one, names the same artifact as the
+// repo-relative token, and refusing it discarded an already-drafted plan over spelling alone. A path
+// that resolves OUTSIDE the working tree keeps its original spelling and is refused by the token
+// check. (The `check` verb of plan-scratch-paths.mjs deliberately does NOT normalize: it lints
+// cleanup tokens written in skill prose, where an absolute or `./` spelling is itself the defect.)
+// Both the logical and the physical spelling of the working tree are tried as the base, so an
+// absolute path written through a symlinked prefix (macOS `/var` -> `/private/var`) still counts
+// as under the tree.
+function repoRelativeScratchPath(candidate, cwd) {
+  if (!isAbsolute(candidate) && !candidate.startsWith('./')) return candidate
+  const bases = [resolve(cwd)]
+  try {
+    bases.push(realpathSync(cwd))
+  } catch {
+    // An unreadable cwd leaves only the logical base; the token check still refuses on no match.
+  }
+  for (const base of bases) {
+    const rel = relative(base, resolve(base, candidate))
+    if (rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)) return rel.split(sep).join('/')
+  }
+  return candidate
+}
+
+function readDescriptionSummary(value, resolveDescription, cwd = process.cwd()) {
   if (typeof value === 'string') {
     return value.trim() === '' ? { kind: 'invalid' } : { kind: 'text', text: value }
   }
@@ -86,7 +112,7 @@ function readDescriptionSummary(value, resolveDescription) {
       'a by-reference descriptionSummary must be exactly {"path": "<this run\'s description artifact>"}',
     )
   }
-  const token = planScratchToken(value.path)
+  const token = planScratchToken(repoRelativeScratchPath(value.path, cwd))
   if (!token.ok) return badReference(token.reason)
   const families = token.families ?? []
   if (token.kind !== 'artifact' || families.length !== 1 || families[0] !== 'description') {
@@ -111,7 +137,7 @@ function readDescriptionSummary(value, resolveDescription) {
 
 export function validateDraftMetadata(
   metadata,
-  { config = DEFAULT_CONFIG, resolveDescription, moduleRoots = [] } = {},
+  { config = DEFAULT_CONFIG, resolveDescription, moduleRoots = [], cwd = process.cwd() } = {},
 ) {
   const missing = []
   const invalid = []
@@ -136,7 +162,7 @@ export function validateDraftMetadata(
   // Read the union ONCE, before the estimate check, so the Atomic-5 justification is looked for in
   // the same bytes the contract check runs over whichever arm of the union carried them.
   const summary = Object.hasOwn(object, 'descriptionSummary')
-    ? readDescriptionSummary(object.descriptionSummary, resolveDescription)
+    ? readDescriptionSummary(object.descriptionSummary, resolveDescription, cwd)
     : null
   const descriptionText = summary?.kind === 'text' ? summary.text : null
 
@@ -147,6 +173,24 @@ export function validateDraftMetadata(
   if (Object.hasOwn(object, 'labels')) {
     if (!Array.isArray(object.labels) || object.labels.some((label) => typeof label !== 'string')) {
       invalid.push('labels')
+    } else {
+      // Returned labels are the content taxonomy only (bug/feature/improvement/docs, each resolved
+      // through the config with the literal as fallback). A label the tracker does not have used to
+      // reach the write-back unchecked; failing closed here keeps it off the tracker.
+      const allowed = contentLabelNames(config)
+      const unknown = object.labels.filter((label) => !allowed.includes(label))
+      if (unknown.length > 0) {
+        invalid.push('labels')
+        violations.push(
+          entry(
+            'unknown-label',
+            'labels',
+            `labels ${unknown.map((label) => JSON.stringify(label)).join(', ')} are outside the ` +
+              `content taxonomy; allowed: ${allowed.map((label) => JSON.stringify(label)).join(', ')}`,
+            { labels: unknown, allowed },
+          ),
+        )
+      }
     }
   }
   if (Object.hasOwn(object, 'agentFriendly')) {

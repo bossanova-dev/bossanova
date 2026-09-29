@@ -123,6 +123,49 @@ for (const [label, skill] of [
     )
   })
 
+  // BOS-1340: the ranking ladder lives in skills-toolbox/plan-sweep-select.mjs and is asserted
+  // there rung by rung. What only prose can carry is the WIRING: Phase 2 must call the helper and
+  // name the two rules a caller applies when it answers a `need`.
+  test(`${label}: Phase 2 selects through plan-sweep-select`, () => {
+    const phase2 = phaseSection(skill, 'Phase 2')
+    assert.match(phase2, /plan-sweep-select\.mjs\s+select/)
+  })
+
+  test(`${label}: Phase 2 names the worst-contained-failure bucket rule`, () => {
+    const phase2 = phaseSection(skill, 'Phase 2')
+    assert.match(phase2, /`worst-contained-failure`/)
+  })
+
+  test(`${label}: Phase 2 names the blocker-inherits-priority tier rule`, () => {
+    const phase2 = phaseSection(skill, 'Phase 2')
+    assert.match(phase2, /`blocker-inherits-priority`/)
+  })
+
+  test(`${label}: Phase 3 checks referents before delegating`, () => {
+    const phase3 = phaseSection(skill, 'Phase 3')
+    assert.match(phase3, /plan-sweep-select\.mjs\s+referents/)
+  })
+
+  test(`${label}: Phase 3 binds notes suppression on the delegated boss-plan`, () => {
+    const phase3 = phaseSection(skill, 'Phase 3')
+    assert.match(phase3, /BOSS_NOTES_SUPPRESSED=1/)
+  })
+
+  test(`${label}: Phase 3 routes a landed-but-unreported writeback to planned-unverified`, () => {
+    const phase3 = phaseSection(skill, 'Phase 3')
+    assert.match(phase3, /planned-unverified/)
+  })
+
+  test(`${label}: Phase 5 has the stale-premise skip outcome`, () => {
+    const phase5 = phaseSection(skill, 'Phase 5')
+    assert.match(phase5, /`skipped\s+<ISSUE-ID>:\s+stale\s+premise`/)
+  })
+
+  test(`${label}: Phase 5 has the planned-unverified outcome`, () => {
+    const phase5 = phaseSection(skill, 'Phase 5')
+    assert.match(phase5, /`planned-unverified\s+<ISSUE-ID>/)
+  })
+
   // An epic outcome has no singular attachment id / estimate / priority, so the single-ticket
   // report shape could only be improvised. Pin the outcome TOKEN and the roster fields.
   test(`${label}: Phase 5 has an epic terminal outcome carrying a per-child roster`, () => {

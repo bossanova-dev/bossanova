@@ -182,6 +182,12 @@ export const DEFAULT_CONFIG = Object.freeze({
   // Durable boss-review dispatch ledger location. Repo-relative so published
   // cores keep storage in the checkout that produced the review.
   reviewLedger: { dir: '.git/boss-review-ledgers' },
+  // boss-plan dependency-scan tuning a repo declares ONCE instead of rebuilding per run:
+  // `moduleRoots` (top-level module names area extraction resolves against), `repoWideTokens`
+  // (append-only registries and generated mirrors too shared to mean a conflict) and
+  // `areaAliases` (a path -> its generated mirrors). Empty by default so the published cores stay
+  // project-agnostic; the step-5 scan unions these with the per-run payload.
+  planDependencies: { moduleRoots: [], repoWideTokens: [], areaAliases: {} },
   // Versioned wire contract for the `##`-section plan description that boss-plan emits and
   // boss-build / bs-sweep-plan consume. `version` is the integer contract
   // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
@@ -340,6 +346,45 @@ export const PLAN_SECTION_REQUIRED_KINDS = new Set([
   'open-questions',
   'optional',
 ])
+
+const PLAN_DEPENDENCY_LIST_KEYS = ['moduleRoots', 'repoWideTokens']
+
+// An absent block is a hand-built config that never merged the defaults; anything present must be
+// well formed, and an unknown key is rejected because a misspelt `repoWideToken` would otherwise
+// suppress nothing while the repo believes its shared files are declared.
+function validatePlanDependencies(block, fail) {
+  if (block === undefined) return
+  if (!block || typeof block !== 'object' || Array.isArray(block)) {
+    fail('planDependencies must be an object')
+  }
+  for (const key of Object.keys(block)) {
+    if (![...PLAN_DEPENDENCY_LIST_KEYS, 'areaAliases'].includes(key)) {
+      fail(`planDependencies.${key} is not a known key`)
+    }
+  }
+  const nonEmptyString = (value) => typeof value === 'string' && value.length > 0
+  for (const key of PLAN_DEPENDENCY_LIST_KEYS) {
+    const list = block[key]
+    if (list === undefined) continue
+    if (!Array.isArray(list)) fail(`planDependencies.${key} must be an array`)
+    if (!list.every(nonEmptyString)) {
+      fail(`planDependencies.${key} entries must be non-empty strings`)
+    }
+  }
+  const aliases = block.areaAliases
+  if (aliases === undefined) return
+  if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)) {
+    fail('planDependencies.areaAliases must be an object')
+  }
+  for (const [area, value] of Object.entries(aliases)) {
+    const ok = Array.isArray(value) ? value.every(nonEmptyString) : nonEmptyString(value)
+    if (area.length === 0 || !ok) {
+      fail(
+        `planDependencies.areaAliases.${area} must map to a non-empty string or an array of them`,
+      )
+    }
+  }
+}
 
 export function validateConfig(config, source) {
   const fail = (msg) => {
@@ -909,6 +954,7 @@ export function validateConfig(config, source) {
   if (normalizedReviewLedgerDir === '..' || normalizedReviewLedgerDir.startsWith('../')) {
     fail('reviewLedger.dir must stay within the repository')
   }
+  validatePlanDependencies(config.planDependencies, fail)
   // planContract is the extension point this feature exists for (a consuming repo overrides
   // the section set), so a malformed override must fail here with a skill-config: error rather
   // than a raw TypeError deep in planSections()/requiredPlanSections()/validatePlanDescription().
@@ -1304,6 +1350,29 @@ export function reviewLedgerConfig(config) {
 }
 
 /**
+ * The repo's declared dependency-scan tuning, as fresh COPIES with every field defaulted (an
+ * unconfigured repo resolves to empty lists and `{}`), so a caller mutating the result never
+ * reaches into the loaded config or the frozen defaults.
+ * @returns {{moduleRoots: string[], repoWideTokens: string[], areaAliases: Record<string, string|string[]>}}
+ */
+export function planDependencyDefaults(config) {
+  const block = config?.planDependencies
+  const list = (value) => (Array.isArray(value) ? [...value] : [])
+  const aliases = block?.areaAliases
+  const areaAliases = {}
+  if (aliases && typeof aliases === 'object' && !Array.isArray(aliases)) {
+    for (const [area, value] of Object.entries(aliases)) {
+      areaAliases[area] = Array.isArray(value) ? [...value] : value
+    }
+  }
+  return {
+    moduleRoots: list(block?.moduleRoots),
+    repoWideTokens: list(block?.repoWideTokens),
+    areaAliases,
+  }
+}
+
+/**
  * A configured/detected command string, or null when this repo declares none. `null` is the
  * honest "no command is known here" — a core that needs one falls back to its own discovery
  * prose (project instructions, CI config, command files) rather than running a wrong target.
@@ -1616,6 +1685,21 @@ export function labelName(config, role) {
  */
 export function optionalLabelName(config, role) {
   return trackerRoleName(config, 'labels', role, false)
+}
+
+// The content taxonomy a drafting dispatch may return in its bounded metadata `labels`. Pipeline
+// labels (agent-friendly, needs-human, agent-question, …) are orchestrator-owned and never
+// returned. The repo's skill-symbol lint keeps a CONTENT_LABELS denylist that must stay a subset of
+// this runtime list (it excludes `bug`, a configured role, by design).
+export const CONTENT_LABEL_ROLES = Object.freeze(['bug', 'feature', 'improvement', 'docs'])
+
+/**
+ * Resolve the content taxonomy to display names: each role through `optionalLabelName`, the role
+ * literal when the repo leaves it unmapped.
+ * @returns {string[]}
+ */
+export function contentLabelNames(config) {
+  return CONTENT_LABEL_ROLES.map((role) => optionalLabelName(config, role) ?? role)
 }
 
 /** Resolve a configured GitHub PR-label display name by its stable role. */

@@ -56,6 +56,11 @@ x-boss-extension:
   that a repo-local round already does the job of a **default round** it would otherwise run itself,
   so the repository gets one pass instead of two. Declaring none is safe; the round still runs, it
   just suppresses nothing.
+- `modes`: the run modes the extension is discovered in, a comma-separated subset of
+  `interactive` and `headless` (for example `modes: interactive`). Absent means every mode. A
+  present but unusable value (empty, or a token outside that set) is skipped as `invalid-modes`
+  rather than read as "every mode". When a caller passes `--mode`, an extension whose `modes` omits
+  it is skipped as `mode-not-declared`.
 
 ### Discovery command
 
@@ -68,6 +73,9 @@ node scripts/skill-extensions.mjs discover --core <core> --role <role> --json
 It prints an ordered `extensions` array of matched descriptors plus a `skipped` array
 recording any directory that was excluded and why. With nothing installed it prints
 `{"extensions":[],"skipped":[]}` and exits `0`, never an error.
+
+Passing `--mode <interactive|headless>` names the run mode the caller is in. Omitting it applies
+no mode filter; an unknown value exits `2` before scanning.
 
 Each `skipped` entry carries four fields — the human `reason`, plus a stable `code` to branch on
 and a `deliberate` classification:
@@ -94,9 +102,10 @@ and a `deliberate` classification:
 
 `deliberate: true` means the skip is the contract working as designed: the directory is a
 same-prefix skill that simply is not an extension of this core — a markerless helper, or one
-extending a core that this one's prefix merely nests into (`boss-` also matches `boss-plan-notes`).
-Reporting it would cry wolf on every run. Only two codes are classified that way
-(`missing-marker` and `extends-other-core`).
+extending a core that this one's prefix merely nests into (`boss-` also matches `boss-plan-notes`),
+or an extension that declared it does not run in the requested `--mode`. Reporting it would cry
+wolf on every run. Only three codes are classified that way (`missing-marker`, `extends-other-core`
+and `mode-not-declared`).
 
 A wrong `extends` is **not** one of them. An extension of `<core>` is a directory named
 `<core>-<suffix>`, so `boss-review-x` declaring `extends: boss-plan` is unreachable from

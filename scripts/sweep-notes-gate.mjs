@@ -1,6 +1,7 @@
-// Pure decision logic for the bs-sweep-notes skill. Linear access, and the
-// filesystem/git probes the staleness signals need, remain injected — the
-// concrete implementations live only as `runCli` defaults, alongside the
+// Pure decision logic for the bs-sweep-notes skill. Linear access, the signed
+// attachment PUT, and the filesystem/git probes the staleness signals and the
+// pointer resolver need, remain injected — the concrete implementations live
+// only as `runCli` defaults (or in the skill's `node -e` blocks), alongside the
 // existing `readFile` default. The only local import is the repository's
 // mandatory CLI guard.
 import { spawnSync } from 'node:child_process'
@@ -41,6 +42,26 @@ export const DEFAULT_CAP = 15
 
 /** Live themes older than this many days expire out of the improvement backlog. */
 export const DEFAULT_STALE_DAYS = 30
+
+/**
+ * Longest `statement` (and `where`) kept on one `digest` line. The digest exists
+ * because the full clusters file measured 921KB at 439 clusters — too large for
+ * the theming subagent to read — so every field on a digest line is bounded.
+ */
+export const DIGEST_STATEMENT_MAX = 160
+
+/**
+ * Evidence bullets rendered into a filed child description before the rest are
+ * summarised by a remainder line. The verbatim bodies live in the attachment.
+ */
+export const MAX_EVIDENCE_BULLETS = 20
+
+/**
+ * Where a published `boss`/`boss-*` core's source lives in this checkout. A
+ * pointer at `.claude/skills/<core>/…` names a directory that does not exist
+ * here (published cores install globally), so the resolver probes this root.
+ */
+export const PUBLISHED_CORE_PAYLOAD_ROOT = 'services/boss/internal/skillinstall/skills'
 
 /**
  * Resolve the cap from an explicit argument, then the environment, then the
@@ -419,13 +440,16 @@ function newestNoteEpoch(cluster) {
   }, null)
 }
 
+function staleWindowMs(staleDays) {
+  return Math.max(0, Math.floor(Number(staleDays))) * 24 * 60 * 60 * 1000
+}
+
 function isExpired(cluster, { staleDays, now }) {
   const newest = newestNoteEpoch(cluster)
   if (newest === null) return false
   const current = Number(now)
   if (!Number.isFinite(current)) return false
-  const windowMs = Math.max(0, Math.floor(Number(staleDays))) * 24 * 60 * 60 * 1000
-  return newest < current - windowMs
+  return newest < current - staleWindowMs(staleDays)
 }
 
 /**
@@ -448,6 +472,64 @@ function extractPaths(values) {
   return [...found].sort((a, b) => a.localeCompare(b))
 }
 
+const INSTALLED_CORE_POINTER = /^\.claude\/skills\/([^/]+)\/(.+)$/
+
+/**
+ * Resolve one extracted path token against the tree. A token that exists is
+ * kept; a missing `.claude/skills/<core>/<rest>` whose payload source
+ * `PUBLISHED_CORE_PAYLOAD_ROOT/<core>/<rest>` exists is rewritten onto it; any
+ * other missing token is reported as missing.
+ *
+ * @returns {{token: string, path: string, status: 'exists'|'rewritten'|'missing'}}
+ */
+function resolvePathToken(token, pathExists) {
+  if (pathExists(token)) return { token, path: token, status: 'exists' }
+  const installed = INSTALLED_CORE_POINTER.exec(token)
+  if (installed) {
+    const payload = `${PUBLISHED_CORE_PAYLOAD_ROOT}/${installed[1]}/${installed[2]}`
+    if (pathExists(payload)) return { token, path: payload, status: 'rewritten' }
+  }
+  return { token, path: token, status: 'missing' }
+}
+
+/** Replace a path token only where it stands as a whole token, never mid-path. */
+function replacePathToken(text, token, replacement) {
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9_.@\\-/~])${escapeRegExp(token)}(?![A-Za-z0-9_@\\-/]|\\.[A-Za-z0-9])`,
+    'g',
+  )
+  return text.replace(pattern, () => replacement)
+}
+
+/**
+ * Resolve every path token in one `Where:` entry with the same token rule the
+ * staleness signals use. Returns the entry with rewritable published-core
+ * pointers moved onto their payload source path, plus the tokens that exist
+ * nowhere in this checkout.
+ *
+ * @param {string} where one `Where:` entry
+ * @param {{pathExists: (path: string) => boolean}} probes
+ * @returns {{text: string, rewritten: Array<{from: string, to: string}>, unresolved: string[]}}
+ */
+export function resolveWherePointer(where, { pathExists } = {}) {
+  if (typeof pathExists !== 'function') {
+    throw new Error('resolveWherePointer requires a pathExists probe')
+  }
+  let text = normalizePresentation(where)
+  const rewritten = []
+  const unresolved = []
+  for (const token of extractPaths([text])) {
+    const resolved = resolvePathToken(token, pathExists)
+    if (resolved.status === 'rewritten') {
+      text = replacePathToken(text, token, resolved.path)
+      rewritten.push({ from: token, to: resolved.path })
+    } else if (resolved.status === 'missing') {
+      unresolved.push(token)
+    }
+  }
+  return { text, rewritten, unresolved }
+}
+
 /**
  * Report what the tree says about each theme's cited paths. These are SIGNALS,
  * never a verdict: a surviving path proves nothing, and a changed one only
@@ -461,7 +543,6 @@ export function stalenessSignals(clusters, { pathExists, lastChangeAt } = {}) {
   return (Array.isArray(clusters) ? clusters : []).map((cluster) => {
     const targets =
       Array.isArray(cluster?.wheres) && cluster.wheres.length ? cluster.wheres : [cluster?.where]
-    const paths = extractPaths(targets)
     const notes = Array.isArray(cluster?.notes) ? cluster.notes : []
     const newest = notes.reduce((latest, entry) => {
       const at = toEpoch(entry?.created_at)
@@ -469,7 +550,12 @@ export function stalenessSignals(clusters, { pathExists, lastChangeAt } = {}) {
     }, null)
     const missing = []
     const changedSince = []
-    for (const path of paths) {
+    // A published-core pointer is probed at its payload source path, so a live
+    // file is never handed to the currency pass as `missing`.
+    const resolved = [
+      ...new Set(extractPaths(targets).map((token) => resolvePathToken(token, pathExists).path)),
+    ].sort((a, b) => a.localeCompare(b))
+    for (const path of resolved) {
       if (!pathExists(path)) {
         missing.push(path)
         continue
@@ -480,7 +566,7 @@ export function stalenessSignals(clusters, { pathExists, lastChangeAt } = {}) {
     return {
       key: cluster?.key,
       newestNoteAt: newest === null ? null : new Date(newest).toISOString(),
-      paths,
+      paths: resolved,
       missing,
       changedSince,
     }
@@ -565,21 +651,39 @@ export function applyVerdicts(clusters, verdicts) {
   return buckets
 }
 
+/** One note is old when its own parseable timestamp is outside the stale window. */
+function isNoteOld(note, { staleDays, now }) {
+  const at = toEpoch(note?.created_at)
+  const current = Number(now)
+  if (at === null || !Number.isFinite(current) || !Number.isFinite(Number(staleDays))) return false
+  return at < current - staleWindowMs(staleDays)
+}
+
 /**
  * The complete, deduplicated set of note ids this run may retire: every note in
- * a wholly `fixed` theme, plus every individually named `fixedNotes` id on any
- * other verdict. Computing it here keeps the union out of skill prose, where an
- * omitted bucket would silently under- or over-retire.
+ * a wholly `fixed` theme, every individually named `fixedNotes` id on any other
+ * verdict, every note of an `expired` theme, and — when `{staleDays, now}` is
+ * supplied — every OLD member note of a `deferred` theme or an `unverifiable`
+ * theme. Computing it here keeps the union out of skill prose, where an omitted
+ * bucket would silently under- or over-retire.
+ *
+ * Per-note expiry exists because theme-level expiry is near-inert at realistic
+ * grouping density: a theme is as young as its newest member, so one recent
+ * recurrence holds every old sibling in the backlog forever. Selected and
+ * already-tracked themes contribute nothing through expiry — their notes are
+ * deleted once filed — and `unverifiable` themes never reach `select`, so
+ * without this they could never expire at all.
  */
-export function retiredNoteIds(buckets, selection = {}) {
+export function retiredNoteIds(buckets, selection = {}, { staleDays, now } = {}) {
   const ids = new Set()
+  const addAll = (cluster, keep = () => true) => {
+    for (const note of Array.isArray(cluster?.notes) ? cluster.notes : []) {
+      if (typeof note?.id === 'string' && note.id && keep(note)) ids.add(note.id)
+    }
+  }
   for (const verdict of VERDICTS) {
     for (const entry of Array.isArray(buckets?.[verdict]) ? buckets[verdict] : []) {
-      if (verdict === 'fixed') {
-        for (const note of Array.isArray(entry?.cluster?.notes) ? entry.cluster.notes : []) {
-          if (typeof note?.id === 'string' && note.id) ids.add(note.id)
-        }
-      }
+      if (verdict === 'fixed') addAll(entry?.cluster)
       for (const id of Array.isArray(entry?.fixedNoteIds) ? entry.fixedNoteIds : []) ids.add(id)
     }
   }
@@ -587,16 +691,57 @@ export function retiredNoteIds(buckets, selection = {}) {
     ...(Array.isArray(buckets?.expired) ? buckets.expired : []),
     ...(Array.isArray(selection?.expired) ? selection.expired : []),
   ]) {
-    for (const note of Array.isArray(entry?.cluster?.notes) ? entry.cluster.notes : []) {
-      if (typeof note?.id === 'string' && note.id) ids.add(note.id)
+    addAll(entry?.cluster)
+  }
+  if (staleDays !== undefined && now !== undefined) {
+    const old = (note) => isNoteOld(note, { staleDays, now })
+    for (const entry of [
+      ...(Array.isArray(selection?.deferred) ? selection.deferred : []),
+      ...(Array.isArray(buckets?.unverifiable) ? buckets.unverifiable : []),
+    ]) {
+      addAll(entry?.cluster, old)
     }
   }
   return [...ids].sort((a, b) => a.localeCompare(b))
 }
 
+function validateDeleteIds(deleteIds) {
+  if (!Array.isArray(deleteIds) || !deleteIds.every((id) => typeof id === 'string' && id)) {
+    throw new Error('retirePlan requires the delete set as an array of note ids')
+  }
+  return [...new Set(deleteIds)].sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * Phase 4's two loops and Phase 5's drain, from one computation. `retag` is the
+ * retirement set minus `delete` — deletion wins, because a filed theme's
+ * evidence already lives on its ticket — so no id is counted twice and
+ * `counts.drain` is exactly `counts.delete + counts.retag`.
+ *
+ * @returns {{delete: string[], retag: string[],
+ *   counts: {delete: number, retag: number, drain: number}}}
+ */
+export function retirePlan(buckets, selection, deleteIds, { staleDays, now } = {}) {
+  const deletions = validateDeleteIds(deleteIds)
+  const deleting = new Set(deletions)
+  const retag = retiredNoteIds(buckets, selection, { staleDays, now }).filter(
+    (id) => !deleting.has(id),
+  )
+  return {
+    delete: deletions,
+    retag,
+    counts: {
+      delete: deletions.length,
+      retag: retag.length,
+      drain: deletions.length + retag.length,
+    },
+  }
+}
+
 /**
  * Account for every cluster exactly once. Marker-carriers are dropped; themes
- * whose newest note is older than the stale window expire; up to `cap`
+ * whose newest note is older than the stale window expire (the special case of
+ * per-note expiry where every member is old — see `retiredNoteIds`); up to `cap`
  * remaining clusters are selected, and the rest are deferred. Ranking is
  * applied here rather than by the caller so it cannot be skipped.
  */
@@ -628,6 +773,120 @@ export function selectClusters(
   return { selected, deferred, dropped, expired }
 }
 
+function truncateText(value, max) {
+  const text = normalizePresentation(value)
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
+/**
+ * One bounded line per mechanical cluster, for the theming subagent. The full
+ * clusters file carries every member note's body and grows with the backlog; a
+ * digest line carries only what a grouping decision needs, so the file stays
+ * readable with an offset/limit read at any backlog size.
+ *
+ * @returns {Array<{key: string, statement: string, where: string|null, notes: number}>}
+ */
+export function digestClusters(clusters) {
+  if (!Array.isArray(clusters)) throw new Error('digestClusters requires a cluster array')
+  return clusters.map((cluster) => {
+    if (!cluster || typeof cluster.key !== 'string' || !cluster.key) {
+      throw new Error('digestClusters received a cluster without a key')
+    }
+    return {
+      key: cluster.key,
+      statement: truncateText(cluster.statement, DIGEST_STATEMENT_MAX),
+      where: cluster.where ? truncateText(cluster.where, DIGEST_STATEMENT_MAX) : null,
+      notes: Array.isArray(cluster.notes) ? cluster.notes.length : 0,
+    }
+  })
+}
+
+/**
+ * Wrap text in a code span whose fence is one backtick longer than the longest
+ * backtick run inside it, so the span cannot close early and the tracker's
+ * autolinker leaves `SKILL.md:689`-shaped tokens as literal text.
+ */
+function codeSpan(text) {
+  const longest = Math.max(0, ...(String(text).match(/`+/g) ?? []).map((run) => run.length))
+  const fence = '`'.repeat(longest + 1)
+  const pad = /^`|`$/.test(text) ? ' ' : ''
+  return `${fence}${pad}${text}${pad}${fence}`
+}
+
+function renderWhereBullet(where, pathExists) {
+  const { text, unresolved } = resolveWherePointer(where, { pathExists })
+  const annotation = unresolved.length
+    ? ` (not found at filing: ${unresolved.map(codeSpan).join(', ')})`
+    : ''
+  return `- ${codeSpan(text)}${annotation}`
+}
+
+/**
+ * Render a filed child's whole description: `## Problem`, `## Where`,
+ * `## Evidence`, then the marker block as the final lines.
+ *
+ * Every `## Where` entry is one code span, published-core pointers are moved
+ * onto their payload source path, and a token that exists nowhere is annotated
+ * outside the span. The Evidence line names the attachment by its bare kind:
+ * the issue id does not exist until the create returns, so it cannot be cited
+ * here. Every interpolated note field passes through `sanitizeEvidenceText`.
+ */
+export function renderChildDescription(cluster, { pathExists } = {}) {
+  if (typeof pathExists !== 'function') {
+    throw new Error('renderChildDescription requires a pathExists probe')
+  }
+  const markers = renderClusterMarkers(cluster)
+  const notes = Array.isArray(cluster?.notes) ? cluster.notes : []
+  const wheres =
+    Array.isArray(cluster?.wheres) && cluster.wheres.length
+      ? cluster.wheres
+      : [cluster?.where].filter(Boolean)
+  const title = sanitizeEvidenceText(cluster?.title ?? cluster?.statement)
+  const shown = notes.slice(0, MAX_EVIDENCE_BULLETS)
+  const noun = notes.length === 1 ? 'source note' : 'source notes'
+  const lines = [
+    '## Problem',
+    '',
+    title,
+    '',
+    '## Where',
+    '',
+    ...(wheres.length
+      ? wheres.map((where) => renderWhereBullet(where, pathExists))
+      : ['- (no Where: pointer recorded)']),
+    '',
+    '## Evidence',
+    '',
+    `_${notes.length} ${noun}; the verbatim bodies are in this issue's Source notes attachment._`,
+    '',
+    ...shown.map((entry) => {
+      const statement = sanitizeEvidenceText(entry?.statement)
+      const run = sanitizeEvidenceText(entry?.run) || 'unknown'
+      const at = sanitizeEvidenceText(entry?.created_at) || 'unknown'
+      return `- ${statement} — recorded by ${run}, ${at}`
+    }),
+    ...(notes.length > shown.length
+      ? [`- …and ${notes.length - shown.length} more in the attachment`]
+      : []),
+    '',
+    markers,
+  ]
+  return lines.join('\n')
+}
+
+/**
+ * The notes whose parsed `Where:` line contains `pointer`, case-insensitively.
+ * The record-side duplicate search used to match whole bodies, so a note that
+ * merely mentioned a skill name drowned out the real duplicates at that pointer.
+ * The raw note objects are returned unchanged.
+ */
+export function whereMatch(notes, pointer) {
+  if (!Array.isArray(notes)) throw new Error('whereMatch requires a note array')
+  const needle = normalize(pointer)
+  if (!needle) throw new Error('whereMatch requires a non-empty pointer')
+  return notes.filter((entry) => normalize(parseNote(entry).where).includes(needle))
+}
+
 export const MARKED_ISSUES_QUERY = `query Marked($filter: IssueFilter!, $after: String) {
   issues(first: 250, filter: $filter, after: $after, includeArchived: true) {
     nodes { identifier description }
@@ -635,15 +894,28 @@ export const MARKED_ISSUES_QUERY = `query Marked($filter: IssueFilter!, $after: 
   }
 }`
 
-/** Fetch the complete marker snapshot; refuse partial pagination results. */
+/**
+ * Fetch the complete marker snapshot, or with `updatedAfter` only the issues
+ * updated since then; refuse partial pagination results either way.
+ */
 export async function fetchMarkedLinearIssues({
   apiKey,
   linearRequest,
   maxPages = 20,
   markerPrefix = 'Notes: ',
+  updatedAfter,
 } = {}) {
   if (typeof linearRequest !== 'function') {
     throw new Error('fetchMarkedLinearIssues requires a linearRequest implementation')
+  }
+  if (updatedAfter !== undefined && updatedAfter !== null && toEpoch(updatedAfter) === null) {
+    throw new Error(`fetchMarkedLinearIssues updatedAfter is not a timestamp: ${updatedAfter}`)
+  }
+  // With `updatedAfter`, only issues changed since the baseline snapshot are
+  // fetched; the caller scans the union of both, so the delta cannot lose one.
+  const filter = {
+    description: { contains: markerPrefix },
+    ...(updatedAfter ? { updatedAt: { gt: updatedAfter } } : {}),
   }
   const nodes = []
   let after = null
@@ -651,7 +923,7 @@ export async function fetchMarkedLinearIssues({
     const data = await linearRequest({
       apiKey,
       query: MARKED_ISSUES_QUERY,
-      variables: { filter: { description: { contains: markerPrefix } }, after },
+      variables: { filter, after },
     })
     const connection = data?.issues
     if (!connection) throw new Error('Linear marker scan returned no issues connection')
@@ -687,6 +959,129 @@ export async function fetchMarkedLinearIssues({
   throw new Error(`Linear marker scan exceeded ${maxPages} pages — dedupe snapshot incomplete`)
 }
 
+export const ISSUE_ATTACHMENTS_QUERY = `query IssueAttachments($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    attachments(first: 250) { nodes { id title } }
+  }
+}`
+
+export const FILE_UPLOAD_MUTATION = `mutation FileUpload($contentType: String!, $filename: String!, $size: Int!) {
+  fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+    success
+    uploadFile { uploadUrl assetUrl headers { key value } }
+  }
+}`
+
+export const ATTACHMENT_CREATE_MUTATION = `mutation AttachmentCreate($input: AttachmentCreateInput!) {
+  attachmentCreate(input: $input) { success attachment { id title } }
+}`
+
+async function readIssueAttachments({ apiKey, linearRequest, issueId }) {
+  const data = await linearRequest({
+    apiKey,
+    query: ISSUE_ATTACHMENTS_QUERY,
+    variables: { id: issueId },
+  })
+  const issue = data?.issue
+  const nodes = issue?.attachments?.nodes
+  if (!issue || typeof issue.id !== 'string' || !issue.id || !Array.isArray(nodes)) {
+    throw new Error(`attachment read for ${issueId} returned no readable attachment list`)
+  }
+  return { uuid: issue.id, titles: nodes.map((node) => node?.title) }
+}
+
+/**
+ * Upload one child's verbatim source notes and attach them under the exact
+ * `sourceNotesTitle(issueId)` title — the whole prepare → PUT → finalize leg in
+ * one call, so no run hand-transcribes a signed URL or its headers.
+ *
+ * - An issue already carrying the exact title is `skipped`, so a resumed run
+ *   cannot duplicate it (`attachmentCreate` mints a new row on every call).
+ * - The declared size is the BYTE length of what `readFile` returns for the
+ *   exact file handed to `put`.
+ * - Every header `fileUpload` returns is passed to `put`.
+ * - The create is sent once, as a write. If it throws or is not confirmed, the
+ *   outcome is settled by re-reading the attachments for the exact title — never
+ *   by re-sending — and a create the read-back cannot find re-throws.
+ *
+ * @returns {Promise<{status: 'skipped'|'created', issueId: string, title: string,
+ *   settledBy?: 'response'|'read-back'}>}
+ */
+export async function attachSourceNotes({
+  apiKey,
+  linearRequest,
+  put,
+  readFile,
+  issueId,
+  file,
+  contentType = 'text/markdown',
+  filename,
+} = {}) {
+  for (const [name, value] of Object.entries({ linearRequest, put, readFile })) {
+    if (typeof value !== 'function') throw new Error(`attachSourceNotes requires ${name}`)
+  }
+  if (typeof issueId !== 'string' || !issueId) throw new Error('attachSourceNotes requires issueId')
+  if (typeof file !== 'string' || !file) throw new Error('attachSourceNotes requires file')
+  const title = sourceNotesTitle(issueId)
+  const before = await readIssueAttachments({ apiKey, linearRequest, issueId })
+  if (before.titles.includes(title)) return { status: 'skipped', issueId, title }
+
+  const content = readFile(file)
+  const size = Buffer.isBuffer(content)
+    ? content.length
+    : Buffer.byteLength(String(content ?? ''), 'utf8')
+  if (size === 0) throw new Error(`attachSourceNotes refuses an empty source notes file: ${file}`)
+
+  const upload = await linearRequest({
+    apiKey,
+    query: FILE_UPLOAD_MUTATION,
+    variables: { contentType, filename: filename || `${issueId}-source-notes.md`, size },
+  })
+  const uploadFile = upload?.fileUpload?.uploadFile
+  if (
+    upload?.fileUpload?.success !== true ||
+    typeof uploadFile?.uploadUrl !== 'string' ||
+    typeof uploadFile?.assetUrl !== 'string' ||
+    !Array.isArray(uploadFile?.headers)
+  ) {
+    throw new Error(`fileUpload for ${issueId} returned no usable signed upload`)
+  }
+  const headers = { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000' }
+  for (const header of uploadFile.headers) {
+    if (typeof header?.key !== 'string' || typeof header?.value !== 'string') {
+      throw new Error(`fileUpload for ${issueId} returned a malformed header`)
+    }
+    headers[header.key] = header.value
+  }
+  await put({ file, uploadURL: uploadFile.uploadUrl, headers })
+
+  let createError = null
+  try {
+    const created = await linearRequest({
+      apiKey,
+      query: ATTACHMENT_CREATE_MUTATION,
+      variables: { input: { issueId: before.uuid, title, url: uploadFile.assetUrl } },
+      operation: 'write',
+    })
+    const result = created?.attachmentCreate
+    if (result?.success === true && result?.attachment?.title === title) {
+      return { status: 'created', issueId, title, settledBy: 'response' }
+    }
+  } catch (error) {
+    createError = error
+  }
+  const after = await readIssueAttachments({ apiKey, linearRequest, issueId })
+  if (after.titles.includes(title)) {
+    return { status: 'created', issueId, title, settledBy: 'read-back' }
+  }
+  throw new Error(
+    `attachmentCreate for ${issueId} did not land ${JSON.stringify(title)}` +
+      (createError ? `: ${createError.message}` : ' (unconfirmed response, absent on read-back)'),
+  )
+}
+
 /** Last commit time for a path, or null when git cannot answer. */
 function gitLastChangeAt(path) {
   const result = spawnSync('git', ['log', '-1', '--format=%cI', '--', path], { encoding: 'utf8' })
@@ -702,6 +1097,7 @@ export function runCli(
     pathExists = (path) => existsSync(path),
     lastChangeAt = gitLastChangeAt,
     env = process.env,
+    now = Date.now,
   } = {},
 ) {
   const [command, ...args] = Array.isArray(argv) ? argv : []
@@ -724,7 +1120,33 @@ export function runCli(
     case 'attachments':
       return JSON.stringify(attachmentPresence(readJson(args[0])))
     case 'retired':
-      return JSON.stringify(retiredNoteIds(readJson(args[0]), args[1] ? readJson(args[1]) : {}))
+      return JSON.stringify(
+        retiredNoteIds(readJson(args[0]), args[1] ? readJson(args[1]) : {}, {
+          staleDays: resolveStaleDays(args[2], env),
+          now: now(),
+        }),
+      )
+    case 'retire-plan':
+      return JSON.stringify(
+        retirePlan(readJson(args[0]), readJson(args[1]), readJson(args[2]), {
+          staleDays: resolveStaleDays(args[3], env),
+          now: now(),
+        }),
+      )
+    case 'digest':
+      return digestClusters(readJson(args[0]))
+        .map((line) => JSON.stringify(line))
+        .join('\n')
+    case 'describe': {
+      const selection = readJson(args[0])
+      const entry = (Array.isArray(selection?.selected) ? selection.selected : []).find(
+        (candidate) => candidate?.cluster?.key === args[1],
+      )
+      if (!entry) throw new Error(`describe: no selected theme with key ${args[1]}`)
+      return renderChildDescription(entry.cluster, { pathExists })
+    }
+    case 'where-match':
+      return JSON.stringify(whereMatch(readJson(args[0]), args[1]))
     case 'select':
       return JSON.stringify(
         selectClusters(readJson(args[0]), readJson(args[1]), {
@@ -739,7 +1161,8 @@ export function runCli(
 
 if (isMainModule(import.meta.url)) {
   try {
-    process.stdout.write(`${runCli(process.argv.slice(2))}\n`)
+    const output = runCli(process.argv.slice(2))
+    process.stdout.write(output ? `${output}\n` : '')
   } catch (error) {
     process.stderr.write(`sweep-notes-gate: ${error.message}\n`)
     process.exitCode = 1

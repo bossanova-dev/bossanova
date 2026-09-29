@@ -55,5 +55,11 @@ build:remote --remote_timeout=3600
 build:remote --bes_backend=grpcs://remote.buildbuddy.io
 build:remote --bes_results_url=https://app.buildbuddy.io/invocation/
 build:remote --bes_upload_mode=fully_async
+# Bound the BES upload tail. --bes_timeout defaults to 0s, i.e. after the tests finish
+# bazel waits FOREVER for the BES upload to complete - a green gate was measured idling
+# ~15 minutes on blank INFO lines. .bazelrc.user may enable BES (--config=remote), so the
+# bound keeps the dashboard uploads while capping how long a finished invocation waits on
+# them. Inert when no BES backend is configured, which covers CI.
+build --bes_timeout=60s
 
 try-import %workspace%/.bazelrc.user

@@ -23,8 +23,10 @@ import {
   SCANNED_EXTRA,
   SCANNED_NAME,
   SCAN_EXCLUSIONS,
+  findLedgerArithmetic,
   findRawSizeRatchets,
   findRawSizeRatchetsInRepo,
+  ledgerTriples,
   scannedFiles,
 } from './check-raw-size-ratchets.mjs'
 
@@ -151,6 +153,76 @@ test('a reasoned opt-out suppresses the budget rule as well', () => {
   assert.deepEqual(findRawSizeRatchets(source), [])
 })
 
+// ─── ratchet-ledger-arithmetic: a written delta must derive from its endpoints (BOS-1341) ──
+
+test('the ledger rule reports an inconsistent triple and names the derived delta', () => {
+  const offenders = findRawSizeRatchets('  // re-banked 66945 -> 71585 (+4515 B) for BOS-1')
+  assert.deepEqual(
+    offenders.map(({ line, rule, text }) => ({ line, rule, text })),
+    [
+      {
+        line: 1,
+        rule: 'ratchet-ledger-arithmetic',
+        text: '66945 -> 71585 (+4515): B − A is +4640',
+      },
+    ],
+  )
+})
+
+test('the ledger rule accepts every consistent arrow and sign spelling', () => {
+  for (const source of [
+    '66945 -> 71585 (+4640 B)',
+    '71585 → 66945 (−4640 B)',
+    '71585 -> 66945 (-4640 B)',
+    "justification: 'BOS-1: 830 -> 835 ( + 5 ) pins'",
+    '100 -> 100 (+0)',
+  ]) {
+    assert.deepEqual(findLedgerArithmetic(source), [], source)
+    assert.equal(ledgerTriples(source).length, 1, `${source} must be parsed as one triple`)
+  }
+})
+
+test('the ledger rule reads the sign: a grow written as a shrink is reported', () => {
+  assert.deepEqual(
+    findLedgerArithmetic('100 → 90 (+10)').map((hit) => hit.text),
+    ['100 -> 90 (+10): B − A is −10'],
+  )
+})
+
+test('a size-ratchet-ok marker does NOT suppress the ledger rule', () => {
+  const source = ['// size-ratchet-ok: historical figure', '// 66945 -> 71585 (+4515 B)'].join('\n')
+  assert.deepEqual(
+    findRawSizeRatchets(source).map((o) => [o.line, o.rule]),
+    [[2, 'ratchet-ledger-arithmetic']],
+  )
+})
+
+test('date ranges, unparenthesised deltas and grouped numbers are not triples', () => {
+  for (const source of [
+    'review 2026-09-08 -> 2026-12-08 (+91 days)',
+    'PROSE 830 -> 835. +5 pins',
+    '66945 -> 71585, +4640 B',
+    '66,945 -> 71,585 (+4,640 B)',
+    '1.5 -> 2 (+1)',
+  ]) {
+    assert.deepEqual(ledgerTriples(source), [], source)
+  }
+})
+
+test('the ledger rule is not vacuous over the real scope: it parses many real triples', () => {
+  const parsed = scannedFiles(repoRoot).flatMap((file) =>
+    ledgerTriples(fs.readFileSync(file, 'utf8')),
+  )
+  assert.ok(
+    parsed.length >= 50,
+    `expected the scope to carry real ledger triples, got ${parsed.length}`,
+  )
+  assert.deepEqual(
+    parsed.filter((triple) => triple.written !== triple.derived),
+    [],
+  )
+})
+
 // ─── Negative fixtures: the detector must NOT fire ────────────────────────────────────────
 
 test('occurrence counting is not a size measurement', () => {
@@ -272,4 +344,7 @@ test('the gate states what a green run does not establish', () => {
   assert.match(RESIDUAL, /intermediate variable/)
   assert.match(RESIDUAL, /statSync\(\)\.size/)
   assert.match(RESIDUAL, /readFileSync\(\)\.length/)
+  // The ledger rule reads one spelling; the residual must say which figures it cannot see.
+  assert.match(RESIDUAL, /parenthesised `A -> B \(±N\)` spelling/)
+  assert.match(RESIDUAL, /cross-referenced figure/)
 })

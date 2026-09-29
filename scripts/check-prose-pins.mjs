@@ -693,6 +693,9 @@ function endOfArgument(masked, from) {
 // TO ADD A PIN you must edit this map, in the same commit, and say why a helper would not do. See
 // docs/skills/prose-pins.md.
 //
+// ON A REBASE CONFLICT keep both sides' reasons, never either side's number: once the rebase
+// completes, re-measure with scripts/ratchet-report.mjs and bank the count it reports.
+//
 // REASON FOR THE CURRENT NUMBERS: the population as it stood when the gate was introduced, banked
 // wholesale so the gate could ship without a bulk rewrite, then RE-MEASURED in the BOS-1210 review
 // after the scanner was corrected for wrapped initialisers and destructuring patterns (see
@@ -764,7 +767,20 @@ export const PROSE_PIN_BASELINE = {
   // three `indexOf` comparisons rather than as prose about ordering. Those four account for
   // the first 16; the 17th (860 -> 861) is the pre-push message re-read, whose recipe is written once in the finalize reference: the pin is
   // on the rule's NAME, so the reference keeps sole ownership of the recipe's text.
-  'scripts/boss-build-skill.test.mjs': 861,
+  // BOS-1338: 861 -> 862, one pin looped over six scopes. The Step 6 hold, its disposition call
+  // and the reviewer's heartbeat/beat commands are all EXECUTED against the real helper; what no
+  // helper can answer is which of the reviewer's own steps the beat obligation covers (fix loop,
+  // nested dispatches, cross-model round, push, tag injection, ready) — the reviewer is prose.
+  // BOS-1334: 862 -> 861. The bounded fallback poll left prose for skills-toolbox/ci-wait.mjs,
+  // whose own suite specifies the chunking, budget, delay and no-reading rules, so the two pins on
+  // the retired loop's identifiers (CI_WAIT_ATTEMPTS / CI_WAIT_INTERVAL) went and one took their
+  // place: that Protocol step 5 runs the helper by its toolbox path.
+  // BOS-1330: 861 -> 864. The five cleanliness sentence pins were RE-AIMED at the worktree-state.mjs
+  // call (net zero), and its clean/dirty/unknown verdict is EXECUTED in the helper's own suite. The
+  // +3 is the prose no helper runs: Step 6 routes `clean` to NO_CHANGE and `unknown` to BLOCKED and
+  // stages only uncommitted paths (one pin), Step 4.6 refutes a missing anchor only after reading the
+  // file, and core-spine's post-hook re-check names the helper and its `unknown` arm.
+  'scripts/boss-build-skill.test.mjs': 864,
   // BOS-1243: 13 -> 14. The claim-adjudication pass gives an action per VERDICT but gave none
   // for the CLI's fourth outcome, exit 2 — an operator error where nothing was adjudicated at
   // all and an empty record list reads exactly like "nothing was refuted". The exit CODE itself
@@ -782,7 +798,11 @@ export const PROSE_PIN_BASELINE = {
   // references it routes to (boss-review/references/falsification.md, boss-build's
   // core-spine.md, docs/testing/non-vacuity-proof.md) all GREW, so this raise is bought
   // by moving the per-shape obligation into a tested helper, not by a net prose descent.
-  'scripts/boss-repair-skill.test.mjs': 23,
+  // BOS-1334: 23 -> 24. Watch Mode step 6's bounded poll now CALLS the vendored ci-wait.mjs,
+  // whose behaviour is asserted in skills-toolbox/ci-wait.test.mjs; what only the document can
+  // carry is that the step makes the call at all, so one pin, and the shell-delay negative is a
+  // doesNotMatch this gate does not count.
+  'scripts/boss-repair-skill.test.mjs': 24,
   // BOS-1213 lowered this from 194: the four regexes quoting §Caller deadline's budget numbers
   // became a numeric comparison against the helper's own constants, plus executable
   // admit-fix-round cases covering every verdict it can return.
@@ -907,7 +927,22 @@ export const PROSE_PIN_BASELINE = {
   // the adapter operationMap" pin went with the paragraph it pinned; the replacement probe, the
   // epic-spec read-row mode and the plan-storage write-back citation are asserted executably (the
   // probe is run, the mode is cross-checked against the adapter, cited helpers must ship).
-  'scripts/bs-plan-skill.test.mjs': 332,
+  // BOS-1338: 332 -> 334, two pins. The documented clock write, `wait` call and step 4 disposition
+  // are EXECUTED against the real helper; the two pins are the prose no helper runs: step 3's hold
+  // pointer must precede step 4's precondition, and the reference's `wait` exit-code routing table
+  // (one pin looped over its five rows, 98 re-arming).
+  // BOS-1329: 334 -> 341, one pin per rule and no more. The guard halves (path normalization, the
+  // content-label allow-list, `--mode` discovery) are asserted over the helpers, and the Step 9
+  // examples are JSON.parse'd and run through validateDraftMetadata rather than pinned. What no
+  // helper can answer is the agent-facing prose: Step 9's strict-JSON/repo-relative lead, Step 5's
+  // inline-Tier-1 + wrapper-ownership leads, the interactive re-plan rule, the resident pointer to
+  // it (one pin looped over both sites), and the three batch rules (Tier 1 unavailable, worker
+  // self-verification, inline per-child descriptionSummary).
+  // BOS-1330: 341 -> 343. plan-secret-scan.mjs's shapes, masking and exit codes are EXECUTED in
+  // its own suite; the two pins are the agent-facing prose: the Phase 5 hazards no longer recommend
+  // `find … -delete` (an absence pin, red on the pre-change body), and the secret gate runs the
+  // floor over plan + description first, fails closed on exit 2, and never replaces the read.
+  'scripts/bs-plan-skill.test.mjs': 343,
   'scripts/bs-record-notes-skill.test.mjs': 2,
   'scripts/bs-sweep-debt-skill.test.mjs': 32,
   'scripts/bs-sweep-mutation-skill.test.mjs': 32,
@@ -917,7 +952,12 @@ export const PROSE_PIN_BASELINE = {
   // Markdown instruction body with no runtime and therefore no helper to assert against; the five
   // pins are the structural lead, the three clauses the acceptance criterion names, and the
   // absence of the prerequisite framing that was removed.
-  'scripts/bs-sweep-notes-skill.test.mjs': 87,
+  // 87 -> 82 (BOS-1332): five pins deleted, none added. The clauses they pinned (the complete
+  // pre-create re-fetch, the hand-measured upload byte size, the blanket "never touch a deferred
+  // theme" rule, and the two MCP attachment tools in allowed-tools) moved into gate helpers whose
+  // behaviour is asserted in scripts/sweep-notes-gate.test.mjs; the skill wiring is asserted with
+  // invocation literals, which this gate does not count.
+  'scripts/bs-sweep-notes-skill.test.mjs': 82,
   // 17 -> 27 (BOS-1253): the plan sweep's all-unprioritized branch named no discriminator and its
   // edge-case table restated the same unnamed judgement, and Phase 5 had no epic terminal outcome.
   // All three sites are instruction Markdown an agent loads at execution time — there is no helper
@@ -934,7 +974,13 @@ export const PROSE_PIN_BASELINE = {
   // and cite it, the outcome TOKEN (`deferred <ISSUE-ID>: peer run in flight`), and the one
   // clause that separates a deferral from the already-planned skip it reuses — the queue label
   // is left in place, so a deferred ticket is re-swept rather than lost.
-  'scripts/bs-sweep-plan-skill.test.mjs': 31,
+  // 31 -> 39 (BOS-1340): the selection ladder and the referent check are a helper
+  // (skills-toolbox/plan-sweep-select.mjs) asserted rung by rung in its own test; the eight pins
+  // are WIRING only — Phase 2 calls `select` and names the two rules a caller applies
+  // (`worst-contained-failure`, `blocker-inherits-priority`), Phase 3 calls `referents`, binds
+  // `BOSS_NOTES_SUPPRESSED=1` on the delegated boss-plan and routes `planned-unverified`, and
+  // Phase 5 carries the two new outcome tokens. No test can observe a live delegation obeying them.
+  'scripts/bs-sweep-plan-skill.test.mjs': 39, // BOS-1340: +8 helper-wiring pins, see above
   'scripts/bs-sweep-prettify-skill.test.mjs': 7,
   // 66 -> 68 (BOS-1277). The retired pin asserted the "one continuous shell session" MANDATE,
   // which was unfollowable — every Bash tool call is a fresh shell — so it was replaced by the

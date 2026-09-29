@@ -9,7 +9,7 @@
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
-	lint-proto-breaking post-rebase-check check-race-budget \
+	lint-proto-breaking post-rebase-check ratchet-report check-race-budget \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Fast affected check (default target) — lint + test only the affected/changed
@@ -229,6 +229,9 @@ vendor-toolbox-check:
 
 ## build-drift-check: Fail if committed BUILD.bazel files drift from gazelle, or if
 ## scripts/bazel/binary-inventory.json / ledger.json no longer match the live graph.
+## A second leg runs scripts/select-affected-external-inputs.test.mjs, which re-derives every
+## cross-tree bazel `data` dep from the BUILD files, so a BUILD-only `data` edit is checked
+## wherever this gate runs (the affected `make test` selects it for any gazelle input).
 ## Depends on copy-skills: the embedsrcs lists describe the mirrored skill payload, so
 ## checking before that rsync would compare against a stale tree under `make -j`.
 ## Deliberately does NOT depend on $(GEN_STAMP), even though generated protobuf sources
@@ -242,6 +245,7 @@ vendor-toolbox-check:
 build-drift-check: copy-skills
 ifeq ($(BAZEL_USABLE),1)
 	node scripts/run-gate.mjs --label "build-drift-check" -- ./scripts/bazel/check-build-drift.sh
+	node scripts/run-gate.mjs --label "build-drift-check: external inputs" -- node --test scripts/select-affected-external-inputs.test.mjs
 else
 	@echo "==> bazel unavailable (BOSS_NO_BAZEL set or bazel not on PATH) — skipping BUILD drift check (public-mirror fallback)"
 endif
@@ -573,6 +577,11 @@ test: test-affected
 ## `make test`. Delegates the Go module loop to `bazel test //...` (cached) + the
 ## native ledger step; falls back to the legacy per-module loop when bazel is
 ## unavailable (BOSS_NO_BAZEL set or not on PATH — keeps the public mirror green).
+## NOT in this suite: the DB-backed legs `make test-warehouse` and
+## `make test-bosso-postgres` (Docker Postgres, uv/dbt). They run from the affected
+## selector (scripts/select-affected-tests.mjs routes services/warehouse/ and the
+## bosso Postgres migrations to test-warehouse) and from CI (the path-filtered
+## test-warehouse.yml job; bazel.yml's Postgres service for the bosso suites).
 test-all: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check build-drift-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
@@ -600,7 +609,10 @@ ifneq ($(wildcard services/web/package.json),)
 endif
 
 ## test-full: Alias for the exhaustive suite (`make test-all`). Kept for the agent
-## command ladder / docs that name the "full" suite explicitly.
+## command ladder / docs that name the "full" suite explicitly. Bazel- and Go-cached
+## as-is; the readiness receipt runs it under BOSS_GATE_FORCE_UNCACHED=1
+## (commands.testReadiness), which adds --nocache_test_results and GO_TEST_COUNT=1.
+## Like test-all it does not run test-warehouse or test-bosso-postgres.
 test-full:
 	$(MAKE) test-all
 
@@ -658,12 +670,22 @@ test-profile:
 	fi; \
 	exit "$$summary_status"
 
+# test-affected: when the selector maps the change to commands, a branch that adds or
+# renames a file (committed, staged or untracked) runs them uncached
+# (BOSS_GATE_FORCE_UNCACHED=1 -> --nocache_test_results / GO_TEST_COUNT=1), using the gate
+# cache's own predicate. Only the printed `adds-or-renames: no` verdict WITH its exit 1 keeps the
+# cache: `yes`, `unknown`, a `no` under any other exit status, and a probe that crashed or printed
+# nothing all force uncached. The smoke fallback, taken when nothing maps, is never forced (it
+# would re-run the whole-repo -short suite).
 test-affected:
 	@commands="$$(node scripts/select-affected-tests.mjs)" || exit $$?; \
 	if [ -z "$$commands" ]; then \
 		echo "make test-smoke"; \
 		node scripts/run-gate.mjs --label "make test-smoke" -- node scripts/gate-cache.mjs run --site "test-smoke" --command "make test-smoke" -- $(MAKE) test-smoke || exit $$?; \
 	else \
+		verdict="$$(node scripts/gate-cache.mjs adds-or-renames)" && probe_rc=0 || probe_rc=$$?; \
+		echo "$${verdict:-adds-or-renames: unknown (the probe printed nothing; forcing uncached)}"; \
+		case "$$probe_rc:$$verdict" in '1:adds-or-renames: no '*) ;; *) BOSS_GATE_FORCE_UNCACHED=1; export BOSS_GATE_FORCE_UNCACHED;; esac; \
 		printf '%s\n' "$$commands" | while IFS= read -r command; do \
 			[ -z "$$command" ] && continue; \
 			echo "$$command"; \
@@ -1040,8 +1062,12 @@ BUF_BREAKING_BASE ?= .git\#branch=origin/main
 lint-proto-breaking:
 	buf breaking --against '$(BUF_BREAKING_BASE)'
 
-## post-rebase-check: Re-run deterministic checks that a clean rebase can silently stale.
-post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test
+## ratchet-report: Print pinned beside measured for every size gate and prose-pin baseline.
+ratchet-report:
+	node scripts/ratchet-report.mjs
+
+## post-rebase-check: Re-run deterministic checks and re-measure pinned values after a rebase.
+post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test ratchet-report
 
 lint-bossalib: lint-check-version
 	node scripts/lint-affected.mjs --module lib/bossalib

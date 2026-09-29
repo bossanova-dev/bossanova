@@ -163,8 +163,7 @@ names generically everywhere else:
 
 - **If the user gave a ticket ID**: call `get_issue` with it. Respect that choice
   regardless of status.
-  - **Interactive:** if it is already in the planned/in-progress/`Done`/`Canceled` state, warn and
-    confirm before re-planning (see `references/interactive-mode.md`).
+  - **Interactive:** re-planning follows the precheck-gated rule in `references/interactive-mode.md`.
   - **Headless (`BOSS_CRON=true`):** do not ask. A cron job that names a ticket means to consider that
     ticket, but the idempotence precheck below still wins: an already-planned ticket with a valid
     description and canonical plan attachment exits cleanly without re-drafting. If the ticket is
@@ -249,8 +248,8 @@ for the Phase 4 secret gate.
    ```
 
    `RUN_ID`/`RUN_DIR` name the sentinel context under `$TMPDIR`; `RUN_SCRATCH` names this run's
-   `.linear-plans/` directory. They are different identifiers with similar names — never substitute
-   one for the other, or scratch lands in a directory Phase 5's removal does not name.
+   `.linear-plans/` directory. Never substitute one for the other, or scratch lands where Phase 5's
+   removal does not look.
 
 2. Before dispatch, write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`, the single raw-description snapshot for
    the whole run: Phase 4 reuses it, and the worker receives this path as its **only** description
@@ -278,12 +277,13 @@ for the Phase 4 secret gate.
    artifact) — **never the plan file's content**, and never drafted text of any kind: it re-inflates
    the caller (codex fold), and this channel escapes `<`/`>`/`&`.
 
-   `references/headless-dispatch.md` owns this dispatch's failure rules: **Phase 2.5
-   tracker-write authority**, a transport death retried once before tier 3, and validating the
-   returned object, not a file at its path.
+   **Hold it:** write `$RUN_DIR/draft.dispatched-at` before each attempt, then re-arm
+   `node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait` while it exits 98.
+   `references/headless-dispatch.md` owns that hold and this dispatch's failure rules.
 
-4. **Classify from the run-file sentinel only**, then re-verify (never trust the sentinel alone —
-   epic D11):
+4. **Precondition:** the step-3 hold has ended — the returned object is in hand, or `wait` exited
+   0, 96 or 97. **Classify from the run-file sentinel only**, then re-verify (never trust the
+   sentinel alone — epic D11):
    **Measurement is orchestrator-owned.** The orchestrator measures on-disk artifacts with `stat` or
    `wc -c`; reported size is never the input. After `ok`, re-verify every orchestrator-consumed
    artifact: `PLAN_PATH`, guard, child-plan and epic-spec scratch. Epics
@@ -295,7 +295,7 @@ for the Phase 4 secret gate.
    READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" draft)"
    AWAIT="${RUN_SENTINEL%/*}/bs-dispatch-await.mjs"
    # `disposition` demotes a provisional (never-upgraded) payload on EVERY kind.
-   DISP="$(node "$AWAIT" disposition "$RUN_DIR" "$RUN_ID" draft --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json)"
+   DISP="$(node "$AWAIT" disposition "$RUN_DIR" "$RUN_ID" draft --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json --dispatched-at "$(cat "$RUN_DIR/draft.dispatched-at")")"
    if [ "$(printf '%s' "$DISP" | jq -r '.publishable')" != true ]; then
      # SAFE branch — NO Linear write, non-zero exit.
      echo "$DISPATCH_FAILURE: no publishable sentinel ($(printf '%s' "$DISP" | jq -r '.reason')) — aborting" >&2
@@ -872,20 +872,20 @@ subagent → validate its envelope → fold or skip), against
 ## Phase 4 — Finalize the plan attachment and write back to the tracker
 
 > **STOP — secret gate (mandatory, do not skip).** This runs before finalizing the native tracker
-> attachment. Read the entire plan file (with special attention to the `## Original notes` verbatim
-> block and anything pasted from the ticket or interview) and confirm it contains **zero** of: API
-> keys, tokens, passwords, connection strings, private keys, session cookies, internal
-> hostnames/IPs, or customer PII. If you find anything credential- or PII-shaped, **redact it in
-> every persisted artifact with `[REDACTED]` or `[REDACTED: reference]`** (e.g. `[REDACTED: repo-root
-.env]`) before attaching it. If you are unsure whether something
-> is sensitive, treat it as sensitive and redact it. Do not finalize the attachment until this
-> check passes. For credential-valued external-image query parameters, use `token=REDACTED`,
-> `token=[REDACTED]`, or `token=[REDACTED:%20vault]`; these preserve the image
-> reference without persisting its credential. The redacted source is the safe form used by the verbatim attachment checks below;
-> the raw Phase 1 source is retained only in the ephemeral image-parity scratch file.
-> A signed `uploads.linear.app` URL is an explicit carve-out: do **not** redact the reference away.
-> Strip its signature query string and preserve the unsigned asset path instead, so the image-parity
-> gate can retain the asset identity without carrying a credential-like signature.
+> attachment. **Mechanical floor first** (toolbox preamble first):
+> `node "${BOSS_PLAN_TOOLBOX:?}/plan-secret-scan.mjs" "$PLAN_FILE" <the description artifact>`.
+> Exit 1 ⇒ redact the named lines and re-run; exit 2 ⇒ the gate fails closed. A clean scan never
+> replaces the read: then read the whole plan file (especially `## Original notes` and anything
+> pasted from the ticket) and confirm it contains **zero** of: API keys, tokens, passwords,
+> connection strings, private keys, session cookies, internal hostnames/IPs, or customer PII. If you
+> find anything credential- or PII-shaped, **redact it in every persisted artifact with `[REDACTED]`
+> or `[REDACTED: reference]`** (e.g. `[REDACTED: repo-root .env]`) before attaching it; unsure ⇒
+> redact. Do not finalize the attachment until this check passes. Credential-valued external-image
+> query parameters become `token=REDACTED`, `token=[REDACTED]`, or `token=[REDACTED:%20vault]`,
+> keeping the reference, not the credential. The redacted source is the safe form the verbatim
+> attachment checks below use; the raw Phase 1 source stays only in the ephemeral image-parity
+> scratch file. A signed `uploads.linear.app` URL is a carve-out: strip its signature query and keep
+> the unsigned asset path, so the image-parity gate keeps the asset identity.
 
 > **STOP — image-parity gate (mandatory, mechanical, do not skip).** A rewritten description that
 > silently drops the reporter's screenshots is "worse than none" (the Phase 0 edge rule), and the
@@ -1124,14 +1124,14 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    manufactures a blocking edge against work neither ticket touches.
 
    c. **Classify once.** Build `subject`, `candidates`, `declaredRelatedIds`, `logicalDependencies`,
-   `moduleRoots`, `repoWideTokens`, `areaAliases` (`epicLabel` and `stateRoles` default from
-   config). `repoWideTokens` EXTENDS the shipped suppression defaults
-   (name this repo's append-only registries and generated mirror directories; a token carrying a
-   slash suppresses everything beneath it), and `areaAliases` maps a path onto the generated mirrors
-   of it. `moduleRoots` is this
-   repo's top-level module/package/`.dotted` names: area extraction drops every slash-free token
-   without it, so a plan whose `## Key changes` names bare module names contributes no areas and its
-   overlaps are missed in silence — the missed-prerequisite defect re-entering through the glue.
+   `moduleRoots`, `repoWideTokens`, `areaAliases` (these three default from `.boss-skills.json`
+   `planDependencies`, `epicLabel` and `stateRoles` from tracker config; payload values extend
+   them). `repoWideTokens` EXTENDS the shipped suppression defaults (a token carrying a slash
+   suppresses everything beneath it), and `areaAliases` maps a path onto the generated mirrors
+   of it. `moduleRoots` is this repo's top-level module/package/`.dotted` names: area extraction
+   drops every slash-free token without it, so a plan whose `## Key changes` names bare module
+   names contributes no areas and its overlaps are missed in silence — the missed-prerequisite
+   defect re-entering through the glue.
    `subject` needs the SAME fields as a candidate, including workflow state/status: it is blocked on
    inbound edges and blocks outbound ones, so missing state downgrades **every** edge rather than
    some. **Write that payload
@@ -1144,7 +1144,7 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    DEPS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json"
-   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});i.stateRoles=i.stateRoles||c.stateRolesFor(g);i.epicLabel=i.epicLabel||c.labelName(g,"epic");const v=d.validateDependencyScanInput(i);if(!v.ok){for(const f of v.defects)console.error(f.code,f.id,f.remedy);process.exitCode=1;return}const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));const r=d.planDependencyEdges(i),V=d.dependencyScanVerdict(r);console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved)+" candidatesWithoutAreas "+r.candidatesWithoutAreas+" "+V.verdict+" compared="+V.compared+" edges="+V.edges+" "+V.reasons);console.log(JSON.stringify({...r,verdict:V}))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
+   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=d.withScanDefaults(g,JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});const v=d.validateDependencyScanInput(i);if(!v.ok){for(const f of v.defects)console.error(f.code,f.id,f.remedy);process.exitCode=1;return}const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));const r=d.planDependencyEdges(i),V=d.dependencyScanVerdict(r);console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved)+" candidatesWithoutAreas "+r.candidatesWithoutAreas+" "+V.verdict+" compared="+V.compared+" edges="+V.edges+" "+V.reasons);console.log(JSON.stringify({...r,verdict:V}))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
    # Removing it here keeps the scan's input from outliving the scan; it is inside this run's
    # scratch directory either way, so an abort between the write and this line still leaves it
    # for Phase 5's single `rm -rf` rather than stranding a file nothing names.
@@ -1304,9 +1304,8 @@ if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
 
 **Why the removal names a run directory and nothing else — the hazards this shape exists to avoid.**
 
-- **`.linear-plans/` is shared mutable state across concurrent runs.** Several planning runs work in
-  the same checkout at once, and one run has been observed holding scratch for nine other tickets
-  mid-flight. Nothing outside `.linear-plans/run-<RUN-SCRATCH-ID>/` is yours.
+- **`.linear-plans/` is shared mutable state across concurrent runs.** Several planning runs share
+  one checkout; one was observed holding scratch for nine other tickets mid-flight. Nothing outside `.linear-plans/run-<RUN-SCRATCH-ID>/` is yours.
 - **An `<issue-id>`-scoped pattern is _not_ sufficient.** It is tempting to reason that a
   `<ISSUE-ID>*` pattern only ever matches your own files. It does not: two runs can plan the **same**
   ticket at the same time, and a correctly `<ISSUE-ID>`-scoped cleanup has been observed deleting a
@@ -1316,10 +1315,11 @@ if [ -e .linear-plans/run-<RUN-SCRATCH-ID> ]; then CLEANUP_RC=1; fi
   never "tidy" `.linear-plans/` beyond your own run directory — not even something that looks like
   obvious residue. Stale entries are the TTL reap's job (Phase 0), not yours. Files a peer has not yet
   committed are invisible to any tracked/untracked test you might reach for.
-- **If you ever do need a pattern, `find … -name 'PREFIX*' -delete` is the load-bearing spelling.** A
-  bare shell glob (`rm dir/PREFIX*`) is not equivalent: under zsh and fish a single unmatched wildcard
-  aborts the **whole command line** before anything runs, so the cleanup deletes nothing while reading
-  as a clean pass. `find … -delete` exits 0 on no match, so it has no such failure mode.
+- **If you ever do need a pattern, list matches in node or name each file in a quoted `rm -f`, then
+  assert each is gone with `[ -e … ]`.** Under zsh and fish one unmatched wildcard in a bare glob
+  aborts the **whole command line**, and a command-rewriting shell hook can drop `find`'s delete
+  action and still exit 0. Either way nothing is deleted yet the step reads as done; only the
+  post-condition proves removal.
 - **A sentinel run directory is selected from the handed `RUN_ID`, never by grepping a ticket id out of
   `$TMPDIR/bs-run-sentinel/`.** A peer run planning a different ticket can cite this one as a premise,
   so its run directory contains this ticket's id too; acting on a ticket-id grep hit reads or deletes a
@@ -1468,7 +1468,7 @@ publishing is separate and continues to follow its configured proof adapter and 
 
 - No unplanned issues / no ID match → report and stop.
 - All unplanned tickets skipped at the Phase 1 confirmation (interactive) → report that the queue is exhausted and stop.
-- Issue already past unplanned → warn and confirm before re-planning (headless: proceed if planned/in-progress, but stop on `Done`/`Canceled` — see Phase 1).
+- Issue already past unplanned → Phase 1 (interactive: the re-plan rule in `references/interactive-mode.md`; headless: stop on `Done`/`Canceled`).
 - Existing description → fold it into the interview/recon and preserve it verbatim under `## Original notes`.
 - Estimate rejected → finish the other updates, warn about Fibonacci estimation setup.
 - **Headless drafting dispatch fails** (missing/stale sentinel, or an `ok` sentinel with a missing/empty plan file) → `dispatch-failure`: **no Linear write**, non-zero exit with a one-line stderr reason, run-dir cleaned. A half-planned issue is worse than none.

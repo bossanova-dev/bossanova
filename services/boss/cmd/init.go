@@ -310,6 +310,7 @@ var skippedBlocks = []struct{ name, reason string }{
 	{"reviewLedger", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"planContract", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"reviewDefaults", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
+	{"planDependencies", "which shared files every ticket appends to is a fact about this repo's history, not its files; the built-in block is empty and the dependency scan uses only its per-run payload until an operator declares them"},
 	{"epicDefaults", "how long a child of an epic typically runs is a fact about this repo's work, not about its files, so it cannot be detected; the built-in child wall clock applies until an operator measures otherwise"},
 	{"notesDefaults", "a reporting-cadence preference rather than a repository property; the built-in default runs the post-terminal notes phase (and the pre-PR knowledge phase) on every run, and an operator who wants fewer of them declares the block and turns sampleRate down"},
 	{"extensionRoots", "not detectable from a repo's files; the built-in defaults scan the supported agent skill roots"},

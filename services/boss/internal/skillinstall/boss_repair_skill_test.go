@@ -1352,7 +1352,7 @@ func TestBossRepairSkillPushedHeadSurvivalContract(t *testing.T) {
 // judge it. An interrupted earlier round had left a complete, coherent fix for the very thread
 // under repair sitting uncommitted; authoring a replacement would have duplicated or regressed it.
 //
-// The three commands are pinned individually because `git status --porcelain` alone shows only
+// The three commands are pinned individually because the verdict helper alone shows only
 // which files moved — the decision "does this already fix the thread" needs the content, and staged
 // content is invisible to `git diff` alone.
 //
@@ -1381,7 +1381,12 @@ func TestBossRepairSkillPhase11ReadsExistingWorktreeDiff(t *testing.T) {
 
 			// Read the change, not just the file list.
 			assertContains(t, step11a, "When `git status` is not clean, read the actual change before authoring anything")
-			assertContains(t, step11a, "git status --porcelain")
+			// BOS-1330: the cleanliness DECISION goes through the shape-validating helper, never a
+			// bare `git status --porcelain` a command-rewriting shell hook can answer with `ok`. The
+			// two diff reads stay: they are content reads, not the decision.
+			assertContains(t, step11a, `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`)
+			assertContains(t, step11a, "`unknown` (or no verdict line) ⇒ stop and report it")
+			assertNotContains(t, step11a, "\ngit status --porcelain\n")
 			assertContains(t, step11a, "\ngit diff\n")
 			assertContains(t, step11a, "git diff --cached")
 
@@ -1435,6 +1440,9 @@ func TestBossRepairSkillPushOwedIsReDerived(t *testing.T) {
 
 			// The stale command is gone, not merely supplemented.
 			assertNotContains(t, phase3, "git status -sb")
+			// BOS-1330: the post-repair clean check asks the verdict helper, not a bare `git status`.
+			assertContains(t, phase3, `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"   # Should print verdict: clean`)
+			assertNotContains(t, phase3, "git status     # Should show clean working tree")
 
 			// The clean-tree check must not contradict Phase 1 step 1.1a, which deliberately leaves
 			// a peer's unrelated work in place. Without this carve-out the agent resolves the

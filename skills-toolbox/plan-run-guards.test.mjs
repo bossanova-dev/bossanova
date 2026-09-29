@@ -198,6 +198,76 @@ test('validateDraftMetadata refuses a reference outside the description scratch 
   }
 })
 
+// BOS-1329 R8: an absolute or `./`-prefixed spelling of the repo-relative description artifact
+// names the same file, so refusing it discarded an already-drafted plan over spelling alone.
+test('validateDraftMetadata accepts an absolute or ./-prefixed description reference under the tree', () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-cwd-'))
+  for (const spelling of [path.join(cwd, DESCRIPTION_REF), `./${DESCRIPTION_REF}`]) {
+    const seen = []
+    const result = validateDraftMetadata(metadata({ descriptionSummary: { path: spelling } }), {
+      cwd,
+      resolveDescription: (file) => {
+        seen.push(file)
+        return descriptionSummary()
+      },
+    })
+    assert.equal(result.ok, true, `${spelling}: ${JSON.stringify(result.violations)}`)
+    assert.deepEqual(seen, [spelling], 'the resolver still reads the spelling it was handed')
+  }
+})
+
+test('validateDraftMetadata refuses an absolute or ./ reference that resolves outside the tree', () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-cwd-'))
+  for (const spelling of [
+    path.join(path.dirname(cwd), DESCRIPTION_REF),
+    `./../${DESCRIPTION_REF}`,
+    path.join(cwd, '.linear-plans', 'BOS-1.description.md'),
+  ]) {
+    const result = validateDraftMetadata(metadata({ descriptionSummary: { path: spelling } }), {
+      cwd,
+      resolveDescription: () => descriptionSummary(),
+    })
+    assert.equal(result.ok, false, spelling)
+    assert.ok(
+      result.violations.some((violation) => violation.code === 'description-summary-bad-reference'),
+      `${spelling} must fire description-summary-bad-reference`,
+    )
+  }
+})
+
+// BOS-1329 R9: returned labels are the content taxonomy only, resolved through the config.
+test('validateDraftMetadata rejects a label outside the content taxonomy with unknown-label', () => {
+  const result = validateDraftMetadata(
+    metadata({ labels: ['improvement', 'agent-friendly', 'refactor'] }),
+  )
+  assert.equal(result.ok, false)
+  assert.ok(result.invalid.includes('labels'))
+  const violation = result.violations.find((entry) => entry.code === 'unknown-label')
+  assert.ok(violation, JSON.stringify(result.violations))
+  assert.deepEqual(violation.labels, ['agent-friendly', 'refactor'])
+  assert.match(violation.message, /"agent-friendly", "refactor"/)
+  assert.deepEqual(violation.allowed, ['bug', 'feature', 'improvement', 'docs'])
+})
+
+test('validateDraftMetadata accepts taxonomy literals and a config-mapped display name', () => {
+  for (const labels of [['bug'], ['improvement'], ['bug', 'feature', 'improvement', 'docs'], []]) {
+    const result = validateDraftMetadata(metadata({ labels }))
+    assert.equal(result.ok, true, `${labels}: ${JSON.stringify(result.violations)}`)
+  }
+  const mapped = {
+    ...DEFAULT_CONFIG,
+    trackerConfig: { linear: { labels: { bug: 'Bug', docs: 'Documentation' } } },
+  }
+  assert.equal(
+    validateDraftMetadata(metadata({ labels: ['Bug', 'Documentation'] }), { config: mapped }).ok,
+    true,
+  )
+  // Once a role is mapped, its bare literal is no longer a label the tracker has.
+  const literal = validateDraftMetadata(metadata({ labels: ['bug'] }), { config: mapped })
+  assert.equal(literal.ok, false)
+  assert.ok(literal.violations.some((entry) => entry.code === 'unknown-label'))
+})
+
 test('validateDraftMetadata refuses a malformed reference object and non-union values', () => {
   const malformed = validateDraftMetadata(
     metadata({ descriptionSummary: { path: DESCRIPTION_REF, inline: 'also this' } }),

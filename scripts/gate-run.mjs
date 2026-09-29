@@ -15,9 +15,15 @@ export const VERDICTS = Object.freeze({
   passed: 'GATE PASSED',
   failedPrefix: 'GATE FAILED (exit ',
   environmentPrefix: 'GATE ENVIRONMENT FAILURE (exit ',
+  stoppedPrefix: 'GATE STOPPED (exit ',
   vanished: 'GATE UNKNOWN - vanished',
   stillRunning: 'GATE UNKNOWN - still running',
 })
+
+// `wait`'s exit code for a run a caller deliberately tore down with `stop`: distinct from 0 (passed),
+// 1 (failed), 75 (environment), 97 (vanished) and 98 (still running), so a teardown can never be
+// read as a red gate by exit code any more than by its first line.
+export const STOPPED_EXIT_CODE = 96
 
 const DEFAULT_TIMEOUT_MS = 600_000
 const POLL_MS = 250
@@ -46,6 +52,17 @@ function writeFileAtomic(file, content) {
 
 function logPath(runDir) {
   return path.join(runDir, 'log')
+}
+
+// `stop` leaves this marker BEFORE its first signal, so the non-zero status that signal produces
+// renders as a deliberate teardown rather than a failure. A status of 0 still wins (the gate passed
+// before the stop took effect), and a non-zero status with no marker is still a genuine red gate.
+function stoppedMarkerPath(runDir) {
+  return path.join(runDir, 'stopped')
+}
+
+function wasStopped(runDir) {
+  return fs.existsSync(stoppedMarkerPath(runDir))
 }
 
 // Every terminal outcome is emitted through here so it survives the poller's stdout: the first line
@@ -272,6 +289,11 @@ async function wait(args) {
         emitVerdict(runDir, VERDICTS.passed, 0)
       }
       const exitStatus = Number.isInteger(status) ? status : 1
+      if (wasStopped(runDir)) {
+        emitVerdict(runDir, `${VERDICTS.stoppedPrefix}${exitStatus})`, STOPPED_EXIT_CODE, [
+          `log: ${logPath(runDir)}`,
+        ])
+      }
       // Only a NON-ZERO status is classified, and only over the bounded tail, so a green gate is
       // never re-read and a test whose own output mentions a timeout cannot flip a pass.
       const classification = classifyGateFailure(readLogTail(runDir)?.text ?? '')
@@ -311,8 +333,9 @@ function readStatus(runDir) {
   }
 }
 
-function verdictLineForStatus(status) {
-  return status === 0 ? VERDICTS.passed : `${VERDICTS.failedPrefix}${status})`
+function verdictLineForStatus(status, stopped = false) {
+  if (status === 0) return VERDICTS.passed
+  return `${stopped ? VERDICTS.stoppedPrefix : VERDICTS.failedPrefix}${status})`
 }
 
 function readChildPid(runDir) {
@@ -370,16 +393,28 @@ async function stop(args) {
   if (existing !== null) {
     // Already terminal: change no file (not even `verdict`), report what is there, exit 0. The
     // evidence line is a read of the log, so it stays inside that no-write guarantee.
-    process.stdout.write(`${verdictLineForStatus(existing)}\n${evidenceLine(runDir)}\n`)
+    process.stdout.write(
+      `${verdictLineForStatus(existing, wasStopped(runDir))}\n${evidenceLine(runDir)}\n`,
+    )
     process.exit(0)
   }
 
   const childPid = readChildPid(runDir)
   const stopExtras = () => [`log: ${logPath(runDir)}`]
 
+  // Mark the teardown before anything is signalled, so every status this stop provokes - whether
+  // the supervisor writes it or this function forces it below - renders as GATE STOPPED.
+  try {
+    writeFileAtomic(stoppedMarkerPath(runDir), `${new Date().toISOString()}\n`)
+  } catch (err) {
+    process.stderr.write(`gate-run stop: cannot write stop marker in ${runDir}: ${err.message}\n`)
+    process.exit(1)
+  }
+
   signalChildGroup(childPid, 'SIGTERM')
   const termStatus = await pollForStatus(runDir, childPid, Date.now() + STOP_TERM_GRACE_MS)
-  if (termStatus !== null) emitVerdict(runDir, verdictLineForStatus(termStatus), 0, stopExtras())
+  if (termStatus !== null)
+    emitVerdict(runDir, verdictLineForStatus(termStatus, true), 0, stopExtras())
 
   // The child ignored or outlived SIGTERM. Escalate before writing anything: a terminal status
   // written over a LIVE child is the worst outcome this subcommand has, because the orphan goes on
@@ -388,7 +423,8 @@ async function stop(args) {
   // is what makes "the held lock is released" a true statement rather than a hopeful one.
   signalChildGroup(childPid, 'SIGKILL')
   const killStatus = await pollForStatus(runDir, childPid, Date.now() + STOP_KILL_GRACE_MS)
-  if (killStatus !== null) emitVerdict(runDir, verdictLineForStatus(killStatus), 0, stopExtras())
+  if (killStatus !== null)
+    emitVerdict(runDir, verdictLineForStatus(killStatus, true), 0, stopExtras())
 
   const survived = Number.isInteger(childPid) && childPid > 0 && isPidAlive(childPid)
   const stoppedStatus = 128 + (os.constants.signals.SIGTERM ?? 15)
@@ -404,9 +440,9 @@ async function stop(args) {
     process.stderr.write(
       `gate-run stop: child pid ${childPid} survived SIGKILL and may still hold its lock\n`,
     )
-    emitVerdict(runDir, verdictLineForStatus(stoppedStatus), 1, stopExtras())
+    emitVerdict(runDir, verdictLineForStatus(stoppedStatus, true), 1, stopExtras())
   }
-  emitVerdict(runDir, verdictLineForStatus(stoppedStatus), 0, stopExtras())
+  emitVerdict(runDir, verdictLineForStatus(stoppedStatus, true), 0, stopExtras())
 }
 
 if (isMainModule(import.meta.url)) {

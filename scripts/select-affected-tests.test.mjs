@@ -12,6 +12,8 @@ import {
   externalInputRules,
   moduleRules,
   nativeModuleRootsForExternalInputRule,
+  needsBuildDriftCheck,
+  renderAffectedCommands,
   renderMakeCommands,
   selectBazelAffected,
   selectLedgerModules,
@@ -446,6 +448,115 @@ test('renderMakeCommands prefixes scoped environment variables', () => {
   )
 })
 
+// BOS-1336: every path that can move gazelle output or the bazel registries must put
+// `make build-drift-check` into the affected selection; paths that provably cannot must not.
+test('needsBuildDriftCheck fires for gazelle inputs and stays quiet for everything else', () => {
+  const positives = [
+    // new test file in a manual-tagged package (note 7696e6c3)
+    'services/boss/internal/skillinstall/boss_review_skill_test.go',
+    // import-only edit to an existing file: edit and add are indistinguishable (note 333207d3)
+    'services/boss/cmd/session_json_test.go',
+    // non-Go files under embedsrcs payloads (notes bd3bbefe, 479c057e)
+    'services/boss/internal/skillinstall/skills/boss-plan/toolbox/new-helper.mjs',
+    'plugins/bossd-plugin-claude/skilldata/skills/boss-plan/SKILL.md',
+    'services/bossd/migrations/0099_x.sql',
+    // BUILD / .bzl files outside any module root
+    'docs/analytics/BUILD.bazel',
+    'tools/BUILD',
+    'tools/rules.bzl',
+    // graph-wide triggers
+    'MODULE.bazel',
+    'go.work',
+    'Makefile',
+    'proto/bossanova/v1/x.proto',
+    // the drift gate's own inputs
+    '.bazelignore',
+    'scripts/bazel/ledger.json',
+    'scripts/bazel/binary-inventory.json',
+    'scripts/bazel/check-build-drift.sh',
+    // path normalization
+    './services/bossd/x.go',
+  ]
+  const negatives = [
+    'docs/solutions/x.md',
+    'services/web/src/App.tsx',
+    'skills-toolbox/plan-deps-lib.mjs',
+    'scripts/select-affected-tests.mjs',
+    'CLAUDE.md',
+    // a near-miss basename must not count as a BUILD file
+    'docs/BUILD.md',
+  ]
+
+  for (const file of positives) {
+    assert.equal(needsBuildDriftCheck([file]), true, `${file} must select build-drift-check`)
+  }
+  for (const file of negatives) {
+    assert.equal(needsBuildDriftCheck([file]), false, `${file} must not select build-drift-check`)
+  }
+  assert.equal(needsBuildDriftCheck([]), false, 'an empty change set selects no drift gate')
+  assert.equal(needsBuildDriftCheck(['', '  ']), false, 'blank paths select no drift gate')
+  assert.equal(
+    needsBuildDriftCheck(['docs/solutions/x.md', 'services/boss/cmd/x.go']),
+    true,
+    'one gazelle input in a mixed set is enough',
+  )
+})
+
+test('needsBuildDriftCheck fires for every tracked embedsrcs package and Go module root', () => {
+  const embedPackages = embedsrcsPackagesFromDisk()
+  for (const dir of embedPackages) {
+    assert.equal(
+      needsBuildDriftCheck([`${dir}/new-file.txt`]),
+      true,
+      `${dir} carries embedsrcs, so a new file there must select build-drift-check`,
+    )
+  }
+  for (const root of moduleRootsFromDisk()) {
+    assert.equal(
+      needsBuildDriftCheck([`${root}/x.go`]),
+      true,
+      `${root} is a Go module root, so a .go file there must select build-drift-check`,
+    )
+  }
+})
+
+test('embedsrcsPackagesFromDisk fails closed when git returns no BUILD files', () => {
+  assert.throws(
+    () => embedsrcsPackagesFromDisk({ execFile: () => '' }),
+    /embedsrcsPackagesFromDisk found no embedsrcs packages; the drift-trigger coverage assertion would pass vacuously/,
+  )
+})
+
+test('renderAffectedCommands prints the drift gate first and otherwise matches renderMakeCommands', () => {
+  const goFiles = ['services/bossd/internal/session/lifecycle.go']
+  assert.deepEqual(renderAffectedCommands(goFiles), [
+    'make build-drift-check',
+    ...renderMakeCommands(selectTargets(goFiles)),
+  ])
+
+  const docsOnly = ['docs/solutions/x.md']
+  const docsCommands = renderAffectedCommands(docsOnly)
+  assert.ok(!docsCommands.includes('make build-drift-check'))
+  assert.deepEqual(docsCommands, renderMakeCommands(selectTargets(docsOnly)))
+})
+
+test('default CLI prints make build-drift-check as its first line for a Go path', () => {
+  const scriptPath = fileURLToPath(new URL('./select-affected-tests.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [scriptPath, 'services/boss/cmd/x.go'], {
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const lines = result.stdout.split('\n').filter(Boolean)
+  assert.equal(lines[0], 'make build-drift-check')
+  assert.ok(lines.length > 1, 'the module target must still follow the drift gate')
+
+  const docs = spawnSync(process.execPath, [scriptPath, 'docs/solutions/x.md'], {
+    encoding: 'utf8',
+  })
+  assert.equal(docs.status, 0, docs.stderr)
+  assert.ok(!docs.stdout.split('\n').includes('make build-drift-check'))
+})
+
 test('--bazel CLI prints the sorted space-joined patterns on one line', () => {
   const scriptPath = fileURLToPath(new URL('./select-affected-tests.mjs', import.meta.url))
   const affected = spawnSync(
@@ -824,6 +935,25 @@ function moduleRootsFromDisk({ execFile = execFileSync } = {}) {
     'moduleRootsFromDisk found no module roots; the module-rule coverage assertion would pass vacuously',
   )
   return roots
+}
+
+function embedsrcsPackagesFromDisk({ execFile = execFileSync } = {}) {
+  const buildFiles = execFile('git', ['ls-files', '--', '*BUILD.bazel'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  })
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+  const packages = buildFiles
+    .filter((file) => /\bembedsrcs\b/.test(fs.readFileSync(path.join(repoRoot, file), 'utf8')))
+    .map((file) => path.posix.dirname(file))
+    .sort()
+  assert.ok(
+    packages.length > 0,
+    'embedsrcsPackagesFromDisk found no embedsrcs packages; the drift-trigger coverage assertion would pass vacuously',
+  )
+  return packages
 }
 
 function trimSlash(value) {

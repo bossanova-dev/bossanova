@@ -152,18 +152,18 @@ gate, Step 9's two re-push waits, Step 10's settle opener, and the two green rea
 `sleep` of **60 seconds or longer** spent waiting for CI is a defect, and so is any "wait N minutes,
 then look" instruction standing in for the wait: a guessed duration is not a reading, and it returns
 green-looking on a PR whose checks never reported. This leaves the short bounded backoffs inside a
-retry loop untouched (`sleep 10` between mergeability reads, `sleep "$CI_WAIT_INTERVAL"` between the
-poll's own reads): those pace a bounded read that is already running, they do not stand in for a wait.
+retry loop untouched (`sleep 10` between mergeability reads): those pace a bounded read that is
+already running, they do not stand in for a wait.
 
 ## Step 9: Finalize (idempotent tag guard, ready), Linear writeback
 
 Step 9 is an **idempotent** guard: re-inject **only** if `boss-repair` added untagged fix-commits,
 then ready the PR. In the common path there is **no rewrite, no push, no second full CI wait**.
 
-Before the ready transition, run `commands.testFull` once against the final tree through the
-cache-ineligible `test-readiness-full` gate and require its zero-exit result. This is the sole
-unconditional full-suite run: cache evidence from a narrow gate, or a full gate over any earlier
-tree, cannot satisfy it.
+Before the ready transition, run `commands.testReadiness` (`commands.testFull` when the repo
+declares none) once against the final tree, directly and never through the gate cache, and require
+its zero-exit result. This is the sole unconditional full-suite run: cache evidence from a narrow
+gate, or a full gate over any earlier tree, cannot satisfy it.
 
 ```bash
 PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
@@ -199,7 +199,9 @@ test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upst
   # from Protocol step 5, never a bare `--watch`. Green ONLY on CI_WAIT_STATE=settled;
   # timeout/unknown are not green. Red → back to Step 8 (boss-repair).
   arm_ci_watches "$PR_NUMBER"   # Protocol step 1; no-op when callbacksAvailable is false
-  ci_wait_bounded "$PR_NUMBER"  # Protocol step 5; sets CI_WAIT_STATE
+  # Not one in-call function: Protocol step 5's `ci-wait.mjs run`, re-issued in a NEW tool call
+  # on every `continue`, until its first terminal state is assigned to CI_WAIT_STATE.
+  ci_wait_bounded "$PR_NUMBER"
   # Not settled is not green. timeout/unknown route identically to red — back to Step 8 — and
   # never fall through to the readiness path below.
   if [ "$CI_WAIT_STATE" != settled ]; then
@@ -223,7 +225,8 @@ if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_
   test -n "$POST_REBASE_CHECK" || { echo "commands.postRebase is not configured"; exit 1; }
   sh -c "$POST_REBASE_CHECK"
   git push --force-with-lease origin "$SESSION_BRANCH"
-  # Re-armed and waited after the rebase push — same two calls as above, same settled-only rule.
+  # Re-armed and waited after the rebase push — same arm and same successive `run` calls as
+  # above, same settled-only rule.
   arm_ci_watches "$PR_NUMBER"
   ci_wait_bounded "$PR_NUMBER"
   PR_STATE="$(gh pr view "$PR_NUMBER" --json isDraft,mergeable,mergeStateStatus)"

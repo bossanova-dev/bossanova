@@ -70,6 +70,12 @@ export const EXTENSION_ROLES = {
 
 const KNOWN_EXTENSION_ROLES = new Set(Object.keys(EXTENSION_ROLES))
 
+// The run modes a core can discover in. An extension's optional `modes` marker key declares the
+// subset it may run on; discovery called with a `mode` skips an extension that does not declare it.
+// Eligibility is a declared property of the extension rather than a per-run judgement, because a
+// core cannot know whether a third-party extension nests dispatches or asks the user.
+export const EXTENSION_MODES = ['interactive', 'headless']
+
 // Every reason `discoverExtensions` can put in `skipped`, classified deliberate-vs-broken ONCE,
 // here, rather than re-derived in each consuming core's prose from the literal `reason` text.
 //
@@ -95,6 +101,12 @@ export const SKIP_REASONS = {
   'unknown-requested-role': { deliberate: false },
   'wrong-role': { deliberate: false },
   'invalid-lens-binding': { deliberate: false },
+  // `modes` is present but not a comma-separated subset of EXTENSION_MODES: a failed declaration,
+  // reported like an unusable `lens` binding rather than read as "every mode".
+  'invalid-modes': { deliberate: false },
+  // The extension declares `modes` and the requested mode is not among them — the declaration
+  // working as intended, so a core's ledger must not report it as a recoverable miss.
+  'mode-not-declared': { deliberate: true },
 }
 
 // Builds one `skipped` entry. `reason` strings are deliberately unchanged from before the codes
@@ -263,7 +275,22 @@ export function extensionMarker(frontmatter) {
   if (typeof block.capability === 'string' && block.capability !== '') {
     marker.capability = block.capability
   }
+  // Optional run-mode declaration (see EXTENSION_MODES). Absent means every mode and omits the
+  // field, so an undeclared descriptor's JSON is byte-identical to what it was before the key
+  // existed; an unusable value is also omitted here and reported by discovery as `invalid-modes`.
+  const modes = parseModes(block.modes)
+  if (modes) marker.modes = modes
   return marker
+}
+
+// A `modes` scalar is a comma-separated subset of EXTENSION_MODES (the frontmatter reader supports
+// scalars only). Returns the de-duplicated token list, or null when the value is absent or unusable:
+// not a string, empty, an empty token, or a token outside EXTENSION_MODES.
+function parseModes(value) {
+  if (typeof value !== 'string') return null
+  const tokens = value.split(',').map((token) => token.trim())
+  if (tokens.some((token) => !EXTENSION_MODES.includes(token))) return null
+  return [...new Set(tokens)]
 }
 
 function extensionRootsForDiscovery(config) {
@@ -314,7 +341,7 @@ export function resolveExtensionRoots(root, config = loadExtensionDiscoveryConfi
     })
 }
 
-function discoverExtensionsInRoot({ core, role, skillsDir, seenNames }) {
+function discoverExtensionsInRoot({ core, role, mode, skillsDir, seenNames }) {
   const extensions = []
   const skipped = []
   let entries = []
@@ -428,6 +455,29 @@ function discoverExtensionsInRoot({ core, role, skillsDir, seenNames }) {
         continue
       }
     }
+    // Mirrors the lens-binding skip above for every role: a PRESENT but unusable `modes` is a
+    // failed declaration, never silently widened to "every mode".
+    const declaredModes = parsed.data['x-boss-extension'].modes
+    if (declaredModes !== undefined && marker.modes === undefined) {
+      skipped.push(
+        skipEntry(
+          entry.name,
+          'invalid-modes',
+          `invalid "modes" (expected a comma-separated subset of ${EXTENSION_MODES.join(', ')})`,
+        ),
+      )
+      continue
+    }
+    if (mode !== undefined && marker.modes !== undefined && !marker.modes.includes(mode)) {
+      skipped.push(
+        skipEntry(
+          entry.name,
+          'mode-not-declared',
+          `declares modes "${declaredModes}", not "${mode}"`,
+        ),
+      )
+      continue
+    }
     const descriptor = {
       name: entry.name,
       dir: path.join(skillsDir, entry.name),
@@ -437,12 +487,20 @@ function discoverExtensionsInRoot({ core, role, skillsDir, seenNames }) {
     }
     if (marker.lens !== undefined) descriptor.lens = marker.lens
     if (marker.capability !== undefined) descriptor.capability = marker.capability
+    if (marker.modes !== undefined) descriptor.modes = marker.modes
     extensions.push(descriptor)
   }
   return { extensions, skipped }
 }
 
-export function discoverExtensions({ core, root, role, roots }) {
+export function discoverExtensions({ core, root, role, mode, roots }) {
+  // An unknown requested mode is a caller bug, not a property of any extension, so it throws rather
+  // than silently admitting every undeclared extension. `main` validates `--mode` before this.
+  if (mode !== undefined && !EXTENSION_MODES.includes(mode)) {
+    throw new Error(
+      `unknown mode ${JSON.stringify(mode)}; valid modes are ${EXTENSION_MODES.join(', ')}`,
+    )
+  }
   const scanRoots = Array.isArray(roots)
     ? roots.map((candidate) => path.resolve(candidate))
     : resolveExtensionRoots(root)
@@ -450,7 +508,7 @@ export function discoverExtensions({ core, root, role, roots }) {
   const skipped = []
   const seenNames = new Set()
   for (const skillsDir of scanRoots) {
-    const discovered = discoverExtensionsInRoot({ core, role, skillsDir, seenNames })
+    const discovered = discoverExtensionsInRoot({ core, role, mode, skillsDir, seenNames })
     extensions.push(...discovered.extensions)
     skipped.push(...discovered.skipped)
   }
@@ -562,9 +620,11 @@ function parseArgs(argv) {
 const USAGE = `usage: skill-extensions.mjs <subcommand> [flags]
 
 subcommands:
-  discover --core <name> [--role <role>] [--root <dir>] [--json]
+  discover --core <name> [--role <role>] [--mode <mode>] [--root <dir>] [--json]
       List the extensions of <core> found under the extension roots, in \`order\`.
       --role  restrict to one role: ${Object.keys(EXTENSION_ROLES).join(' | ')}
+      --mode  the run mode discovering: ${EXTENSION_MODES.join(' | ')}; an extension whose
+              \`modes\` omits it is skipped as mode-not-declared (absent = no mode filter)
       --root  scan below this directory instead of the current one
       --json  print the full {extensions, skipped} envelope instead of one TSV line per extension
 
@@ -602,7 +662,14 @@ export function main(argv) {
       )
       return 2
     }
-    const result = discoverExtensions({ core, root, role })
+    const mode = typeof args.mode === 'string' ? args.mode : undefined
+    if (args.mode !== undefined && (mode === undefined || !EXTENSION_MODES.includes(mode))) {
+      process.stderr.write(
+        `discover: unknown --mode ${JSON.stringify(args.mode)}; valid modes are ${EXTENSION_MODES.join(', ')}\n`,
+      )
+      return 2
+    }
+    const result = discoverExtensions({ core, root, role, mode })
     if (args.json) {
       process.stdout.write(`${JSON.stringify(result)}\n`)
     } else {

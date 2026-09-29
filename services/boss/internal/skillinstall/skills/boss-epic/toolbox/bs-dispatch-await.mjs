@@ -7,7 +7,9 @@
 // still-running, never finished; a launcher's exit status is not the job's
 // status; and a timeout is reported distinctly from a clean empty result.
 // Awaiting means staying in the turn and re-reading through this helper; ending
-// the turn is not waiting.
+// the turn is not waiting. The in-turn hold is the `wait` verb (`awaitDispatch`):
+// one bounded foreground call that polls the sentinel and the dispatch's own
+// heartbeat, re-armed by the caller while it exits 98.
 //
 // Agent bindings for the neutral dispatch contract:
 // - Claude Code: issue awaited `Task` calls (for example with `subagent_type: general-purpose`);
@@ -51,6 +53,17 @@ export const DEFAULT_OPEN_DISPATCH_STALE_MS = 30 * 60 * 1000
 // the conservative width for unclassified dispatch graphs.
 export const MAX_BATCH_WIDTH = 4
 export const DEFAULT_POLL_INTERVAL_MS = 1_000
+// One `wait` call's default budget: under Claude Code's 120 s default Bash timeout, past which an
+// untimed call is backgrounded — which would reproduce the very un-held dispatch `wait` replaces.
+export const DEFAULT_WAIT_BUDGET_MS = 110_000
+// `wait` exit codes, one per outcome. Anything else (a harness kill) is UNKNOWN and re-arms; it is
+// never read as a death class. 97 collides with `gate-run.mjs`'s `vanished` — always name the verb.
+export const WAIT_EXIT_CODES = Object.freeze({
+  completed: 0,
+  'timed-out': 96,
+  abandoned: 97,
+  budget: 98,
+})
 
 // ---------------------------------------------------------------------------
 // Liveness — "is this dispatch still working?", settled on an artifact the
@@ -520,6 +533,99 @@ export function dispatchDisposition(ctx, name, opts = {}) {
   return decide('discard', 'unclassified', { status: classified.status })
 }
 
+/**
+ * Validate a caller-held dispatch clock. It must be a finite, positive epoch that is not in the
+ * future: `Number('')` is 0, so an unset shell variable would otherwise read as a 56-year-old seed
+ * and report an instant `abandoned`.
+ * @param {unknown} value
+ * @param {number} now
+ * @returns {number}
+ */
+export function assertDispatchedAt(value, now) {
+  const parsed =
+    typeof value === 'string' ? (value.trim() === '' ? Number.NaN : Number(value)) : value
+  if (typeof parsed !== 'number' || !Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`--dispatched-at requires a finite positive epoch ms, got: ${String(value)}`)
+  }
+  if (parsed > now) throw new Error(`--dispatched-at is in the future: ${parsed} > ${now}`)
+  return parsed
+}
+
+function sentinelFileExists(ctx, name) {
+  try {
+    return statSync(ctx.sentinelPath(name)).isFile()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The blocking hold: poll `classifyDispatch` (and, with `whileLive`, the heartbeat) until an
+ * outcome or the budget. Bounded and re-armable by construction — one call never outlives
+ * `budgetMs`, so the harness never backgrounds the hold itself; the caller re-arms on `budget`.
+ *
+ * Read-only: the heartbeat is consulted through `heartbeatLiveness`, never `touchHeartbeat`, so the
+ * wait cannot manufacture the liveness it measures. A provisional seed never completes the wait.
+ *
+ * Refuses (throws) when the sentinel is absent and no `dispatchedAt` is given: the fallback clock
+ * would be `now` on every re-armed call, so `abandoned` could never fire.
+ *
+ * @param {{runId: string, dir: string, sentinelPath: (n: string) => string}} ctx
+ * @param {string} name
+ * @param {{heartbeatPath?: string, dispatchedAt?: number, deadlineAt?: number, budgetMs?: number,
+ *   intervalMs?: number, whileLive?: boolean, staleAfterMs?: number,
+ *   now?: () => number, sleep?: (ms: number) => Promise<unknown>}} [opts]
+ * @returns {Promise<object>} the `classifyDispatch` result plus `outcome`, `waitedMs`, and `held`
+ *   when `whileLive` kept a completed sentinel open
+ */
+export async function awaitDispatch(ctx, name, opts = {}) {
+  const clock = opts.now ?? Date.now
+  const sleep = opts.sleep ?? delay
+  const budgetMs = assertPositiveNumber(opts.budgetMs ?? DEFAULT_WAIT_BUDGET_MS, 'budgetMs')
+  const intervalMs = assertPositiveNumber(opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'intervalMs')
+  const start = clock()
+  const dispatchedAt =
+    opts.dispatchedAt === undefined ? undefined : assertDispatchedAt(opts.dispatchedAt, start)
+  if (dispatchedAt === undefined && !sentinelFileExists(ctx, name)) {
+    throw new Error(
+      `wait refuses: sentinel ${name} is absent and no --dispatched-at was given, so the seed clock would restart on every re-arm`,
+    )
+  }
+  if (opts.whileLive && !opts.heartbeatPath) throw new Error('--while-live requires --heartbeat')
+  // No caller deadline means `timed-out` is unreachable: `wait` is re-armed, not expired.
+  const deadlineAt = opts.deadlineAt ?? Number.POSITIVE_INFINITY
+  for (;;) {
+    const now = clock()
+    const classified = classifyDispatch(ctx, name, {
+      now,
+      deadlineAt,
+      dispatchedAt,
+      heartbeatPath: opts.heartbeatPath,
+      staleAfterMs: opts.staleAfterMs,
+    })
+    const waitedMs = Math.max(0, now - start)
+    let held = null
+    if (classified.status === COMPLETED) {
+      if (!opts.whileLive) return { ...classified, outcome: COMPLETED, waitedMs }
+      // Artifact-ready is not dispatch-returned: hold while the worker still beats.
+      const beat = heartbeatLiveness(opts.heartbeatPath, { now, staleAfterMs: opts.staleAfterMs })
+      if (beat.status !== HEARTBEAT_LIVE) return { ...classified, outcome: COMPLETED, waitedMs }
+      held = 'heartbeat-live'
+    } else if (classified.status === ABANDONED || classified.status === TIMED_OUT) {
+      return { ...classified, outcome: classified.status, waitedMs }
+    }
+    if (waitedMs >= budgetMs) {
+      return { ...classified, outcome: 'budget', waitedMs, ...(held ? { held } : {}) }
+    }
+    await sleep(Math.min(intervalMs, budgetMs - waitedMs))
+  }
+}
+
+/** Map an `awaitDispatch` result to its `wait` exit code. */
+export function waitExitCode(result) {
+  return WAIT_EXIT_CODES[result?.outcome] ?? WAIT_EXIT_CODES.budget
+}
+
 function sentinelNames(runDir) {
   return readdirSync(runDir)
     .filter((name) => name.endsWith('.json'))
@@ -665,7 +771,9 @@ export async function awaitAll(dispatchNodes, dispatcher, opts = {}) {
 function usage() {
   return [
     'usage: bs-dispatch-await.mjs <classify <dir> <runId> <name> <deadlineAtMs> [nowMs] [heartbeatPath]',
-    '  | disposition <dir> <runId> <name> [--deadline <ms>] [--now <ms>] [--artifact <path>]... [--heartbeat <path>]',
+    '  | disposition <dir> <runId> <name> [--deadline <ms>] [--now <ms>] [--artifact <path>]... [--heartbeat <path>] [--dispatched-at <ms>]',
+    '  | wait <dir> <runId> <name> [--heartbeat <path>] [--dispatched-at <ms>] [--deadline <ms>] [--budget <ms>] [--interval <ms>] [--while-live]',
+    '    (exit 0 completed | 96 timed-out | 97 abandoned | 98 budget spent, re-arm)',
     '  | probe <path>... | guard-discard <path>...',
     '  | heartbeat <path> [note] | liveness <path> [nowMs] [staleMs]',
     '  | beat <path> [--interval <ms>] -- <command> [args...]',
@@ -695,13 +803,16 @@ function parseDispositionFlags(argv, fail) {
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
     const value = argv[i + 1]
-    if (!['--artifact', '--deadline', '--now', '--heartbeat'].includes(flag)) {
+    if (!['--artifact', '--deadline', '--now', '--heartbeat', '--dispatched-at'].includes(flag)) {
       return fail(`unknown disposition flag: ${flag}`)
     }
     if (value === undefined) return fail(`${flag} requires a value`)
     if (flag === '--artifact') opts.artifacts.push(value)
     else if (flag === '--heartbeat') opts.heartbeatPath = value
-    else {
+    else if (flag === '--dispatched-at') {
+      requireFiniteArgs([[flag, value]], fail)
+      opts.dispatchedAtRaw = value
+    } else {
       requireFiniteArgs([[flag, value]], fail)
       const parsed = Number(value)
       if (flag === '--deadline') opts.deadlineAt = parsed
@@ -713,6 +824,50 @@ function parseDispositionFlags(argv, fail) {
   // reachable state: default the deadline to now and let the staleness window pick the death class.
   opts.now ??= Date.now()
   opts.deadlineAt ??= opts.now
+  if (opts.dispatchedAtRaw !== undefined) {
+    // The same clock `wait` held on, so a re-classification cannot call an abandoned dispatch a
+    // resumable timeout.
+    try {
+      opts.dispatchedAt = assertDispatchedAt(opts.dispatchedAtRaw, opts.now)
+    } catch (err) {
+      return fail(err.message)
+    }
+    delete opts.dispatchedAtRaw
+  }
+  return opts
+}
+
+const WAIT_VALUE_FLAGS = ['--heartbeat', '--dispatched-at', '--deadline', '--budget', '--interval']
+
+function parseWaitFlags(argv, fail) {
+  const opts = {}
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i]
+    if (flag === '--while-live') {
+      opts.whileLive = true
+      continue
+    }
+    if (!WAIT_VALUE_FLAGS.includes(flag)) return fail(`unknown wait flag: ${flag}`)
+    const value = argv[i + 1]
+    if (value === undefined) return fail(`${flag} requires a value`)
+    i += 1
+    if (flag === '--heartbeat') {
+      opts.heartbeatPath = value
+      continue
+    }
+    requireFiniteArgs([[flag, value]], fail)
+    if (flag === '--dispatched-at') {
+      // Validated (positive, not future) inside `awaitDispatch`; the raw string is kept so an empty
+      // value is refused there rather than coerced to 0 here.
+      opts.dispatchedAt = value
+      continue
+    }
+    const parsed = Number(value)
+    if (flag === '--deadline') opts.deadlineAt = parsed
+    else if (parsed <= 0) return fail(`${flag} requires a positive number, got: ${value}`)
+    else if (flag === '--budget') opts.budgetMs = parsed
+    else opts.intervalMs = parsed
+  }
   return opts
 }
 
@@ -793,6 +948,18 @@ if (isMainModule(import.meta.url)) {
       const opts = parseDispositionFlags(flags, fail)
       process.stdout.write(
         `${JSON.stringify(dispatchDisposition(ctxFor(dir, runId), name, opts))}\n`,
+      )
+    } else if (cmd === 'wait') {
+      const [dir, runId, name, ...flags] = rest
+      if (!dir || !runId || !name) fail(`wait requires <dir> <runId> <name> [flags]\n${usage()}`)
+      const opts = parseWaitFlags(flags, fail)
+      awaitDispatch(ctxFor(dir, runId), name, opts).then(
+        (result) => {
+          process.stdout.write(`${JSON.stringify(result)}\n`)
+          // exitCode, not exit(): a piped stdout is asynchronous on macOS and exit() can truncate it.
+          process.exitCode = waitExitCode(result)
+        },
+        (err) => fail(err.message),
       )
     } else if (cmd === 'probe') {
       if (rest.length === 0) fail('probe requires at least one <path>')

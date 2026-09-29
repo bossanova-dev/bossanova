@@ -37,24 +37,31 @@ spellings.
 Each shell invocation is a fresh process, so nothing set in the first block survives into the
 second. Re-assign every variable in the block that uses it; `:?` aborts rather than letting an unset
 `PLAN_DOC` become a bare `:(exclude)`, which excludes _everything_ and turns the check into a silent
-pass. Keep `--untracked-files=all`: at the default `-unormal` git collapses an untracked directory
-to a single `.claude/` entry that no per-file exclusion matches, silently restoring an every-run
-false positive that stops the check discriminating.
+pass. Keep the helper's default `--untracked all`: at `-unormal` git collapses an untracked
+directory to a single `.claude/` entry that no per-file exclusion matches, silently restoring an
+every-run false positive that stops the check discriminating.
+
+Every block decides from `worktree-state.mjs`, never from `git status` typed into the shell: the
+helper validates git's porcelain, so a command-rewriting shell hook cannot fabricate its verdict.
+Act on the printed token — `verdict: clean` passes, `dirty` lists the paths, and `unknown` (or no
+verdict line at all) means stop and report, never clean.
 
 **Before the dispatch**, as one invocation:
 
 ```bash
 PLAN_DOC="docs/plans/<the file Step 4 saved>"   # also record this in the run notes
-git status --porcelain --untracked-files=all -- . \
-  ":(exclude)${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
-  ':(exclude).claude/scheduled_tasks.lock' ':(exclude).claude/settings.local.json'
-# …must print nothing. Only once it does, record the HEAD the dispatch starts from *and* which
+T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
+[ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
+node "$T/worktree-state.mjs" \
+  --exclude "${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
+  --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
+# …must print `verdict: clean`. Only once it does, record the HEAD the dispatch starts from *and* which
 # dispatch is starting — substitute the task's number for N:
 printf '%s task-N\n' "$(git rev-parse HEAD)" \
   >"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"
 ```
 
-If that status is not empty, resolve the dirt **and re-run this whole block** — the recorded HEAD
+If the verdict is `dirty`, resolve the dirt **and re-run this whole block** — the recorded HEAD
 has to be the commit the dispatch actually starts from, or a cleanup commit alone makes the
 after-return range non-empty and a dispatch that landed nothing reads as done.
 
@@ -75,21 +82,23 @@ pathspec:
 
 ```bash
 PLAN_DOC="docs/plans/<the file Step 4 saved>"   # re-set: this is a new shell
-git status --porcelain --untracked-files=all -- . \
-  ":(exclude)${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
-  ':(exclude).claude/scheduled_tasks.lock' ':(exclude).claude/settings.local.json'
-# must be empty
+T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
+[ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
+node "$T/worktree-state.mjs" \
+  --exclude "${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
+  --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
+# must print `verdict: clean`
 git log --oneline "$(cut -d' ' -f1 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")..HEAD"
 # …must list this dispatch's commit(s)
 ```
 
-**Recovering residue.** Stage exactly the attributed paths — the ones the status listed _and_ the
+**Recovering residue.** Stage exactly the attributed paths — the ones the verdict listed _and_ the
 returned contract named (all of them when the subagent never returned to name any):
 
 ```bash
 git add -- <the attributed residue paths>
 # --only commits exactly these paths. A plain `git commit` would commit the whole index, which can
-# hold a path the status above deliberately excluded ($PLAN_DOC, a daemon artifact) staged earlier
+# hold a path the check above deliberately excluded ($PLAN_DOC, a daemon artifact) staged earlier
 # and therefore invisible to the check — swept in silently.
 git commit --only -m "chore(task-N): recover uncommitted subagent work" \
   -- <the same attributed paths>  # substitute the dispatch's label
@@ -130,9 +139,11 @@ git log --oneline "$BASE_REF..HEAD"
 # same invocation — `:?` aborts rather than letting an unset variable become a bare
 # `:(exclude)`, which excludes everything and reports a clean tree that isn't.
 PLAN_DOC="docs/plans/<the file Step 4 saved>"
-git status --porcelain --untracked-files=all -- . \
-  ":(exclude)${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
-  ':(exclude).claude/scheduled_tasks.lock' ':(exclude).claude/settings.local.json'
+T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
+[ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
+node "$T/worktree-state.mjs" \
+  --exclude "${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
+  --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 ```
 
 Map those commits onto the plan's task list, one row per task: **committed** (a commit exists whose
@@ -142,7 +153,7 @@ subject) or **remaining**. Then:
 - Dispatch **only** the remaining tasks. Carry the standing instruction _continue from committed
   state; do not redo committed tasks_ into every re-dispatched subagent, along with the list of
   tasks already committed, so it builds on top instead of re-implementing them.
-- If that scoped `git status` is non-empty, the interrupted subagent **may** have died with work in
+- If that scoped verdict is `dirty`, the interrupted subagent **may** have died with work in
   the tree. Which recovery applies turns on the snapshot above, never on whether your process
   restarted —
   `"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"` is consumed on every resolved outcome,

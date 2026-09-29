@@ -40,8 +40,24 @@ export function normalizeGateSite(site) {
   return text
 }
 
-export function eligibleGate(config, site) {
+// A command that sets BOSS_GATE_FORCE_UNCACHED=1 as an env assignment asks for an executed run, so
+// it can never be answered from a stamp - whatever make target it normalizes to. Token-anchored: a
+// longer variable name that merely contains the text, or any value other than 1, does not count.
+const FORCES_UNCACHED = /(?:^|\s)BOSS_GATE_FORCE_UNCACHED=(['"]?)1\1(?=\s|$)/
+
+export function forcesUncached(text) {
+  return FORCES_UNCACHED.test(String(text || ''))
+}
+
+export function eligibleGate(config, site, command = '') {
   const normalized = normalizeGateSite(site)
+  if (forcesUncached(site) || forcesUncached(command)) {
+    return {
+      eligible: false,
+      site: normalized,
+      reason: 'forces an uncached run; never served from a stamp',
+    }
+  }
   const entry = config?.gateCache?.eligible?.[normalized]
   if (!entry) return { eligible: false, site: normalized, reason: 'not declared cache-eligible' }
   return {

@@ -9,12 +9,35 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cli = path.join(repoRoot, 'scripts', 'gate-cache.mjs')
 
-test('BOS-1265: selection and readiness cache eligibility are fail-safe', () => {
+test('R1: gateCache gives every gate one verdict, keyed on real make targets (BOS-1339)', async () => {
+  const { eligibleGate } = await import('./gate-stamp-lib.mjs')
   const config = JSON.parse(fs.readFileSync(path.join(repoRoot, '.boss-skills.json'), 'utf8'))
+  const eligible = Object.keys(config.gateCache.eligible)
+  const ineligible = Object.keys(config.gateCache.ineligible)
+
+  // One lookup, one verdict: no key may sit in both tables.
+  assert.deepEqual(
+    eligible.filter((key) => ineligible.includes(key)),
+    [],
+  )
+
+  // Every key names a target the root Makefile actually defines, so neither table can describe a
+  // gate nothing runs.
+  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  for (const key of [...eligible, ...ineligible]) {
+    assert.match(makefile, new RegExp(`^${escape(key)}:`, 'm'), `no Makefile target for ${key}`)
+  }
+
+  // The readiness receipt is never cache-eligible, although it normalizes to the eligible
+  // `test-full`; iterative full decisions stay cacheable.
+  assert.equal(typeof config.commands.testReadiness, 'string')
+  assert.equal(eligibleGate(config, config.commands.testReadiness).eligible, false)
+  assert.equal(eligibleGate(config, 'make test-full').eligible, true)
+
+  // The narrow gate stays out of the cache for the reason BOS-1265 recorded.
   assert.equal(config.gateCache.eligible['test-affected'], undefined)
   assert.match(config.gateCache.ineligible['test-affected'], /selection-dependent/)
-  assert.equal(config.gateCache.eligible['test-full'].cacheable, true)
-  assert.match(config.gateCache.ineligible['test-readiness-full'], /executed full gate/)
 })
 
 function git(root, args) {
@@ -51,11 +74,16 @@ function fixture(
   return { root, stampDir, base: git(root, ['rev-parse', 'HEAD']) }
 }
 
+// The suite may itself run under a readiness gate that exports BOSS_GATE_FORCE_UNCACHED; scrub it
+// (and its companion marker) so a test only sees the forcing it passes in extraEnv.
 function run(root, stampDir, args, extraEnv = {}) {
+  const env = { ...process.env, BOSS_GATE_STAMP_DIR: stampDir }
+  delete env.BOSS_GATE_FORCE_UNCACHED
+  delete env.BOSS_GATE_UNCACHED_COMMAND_ACTIVE
   return spawnSync(process.execPath, [cli, ...args], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, BOSS_GATE_STAMP_DIR: stampDir, ...extraEnv },
+    env: { ...env, ...extraEnv },
   })
 }
 
@@ -104,6 +132,35 @@ test('run records a successful gate and skips the identical second run', (t) => 
   assert.equal(second.status, 0, second.stderr)
   assert.match(second.stdout, /cached at tree [0-9a-f]{12}/)
   assert.equal(fs.readFileSync(counter, 'utf8'), 'x')
+})
+
+test('an inherited BOSS_GATE_FORCE_UNCACHED=1 is never served from a stamp', (t) => {
+  const { root, stampDir, base } = fixture(t)
+  const counter = path.join(stampDir, 'counter')
+  const command = `${process.execPath} -e "require('fs').appendFileSync(process.env.COUNTER,'x')"`
+  const args = (mode) => [
+    mode,
+    '--site',
+    'demo',
+    '--command',
+    command,
+    '--base-ref',
+    base,
+    '--',
+    process.execPath,
+    '-e',
+    "require('fs').appendFileSync(process.env.COUNTER,'x')",
+  ]
+  assert.equal(run(root, stampDir, args('run'), { COUNTER: counter }).status, 0)
+  const forced = { COUNTER: counter, BOSS_GATE_FORCE_UNCACHED: '1' }
+  const second = run(root, stampDir, args('run'), forced)
+  assert.equal(second.status, 0, second.stderr)
+  assert.doesNotMatch(second.stdout, /cached at tree/)
+  assert.match(second.stdout, /inherited BOSS_GATE_FORCE_UNCACHED=1/)
+  assert.equal(fs.readFileSync(counter, 'utf8'), 'xx')
+  // `check` agrees: a stamp exists for this tree, yet the inherited env is not eligible.
+  assert.equal(run(root, stampDir, args('check').slice(0, 7), forced).status, 3)
+  assert.equal(run(root, stampDir, args('check').slice(0, 7)).status, 0)
 })
 
 test('non-zero gate status is not recorded', (t) => {
@@ -217,4 +274,54 @@ test('narrow selections never share a full readiness gate, while full gates stil
   assert.equal(run(root, stampDir, args('test-full'), { COUNTER: counter }).status, 0)
   assert.equal(run(root, stampDir, args('test-full'), { COUNTER: counter }).status, 0)
   assert.equal(fs.readFileSync(counter, 'utf8'), 'xxx')
+})
+
+// BOS-1339: `make test-affected` asks this mode whether the branch adds or renames an input, and
+// forces its selected commands uncached on exit 0. `unknown` is fail-safe: it exits 0 as well.
+function addsOrRenames(root, stampDir, base) {
+  const result = run(root, stampDir, ['adds-or-renames', '--base-ref', base])
+  return { status: result.status, line: result.stdout.trim(), stderr: result.stderr }
+}
+
+test('adds-or-renames answers yes for a committed add', (t) => {
+  const { root, stampDir, base } = fixture(t)
+  fs.writeFileSync(path.join(root, 'added.txt'), 'new\n')
+  git(root, ['add', 'added.txt'])
+  git(root, ['commit', '-m', 'add'])
+  const verdict = addsOrRenames(root, stampDir, base)
+  assert.equal(verdict.status, 0, verdict.stderr)
+  assert.match(verdict.line, /^adds-or-renames: yes \(.+\)$/)
+})
+
+test('adds-or-renames answers yes for a committed rename', (t) => {
+  const { root, stampDir, base } = fixture(t)
+  git(root, ['mv', 'file.txt', 'renamed.txt'])
+  git(root, ['commit', '-m', 'rename'])
+  const verdict = addsOrRenames(root, stampDir, base)
+  assert.equal(verdict.status, 0, verdict.stderr)
+  assert.match(verdict.line, /^adds-or-renames: yes \(.+\)$/)
+})
+
+test('adds-or-renames answers yes for an untracked file', (t) => {
+  const { root, stampDir, base } = fixture(t)
+  fs.writeFileSync(path.join(root, 'untracked.txt'), 'new\n')
+  const verdict = addsOrRenames(root, stampDir, base)
+  assert.equal(verdict.status, 0, verdict.stderr)
+  assert.match(verdict.line, /^adds-or-renames: yes \(.+\)$/)
+})
+
+test('adds-or-renames answers no (exit 1) for a modify-only branch', (t) => {
+  const { root, stampDir, base } = fixture(t)
+  fs.writeFileSync(path.join(root, 'file.txt'), 'changed\n')
+  git(root, ['commit', '-am', 'modify'])
+  const verdict = addsOrRenames(root, stampDir, base)
+  assert.equal(verdict.status, 1, verdict.stderr)
+  assert.match(verdict.line, /^adds-or-renames: no \(.+\)$/)
+})
+
+test('adds-or-renames answers unknown (exit 0, fail safe) when the base ref cannot be resolved', (t) => {
+  const { root, stampDir } = fixture(t)
+  const verdict = addsOrRenames(root, stampDir, 'refs/heads/no-such-base')
+  assert.equal(verdict.status, 0, verdict.stderr)
+  assert.match(verdict.line, /^adds-or-renames: unknown \(.+\)$/)
 })

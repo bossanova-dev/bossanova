@@ -169,3 +169,21 @@ test('BOS-1288: Strategy C step 3 classifies the fix shape and adjudicates the m
   // exactly the drift this ticket removed, so its return is a finding rather than a duplication.
   assert.doesNotMatch(strategyC, /A\s+fix\s+that\s+tightens\s+a\s+guard/, REPAIR_CANONICAL)
 })
+
+// BOS-1334: Watch Mode step 6 names no sleep-driven poll. Its bounded wait is the vendored
+// `ci-wait.mjs run`, one tool call per chunk; what `run` does is specified by
+// skills-toolbox/ci-wait.test.mjs, so the one pin here is that the step calls it, and the negative
+// is that none of its fences takes the delay in the shell.
+test('BOS-1334: Watch Mode step 6 waits through ci-wait.mjs run', () => {
+  const step6 = region(
+    skillText(REPAIR_CANONICAL),
+    '6. **Pending checks:**',
+    '7. **Failed checks:**',
+  )
+  assert.match(step6, /\$BOSS_REPAIR_TOOLBOX\/ci-wait\.mjs"?\s+run\b/)
+  const fences = [...step6.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1])
+  assert.ok(fences.length >= 2)
+  for (const fence of fences) {
+    assert.doesNotMatch(fence, /(^|[\s;|&(])sleep\s|\bread\s+-t\b/m)
+  }
+})

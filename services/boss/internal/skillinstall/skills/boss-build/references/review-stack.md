@@ -98,6 +98,15 @@ Two generated arguments, neither hand-written.
   generating a line without piping it into the writer leaves the run file **absent** ->
   `dispatch-failure` by the other sub-case. Run the whole command, never either half.
 
+**Beat `$RUN_DIR/review.heartbeat` for the whole pass.** The orchestrator holds you with
+`bs-dispatch-await.mjs wait … --while-live` on that path, and your verdict line lands before your
+publication route: a beat silent for 30 minutes reads `abandoned`, and one that stops at the verdict
+releases the hold mid-publication. Run
+`node "$BOSS_BUILD_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$RUN_DIR/review.heartbeat"` at every
+lens, round and fix-loop boundary and on each re-arm while you wait on nested dispatches; wrap each
+long gate, the cross-model round's command and every publication command (push, tag injection,
+ready, post-publication read) in `… beat "$RUN_DIR/review.heartbeat" -- <cmd>`.
+
 **`STEP_6C_FUNDING_REASON` is a stated interface, not ambient shell state** — the same kind of name
 as `STEP_6C_DEADLINE`, and for the same reason. Shell state does not survive between Bash calls, so
 a reason left in a variable and never stated reaches nothing. **State it in the `boss-review`
@@ -1045,10 +1054,8 @@ stack. Run the same procedure below first. Only `PUSHED=yes` may then write the 
 section's BLOCKED reporting instead. Do not fall through to Step 7 in any case.
 
 ```bash
-# Only commits not already on the remote; with no upstream yet, everything on this branch. If BOTH
-# forms fail the substitution is non-zero, so the trailing `|| UNPUSHED=` is what keeps errexit from
-# killing this block on its first line; an empty count then matches no arm of the guard below and
-# falls through to the push, which is the fail-open direction for a count nobody could read.
+# Only commits not already on the remote (with no upstream, all of them). `|| UNPUSHED=` keeps
+# errexit from killing this block; an empty count matches no arm below and falls through to the push.
 UNPUSHED=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || git rev-list --count HEAD) ||
   UNPUSHED=
 # Nothing to send AND origin's copy of the branch CONTAINS this HEAD: the work is already stored
@@ -1064,16 +1071,9 @@ REMOTE_HAS_HEAD=no
 # the ASK's status apart from its answer. "Origin advertises nothing" licenses the injection below to
 # rewrite freely; "could not ask origin" must not, and `2>/dev/null` renders the two identical. A
 # pipeline's status is the LAST stage's, not git's, so capture the raw output first and parse it
-# afterwards. The awk reads the record into a NAMED VARIABLE and splits that, instead of reading
-# `$2`: this file belongs to a skill whose SKILL.md body is reachable as a slash command, and the
-# harness rewrites `$0`-`$9` in that body before any shell runs it. A reference file is read rather
-# than substituted, so the hazard is latent here — but this block exists to be lifted verbatim into
-# a body, so it is written to survive the move. Substituted, `'$2 == ref { print $1 }'` arrives as
-# `'== ref { print }'`. That does not fail loudly — it is an awk syntax error, the capture takes the
-# `|| REMOTE_SHA=` tail, and REMOTE_SHA lands EMPTY, which this route reads as "origin advertises
-# nothing" and treats as a licence to rewrite unguarded. `getline line` plus `f[1]`/`f[2]` say the
-# same thing in bytes the harness does not touch. `$0` is NOT one of them: the index is zero-based,
-# so `$0` is substituted like any other, which is the whole reason the record goes into `line`.
+# afterwards. The awk splits a NAMED record (`getline line`, `f[1]`/`f[2]`), never `$0`-`$9`: a
+# slash-command body has those substituted before any shell runs, and the resulting awk syntax error
+# lands REMOTE_SHA EMPTY, which this route reads as a licence to rewrite unguarded.
 # Keep the tail's line ending in `|` above it: a capture whose
 # `|| VAR=` sits past a line that does not end in an operator reads as bare to a continuation-joining
 # reader, and under errexit a bare capture aborts this block before the push.
@@ -2100,20 +2100,19 @@ On a **refreshable** reading do all of the following in one go. On an **unrefres
 only **Brief the reviewer** and then publish the note as below — no rebase happened, so the re-bind,
 the force-full-pass rule and the cap all have nothing to act on:
 
-- **Rebase onto the moved base** (refreshable reading only). Check the tree **first**, the way the
-  tag injector already does: `git status --porcelain --untracked-files=no` must be empty. `git
-rebase` refuses outright on unstaged changes and `git rebase --abort` then exits 128 with "no
+- **Rebase onto the moved base** (refreshable reading only). Check the tree **first**:
+  `node "$BOSS_BUILD_TOOLBOX/worktree-state.mjs" --untracked no` must print `verdict: clean` —
+  anything else is dirty. `git rebase` refuses outright on unstaged changes and `git rebase --abort` then exits 128 with "no
   rebase in progress", so the two post-conditions below would report a worktree left mid-rebase by a
   rebase that never started — a BLOCKED whose stated cause is the opposite of what happened. Step 6
-  has already committed the implementation, so a dirty tree here is an ordinary
-  state, not an edge case. A dirty tree is a recorded skip with its own reason: keep the old base,
+  has already committed the implementation, so a dirty tree here is ordinary. A dirty tree is a recorded skip with its own reason: keep the old base,
   publish the note, and review on. That pre-condition
   belongs here, ahead of the command, because a top-down executor acts at the first mention — a
   prohibition stated three bullets later is read after the rebase it forbids. Only on a clean tree
   run `git rebase "$BASE_REF"`. On failure run `git rebase --abort`,
   then confirm the abort actually landed before continuing: two post-conditions, both required —
-  `git rev-parse --verify --quiet REBASE_HEAD` prints nothing, and `git status --porcelain` is
-  empty. An abort that reports success while either still holds has left the worktree mid-rebase,
+  `git rev-parse --verify --quiet REBASE_HEAD` prints nothing, and `worktree-state.mjs` prints
+  `verdict: clean`. An abort that reports success while either fails has left the worktree mid-rebase,
   where no further review is meaningful; route to **BLOCKED** with the drift note attached — a
   worktree stuck mid-rebase can neither be committed nor pushed, so that is cause (2), not a review
   finding. A clean

@@ -71,6 +71,11 @@
 //      returns `edge: 'none'` with a `question`, and questions route to a
 //      different destination than notes.
 //
+// Containment still reports an overlap, but an overlap basis BLOCKS only on
+// `areasOverlap`'s `fileShared` — the same file named on both sides. A
+// directory-only overlap is `edge: 'relatedTo'` / `directory-overlap` with
+// `write: null`, and its note and any orientation question quote `shared`.
+//
 // `semantic judgment stays with the model`: "this ticket needs the other's
 // feature" is not a function of two strings, so the caller supplies it as a
 // per-candidate `logicalDependencies` verdict. The agent makes the judgment;
@@ -94,7 +99,14 @@
 //     blocking write whose other side is itself entangled in open blocking work.
 
 import { descriptionAppearsTruncated } from './plan-epic-lib.mjs'
-import { planDescriptionSections, planSections, scanFences } from './skill-config.mjs'
+import {
+  labelName,
+  planDependencyDefaults,
+  planDescriptionSections,
+  planSections,
+  scanFences,
+  stateRolesFor,
+} from './skill-config.mjs'
 
 // ---------------------------------------------------------------------------
 // Exported constants
@@ -127,6 +139,8 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'candidate-landed',
   'prerequisite-satisfied',
   'prerequisite-canceled',
+  // Between rungs 4 and 5 — an overlap no file is named on both sides of.
+  'directory-overlap',
   // Rung 5 — orientation.
   'oriented-by-logical',
   'oriented-by-priority',
@@ -232,6 +246,8 @@ const KEY_CHANGES_TITLE = 'key changes'
 const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+[.)])\s+/
 const HEADING_RE = /^\s*#{1,6}\s/
 const BACKTICK_SPAN_RE = /`([^`]+)`/g
+// A CommonMark backslash escape: `\` before any ASCII punctuation character.
+const MARKDOWN_ESCAPE_RE = /\\([!-/:-@[-`{-~])/g
 // A trailing `.ext` is the one signal inside the token itself that says "this
 // names a file", which is what lets a path under an undeclared root still be
 // recognised as path-shaped rather than read as prose.
@@ -606,6 +622,12 @@ function braceAreaTokens(token, limit = BRACE_EXPANSION_LIMIT) {
  * rejecting every area at once.
  */
 function classifyAreaToken(token, moduleRoots, marked) {
+  // A CommonMark backslash escape comes FIRST: a tracker that re-serializes
+  // markdown writes `services/x/public/\_redirects`, an area no changed-file path
+  // can ever equal. A backslash before ASCII punctuation can never be part of a
+  // repo-relative POSIX area, so stripping it cannot lose a real one; an escaped
+  // glob star (`dir/\*.ext`) then behaves exactly as the unescaped glob.
+  //
   // `**` adjacent to a slash is a DOUBLESTAR PATH SEGMENT, never bold delimiters.
   // Stripping it unconditionally rewrote `services/**/testdata` into an empty path
   // segment (`services//testdata`) — an area no changed-file path can ever equal,
@@ -613,6 +635,7 @@ function classifyAreaToken(token, moduleRoots, marked) {
   // to see a wildcard that is already gone. Left standing, the glob reaches that
   // guard and is recorded as an areless entry instead.
   const raw = text(token)
+    .replace(MARKDOWN_ESCAPE_RE, '$1')
     .replace(/\r/g, '')
     .replace(/(?<![/*])\*\*(?![/*])/g, '')
     .trim()
@@ -841,6 +864,14 @@ function sharedRegion(a, b) {
  * under-links it. It is one predicate and it is pinned by a named test, so it
  * can be flipped with evidence.
  *
+ * Containment still reports `overlap`, but only `fileShared` may BLOCK: the
+ * regions where both sides named the same path and that path names a file (by
+ * `namesAFile`'s extension rule, after `areaAliases` expansion). A bare
+ * directory holding a file the other side names is merge-order surface, not a
+ * prerequisite, so `classifyDependencyEdge` records it as a `directory-overlap`
+ * relation. An extensionless file (`Makefile`) therefore reads as
+ * directory-level — the side a missed edge sits on, which costs a rebase.
+ *
  * @param {string[]} a subject areas
  * @param {string[]} b candidate areas
  * @param {{repoWideTokens?: string[], replaceRepoWideTokens?: boolean,
@@ -861,8 +892,9 @@ function sharedRegion(a, b) {
  *   an area onto the other areas it stands for — the seam a repo uses to close
  *   a known false negative (generated mirrors of one logical file) WITHOUT
  *   making this module know anything about that repo.
- * @returns {{overlap: boolean, shared: string[]}} `shared` is sorted, so a
- *   re-plan of unchanged tickets produces an unchanged dependency line.
+ * @returns {{overlap: boolean, shared: string[], fileShared: string[]}} both
+ *   sorted, so a re-plan of unchanged tickets produces an unchanged dependency
+ *   line; `fileShared` is the same-file subset of `shared`.
  *
  * BOTH positional arguments are AREA SETS, and passing a bare area string
  * raises. The return is an OBJECT, so the natural-looking per-candidate call
@@ -901,6 +933,7 @@ export function areasOverlap(a, b, options = {}) {
   const left = expandAreas(a, options.areaAliases)
   const right = expandAreas(b, options.areaAliases)
   const shared = new Set()
+  const fileShared = new Set()
   for (const x of left) {
     for (const y of right) {
       const region = sharedRegion(x, y)
@@ -912,10 +945,13 @@ export function areasOverlap(a, b, options = {}) {
       // blocking write.
       if (region === null || isWide(region) || isWide(x) || isWide(y)) continue
       shared.add(region)
+      // Both sides named this exact path, and the path names a FILE: the only
+      // overlap that may block. Containment reaches `shared` but never here.
+      if (x === y && namesAFile(x)) fileShared.add(region)
     }
   }
   const list = [...shared].sort()
-  return { overlap: list.length > 0, shared: list }
+  return { overlap: list.length > 0, shared: list, fileShared: [...fileShared].sort() }
 }
 
 // ---------------------------------------------------------------------------
@@ -989,7 +1025,10 @@ function normalizeLogical(verdict) {
  *                                prerequisite for; a logical prerequisite the
  *                                subject needs survives being completed, and a
  *                                CANCELED one is a warning, not a satisfaction
- *   5. orientation             — a LOGICAL basis is already oriented by its own
+ *   4½. directory overlap      — an OVERLAP basis with an empty `fileShared`
+ *                                (containment only) is a non-blocking
+ *                                `relatedTo`, never oriented and never a question
+ *   5. orientation            — a LOGICAL basis is already oriented by its own
  *                                verdict; an overlap orients by priority ORDER,
  *                                then older createdAt, else ambiguous-orientation
  *                                with a question
@@ -1188,6 +1227,45 @@ export function classifyDependencyEdge(input = {}) {
     })
   }
 
+  // `(shared: a, b)` — the evidence a human needs to tell merge-conflict surface
+  // from a prerequisite at a glance, carried by the question and the note alike.
+  const sharedSuffix = ` (shared: ${overlap.shared.join(', ')})`
+  const unidentifiable = () =>
+    result({
+      ...base,
+      basis,
+      reason: 'unidentifiable-issue',
+      note: note(
+        'warning',
+        'risks',
+        candidateName,
+        'unidentifiable-issue',
+        `A ${basis} dependency between ${subjectName} and ${candidateName} was established, but one side carries neither an id nor an identifier, so no write can name it. Re-fetch that issue with its id before treating the dependency line as complete.`,
+      ),
+    })
+
+  // Between rungs 4 and 5 — directory overlap. A blocking edge on an overlap
+  // basis needs the same FILE named on both sides; containment where one side is
+  // only a directory is merge-order evidence at most. It never reaches
+  // orientation, so it can neither invent a direction nor raise a question. The
+  // relation still needs both ids, so the write guard runs first here too.
+  if (basis === 'overlap' && overlap.fileShared.length === 0) {
+    if (issueKey(subject) === null || issueKey(candidate) === null) return unidentifiable()
+    return result({
+      ...base,
+      edge: 'relatedTo',
+      basis,
+      reason: 'directory-overlap',
+      note: note(
+        'info',
+        'planning',
+        candidateName,
+        'directory-overlap',
+        `${subjectName} and ${candidateName} overlap only at directory level, so this is merge-order surface, not a prerequisite: recorded as a non-blocking relation${sharedSuffix}.`,
+      ),
+    })
+  }
+
   // Rung 5 — orientation. A LOGICAL basis arrives ALREADY oriented: the caller's
   // verdict named which side is the prerequisite, and neither priority nor age may
   // overrule it. Only an overlap — where no one has said which way the dependency
@@ -1216,7 +1294,7 @@ export function classifyDependencyEdge(input = {}) {
         reason: 'ambiguous-orientation',
         question: question(
           candidateName,
-          `${subjectName} and ${candidateName} conflict but their link direction is genuinely balanced (equal priority, no usable creation order). Which must land first?`,
+          `${subjectName} and ${candidateName} conflict but their link direction is genuinely balanced (equal priority, no usable creation order). Which must land first?${sharedSuffix}`,
         ),
       })
     }
@@ -1238,20 +1316,7 @@ export function classifyDependencyEdge(input = {}) {
   // produce. `issueKey` is null when an issue carries neither `id` nor `identifier`.
   const blockedKey = issueKey(blocked)
   const blockerKey = issueKey(blocker)
-  if (blockedKey === null || blockerKey === null) {
-    return result({
-      ...base,
-      basis,
-      reason: 'unidentifiable-issue',
-      note: note(
-        'warning',
-        'risks',
-        candidateName,
-        'unidentifiable-issue',
-        `A ${basis} dependency between ${subjectName} and ${candidateName} was established, but one side carries neither an id nor an identifier, so no write can name it. Re-fetch that issue with its id before treating the dependency line as complete.`,
-      ),
-    })
-  }
+  if (blockedKey === null || blockerKey === null) return unidentifiable()
 
   // Rung 6 — started-side downgrade, applied SYMMETRICALLY. The ticket that
   // RECEIVES the blocking write is the one that gets stranded mid-task, and that
@@ -1699,6 +1764,52 @@ function flatNested(issue) {
       'stateName',
     ],
   ]
+}
+
+function unionStrings(...lists) {
+  return [...new Set(lists.flatMap((list) => (Array.isArray(list) ? list : [])))]
+}
+
+// A config that does not configure a role leaves the field ABSENT rather than
+// throwing: `validateDependencyScanInput` then names the gap with its own remedy.
+// Only skill-config's unconfigured-role error is absorbed; anything else (a
+// TypeError from a malformed config) is a real fault and propagates.
+function resolvedOrUndefined(resolve) {
+  try {
+    return resolve()
+  } catch (error) {
+    if (String(error?.message).startsWith('skill-config: trackerConfig.')) return undefined
+    throw error
+  }
+}
+
+/**
+ * Fill a dependency-scan payload's defaults from the repo config, so a repo
+ * declares its tuning ONCE (`.boss-skills.json` `planDependencies`) instead of on
+ * every run. Pure: returns a NEW object and never mutates `input`.
+ *
+ * `moduleRoots` and `repoWideTokens` are UNIONED — config first, de-duplicated —
+ * because a payload value extends the repo's declaration rather than silently
+ * dropping it. `areaAliases` is shallow-merged with the payload winning per key.
+ * `epicLabel` and `stateRoles` are filled only when the payload leaves them falsy.
+ * A payload that is not an object is returned untouched, for the validator to refuse.
+ *
+ * @param {object} config resolved skill config (config-first)
+ * @param {object} input the step-5 payload `validateDependencyScanInput` takes
+ */
+export function withScanDefaults(config, input) {
+  assertConfigFirst(config, 'withScanDefaults')
+  if (!isConfigShaped(input)) return input
+  const declared = planDependencyDefaults(config)
+  const payloadAliases = isConfigShaped(input.areaAliases) ? input.areaAliases : {}
+  return {
+    ...input,
+    moduleRoots: unionStrings(declared.moduleRoots, input.moduleRoots),
+    repoWideTokens: unionStrings(declared.repoWideTokens, input.repoWideTokens),
+    areaAliases: { ...declared.areaAliases, ...payloadAliases },
+    stateRoles: input.stateRoles || resolvedOrUndefined(() => stateRolesFor(config)),
+    epicLabel: input.epicLabel || resolvedOrUndefined(() => labelName(config, 'epic')),
+  }
 }
 
 /**

@@ -35,6 +35,7 @@ import {
   notesSampleRate,
   NOTES_DEFAULT_SAMPLE_RATE,
   reviewLedgerConfig,
+  planDependencyDefaults,
   command,
   moduleTestCommand,
   manifestPath,
@@ -53,6 +54,8 @@ import {
   stateName,
   labelName,
   optionalLabelName,
+  CONTENT_LABEL_ROLES,
+  contentLabelNames,
   githubLabelName,
   isConfiguredForRepo,
   isConfiguredForPlanning,
@@ -281,6 +284,79 @@ test('validateConfig rejects malformed reviewLedger configuration', () => {
       validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: 'custom/../../shared' } }, 'test'),
     /skill-config:.*reviewLedger\.dir must stay within the repository/,
   )
+})
+
+test('BOS-1337: DEFAULT_CONFIG ships an empty planDependencies block', () => {
+  assert.deepEqual(DEFAULT_CONFIG.planDependencies, {
+    moduleRoots: [],
+    repoWideTokens: [],
+    areaAliases: {},
+  })
+  assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG }, 'test'))
+})
+
+test('BOS-1337: planDependencyDefaults fills defaults and returns copies', () => {
+  const empty = { moduleRoots: [], repoWideTokens: [], areaAliases: {} }
+  assert.deepEqual(planDependencyDefaults(DEFAULT_CONFIG), empty)
+  assert.deepEqual(planDependencyDefaults({}), empty, 'an unconfigured repo resolves empty')
+  assert.deepEqual(planDependencyDefaults(undefined), empty)
+  const config = {
+    planDependencies: { repoWideTokens: ['docs/index.md'], areaAliases: { 'a/x.go': ['b/x.go'] } },
+  }
+  const resolved = planDependencyDefaults(config)
+  assert.deepEqual(resolved, {
+    moduleRoots: [],
+    repoWideTokens: ['docs/index.md'],
+    areaAliases: { 'a/x.go': ['b/x.go'] },
+  })
+  resolved.repoWideTokens.push('mutated')
+  resolved.areaAliases['a/x.go'].push('mutated')
+  assert.deepEqual(config.planDependencies.repoWideTokens, ['docs/index.md'])
+  assert.deepEqual(config.planDependencies.areaAliases['a/x.go'], ['b/x.go'])
+})
+
+test('BOS-1337: a repo planDependencies block merges over the defaults on load', () => {
+  const { nested, cleanup } = scratchRepo(
+    JSON.stringify({ planDependencies: { repoWideTokens: ['docs/index.md'] } }),
+  )
+  try {
+    assert.deepEqual(planDependencyDefaults(loadSkillConfig({ cwd: nested })), {
+      moduleRoots: [],
+      repoWideTokens: ['docs/index.md'],
+      areaAliases: {},
+    })
+  } finally {
+    cleanup()
+  }
+})
+
+test('BOS-1337: validateConfig rejects each malformed planDependencies shape', () => {
+  const reject = (planDependencies, pattern) =>
+    assert.throws(
+      () => validateConfig({ ...DEFAULT_CONFIG, planDependencies }, 'test'),
+      pattern,
+      JSON.stringify(planDependencies),
+    )
+  reject(null, /planDependencies must be an object/)
+  reject([], /planDependencies must be an object/)
+  reject('docs', /planDependencies must be an object/)
+  reject({ repoWideToken: [] }, /planDependencies\.repoWideToken is not a known key/)
+  reject({ moduleRoots: 'services' }, /planDependencies\.moduleRoots must be an array/)
+  reject({ repoWideTokens: [3] }, /planDependencies\.repoWideTokens entries must be non-empty/)
+  reject({ repoWideTokens: [''] }, /planDependencies\.repoWideTokens entries must be non-empty/)
+  reject({ areaAliases: [] }, /planDependencies\.areaAliases must be an object/)
+  reject({ areaAliases: { 'a/x.go': 3 } }, /areaAliases\.a\/x\.go must map/)
+  reject({ areaAliases: { 'a/x.go': ['b/x.go', ''] } }, /areaAliases\.a\/x\.go must map/)
+  reject({ areaAliases: { 'a/x.go': '' } }, /areaAliases\.a\/x\.go must map/)
+  // Control: every well-formed shape, including a partial block and both alias forms, passes.
+  for (const planDependencies of [
+    undefined,
+    {},
+    { moduleRoots: ['services'] },
+    { areaAliases: { 'a/x.go': 'b/x.go', 'a/y.go': ['b/y.go', 'c/y.go'] } },
+  ]) {
+    assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG, planDependencies }, 'test'))
+  }
 })
 
 test('mergeConfig replaces arrays and shallow-merges objects', () => {
@@ -2360,6 +2436,23 @@ test('stateName, labelName, and githubLabelName fail closed for missing roles', 
     () => githubLabelName(cfg, 'release'),
     /skill-config:.*githubLabels\.release must be configured/,
   )
+})
+
+test('contentLabelNames resolves mapped roles and falls back to the literal for unmapped ones', () => {
+  assert.deepEqual(CONTENT_LABEL_ROLES, ['bug', 'feature', 'improvement', 'docs'])
+  // DEFAULT_CONFIG maps no content role, so every role falls back to its literal.
+  assert.deepEqual(contentLabelNames(DEFAULT_CONFIG), ['bug', 'feature', 'improvement', 'docs'])
+  // The fixture maps `bug` to `defect`; the rest stay literal.
+  assert.deepEqual(contentLabelNames(configuredFixture()), [
+    'defect',
+    'feature',
+    'improvement',
+    'docs',
+  ])
+  const mapped = mergeConfig(configuredFixture(), {
+    trackerConfig: { demo: { labels: { bug: 'defect', improvement: 'Enhancement' } } },
+  })
+  assert.deepEqual(contentLabelNames(mapped), ['defect', 'feature', 'Enhancement', 'docs'])
 })
 
 test('optionalLabelName still fails closed for malformed configured label roles', () => {

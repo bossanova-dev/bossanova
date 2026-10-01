@@ -549,12 +549,8 @@ export function parseEpicChildMarker(description) {
  * @param {string} description
  * @returns {boolean}
  */
-export function descriptionAppearsTruncated(description) {
-  return (
-    typeof description === 'string' &&
-    description.includes('(truncated, use get_issue for full description)')
-  )
-}
+export { descriptionAppearsTruncated } from './skill-config.mjs'
+import { descriptionAppearsTruncated } from './skill-config.mjs'
 
 // LEGACY, READ-ONLY. Two inline `boss-plan-epic-spec` markers that earlier
 // builds hid in the epic PARENT's description. NOTHING WRITES EITHER ANY MORE —

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -566,5 +567,62 @@ func TestRemoteClient_ListSessionsServesPartialRead(t *testing.T) {
 	}
 	if len(plain) != 2 {
 		t.Fatalf("ListSessions dropped served sessions: got %d, want 2", len(plain))
+	}
+}
+
+// updateRepoRecorder serves the two RPCs RemoteClient.UpdateRepo would make
+// (daemon resolution, then ProxyUpdateRepo) and counts them, so a refusal is
+// proven to happen before either rather than being masked by an Unimplemented.
+type updateRepoRecorder struct {
+	bossanovav1connect.UnimplementedOrchestratorServiceHandler
+	aggregatedCalls int
+	updateCalls     int
+}
+
+func (f *updateRepoRecorder) ProxyListReposAggregated(context.Context, *connect.Request[pb.ProxyListReposAggregatedRequest]) (*connect.Response[pb.ProxyListReposAggregatedResponse], error) {
+	f.aggregatedCalls++
+	return connect.NewResponse(&pb.ProxyListReposAggregatedResponse{Repos: []*pb.AggregatedRepo{{
+		Daemons: []*pb.DaemonRepoRef{{DaemonId: "daemon-1", RepoId: "repo-1"}},
+	}}}), nil
+}
+
+func (f *updateRepoRecorder) ProxyUpdateRepo(_ context.Context, req *connect.Request[pb.ProxyUpdateRepoRequest]) (*connect.Response[pb.ProxyUpdateRepoResponse], error) {
+	f.updateCalls++
+	return connect.NewResponse(&pb.ProxyUpdateRepoResponse{Settings: &pb.RepoSettings{Id: req.Msg.GetRepoId()}}), nil
+}
+
+// TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir pins BOS-1344: the proxy
+// surface has no worktree field, so a --remote update that sets one must fail
+// rather than report a success that changed nothing.
+func TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir(t *testing.T) {
+	t.Parallel()
+	fake := &updateRepoRecorder{}
+	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := NewRemote(srv.URL, "tok")
+
+	dir := "/abs/worktrees"
+	_, err := c.UpdateRepo(context.Background(), &pb.UpdateRepoRequest{Id: "repo-1", WorktreeBaseDir: &dir})
+	if err == nil {
+		t.Fatal("UpdateRepo with worktree_base_dir succeeded, want a local-only refusal")
+	}
+	if connect.CodeOf(err) != connect.CodeUnimplemented || !strings.Contains(err.Error(), "only available on a local daemon") {
+		t.Fatalf("UpdateRepo error = %v, want Unimplemented local-only refusal", err)
+	}
+	if fake.aggregatedCalls != 0 || fake.updateCalls != 0 {
+		t.Fatalf("RPCs dispatched: aggregated=%d update=%d, want 0 and 0", fake.aggregatedCalls, fake.updateCalls)
+	}
+
+	// Control: the same fake serves a field-free update, so the zero counts
+	// above are the refusal's doing, not an unreachable server.
+	name := "renamed"
+	if _, err := c.UpdateRepo(context.Background(), &pb.UpdateRepoRequest{Id: "repo-1", DisplayName: &name}); err != nil {
+		t.Fatalf("control UpdateRepo error = %v", err)
+	}
+	if fake.updateCalls != 1 {
+		t.Fatalf("control ProxyUpdateRepo calls = %d, want 1", fake.updateCalls)
 	}
 }

@@ -1,7 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +20,7 @@ import {
   adoptReturnedMetadata,
   planIdempotencePrecheck,
   premiseDrift,
+  reconcilePremiseAnnotations,
   validateDraftMetadata,
 } from './plan-run-guards.mjs'
 import { DEFAULT_CONFIG, requiredPlanSections } from './skill-config.mjs'
@@ -674,6 +684,432 @@ test('premiseDrift reports drifted, unresolved, and verification coverage', () =
       declared: 2,
     },
   )
+})
+
+const annotationPremises = [
+  { id: 'GIG-46', state: 'Todo' },
+  { id: 'GIG-47', state: 'Todo' },
+]
+const reconcile = (text, states = { 'GIG-46': 'In Progress', 'GIG-47': 'Todo' }) =>
+  reconcilePremiseAnnotations(text, {
+    premises: annotationPremises,
+    drifted: premiseDrift(annotationPremises, states).drifted,
+  })
+const annotationBody = (prose) =>
+  `## Risks / unknowns\n\n${prose}\n\n## Planning\n\n- Contract: v1\n- Scope: bounded\n\n## Original notes\n\nGIG-46 was Todo.\n`
+
+test('reconcilePremiseAnnotations flags drifted prose only, reporting sections', () => {
+  const before = annotationBody('- GIG-46 and GIG-47 were Todo.\n- GIG-47 stays Todo.')
+  const after = reconcile(before)
+  assert.ok(
+    after.includes('- GIG-46 and GIG-47 were Todo. (premise drift: GIG-46 is now In Progress)'),
+  )
+  assert.ok(after.includes('- GIG-47 stays Todo.\n'))
+  assert.ok(
+    after.includes(
+      '- Scope: bounded\n- Premise drift: GIG-46 was Todo, is now In Progress; flagged inline in Risks / unknowns\n\n## Original notes',
+    ),
+  )
+  assert.ok(!after.includes('premise drift: GIG-47'))
+})
+
+test('reconcilePremiseAnnotations reports checkbox sections without rewriting their bullets', () => {
+  const bullets =
+    '- [ ] GIG-46 was Todo — check: `verify GIG-46`\n- [ ] GIG-47 was Todo — check: `verify GIG-47`'
+  const before = annotationBody('').replace(
+    '## Planning',
+    `## Premises\n\n${bullets}\n\n## Acceptance criteria\n\n${bullets}\n\n## Planning`,
+  )
+  const after = reconcile(before)
+  assert.equal(after.split(bullets).length, 3)
+  assert.ok(after.includes('; also stated in Premises, Acceptance criteria\n'))
+  assert.ok(!after.includes('; flagged inline in'))
+})
+
+test('reconcilePremiseAnnotations leaves Original notes through EOF and fenced code byte-identical', () => {
+  const code =
+    '```md\n## Premises\nGIG-46 (premise drift: GIG-46 is now Old)\n- Premise drift: GIG-46 was Todo, is now Old\n```\n~~~\nGIG-46\n~~~'
+  const before =
+    annotationBody(`GIG-46 prose.\n${code}`) +
+    '## Evidence\nGIG-46 (premise drift: GIG-46 is now Old)\n'
+  const after = reconcile(before)
+  assert.ok(after.includes(code))
+  const originalNotesStart = before.indexOf('## Original notes')
+  assert.ok(originalNotesStart >= 0)
+  const protectedTail = before.slice(originalNotesStart)
+  assert.ok(after.endsWith(protectedTail))
+  assert.ok(after.includes('GIG-46 prose. (premise drift: GIG-46 is now In Progress)'))
+})
+
+test('reconcilePremiseAnnotations inserts missing Planning before an EOF Original notes heading', () => {
+  for (const heading of ['## Original notes', '## Original notes ###']) {
+    for (const ending of ['', '\n']) {
+      const protectedTail = heading + ending
+      const before = `## Risks / unknowns\n\nGIG-46 was Todo.\n\n${protectedTail}`
+      const after = reconcile(before)
+      assert.ok(after.endsWith(protectedTail))
+      assert.ok(after.indexOf('## Planning') < after.indexOf(heading))
+      assert.ok(after.includes('- Premise drift: GIG-46 was Todo, is now In Progress'))
+      assert.equal(reconcile(after), after)
+    }
+  }
+})
+
+test('reconcilePremiseAnnotations ignores fenced Original notes headings when inserting Planning', () => {
+  const code = '```md\n## Original notes\nGIG-46 example.\n```'
+  for (const tail of ['', '\n\n## Original notes', '\n\n## Original notes ###\n']) {
+    const before = `## Risks / unknowns\n\n${code}\n\nGIG-46 was Todo.${tail}`
+    const after = reconcile(before)
+    assert.ok(after.includes(code))
+    assert.ok(after.indexOf('## Planning') > after.indexOf(code) + code.length)
+    assert.ok(after.includes('GIG-46 was Todo. (premise drift: GIG-46 is now In Progress)'))
+    if (tail) assert.ok(after.endsWith(tail.trimStart()))
+    assert.equal(reconcile(after), after)
+  }
+})
+
+test('reconcilePremiseAnnotations matches whole tokens, skipping headings and table rows', () => {
+  const after = reconcile(
+    annotationBody('GIG-46.\nGIG-461 and XGIG-46 and GIG-46-extra.\n### GIG-46\n| GIG-46 | Todo |'),
+  )
+  assert.ok(after.includes('GIG-46. (premise drift: GIG-46 is now In Progress)'))
+  assert.ok(
+    after.includes('GIG-461 and XGIG-46 and GIG-46-extra.\n### GIG-46\n| GIG-46 | Todo |\n'),
+  )
+})
+
+test('reconcilePremiseAnnotations skips Markdown tables with optional outer pipes', () => {
+  const table = 'Ticket | State\n--- | ---\nGIG-46 | Todo'
+  const after = reconcile(annotationBody(`${table}\n\nGIG-46 prose.`))
+  assert.ok(after.includes(table + '\n\n'))
+  assert.ok(after.includes('GIG-46 prose. (premise drift: GIG-46 is now In Progress)'))
+})
+
+test('reconcilePremiseAnnotations is idempotent and replaces a second-pass state', () => {
+  const once = reconcile(annotationBody('GIG-46 was Todo.'))
+  assert.equal(reconcile(once), once)
+  const twice = reconcile(once, { 'GIG-46': 'In Review', 'GIG-47': 'Todo' })
+  assert.ok(twice.includes('(premise drift: GIG-46 is now In Review)'))
+  assert.ok(twice.includes('- Premise drift: GIG-46 was Todo, is now In Review;'))
+  assert.ok(!twice.includes('In Progress'))
+  assert.equal(reconcile(twice, { 'GIG-46': 'In Review', 'GIG-47': 'Todo' }), twice)
+})
+
+test('reconcilePremiseAnnotations removes resolved annotations and preserves undeclared ids', () => {
+  const before = annotationBody('GIG-46 was Todo.\nGIG-48 (premise drift: GIG-48 is now Done)')
+  const once = reconcile(before)
+  assert.equal(reconcile(once, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+  assert.ok(reconcile(once).includes('(premise drift: GIG-48 is now Done)'))
+})
+
+test('reconcilePremiseAnnotations preserves no-drift bytes, CRLF and missing terminal newline', () => {
+  for (const before of [
+    annotationBody('GIG-46.'),
+    annotationBody('GIG-46.').replaceAll('\n', '\r\n').trimEnd(),
+  ]) {
+    assert.equal(reconcile(before, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+    const once = reconcile(before)
+    assert.equal(reconcile(once), once)
+    assert.equal(reconcile(once, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+  }
+})
+
+test('reconcilePremiseAnnotations marks multiple drifted ids without treating markers as mentions', () => {
+  const before = annotationBody('GIG-46 and GIG-47 were Todo.')
+  const states = { 'GIG-46': 'In Review', 'GIG-47': 'Done' }
+  const after = reconcile(before, states)
+  assert.ok(
+    after.includes('(premise drift: GIG-46 is now In Review) (premise drift: GIG-47 is now Done)'),
+  )
+  assert.equal(reconcile(after, states), after)
+  assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+})
+
+test('reconcilePremiseAnnotations reconciles parenthesized states without marking ids inside markers', () => {
+  const before = annotationBody('GIG-46 was Todo.')
+  const states = { 'GIG-46': 'Review (waiting on GIG-47)', 'GIG-47': 'Done' }
+  const after = reconcile(before, states)
+  assert.ok(after.includes('(premise drift: GIG-46 is now Review \\(waiting on GIG-47\\))'))
+  assert.ok(!after.includes('(premise drift: GIG-47'))
+  assert.equal(reconcile(after, states), after)
+  assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+})
+
+test('reconcilePremiseAnnotations treats unmatched state parentheses as opaque text', () => {
+  const before = annotationBody('GIG-46 and GIG-47 were Todo.')
+  for (const state of ['Review (waiting', 'Review ) waiting', 'Review \\(waiting)']) {
+    const states = { 'GIG-46': state, 'GIG-47': 'Done' }
+    const after = reconcile(before, states)
+    const escapedState = state.replace(/[\\()]/g, '\\$&')
+    assert.ok(after.includes(`(premise drift: GIG-46 is now ${escapedState})`))
+    assert.equal(escapedState.replace(/\\([\\()])/g, '$1'), state)
+    assert.equal(reconcile(after, states), after)
+    assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+    const changed = reconcile(after, { 'GIG-46': 'In Review', 'GIG-47': 'Done' })
+    assert.ok(!changed.includes(`(premise drift: GIG-46 is now ${escapedState})`))
+    assert.equal(reconcile(changed, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+    const control = annotationBody('GIG-46 was Todo. (premise drift: GIG-48 is now Done)')
+    const marked = reconcile(control, { 'GIG-46': state, 'GIG-47': 'Todo' })
+    assert.equal(reconcile(marked, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), control)
+  }
+})
+
+test('reconcilePremiseAnnotations removes balanced relocated markers without losing following prose', () => {
+  for (const suffix of [
+    ' followed by required condition (check)',
+    '. Required condition (check).',
+    ', required condition; check!',
+  ]) {
+    for (const state of ['Old', 'Review (waiting on GIG-47)']) {
+      const prose = `GIG-46 prose${suffix}`
+      const before = annotationBody(prose)
+      const relocated = annotationBody(
+        `GIG-46 prose (premise drift: GIG-46 is now ${state})${suffix}`,
+      )
+      const after = reconcile(relocated)
+      assert.equal(after, reconcile(before))
+      assert.ok(after.includes(prose))
+      assert.equal(reconcile(after), after)
+      assert.equal(reconcile(after, { 'GIG-46': 'Todo', 'GIG-47': 'Todo' }), before)
+    }
+  }
+})
+
+test('premises --annotate updates two files, records drift and leaves a repeat byte-identical', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'premise-annotate-'))
+  try {
+    const p = path.join(dir, 'premises.json'),
+      live = path.join(dir, 'live.json')
+    const files = [path.join(dir, 'description.md'), path.join(dir, 'plan.md')]
+    const modes = [0o640, 0o600]
+    writeFileSync(p, JSON.stringify(annotationPremises))
+    writeFileSync(live, JSON.stringify({ 'GIG-46': 'In Review', 'GIG-47': 'Todo' }))
+    for (const file of files) writeFileSync(file, annotationBody('GIG-46 was Todo.'))
+    files.forEach((file, index) => chmodSync(file, modes[index]))
+    const args = ['premises', p, live, ...files.flatMap((file) => ['--annotate', file])]
+    const outcomes = path.join(dir, 'outcomes.tsv')
+    const first = runGuardRecording(args, outcomes)
+    assert.equal(first.status, 0, first.stderr)
+    assert.match(
+      first.stderr,
+      /premise-annotated: plan-run-guards: GIG-46 flagged in Risks \/ unknowns/,
+    )
+    const after = files.map((file) => readFileSync(file, 'utf8'))
+    assert.ok(after.every((text) => text.includes('(premise drift: GIG-46 is now In Review)')))
+    assert.deepEqual(
+      files.map((file) => statSync(file).mode & 0o7777),
+      modes,
+    )
+    const second = runGuardRecording(args, outcomes)
+    assert.equal(second.status, 0, second.stderr)
+    assert.deepEqual(
+      files.map((file) => readFileSync(file, 'utf8')),
+      after,
+    )
+    writeFileSync(live, JSON.stringify({ 'GIG-46': 'Todo', 'GIG-47': 'Todo' }))
+    assert.equal(runGuardRecording(args, outcomes).status, 0)
+    assert.ok(
+      files.every((file) => readFileSync(file, 'utf8') === annotationBody('GIG-46 was Todo.')),
+    )
+    assert.equal(runGuardRecording(args, outcomes).status, 0)
+    assert.deepEqual(
+      recordedOutcomes(outcomes).map((row) => row[2]),
+      ['premise-drift', 'premise-drift', 'ok', 'ok'],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test(
+  'premises --annotate refuses an unwritable target before changing either file',
+  {
+    skip:
+      process.getuid?.() === 0
+        ? 'root can write chmod 0444 files; this fixture requires an unprivileged user'
+        : false,
+  },
+  () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'premise-unwritable-'))
+    const first = path.join(dir, 'first.md'),
+      second = path.join(dir, 'second.md')
+    try {
+      const p = path.join(dir, 'premises.json'),
+        live = path.join(dir, 'live.json')
+      const before = annotationBody('GIG-46 was Todo.')
+      writeFileSync(p, JSON.stringify(annotationPremises))
+      writeFileSync(live, JSON.stringify({ 'GIG-46': 'In Review', 'GIG-47': 'Todo' }))
+      writeFileSync(first, before)
+      writeFileSync(second, before)
+      chmodSync(second, 0o444)
+      const result = spawnSync(
+        process.execPath,
+        [GUARD, 'premises', p, live, '--annotate', first, '--annotate', second],
+        { encoding: 'utf8' },
+      )
+      assert.equal(result.status, 1, result.stderr)
+      assert.match(result.stderr, /unreadable-input:/)
+      assert.equal(readFileSync(first, 'utf8'), before)
+      assert.equal(readFileSync(second, 'utf8'), before)
+    } finally {
+      chmodSync(second, 0o644)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+for (const phase of ['stage', 'commit']) {
+  test(`premises --annotate restores all bytes and modes when the second ${phase} fails`, () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'premise-transaction-'))
+    try {
+      const p = path.join(dir, 'premises.json'),
+        live = path.join(dir, 'live.json'),
+        outcomes = path.join(dir, 'outcomes.tsv'),
+        preload = path.join(dir, 'fault.mjs')
+      const files = [path.join(dir, 'first.md'), path.join(dir, 'second.md')]
+      const before = annotationBody('GIG-46 was Todo.')
+      const modes = [0o640, 0o600]
+      writeFileSync(p, JSON.stringify(annotationPremises))
+      writeFileSync(live, JSON.stringify({ 'GIG-46': 'In Review', 'GIG-47': 'Todo' }))
+      files.forEach((file, index) => {
+        writeFileSync(file, before)
+        chmodSync(file, modes[index])
+      })
+      // Patch the builtin before guard imports: fail one exact staging/commit operation,
+      // leaving rollback operations unaffected and avoiding permission/timing dependence.
+      writeFileSync(
+        preload,
+        `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const phase = ${JSON.stringify(phase)}
+const method = phase === 'stage' ? 'writeFileSync' : 'renameSync'
+const original = fs[method]
+let calls = 0
+fs[method] = function (file, ...args) {
+  if (String(file).endsWith('/next') && String(file).includes('/.premise-annotations-')) {
+    calls += 1
+    if (calls === 2) {
+      const first = fs.readFileSync(${JSON.stringify(files[0])}, 'utf8')
+      const before = ${JSON.stringify(before)}
+      if (phase === 'stage' && first !== before) throw new Error('first target changed before staging completed')
+      if (phase === 'commit' && first === before) throw new Error('first commit was not exercised')
+      throw new Error('injected second ' + phase + ' failure')
+    }
+  }
+  return original.call(this, file, ...args)
+}
+syncBuiltinESMExports()
+`,
+      )
+      const result = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          preload,
+          GUARD,
+          'premises',
+          p,
+          live,
+          ...files.flatMap((file) => ['--annotate', file]),
+        ],
+        { encoding: 'utf8', env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes } },
+      )
+      assert.equal(result.status, 1, result.stderr)
+      assert.match(result.stderr, new RegExp(`unreadable-input:.*injected second ${phase} failure`))
+      assert.doesNotMatch(result.stderr, /premise-annotated:/)
+      assert.deepEqual(
+        files.map((file) => readFileSync(file)),
+        files.map(() => Buffer.from(before)),
+      )
+      assert.deepEqual(
+        files.map((file) => statSync(file).mode & 0o7777),
+        modes,
+      )
+      assert.ok(!readdirSync(dir).some((name) => name.startsWith('.premise-annotations-')))
+      assert.deepEqual(recordedOutcomes(outcomes), [
+        ['plan-run-guards.premises', 'fire', 'unreadable-input'],
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
+
+test('premises --annotate stages nothing for unchanged targets', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'premise-noop-'))
+  try {
+    const p = path.join(dir, 'premises.json'),
+      live = path.join(dir, 'live.json'),
+      file = path.join(dir, 'description.md'),
+      preload = path.join(dir, 'fault.mjs')
+    const before = annotationBody('GIG-46 was Todo.')
+    writeFileSync(p, JSON.stringify(annotationPremises))
+    writeFileSync(live, JSON.stringify({ 'GIG-46': 'Todo', 'GIG-47': 'Todo' }))
+    writeFileSync(file, before)
+    const originalStat = statSync(file)
+    writeFileSync(
+      preload,
+      `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+fs.mkdtempSync = () => { throw new Error('unchanged targets must not stage') }
+syncBuiltinESMExports()
+`,
+    )
+    const result = spawnSync(
+      process.execPath,
+      ['--import', preload, GUARD, 'premises', p, live, '--annotate', file],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readFileSync(file, 'utf8'), before)
+    assert.equal(statSync(file).ino, originalStat.ino)
+    assert.equal(statSync(file).mtimeMs, originalStat.mtimeMs)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('premises --annotate writes nothing on premise-limit, premise-unresolved or unreadable-input', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'premise-abort-'))
+  try {
+    const p = path.join(dir, 'premises.json'),
+      live = path.join(dir, 'live.json')
+    const file = path.join(dir, 'description.md'),
+      absent = path.join(dir, 'absent.md')
+    const before = annotationBody('GIG-46 was Todo.')
+    for (const [reason, premises, states, extra] of [
+      [
+        'premise-limit',
+        Array.from({ length: PREMISE_LIMIT + 1 }, (_, i) => ({ id: `GIG-${i}`, state: 'Todo' })),
+        {},
+        [],
+      ],
+      ['premise-unresolved', annotationPremises, { 'GIG-46': 'In Review' }, []],
+      ['unreadable-input', annotationPremises, 'bad json', []],
+      [
+        'unreadable-input',
+        annotationPremises,
+        { 'GIG-46': 'In Review', 'GIG-47': 'Todo' },
+        ['--annotate', absent],
+      ],
+    ]) {
+      writeFileSync(file, before)
+      writeFileSync(p, JSON.stringify(premises))
+      writeFileSync(live, typeof states === 'string' ? states : JSON.stringify(states))
+      const result = spawnSync(
+        process.execPath,
+        [GUARD, 'premises', p, live, '--annotate', file, ...extra],
+        { encoding: 'utf8' },
+      )
+      assert.equal(result.status, 1, result.stderr)
+      assert.ok(result.stderr.includes(reason))
+      assert.equal(readFileSync(file, 'utf8'), before)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('premises CLI reports zero verification coverage for an empty declared set', () => {

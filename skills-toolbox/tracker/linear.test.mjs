@@ -12,6 +12,8 @@ import {
   READ_DESCRIPTION_QUERY,
   linearReadDescription,
   linearSelectPlanned,
+  linearSelectCandidates,
+  LIST_CANDIDATES_QUERY,
 } from './linear.mjs'
 import { buildIssueCountFilter } from '../linear-gate-lib.mjs'
 import { assertConforms, REQUIRED_TRACKER_OPERATIONS, TRACKER_STATE_ROLES } from './adapter.mjs'
@@ -35,6 +37,198 @@ function fakeFetch(nodes) {
   }
   return { impl, calls }
 }
+
+const candidateNode = {
+  id: 'uuid-1',
+  identifier: 'APP-1',
+  title: 'candidate',
+  priority: 2,
+  createdAt: '2026-01-01',
+  description: 'full',
+  state: { name: 'Todo', type: 'unstarted' },
+  parent: { identifier: 'APP-9' },
+  labels: { nodes: [{ name: 'label' }] },
+}
+
+test('selectCandidates fetches full bodies, team AND states, paginates and hydrates Done ids without filters', async () => {
+  const calls = []
+  const fetchImpl = async (_, init) => {
+    const body = JSON.parse(init.body)
+    calls.push(body)
+    return {
+      ok: true,
+      json: async () => ({
+        data: body.variables.id
+          ? {
+              issue: { ...candidateNode, state: { name: 'Done', type: 'completed' }, parent: null },
+            }
+          : {
+              issues: {
+                nodes: [candidateNode],
+                pageInfo: { hasNextPage: calls.length === 1, endCursor: 'next' },
+              },
+            },
+      }),
+    }
+  }
+  const rows = await linearSelectCandidates({
+    apiKey: 'k',
+    fetchImpl,
+    team: 'team',
+    states: ['Todo'],
+    ids: ['APP-1'],
+    limit: 1,
+  })
+  assert.deepEqual(calls[0].variables.filter, {
+    team: { name: { eq: 'team' } },
+    state: { name: { in: ['Todo'] } },
+  })
+  assert.equal(calls[1].variables.after, 'next')
+  assert.deepEqual(calls[2].variables, { id: 'APP-1' })
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].source, 'id')
+  assert.equal(rows[0].parentId, null)
+  assert.equal(rows[0].stateType, 'completed')
+  assert.equal(Object.hasOwn(rows[0], 'state'), false)
+  assert.match(LIST_CANDIDATES_QUERY, /description/)
+  assert.match(LIST_CANDIDATES_QUERY, /parent\s*\{\s*identifier\s*\}/)
+  const control = await linearSelectCandidates({
+    apiKey: 'k',
+    fetchImpl: fakeFetch([candidateNode]).impl,
+    team: 'team',
+    states: ['Todo'],
+  })
+  assert.equal(control[0].parentId, 'APP-9')
+  assert.deepEqual(control[0].labels, ['label'])
+  const empty = await linearSelectCandidates({
+    apiKey: 'k',
+    fetchImpl: fakeFetch([{ ...candidateNode, parent: null, description: null }]).impl,
+    team: 'team',
+    states: ['Todo'],
+  })
+  assert.equal(empty[0].parentId, null)
+  assert.equal(empty[0].description, '')
+})
+
+test('selectCandidates adapter forwards selectors and validates label connections', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-candidates-'))
+  try {
+    fs.writeFileSync(
+      path.join(dir, '.boss-skills.json'),
+      JSON.stringify({
+        adapters: { tracker: 'linear' },
+        trackerConfig: { linear: { mcpServer: 'stub', team: 'Acme' } },
+      }),
+    )
+    const { impl, calls } = fakeFetch([candidateNode])
+    const fetchImpl = async (url, init) => {
+      const response = await impl(url, init)
+      return JSON.parse(init.body).variables.id
+        ? { ok: true, json: async () => ({ data: { issue: candidateNode } }) }
+        : response
+    }
+    const adapter = createLinearAdapter({
+      apiKey: 'secret',
+      fetchImpl,
+      endpoint: 'https://tracker.example/graphql',
+      cwd: dir,
+    })
+    const rows = await adapter.selectCandidates({ states: ['Todo'], ids: ['APP-1'], limit: 7 })
+    assert.equal(calls[0].url, 'https://tracker.example/graphql')
+    assert.equal(calls[0].headers.Authorization, 'secret')
+    assert.equal(calls[0].body.variables.first, 7)
+    assert.deepEqual(calls[0].body.variables.filter, {
+      team: { name: { eq: 'Acme' } },
+      state: { name: { in: ['Todo'] } },
+    })
+    assert.deepEqual(rows[0].labels, ['label'])
+    assert.deepEqual(calls[1].body.variables, { id: 'APP-1' })
+    assert.equal(rows[0].source, 'id')
+    assert.throws(
+      () => adapter.selectCandidates({ states: ['Todo'], label: 'lost' }),
+      /unknown selection/,
+    )
+    assert.equal(calls.length, 2)
+    for (const labels of [
+      undefined,
+      null,
+      {},
+      { nodes: null },
+      { nodes: [null] },
+      { nodes: [{ name: '' }] },
+      { nodes: ['epic'] },
+    ]) {
+      const malformed = createLinearAdapter({
+        apiKey: 'k',
+        fetchImpl: fakeFetch([{ ...candidateNode, labels }]).impl,
+        cwd: dir,
+      })
+      await assert.rejects(malformed.selectCandidates({ states: ['Todo'] }), /unreadable candidate/)
+    }
+    const empty = createLinearAdapter({
+      apiKey: 'k',
+      fetchImpl: fakeFetch([{ ...candidateNode, labels: { nodes: [] } }]).impl,
+      cwd: dir,
+    })
+    assert.deepEqual((await empty.selectCandidates({ states: ['Todo'] }))[0].labels, [])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('selectCandidates input guards throw before network and malformed/incomplete pages never answer empty', async () => {
+  for (const patch of [
+    { states: [] },
+    { states: [''] },
+    { team: '' },
+    { limit: 0 },
+    { limit: 251 },
+    { ids: [''] },
+    { apiKey: '' },
+  ]) {
+    let called = false
+    await assert.rejects(
+      linearSelectCandidates({
+        apiKey: 'k',
+        team: 'team',
+        states: ['Todo'],
+        ...patch,
+        fetchImpl: async () => {
+          called = true
+        },
+      }),
+    )
+    assert.equal(called, false)
+  }
+  await assert.rejects(linearSelectCandidates({ apiKey: '', team: 'team', states: ['Todo'] }), {
+    code: TRACKER_CREDENTIALS_MISSING,
+  })
+  for (const issues of [
+    { nodes: null, pageInfo: { hasNextPage: false } },
+    { nodes: [], pageInfo: {} },
+    { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } },
+    { nodes: [], pageInfo: { hasNextPage: true, endCursor: 'repeated' } },
+    { nodes: [{}], pageInfo: { hasNextPage: false } },
+  ]) {
+    await assert.rejects(
+      linearSelectCandidates({
+        apiKey: 'k',
+        team: 'team',
+        states: ['Todo'],
+        fetchImpl: async () => ({ ok: true, json: async () => ({ data: { issues } }) }),
+      }),
+    )
+  }
+  assert.deepEqual(
+    await linearSelectCandidates({
+      apiKey: 'k',
+      team: 'team',
+      states: ['Todo'],
+      fetchImpl: fakeFetch([]).impl,
+    }),
+    [],
+  )
+})
 
 test('the Linear adapter conforms to the interface', () => {
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })

@@ -4344,8 +4344,49 @@ func TestSendLine_RetryLooksAgainBeforeEnteringAMutilatedRemainder(t *testing.T)
 	// judged against is the ONE baseline taken before the first clear, so no press
 	// pays for a pre-clear capture of its own.
 	want := []string{"clear", "capture", "capture", "clear", "capture", "capture"}
-	if got := pane.stepsFromFirstClear(); !slices.Equal(got, want) {
-		t.Fatalf("steps from the clear = %v, want %v (no Enter onto a mutilated payload)", got, want)
+	if got := pane.stepsFromFirstClear(); !composerClearReadsMatch(got, want) {
+		t.Fatalf("steps from the clear = %v, want %v with optional extra captures (no Enter onto a mutilated payload)", got, want)
+	}
+}
+
+// composerClearReadsMatch retains every clear and the minimum two reads after
+// it, while allowing extra captures from the poll. If a capture subprocess takes
+// longer than both timers, select may choose the ready ticker before the ready
+// deadline. That adds a read without changing the safety outcome or key order.
+func composerClearReadsMatch(got, want []string) bool {
+	i := 0
+	for _, step := range got {
+		if i < len(want) && step == want[i] {
+			i++
+			continue
+		}
+		if step != "capture" || i == 0 || want[i-1] != "capture" {
+			return false
+		}
+	}
+	return i == len(want)
+}
+
+func TestComposerClearReadsMatch(t *testing.T) {
+	want := []string{"clear", "capture", "capture", "clear", "capture", "capture"}
+	for _, tc := range []struct {
+		name  string
+		got   []string
+		match bool
+	}{
+		{"exact", want, true},
+		{"extra polls", []string{"clear", "capture", "capture", "capture", "clear", "capture", "capture", "capture"}, true},
+		{"missing read", []string{"clear", "capture", "clear", "capture", "capture"}, false},
+		{"missing clear", []string{"clear", "capture", "capture", "capture", "capture"}, false},
+		{"enter", []string{"clear", "capture", "capture", "enter", "clear", "capture", "capture"}, false},
+		{"redelivery", []string{"clear", "capture", "capture", "literal", "clear", "capture", "capture"}, false},
+		{"extra clear", append(append([]string{}, want...), "clear"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composerClearReadsMatch(tc.got, want); got != tc.match {
+				t.Fatalf("composerClearReadsMatch(%v, %v) = %v, want %v", tc.got, want, got, tc.match)
+			}
+		})
 	}
 }
 
@@ -4379,8 +4420,8 @@ func TestSendLine_RetryComposerVanishingOnTheReReadIsUnconfirmed(t *testing.T) {
 	// The stale capture hides the vanishing from the clear-verify window, so the
 	// re-read is the capture that sees it: two looks, then a stop.
 	want := []string{"clear", "capture", "capture"}
-	if got := pane.stepsFromFirstClear(); !slices.Equal(got, want) {
-		t.Fatalf("steps from the clear = %v, want %v (no keystroke into a pane with no input box)", got, want)
+	if got := pane.stepsFromFirstClear(); !composerClearReadsMatch(got, want) {
+		t.Fatalf("steps from the clear = %v, want %v with optional extra captures (no keystroke into a pane with no input box)", got, want)
 	}
 }
 

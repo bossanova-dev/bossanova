@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/recurser/bossalib/bossmcp"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/testharness"
 )
@@ -137,6 +138,18 @@ func assertNotMissingRequired(t *testing.T, tool string, err error) {
 // request against a real bossd daemon, asserting bossd never rejects it for a
 // missing required field.
 func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
+	// The in-process daemon resolves an omitted repo worktree base from the
+	// global settings, so seed a known value and keep this test off the
+	// developer's real settings file.
+	seededBase := filepath.Join(t.TempDir(), "global-worktrees")
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	seed := config.DefaultSettings()
+	seed.WorktreeBaseDir = seededBase
+	if err := config.SaveTo(settingsPath, seed); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
 	h := testharness.New(t)
 	ctx := context.Background()
 
@@ -147,8 +160,19 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 			"name":                "contract-repo",
 			"default_base_branch": "main",
 		})
-		_, err := h.Client.RegisterRepo(ctx, connect.NewRequest(backend.registerRepo))
+		if got := backend.registerRepo.GetWorktreeBaseDir(); got != "" {
+			t.Fatalf("register_repo sent worktree_base_dir %q, want none (the daemon default is under test)", got)
+		}
+		resp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(backend.registerRepo))
 		assertNotMissingRequired(t, "register_repo", err)
+		if err != nil {
+			t.Fatalf("register_repo: daemon rejected the MCP-built request: %v", err)
+		}
+		// BOS-1344: an MCP registration with no base must still yield a repo that
+		// can create sessions, i.e. one carrying the global default.
+		if got := resp.Msg.GetRepo().GetWorktreeBaseDir(); got != seededBase {
+			t.Fatalf("registered repo worktree_base_dir = %q, want seeded global default %q", got, seededBase)
+		}
 	})
 
 	t.Run("clone_and_register_repo", func(t *testing.T) {

@@ -115,6 +115,11 @@
  *           missing issue, a description it cannot read as a string, or a missing credential,
  *           never answer with bytes it did not read. A missing credential's error carries
  *           `code: TRACKER_CREDENTIALS_MISSING`.
+ * @property {(query: {states: string[], ids?: string[], limit?: number}) => Promise<object[]>} [selectCandidates]
+ *           OPTIONAL full dependency candidates, including explicit ids regardless of state.
+ *           Returns id, identifier, title, priority, createdAt, description, stateName,
+ *           stateType, parentId (identifier or null), labels (string[]), and source ('state' or 'id').
+ *           Paginates the state selection; unreadable or incomplete results must throw.
  * @property {() => Record<string, string|null>} [states]
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). Synchronous — every caller on
  *           this path is. Returns a plain object mapping every role in
@@ -148,11 +153,17 @@ export const TRACKER_CAPABILITIES = [
 
 // Capabilities an adapter MAY expose: `states` (workflow-state names), `selectPlanned`
 // (the executable filtered candidate read) and `readDescription` (the executable
-// stored-description read). Never fold these into TRACKER_CAPABILITIES —
+// stored-description read), plus `selectCandidates` (full dependency candidates).
+// Never fold these into TRACKER_CAPABILITIES —
 // assertConforms requires every entry there, so promoting one would fail every
 // conforming adapter that legitimately omits it. assertConforms validates the SHAPE
 // of an optional capability when present, and ignores it when absent.
-export const OPTIONAL_TRACKER_CAPABILITIES = ['states', 'selectPlanned', 'readDescription']
+export const OPTIONAL_TRACKER_CAPABILITIES = [
+  'states',
+  'selectPlanned',
+  'readDescription',
+  'selectCandidates',
+]
 
 // Operations an adapter MAY declare. Two groups live here, for two different reasons:
 //
@@ -247,7 +258,7 @@ export function operationHasTool(op) {
  * calls this to prove conformance.
  *
  * OPTIONAL_TRACKER_CAPABILITIES are never *required* — omitting one conforms — but a
- * present one must be callable. A `states`, `selectPlanned` or `readDescription` that is, say,
+ * present one must be callable. A `states`, `selectPlanned`, `readDescription` or `selectCandidates` that is, say,
  * a plain object rather than a function would otherwise pass here and blow up at the call site
  * as a raw TypeError, defeating the fallback (or the fail-closed stop) the caller wrote.
  * @param {TrackerAdapter} adapter

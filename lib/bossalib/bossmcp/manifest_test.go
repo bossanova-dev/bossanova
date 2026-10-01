@@ -224,9 +224,19 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// spending bytes to say there is no difference. The description now states
 	// the default in one clause and the argument doc states the action, the
 	// default and the opt-out with no clause repeated between them.
+	// RE-PINNED DOWN 2026-10-01 (BOS-1344): 70 tools / 58,826 bytes, same
+	// method, schema-share self-check green in the same run. update_repo gained
+	// a `worktree_base_dir` argument (the in-place repair for a repo stored with
+	// an empty base) and PAID for it out of its own argument docs: can_auto_repair
+	// named the plugin that the tool already implies, should_keep_branches_current
+	// said "proactively" and "whenever a merge advances it" for "when the base
+	// advances", both secret keys followed "write-only" with the restatement "by
+	// any read tool", and merge_strategy's "e.g." list was in fact the complete
+	// set of values. register_repo and clone_and_register_repo gained nothing:
+	// the daemon now defaults an omitted base from global settings.
 	const (
 		maxToolCount   = 70
-		maxSchemaBytes = 58831
+		maxSchemaBytes = 58826
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

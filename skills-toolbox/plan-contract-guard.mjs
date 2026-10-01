@@ -1486,7 +1486,8 @@ function checkSubjectAreas(config, description, { mode, moduleRoots }) {
     faults.push(
       `${unresolved.length} path-shaped token(s) do not resolve to a repo-relative area ` +
         `(${unresolved.join(', ')}) — rewrite them as repo-relative paths, or declare their ` +
-        `leading directory in the dependency scan's \`moduleRoots\``,
+        `leading directory in the dependency scan's \`moduleRoots\`; for a root file, declare the ` +
+        `root file itself in \`moduleRoots\` and present it as code-marked or as the lead of a split bullet`,
     )
   }
   if (faults.length === 0) return { violations: [], advisories }

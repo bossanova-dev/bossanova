@@ -337,3 +337,28 @@ test('passes on a clean range whose commits contain no .env* file at all (|| tru
   assert.equal(result.code, 0, result.stderr)
   assert.match(result.stdout, /Leak guard passed/)
 })
+
+for (const privateRoot of [
+  'experiments',
+  'services/bosso',
+  'services/web',
+  'services/marketing',
+  'lib/ui-tokens',
+  'infra',
+]) {
+  test('rejects private root ' + privateRoot + ' in intermediate history', () => {
+    const { dir, base } = initRepo()
+    const file = privateRoot + '/probe.txt'
+    commit(dir, { [file]: 'private fixture\n' }, 'private boundary fixture')
+    removeFile(dir, file, 'remove fixture')
+    const result = runGuard(dir, base)
+    assert.equal(result.code, 1, result.stderr)
+    assert.match(result.stderr, /forbidden path/)
+  })
+}
+
+test('rejects private publication tests in exported history', () => {
+  const { dir, base } = initRepo()
+  commit(dir, { 'scripts/public-export.test.mjs': 'private fixture\n' }, 'private test fixture')
+  assert.equal(runGuard(dir, base).code, 1)
+})

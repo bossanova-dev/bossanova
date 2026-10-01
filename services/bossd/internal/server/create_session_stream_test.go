@@ -769,6 +769,13 @@ func TestCreateSessionEmptyWorktreeBaseDirReturnsInvalidArgument(t *testing.T) {
 		if !strings.Contains(err.Error(), h.repo.ID) {
 			t.Fatalf("CreateSession error = %q, want it to name repo id %q", err.Error(), h.repo.ID)
 		}
+		// The remedy must name a command flag and an MCP argument that exist
+		// (BOS-1344): `boss repo update <id> --worktree-base-dir` and update_repo.
+		for _, want := range []string{"--worktree-base-dir", "update_repo"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("CreateSession error = %q, want it to name %q", err.Error(), want)
+			}
+		}
 	}
 
 	// The guard is gated on !IsQuickChat: a IsQuickChat create still succeeds with

@@ -942,7 +942,16 @@ export const PROSE_PIN_BASELINE = {
   // its own suite; the two pins are the agent-facing prose: the Phase 5 hazards no longer recommend
   // `find … -delete` (an absence pin, red on the pre-change body), and the secret gate runs the
   // floor over plan + description first, fails closed on exit 2, and never replaces the read.
-  'scripts/bs-plan-skill.test.mjs': 343,
+  // GIG-457: 343 -> 353. Reconciliation behavior is tested in plan-run-guards.test.mjs;
+  // these pins cover orchestration only: gate order, both annotation targets, fresh second
+  // reads and their save trigger, the pre-dispatch rule and recon-dated drafting states.
+  // GIG-457 review: 353 -> 362. Persisted inputs, late-abort verification and scoped
+  // recon-state drafting are agent orchestration prose; guard behavior stays in unit tests.
+  // GIG-461: 343 -> 348. Five planned caller-contract pins cover Step 5(c)/(d)
+  // wording and embedded glue/guard wiring. The issue scopes that markdown
+  // coverage to pins; pure extractor tests cannot check authoring instructions.
+  // Post-rebase scanner measures 367 pins with both GIG-457 and GIG-461 coverage retained.
+  'scripts/bs-plan-skill.test.mjs': 367,
   'scripts/bs-record-notes-skill.test.mjs': 2,
   'scripts/bs-sweep-debt-skill.test.mjs': 32,
   'scripts/bs-sweep-mutation-skill.test.mjs': 32,

@@ -797,6 +797,41 @@ func TestUsageSnapshotConfirmsLimitedExactStatus(t *testing.T) {
 	}) {
 		t.Fatal("NOT_RATE_LIMITED must not confirm limited by substring")
 	}
+	if UsageSnapshotConfirmsLimited(models.UsageSnapshot{
+		Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+		Util5h:    0.01,
+		Util7d:    0.77,
+		FetchedAt: &fetched,
+	}) {
+		t.Fatal("RATE_LIMITED must not override measured sub-cap utilization")
+	}
+}
+
+func TestUsageUtilDoesNotPromoteContradictedRateLimitedStatus(t *testing.T) {
+	fetched := base
+	snap := models.UsageSnapshot{
+		Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+		Util5h:    0.01,
+		Util7d:    0.77,
+		FetchedAt: &fetched,
+	}
+	if got := UsageUtil(snap); got != 0.77 {
+		t.Fatalf("UsageUtil = %v, want measured max 0.77", got)
+	}
+}
+
+func TestUsageSnapshotResetAtKeepsFallbackForCappedWindowWithoutReset(t *testing.T) {
+	weeklyReset := base.Add(7 * 24 * time.Hour)
+	snap := models.UsageSnapshot{
+		Status:  "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+		Util5h:  1,
+		Util7d:  0.5,
+		Reset7d: &weeklyReset,
+	}
+	got := UsageSnapshotResetAt(snap)
+	if got == nil || !got.Equal(weeklyReset) {
+		t.Fatalf("UsageSnapshotResetAt = %v, want fallback reset %v", got, weeklyReset)
+	}
 }
 
 func TestDecideCooldownDuration(t *testing.T) {

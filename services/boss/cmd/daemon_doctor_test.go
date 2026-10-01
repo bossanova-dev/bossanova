@@ -1206,6 +1206,8 @@ func TestRunDaemonDoctorServicePathMissingToolIsNotFatal(t *testing.T) {
 // carries an explicit PATH too, so the report must precede the macOS-only early
 // return rather than sit behind it.
 func TestRunDaemonDoctorReportsServicePathOnNonDarwin(t *testing.T) {
+	_, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorState(t, stagedPath, true, nil)
 	previous := daemonDoctorGOOS
 	daemonDoctorGOOS = "linux"
 	t.Cleanup(func() { daemonDoctorGOOS = previous })

@@ -100,6 +100,36 @@ func TestParseUsageDerivesRateLimited(t *testing.T) {
 	}
 }
 
+func TestParseUsageTrustsCompleteMeasuredHeadroomOverCoarseStatus(t *testing.T) {
+	got, err := parseUsage([]byte(`{
+		"five_hour":{"utilization":0,"resets_at":"2026-04-11T07:00:00Z"},
+		"seven_day":{"utilization":77,"resets_at":"2026-04-17T00:59:59Z"},
+		"plan_status":"rate_limited"
+	}`))
+	if err != nil {
+		t.Fatalf("parseUsage: %v", err)
+	}
+	if got.GetLimited() {
+		t.Fatal("limited = true, want false for complete measured headroom")
+	}
+	if got.GetStatus() != bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE {
+		t.Fatalf("status = %v, want ACTIVE", got.GetStatus())
+	}
+}
+
+func TestParseUsageKeepsCoarseStatusForPartialMeasurement(t *testing.T) {
+	got, err := parseUsage([]byte(`{
+		"five_hour":{"utilization":42,"resets_at":"2026-04-11T07:00:00Z"},
+		"plan_status":"rate_limited"
+	}`))
+	if err != nil {
+		t.Fatalf("parseUsage: %v", err)
+	}
+	if !got.GetLimited() {
+		t.Fatal("limited = false, want true for partial measurement")
+	}
+}
+
 func TestParseUsageUsesMostConstrainedWeeklyModelWindow(t *testing.T) {
 	data, err := os.ReadFile("testdata/usage/split_weekly_exhausted.json")
 	if err != nil {
@@ -317,7 +347,7 @@ func TestProbeRateLimitUsageTransportFailureReturnsError(t *testing.T) {
 	}
 }
 
-func TestProbeRateLimitFallsBackToHeaders(t *testing.T) {
+func TestProbeRateLimitTrustsCompleteHeaderUsageOverStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("anthropic-ratelimit-unified-5h-utilization", "0.42")
 		w.Header().Set("anthropic-ratelimit-unified-5h-reset", "1764554400")
@@ -337,11 +367,11 @@ func TestProbeRateLimitFallsBackToHeaders(t *testing.T) {
 		t.Fatalf("ProbeRateLimit: %v", err)
 	}
 	got := resp.GetStatus()
-	if !got.GetLimited() {
-		t.Fatal("limited = false, want true from per-window status fallback")
+	if got.GetLimited() {
+		t.Fatal("limited = true, want false for complete measured headroom")
 	}
-	if got.GetStatus() != bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_RATE_LIMITED {
-		t.Fatalf("status = %v, want RATE_LIMITED", got.GetStatus())
+	if got.GetStatus() != bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE {
+		t.Fatalf("status = %v, want ACTIVE", got.GetStatus())
 	}
 	if got.GetUtil_5H() != 0.42 {
 		t.Errorf("util_5h = %v, want 0.42", got.GetUtil_5H())

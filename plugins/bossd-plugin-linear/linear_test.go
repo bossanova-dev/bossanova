@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -204,6 +207,28 @@ func TestFetchIssues_AuthError(t *testing.T) {
 	_, err := client.FetchIssues(context.Background(), "")
 	if err == nil {
 		t.Fatal("Expected error for auth failure, got nil")
+	}
+	if want := `linear API error (status 401): {"error": "Invalid API key"}`; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+func TestFetchIssues_TruncatedErrorBody(t *testing.T) {
+	const body = "upstream unavailable"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := &linearClient{apiKey: "test-key", endpoint: server.URL}
+	_, err := client.FetchIssues(context.Background(), "")
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("error = %v, want wrapped unexpected EOF", err)
+	}
+	if !strings.Contains(err.Error(), "status 502") || !strings.Contains(err.Error(), body) {
+		t.Fatalf("error = %q, want HTTP status and partial response body", err)
 	}
 }
 

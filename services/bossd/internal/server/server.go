@@ -964,6 +964,11 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("not a git repository: %s", msg.LocalPath))
 	}
 
+	worktreeBaseDir, err := resolveRepoWorktreeBaseDir(msg.WorktreeBaseDir, config.Load)
+	if err != nil {
+		return nil, err
+	}
+
 	var setupScript *string
 	if msg.SetupScript != nil {
 		setupScript = msg.SetupScript
@@ -977,7 +982,7 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 		LocalPath:         msg.LocalPath,
 		OriginURL:         originURL,
 		DefaultBaseBranch: msg.DefaultBaseBranch,
-		WorktreeBaseDir:   msg.WorktreeBaseDir,
+		WorktreeBaseDir:   worktreeBaseDir,
 		SetupScript:       setupScript,
 	})
 	if err != nil {
@@ -994,6 +999,13 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 	}
 	if msg.LocalPath == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local_path is required"))
+	}
+
+	// Resolve the worktree base before cloning so a bad value never leaves a
+	// cloned directory behind with no registration.
+	worktreeBaseDir, err := resolveRepoWorktreeBaseDir(msg.WorktreeBaseDir, config.Load)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check if the target path already exists.
@@ -1031,7 +1043,7 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 		LocalPath:         msg.LocalPath,
 		OriginURL:         originURL,
 		DefaultBaseBranch: msg.DefaultBaseBranch,
-		WorktreeBaseDir:   msg.WorktreeBaseDir,
+		WorktreeBaseDir:   worktreeBaseDir,
 		SetupScript:       setupScript,
 	})
 	if err != nil {
@@ -1120,6 +1132,15 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	params.SentryAPIKey = secretUpdateToParam(msg.SentryKey, msg.SentryApiKey)
 	if msg.SentryOrg != nil {
 		params.SentryOrg = msg.SentryOrg
+	}
+	if msg.WorktreeBaseDir != nil {
+		// Present-but-empty is rejected rather than clearing the column: an
+		// empty base is exactly the state that blocks session creation.
+		dir, err := validateRepoWorktreeBaseDir(*msg.WorktreeBaseDir)
+		if err != nil {
+			return nil, err
+		}
+		params.WorktreeBaseDir = &dir
 	}
 	if msg.ExpectedUpdatedAt != nil {
 		t := msg.ExpectedUpdatedAt.AsTime()
@@ -1670,7 +1691,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 
 	if !msg.IsQuickChat && strings.TrimSpace(repo.WorktreeBaseDir) == "" {
 		return connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("repo %s (%s) has no worktree base directory configured; set one with 'boss repo update %s' before creating a session",
+			fmt.Errorf("repo %s (%s) has no worktree base directory configured; set one with 'boss repo update %s --worktree-base-dir <dir>' (or the MCP update_repo tool's worktree_base_dir argument) before creating a session",
 				repo.ID, repo.DisplayName, repo.ID))
 	}
 

@@ -1118,8 +1118,11 @@ type UpdateRepoRequest struct {
 	ShouldArchiveSessionsAfterMerge *bool                  `protobuf:"varint,19,opt,name=should_archive_sessions_after_merge,json=shouldArchiveSessionsAfterMerge,proto3,oneof" json:"should_archive_sessions_after_merge,omitempty"`
 	CanAutoDeleteBranches           *bool                  `protobuf:"varint,20,opt,name=can_auto_delete_branches,json=canAutoDeleteBranches,proto3,oneof" json:"can_auto_delete_branches,omitempty"`
 	ShouldKeepBranchesCurrent       *bool                  `protobuf:"varint,21,opt,name=should_keep_branches_current,json=shouldKeepBranchesCurrent,proto3,oneof" json:"should_keep_branches_current,omitempty"`
-	unknownFields                   protoimpl.UnknownFields
-	sizeCache                       protoimpl.SizeCache
+	// Per-repo base directory for new session worktrees. Must be absolute; an
+	// empty value is rejected rather than clearing it.
+	WorktreeBaseDir *string `protobuf:"bytes,22,opt,name=worktree_base_dir,json=worktreeBaseDir,proto3,oneof" json:"worktree_base_dir,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *UpdateRepoRequest) Reset() {
@@ -1262,6 +1265,13 @@ func (x *UpdateRepoRequest) GetShouldKeepBranchesCurrent() bool {
 		return *x.ShouldKeepBranchesCurrent
 	}
 	return false
+}
+
+func (x *UpdateRepoRequest) GetWorktreeBaseDir() string {
+	if x != nil && x.WorktreeBaseDir != nil {
+		return *x.WorktreeBaseDir
+	}
+	return ""
 }
 
 type UpdateRepoResponse struct {
@@ -11691,7 +11701,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05repos\x18\x01 \x03(\v2\x12.bossanova.v1.RepoR\x05repos\"#\n" +
 	"\x11RemoveRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12RemoveRepoResponse\"\xfd\b\n" +
+	"\x12RemoveRepoResponse\"\xc4\t\n" +
 	"\x11UpdateRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12)\n" +
@@ -11712,7 +11722,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"#should_archive_sessions_after_merge\x18\x13 \x01(\bH\tR\x1fshouldArchiveSessionsAfterMerge\x88\x01\x01\x12<\n" +
 	"\x18can_auto_delete_branches\x18\x14 \x01(\bH\n" +
 	"R\x15canAutoDeleteBranches\x88\x01\x01\x12D\n" +
-	"\x1cshould_keep_branches_current\x18\x15 \x01(\bH\vR\x19shouldKeepBranchesCurrent\x88\x01\x01B\x0f\n" +
+	"\x1cshould_keep_branches_current\x18\x15 \x01(\bH\vR\x19shouldKeepBranchesCurrent\x88\x01\x01\x12/\n" +
+	"\x11worktree_base_dir\x18\x16 \x01(\tH\fR\x0fworktreeBaseDir\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x11\n" +
 	"\x0f_can_auto_mergeB\x1c\n" +
 	"\x1a_can_auto_merge_dependabotB\x11\n" +
@@ -11724,7 +11735,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x10_can_auto_repairB&\n" +
 	"$_should_archive_sessions_after_mergeB\x1b\n" +
 	"\x19_can_auto_delete_branchesB\x1f\n" +
-	"\x1d_should_keep_branches_currentJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fJ\x04\b\n" +
+	"\x1d_should_keep_branches_currentB\x14\n" +
+	"\x12_worktree_base_dirJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fJ\x04\b\n" +
 	"\x10\vJ\x04\b\r\x10\x0e\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
 	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"(\n" +

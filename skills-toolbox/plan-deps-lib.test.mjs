@@ -451,7 +451,12 @@ test('BOS-1145: a bare directory named parenthetically yields no area while the 
     ['app/api/router.ts'],
     'a directory mentioned to say it is NOT touched must not prefix-match everything beneath it, and the narrowing must not take the real change site with it',
   )
-  assert.deepEqual(result.unresolved, ['vendor/legacy'])
+  assert.deepEqual(result.unresolved, [])
+  assert.deepEqual(
+    result.referenced,
+    ['vendor/legacy'],
+    'GIG-461: description-tail directory is referenced, not unresolved',
+  )
 })
 
 test('BOS-1056: a path in a sibling-enumeration table row is not promoted to a change site', () => {
@@ -604,6 +609,9 @@ test('BOS-1176: an unresolved subject token raises its own warning beside the ar
   assert.equal(warning.severity, 'warning')
   assert.equal(warning.destination, 'risks')
   assert.match(warning.text, /skill\.md/, 'the note must NAME the token so it can be resolved')
+  assert.match(warning.text, /leading directory in `moduleRoots`/)
+  assert.match(warning.text, /root file itself in `moduleRoots`/)
+  assert.match(warning.text, /present it as code-marked or as the lead of a split bullet/)
 })
 
 test('BOS-1164: repoWideTokens EXTENDS the shipped defaults instead of replacing them', () => {
@@ -3276,4 +3284,88 @@ test('BOS-1337 withScanDefaults: config-declared repoWideTokens suppress a share
     }).reason
   assert.equal(shared(payload.repoWideTokens), 'no-overlap')
   assert.equal(shared([]), 'ambiguous-orientation', 'non-vacuity: undeclared, the file overlaps')
+})
+
+// GIG-461: lead targets and references are deliberately asymmetric.
+const REFERENCE_ROWS = [
+  ['called path', '- `app/a.ts`: calls `app/b.ts`', ['app/a.ts'], [], ['app/b.ts']],
+  ['read path', '- `app/a.ts` — reads `app/b.ts`', ['app/a.ts'], [], ['app/b.ts']],
+  ['both edited', '- `app/a.ts`, `app/b.ts` — edit both', ['app/a.ts', 'app/b.ts'], [], []],
+  [
+    'tail directories',
+    '- `app/a.ts` – assert nothing under `app` or `web/lib`',
+    ['app/a.ts'],
+    [],
+    ['app', 'web/lib'],
+  ],
+  ['lead directory', '- `web/lib` - edit the helpers', ['web/lib'], [], []],
+  ['span locator', '- `app/a.ts:12`, `app/b.ts` — edit both', ['app/a.ts', 'app/b.ts'], [], []],
+  ['separator in span', '- `app/a.ts`, `a - b` — reads `app/c.ts`', ['app/a.ts'], [], ['app/c.ts']],
+  ['path-free lead', '- Note: replace the map in app/api/router.ts', ['app/api/router.ts'], [], []],
+  ['unchanged', '- `app/a.ts`: unchanged', [], [], ['app/a.ts']],
+  ['no change', '- `app/b.ts` — no change', [], [], ['app/b.ts']],
+  ['stays as-is', '- `app/c.ts` stays as-is.', [], [], ['app/c.ts']],
+  ['prefix declaration', '- Not touched: `app/d.ts`, `app/e.ts`', [], [], ['app/d.ts', 'app/e.ts']],
+  ['later unchanged', '- `app/a.ts`: rename helper; behaviour unchanged', ['app/a.ts'], [], []],
+  [
+    'qualifier opens edit',
+    '- `app/k.mjs`: unchanged behaviour; add doc comment',
+    ['app/k.mjs'],
+    [],
+    [],
+  ],
+  ['flag qualifier', '- `app/h.sh`: no change to `--x`; adjust list', ['app/h.sh'], [], []],
+  ['colon opens edit', '- `app/a.ts`: unchanged: add helper', ['app/a.ts'], [], []],
+  [
+    'terminal rationale',
+    '- `app/a.ts`: read-only — called by `app/b.ts`',
+    [],
+    [],
+    ['app/a.ts', 'app/b.ts'],
+  ],
+  [
+    'cross-entry area',
+    '- `app/a.ts`: edit\n- `app/b.ts`: reads `app/a.ts`',
+    ['app/a.ts', 'app/b.ts'],
+    [],
+    [],
+  ],
+  [
+    'cross-entry unresolved',
+    '- `SKILL.md`: edit\n- `app/b.ts`: reads `SKILL.md`',
+    ['app/b.ts'],
+    ['skill.md'],
+    [],
+  ],
+  ['declared root file', '- AGENTS.md — update rules', ['agents.md'], [], []],
+  ['marked root file', '- `AGENTS.md` — update rules', ['agents.md'], [], []],
+  ['declared root file separator-free prose', '- touch AGENTS.md', [], [], []],
+  ['declared root file separator-free marked', '- touch `AGENTS.md`', ['agents.md'], [], []],
+  ['undeclared basename', '- touch SKILL.md', [], ['skill.md'], []],
+  ['root file prose', '- Note: see README.md for context', [], [], []],
+]
+for (const [name, body, expectedAreas, unresolved, referenced] of REFERENCE_ROWS) {
+  test('GIG-461 referenced: ' + name, () => {
+    const result = areas(planBody(body + '\n'), {
+      moduleRoots: ['app', 'web', 'AGENTS.md', 'README.md'],
+    })
+    assert.deepEqual(
+      { areas: result.areas, unresolved: result.unresolved, referenced: result.referenced },
+      { areas: expectedAreas, unresolved, referenced },
+    )
+    if (referenced.length) assert.deepEqual(result.arealessEntries, [])
+  })
+}
+test('GIG-461 referenced: every return shape and free-text root-file provenance', () => {
+  for (const body of [
+    '',
+    planBody(''),
+    'See README.md for context',
+    '- README.md — update rules',
+    planBody('- prose only'),
+  ]) {
+    const result = areas(body, { moduleRoots: ['README.md'] })
+    assert.deepEqual(result.referenced, [])
+    assert.deepEqual(result.areas, [])
+  }
 })

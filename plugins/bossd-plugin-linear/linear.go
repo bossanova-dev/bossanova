@@ -208,7 +208,10 @@ func (c *linearClient) FetchIssues(ctx context.Context, titleQuery string) ([]li
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("linear API error (status %d): %s: read response body: %w", resp.StatusCode, string(body), err)
+		}
 		return nil, fmt.Errorf("linear API error (status %d): %s", resp.StatusCode, string(body))
 	}
 

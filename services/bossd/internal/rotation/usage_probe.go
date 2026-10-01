@@ -14,7 +14,28 @@ func UsageSnapshotConfirmsLimited(snap models.UsageSnapshot) bool {
 	if snap.FetchedAt == nil {
 		return false
 	}
-	return UsageSnapshotRateLimited(snap) || snap.Util5h >= 1 || snap.Util7d >= 1
+	if hasCappedUsage(snap) {
+		return true
+	}
+	// Claude can report the coarse plan status as rate_limited while its
+	// simultaneously returned quota windows still show available capacity. The
+	// measured windows are the account-limit authority in that contradictory
+	// shape; trusting the coarse status would bench the account until an unrelated
+	// later reset. Preserve the conservative status-only fallback for providers
+	// that do not return a usable utilization measurement.
+	return UsageSnapshotRateLimited(snap) && !hasMeasuredSubcapUsage(snap)
+}
+
+func hasCappedUsage(snap models.UsageSnapshot) bool {
+	return snap.Util5h >= 1 || snap.Util7d >= 1
+}
+
+func hasMeasuredSubcapUsage(snap models.UsageSnapshot) bool {
+	// Zero-valued protobuf scalars do not preserve field presence, so only treat
+	// the persisted shape as contradictory when both windows carry a non-zero
+	// measurement. The Claude probe resolves explicit zeroes while it still has
+	// the provider payload's presence information.
+	return snap.Util5h > 0 && snap.Util5h < 1 && snap.Util7d > 0 && snap.Util7d < 1
 }
 
 // UsageSnapshotRateLimited reports whether the normalized status is explicitly
@@ -52,7 +73,7 @@ func UsageSnapshotResetAt(snap models.UsageSnapshot) *time.Time {
 	case snap.Util5h >= 1 && snap.Reset5h != nil:
 		r := *snap.Reset5h
 		return &r
-	case UsageSnapshotRateLimited(snap):
+	case UsageSnapshotRateLimited(snap) && (hasCappedUsage(snap) || !hasMeasuredSubcapUsage(snap)):
 		return laterUsageReset(snap.Reset5h, snap.Reset7d)
 	default:
 		return nil

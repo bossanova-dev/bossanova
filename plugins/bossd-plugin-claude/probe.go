@@ -392,7 +392,11 @@ func parseUsage(body []byte) (*bossanovav1.RateLimitStatus, error) {
 	if status.PlanTier != "" {
 		seen = true
 	}
-	status.Status = derivePlanStatus(firstNonEmpty(payload.Status, payload.PlanStatus), status.Util_5H, status.Util_7D)
+	status.Status = deriveMeasuredPlanStatus(
+		firstNonEmpty(payload.Status, payload.PlanStatus),
+		status.Util_5H, payload.FiveHour.hasUtilization(),
+		status.Util_7D, weekly.hasUtilization(),
+	)
 	if firstNonEmpty(payload.Status, payload.PlanStatus) != "" {
 		seen = true
 	}
@@ -408,13 +412,17 @@ func parseUsageHeaders(h http.Header) (*bossanovav1.RateLimitStatus, bool) {
 		Status: bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
 	}
 	seen := false
+	fiveHourMeasured := false
+	sevenDayMeasured := false
 	if util, ok := parseHeaderUtil(h.Get("anthropic-ratelimit-unified-5h-utilization")); ok {
 		status.Util_5H = util
 		seen = true
+		fiveHourMeasured = true
 	}
 	if util, ok := parseHeaderUtil(h.Get("anthropic-ratelimit-unified-7d-utilization")); ok {
 		status.Util_7D = util
 		seen = true
+		sevenDayMeasured = true
 	}
 	if reset := parseTimestamp(h.Get("anthropic-ratelimit-unified-5h-reset")); reset != nil {
 		status.Reset_5H = reset
@@ -445,7 +453,11 @@ func parseUsageHeaders(h http.Header) (*bossanovav1.RateLimitStatus, bool) {
 	genericRaw := firstNonEmpty(h.Get("anthropic-ratelimit-unified-status"), h.Get("anthropic-ratelimit-status"))
 	fiveHourRaw := h.Get("anthropic-ratelimit-unified-5h-status")
 	sevenDayRaw := h.Get("anthropic-ratelimit-unified-7d-status")
-	status.Status = mostSeverePlanStatus(statusFromHeader(genericRaw, status.Util_5H, status.Util_7D), statusFromHeader(fiveHourRaw), statusFromHeader(sevenDayRaw))
+	if fiveHourMeasured && sevenDayMeasured {
+		status.Status = deriveMeasuredPlanStatus(genericRaw, status.Util_5H, true, status.Util_7D, true)
+	} else {
+		status.Status = mostSeverePlanStatus(statusFromHeader(genericRaw, status.Util_5H, status.Util_7D), statusFromHeader(fiveHourRaw), statusFromHeader(sevenDayRaw))
+	}
 	if firstNonEmpty(genericRaw, fiveHourRaw, sevenDayRaw) != "" {
 		seen = true
 	}
@@ -566,6 +578,17 @@ func derivePlanStatus(raw string, utils ...float64) bossanovav1.RateLimitPlanSta
 		}
 	}
 	return bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE
+}
+
+// deriveMeasuredPlanStatus lets complete utilization windows override Claude's
+// occasionally stale coarse plan status. Presence is evaluated here, before
+// protobuf scalar encoding makes an explicit zero indistinguishable from an
+// omitted value; partial measurements retain the conservative raw status.
+func deriveMeasuredPlanStatus(raw string, util5h float64, has5h bool, util7d float64, has7d bool) bossanovav1.RateLimitPlanStatus {
+	if has5h && has7d {
+		raw = ""
+	}
+	return derivePlanStatus(raw, util5h, util7d)
 }
 
 func statusFromHeader(raw string, utils ...float64) bossanovav1.RateLimitPlanStatus {

@@ -529,6 +529,7 @@ func repoCmd() *cobra.Command {
 	update.Flags().String("name", "", "Set display name")
 	update.Flags().String("setup-script", "", "Set setup script (empty string to clear)")
 	update.Flags().String("merge-strategy", "", "Set merge strategy (merge, rebase, squash)")
+	update.Flags().String("worktree-base-dir", "", "Set the absolute directory new session worktrees are created under (applies to new sessions)")
 	update.Flags().Bool("auto-merge", false, "Enable auto-merge")
 	update.Flags().Bool("no-auto-merge", false, "Disable auto-merge")
 	update.Flags().Bool("auto-merge-dependabot", false, "Enable auto-merge for Dependabot PRs")

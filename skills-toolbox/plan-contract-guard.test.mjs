@@ -525,7 +525,9 @@ describe('checkPlanContract — each violation code fires', () => {
     const found = result.violations.find((v) => v.code === 'subject-areas-unresolved')
     assert.ok(found, 'an unresolved path-shaped token must raise the code even when areas exist')
     assert.match(found.message, /skill\.md/)
+    assert.match(found.message, /root file itself/)
     assert.match(found.message, /moduleRoots/)
+    assert.match(found.message, /present it as code-marked or as the lead of a split bullet/)
   })
 
   test('subject-areas-unresolved does not fire for an epic parent, whose contract has no `## Key changes`', () => {

@@ -150,11 +150,32 @@ type codexEnvelope struct {
 }
 
 type codexSessionMetaPayload struct {
-	ID         string `json:"id"`
-	Timestamp  string `json:"timestamp"`
-	CWD        string `json:"cwd"`
-	Originator string `json:"originator"`
-	CLIVersion string `json:"cli_version"`
+	ID             string          `json:"id"`
+	Timestamp      string          `json:"timestamp"`
+	CWD            string          `json:"cwd"`
+	Originator     string          `json:"originator"`
+	CLIVersion     string          `json:"cli_version"`
+	ParentThreadID string          `json:"parent_thread_id"`
+	ThreadSource   string          `json:"thread_source"`
+	Source         json.RawMessage `json:"source"`
+}
+
+// isSubagent checks thread provenance, not fork ancestry: ordinary root forks
+// can carry forked_from_id and remain independently resumable.
+func (m codexSessionMetaPayload) isSubagent() bool {
+	if m.ParentThreadID != "" || m.ThreadSource == "subagent" {
+		return true
+	}
+	var source string
+	if json.Unmarshal(m.Source, &source) == nil {
+		return source == "subagent"
+	}
+	var tagged map[string]json.RawMessage
+	if json.Unmarshal(m.Source, &tagged) == nil {
+		_, subagent := tagged["subagent"]
+		return subagent
+	}
+	return false
 }
 
 type interactiveSessionCandidate struct {
@@ -335,7 +356,7 @@ func scanInteractiveSessionCandidatesInWindowWith(root, workDir string, notBefor
 		if !ok {
 			return nil
 		}
-		if meta.ID == "" || meta.Originator != "codex-tui" || !sameWorkDir(meta.CWD, workDir) {
+		if meta.ID == "" || meta.Originator != "codex-tui" || meta.isSubagent() || !sameWorkDir(meta.CWD, workDir) {
 			return nil
 		}
 		sessionTime := info.ModTime()
@@ -545,14 +566,14 @@ func readSessionMeta(path string) (codexSessionMetaPayload, bool) {
 	if err := json.Unmarshal(line, &env); err != nil || env.Type != "session_meta" {
 		return codexSessionMetaPayload{}, false
 	}
-	var meta codexSessionMetaPayload
-	if err := json.Unmarshal(env.Payload, &meta); err != nil {
+	var meta *codexSessionMetaPayload
+	if err := json.Unmarshal(env.Payload, &meta); err != nil || meta == nil {
 		return codexSessionMetaPayload{}, false
 	}
 	if meta.Timestamp == "" {
 		meta.Timestamp = env.Timestamp
 	}
-	return meta, true
+	return *meta, true
 }
 
 func resolveInteractiveSessionID(workDir string, launchedAfter time.Time) (id, transcriptPath string, ambiguous bool, reason string) {

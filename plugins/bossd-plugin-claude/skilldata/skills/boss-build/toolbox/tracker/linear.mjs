@@ -51,6 +51,110 @@ const SELECT_PLANNED_MAX_LIMIT = 250
 // The closed set of query keys `selectPlanned` knows how to put on the wire. See the adapter wrapper.
 const SELECT_PLANNED_KEYS = new Set(['state', 'label', 'assigneeOrCreator', 'limit'])
 
+const CANDIDATE_FIELDS = `id identifier title priority createdAt description
+  state { name type } parent { identifier } labels { nodes { name } }`
+
+export const LIST_CANDIDATES_QUERY = `
+  query ListCandidates($first: Int!, $filter: IssueFilter!, $after: String) {
+    issues(first: $first, filter: $filter, after: $after) {
+      nodes { ${CANDIDATE_FIELDS} }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`
+const READ_CANDIDATE_QUERY = `query ReadCandidate($id: String!) {
+  issue(id: $id) { ${CANDIDATE_FIELDS} }
+}`
+
+const nonEmpty = (value) => typeof value === 'string' && value.trim() !== ''
+
+function flattenCandidate(node, source) {
+  if (
+    !node ||
+    !['id', 'identifier', 'title'].every((key) => nonEmpty(node[key])) ||
+    !nonEmpty(node.state?.name) ||
+    !nonEmpty(node.state?.type) ||
+    (node.description !== null && typeof node.description !== 'string') ||
+    (node.parent !== null && !nonEmpty(node.parent?.identifier)) ||
+    !Array.isArray(node.labels?.nodes) ||
+    !node.labels.nodes.every((entry) => entry && nonEmpty(entry.name))
+  ) {
+    throw new Error('tracker/linear selectCandidates: unreadable candidate fields')
+  }
+  return {
+    id: node.id,
+    identifier: node.identifier,
+    title: node.title,
+    priority: node.priority,
+    createdAt: node.createdAt,
+    description: node.description ?? '',
+    stateName: node.state.name,
+    stateType: node.state.type,
+    parentId: node.parent?.identifier ?? null,
+    labels: node.labels.nodes.map((entry) => entry.name),
+    source,
+  }
+}
+
+export async function linearSelectCandidates({
+  apiKey,
+  fetchImpl,
+  endpoint,
+  team,
+  states,
+  ids = [],
+  limit = 250,
+}) {
+  if (!Array.isArray(states) || states.length === 0 || !states.every(nonEmpty)) {
+    throw new Error('tracker/linear selectCandidates: non-empty states required')
+  }
+  if (!nonEmpty(team)) throw new Error('tracker/linear selectCandidates: configured team required')
+  if (!Number.isInteger(limit) || limit < 1 || limit > 250)
+    throw new Error('tracker/linear selectCandidates: limit must be 1-250')
+  if (!Array.isArray(ids) || !ids.every(nonEmpty))
+    throw new Error('tracker/linear selectCandidates: ids must be non-empty strings')
+  if (!apiKey)
+    throw Object.assign(new Error('LINEAR_API_KEY is not set'), {
+      code: TRACKER_CREDENTIALS_MISSING,
+    })
+  const filter = { team: { name: { eq: team } }, state: { name: { in: states } } }
+  const records = new Map()
+  const cursors = new Set()
+  let after = null
+  do {
+    const data = await linearRequest({
+      apiKey,
+      fetchImpl,
+      endpoint,
+      query: LIST_CANDIDATES_QUERY,
+      variables: { first: limit, filter, after },
+    })
+    const { nodes, pageInfo } = data?.issues ?? {}
+    if (!Array.isArray(nodes) || typeof pageInfo?.hasNextPage !== 'boolean') {
+      throw new Error('tracker/linear selectCandidates: unreadable issues page')
+    }
+    for (const node of nodes) records.set(node.id, flattenCandidate(node, 'state'))
+    if (!pageInfo.hasNextPage) break
+    if (!nonEmpty(pageInfo.endCursor) || cursors.has(pageInfo.endCursor)) {
+      throw new Error('tracker/linear selectCandidates: pagination did not advance')
+    }
+    after = pageInfo.endCursor
+    cursors.add(after)
+  } while (true)
+  for (const id of new Set(ids.map((value) => value.trim()))) {
+    const data = await linearRequest({
+      apiKey,
+      fetchImpl,
+      endpoint,
+      query: READ_CANDIDATE_QUERY,
+      variables: { id },
+    })
+    const record = flattenCandidate(data?.issue, 'id')
+    records.set(record.id, record)
+  }
+  return [...records.values()]
+}
+
 // A GraphQL connection read as a plain array: `{nodes: [...]}` -> `[...]`. An already-flat array
 // passes through, and anything else is an empty list rather than a throw, matching the shared
 // ticket normalizer's own tolerance for these two fields.
@@ -444,6 +548,20 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
     // operationMap entry: it is a read the gate files are written from by code, so it never enters
     // the MCP approval surface and its bytes never pass through model context.
     readDescription: (issueId) => linearReadDescription({ apiKey, fetchImpl, endpoint, issueId }),
+    selectCandidates: (query = {}) => {
+      const unknown = Object.keys(query ?? {}).filter(
+        (key) => !['states', 'ids', 'limit'].includes(key),
+      )
+      if (unknown.length > 0)
+        throw new Error('tracker/linear selectCandidates: unknown selection keys')
+      return linearSelectCandidates({
+        apiKey,
+        fetchImpl,
+        endpoint,
+        team: trackerConfig?.team,
+        ...query,
+      })
+    },
     operationMap: buildLinearOperationMap(mcpServer),
   }
 }

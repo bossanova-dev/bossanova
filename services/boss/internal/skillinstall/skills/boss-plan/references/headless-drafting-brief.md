@@ -596,6 +596,10 @@ noise defeats the signal). These become the `openQuestions` you return and the p
 
 ## Step 5 — Resolve drafting, then write the polished plan
 
+- Prose naming a ticket's current workflow state observed at recon dates that observation.
+  Non-EPIC drafts include load-bearing states in `premises`, at most `PREMISE_LIMIT` entries,
+  using Step 8's recon-state semantics.
+
 First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --mode headless --json`
 after running the toolbox preamble first. If that helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
@@ -894,6 +898,8 @@ the value. When in doubt, redact.
 
 ## Step 7 — Compose the description summary (byte-identical template)
 
+Lead each `## Key changes` bullet with the edited paths; paths after its description separator are references.
+
 Assemble the Linear description block the orchestrator will write back **verbatim**, then return the
 **path** of the file you assembled it in as `descriptionSummary`. This template is the
 **byte-identical external contract** boss-build and
@@ -1026,7 +1032,8 @@ and attachment differ, because the attachment is uploaded as raw bytes.
 Once the plan file is written and non-empty, record your terminal decision to the run-file sentinel
 so the orchestrator can classify the dispatch outcome **from the file only** (never from your
 returned prose). Include `premises` in the sentinel payload as an array of at most `PREMISE_LIMIT`
-`{id, state}` entries for tracker issues whose current state your plan relies on. Emit `[]` when
+`{id, state}` entries for tracker issues whose state your plan relies on.
+`premises[].state` is the state observed at recon, not a predicted state or a pre-dispatch read. Emit `[]` when
 there are no such dependencies; do not omit the key.
 
 ```bash
@@ -1120,12 +1127,12 @@ abort the whole run.
 **Also self-verify the plan contract**, in a block of its own immediately after that one and before
 the `ok` sentinel — it sources the toolbox preamble again because blocks inherit nothing, so do not
 merge it into the block above. Write the composed `descriptionSummary` to a scratch file and run the
-contract guard over it and the plan file:
+contract guard over it and the plan file from the repo worktree root:
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the same composed description as above
-node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH"
+node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"
 ```
 
 It prints one stderr line per violation, tagged `duplicate-section`, `enumeration-dropped`, `line-spanning-emphasis`, `merged-list-item`,

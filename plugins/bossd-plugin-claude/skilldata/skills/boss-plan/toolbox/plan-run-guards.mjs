@@ -4,7 +4,20 @@
 // untrusted drafting output and tracker writeback, so they return structured
 // violations and keep the CLI shape small enough for skill bash blocks.
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 import { checkPlanContract } from './plan-contract-guard.mjs'
@@ -382,6 +395,191 @@ export function premiseDrift(premises, liveStates) {
     verified,
     declared: list.length,
   }
+}
+
+// Keep line terminators, whitespace and the reporter-owned tail intact. Reconciliation
+// starts from unannotated bytes each time, so both a changed state and resolved drift
+// replace the previous verdict without any state carried between passes.
+function reconcilePremises(text, { premises, drifted }) {
+  const ids = [...new Set((premises ?? []).map((p) => p?.id).filter(Boolean))]
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const token = (id) => new RegExp(`(?<![\\w-])${escape(id)}(?![\\w-])`)
+  const mentions = new Map(ids.map((id) => [id, token(id)]))
+  const annotations = (drifted ?? [])
+    .filter((item) => mentions.has(item.id))
+    .map((item) => ({
+      ...item,
+      inline: new Set(),
+      checkbox: new Set(),
+    }))
+  const driftLine = ids.length
+    ? new RegExp(`^[-*] Premise drift: (${ids.map(escape).join('|')})(?![\\w-])`)
+    : null
+  const marker = ids.length
+    ? new RegExp(` \\(premise drift: (?:${ids.map(escape).join('|')})(?![\\w-])`, 'g')
+    : null
+  const stripMarkers = (line) => {
+    if (!marker) return line
+    marker.lastIndex = 0
+    let output = '',
+      cursor = 0,
+      match
+    while ((match = marker.exec(line))) {
+      let depth = 0
+      for (let i = match.index + 1; i < line.length; i += 1) {
+        if (line[i] === '\\') {
+          i += 1
+          continue
+        }
+        if (line[i] === '(') depth += 1
+        else if (line[i] === ')') {
+          depth -= 1
+          if (depth === 0) {
+            output += line.slice(cursor, match.index)
+            cursor = i + 1
+            marker.lastIndex = cursor
+            break
+          }
+        }
+      }
+    }
+    return output + line.slice(cursor)
+  }
+  const escapeState = (state) => String(state).replace(/[\\()]/g, '\\$&')
+  const lines = text.match(/[^\r\n]*(?:\r\n|\n|$)/g).filter((line) => line !== '')
+  const tableRows = new Set()
+  for (let i = 1; i < lines.length; i += 1) {
+    if (!/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i])) continue
+    if (lines[i - 1].includes('|')) tableRows.add(i - 1)
+    tableRows.add(i)
+    for (let j = i + 1; j < lines.length && lines[j].includes('|'); j += 1) tableRows.add(j)
+  }
+  const newline = text.includes('\r\n') ? '\r\n' : '\n'
+  const output = []
+  let section = '',
+    fence = null,
+    original = false,
+    originalIndex = null,
+    planningEnd = null,
+    lastBullet = null
+  for (const [index, raw] of lines.entries()) {
+    let line = raw.replace(/\r?\n$/, '')
+    const eol = raw.slice(line.length)
+    if (original) {
+      output.push(raw)
+      continue
+    }
+    if (fence) {
+      output.push(raw)
+      if (new RegExp(`^ {0,3}${fence.char}{${fence.length},}\\s*$`).test(line)) fence = null
+      continue
+    }
+    const openFence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (openFence) {
+      fence = { char: openFence[1][0], length: openFence[1].length }
+      output.push(raw)
+      continue
+    }
+    const heading = /^##\s+(.+?)\s*#*\s*$/.exec(line)
+    if (heading) {
+      if (section === 'Planning') planningEnd = output.length
+      section = heading[1]
+      if (section === 'Planning') {
+        lastBullet = null
+        planningEnd = output.length + 1
+      }
+      if (section === 'Original notes') {
+        original = true
+        originalIndex = output.length
+      }
+      output.push(raw)
+      continue
+    }
+    if (driftLine?.test(line)) continue
+    // Balanced legacy markers and escaped new markers end at their own closing
+    // parenthesis, preserving any prose that follows a relocated annotation.
+    line = stripMarkers(line)
+    if (section === 'Planning' && /^\s*[-*+]\s+/.test(line)) lastBullet = output.length
+    if (!tableRows.has(index) && !/^\s*(?:#|\|)/.test(line)) {
+      const matched = annotations.filter((item) => mentions.get(item.id).test(line))
+      for (const item of matched) {
+        if (section === 'Premises' || section === 'Acceptance criteria') item.checkbox.add(section)
+        else if (section !== 'Planning') item.inline.add(section || 'preamble')
+      }
+      // Decide all mentions before appending anything: generated markers are never mentions.
+      for (const item of matched) {
+        if (section !== 'Planning' && section !== 'Premises' && section !== 'Acceptance criteria') {
+          line += ` (premise drift: ${item.id} is now ${escapeState(item.currentState)})`
+        }
+      }
+    }
+    output.push(line + eol)
+    if (section === 'Planning') planningEnd = output.length
+  }
+  if (annotations.length) {
+    const reports = annotations.map((item) => {
+      let report = `- Premise drift: ${item.id} was ${item.plannedState}, is now ${item.currentState}`
+      if (item.inline.size) report += `; flagged inline in ${[...item.inline].join(', ')}`
+      if (item.checkbox.size) report += `; also stated in ${[...item.checkbox].join(', ')}`
+      return report + newline
+    })
+    if (planningEnd === null) {
+      const index = originalIndex === null ? output.length : originalIndex
+      if (index > 0 && !output[index - 1].endsWith('\n')) output[index - 1] += newline
+      output.splice(index, 0, `## Planning${newline}${newline}`, ...reports)
+    } else {
+      const index = lastBullet === null ? planningEnd : lastBullet + 1
+      if (index > 0 && !output[index - 1].endsWith('\n')) output[index - 1] += newline
+      output.splice(index, 0, ...reports)
+    }
+  }
+  return { text: output.join(''), annotations }
+}
+
+function writePremiseUpdates(changed) {
+  // Check permissions before staging: rename itself can replace a read-only file.
+  for (const update of changed) accessSync(update.file, constants.W_OK)
+  const staged = []
+  const committed = []
+  try {
+    for (const update of changed) {
+      const file = realpathSync(update.file)
+      const mode = statSync(file).mode & 0o7777
+      const dir = mkdtempSync(resolve(dirname(file), '.premise-annotations-'))
+      const item = { file, dir, next: resolve(dir, 'next'), backup: resolve(dir, 'original') }
+      staged.push(item)
+      copyFileSync(file, item.backup)
+      chmodSync(item.backup, mode)
+      writeFileSync(item.next, update.text)
+      chmodSync(item.next, mode)
+    }
+    for (const item of staged) {
+      renameSync(item.next, item.file)
+      committed.push(item)
+    }
+  } catch (error) {
+    // All original bytes are retained until every replacement has succeeded.
+    for (const item of committed.reverse()) {
+      try {
+        renameSync(item.backup, item.file)
+      } catch (rollbackError) {
+        // Keep the backup if restoration itself fails so recovery remains possible.
+        item.keepBackup = true
+        error = new Error(
+          `${error.message}; rollback failed for ${item.file}: ${rollbackError.message}; original retained at ${item.backup}`,
+        )
+      }
+    }
+    throw error
+  } finally {
+    for (const item of staged) {
+      if (!item.keepBackup) rmSync(item.dir, { recursive: true, force: true })
+    }
+  }
+}
+
+export function reconcilePremiseAnnotations(text, options) {
+  return reconcilePremises(text, options).text
 }
 
 function readJSON(file) {
@@ -764,6 +962,40 @@ function runGuardVerb(argv) {
       if (overLimit) reason = 'premise-limit'
       else if (result.unresolved.length > 0) reason = 'premise-unresolved'
       else if (result.drifted.length > 0) reason = 'premise-drift'
+      if (!overLimit && result.unresolved.length === 0) {
+        const files = []
+        for (let i = 3; i < argv.length; i += 2) {
+          if (argv[i] !== '--annotate' || !argv[i + 1] || argv[i + 1].startsWith('--')) {
+            throw new Error('premises expects repeatable --annotate <file>')
+          }
+          files.push(argv[i + 1])
+        }
+        // Read every target before writing any: an unreadable second target must not
+        // leave the first annotated on a SAFE-branch abort.
+        const updates = [...new Set(files)].map((file) => {
+          const before = readFileSync(file, 'utf8')
+          return {
+            file,
+            before,
+            ...reconcilePremises(before, { premises, drifted: result.drifted }),
+          }
+        })
+        const changed = updates.filter((update) => update.before !== update.text)
+        writePremiseUpdates(changed)
+        for (const item of result.drifted) {
+          const sections = new Set(
+            updates.flatMap((update) =>
+              update.annotations
+                .filter((annotation) => annotation.id === item.id)
+                .flatMap((annotation) => [...annotation.inline, ...annotation.checkbox]),
+            ),
+          )
+          if (updates.length)
+            process.stderr.write(
+              `premise-annotated: plan-run-guards: ${item.id} flagged in ${[...sections].join(', ') || 'Planning'}\n`,
+            )
+        }
+      }
       return {
         verb,
         code: overLimit || result.unresolved.length > 0 ? 1 : 0,
@@ -775,7 +1007,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> | epic-reverify <bundle.json>\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json>\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

@@ -3,6 +3,8 @@
 // helpers through the resolved tracker adapter, so the skill names a tracker-agnostic
 // capability instead of a Linear-specific script. node builtins only (the cron
 // worktree is dependency-free).
+//   node tracker/cli.mjs fetch-candidates --out-file <path> [--state <name>]... [--id <id>]...
+//     -> full dependency candidates written atomically; stdout contains counts/bytes only
 //
 //   node tracker/cli.mjs claim-token
 //     -> prints a fresh run token (stdout), tracker-agnostic 32-char hex
@@ -96,7 +98,13 @@ import {
   TRACKER_CREDENTIALS_MISSING,
   operationHasTool,
 } from './adapter-core.mjs'
-import { loadSkillConfig, plannedSelectionQuery, trackerConfigFor } from '../skill-config.mjs'
+import {
+  loadSkillConfig,
+  plannedSelectionQuery,
+  trackerConfigFor,
+  keyChangesSection,
+  descriptionAppearsTruncated,
+} from '../skill-config.mjs'
 import { TRACKER_VERDICTS, classifyTrackerOutcome, formatOutcomeLine } from './outcome.mjs'
 
 // The action each verdict requires, as one line. This is the whole point of exposing the
@@ -183,6 +191,10 @@ capabilities:
       and a usage error exits 64, both with no stdout.
       OPTIONAL: an adapter without readDescription exits 2 with a diagnostic naming
       the getIssue fallback.
+
+  fetch-candidates --out-file <path> [--state <name>]... [--id <id>[,<id>...]]... [--limit <1-250>]
+      Atomically write full dependency candidates and verbatim keyChanges to disk.
+      Prints one counts/bytes receipt. Failure exits 2; usage exits 64; no bodies printed.
 
   list-planned [--state <name>] [--label <name>[,<name>...]]... [--assignee-or-creator <me|id>] [--limit <1-250>]
       Print the planned candidates as a JSON array, filtered by the same selection
@@ -325,6 +337,134 @@ async function runListPlanned(rest, { write, errWrite, env, resolveAdapter, load
 // the MCP read on exit 2, and a mis-substituted invocation must stop the run instead of silently
 // routing every run back through the retyped path.
 const EX_USAGE = 64
+
+async function runFetchCandidates(rest, { write, errWrite, env, resolveAdapter, loadConfig }) {
+  const fail = (message, code = 2) => {
+    errWrite(`fetch-candidates: ${message}\n`)
+    return code
+  }
+  const states = [],
+    ids = []
+  let outFile,
+    limit = 250,
+    hasLimit = false
+  for (let i = 0; i < rest.length; i += 2) {
+    const flag = rest[i],
+      value = rest[i + 1]
+    if (
+      !['--out-file', '--state', '--id', '--limit'].includes(flag) ||
+      typeof value !== 'string' ||
+      value.trim() === '' ||
+      value.startsWith('--')
+    ) {
+      return fail(
+        'usage: expected --out-file <path> [--state <name>]... [--id <id>[,<id>...]]... [--limit <1-250>]',
+        EX_USAGE,
+      )
+    }
+    if (flag === '--out-file') {
+      if (outFile !== undefined) return fail('usage: repeated --out-file', EX_USAGE)
+      outFile = value
+    } else if (flag === '--state') states.push(value.trim())
+    else if (flag === '--id') {
+      const entries = value.split(',').map((s) => s.trim())
+      if (entries.some((s) => s === '')) return fail('usage: empty --id', EX_USAGE)
+      ids.push(...entries)
+    } else {
+      if (hasLimit || !/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 250)
+        return fail('usage: --limit must be 1-250', EX_USAGE)
+      limit = Number(value)
+      hasLimit = true
+    }
+  }
+  if (!outFile) return fail('usage: --out-file required', EX_USAGE)
+  let adapter, config
+  try {
+    adapter = resolveAdapter({ env })
+    config = loadConfig()
+  } catch {
+    return fail('could not resolve tracker configuration')
+  }
+  if (typeof adapter?.selectCandidates !== 'function')
+    return fail('missing selectCandidates capability; could not evaluate')
+  let candidates
+  try {
+    const defaults = trackerConfigFor(config)?.states
+    const adapterStates =
+      !states.length && typeof adapter.states === 'function' ? adapter.states() : null
+    const selected = states.length
+      ? states
+      : ['planned', 'inProgress', 'inReview'].map((role) => {
+          const name = adapterStates?.[role]
+          return typeof name === 'string' && name.trim() !== '' ? name : defaults?.[role]
+        })
+    if (selected.some((state) => typeof state !== 'string' || state.trim() === ''))
+      return fail('configured candidate states missing; could not evaluate')
+    candidates = await adapter.selectCandidates({
+      states: [...new Set(selected)],
+      ids: [...new Set(ids)],
+      limit,
+    })
+  } catch (err) {
+    // Tracker errors can contain response bodies, credentials, and request text. Never echo them.
+    return fail(
+      err?.code === TRACKER_CREDENTIALS_MISSING
+        ? 'tracker credential missing; could not evaluate'
+        : 'tracker read failed; could not evaluate',
+    )
+  }
+  if (!Array.isArray(candidates)) return fail('unreadable candidate array; could not evaluate')
+  for (const row of candidates) {
+    if (
+      !row ||
+      !['id', 'identifier', 'title', 'stateName', 'stateType'].every(
+        (key) => typeof row[key] === 'string' && row[key].trim() !== '',
+      ) ||
+      typeof row.description !== 'string' ||
+      !row.description.isWellFormed() ||
+      !Object.hasOwn(row, 'parentId') ||
+      (row.parentId !== null && (typeof row.parentId !== 'string' || row.parentId.trim() === '')) ||
+      Object.hasOwn(row, 'state') ||
+      !['state', 'id'].includes(row.source)
+    )
+      return fail('unreadable candidate fields; could not evaluate')
+    if (descriptionAppearsTruncated(row.description))
+      return fail('truncated candidate description; could not evaluate')
+  }
+  let serialized
+  try {
+    serialized = JSON.stringify(
+      candidates.map((row) => ({ ...row, keyChanges: keyChangesSection(config, row.description) })),
+    )
+  } catch {
+    return fail('could not serialize candidates')
+  }
+  const target = path.resolve(outFile)
+  const temp = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
+  )
+  let bytes
+  try {
+    writeFileSync(temp, serialized, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    renameSync(temp, target)
+    bytes = statSync(target).size
+  } catch {
+    rmSync(temp, { force: true })
+    return fail('could not write candidate file')
+  }
+  write(
+    JSON.stringify({
+      outcome: 'candidates-written',
+      count: candidates.length,
+      byState: candidates.filter((row) => row.source === 'state').length,
+      byId: candidates.filter((row) => row.source === 'id').length,
+      bytes,
+      out: outFile,
+    }) + '\n',
+  )
+  return 0
+}
 const READ_DESCRIPTION_FLAGS = new Set(['id', 'out-file'])
 const READ_DESCRIPTION_FALLBACK =
   "fall back to the tracker adapter's getIssue operation (MCP) byte-copy"
@@ -535,7 +675,7 @@ function runOperations(rest, { write, errWrite, env, resolveAdapter }) {
 /**
  * Dispatch one tracker capability. Returns the process exit code; never calls
  * process.exit directly so it is unit-testable. Every verb is synchronous except
- * `list-planned` and `read-description`, which read the tracker and so return a Promise of the
+ * `list-planned`, `read-description`, and `fetch-candidates`, which return a Promise of the
  * exit code; the entrypoint awaits the result, which is harmless for a plain number.
  * @param {string[]} argv
  * @param {{write?: (s: string) => void, errWrite?: (s: string) => void, env?: object,
@@ -799,6 +939,9 @@ export function runCli(
   }
   if (cmd === 'read-description') {
     return runReadDescription(rest, { write, errWrite, env, resolveAdapter })
+  }
+  if (cmd === 'fetch-candidates') {
+    return runFetchCandidates(rest, { write, errWrite, env, resolveAdapter, loadConfig })
   }
   if (cmd === 'classify-outcome') {
     const { observed, result, operation = 'read', status } = parseFlags(rest)

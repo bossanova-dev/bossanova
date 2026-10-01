@@ -258,12 +258,13 @@ the approved spec:
   a bounded artifact unbounded in exactly the runs that have the most children.
 
 **The worker self-verifies, and its prose is never evidence.** Require the worker to run the
-plan-contract guard (`plan-contract-guard.mjs --description <key>.description.md --plan <key>.md`,
-both under `<runTmp>/batch-draft/`) per child before it returns, and never to report success while any run exits non-zero. Do not read
+plan-contract guard from the repo worktree root per child before returning:
+`node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "<absolute-runTmp>/batch-draft/<key>.description.md" --plan "<absolute-runTmp>/batch-draft/<key>.md" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"`.
+Pass absolute draft paths because `runTmp` can be outside the repo. Never report success while any run exits non-zero. Do not read
 its claim of validation ("all N validated") either way: the orchestrator's own per-child gate run
 below stays the verdict.
 
-**Per-child validation reuses the existing gate — do not write a second one.** Every command below
+**Per-child validation reuses the existing gate — do not write a second one.** Run from the same repo worktree root with absolute draft paths. Every command below
 dereferences `$BOSS_PLAN_TOOLBOX`, so run each in a block that begins with the toolbox preamble —
 each Bash call is a fresh shell, and an unset `$BOSS_PLAN_TOOLBOX` turns these gates into
 module-not-found errors at the one step whose whole point is that they run. For each child, compose
@@ -275,7 +276,7 @@ its draft-metadata object from its `children[<key>]` entry plus `planPath` (its 
 `node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata <runTmp>/batch-draft/<key>.draft-metadata.json` — the same bounded-metadata guard the
 single-ticket path runs, so an unknown key, a non-boolean `agentFriendly` or a non-single-ticket
 estimate fails identically here. Then run the plan-contract guard
-(`node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <desc> --plan <plan>`), the image
+(`node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <desc> --plan <plan> --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"`), the image
 guard (`node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --require-verbatim …`), and the secret gate,
 per child, **before the first tracker write**. One dispatch drafting ten plans is precisely where a
 late plan degrades, so these are the gates that must not be batched.

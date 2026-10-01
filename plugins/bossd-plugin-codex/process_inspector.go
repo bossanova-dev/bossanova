@@ -200,33 +200,37 @@ func resolveInteractiveSessionIDByPIDAt(insp processInspector, root, workDir str
 // rolloutCandidate reads the session_meta of a codex rollout at path and
 // builds a candidate. It prefers the meta ID as the authoritative session id
 // (matching the time-window resolver) and falls back to the filename UUID when
-// the meta is unreadable. cwdMatch reflects whether the rollout's recorded cwd
+// readable metadata lacks an ID. cwdMatch reflects whether the rollout's recorded cwd
 // resolves to workDir.
 func rolloutCandidate(path, workDir string) (pidRolloutCandidate, bool) {
 	uuid, ok := rolloutUUIDFromPath(path)
 	if !ok {
 		return pidRolloutCandidate{}, false
 	}
+	meta, metaOK := readSessionMeta(path)
+	// An open FD proves process ownership, but cannot prove that an unreadable
+	// rollout is a root thread. Never bind a possible subagent by filename alone.
+	if !metaOK || meta.isSubagent() {
+		return pidRolloutCandidate{}, false
+	}
 	cand := pidRolloutCandidate{id: uuid, path: path}
 	if info, err := os.Stat(path); err == nil {
 		cand.modTime = info.ModTime()
 	}
-	if meta, metaOK := readSessionMeta(path); metaOK {
-		// A readable session_meta that is NOT a codex-tui rollout (e.g. a
-		// `codex exec` transcript that happened to be open under the pane's
-		// process tree) is not an interactive chat's rollout — skip it, matching
-		// the originator filter the time-window scan applies.
-		if meta.Originator != "" && meta.Originator != "codex-tui" {
-			return pidRolloutCandidate{}, false
-		}
-		if meta.ID != "" {
-			cand.id = meta.ID
-		}
-		cand.cwdMatch = sameWorkDir(meta.CWD, workDir)
-		if meta.Timestamp != "" {
-			if parsed, err := time.Parse(time.RFC3339Nano, meta.Timestamp); err == nil {
-				cand.modTime = parsed
-			}
+	// A readable session_meta that is NOT a codex-tui rollout (e.g. a
+	// `codex exec` transcript that happened to be open under the pane's
+	// process tree) is not an interactive chat's rollout — skip it, matching
+	// the originator filter the time-window scan applies.
+	if meta.Originator != "" && meta.Originator != "codex-tui" {
+		return pidRolloutCandidate{}, false
+	}
+	if meta.ID != "" {
+		cand.id = meta.ID
+	}
+	cand.cwdMatch = sameWorkDir(meta.CWD, workDir)
+	if meta.Timestamp != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, meta.Timestamp); err == nil {
+			cand.modTime = parsed
 		}
 	}
 	if cand.id == "" {

@@ -90,7 +90,12 @@ test('REQUIRED_TRACKER_OPERATIONS lists the full required op surface, including 
 })
 
 test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does NOT (BOS-524)', () => {
-  assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, ['states', 'selectPlanned', 'readDescription'])
+  assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, [
+    'states',
+    'selectPlanned',
+    'readDescription',
+    'selectCandidates',
+  ])
   // The separation is the whole point: assertConforms REQUIRES every
   // TRACKER_CAPABILITIES entry, so promoting `states` there would fail every
   // conforming adapter that legitimately omits it.
@@ -98,6 +103,15 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
     !TRACKER_CAPABILITIES.includes('states'),
     'states must stay optional — a required states would break conforming adapters without one',
   )
+})
+
+test('selectCandidates is optional but a declared capability must be callable', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.doesNotThrow(() => assertConforms(adapter))
+  adapter.selectCandidates = 'not callable'
+  assert.throws(() => assertConforms(adapter), /selectCandidates/)
+  adapter.selectCandidates = async () => []
+  assert.doesNotThrow(() => assertConforms(adapter))
 })
 
 test('optional operations — attachment AND adapter-discretion — validate only when declared', () => {

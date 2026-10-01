@@ -330,12 +330,14 @@ const proactiveHysteresis = 0.25
 
 // UsageUtil reduces a usage snapshot to the single worst-case utilization
 // fraction used to compare account load on one scale: max of Util5h/Util7d,
-// bumped to 1 when the snapshot is explicitly rate-limited. It is the canonical
-// reduction shared by the rotation package and the cmd wiring (candidate
-// utilization probing), so the two cannot drift. (BOS-318)
+// bumped to 1 when a status-only snapshot is explicitly rate-limited. A
+// measured sub-cap window wins over a contradictory coarse plan status, matching
+// UsageSnapshotConfirmsLimited. It is the canonical reduction shared by the
+// rotation package and the cmd wiring (candidate utilization probing), so the
+// two cannot drift. (BOS-318)
 func UsageUtil(snap models.UsageSnapshot) float64 {
 	util := MaxUtilization(snap.Util5h, snap.Util7d)
-	if UsageSnapshotRateLimited(snap) && util < 1 {
+	if UsageSnapshotRateLimited(snap) && util < 1 && !hasMeasuredSubcapUsage(snap) {
 		return 1
 	}
 	return util

@@ -6,6 +6,42 @@ then the three rules that decide a run only when something is unusual — an EPI
 death, or a metadata object that does not match the file at its declared path. Read those at those
 three points, not on the happy path.
 
+## Premise drift is reconciled, not appended
+
+Persist the Phase 2 sentinel array `$PREMISES` to `premises.json` before the first guard.
+For empty premises, write `{}` to `premise-states.json`; both guard inputs must exist.
+For a non-empty sentinel `premises` array, use fresh `getIssue` reads at both write boundaries.
+The first pass runs after the secret gate and before image parity: `--annotate` updates the
+description artifact and `$PLAN_FILE`, so the image guard copies annotated bytes and every later
+gate checks the text that will be saved. The orchestrator never hand-appends drift lines.
+
+Before composing step 5(f), read the stored description into `image-guard-final`, re-read the
+premise ids and overwrite the same `premise-states` file. Reconcile that read-back, then save when
+the dependency verdict requests recording or reconciliation changed its bytes. Keep the annotated
+read-back as the save's intended bytes; fetching it again would discard the second pass. This
+also catches a resolved premise, whose old annotations must be removed. Do not re-annotate the
+attachment: step 5(f) already legitimately diverges from it. Step 6 verifies this final save.
+The dependency scan needs no earlier premise verdict: it fetches its own candidate states fresh.
+
+A Phase 1 selection payload, idempotence precheck or any state seen before the drafter returned
+is not a reference for judging a returned premise. Disagreement is not a drafting error. Only
+the fresh re-read decides drift; report and annotate it, never rewrite recon-time premise states.
+
+`reconcilePremiseAnnotations` strips prior drift lines and inline markers for every declared id,
+then applies the current drift set. Repeating a pass preserves identical bytes; changed states
+replace annotations and resolved drift removes them. Whole-token matches exclude ticket prefixes.
+The helper skips fenced code and `## Original notes` through EOF. Headings, table rows and
+`## Planning` receive no inline markers. `## Premises` and `## Acceptance criteria` stay intact
+because their checkbox bullets end in a guard-parsed `— check:` clause; their mentions appear in
+the drift line's `also stated in` clause. Inline sections appear in `flagged inline in`. Drift
+lines land directly after the last Planning bullet with no intervening blank line.
+
+`premise-limit`, `premise-unresolved` and `unreadable-input` write no annotation files. On the
+first pass these take the SAFE branch before tracker writeback. On the second pass the first save
+already exists: stop further writes and retain scratch. Run mandatory step 6 against step 4's
+intended bytes, report its verdict and the premise error, then exit non-zero. Never claim no write
+occurred or verify the read-back as its own intended bytes. `ok` and `premise-drift` reconcile every named file; drift never aborts.
+
 ## Hold the dispatch in-turn with `wait`
 
 The Agent tool backgrounds every dispatch, so "await" needs a mechanism, and ending the turn is not

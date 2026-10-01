@@ -103,7 +103,7 @@ import {
   labelName,
   planDependencyDefaults,
   planDescriptionSections,
-  planSections,
+  keyChangesHeading,
   scanFences,
   stateRolesFor,
 } from './skill-config.mjs'
@@ -241,7 +241,6 @@ const DEFAULT_MAX_EXPANSION_DEPTH = 2
 // The `## Key changes` section is resolved from the plan contract by TITLE, so
 // the heading's exact spelling (and its `##` prefix) comes from config rather
 // than from a literal baked in here.
-const KEY_CHANGES_TITLE = 'key changes'
 
 const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+[.)])\s+/
 const HEADING_RE = /^\s*#{1,6}\s/
@@ -489,23 +488,6 @@ function issueLabel(issue) {
 // `## Key changes` area extraction
 // ---------------------------------------------------------------------------
 
-function normalizeHeadingTitle(heading) {
-  return text(heading)
-    .replace(/^#+\s*/, '')
-    .trim()
-    .toLowerCase()
-}
-
-function resolveKeyChangesHeading(config, override) {
-  const explicit = text(override).trim()
-  if (explicit !== '') return explicit
-  const sections = planSections(config)
-  const match = (Array.isArray(sections) ? sections : []).find(
-    (section) => normalizeHeadingTitle(section?.heading) === KEY_CHANGES_TITLE,
-  )
-  return match ? match.heading : null
-}
-
 /**
  * Join wrapped continuation lines into one entry each. A real `## Key changes`
  * bullet routinely wraps a backticked path across two lines; scanning
@@ -621,7 +603,7 @@ function braceAreaTokens(token, limit = BRACE_EXPANSION_LIMIT) {
  * so the classifier degrades to the older admit-any-slash behaviour rather than
  * rejecting every area at once.
  */
-function classifyAreaToken(token, moduleRoots, marked) {
+function classifyAreaToken(token, moduleRoots, marked, leadPosition = false) {
   // A CommonMark backslash escape comes FIRST: a tracker that re-serializes
   // markdown writes `services/x/public/\_redirects`, an area no changed-file path
   // can ever equal. A backslash before ASCII punctuation can never be part of a
@@ -689,11 +671,12 @@ function classifyAreaToken(token, moduleRoots, marked) {
     return named ? { area: value } : { unresolved: value }
   }
   // A bare module-root name is a change site ONLY where the author marked it as
-  // code. Unmarked it is just an English word, and admitting it re-opened the
+  // code, or file-shaped in a split list item lead. Unmarked words in prose
+  // re-open the
   // fabrication this scan exists to close: "so the web and services teams share
   // one shape" contributed `web` and `services` as areas, which `areasOverlap`
   // then containment-matched against every file beneath them.
-  if (moduleRoots.has(value)) return marked ? { area: value } : {}
+  if (moduleRoots.has(value)) return marked || (named && leadPosition) ? { area: value } : {}
   // The directory a one-level glob named, under a root the caller never declared.
   // Reported, never guessed at — see `globCollapsedToWord`.
   if (globCollapsedToWord) return { unresolved: value }
@@ -703,27 +686,83 @@ function classifyAreaToken(token, moduleRoots, marked) {
   return named ? { unresolved: value } : {}
 }
 
-function areasFromLines(lines, moduleRoots) {
+// Calls and reads in a description tail are references; path-free leads keep the old scan.
+const DESCRIPTION_SEPARATOR_RE = /: | — | – | - /
+// Terminal declarations only: "unchanged behaviour; add ..." still edits its lead.
+const NO_EDIT_RE =
+  /^(?:unchanged|untouched|not touched|not changed|not modified|not edited|no changes?|no code change|stays as-is|left as-is|kept as-is|read-only)(?=$|[.(]|\s+(?:\(|—|–|-)(?:\s|$))/i
+
+function splitAreaEntry(entry) {
+  if (!LIST_MARKER_RE.test(entry)) return null
+  const masked = entry.replace(BACKTICK_SPAN_RE, (span) => ' '.repeat(span.length))
+  const separator = DESCRIPTION_SEPARATOR_RE.exec(masked)
+  return separator
+    ? {
+        lead: entry.slice(0, separator.index),
+        tail: entry.slice(separator.index + separator[0].length),
+      }
+    : null
+}
+
+function noEditDeclaration(entry, split) {
+  const item = entry.replace(LIST_MARKER_RE, '').trim()
+  const followingSpans = item.replace(/^`[^`]+`(?:\s*(?:,|and|\+)\s*`[^`]+`)*/, '').trim()
+  return (
+    NO_EDIT_RE.test(item) ||
+    (split && NO_EDIT_RE.test(split.lead.replace(LIST_MARKER_RE, '').trim())) ||
+    NO_EDIT_RE.test(split ? split.tail.trim() : followingSpans)
+  )
+}
+
+function areasFromLines(lines, moduleRoots, allowLeadFiles = true) {
   const seenAreas = new Set()
   const seenUnresolved = new Set()
   const areas = []
   const unresolved = []
+  const referenced = new Set()
   const arealessEntries = []
   for (const entry of joinWrappedLines(lines)) {
     let produced = false
-    for (const { value, marked } of entryTokens(entry)) {
-      for (const expanded of braceAreaTokens(value)) {
-        const outcome = classifyAreaToken(expanded, moduleRoots, marked)
-        if (outcome.area !== undefined) {
-          produced = true // BEFORE the dedupe: a repeat is still an outcome
-          if (seenAreas.has(outcome.area)) continue
-          seenAreas.add(outcome.area)
-          areas.push(outcome.area)
-        } else if (outcome.unresolved !== undefined) {
+    const split = splitAreaEntry(entry)
+    const outcomes = (part, leadPosition = false) =>
+      entryTokens(part).flatMap(({ value, marked }) =>
+        braceAreaTokens(value).map((expanded) =>
+          classifyAreaToken(expanded, moduleRoots, marked, leadPosition),
+        ),
+      )
+    const lead = split ? outcomes(split.lead, allowLeadFiles) : []
+    const leadProduced = lead.some(
+      (outcome) => outcome.area !== undefined || outcome.unresolved !== undefined,
+    )
+    const noEdit = noEditDeclaration(entry, split)
+    const classified = leadProduced ? lead : outcomes(entry)
+    for (const outcome of classified) {
+      if (noEdit) {
+        const value = outcome.area ?? outcome.unresolved
+        if (value !== undefined) {
           produced = true
-          if (seenUnresolved.has(outcome.unresolved)) continue
-          seenUnresolved.add(outcome.unresolved)
-          unresolved.push(outcome.unresolved)
+          referenced.add(value)
+        }
+        continue
+      }
+      if (outcome.area !== undefined) {
+        produced = true // BEFORE the dedupe: a repeat is still an outcome
+        if (seenAreas.has(outcome.area)) continue
+        seenAreas.add(outcome.area)
+        areas.push(outcome.area)
+      } else if (outcome.unresolved !== undefined) {
+        produced = true
+        if (seenUnresolved.has(outcome.unresolved)) continue
+        seenUnresolved.add(outcome.unresolved)
+        unresolved.push(outcome.unresolved)
+      }
+    }
+    if (leadProduced) {
+      for (const outcome of outcomes(split.tail)) {
+        const value = outcome.area ?? outcome.unresolved
+        if (value !== undefined) {
+          produced = true
+          referenced.add(value)
         }
       }
     }
@@ -744,9 +783,14 @@ function areasFromLines(lines, moduleRoots) {
   // for a second change site that does not exist. A POST-pass, because the
   // qualifying path routinely appears in a LATER bullet than the bare mention.
   const resolvedBasenames = new Set(areas.map((area) => area.slice(area.lastIndexOf('/') + 1)))
+  const finalUnresolved = unresolved.filter(
+    (value) => value.includes('/') || !resolvedBasenames.has(value),
+  )
+  const editTokens = new Set([...areas, ...finalUnresolved])
   return {
     areas,
-    unresolved: unresolved.filter((value) => value.includes('/') || !resolvedBasenames.has(value)),
+    unresolved: finalUnresolved,
+    referenced: [...referenced].filter((value) => !editTokens.has(value)),
     arealessEntries,
   }
 }
@@ -764,13 +808,16 @@ function areasFromLines(lines, moduleRoots) {
  * @param {{moduleRoots?: string[], keyChangesHeading?: string}} [options]
  *   `moduleRoots` admits bare, slash-free tokens (a repo's top-level module names)
  *   as areas; `keyChangesHeading` overrides the heading resolved from the contract.
- * @returns {{areas: string[], unresolved: string[], arealessEntries: string[], source: 'key-changes'|'fallback-text'|'none'}}
+ * @returns {{areas: string[], unresolved: string[], referenced: string[], arealessEntries: string[], source: 'key-changes'|'fallback-text'|'none'}}
  *   `source` distinguishes THREE outcomes that must never be conflated: the
  *   section was parsed (`key-changes`), the section was absent so the whole
  *   description was scanned (`fallback-text`), or there was no body to read at
  *   all (`none`). A parsed-but-arealess section is `key-changes` with an empty
  *   `areas` — different from `none`, because "we looked and found nothing" and
  *   "there was nothing to look at" carry different weight downstream.
+ *
+ *   `referenced` reports path-shaped tokens demoted from description tails or explicit
+ *   no-edit declarations. It is disjoint from the final `areas` and `unresolved`.
  *
  *   `unresolved` is the ADDITIVE fourth outcome: tokens this scan recognised as
  *   path-shaped but could not resolve to a repo-relative area. It is a new field
@@ -796,19 +843,19 @@ export function extractKeyChangeAreas(config, description, options = {}) {
       .filter((root) => root !== ''),
   )
   const body = text(description)
-  const heading = resolveKeyChangesHeading(config, options.keyChangesHeading)
+  const heading = keyChangesHeading(config, options.keyChangesHeading)
   const section = heading
     ? planDescriptionSections(config, body).find((entry) => entry.heading === heading)
     : null
 
   if (!section) {
     const lines = scanFences(body).lines.map((entry) => entry.line)
-    return { ...areasFromLines(lines, moduleRoots), source: 'fallback-text' }
+    return { ...areasFromLines(lines, moduleRoots, false), source: 'fallback-text' }
   }
 
   const lines = scanFences(section.bodyLines.join('\n')).lines.map((entry) => entry.line)
   if (!lines.some((line) => line.trim() !== '')) {
-    return { areas: [], unresolved: [], arealessEntries: [], source: 'none' }
+    return { areas: [], unresolved: [], referenced: [], arealessEntries: [], source: 'none' }
   }
   return { ...areasFromLines(lines, moduleRoots), source: 'key-changes' }
 }
@@ -1732,7 +1779,7 @@ export function planDependencyEdges(input = {}) {
         'risks',
         issueLabel(subject),
         'subject-unresolved-areas',
-        `${issueLabel(subject)}'s \`## Key changes\` named ${subjectUnresolved.length} path-shaped token(s) this scan could not resolve to a repo-relative area: ${subjectUnresolved.join(', ')}. They were NOT compared, so any overlap they carry was missed rather than ruled out. Rewrite them as repo-relative paths, or declare their leading directory in \`moduleRoots\`, before treating the dependency line as complete.`,
+        `${issueLabel(subject)}'s \`## Key changes\` named ${subjectUnresolved.length} path-shaped token(s) this scan could not resolve to a repo-relative area: ${subjectUnresolved.join(', ')}. They were NOT compared, so any overlap they carry was missed rather than ruled out. Rewrite them as repo-relative paths, or declare their leading directory in \`moduleRoots\`; for a root file, declare the root file itself in \`moduleRoots\` and present it as code-marked or as the lead of a split bullet before treating the dependency line as complete.`,
       ),
     )
   }

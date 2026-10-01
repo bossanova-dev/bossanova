@@ -10,6 +10,9 @@ if (!fs.existsSync(mirrorWorkflow)) {
 }
 
 const mirror = fs.readFileSync(mirrorWorkflow, 'utf8')
+const exporterPath = '.github/scripts/export-public-tree.sh'
+const projection = fs.existsSync(exporterPath) ? fs.readFileSync(exporterPath, 'utf8') : ''
+const publication = mirror + '\n' + projection
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -31,7 +34,7 @@ const requiredPublicWorkflows = [
   '.github/workflows/test-go.yml',
 ]
 
-const missing = requiredPublicWorkflows.filter((workflow) => !mirror.includes(workflow))
+const missing = requiredPublicWorkflows.filter((workflow) => !publication.includes(workflow))
 
 if (missing.length > 0) {
   console.error('Public mirror is missing test workflows for public repo code:')
@@ -60,7 +63,8 @@ const requiredMirrorClauses = [
 
 const missingClauses = requiredMirrorClauses
   .filter(
-    ({ clause, match = (content, value) => content.includes(value) }) => !match(mirror, clause),
+    ({ clause, match = (content, value) => content.includes(value) }) =>
+      !match(publication, clause),
   )
   .map(({ clause }) => clause)
 

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
@@ -98,7 +100,20 @@ func (w *repoMgmtWorktree) Clone(context.Context, string, string) error {
 	return w.cloneErr
 }
 
+// seededWorktreeBase is the global settings.worktree_base_dir the repo
+// registration tests seed through BOSS_SETTINGS_PATH, so the daemon default
+// path never reads the developer's real settings file.
+const seededWorktreeBase = "/seeded/global/worktrees"
+
+func seedWorktreeBaseSettings(t *testing.T) {
+	t.Helper()
+	seed := config.DefaultSettings()
+	seed.WorktreeBaseDir = seededWorktreeBase
+	seedSettings(t, seed)
+}
+
 func TestRegisterRepo(t *testing.T) {
+	seedWorktreeBaseSettings(t)
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "file")
 	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
@@ -112,7 +127,9 @@ func TestRegisterRepo(t *testing.T) {
 		worktrees  *repoMgmtWorktree
 		createErr  error
 		wantErrSub string
+		wantCode   connect.Code
 		wantSetup  *string
+		wantBase   string
 	}{
 		{
 			name:       "empty local path",
@@ -146,6 +163,33 @@ func TestRegisterRepo(t *testing.T) {
 			req:       &pb.RegisterRepoRequest{LocalPath: dir},
 			worktrees: &repoMgmtWorktree{isGitRepo: true},
 			wantSetup: nil,
+			wantBase:  seededWorktreeBase,
+		},
+		{
+			name:      "whitespace base defaults to global setting",
+			req:       &pb.RegisterRepoRequest{LocalPath: dir, WorktreeBaseDir: "   "},
+			worktrees: &repoMgmtWorktree{isGitRepo: true},
+			wantBase:  seededWorktreeBase,
+		},
+		{
+			name:      "explicit base is preserved and cleaned",
+			req:       &pb.RegisterRepoRequest{LocalPath: dir, WorktreeBaseDir: "/explicit/wt/"},
+			worktrees: &repoMgmtWorktree{isGitRepo: true},
+			wantBase:  "/explicit/wt",
+		},
+		{
+			name:       "relative base is rejected",
+			req:        &pb.RegisterRepoRequest{LocalPath: dir, WorktreeBaseDir: "rel/wt"},
+			worktrees:  &repoMgmtWorktree{isGitRepo: true},
+			wantErrSub: "absolute",
+			wantCode:   connect.CodeInvalidArgument,
+		},
+		{
+			name:       "tilde base is rejected",
+			req:        &pb.RegisterRepoRequest{LocalPath: dir, WorktreeBaseDir: "~/wt"},
+			worktrees:  &repoMgmtWorktree{isGitRepo: true},
+			wantErrSub: "absolute",
+			wantCode:   connect.CodeInvalidArgument,
 		},
 		{
 			name:       "create fails",
@@ -173,6 +217,14 @@ func TestRegisterRepo(t *testing.T) {
 				if !strings.Contains(err.Error(), tc.wantErrSub) {
 					t.Fatalf("RegisterRepo() error = %v, want substring %q", err, tc.wantErrSub)
 				}
+				if tc.wantCode != 0 {
+					if got := connect.CodeOf(err); got != tc.wantCode {
+						t.Fatalf("RegisterRepo() code = %v, want %v", got, tc.wantCode)
+					}
+					if repos.createCalls != 0 {
+						t.Fatalf("Create called %d times, want 0", repos.createCalls)
+					}
+				}
 				return
 			}
 			if err != nil {
@@ -187,11 +239,52 @@ func TestRegisterRepo(t *testing.T) {
 			if tc.wantSetup != nil && *repos.createParams.SetupScript != *tc.wantSetup {
 				t.Fatalf("Create SetupScript = %q, want %q", *repos.createParams.SetupScript, *tc.wantSetup)
 			}
+			if tc.wantBase != "" && repos.createParams.WorktreeBaseDir != tc.wantBase {
+				t.Fatalf("Create WorktreeBaseDir = %q, want %q", repos.createParams.WorktreeBaseDir, tc.wantBase)
+			}
+		})
+	}
+}
+
+// TestRegisterRepoWorktreeBaseSettingsFailures drives the default path through
+// a real config.Load against a seeded settings file: an unreadable file is
+// Internal and a blank global base is FailedPrecondition, and neither creates a
+// repo row.
+func TestRegisterRepoWorktreeBaseSettingsFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+		wantCode connect.Code
+	}{
+		{name: "malformed settings file is internal", contents: "{not json", wantCode: connect.CodeInternal},
+		{name: "blank global base is failed precondition", contents: `{"worktree_base_dir": ""}`, wantCode: connect.CodeFailedPrecondition},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			settingsPath := filepath.Join(t.TempDir(), "settings.json")
+			if err := os.WriteFile(settingsPath, []byte(tc.contents), 0o600); err != nil {
+				t.Fatalf("write settings: %v", err)
+			}
+			t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+
+			repos := &repoMgmtRepoStore{}
+			s := New(Config{Repos: repos, Worktrees: &repoMgmtWorktree{isGitRepo: true}})
+			_, err := s.RegisterRepo(context.Background(), connect.NewRequest(&pb.RegisterRepoRequest{LocalPath: t.TempDir()}))
+			if got := connect.CodeOf(err); got != tc.wantCode {
+				t.Fatalf("RegisterRepo() code = %v, want %v (err=%v)", got, tc.wantCode, err)
+			}
+			if tc.wantCode == connect.CodeFailedPrecondition && !strings.Contains(err.Error(), "worktree_base_dir") {
+				t.Fatalf("RegisterRepo() error = %v, want it to name worktree_base_dir", err)
+			}
+			if repos.createCalls != 0 {
+				t.Fatalf("Create called %d times, want 0", repos.createCalls)
+			}
 		})
 	}
 }
 
 func TestCloneAndRegisterRepo(t *testing.T) {
+	seedWorktreeBaseSettings(t)
 	baseDir := t.TempDir()
 	existingDir := filepath.Join(baseDir, "exists")
 	if err := os.Mkdir(existingDir, 0o755); err != nil {
@@ -206,8 +299,10 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 		worktrees  *repoMgmtWorktree
 		createErr  error
 		wantErrSub string
+		wantCode   connect.Code
 		wantClone  bool
 		wantSetup  *string
+		wantBase   string
 	}{
 		{
 			name:       "empty clone url",
@@ -243,6 +338,21 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			worktrees: &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
 			wantClone: true,
 			wantSetup: &setup,
+			wantBase:  seededWorktreeBase,
+		},
+		{
+			name:      "explicit base is preserved",
+			req:       &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: missingDir, WorktreeBaseDir: "/explicit/wt"},
+			worktrees: &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
+			wantClone: true,
+			wantBase:  "/explicit/wt",
+		},
+		{
+			name:       "relative base is rejected before cloning",
+			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: missingDir, WorktreeBaseDir: "rel/wt"},
+			worktrees:  &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
+			wantErrSub: "absolute",
+			wantCode:   connect.CodeInvalidArgument,
 		},
 		{
 			name:       "clone fails",
@@ -276,6 +386,14 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 				if !strings.Contains(err.Error(), tc.wantErrSub) {
 					t.Fatalf("CloneAndRegisterRepo() error = %v, want substring %q", err, tc.wantErrSub)
 				}
+				if tc.wantCode != 0 {
+					if got := connect.CodeOf(err); got != tc.wantCode {
+						t.Fatalf("CloneAndRegisterRepo() code = %v, want %v", got, tc.wantCode)
+					}
+					if wt.cloneCalls != 0 || repos.createCalls != 0 {
+						t.Fatalf("cloneCalls=%d createCalls=%d, want 0 and 0", wt.cloneCalls, repos.createCalls)
+					}
+				}
 				return
 			}
 			if err != nil {
@@ -292,6 +410,9 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			}
 			if tc.wantSetup != nil && *repos.createParams.SetupScript != *tc.wantSetup {
 				t.Fatalf("Create SetupScript = %q, want %q", *repos.createParams.SetupScript, *tc.wantSetup)
+			}
+			if tc.wantBase != "" && repos.createParams.WorktreeBaseDir != tc.wantBase {
+				t.Fatalf("Create WorktreeBaseDir = %q, want %q", repos.createParams.WorktreeBaseDir, tc.wantBase)
 			}
 		})
 	}
@@ -400,6 +521,55 @@ func TestUpdateRepoSetupScript(t *testing.T) {
 		}
 		if **repos.updateParams.SetupScript != cmd {
 			t.Fatalf("SetupScript inner = %q, want %q", **repos.updateParams.SetupScript, cmd)
+		}
+	})
+}
+
+func TestUpdateRepoWorktreeBaseDir(t *testing.T) {
+	t.Parallel()
+
+	update := func(t *testing.T, req *pb.UpdateRepoRequest) (*repoMgmtRepoStore, error) {
+		t.Helper()
+		repos := &repoMgmtRepoStore{}
+		s := New(Config{Repos: repos})
+		_, err := s.UpdateRepo(context.Background(), connect.NewRequest(req))
+		return repos, err
+	}
+
+	t.Run("absolute value is written cleaned", func(t *testing.T) {
+		t.Parallel()
+		dir := "/new/worktrees/"
+		repos, err := update(t, &pb.UpdateRepoRequest{Id: "r1", WorktreeBaseDir: &dir})
+		if err != nil {
+			t.Fatalf("UpdateRepo() error = %v", err)
+		}
+		if repos.updateParams.WorktreeBaseDir == nil || *repos.updateParams.WorktreeBaseDir != "/new/worktrees" {
+			t.Fatalf("UpdateRepoParams.WorktreeBaseDir = %v, want /new/worktrees", repos.updateParams.WorktreeBaseDir)
+		}
+	})
+
+	for _, bad := range []string{"", "   ", "rel/dir", "~/wt"} {
+		t.Run("rejects "+strconv.Quote(bad), func(t *testing.T) {
+			t.Parallel()
+			repos, err := update(t, &pb.UpdateRepoRequest{Id: "r1", WorktreeBaseDir: &bad})
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("UpdateRepo() code = %v, want InvalidArgument (err=%v)", got, err)
+			}
+			if repos.updateCalls != 0 {
+				t.Fatalf("Update called %d times, want 0", repos.updateCalls)
+			}
+		})
+	}
+
+	t.Run("omitted leaves the param nil", func(t *testing.T) {
+		t.Parallel()
+		name := "renamed"
+		repos, err := update(t, &pb.UpdateRepoRequest{Id: "r1", DisplayName: &name})
+		if err != nil {
+			t.Fatalf("UpdateRepo() error = %v", err)
+		}
+		if repos.updateParams.WorktreeBaseDir != nil {
+			t.Fatalf("UpdateRepoParams.WorktreeBaseDir = %q, want nil", *repos.updateParams.WorktreeBaseDir)
 		}
 	})
 }

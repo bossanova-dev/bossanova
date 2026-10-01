@@ -897,7 +897,7 @@ test-warehouse: $(WAREHOUSE_TEST_PG_PREREQS)
 ## (the app user's URL, e.g. through `make db-production`) and WAREHOUSE_ROLE.
 ## Re-run after a migration adds a table dbt reads or the withheld list changes.
 grant-warehouse-reads:
-	@: "$${WAREHOUSE_ADMIN_URL:?set WAREHOUSE_ADMIN_URL to the app user's database URL}"
+	@: "$${WAREHOUSE_ADMIN_URL:?set WAREHOUSE_ADMIN_URL to the database URL of the app user}"
 	@: "$${WAREHOUSE_ROLE:?set WAREHOUSE_ROLE, e.g. bossanova_warehouse_production}"
 	cd services/warehouse && uv run --frozen python scripts/grant_warehouse_reads.py
 

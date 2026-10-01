@@ -783,26 +783,125 @@ function depsOneLiner() {
     (entry) => entry.trim().startsWith("node -e '") && entry.includes('planDependencyEdges'),
   )
   assert.ok(line, 'step 5(c) must carry its runnable node -e line')
-  const script = line.match(/node -e '(.*)' "\$DEPS_IN"$/)?.[1] ?? ''
+  const script = line.match(/node -e '(.*)' "\$DEPS_IN" "\$CANDIDATES"$/)?.[1] ?? ''
   assert.ok(script.includes('planDependencyEdges'), 'the one-liner body must be extractable')
   return script
 }
 
 // Runs the one-liner from the REPO ROOT against the vendored toolbox, so this repo's own
 // `.boss-skills.json` is the config it loads.
-function depsRunner(script, prefix) {
+function depsRunner(script, prefix, cwd = abs('..')) {
   const dir = mkdtempSync(join(tmpdir(), prefix))
-  const run = (payload) => {
+  const run = (payload, { embedded = false } = {}) => {
     const file = join(dir, `${Math.random().toString(36).slice(2)}.deps-in.json`)
-    writeFileSync(file, JSON.stringify(payload))
-    return spawnSync(process.execPath, ['-e', script, file], {
-      cwd: abs('..'),
+    const candidates = file.replace('.deps-in.json', '.candidates.json')
+    writeFileSync(candidates, JSON.stringify(payload.candidates ?? []))
+    const input = { ...payload }
+    if (!embedded) delete input.candidates
+    writeFileSync(file, JSON.stringify(input))
+    return spawnSync(process.execPath, ['-e', script, file, candidates], {
+      cwd,
       encoding: 'utf8',
       env: { ...process.env, BOSS_PLAN_TOOLBOX: abs(`${CORE}/toolbox`) },
     })
   }
   return { run, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
+
+test('GIG-461: dependency glue derives HEAD roots from the worktree with external input files', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'gig461-roots-'))
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout
+  }
+  let cleanup
+  try {
+    git('init', '-q')
+    git('config', 'commit.gpgsign', 'false')
+    writeFileSync(join(repo, 'root.mjs'), '')
+    writeFileSync(join(repo, '.policy'), '')
+    writeFileSync(
+      join(repo, '.boss-skills.json'),
+      JSON.stringify({
+        ...JSON.parse(read('../.boss-skills.json')),
+        planDependencies: {
+          moduleRoots: ['configured'],
+          areaAliases: { 'mirror/x.mjs': 'configured/x.mjs' },
+        },
+      }),
+    )
+    git('add', '.')
+    git(
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.test',
+      'commit',
+      '-qm',
+      'fixture',
+    )
+    const runner = depsRunner(depsOneLiner(), 'gig461-external-draft-', repo)
+    cleanup = runner.cleanup
+    for (const [subjectPath, candidatePath] of [
+      ['root.mjs', 'root.mjs'],
+      ['.policy', '.policy'],
+      ['configured', 'configured'],
+      ['inputroot', 'inputroot'],
+      ['configured/x.mjs', 'mirror/x.mjs'],
+    ]) {
+      const result = runner.run({
+        subject: depsIssue('TCK-1', {
+          description: `## Key changes\n\n- \`${subjectPath}\`: update\n`,
+        }),
+        candidates: [
+          depsIssue('TCK-2', { description: `## Key changes\n\n- \`${candidatePath}\`: update\n` }),
+        ],
+        moduleRoots: ['inputroot'],
+      })
+      assert.equal(result.status, 0, result.stderr)
+      const scan = JSON.parse(result.stdout)
+      assert.equal(scan.compared, 1, subjectPath)
+      assert.equal(scan.candidatesWithoutAreas, 0, candidatePath)
+      assert.ok(scan.questions.length + scan.edges.length > 0, subjectPath)
+      assert.doesNotMatch(result.stderr, /unresolved \["/)
+    }
+    // Execute the worker's actual shell invocation: external absolute draft paths,
+    // repo cwd and mechanically derived roots must resolve the same marked root file.
+    const worker = INTERACTIVE.match(
+      /`(node "\$BOSS_PLAN_TOOLBOX\/plan-contract-guard\.mjs" --description "<absolute-runTmp>[^`]+)`/,
+    )?.[1]
+    assert.ok(worker)
+    const draft = mkdtempSync(join(tmpdir(), 'gig461-worker-draft-'))
+    try {
+      mkdirSync(join(draft, 'batch-draft'))
+      const description = '## Key changes\n\n- `root.mjs`: update\n- `.policy`: update\n'
+      writeFileSync(join(draft, 'batch-draft', 'child.description.md'), description)
+      writeFileSync(join(draft, 'batch-draft', 'child.md'), description)
+      const result = spawnSync(
+        'bash',
+        ['-c', worker.replaceAll('<absolute-runTmp>', draft).replaceAll('<key>', 'child')],
+        {
+          cwd: repo,
+          encoding: 'utf8',
+          env: { ...process.env, BOSS_PLAN_TOOLBOX: abs(`${CORE}/toolbox`) },
+        },
+      )
+      // Other required plan sections are deliberately absent; only root parity is under test.
+      assert.equal(result.status, 1)
+      assert.doesNotMatch(
+        result.stderr,
+        /subject-areas-unresolved|ENOENT|not\s+a\s+git\s+repository/,
+      )
+      assert.match(result.stderr, /plan-contract/)
+    } finally {
+      rmSync(draft, { recursive: true, force: true })
+    }
+  } finally {
+    cleanup?.()
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
 
 function depsIssue(identifier, over = {}) {
   return {
@@ -860,6 +959,10 @@ test('BOS-1327: the step-5(c) one-liner refuses a defective payload and prints t
   // prose-pin: literal-space ok
   assert.match(bad.stderr, /^missing-parent-field TCK-2 /m)
   assert.doesNotMatch(bad.stderr, /subjectAreas/)
+  const forged = run({ subject: issue('TCK-1'), candidates: [issue('TCK-2')] }, { embedded: true })
+  assert.equal(forged.status, 1)
+  assert.equal(forged.stdout, '')
+  assert.match(forged.stderr, /candidates\s+must\s+come\s+from\s+file/)
   cleanup()
 })
 
@@ -959,14 +1062,10 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   )
   assert.match(
     flat,
-    /\*\*explicit\s+field\s+list\*\*:\s+`description,\s+labels,\s+priority,\s+createdAt`\s+plus\s+the\s+adapter's\s+workflow-state\/status\s+fields/,
-    'the candidate fetch must name the explicit data fields plus adapter-specific workflow state/status fields — defaults omit them and yield a silent zero-link run',
+    /fetch-candidates\s+--out-file.*never\s+read\s+into\s+the\s+orchestrator.*Never\s+restate,\s+summarise\s+or\s+coarsen/,
+    'candidate materialisation must use the executable verb',
   )
-  assert.match(
-    flat,
-    /\*\*by\s+id,\s+regardless\s+of\s+state\*\*\s+—\s+`selectPlanned`\s+never\s+returns\s+a\s+cleared\s+ticket/,
-    'declared relations must be fetched by id regardless of state, or a cleared prerequisite is never reachable',
-  )
+  assert.match(flat, /--id.*regardless\s+of\s+state/, 'declared ids must bypass state filtering')
   // Both appendRelatedTo branches, written as instructions rather than as an aside.
   assert.match(
     flat,
@@ -1012,11 +1111,7 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   )
   // The prefilter is a context-scale measure. Read as an overlap filter it re-introduces the
   // missed-prerequisite defect one layer above the oracle.
-  assert.match(
-    flat,
-    /prefilter\s+is\s+a\s+\*\*context-scale\s+measure\s+only,\s+never\s+an\s+overlap\s+decision\*\*/,
-    'the title+label prefilter must be bounded, or it silently decides overlap ahead of the oracle',
-  )
+  assert.match(flat, /expandChildren.*--id/s, 'expanded children use executable fetch')
   // The run's only post-dependency save. Gated on relations alone it discards every zero-relation
   // outcome the library went to the trouble of raising.
   // BOS-1327: the gate is the library's `recordToDescription`, which is true on a note or a
@@ -1024,7 +1119,7 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   // stdout as `verdict`, which the one-liner test below asserts behaviourally.
   assert.match(
     flat,
-    /Record\s+what\s+step\s+5\s+found\s+—\s+\*\*only\s+when\s+stdout's\s+`verdict\.recordToDescription`\s+is\s+true\*\*/,
+    /Record\s+what\s+step\s+5\s+found\s+—\s+\*\*only\s+when\s+stdout's\s+`verdict\.recordToDescription`\s+is\s+true\s+or\s+the\s+second\s+premise\s+pass\s+changed\s+the\s+read-back\*\*/,
     'the recording save must be gated on the verdict helper, not re-derived in prose',
   )
   assert.match(
@@ -1537,7 +1632,7 @@ test('BOS-769: premises ride the sentinel and Phase 4 re-verifies them', () => {
     )
     assert.match(
       payload.skill,
-      /PREMISE_REPORT="\$\(node[\s\S]{0,220}PREMISE_RC=\$\?/,
+      /PREMISE_REPORT="\$\(node[\s\S]{0,420}PREMISE_RC=\$\?/,
       `${payload.name}: Phase 4 must capture premise drift output without conflating it with an abort`,
     )
     assert.match(
@@ -1545,9 +1640,80 @@ test('BOS-769: premises ride the sentinel and Phase 4 re-verifies them', () => {
       /-\s+Premise\s+drift:\s+<ticket>\s+was\s+<state\s+at\s+recon>,\s+is\s+now\s+<current\s+state>/,
       `${payload.name}: Phase 4 must document the drift annotation line`,
     )
+    const phase4 = sectionBetween(payload.skill, '## Phase 4', '\n## Phase 5')
+    assert.ok(precedes(phase4, 'STOP — secret', 'STOP — premise re-verification', 'Phase 4 gates'))
+    assert.ok(
+      precedes(
+        phase4,
+        'STOP — premise re-verification',
+        'STOP — image-parity gate',
+        'Phase 4 gates',
+      ),
+    )
+    const persistPremises = `printf '%s\\n' "$PREMISES" >"$PREMISES_FILE" || exit 1`
+    const guardCall = 'plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE"'
+    assert.ok(precedes(phase4, persistPremises, guardCall, 'Phase 4 premise inputs'))
+    assert.ok(phase4.includes(`PREMISES="\${PREMISES:-[]}"`))
+    const emptyStates = `if [ "$PREMISES" = '[]' ]; then\n>   printf '{}\\n' >"$LIVE_STATES_FILE" || exit 1\n> fi`
+    assert.ok(precedes(phase4, emptyStates, guardCall, 'Phase 4 empty live-state input'))
+    assert.match(
+      phase4,
+      /--annotate \.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>\.description\.md --annotate "\$PLAN_FILE"/,
+    )
+    assert.doesNotMatch(phase4, /line\s+parsed\s+from/)
+    assert.match(phase4, /\[premise\s+protocol\]\(references\/headless-dispatch\.md#/)
+    assert.match(
+      phase4,
+      /pre-dispatch\s+state\s+read\s+is\s+not\s+ground\s+truth[\s\S]{0,100}disagreement\s+is\s+not\s+a\s+drafter\s+error/,
+    )
+    assert.match(
+      HEADLESS_DISPATCH,
+      /state\s+seen\s+before\s+the\s+drafter\s+returned[\s\S]{0,100}not\s+a\s+reference/,
+    )
+    assert.match(HEADLESS_DISPATCH, /never\s+rewrite\s+recon-time\s+premise\s+states/)
+    const secondPass = sectionBetween(phase4, 'f. Record', '\n6. **STOP')
+    assert.match(secondPass, /re-read\s+the\s+premise\s+ids[\s\S]{0,200}premise-states\.json/)
+    assert.match(
+      secondPass,
+      /plan-run-guards\.mjs" premises "\$PREMISES_FILE" "\$LIVE_STATES_FILE"[\s\S]{0,180}--annotate \.linear-plans\/run-<RUN-SCRATCH-ID>\/<ISSUE-ID>\.image-guard-final\.md/,
+    )
+    assert.match(secondPass, /PREMISE_CHANGED/)
+    assert.match(secondPass, /Do\s+not\s+re-annotate\s+the\s+plan\s+attachment/)
+    assert.doesNotMatch(secondPass, /exit "\$PREMISE_RC"/)
+    assert.match(
+      secondPass,
+      /Non-zero:[\s\S]{0,130}route\s+to\s+step\s+6\s+against\s+step\s+4's\s+intended\s+bytes/,
+    )
+    assert.match(secondPass, /exit\s+after\s+verification/)
+    assert.match(secondPass, /if \[ "\$PREMISE_RC" = 0 \]; then[\s\S]{0,300}fi/)
+    const verification = sectionBetween(
+      payload.skill,
+      '6. **STOP — write-back verification',
+      '\n## Phase 5',
+    )
+    assert.ok(
+      precedes(
+        verification,
+        'plan-writeback-verify.mjs',
+        '[ "${PREMISE_RC:-0}" = 0 ] || { echo "$PREMISE_REPORT" >&2; exit "$PREMISE_RC"; }',
+        'second-pass failure verification',
+      ),
+    )
   }
   assert.ok(BRIEF.includes('Include `premises` in the sentinel payload'))
   assert.ok(BRIEF.includes('It rides the run-file sentinel'))
+  assert.match(BRIEF, /`premises\[\]\.state`\s+is\s+the\s+state\s+observed\s+at\s+recon/)
+  const step5 = sectionBetween(BRIEF, '## Step 5', '\n## Step 6')
+  assert.match(step5, /workflow\s+state[\s\S]{0,180}observed\s+at\s+recon[\s\S]{0,180}`premises`/)
+  assert.match(
+    step5,
+    /current\s+workflow\s+state\s+observed\s+at\s+recon\s+dates\s+that\s+observation/,
+  )
+  assert.match(
+    step5,
+    /Non-EPIC\s+drafts\s+include\s+load-bearing\s+states\s+in\s+`premises`,\s+at\s+most\s+`PREMISE_LIMIT`/,
+  )
+  assert.match(step5, /Step\s+8's\s+recon-state\s+semantics/)
 })
 
 test('BOS-769: headless drafting defers resolution to the shared Fallback contract', () => {
@@ -3475,7 +3641,7 @@ test('BOS-1286: step 5(f) composes the whole-description save from the STORED by
   // here and not over a helper because the subject IS the markdown body: no function returns it.
   assert.match(
     PHASE_4_SECTION,
-    /\*\*fresh\s+read\s+of\s+the\s+stored\s+description\*\*[\s\S]{0,80}never\s+by\s+re-sending\s+Step\s+4's\s+bytes/,
+    /\*\*fresh\s+read\s+of\s+the\s+stored\s+description\*\*[\s\S]{0,180}never\s+by\s+re-sending\s+Step\s+4's\s+bytes/,
     'step 5(f) must compose from a fresh read of the stored description, not the step-4 draft',
   )
 })
@@ -3595,7 +3761,7 @@ test('BOS-1303: the three stored-description reads route through read-descriptio
     ['Phase 2 step 2', sectionBetween(HEADLESS_SECTION, '2. Before dispatch, write', '\n3. ')],
     [
       'Phase 4 step 5(f)',
-      sectionBetween(PHASE_4_SECTION, 'fresh read of the stored', 'If you send an incremental'),
+      sectionBetween(PHASE_4_SECTION, 'f. Record', 'If you send an incremental'),
     ],
     [
       'Phase 4 step 6',
@@ -3657,7 +3823,7 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // same thinness rather than gaining slack a later edit could spend unnoticed.
   // BOS-1290 carries it 126510 -> 126637 alongside the RATCHET re-bank below, again at
   // RATCHET + 4, so the rebase restores the margin rather than widening it.
-  const PRE_SPLIT_BASELINE = 126637
+  const PRE_SPLIT_BASELINE = 126635
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -4069,7 +4235,8 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // BOS-1330 banks 124703 -> 124696 (-7 B), leaving PRE_SPLIT_BASELINE where it is. The Phase 5
   // hazard bullet stopped recommending `find … -delete`, and the Phase 4 secret gate gained its
   // plan-secret-scan.mjs floor, paid for by tightening the same gate paragraph.
-  const RATCHET = 124696 // re-measured for BOS-1330 (down-bank); see the ledger above
+  // GIG-458 banks 124696 -> 124650 (-46 B): file-backed candidate scan replaces list prefilter prose.
+  const RATCHET = 126478 // GIG-461 review: derive HEAD roots mechanically; down-bank measured body
   const STEP_DOWN = 1024
   const REVIEW_BY = '2026-12-08'
   assertDescendingBudget({
@@ -4091,6 +4258,14 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
       // to write a fresh reason for it, which is the same arm dead a second way.
       from: 123354,
       justification:
+        'GIG-457: +1917 B over rebased origin/main (124650 B). The resident body must ' +
+        'invoke annotation before Phase 4 gates and re-read before deciding on step 5(f), ' +
+        'including its byte-change trigger, persisted inputs and verification before a late abort. ' +
+        'Rationale and reconciliation rules live in ' +
+        'references/headless-dispatch.md; only calls, verdict actions and the pre-dispatch ' +
+        'routing remain resident. GIG-461 reference routing is preserved. ' +
+        'GIG-461: prints referenced paths, declares root files and passes top-level entries to ' +
+        'the guard; tighter moduleRoots prose pays for the added behavior; the combined artifact measures 126506 B. Earlier entry: ' +
         'BOS-1278: the Phase 2 metadata guard validated a FILE at the declared draft-metadata ' +
         'path, and the drafting worker is told to write its local files under declared basenames ' +
         '— so the worker could write the very path the orchestrator was specified to write from ' +
@@ -4482,4 +4657,12 @@ test('BOS-1329: batch child drafting skips Tier 1, self-verifies, and validates 
   assert.ok(
     INTERACTIVE.includes('discover --core boss-plan --role draft --mode interactive --json'),
   )
+})
+
+test('GIG-461 reference reporting and root-file guard parity', () => {
+  assert.match(PHASE_4_SECTION, /git\s+ls-tree\s+--name-only\s+HEAD/)
+  assert.match(PHASE_4_SECTION, /JSON\.stringify\(s\.referenced\)/)
+  assert.match(PHASE_4_SECTION, /declare\s+a\s+root\s+file\s+or\s+top-level\s+directory/)
+  assert.doesNotMatch(PHASE_4_SECTION, /else\s+\(a\s+root\s+file/)
+  assert.match(PHASE_4_SECTION, /--plan "\$PLAN_FILE" --module-roots/)
 })

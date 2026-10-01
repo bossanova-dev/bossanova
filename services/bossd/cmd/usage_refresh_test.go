@@ -96,6 +96,31 @@ func TestRefreshActiveAccountUsageReconcilesContradictedCooldown(t *testing.T) {
 	}
 }
 
+func TestRefreshActiveAccountUsageClearsCooldownWhenStatusContradictsMeasuredUsage(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour)
+	fetched := time.Now().UTC()
+	cooling := &models.Account{ID: "tomo", Status: models.AccountStatusActive, CooldownUntil: &future}
+	cache := &fakeDecisionUsageCache{
+		probeSnap: models.UsageSnapshot{
+			Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
+			Util5h:    0.01,
+			Util7d:    0.77,
+			FetchedAt: &fetched,
+		},
+		accounts: []*models.Account{cooling},
+	}
+
+	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil); n != 1 {
+		t.Fatalf("refreshed = %d, want 1", n)
+	}
+	if len(cache.updates) != 1 || cache.updates[0].params.CooldownUntil == nil || *cache.updates[0].params.CooldownUntil != nil {
+		t.Fatalf("account updates = %+v, want exactly one cooldown clear", cache.updates)
+	}
+	if cooling.CooldownUntil != nil {
+		t.Fatalf("cooldown_until = %v, want cleared", cooling.CooldownUntil)
+	}
+}
+
 // TestRefreshActiveAccountUsageKeepsACooldownWrittenDuringTheProbe pins the
 // reconciler's re-read guard. The account row is listed BEFORE a network probe,
 // so a genuine, probe-confirmed 429 can bench it while that probe is in flight.

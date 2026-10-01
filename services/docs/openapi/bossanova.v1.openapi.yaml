@@ -17360,6 +17360,14 @@ components:
             - boolean
             - "null"
           title: should_keep_branches_current
+        worktreeBaseDir:
+          type:
+            - string
+            - "null"
+          title: worktree_base_dir
+          description: |-
+            Per-repo base directory for new session worktrees. Must be absolute; an
+             empty value is rejected rather than clearing it.
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:

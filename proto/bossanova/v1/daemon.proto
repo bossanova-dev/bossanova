@@ -436,6 +436,9 @@ message UpdateRepoRequest {
   optional bool should_archive_sessions_after_merge = 19;
   optional bool can_auto_delete_branches = 20;
   optional bool should_keep_branches_current = 21;
+  // Per-repo base directory for new session worktrees. Must be absolute; an
+  // empty value is rejected rather than clearing it.
+  optional string worktree_base_dir = 22;
 }
 
 message UpdateRepoResponse {

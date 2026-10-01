@@ -49,6 +49,7 @@ Update repository settings
 - `--no-delete-branches` — Disable deleting local branches after archiving
 - `--no-keep-branches-current` — Disable proactively rebasing in-flight session branches when the base advances
 - `--setup-script` — Set setup script (empty string to clear)
+- `--worktree-base-dir` — Set the absolute directory new session worktrees are created under (applies to new sessions)
 
 ```bash
 boss repo update my-repo --name "My Repo" --merge-strategy squash

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -1169,5 +1170,114 @@ func TestTruncate_CutFallsInsideMultiByteRune(t *testing.T) {
 	}
 	if want := strings.Repeat("a", 76) + ellipsis; got != want {
 		t.Errorf("truncate(...) = %q, want %q", got, want)
+	}
+}
+
+// The child shares its parent's originator and cwd and is newer, as in Codex 0.159.2.
+func TestInteractiveDiscoveryRejectsSubagentRollouts(t *testing.T) {
+	parentID := uuidA
+	cases := []struct{ name, fields string }{
+		{"multi_agent_v2", `"session_id":"` + parentID + `","parent_thread_id":"` + parentID + `","forked_from_id":"` + parentID + `","thread_source":"subagent","source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + parentID + `","depth":1,"agent_path":"/root/cloud_grounding","agent_nickname":"Singer","agent_role":"default"}}}`},
+		{"parent_thread_id", `"parent_thread_id":"` + parentID + `"`},
+		{"thread_source", `"thread_source":"subagent"`},
+		{"source_object", `"source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + parentID + `","depth":1}}}`},
+		{"source_string", `"source":"subagent"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, workDir := t.TempDir(), t.TempDir()
+			started := time.Date(2026, 9, 30, 1, 22, 6, 0, time.UTC)
+			parent := writeSessionMetaRollout(t, root, parentID, workDir, "codex-tui", started)
+			child := writeSessionMetaRollout(t, root, uuidB, workDir, "codex-tui", started.Add(time.Minute))
+			addSessionMetaFields(t, child, tc.fields)
+			insp := fakeProcessInspector{descendants: map[int][]int{100: {100, 200}}, openFiles: map[int][]string{200: {parent, child}}}
+			id, path, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+			if id != parentID || path != parent || outcome != fdOutcomeBound {
+				t.Errorf("FD discovery = %q, %q, %v; want parent", id, path, outcome)
+			}
+			id, path, ambiguous, reason := resolveInteractiveSessionIDAt(root, workDir, started)
+			if id != parentID || path != parent || ambiguous || reason != "" {
+				t.Errorf("launch discovery = %q, %q, %v, %q; want parent", id, path, ambiguous, reason)
+			}
+			id, path, ambiguous, reason = resolveLegacyInteractiveSessionIDAt(root, workDir, started, started.Add(time.Hour))
+			if id != parentID || path != parent || ambiguous || reason != "" {
+				t.Errorf("recovery discovery = %q, %q, %v, %q; want parent", id, path, ambiguous, reason)
+			}
+			insp.openFiles[200] = []string{child}
+			id, path, outcome = resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+			if id != "" || path != "" || outcome != fdOutcomeNoRolloutFDOpen {
+				t.Errorf("child-only FD discovery = %q, %q, %v; want miss", id, path, outcome)
+			}
+			if err := os.Remove(parent); err != nil {
+				t.Fatal(err)
+			}
+			if got := scanInteractiveSessionCandidates(root, workDir, started); len(got) != 0 {
+				t.Errorf("child-only scan = %+v; want none", got)
+			}
+		})
+	}
+}
+
+func addSessionMetaFields(t *testing.T, path, fields string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	payload := strings.TrimSuffix(string(env["payload"]), "}") + "," + fields + "}"
+	env["payload"] = json.RawMessage(payload)
+	data, err = json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInteractiveDiscoveryRootMetadataCompatibility(t *testing.T) {
+	for _, fields := range []string{"", `"source":"cli"`, `"source":"cli","forked_from_id":"` + uuidB + `"`, `"source":null,"parent_thread_id":null,"thread_source":null`} {
+		t.Run(fields, func(t *testing.T) {
+			root, workDir := t.TempDir(), t.TempDir()
+			started := time.Now()
+			parent := writeSessionMetaRollout(t, root, uuidA, workDir, "codex-tui", started)
+			if fields != "" {
+				addSessionMetaFields(t, parent, fields)
+			}
+			insp := fakeProcessInspector{descendants: map[int][]int{100: {100}}, openFiles: map[int][]string{100: {parent}}}
+			id, path, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+			if id != uuidA || path != parent || outcome != fdOutcomeBound {
+				t.Fatalf("FD = %q, %q, %v; want root", id, path, outcome)
+			}
+			id, path, ambiguous, reason := resolveInteractiveSessionIDAt(root, workDir, started)
+			if id != uuidA || path != parent || ambiguous || reason != "" {
+				t.Fatalf("scan = %q, %q, %v, %q; want root", id, path, ambiguous, reason)
+			}
+		})
+	}
+}
+
+func TestInteractiveDiscoveryRejectsUnreadableMetadata(t *testing.T) {
+	for _, line := range []string{"", "{", `{"type":"event_msg","payload":{}}`, `{"type":"session_meta","payload":null}`, `{"type":"session_meta","payload":{"parent_thread_id":42}}`} {
+		t.Run(line, func(t *testing.T) {
+			root, workDir := t.TempDir(), t.TempDir()
+			started := time.Now()
+			path := writeSessionMetaRollout(t, root, uuidA, workDir, "codex-tui", started)
+			if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			insp := fakeProcessInspector{descendants: map[int][]int{100: {100}}, openFiles: map[int][]string{100: {path}}}
+			id, gotPath, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100)
+			if id != "" || gotPath != "" || outcome != fdOutcomeNoRolloutFDOpen {
+				t.Errorf("FD = %q, %q, %v; want miss", id, gotPath, outcome)
+			}
+			if got := scanInteractiveSessionCandidates(root, workDir, started); len(got) != 0 {
+				t.Errorf("scan = %+v; want none", got)
+			}
+		})
 	}
 }

@@ -45,10 +45,14 @@ func TestMutatingTools(t *testing.T) {
 		},
 		{
 			tool: "update_repo",
-			args: map[string]any{"id": "r1", "name": "newname", "merge_strategy": "squash"},
+			args: map[string]any{"id": "r1", "name": "newname", "merge_strategy": "squash", "worktree_base_dir": "/abs/worktrees"},
 			backend: &fakeBackend{updateRepo: func(_ context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
 				if req.GetId() != "r1" || req.GetDisplayName() != "newname" || req.GetMergeStrategy() != "squash" {
 					t.Errorf("update_repo args not forwarded: %+v", req)
+				}
+				// BOS-1344: the in-place repair for an empty repo worktree base.
+				if req.WorktreeBaseDir == nil || req.GetWorktreeBaseDir() != "/abs/worktrees" {
+					t.Errorf("update_repo worktree_base_dir not forwarded: %+v", req)
 				}
 				return &pb.Repo{Id: "repo-ur"}, nil
 			}},
@@ -358,6 +362,9 @@ func TestMutatingTools(t *testing.T) {
 			backend: &fakeBackend{updateRepo: func(_ context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
 				if req.GetLinearApiKey() != "lin_secret" || req.GetSentryApiKey() != "sen_secret" || req.GetSentryOrg() != "myorg" {
 					t.Errorf("update_repo secrets not forwarded: %+v", req)
+				}
+				if req.WorktreeBaseDir != nil {
+					t.Errorf("update_repo set worktree_base_dir without the argument: %q", req.GetWorktreeBaseDir())
 				}
 				return &pb.Repo{Id: "repo-ur-secrets"}, nil
 			}},
@@ -1336,5 +1343,31 @@ func TestSendChatMessageResultNamesTurnStartAndDeliveryStates(t *testing.T) {
 				t.Fatalf("delivery_state_name = %v, want %q in %s", got, tc.delivery.String(), textOf(t, res))
 			}
 		})
+	}
+}
+
+// TestRepoWorktreeBaseDirArgumentScope pins BOS-1344's schema decision: only
+// update_repo carries worktree_base_dir. register_repo and clone_and_register_repo
+// rely on the daemon defaulting an omitted base from global settings, so every
+// schema byte there would be re-paid every turn for no capability.
+func TestRepoWorktreeBaseDirArgumentScope(t *testing.T) {
+	want := map[string]bool{"update_repo": true, "register_repo": false, "clone_and_register_repo": false}
+	seen := map[string]bool{}
+	for _, tool := range listedToolDefinitions(t, Options{}) {
+		wantArg, ok := want[tool.Name]
+		if !ok {
+			continue
+		}
+		seen[tool.Name] = true
+		schema, _ := tool.InputSchema.(map[string]any)
+		props, _ := schema["properties"].(map[string]any)
+		if _, has := props["worktree_base_dir"]; has != wantArg {
+			t.Errorf("%s schema has worktree_base_dir = %v, want %v", tool.Name, has, wantArg)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("tool %s not listed", name)
+		}
 	}
 }

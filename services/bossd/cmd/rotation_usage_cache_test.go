@@ -230,7 +230,7 @@ func TestCacheUsageProbeForRotationDecisionUsesExhaustedWindowReset(t *testing.T
 			want: reset7d,
 		},
 		{
-			name: "rate limited with ambiguous utilization chooses later reset",
+			name: "coarse rate limited status with measured headroom has no reset",
 			snap: models.UsageSnapshot{
 				Util5h:    0.99,
 				Util7d:    0.99,
@@ -239,7 +239,6 @@ func TestCacheUsageProbeForRotationDecisionUsesExhaustedWindowReset(t *testing.T
 				Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 				FetchedAt: &fetched,
 			},
-			want: reset7d,
 		},
 	}
 
@@ -251,6 +250,12 @@ func TestCacheUsageProbeForRotationDecisionUsesExhaustedWindowReset(t *testing.T
 
 			if cache.probeCalls != 1 || cache.recordCalls != 1 {
 				t.Fatalf("calls probe=%d record=%d, want 1/1", cache.probeCalls, cache.recordCalls)
+			}
+			if tt.want.IsZero() {
+				if got != nil {
+					t.Fatalf("reset = %v, want nil for measured sub-cap usage", got)
+				}
+				return
 			}
 			if got == nil || !got.Equal(tt.want) {
 				t.Fatalf("reset = %v, want exhausted window reset %v", got, tt.want)

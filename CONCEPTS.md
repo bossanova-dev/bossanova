@@ -261,6 +261,12 @@ Canonicalization means reaching a fixed point, not running the reduction once. T
 
 A separate, weaker reduction exists for stream deduplication; it discards the scheme and belongs to a different key space. The two are never substitutes for one another.
 
+### Worktree base directory
+
+The absolute directory, held separately for each registered repository, under which that repository's session worktrees are created. It is distinct from the installation-wide default of the same name, which applies only when a repository is registered without its own value.
+
+The default is copied onto the repository at registration time, not looked up again whenever a session is created, so a later change to the installation-wide default does not move existing repositories. A repository's worktree base directory must not be empty: an empty value is the state that stops worktree-backed sessions from being created, so registration refuses rather than store one, and an update may replace the value but not clear it. Rows registered before that rule may still hold an empty value, and are repaired by setting one. Setting it is a daemon-local operation, because the hosted surfaces deliberately do not carry physical paths.
+
 ### Repo origin ownership
 
 The rule that a canonical repo origin is held by at most one organization across the whole installation, rather than once per organization. Ownership is enforced as a uniqueness invariant over the stored origin, so it survives any application path that forgets to check it — which is what makes the canonical form load-bearing rather than cosmetic. Re-asserting an ownership one already holds is the same claim, not a second one; asserting one another organization holds is refused.

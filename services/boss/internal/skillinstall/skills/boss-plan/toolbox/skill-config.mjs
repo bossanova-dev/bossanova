@@ -2032,6 +2032,42 @@ export function planDescriptionSections(config, description, { mode = 'child-pla
   )
 }
 
+function normaliseSectionHeading(heading) {
+  return String(heading ?? '')
+    .replace(/^#+\s*/, '')
+    .trim()
+    .toLowerCase()
+}
+
+export function keyChangesHeading(config, override) {
+  assertConfigFirst(config, 'keyChangesHeading')
+  const explicit = typeof override === 'string' ? override.trim() : ''
+  if (explicit !== '') return explicit
+  return (
+    planSections(config).find(
+      (section) => normaliseSectionHeading(section?.heading) === 'key changes',
+    )?.heading ?? null
+  )
+}
+
+export function keyChangesSection(config, description) {
+  assertConfigFirst(config, 'keyChangesSection')
+  const heading = keyChangesHeading(config)
+  const section = planDescriptionSections(config, description).find(
+    (entry) =>
+      heading !== null &&
+      normaliseSectionHeading(entry.heading) === normaliseSectionHeading(heading),
+  )
+  return section ? section.bodyLines.join('\n') : null
+}
+
+export function descriptionAppearsTruncated(description) {
+  return (
+    typeof description === 'string' &&
+    description.includes('(truncated, use get_issue for full description)')
+  )
+}
+
 /**
  * Validate a plan description against the contract.
  *

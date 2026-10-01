@@ -103,9 +103,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			CanAutoRepair:             args.CanAutoRepair,
 			ShouldKeepBranchesCurrent: args.ShouldKeepBranchesCurrent,
 			// Optional *string args map straight through; nil stays unset.
-			LinearApiKey: args.LinearAPIKey,
-			SentryApiKey: args.SentryAPIKey,
-			SentryOrg:    args.SentryOrg,
+			WorktreeBaseDir: args.WorktreeBaseDir,
+			LinearApiKey:    args.LinearAPIKey,
+			SentryApiKey:    args.SentryAPIKey,
+			SentryOrg:       args.SentryOrg,
 		}
 		out, err := backend.UpdateRepo(ctx, req)
 		if err != nil {
@@ -975,15 +976,16 @@ type CloneAndRegisterRepoArgs struct {
 type UpdateRepoArgs struct {
 	ID                        string  `json:"id" jsonschema:"the repo id"`
 	Name                      *string `json:"name,omitempty" jsonschema:"new display name"`
-	MergeStrategy             *string `json:"merge_strategy,omitempty" jsonschema:"merge strategy (e.g. squash, merge, rebase)"`
+	MergeStrategy             *string `json:"merge_strategy,omitempty" jsonschema:"merge, squash or rebase"`
 	SetupScript               *string `json:"setup_script,omitempty" jsonschema:"setup script to run in new worktrees"`
 	CanAutoMerge              *bool   `json:"can_auto_merge,omitempty" jsonschema:"mark a passing draft PR ready for review (does not merge)"`
 	CanAutoMergeDependabot    *bool   `json:"can_auto_merge_dependabot,omitempty" jsonschema:"allow auto-merge for dependabot PRs"`
-	CanAutoRepair             *bool   `json:"can_auto_repair,omitempty" jsonschema:"allow the repair plugin to auto-repair PRs (failing checks, conflicts, review feedback)"`
-	ShouldKeepBranchesCurrent *bool   `json:"should_keep_branches_current,omitempty" jsonschema:"proactively rebase in-flight session branches onto the base branch whenever a merge advances it (force-push with lease); opt-in, every rebase re-runs CI"`
-	LinearAPIKey              *string `json:"linear_api_key,omitempty" jsonschema:"Linear API key for this repo; write-only, never returned by any read tool"`
-	SentryAPIKey              *string `json:"sentry_api_key,omitempty" jsonschema:"Sentry auth token for this repo; write-only, never returned by any read tool"`
+	CanAutoRepair             *bool   `json:"can_auto_repair,omitempty" jsonschema:"auto-repair PRs (failing checks, conflicts, review feedback)"`
+	ShouldKeepBranchesCurrent *bool   `json:"should_keep_branches_current,omitempty" jsonschema:"rebase in-flight session branches when the base advances (force-push with lease); opt-in, each rebase re-runs CI"`
+	LinearAPIKey              *string `json:"linear_api_key,omitempty" jsonschema:"Linear API key for this repo; write-only, never returned"`
+	SentryAPIKey              *string `json:"sentry_api_key,omitempty" jsonschema:"Sentry auth token for this repo; write-only, never returned"`
 	SentryOrg                 *string `json:"sentry_org,omitempty" jsonschema:"Sentry organization slug (issues are listed org-wide)"`
+	WorktreeBaseDir           *string `json:"worktree_base_dir,omitempty" jsonschema:"absolute dir new session worktrees are created under"`
 }
 
 // createSessionOutput is the create_session tool's structured result. The

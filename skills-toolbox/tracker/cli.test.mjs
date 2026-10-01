@@ -10,6 +10,177 @@ import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
 import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
 import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../skill-config.mjs'
+import { validateDependencyScanInput } from '../plan-deps-lib.mjs'
+
+const fullCandidate = {
+  id: 'uuid-1',
+  identifier: 'APP-1',
+  title: 'candidate',
+  priority: 2,
+  stateName: 'Todo',
+  stateType: 'unstarted',
+  parentId: null,
+  labels: [],
+  description: '## Key changes\n- `app/file.mjs`: UNIQUE_BODY_TOKEN\n  exact continuation\n',
+  source: 'state',
+}
+async function fetchCandidates(
+  args,
+  adapter = { selectCandidates: async () => [fullCandidate] },
+  configPatch = {},
+) {
+  let out = '',
+    err = '',
+    query
+  const resolved = { ...adapter }
+  if (typeof adapter.selectCandidates === 'function')
+    resolved.selectCandidates = async (q) => {
+      query = q
+      return adapter.selectCandidates(q)
+    }
+  const code = await runCli(['fetch-candidates', ...args], {
+    write: (s) => {
+      out += s
+    },
+    errWrite: (s) => {
+      err += s
+    },
+    resolveAdapter: () => resolved,
+    loadConfig: () =>
+      mergeConfig(
+        mergeConfig(DEFAULT_CONFIG, {
+          adapters: { tracker: 'linear' },
+          trackerConfig: {
+            linear: { states: { planned: 'Todo', inProgress: 'Doing', inReview: 'Review' } },
+          },
+        }),
+        configPatch,
+      ),
+  })
+  return { code, out, err, query }
+}
+
+test('fetch-candidates atomically writes full candidates.json with one secret-free stat receipt', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    fs.writeFileSync(file, 'old')
+    const { code, out, err, query } = await fetchCandidates([
+      '--out-file',
+      file,
+      '--id',
+      'APP-2,APP-3',
+      '--id',
+      'APP-2',
+    ])
+    assert.equal(code, 0)
+    assert.equal(err, '')
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    assert.equal(out.trim().split('\n').length, 1)
+    assert.equal(out.includes('UNIQUE_BODY_TOKEN'), false)
+    const receipt = JSON.parse(out)
+    assert.deepEqual(receipt, {
+      outcome: 'candidates-written',
+      count: 1,
+      byState: 1,
+      byId: 0,
+      bytes: fs.statSync(file).size,
+      out: file,
+    })
+    assert.deepEqual(query.ids, ['APP-2', 'APP-3'])
+    assert.equal(query.states.length, 3)
+    const rows = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.equal(rows[0].keyChanges, '- `app/file.mjs`: UNIQUE_BODY_TOKEN\n  exact continuation\n')
+    assert.deepEqual(
+      validateDependencyScanInput({
+        subject: { ...fullCandidate, id: 'subject' },
+        candidates: rows,
+        epicLabel: 'epic',
+        stateRoles: { planned: 'Todo' },
+      }).defects,
+      [],
+    )
+    assert.deepEqual(entries(dir), ['candidates.json'])
+  })
+})
+
+test('fetch-candidates resolves state roles adapter first with per-role config fallback', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    const adapter = {
+      states: () => ({ planned: 'Adapter Todo', inProgress: null, inReview: 'Adapter Review' }),
+      selectCandidates: async () => [],
+    }
+    const result = await fetchCandidates(['--out-file', file], adapter)
+    assert.equal(result.code, 0)
+    assert.deepEqual(result.query.states, ['Adapter Todo', 'Doing', 'Adapter Review'])
+    const owned = await fetchCandidates(
+      ['--out-file', file],
+      { ...adapter, states: () => ({ planned: 'A', inProgress: 'B', inReview: 'C' }) },
+      {
+        trackerConfig: { linear: { states: { planned: null, inProgress: null, inReview: null } } },
+      },
+    )
+    assert.equal(owned.code, 0)
+    assert.deepEqual(owned.query.states, ['A', 'B', 'C'])
+    const explicit = await fetchCandidates(['--out-file', file, '--state', 'Explicit'], {
+      ...adapter,
+      states: () => {
+        throw new Error('must not resolve defaults')
+      },
+    })
+    assert.equal(explicit.code, 0)
+    assert.deepEqual(explicit.query.states, ['Explicit'])
+  })
+})
+
+test('fetch-candidates failures preserve prior bytes, suppress bodies/errors and distinguish usage', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    for (const adapter of [
+      {},
+      {
+        selectCandidates: async () => {
+          throw new Error('UNIQUE_BODY_TOKEN\ncredential secret')
+        },
+      },
+      { selectCandidates: async () => null },
+      {
+        selectCandidates: async () => {
+          throw Object.assign(new Error('UNIQUE_BODY_TOKEN'), { code: TRACKER_CREDENTIALS_MISSING })
+        },
+      },
+      {
+        selectCandidates: async () => [
+          { ...fullCandidate, description: '(truncated, use get_issue for full description)' },
+        ],
+      },
+      { selectCandidates: async () => [{ ...fullCandidate, stateType: '' }] },
+      { selectCandidates: async () => [{ ...fullCandidate, parentId: undefined }] },
+    ]) {
+      fs.writeFileSync(file, 'old')
+      const { code, out, err } = await fetchCandidates(['--out-file', file], adapter)
+      assert.equal(code, 2)
+      assert.equal(out, '')
+      assert.equal(err.trim().split('\n').length, 1)
+      assert.equal(err.includes('UNIQUE_BODY_TOKEN'), false)
+      assert.equal(fs.readFileSync(file, 'utf8'), 'old')
+    }
+    for (const args of [
+      [],
+      ['--out-file'],
+      ['--out-file', file, '--limit', '251'],
+      ['--out-file', file, '--bogus', 'x'],
+      ['--out-file', file, '--id', 'x,'],
+    ]) {
+      assert.equal((await fetchCandidates(args)).code, 64)
+    }
+    const { code } = await fetchCandidates(['--out-file', file, '--state', 'Review'], {
+      selectCandidates: async () => [{ ...fullCandidate, description: '', source: 'id' }],
+    })
+    assert.equal(code, 0)
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8'))[0].keyChanges, null)
+  })
+})
 
 const won = '11111111111111111111111111111111'
 const lost = '22222222222222222222222222222222'

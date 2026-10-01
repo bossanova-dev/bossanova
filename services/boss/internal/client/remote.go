@@ -166,6 +166,11 @@ func (c *RemoteClient) resolveDaemonForRepo(ctx context.Context, repoID string) 
 // projected back to a *pb.Repo (secret/physical fields stay empty), mirroring the
 // mcp-gateway proxybackend.
 func (c *RemoteClient) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
+	// ProxyUpdateRepoRequest has no worktree field (the cloud surface masks
+	// physical paths), so refuse rather than silently drop it.
+	if req.WorktreeBaseDir != nil {
+		return nil, errLocalOnly("setting a repo worktree base directory")
+	}
 	daemonID, err := c.resolveRemoteDaemonForRepo(ctx, req.GetId())
 	if err != nil {
 		return nil, err

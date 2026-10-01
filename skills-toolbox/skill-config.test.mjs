@@ -65,6 +65,9 @@ import {
   planSections,
   planSectionsForDescriptionMode,
   planDescriptionSections,
+  keyChangesHeading,
+  keyChangesSection,
+  descriptionAppearsTruncated,
   requiredPlanSections,
   requiredSectionsForDescriptionMode,
   validatePlanDescription,
@@ -82,6 +85,40 @@ import {
   VERIFY_ONLY_CHECKED,
   VERIFY_ONLY_RESULT,
 } from './skill-config.mjs'
+
+test('keyChangesSection preserves wrapped paths and ignores fenced or original-note headings', () => {
+  const body = '\n- `app/api/file.mjs`: keep\n  wrapped wording.\n\n'
+  assert.equal(
+    keyChangesSection(DEFAULT_CONFIG, '## Key changes\n' + body + '## Testing\nnext'),
+    body.slice(0, -1),
+  )
+  assert.equal(
+    keyChangesSection(
+      DEFAULT_CONFIG,
+      '```md\n## Key changes\nwrong\n```\n## Original notes\n## Key changes\nwrong',
+    ),
+    null,
+  )
+  assert.equal(keyChangesSection(DEFAULT_CONFIG, '## Summary\nnone'), null)
+  assert.equal(keyChangesHeading(DEFAULT_CONFIG, '## Files'), '## Files')
+  const custom = mergeConfig(DEFAULT_CONFIG, {
+    planContract: { sections: [{ heading: '## KEY CHANGES' }, { heading: '## Original notes' }] },
+  })
+  assert.equal(keyChangesHeading(custom), '## KEY CHANGES')
+  assert.equal(keyChangesSection(custom, '## KEY CHANGES\nexact\n## Original notes\nrest'), 'exact')
+  assert.equal(descriptionAppearsTruncated('(truncated, use get_issue for full description)'), true)
+  assert.equal(descriptionAppearsTruncated('complete'), false)
+})
+
+test('keyChanges helpers normalize case and reject config-first argument swaps', () => {
+  assert.equal(keyChangesSection(DEFAULT_CONFIG, '## Key Changes\nbody\n## Testing\nrest'), 'body')
+  const custom = mergeConfig(DEFAULT_CONFIG, {
+    planContract: { sections: [{ heading: '## KEY CHANGES' }, { heading: '## Original notes' }] },
+  })
+  assert.equal(keyChangesSection(custom, '## Key changes\nbody'), 'body')
+  assert.throws(() => keyChangesHeading('description', DEFAULT_CONFIG), /keyChangesHeading/)
+  assert.throws(() => keyChangesSection('description', DEFAULT_CONFIG), /keyChangesSection/)
+})
 
 // --- Task 2: glob matcher + default config --------------------------------
 

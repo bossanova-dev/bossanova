@@ -4341,11 +4341,43 @@ func runTrashDelete(cmd *cobra.Command, sessionID string) error {
 // --- Repo Update ---
 
 func runRepoUpdate(cmd *cobra.Command, repoID string) error {
+	req, err := buildRepoUpdateRequest(cmd, repoID)
+	if err != nil {
+		return err
+	}
+
 	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
 
+	ctx := context.Background()
+	repo, err := c.UpdateRepo(ctx, req)
+	if err != nil {
+		return fmt.Errorf("update repo: %w", err)
+	}
+
+	fmt.Printf("Repository updated.\n")
+	fmt.Printf("  ID:       %s\n", repo.Id)
+	fmt.Printf("  Name:     %s\n", repo.DisplayName)
+	fmt.Printf("  Strategy: %s\n", repo.MergeStrategy)
+	if repo.SetupScript != nil {
+		fmt.Printf("  Setup:    %s\n", *repo.SetupScript)
+	}
+	fmt.Printf("  Worktree base:          %s\n", repo.WorktreeBaseDir)
+	fmt.Printf("  Mark ready on green:    %v\n", repo.CanAutoMerge)
+	fmt.Printf("  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
+	fmt.Printf("  Automatic repair:       %v\n", repo.CanAutoRepair)
+	fmt.Printf("  Delete branches:        %v\n", repo.CanAutoDeleteBranches)
+	fmt.Printf("  Keep branches current:  %v\n", repo.ShouldKeepBranchesCurrent)
+	return nil
+}
+
+// buildRepoUpdateRequest maps the `boss repo update` flags that were actually
+// set onto an UpdateRepoRequest, so the mapping is testable without a daemon.
+// It errors when no flag was set or when a flag pair conflicts. Path validation
+// for --worktree-base-dir is the daemon's (it must be absolute).
+func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRequest, error) {
 	req := &pb.UpdateRepoRequest{Id: repoID}
 	anyChanged := false
 
@@ -4365,8 +4397,13 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 		case "merge", "rebase", "squash":
 			req.MergeStrategy = &v
 		default:
-			return fmt.Errorf("invalid merge strategy %q (use merge, rebase, or squash)", v)
+			return nil, fmt.Errorf("invalid merge strategy %q (use merge, rebase, or squash)", v)
 		}
+		anyChanged = true
+	}
+	if cmd.Flags().Changed("worktree-base-dir") {
+		v, _ := cmd.Flags().GetString("worktree-base-dir")
+		req.WorktreeBaseDir = &v
 		anyChanged = true
 	}
 
@@ -4385,7 +4422,7 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 		enableChanged := cmd.Flags().Changed(bp.enable)
 		disableChanged := cmd.Flags().Changed(bp.disable)
 		if enableChanged && disableChanged {
-			return fmt.Errorf("cannot use both --%s and --%s", bp.enable, bp.disable)
+			return nil, fmt.Errorf("cannot use both --%s and --%s", bp.enable, bp.disable)
 		}
 		if enableChanged {
 			bp.setter(true)
@@ -4398,28 +4435,9 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 	}
 
 	if !anyChanged {
-		return fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, or boolean flags")
+		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, --worktree-base-dir, or boolean flags")
 	}
-
-	ctx := context.Background()
-	repo, err := c.UpdateRepo(ctx, req)
-	if err != nil {
-		return fmt.Errorf("update repo: %w", err)
-	}
-
-	fmt.Printf("Repository updated.\n")
-	fmt.Printf("  ID:       %s\n", repo.Id)
-	fmt.Printf("  Name:     %s\n", repo.DisplayName)
-	fmt.Printf("  Strategy: %s\n", repo.MergeStrategy)
-	if repo.SetupScript != nil {
-		fmt.Printf("  Setup:    %s\n", *repo.SetupScript)
-	}
-	fmt.Printf("  Mark ready on green:    %v\n", repo.CanAutoMerge)
-	fmt.Printf("  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
-	fmt.Printf("  Automatic repair:       %v\n", repo.CanAutoRepair)
-	fmt.Printf("  Delete branches:        %v\n", repo.CanAutoDeleteBranches)
-	fmt.Printf("  Keep branches current:  %v\n", repo.ShouldKeepBranchesCurrent)
-	return nil
+	return req, nil
 }
 
 // --- Settings ---

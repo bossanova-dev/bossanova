@@ -31,6 +31,7 @@ Mode-exclusive prose lives in `references/*.md`, loaded **only** on the path tha
 | --------------------------------------- | ----------------------------------------------------------------------------------------- |
 | `references/interactive-mode.md`        | Interactive `/boss-plan` only — Phase 1 confirm loop, design-doc seed, draft resolution   |
 | `references/headless-drafting-brief.md` | Passed (by **path**) to the Phase 2 drafting subagent — never read by the orchestrator    |
+| `references/headless-dispatch.md`       | Non-empty premises — Phase 4 and step 5(f) reconciliation                                 |
 | `references/extension-reviewers.md`     | Phase 3.5 — repo-local `boss-plan-*` extension plan-reviewers (additive; no-op when none) |
 
 Workspace facts (do not re-discover). Load the config once in Phase 0 —
@@ -391,7 +392,7 @@ for the Phase 4 secret gate.
    Unknown top-level keys, a missing `descriptionSummary`, non-boolean `agentFriendly`, a
    non-single-ticket estimate, or an off-contract `descriptionSummary` are all the same SAFE branch:
    `DISPATCH_FAILURE`, no Phase 3.5, no tracker write. Preserve `PREMISES` from the sentinel payload
-   before cleanup; Phase 4 re-verifies those tracker premises immediately before writeback.
+   before cleanup; Phase 4 re-verifies those tracker premises before the gates; step 5(f) re-reads before its save.
 
 ## Phase 2.5 — Epic decomposition (triage = EPIC only)
 
@@ -887,6 +888,27 @@ subagent → validate its envelope → fold or skip), against
 > scratch file. A signed `uploads.linear.app` URL is a carve-out: strip its signature query and keep
 > the unsigned asset path, so the image-parity gate keeps the asset identity.
 
+> **STOP — premise re-verification (mandatory, mechanical, do not skip).** Follow
+> [premise protocol](references/headless-dispatch.md#premise-drift-is-reconciled-not-appended).
+> A pre-dispatch state read is not ground truth for a returned premise; disagreement is not a drafter error.
+>
+> ```bash
+> BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+> PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
+> PREMISES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premise-states.json"
+> PREMISES="${PREMISES:-[]}"
+> printf '%s\n' "$PREMISES" >"$PREMISES_FILE" || exit 1
+> if [ "$PREMISES" = '[]' ]; then
+>   printf '{}\n' >"$LIVE_STATES_FILE" || exit 1
+> fi
+> PREMISE_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE" --annotate .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md --annotate "$PLAN_FILE" 2>&1)"
+> PREMISE_RC=$?
+> ```
+>
+> Non-zero: SAFE branch, no writes; report the reason, discard scratch, exit. Drift continues: the helper writes
+> `- Premise drift: <ticket> was <state at recon>, is now <current state>` plus inline flags.
+> Name drift in Phase 6; `planContract.version` stays unchanged.
+
 > **STOP — image-parity gate (mandatory, mechanical, do not skip).** A rewritten description that
 > silently drops the reporter's screenshots is "worse than none" (the Phase 0 edge rule), and the
 > drafting LLM cannot be trusted to preserve them — so verify parity **mechanically** before any
@@ -968,14 +990,14 @@ subagent → validate its envelope → fold or skip), against
 > placeholder, an unsubstituted `<ATTACHMENT-ID>`-style token, an off-contract heading, and a plan
 > file ending in literal tool-call scaffolding all passed every earlier gate. Verify
 > **mechanically**, reusing that same `$NEW` copy and `PLAN_FILE` — **zero** extra tracker
-> reads. Re-derive the toolbox dir here; blocks inherit nothing:
+> reads. Run from the repo worktree root. Re-derive the toolbox dir here; blocks inherit nothing:
 >
 > ```bash
 > BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 > ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
 > PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
 > PLAN_REJECTED="$PLAN_FILE.rejected"
-> if CONTRACT_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_FILE" 2>&1)"; then
+> if CONTRACT_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_FILE" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)" 2>&1)"; then
 >   :
 > else
 >   printf '%s\n' "$CONTRACT_REPORT" >&2
@@ -1019,26 +1041,6 @@ subagent → validate its envelope → fold or skip), against
 > the heading and its remedy. On non-zero exit take the **SAFE branch**: **no Linear write**, no
 > attachment finalize, a one-line stderr reason carrying the guard's own message, discard the scratch
 > as above, exit non-zero.
-
-> **STOP — premise re-verification (mandatory, mechanical, do not skip).** The plan artifact and
-> description may still be valid while the tracker premises the drafter relied on have moved. The
-> drafting sentinel carries `premises: [{id, state}]`; immediately before the single tracker save,
-> re-read those issue ids through the tracker adapter's `getIssue` capability, build a JSON object of
-> live states, and run:
->
-> ```bash
-> BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-> PREMISES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premise-states.json"
-> PREMISE_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE" 2>&1)"
-> PREMISE_RC=$?
-> ```
->
-> An empty `premises` array skips the reads. A `premise-limit` or unreadable premise is a SAFE
-> branch before tracker writeback. A changed state does **not** abort: append an orchestrator-owned
-> `- Premise drift: <ticket> was <state at recon>, is now <current state>` line parsed from
-> `PREMISE_REPORT` under `## Planning` before the save, and name that annotation in the Phase 6
-> report. This warning line is outside the description-section contract; `planContract.version` stays
-> unchanged.
 
 1. Finalize the native tracker attachment before tracker writeback (failure: no plan metadata/state write). Follow
    [`references/plan-storage.md`](references/plan-storage.md). Set
@@ -1095,20 +1097,13 @@ subagent → validate its envelope → fold or skip), against
    Every decision comes from `$BOSS_PLAN_TOOLBOX/plan-deps-lib.mjs`; this step is I/O only. Never
    re-decide an edge in prose.
 
-   a. **Fetch.** Op `selectPlanned` (planned — `trackerConfigFor(config).team`, `limit=250` — then
-   in-progress and in-review) with an **explicit field list**: `description, labels, priority,
-createdAt` plus the adapter's workflow-state/status fields (`stateName`/`stateType`,
-   `state.{name,type}`, `status`/`statusType`, or equivalent) and `parentId`, written on the subject and
-   every candidate (`null` when none). The default field set omits those, and an all-empty-description run returns
-   zero links with no error, indistinguishable from a clean result. Prefilter on title + labels
-   before reading 250 descriptions — but that prefilter is a **context-scale measure only, never an
-   overlap decision**. Keep it inclusive: a candidate whose title and labels look unrelated can still
-   list your files under `## Key changes`, and dropping it here is the missed-prerequisite defect
-   re-entering through the filter instead of through fuzzy search. When a candidate is arguable, read
-   its description and let the library decide. Then read this ticket's declared relations (op
-   `getIssue` with relations) and fetch each related id **by id, regardless of state** — `selectPlanned` never
-   returns a cleared ticket, so that is the only path by which a completed or canceled prerequisite
-   is considered at all. Cache to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json`.
+   a. **Fetch.** Read this ticket with op `getIssue` with relations. Run
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-candidates --out-file ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json" --id <each declared related id>`:
+   configured planned, in-progress and in-review candidates, plus every `--id` regardless of state.
+   Read the receipt only; bodies are never read into the orchestrator's context. Judge from
+   `jq -r '.[] | [.identifier, .title, .stateName] | @tsv' <candidates-path>`
+   and an arguable record's `.keyChanges`. Non-zero exit, including missing capability or credential:
+   _could not evaluate_, stop linking. Never rebuild this file through MCP or Write.
 
    b. **Judge logical dependency** per candidate (does either ticket need the other's feature? the
    one call no function can make) and pass it as `logicalDependencies[<candidate id>] = {direction,
@@ -1121,33 +1116,30 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    and must never decide overlap** — the oracle is each candidate's `## Key changes` section, or its
    whole description when it has none. Feed those entries in **verbatim**: overlap is
    containment-based, so coarsening `services/x/internal/views/y.go` to `services/x` before the scan
-   manufactures a blocking edge against work neither ticket touches.
+   manufactures a blocking edge against work neither ticket touches. Key changes come from
+   `candidates.json` by code. Never restate, summarise or coarsen them into `deps-in.json`; a null
+   `keyChanges` uses the whole description in the library.
 
-   c. **Classify once.** Build `subject`, `candidates`, `declaredRelatedIds`, `logicalDependencies`,
+   c. **Classify once.** Build `subject`, `declaredRelatedIds`, `logicalDependencies`,
    `moduleRoots`, `repoWideTokens`, `areaAliases` (these three default from `.boss-skills.json`
    `planDependencies`, `epicLabel` and `stateRoles` from tracker config; payload values extend
    them). `repoWideTokens` EXTENDS the shipped suppression defaults (a token carrying a slash
    suppresses everything beneath it), and `areaAliases` maps a path onto the generated mirrors
-   of it. `moduleRoots` is this repo's top-level module/package/`.dotted` names: area extraction
-   drops every slash-free token without it, so a plan whose `## Key changes` names bare module
-   names contributes no areas and its overlaps are missed in silence — the missed-prerequisite
-   defect re-entering through the glue.
+   of it. Run from the repo worktree root; the block unions tracked HEAD roots with configured/input roots.
    `subject` needs the SAME fields as a candidate, including workflow state/status: it is blocked on
    inbound edges and blocks outbound ones, so missing state downgrades **every** edge rather than
-   some. **Write that payload
+   some. Use the parent's identifier for `subject.parentId`, null when none. **Write that payload
    to this run's declared dependency-scan input** — `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json`,
-   the `deps-input` family — rather than to a name you invent; the block does not create the file,
-   because an empty `mktemp` file parses as nothing and throws. It refuses a defective payload
-   (`validateDependencyScanInput`) before classifying, and prints `subjectAreas`, the unresolved
-   tokens and the verdict to stderr **before any edge is written**; read that line first.
+   the `deps-input` family — rather than to a name you invent; the block reads this file and refuses defective input
+   (`validateDependencyScanInput`) before classifying. It prints `subjectAreas`, unresolved
+   tokens, `referenced` and the verdict to stderr **before any edge is written**; read that line first.
 
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    DEPS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json"
-   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=d.withScanDefaults(g,JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});const v=d.validateDependencyScanInput(i);if(!v.ok){for(const f of v.defects)console.error(f.code,f.id,f.remedy);process.exitCode=1;return}const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));const r=d.planDependencyEdges(i),V=d.dependencyScanVerdict(r);console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved)+" candidatesWithoutAreas "+r.candidatesWithoutAreas+" "+V.verdict+" compared="+V.compared+" edges="+V.edges+" "+V.reasons);console.log(JSON.stringify({...r,verdict:V}))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
-   # Removing it here keeps the scan's input from outliving the scan; it is inside this run's
-   # scratch directory either way, so an abort between the write and this line still leaves it
-   # for Phase 5's single `rm -rf` rather than stranding a file nothing names.
+   CANDIDATES=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json"
+   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),p=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));if(Object.hasOwn(p,"candidates"))throw Error("candidates must come from file");const rows=JSON.parse(require("node:fs").readFileSync(process.argv[2],"utf8"));if(!Array.isArray(rows))throw Error("candidate file must be an array");const roots=require("node:child_process").execFileSync("git",["ls-tree","--name-only","HEAD"],{encoding:"utf8"}).trim().split("\n").filter(Boolean),i=d.withScanDefaults(g,{...p,candidates:rows});i.moduleRoots=[...new Set([...i.moduleRoots,...roots])];const a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});const v=d.validateDependencyScanInput(i);if(!v.ok){for(const f of v.defects)console.error(f.code,f.id,f.remedy);process.exitCode=1;return}const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));const r=d.planDependencyEdges(i),V=d.dependencyScanVerdict(r);console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved)+" referenced "+JSON.stringify(s.referenced)+" candidatesWithoutAreas "+r.candidatesWithoutAreas+" "+V.verdict+" compared="+V.compared+" edges="+V.edges+" "+V.reasons);console.log(JSON.stringify({...r,verdict:V}))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN" "$CANDIDATES"
+   # Remove the consumed scan input.
    rm -f "$DEPS_IN"
    ```
 
@@ -1167,14 +1159,16 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    - `questions[]` → record under `## Open Questions` and add `agent-question`. Headless never asks;
      interactive mode may ask via AskUserQuestion.
    - `skipped[]` `expandChildren: true` → an epic parent, which never produces a PR of its own: fetch
-     its active children and re-run (c) with those as candidates. Re-run at most twice, and add every
+     its active child ids (list op with parentId), add them as `--id` to (a), then re-run (c). Never
+     use listing descriptions. Re-run at most twice, and add every
      parent id you have already expanded to `excludeIds`: the library's depth cap bounds ONE call, so
      a re-run loop that resets it walks a malformed parent/child graph forever.
-   - `skipped[]` `reason: 'declared-related-unresolved'` → fetch that id and re-run (c), or record an
+   - `skipped[]` `reason: 'declared-related-unresolved'` → re-run (a) with that `--id`, then (c), or record an
      Open Question. Never drop it silently.
    - verdict `could-not-evaluate` → report _could not evaluate_, never _no dependencies_. On
-     `subject-unresolved-areas`, per unresolved token: only if its leading segment is a source root, declare it, re-run (c);
-     else (a root file, `origin/main`, `../x`) hand-compare under `## Planning`.
+     `subject-unresolved-areas`, per unresolved token: declare a root file or top-level directory in `moduleRoots`, re-run (c);
+     hand-compare non-repo tokens (`origin/main`, `../x`) under `## Planning`.
+   - A `referenced` path this ticket edits needs its own leading bullet; re-run (c).
 
    e. **Cycle safety — after (d)'s downgrade, over blocking writes only.** For each surviving
    `write`, op `getIssue` with relations on both ids; skip that write when the opposite relation
@@ -1201,15 +1195,34 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    one side landing is not evidence the edge did. A missing edge is **recorded** under `## Planning`,
    never re-written — an append that already landed would duplicate it.
 
-   f. Record what step 5 found — **only when stdout's `verdict.recordToDescription` is true**;
-   otherwise the verdict goes to the Phase 6 report only.
+   f. Record what step 5 found — **only when stdout's `verdict.recordToDescription` is true or the second premise pass changed the read-back**.
+   Before deciding whether to save, when premises are non-empty, read the stored description on the
+   run's route (`read-description`) into `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md`, then re-read the premise ids via
+   `getIssue`, overwriting `<ISSUE-ID>.premise-states.json` with fresh states. Run the second premise pass:
+
+   ```bash
+   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+   PREMISES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.premise-states.json"
+   FINAL=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md"
+   PREMISE_BEFORE="$(shasum -a 256 "$FINAL")" || exit 1
+   PREMISE_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE" --annotate .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-final.md 2>&1)"
+   PREMISE_RC=$?
+   PREMISE_CHANGED=0
+   if [ "$PREMISE_RC" = 0 ]; then
+     PREMISE_AFTER="$(shasum -a 256 "$FINAL")" || exit 1
+     [ "$PREMISE_BEFORE" = "$PREMISE_AFTER" ] || PREMISE_CHANGED=1
+   fi
+   ```
+
+   Non-zero: stop writes, retain scratch, route to step 6 against step 4's intended bytes; report
+   the premise error and exit after verification. No premises: `PREMISE_CHANGED=0`. Neither trigger:
+   report only. Do not re-annotate the plan attachment.
    Step 4 saved the description first, so send a second tracker save with `id` + `description`
    (adding `labels` only to carry `agent-question`, when (d) or (e2) produced a question — union it into the
    set Step 4 saved, because `labels` **replaces** the whole set; this is the run's last save, so a
-   label deferred past it is a label never applied): compose it from a **fresh read of the stored
-   description**, never by re-sending Step 4's bytes: the tracker may have renormalized that write,
-   and re-sending reverts it. Read it on the run's route (`read-description`) into
-   `<ISSUE-ID>.image-guard-final.md`, edit it in place, and send it with `write-description`. Put (d)'s notes and questions under the sections (d) named, each
+   label deferred past it is a label never applied): compose it from the **fresh read of the stored
+   description** above (fetch now if no premises), keeping annotations, never by re-sending Step 4's bytes: the tracker may have renormalized that write,
+   and re-sending reverts it. Edit that read-back in place and send it with `write-description`. Put (d)'s notes and questions under the sections (d) named, each
    bullet **directly after the last existing bullet** of its section, with no blank line introduced
    before it and the blank line before the next heading left in place, plus — only when ≥1
    relation was written — `- Dependencies: blocks <BLOCKED-ID>; blocked by <BLOCKER-ID>` under
@@ -1220,8 +1233,8 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    Step 4's other fields and (d)'s relations intact.
 
    After this save the description and the plan attachment **legitimately diverge** at `## Planning`:
-   5(f) mutates the description only, so on every run that writes relations the attachment still
-   holds the pre-append bytes. That divergence is expected behaviour, not a gate failure — never
+   5(f) mutates the description only; relation notes and late premise reconciliation leave the attachment
+   holding the first-pass bytes. That divergence is expected behaviour, not a gate failure — never
    supersede a correct attachment for cosmetic parity, and name it in the Phase 6 report so a reader
    meeting the difference does not read it as drift.
 
@@ -1258,6 +1271,7 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
      echo "write-back verification failed (verdict above) — the description is ALREADY stored; do NOT rewrite it" >&2
      exit 1
    fi
+   [ "${PREMISE_RC:-0}" = 0 ] || { echo "$PREMISE_REPORT" >&2; exit "$PREMISE_RC"; }
    ```
 
    The helper prints one machine-readable `writeback-verdict: <verdict>` line plus a human line, and

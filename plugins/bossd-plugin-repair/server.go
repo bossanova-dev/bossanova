@@ -1074,8 +1074,7 @@ func (m *repairMonitor) waitForPostRepairAssessment(
 		// applies on a clean status, since that is the one case the base
 		// assessment would otherwise miss (a green PR with a fresh comment that
 		// the host has not flipped to REJECTED).
-		if sess != nil &&
-			(assessment.Status == postRepairStatusClean || assessment.Status == postRepairStatusNeedsRepair) {
+		if assessment.Status == postRepairStatusClean || assessment.Status == postRepairStatusNeedsRepair {
 			info := sessionInfo{
 				RepoName:      sess.GetRepoDisplayName(),
 				SessionTitle:  sess.GetTitle(),
@@ -1111,13 +1110,7 @@ func (m *repairMonitor) waitForPostRepairAssessment(
 				Bool("has_failures", assessment.HasFailures).
 				Str("head_sha", assessment.HeadSHA).
 				Msg("post-repair assessment still matches pre-repair input, continuing wait")
-			timer := time.NewTimer(pollInterval)
-			select {
-			case <-waitCtx.Done():
-				timer.Stop()
-				return cancelledAssessment(waitCtx.Err())
-			case <-timer.C:
-			}
+			fallthrough
 		case postRepairStatusPending:
 			timer := time.NewTimer(pollInterval)
 			select {

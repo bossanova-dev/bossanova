@@ -22,7 +22,6 @@ import {
   COULD_NOT_EVALUATE_REASONS,
   DEFAULT_CANCELED_STATE_TYPES,
   DEFAULT_CLEARED_STATE_TYPES,
-  DEFAULT_PRIORITY_ORDER,
   DEPENDENCY_REASONS,
   areasOverlap,
   classifyDependencyEdge,
@@ -97,8 +96,9 @@ function classify(over = {}) {
   return classifyDependencyEdge({
     subject: subject(),
     candidate: candidate(),
-    // A same FILE on both sides: only that overlap may block (BOS-1337). A bare
-    // shared directory is `directory-overlap`, pinned by its own tests below.
+    // A same FILE on both sides. An overlap never blocks: it is a non-blocking
+    // `file-overlap` (or `directory-overlap`) relation. Blocking edges need a
+    // `logicalDependency` verdict, which the tests that exercise them pass.
     subjectAreas: ['app/api/x.go'],
     candidateAreas: ['app/api/x.go'],
     stateRoles: STATE_ROLES,
@@ -135,34 +135,6 @@ test('the inlined cleared/canceled split still reassembles into the original cle
   assert.ok(
     !DEFAULT_CANCELED_STATE_TYPES.includes('completed'),
     'the canceled set must genuinely exclude completed',
-  )
-})
-
-test('the inlined DEFAULT_PRIORITY_ORDER still matches the scheduler ranking it copies', () => {
-  // dag-scheduler keeps its PRIORITY_ORDER private, so the agreement is asserted
-  // BEHAVIOURALLY: identical createdAt isolates priority as the only sort input.
-  const stamp = '2026-01-01T00:00:00.000Z'
-  const nodes = [4, 0, 2, 1, 3].map((priority) => ({
-    id: `n${priority}`,
-    priority,
-    createdAt: stamp,
-    blockedBy: [],
-  }))
-  const ordered = readyTickets(buildGraph(nodes), {
-    merged: new Set(),
-    failed: new Set(),
-    inFlight: new Set(),
-    externallyCleared: new Set(),
-  }).map((node) => node.priority)
-  assert.deepEqual(
-    ordered,
-    [...DEFAULT_PRIORITY_ORDER],
-    'the copy in plan-deps-lib must rank exactly as the scheduler does, or the same two tickets get opposite orderings depending on which module decided',
-  )
-  assert.notDeepEqual(
-    [...DEFAULT_PRIORITY_ORDER],
-    [0, 1, 2, 3, 4],
-    'the order must NOT be plain ascending — that is the naive a.priority - b.priority ordering the whole rung exists to avoid',
   )
 })
 
@@ -1073,10 +1045,12 @@ test('a file-disjoint pair produces no edge even when the candidate is far more 
   })
   assert.equal(
     overlapping.edge,
-    'blockedBy',
-    'the same pair WITH an overlap must still produce an edge',
+    'relatedTo',
+    'the same pair WITH an overlap is recorded as a non-blocking relation',
   )
   assert.equal(overlapping.basis, 'overlap')
+  assert.equal(overlapping.reason, 'file-overlap')
+  assert.equal(overlapping.write, null, 'an overlap never writes a blocking edge')
 })
 
 test('an arealess side reports no-areas, distinct from no-overlap', () => {
@@ -1099,6 +1073,7 @@ test('an outbound edge onto an inProgress candidate downgrades; the inbound edge
   const outbound = classify({
     subject: subject({ priority: 1 }),
     candidate: candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
+    logicalDependency: { direction: 'blocks' },
   })
   assert.equal(outbound.edge, 'relatedTo')
   assert.equal(outbound.reason, 'downgraded-candidate-started')
@@ -1111,6 +1086,7 @@ test('an outbound edge onto an inProgress candidate downgrades; the inbound edge
   const inbound = classify({
     subject: subject({ priority: 3 }),
     candidate: candidate({ priority: 1, stateName: 'In Progress', stateType: 'started' }),
+    logicalDependency: true,
   })
   assert.equal(
     inbound.edge,
@@ -1124,6 +1100,7 @@ test('an inReview candidate downgrades exactly as an inProgress one does', () =>
   const review = classify({
     subject: subject({ priority: 1 }),
     candidate: candidate({ priority: 3, stateName: 'In Review', stateType: 'started' }),
+    logicalDependency: { direction: 'blocks' },
   })
   assert.equal(review.edge, 'relatedTo')
   assert.equal(review.reason, 'downgraded-candidate-started')
@@ -1131,6 +1108,7 @@ test('an inReview candidate downgrades exactly as an inProgress one does', () =>
   const planned = classify({
     subject: subject({ priority: 1 }),
     candidate: candidate({ priority: 3 }),
+    logicalDependency: { direction: 'blocks' },
   })
   assert.equal(
     planned.edge,
@@ -1144,6 +1122,7 @@ test('a started SUBJECT downgrades an inbound edge — the rung is symmetric', (
   const started = classify({
     subject: subject({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
     candidate: candidate({ priority: 1 }),
+    logicalDependency: true,
   })
   assert.equal(
     started.edge,
@@ -1156,6 +1135,7 @@ test('a started SUBJECT downgrades an inbound edge — the rung is symmetric', (
   const plannedSubject = classify({
     subject: subject({ priority: 3 }),
     candidate: candidate({ priority: 1 }),
+    logicalDependency: true,
   })
   assert.equal(
     plannedSubject.edge,
@@ -1197,6 +1177,7 @@ test('an unrecognized state name degrades rather than betting a blocking edge on
   const unknown = classify({
     subject: subject({ priority: 1 }),
     candidate: candidate({ priority: 3, stateName: 'Shipping Soon' }),
+    logicalDependency: { direction: 'blocks' },
   })
   assert.ok(
     !('Shipping Soon' in STATE_ROLES),
@@ -1273,6 +1254,7 @@ test('an issue carrying no state field at all downgrades on unknown state', () =
       createdAt: '2026-01-02T00:00:00.000Z',
       labels: [],
     },
+    logicalDependency: true,
   })
   assert.equal(noState.edge, 'relatedTo')
   assert.equal(noState.reason, 'downgraded-unknown-state')
@@ -1298,7 +1280,8 @@ test('a cleared candidate with an overlap basis is dropped quietly', () => {
   )
 
   const open = classify({ subject: subject({ priority: 1 }) })
-  assert.equal(open.edge, 'blocks', 'the same fixture while still open must produce an edge')
+  assert.equal(open.edge, 'relatedTo', 'the same fixture while still open is a relation')
+  assert.equal(open.reason, 'file-overlap')
 })
 
 test('a COMPLETED candidate with a logical basis reports the prerequisite as satisfied', () => {
@@ -1346,7 +1329,7 @@ test('a CANCELED logical prerequisite is a warning, never a satisfaction', () =>
   )
 })
 
-test('rung 4 precedes rung 5 — a cleared candidate never reaches orientation', () => {
+test('rung 4 precedes the overlap rung — a cleared candidate leaves no relation', () => {
   const stamp = '2026-03-03T00:00:00.000Z'
   const cleared = classify({
     subject: subject({ priority: 2, createdAt: stamp }),
@@ -1360,7 +1343,7 @@ test('rung 4 precedes rung 5 — a cleared candidate never reaches orientation',
   assert.equal(
     cleared.reason,
     'candidate-cleared',
-    'equal priority and equal createdAt would be ambiguous-orientation if the ladder ran orientation first',
+    'the cleared rung must run before the overlap rung, or a merged ticket would still be recorded as a relation',
   )
   assert.equal(cleared.question, null)
 
@@ -1370,8 +1353,8 @@ test('rung 4 precedes rung 5 — a cleared candidate never reaches orientation',
   })
   assert.equal(
     open.reason,
-    'ambiguous-orientation',
-    'non-vacuity: the identical fixture WITHOUT the cleared state must genuinely reach orientation and be ambiguous',
+    'file-overlap',
+    'non-vacuity: the identical fixture WITHOUT the cleared state genuinely reaches the overlap rung',
   )
 })
 
@@ -1412,7 +1395,7 @@ test('an undefined epicLabel treats NO candidate as epic', () => {
     'epic-parent',
     'an unconfigured epic label must mean "no candidate is epic", never "every candidate is" — the latter silently produces zero edges for the whole run',
   )
-  assert.equal(result.edge, 'blocks')
+  assert.equal(result.edge, 'relatedTo')
 })
 
 test('an epic SUBJECT short-circuits to zero edges', () => {
@@ -1570,11 +1553,11 @@ test('same-epic siblings and the epic parent are planning notes, not external ed
 })
 
 test('an unrecognized state on the BLOCKER downgrades too, not only on the blocked side', () => {
-  // The subject outranks the candidate, so the subject is the BLOCKER and the
-  // candidate is the blocked side. Only the blocker's state is unmappable.
+  // The verdict makes the subject the BLOCKER and the candidate the blocked side. Only the blocker's state is unmappable.
   const classified = classify({
     subject: subject({ priority: 1, stateName: 'Bikeshedding' }),
     candidate: candidate({ priority: 3 }),
+    logicalDependency: { direction: 'blocks' },
   })
   assert.equal(
     classified.reason,
@@ -1598,114 +1581,29 @@ test('an unrecognized state on the BLOCKER downgrades too, not only on the block
 // Rung 5 — orientation
 // ---------------------------------------------------------------------------
 
-test('orientation follows the tracker priority order, not a numeric subtraction', () => {
-  const strongerSubject = classify({
-    subject: subject({ priority: 2 }),
-    candidate: candidate({ priority: 0 }),
-  })
-  assert.equal(
-    strongerSubject.edge,
-    'blocks',
-    'priority 2 outranks priority 0 (none); a plain a.priority - b.priority makes 0 look strongest and inverts this',
-  )
-  assert.deepEqual(strongerSubject.write, { id: 'uuid-candidate', blockedBy: ['uuid-subject'] })
-
-  const weakerSubject = classify({
-    subject: subject({ priority: 0 }),
-    candidate: candidate({ priority: 4 }),
-  })
-  assert.equal(
-    weakerSubject.edge,
-    'blockedBy',
-    'priority 4 (low) still outranks 0 (none) — the second assertion a numeric compare fails',
-  )
-  assert.deepEqual(weakerSubject.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
-})
-
-test('the {value, name} priority form ranks identically to the bare number', () => {
-  const bare = classify({
-    subject: subject({ priority: 2 }),
-    candidate: candidate({ priority: 0 }),
-  })
-  const object = classify({
-    subject: subject({ priority: { value: 2, name: 'High' } }),
-    candidate: candidate({ priority: { value: 0, name: 'No priority' } }),
-  })
-  assert.equal(object.edge, bare.edge)
-  assert.equal(object.reason, 'oriented-by-priority')
-  assert.deepEqual(
-    object.write,
-    bare.write,
-    'an adapter that returns the object form must not silently reorder every edge in the plan',
-  )
-})
-
-test('equal priority is broken by the older createdAt', () => {
-  const olderCandidate = classify({
-    subject: subject({ priority: 2, createdAt: '2026-05-02T00:00:00.000Z' }),
-    candidate: candidate({ priority: 2, createdAt: '2026-05-01T00:00:00.000Z' }),
-  })
-  assert.equal(olderCandidate.edge, 'blockedBy')
-  assert.equal(olderCandidate.reason, 'oriented-by-age')
-
-  const newerCandidate = classify({
-    subject: subject({ priority: 2, createdAt: '2026-05-01T00:00:00.000Z' }),
-    candidate: candidate({ priority: 2, createdAt: '2026-05-02T00:00:00.000Z' }),
-  })
-  assert.equal(newerCandidate.edge, 'blocks', 'the tie-break must be directional, not constant')
-})
-
-test('a genuinely balanced pair yields ambiguous-orientation deterministically, with a question', () => {
-  const balanced = () =>
-    classify({
-      subject: subject({ priority: 2, createdAt: '2026-05-01T00:00:00.000Z' }),
-      candidate: candidate({ priority: 2, createdAt: '2026-05-01T00:00:00.000Z' }),
-    })
-  const first = balanced()
-  assert.equal(first.edge, 'none')
-  assert.equal(first.reason, 'ambiguous-orientation')
-  assert.equal(first.write, null)
-  assert.equal(
-    first.note,
-    null,
-    'an ambiguous orientation is a question, not a note — they route to different sections',
-  )
-  assert.equal(first.question.destination, 'open-questions')
-  assert.ok(first.question.text.includes('TCK-2'))
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    assert.deepEqual(
-      balanced(),
-      first,
-      'repeated calls must not flip a coin — epic children share a creation batch',
-    )
-  }
-})
-
-test('an unparseable createdAt is ambiguous, not an arbitrary edge', () => {
-  const result = classify({
-    subject: subject({ priority: 2, createdAt: 'sometime last week' }),
-    candidate: candidate({ priority: 2, createdAt: '2026-05-01T00:00:00.000Z' }),
-  })
-  assert.equal(result.reason, 'ambiguous-orientation')
-  assert.ok(
-    result.question,
-    'an unusable timestamp must surface as a question rather than silently pick a side',
-  )
-})
-
 // ---------------------------------------------------------------------------
 // Every result is writable as returned
 // ---------------------------------------------------------------------------
 
 test('write intent is present exactly on blocking outcomes and names the blocked side', () => {
   const rows = [
-    classify({ subject: subject({ priority: 1 }), candidate: candidate({ priority: 3 }) }),
-    classify({ subject: subject({ priority: 3 }), candidate: candidate({ priority: 1 }) }),
+    classify({
+      subject: subject({ priority: 1 }),
+      candidate: candidate({ priority: 3 }),
+      logicalDependency: { direction: 'blocks' },
+    }),
+    classify({
+      subject: subject({ priority: 3 }),
+      candidate: candidate({ priority: 1 }),
+      logicalDependency: true,
+    }),
     classify({
       subject: subject({ priority: 1 }),
       candidate: candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
+      logicalDependency: { direction: 'blocks' },
     }),
     classify({ subjectAreas: ['app/api'], candidateAreas: ['app/web'] }),
+    classify({}),
   ]
   for (const row of rows) {
     if (row.edge === 'blockedBy' || row.edge === 'blocks') {
@@ -1741,18 +1639,16 @@ test('an id-less side stops the edge instead of emitting an unwritable write', (
     stateType: 'unstarted',
     labels: [],
   }
-  for (const [subjectPriority, candidatePriority] of [
-    [3, 1],
-    [1, 3],
-  ]) {
+  for (const logicalDependency of [true, { direction: 'blocks' }]) {
     const row = classify({
-      subject: subject({ priority: subjectPriority }),
-      candidate: { ...nameless, priority: candidatePriority },
+      subject: subject(),
+      candidate: nameless,
+      logicalDependency,
     })
     assert.equal(row.edge, 'none', 'an unnameable side must not produce a blocking edge')
     assert.equal(row.write, null)
     assert.equal(row.reason, 'unidentifiable-issue')
-    assert.equal(row.basis, 'overlap', 'the basis that WAS established is still reported')
+    assert.equal(row.basis, 'logical', 'the basis that WAS established is still reported')
     assert.equal(
       row.note.severity,
       'warning',
@@ -1764,6 +1660,7 @@ test('an id-less side stops the edge instead of emitting an unwritable write', (
   const writable = classify({
     subject: subject({ priority: 3 }),
     candidate: candidate({ priority: 1 }),
+    logicalDependency: true,
   })
   assert.equal(writable.edge, 'blockedBy')
   assert.deepEqual(writable.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
@@ -1833,6 +1730,7 @@ test('a run where every compared pair downgrades on unknown state gets an aggreg
         areas: ['app/api/x.go'],
       },
     ],
+    logicalDependencies: { 'TCK-A': true, 'TCK-B': true },
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
   })
@@ -1855,6 +1753,7 @@ test('a run where every compared pair downgrades on unknown state gets an aggreg
       },
       { ...candidate({ id: 'b', identifier: 'TCK-B', priority: 1 }), areas: ['app/api/x.go'] },
     ],
+    logicalDependencies: { 'TCK-A': true, 'TCK-B': true },
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
   })
@@ -1920,21 +1819,19 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
         logicalDependency: true,
       }),
       classify({
-        subject: subject({ priority: 2, createdAt: '2026-05-02T00:00:00.000Z' }),
-        candidate: candidate({ priority: 2, createdAt: '2026-05-01T00:00:00.000Z' }),
-      }),
-      classify({ subject: subject({ priority: 2 }), candidate: candidate({ priority: 2 }) }),
-      classify({
         subject: subject({ priority: 1 }),
         candidate: candidate({ priority: 3, ...started }),
+        logicalDependency: { direction: 'blocks' },
       }),
       classify({
         subject: subject({ priority: 3, ...started }),
         candidate: candidate({ priority: 1 }),
+        logicalDependency: true,
       }),
       classify({
         subject: subject({ priority: 1 }),
         candidate: candidate({ priority: 3, stateName: '?' }),
+        logicalDependency: { direction: 'blocks' },
       }),
       classify({ candidate: candidate({ ...started, landed: { evidence: 'abc123' } }) }),
       classify({ subjectAreas: ['app/api'], candidateAreas: ['app/api/x.go'] }),
@@ -2091,24 +1988,6 @@ test('edges are ordered by candidate identifier regardless of input order', () =
   )
 })
 
-test('a question surfaces in questions and never in notes', () => {
-  const stamp = '2026-06-06T00:00:00.000Z'
-  const result = planDependencyEdges({
-    subject: { ...subject({ priority: 2, createdAt: stamp }), areas: ['app/api/x.go'] },
-    candidates: [{ ...candidate({ priority: 2, createdAt: stamp }), areas: ['app/api/x.go'] }],
-    stateRoles: STATE_ROLES,
-    epicLabel: 'Epic',
-  })
-  assert.equal(result.questions.length, 1)
-  assert.equal(result.questions[0].destination, 'open-questions')
-  assert.equal(
-    result.notes.length,
-    0,
-    'questions route to the Open Questions section and an agent-question label — a different destination from notes, so mixing them mis-files the output',
-  )
-  assert.equal(result.skipped[0].reason, 'ambiguous-orientation')
-})
-
 // ---------------------------------------------------------------------------
 // Direction, repo-wide asymmetry, write-guard order, declared reconciliation
 // ---------------------------------------------------------------------------
@@ -2133,14 +2012,14 @@ test('a logical prerequisite keeps its direction whatever the priority order say
   assert.equal(oriented.reason, 'oriented-by-logical')
   assert.deepEqual(oriented.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
 
-  // Non-vacuity: the identical fixture on an OVERLAP basis genuinely orients the
-  // other way, so the assertion above tracks the direction and not the fixture.
-  const byPriority = classify({
+  // Non-vacuity: the identical fixture on an OVERLAP basis writes no blocking edge at
+  // all, so the assertion above comes from the verdict and not the fixture.
+  const byOverlap = classify({
     subject: subject({ priority: 1 }),
     candidate: candidate({ priority: 4 }),
   })
-  assert.equal(byPriority.edge, 'blocks')
-  assert.equal(byPriority.reason, 'oriented-by-priority')
+  assert.equal(byOverlap.edge, 'relatedTo')
+  assert.equal(byOverlap.write, null)
 
   // The reverse reading is available, and saying it explicitly is the ONLY way to
   // get it — a direction is never inferred from priority or age.
@@ -2222,6 +2101,7 @@ test('a downgrade whose side carries no id stops instead of returning an unwrita
       stateType: 'unstarted',
       labels: [],
     },
+    logicalDependency: true,
   })
   assert.equal(
     idless.reason,
@@ -2233,6 +2113,7 @@ test('a downgrade whose side carries no id stops instead of returning an unwrita
   const named = classify({
     subject: subject({ priority: 3, ...started }),
     candidate: candidate({ priority: 1 }),
+    logicalDependency: true,
   })
   assert.equal(
     named.edge,
@@ -2349,13 +2230,13 @@ test('caller-supplied tuning that is not a list degrades instead of throwing', (
     subjectAreas: ['app/api/x.go'],
     candidateAreas: ['app/api/x.go'],
     stateRoles: STATE_ROLES,
-    priorityOrder: null,
     clearedStateTypes: undefined,
     canceledStateTypes: 'completed',
+    logicalDependency: { direction: 'blocks' },
   })
   assert.equal(
     decided.reason,
-    'oriented-by-priority',
+    'oriented-by-logical',
     'the header promises nothing here throws; a malformed tuning list must fall back to the default, not abort the run',
   )
 })
@@ -2606,7 +2487,7 @@ test('BOS-1327 shared: every classifier result carries a shared array', () => {
     candidateAreas: ['app/api/x.go'],
   })
   assert.deepEqual(overlapping.shared, ['app/api/x.go'])
-  assert.notEqual(overlapping.write, null)
+  assert.equal(overlapping.edge, 'relatedTo')
   for (const row of [
     classify({ subjectAreas: ['app/api'], candidateAreas: ['app/web'] }),
     classify({ subject: subject({ labels: ['Epic'] }) }),
@@ -2806,6 +2687,7 @@ test('BOS-1327 verdict: each outcome, and could-not-evaluate outranks everything
   const linked = planDependencyEdges({
     subject: { ...subject(), areas: ['app/api/x.go'] },
     candidates: [{ ...candidate({ priority: 1 }), areas: ['app/api/x.go'] }],
+    logicalDependencies: { 'TCK-2': true },
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
   })
@@ -2817,36 +2699,14 @@ test('BOS-1327 verdict: each outcome, and could-not-evaluate outranks everything
     reasons: [],
     recordToDescription: true,
   })
-  const related = planDependencyEdges({
-    subject: { ...subject(), areas: ['app/api/x.go'] },
-    candidates: [
-      {
-        ...candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
-        areas: ['app/api/x.go'],
-      },
-    ],
-    stateRoles: STATE_ROLES,
-    epicLabel: 'Epic',
-    priorityOrder: [1, 2, 3, 4, 0],
-  })
-  // Equal priority and equal createdAt would be ambiguous; make the subject the blocker.
+  // A plain file overlap is a non-blocking relation, recorded in the description.
   const relatedOnly = planDependencyEdges({
     subject: { ...subject({ priority: 1 }), areas: ['app/api/x.go'] },
-    candidates: [
-      {
-        ...candidate({ priority: 3, stateName: 'In Progress', stateType: 'started' }),
-        areas: ['app/api/x.go'],
-      },
-    ],
+    candidates: [{ ...candidate({ priority: 3 }), areas: ['app/api/x.go'] }],
     stateRoles: STATE_ROLES,
     epicLabel: 'Epic',
   })
-  assert.equal(related.edges.length, 0, 'the balanced pair asks a question instead')
-  assert.equal(
-    dependencyScanVerdict(related).recordToDescription,
-    true,
-    'a question earns the save',
-  )
+  assert.equal(dependencyScanVerdict(relatedOnly).recordToDescription, true)
   assert.equal(dependencyScanVerdict(relatedOnly).verdict, 'related-only')
   assert.equal(dependencyScanVerdict(relatedOnly).relatedTo, 1)
   // Never throws on a result it cannot read; an unreadable result could not evaluate.
@@ -2953,7 +2813,7 @@ test('BOS-1327 integration: validated payload -> edges -> verdict -> transitive 
       areas: areas(entry.description).areas,
     })),
   }
-  const result = planDependencyEdges(withAreas)
+  const result = planDependencyEdges({ ...withAreas, logicalDependencies: { 'TCK-2': true } })
   assert.equal(dependencyScanVerdict(result).verdict, 'linked')
   const writes = result.edges.map((entry) => entry.write).filter(Boolean)
   assert.deepEqual(writes, [{ id: 'uuid-subject', blockedBy: ['uuid-candidate'] }])
@@ -3048,18 +2908,14 @@ test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every di
     assert.ok(row.note.text.includes(`(shared: ${shared})`), `${label}: the note names shared`)
     assert.ok(row.note.text.includes('TCK-1') && row.note.text.includes('TCK-2'), label)
   }
-  // Non-vacuity: the pre-change shape (same fixture, age-ordered) oriented a blocking edge.
-  const byAge = classify({
-    subject: subject({ createdAt: '2026-05-02T00:00:00.000Z' }),
-    candidate: candidate({ createdAt: '2026-05-01T00:00:00.000Z' }),
+  // Non-vacuity: the same file named on both sides is a different reason, still non-blocking.
+  const sameFile = classify({
     subjectAreas: ['services/bosso/internal/server/billing.go'],
     candidateAreas: ['services/bosso/internal/server/billing.go'],
   })
-  assert.equal(byAge.reason, 'oriented-by-age', 'a same-file pair still orients by age')
-  assert.deepEqual(byAge.write, { id: 'uuid-subject', blockedBy: ['uuid-candidate'] })
-  const byPriority = classify({ candidate: candidate({ priority: 1 }) })
-  assert.equal(byPriority.reason, 'oriented-by-priority')
-  assert.notEqual(byPriority.write, null)
+  assert.equal(sameFile.reason, 'file-overlap')
+  assert.equal(sameFile.edge, 'relatedTo')
+  assert.equal(sameFile.write, null)
 })
 
 test('BOS-1337 directory-overlap: cleared state and a logical basis both take precedence', () => {
@@ -3091,21 +2947,6 @@ test('BOS-1337 directory-overlap: cleared state and a logical basis both take pr
   })
   assert.equal(idless.reason, 'unidentifiable-issue')
   assert.equal(idless.edge, 'none')
-})
-
-test('BOS-1337 question: ambiguous orientation names the shared file', () => {
-  const stamp = '2026-06-06T00:00:00.000Z'
-  const row = classify({
-    subject: subject({ createdAt: stamp }),
-    candidate: candidate({ createdAt: stamp }),
-    subjectAreas: ['proof/recipes/default.json'],
-    candidateAreas: ['proof/recipes/default.json'],
-  })
-  assert.equal(row.reason, 'ambiguous-orientation')
-  assert.ok(
-    row.question.text.endsWith('(shared: proof/recipes/default.json)'),
-    'a human must be able to tell merge-conflict surface from a prerequisite at a glance',
-  )
 })
 
 test('BOS-1337 set level: a directory-only pair lands in edges as a related-only verdict', () => {
@@ -3283,7 +3124,7 @@ test('BOS-1337 withScanDefaults: config-declared repoWideTokens suppress a share
       repoWideTokens,
     }).reason
   assert.equal(shared(payload.repoWideTokens), 'no-overlap')
-  assert.equal(shared([]), 'ambiguous-orientation', 'non-vacuity: undeclared, the file overlaps')
+  assert.equal(shared([]), 'file-overlap', 'non-vacuity: undeclared, the file overlaps')
 })
 
 // GIG-461: lead targets and references are deliberately asymmetric.

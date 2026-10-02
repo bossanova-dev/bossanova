@@ -154,7 +154,7 @@ Each receives:
   "context": {
     "mode": "<interactive if this run involved operator interaction; otherwise headless>",
     "core": "boss-build",
-    "planPath": "<plan doc path when this run had one; otherwise null>",
+    "planPath": "<$PLAN_FILE, the fetched plan; otherwise null>",
     "mergeBase": "<REVIEW_BASE>",
     "head": "<current HEAD after Step 6 fixes are committed>",
     "carriedObservations": [

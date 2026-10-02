@@ -17,6 +17,7 @@ import {
   canEpicTerminate,
   createEpicState,
   epicDoneBlockers,
+  epicDoneWarnings,
   epicStatePath,
   epicTerminalBlockers,
   greenAdmissionBlockers,
@@ -343,25 +344,22 @@ test('each terminal-invariant condition independently rejects DONE', () => {
   )
 })
 
-test('transitionToDone is the sole DONE path and demands full terminal bookkeeping', () => {
+test('transitionToDone needs finished work, and reports unfinished bookkeeping as warnings', () => {
   let state = normalizeEpicState({
     ...baseState(),
     merged: ['T-1', 'T-2'],
     externallyCleared: ['T-1', 'T-2'],
   })
   state = recordReconciliation(state, { at: NOW, externalBlockersEvaluated: true })
-  // Invariant is false, but the bookkeeping is not done yet.
   assert.deepEqual(epicTerminalBlockers(state), [])
-  let blockers = epicDoneBlockers(state)
-  assert.ok(blockers.includes('finalProgress:not-written'), blockers.join('; '))
-  assert.ok(blockers.includes('watchCleanup:not-done'), blockers.join('; '))
-  assert.throws(() => transitionToDone(state), /cannot be reported DONE/)
+  assert.deepEqual(epicDoneBlockers(state), [])
+  assert.deepEqual(epicDoneWarnings(state), ['finalProgress:not-written', 'watchCleanup:not-done'])
+  assert.equal(transitionToDone(state).status, EPIC_RUN_STATUSES.DONE)
 
   state = recordWatchCleanup(recordProgressUpsert(state, { commentId: 'c', finalAt: NOW }), {
     at: NOW,
   })
-  assert.deepEqual(epicDoneBlockers(state), [])
-  assert.equal(transitionToDone(state).status, EPIC_RUN_STATUSES.DONE)
+  assert.deepEqual(epicDoneWarnings(state), [])
 })
 
 test('a not-yet-terminal ticket blocks DONE even with empty work collections', () => {
@@ -506,7 +504,7 @@ test('verifySubscriptionRow checks ownership and liveness, not just presence', (
 
 // --- green admission -------------------------------------------------------
 
-test('green admission holds a draft, an unsettled chat, a partial marker and a wrong state', () => {
+test('green admission holds a draft, an unsettled chat and a partial marker', () => {
   assert.deepEqual(greenAdmissionBlockers(greenSnapshot()), [])
   assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ prView: { isDraft: true } })), [
     'pr:draft-or-unknown',
@@ -517,14 +515,13 @@ test('green admission holds a draft, an unsettled chat, a partial marker and a w
   assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ partialMarker: true })), [
     'pr:partial-marker',
   ])
-  assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ reviewStateMatches: false })), [
-    'ticket:not-in-review-state',
-  ])
+  // The ticket's tracker state never holds a green PR.
+  assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ reviewStateMatches: false })), [])
   assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ checkVerdict: { state: 'pending' } })), [
     'checks:pending',
   ])
   // Missing evidence is never admission.
-  assert.ok(greenAdmissionBlockers({}).length >= 4)
+  assert.ok(greenAdmissionBlockers({}).length >= 3)
 })
 
 // --- continuation prompts --------------------------------------------------

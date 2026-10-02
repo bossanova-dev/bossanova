@@ -727,16 +727,11 @@ func TestDetectHarnesses(t *testing.T) {
 	}
 }
 
-// TestInitReportStatesTheKeyRule asserts the printed report itself carries the
-// rule and the silent-failure warning — the report is where an operator running
-// the command actually reads it, so it cannot live only in the help text.
-func TestInitReportStatesTheKeyRule(t *testing.T) {
+// TestInitReportShowsEachHarnessDeclaration asserts the printed report carries the
+// placeholder key and each harness's declaration file.
+func TestInitReportShowsEachHarnessDeclaration(t *testing.T) {
 	report := initReport("/repo/.boss-skills.json", detectedConfig{}, supportedHarnesses, "")
 	for _, want := range []string{
-		"BYTE-IDENTICAL",
-		"trackerConfig.<tracker>.mcpServer",
-		"no underscore substitution",
-		"still lists as healthy",
 		`"` + mcpServerPlaceholder + `"`,
 		".mcp.json",
 		".codex/config.toml",
@@ -747,17 +742,6 @@ func TestInitReportStatesTheKeyRule(t *testing.T) {
 	}
 	if strings.Contains(report, `\u003c`) {
 		t.Errorf("report escaped the placeholder key:\n%s", report)
-	}
-}
-
-// TestInitHelpStatesTheKeyRule covers the same rule on the other surface an
-// operator reads before ever running the command.
-func TestInitHelpStatesTheKeyRule(t *testing.T) {
-	long := initCmd().Long
-	for _, want := range []string{"BYTE-IDENTICAL", "trackerConfig.<tracker>.mcpServer", "never writes them"} {
-		if !strings.Contains(long, want) {
-			t.Errorf("init --help does not state %q:\n%s", want, long)
-		}
 	}
 }
 
@@ -788,9 +772,6 @@ func TestInitReportPrintsDetectedHarnessesThroughRunInit(t *testing.T) {
 	}
 	if strings.Contains(report, "Claude Code") || strings.Contains(report, `"mcpServers"`) {
 		t.Errorf("report names an undetected harness:\n%s", report)
-	}
-	if !strings.Contains(report, "BYTE-IDENTICAL") {
-		t.Errorf("report omits the key rule:\n%s", report)
 	}
 }
 

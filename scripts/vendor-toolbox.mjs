@@ -157,6 +157,7 @@ export const VENDOR_MAP = {
     'finalize/cli.mjs',
     'finalize/boss-finalize.mjs',
     'finalize/route-contract.mjs',
+    'finalize/push-branch.mjs',
     'skill-extensions.mjs',
     'pr-ownership.mjs',
     // pr-check-state.mjs is the single agent-callable check-state verdict the finalize and
@@ -385,17 +386,8 @@ export const VENDOR_MAP = {
     // the repair-dispatch prose cites; it imports the sentinel and scheduler.
     'bs-dispatch-await.mjs',
     'bs-run-sentinel.mjs',
-    // BOS-1194: bs-repair-escalation.mjs is the escalation ladder for a residual that re-fires
-    // across rounds. The residual routing sites in the body invoke it by path, so it must resolve
-    // inside an INSTALLED boss-repair toolbox — a consuming repo has no repo-root skills-toolbox/
-    // to reach back into, and the existing review-side triage module is vendored to boss-review
-    // alone, so hosting the ladder there would leave it unreachable from repair. It imports
-    // bs-run-sentinel.mjs (for the shipped terminal vocabulary its terminal rung reuses) and
-    // main-module.mjs, both already vendored here.
-    'bs-repair-escalation.mjs',
     // BOS-1249: bs-repair-derivations.mjs owns the round's push-state, decline-reply,
-    // residual-sink and problem-source classifications. Like the escalation ladder above, the body
-    // invokes it by path from sites that run in a CONSUMING repo — one with no repo-root
+    // residual-sink and problem-source classifications. The body invokes it by path from sites that run in a CONSUMING repo — one with no repo-root
     // skills-toolbox/ to reach back into and no guarantee any other core is installed — so it must
     // resolve inside an INSTALLED boss-repair toolbox. It imports boss-binary.mjs (the residual
     // sink detects the CLI through the same resolver the callback seam already uses, rather than
@@ -406,23 +398,6 @@ export const VENDOR_MAP = {
     // entry. boss-repair decides cleanliness by path from its own installed toolbox.
     'worktree-state.mjs',
     'dag-scheduler.mjs',
-    // bs-dispatch-claims.mjs (BOS-1243) is the single adjudicator of a dispatch report's
-    // mechanically checkable claims — a cited path, a quoted object name, a tree hash offered as
-    // the tree the gates ran on. It resolves a cited path through citation-coordinate.mjs, the
-    // one citation resolver in the tree, rather than growing a second one, so that module ships
-    // with it; an installed core has no repo-root skills-toolbox/ to reach back into. The
-    // resolver sits in its own module precisely so this reuse costs a core two kilobytes rather
-    // than plan-contract-guard.mjs's whole import closure.
-    'bs-dispatch-claims.mjs',
-    'citation-coordinate.mjs',
-    // bs-mutation-obligations.mjs (BOS-1288) is the adjudicator Strategy C step 3 calls
-    // before committing a fix that adds or changes a guard: it maps the fix's shape to the
-    // mutant set that shape owes and refuses a one-mutant record for a multi-mutant shape.
-    // boss-repair runs in a CONSUMING repo with no repo-root skills-toolbox/ to reach back
-    // into, and cannot reach boss-review's copy — that core may not be installed at all —
-    // so the module ships in its own toolbox. Its only import is main-module.mjs, already
-    // vendored here.
-    'bs-mutation-obligations.mjs',
     'skill-extensions.mjs',
     // skill-config.mjs exposes notesSampleRate, which the post-terminal notes phase reads to
     // take its per-run sampling roll. boss-repair installs into user repos that have no
@@ -430,17 +405,6 @@ export const VENDOR_MAP = {
     // not be installed at all — so the helper ships in its own toolbox. It is the last of the
     // five notes-taking cores to need it; the other four already vendor it for other callers.
     'skill-config.mjs',
-    // Preflight drift probe used only when no boss CLI is available for the
-    // fail-closed `boss skills check --gate` path.
-    'toolbox-drift.mjs',
-    // skill-drift-verdict.mjs (BOS-1280) is the consumer half of that same preflight. The gate
-    // reports a kind and a direction per drifted path; this is the one module that decides which
-    // of those are a stale record (warn) and which are an absent capability (stop), so the rule
-    // has one implementation instead of one `case` block per consuming core. The preflight
-    // invokes it by path, so it must resolve inside an INSTALLED toolbox — a consuming repo has
-    // no repo-root skills-toolbox/ to reach back into. Its only import is main-module.mjs,
-    // already vendored here.
-    'skill-drift-verdict.mjs',
     // pr-check-state.mjs decides both of this core's check reads — the post-push poll and the
     // Watch Mode interpretation step — which previously restated their own bucket-only rule in
     // prose. Both run in a user repo with no repo-root skills-toolbox/, so the verdict ships here.
@@ -464,8 +428,6 @@ export const VENDOR_MAP = {
     'callback/ci-watch.mjs',
     'bossd-present.mjs',
     'boss-binary.mjs',
-    'session/adapter.mjs',
-    'session/boss.mjs',
     // test-selection.mjs (BOS-1264) — the portable affected-test decision helper; see the
     // note on boss-review's entry. Its ./skill-config.mjs import already ships in this core.
     'test-selection.mjs',

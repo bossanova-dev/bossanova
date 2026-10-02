@@ -83,8 +83,9 @@ bearer_token_env_var = "TRACKER_API_KEY"
 required = false
 ```
 
-The key has to be identical to `trackerConfig.<tracker>.mcpServer`: same case,
-same hyphens, no underscore substitution.
+Use the `trackerConfig.<tracker>.mcpServer` name as the key. The skills also find the
+server under another spelling (case, hyphens, underscores) or another name, as long
+as it publishes the tracker's tools.
 
 ## Config reference
 
@@ -101,7 +102,7 @@ same hyphens, no underscore substitution.
 | `trackerConfig`     | Per-tracker identity: `mcpServer`, `team`, and the `states`, `labels`, and `githubLabels` role maps. | Absent: the tracker-driven skills self-disable. A block missing `mcpServer` or `team` fails validation. A role naming no real tracker entity fails inside a later tracker write.                    |
 | `publishConfig`     | Per-publisher `bucket` and `baseUrl` for proof artifacts.                                            | Absent: proof publishing has no destination. A present block missing either field fails validation.                                                                                                 |
 | `planStorage`       | Where `boss-plan` stores the implementation plan it writes.                                          | Absent: `tracker-attachment`, the one accepted value. A `kind` of `r2` warns and is coerced back to it. Any other `kind` fails validation.                                                          |
-| `planContract`      | The plan-description section contract, and the `planFile` heading floor below.                       | Absent: the shipped contract applies. A section with an unrecognised `required` class, or an empty `requiredHeadings`, fails validation.                                                            |
+| `planContract`      | The section contract for the tracker description `boss-plan` writes (the plan itself is free-form).  | Absent: the shipped contract applies (only `## Summary` and `## Original notes` are required). A section with an unrecognised `required` class fails validation.                                    |
 | `planDependencies`  | `boss-plan`'s dependency-scan `moduleRoots`, `repoWideTokens`, and `areaAliases`.                    | Absent: all empty; a per-run payload extends them. A non-object block, unknown key, empty entry, or non-string alias fails validation.                                                              |
 | `epicDefaults`      | `childWallClockMinutes`, the budget `boss-epic` gives one child before fail-isolating it.            | Absent: 360. A non-object block fails validation. A value outside `[1, 1440]` warns and falls back to 360.                                                                                          |
 | `notesDefaults`     | `sampleRate`, the probability that a run performs its reporting phases at all.                       | Absent: `1`, so every run reports. A non-object block fails validation. A number outside `[0, 1]` warns and falls back to `1`.                                                                      |
@@ -127,10 +128,6 @@ be configured as a non-empty string` rather than resolving to nothing.
   state or label passes `validateConfig`, because validation checks the type and
   not the tracker. The failure lands deep inside a later tracker write, after
   the skill has already done its work.
-- **Connects, then fails.** An MCP server key that differs from
-  `trackerConfig.<tracker>.mcpServer` connects, and a health listing reports it
-  healthy, because neither one knows what name the config meant. The first tool
-  invocation is the first thing to notice.
 
 ## Inheriting the plan structure
 

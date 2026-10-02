@@ -37,6 +37,8 @@
  * @property {boolean} ok               true only when the probe succeeded
  * @property {'ok'|'absent'|'unreachable'} status
  * @property {string} mcpServer         the server name the skill config named
+ * @property {string} [resolvedServer]  ok only: the server name to call tools through, which may
+ *                                      differ from mcpServer in case, separators or naming
  * @property {string} agent             the harness, or 'unknown harness'
  * @property {string[]} missing         expected tool names not found in this session
  * @property {string} message           empty when ok; otherwise the NO_CHANGE reason
@@ -89,8 +91,14 @@ export function trackerMcpPreflight({
   // check credentials for it. No configured name means there is nothing to look for.
   const record =
     hasReport && mcpServer !== ''
-      ? report.find((entry) => entry && typeof entry.name === 'string' && entry.name === mcpServer)
+      ? report.find(
+          (entry) =>
+            entry &&
+            typeof entry.name === 'string' &&
+            serverKey(entry.name) === serverKey(mcpServer),
+        )
       : undefined
+  const resolvedServer = resolveTrackerMcpServer({ mcpServer, expected, availableTools })
   const declared = hasReport ? Boolean(record) : null
 
   // The probe wins. A harness that reaches the tracker some other way — one whose MCP tool
@@ -101,9 +109,25 @@ export function trackerMcpPreflight({
       ok: true,
       status: 'ok',
       mcpServer,
+      resolvedServer: resolvedServer || mcpServer,
       agent: harness,
       missing: [],
       message: '',
+      declared,
+    }
+  }
+
+  // The tracker's tools are present under a different server name than the config spells. That
+  // is not a misconfiguration worth stopping for: use the server the session actually has.
+  if (resolvedServer !== '' && resolvedServer !== mcpServer) {
+    return {
+      ok: true,
+      status: 'ok',
+      mcpServer,
+      resolvedServer,
+      agent: harness,
+      missing: [],
+      message: `tracker MCP server "${mcpServer}" is exposed in this session as "${resolvedServer}"; use that name`,
       declared,
     }
   }
@@ -180,6 +204,51 @@ export function trackerMcpPreflight({
       (declared === false ? ` The caller's declaration report lists no server by that name.` : ''),
     declared,
   }
+}
+
+/** A server name compared the way a person reads it: case, `-`, `_` and spaces do not matter. */
+export function serverKey(name) {
+  return String(name ?? '')
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '')
+}
+
+/**
+ * Find the MCP server this session actually exposes the tracker through. The configured name is a
+ * hint, not a contract: a server registered as `bossanova_linear`, `Bossanova-Linear` or plain
+ * `linear` is the same tracker when it publishes the tracker's operations. Matches the configured
+ * name first (ignoring case and separators), then any server publishing at least half (and at least
+ * two) of the expected operations. Returns the server name as the session spells it, or '' when none qualifies.
+ */
+export function resolveTrackerMcpServer({
+  mcpServer = '',
+  expected = [],
+  availableTools = [],
+} = {}) {
+  const ops = new Set(
+    expected.map((tool) => /^(?:mcp__)?.+?__(.+)$/.exec(String(tool))?.[1]).filter(Boolean),
+  )
+  if (ops.size === 0) return ''
+  const byServer = new Map()
+  for (const tool of availableTools.map(String)) {
+    const match = /^(?:mcp__)?(.+?)__(.+)$/.exec(tool)
+    if (!match || !ops.has(match[2])) continue
+    if (!byServer.has(match[1])) byServer.set(match[1], new Set())
+    byServer.get(match[1]).add(match[2])
+  }
+  const wanted = serverKey(mcpServer)
+  for (const server of byServer.keys()) {
+    if (wanted !== '' && serverKey(server) === wanted) return server
+  }
+  let best = ''
+  let bestCount = 0
+  for (const [server, found] of byServer) {
+    if (found.size > bestCount) {
+      best = server
+      bestCount = found.size
+    }
+  }
+  return bestCount >= Math.max(2, Math.ceil(ops.size / 2)) ? best : ''
 }
 
 /** First finite number among the candidates, or null when the caller supplied none. */

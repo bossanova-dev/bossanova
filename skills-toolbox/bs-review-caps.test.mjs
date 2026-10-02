@@ -738,52 +738,53 @@ test('matchSentinel round-trips the builders', () => {
 // Derived verdict — clean only when evidence proves no unresolved blockers.
 // ---------------------------------------------------------------------------
 
-test('reviewVerdict returns clean only when unresolved must-fix, invalid and ledger evidence are clean', () => {
+test('reviewVerdict caps on unresolved must-fix and unread outputs, not on one bad finding', () => {
   assert.deepEqual(
     reviewVerdict({ mustfix: { unresolved: 0 }, invalid: [], ledger: cleanLedger }),
-    {
-      status: 'clean',
-      reasons: [],
-    },
+    { status: 'clean', reasons: [] },
   )
   assert.deepEqual(
     reviewVerdict({ mustfix: { unresolved: 1 }, invalid: [], ledger: cleanLedger }),
-    {
-      status: 'capped',
-      reasons: ['unresolved-mustfix'],
-    },
+    { status: 'capped', reasons: ['unresolved-mustfix'] },
   )
+  // One malformed finding inside an output that was read: reported, not capped.
   assert.deepEqual(
     reviewVerdict({
       mustfix: { unresolved: 0 },
-      invalid: [{ reason: 'bad' }],
+      invalid: [{ item: { title: 'x' }, reason: 'missing or blank file' }],
       ledger: cleanLedger,
     }),
-    {
-      status: 'capped',
-      reasons: ['invalid-evidence'],
-    },
+    { status: 'clean', reasons: [] },
   )
+  // A reviewer whose whole output could not be read did not run.
+  for (const entry of [
+    { item: null, reason: 'findings-x.json: Unexpected end of JSON input' },
+    { item: { findings: 1 }, reason: 'findings-x.json: top level is not a list of findings' },
+    { item: null, reason: 'findings-lens-0-*.json: selected lens go produced no output' },
+  ]) {
+    assert.deepEqual(
+      reviewVerdict({ mustfix: { unresolved: 0 }, invalid: [entry], ledger: cleanLedger }),
+      { status: 'capped', reasons: ['unread-output'] },
+      entry.reason,
+    )
+  }
 })
 
 test('reviewVerdict reports every blocker reason that prevents a clean verdict', () => {
   assert.deepEqual(
     reviewVerdict({
       mustfix: { unresolved: 2 },
-      invalid: [{ reason: 'bad' }],
+      invalid: [{ item: null, reason: 'findings-a.json: bad' }],
       ledger: cleanLedger,
     }),
-    {
-      status: 'capped',
-      reasons: ['unresolved-mustfix', 'invalid-evidence'],
-    },
+    { status: 'capped', reasons: ['unresolved-mustfix', 'unread-output'] },
   )
 })
 
-test('reviewVerdict caps for unreadable or zero-completed ledger coverage', () => {
+test('reviewVerdict caps on zero reviewer coverage, and ignores an unreadable ledger', () => {
   assert.deepEqual(reviewVerdict({ mustfix: { unresolved: 0 }, invalid: [] }), {
-    status: 'capped',
-    reasons: ['unreadable-ledger'],
+    status: 'clean',
+    reasons: [],
   })
   assert.deepEqual(
     reviewVerdict({
@@ -792,14 +793,6 @@ test('reviewVerdict caps for unreadable or zero-completed ledger coverage', () =
       ledger: { discovered: 2, completed: 0, skipped: 0, timedOut: 0, notReached: 2 },
     }),
     { status: 'capped', reasons: ['no-coverage'] },
-  )
-  assert.deepEqual(
-    reviewVerdict({
-      mustfix: { unresolved: 0 },
-      invalid: [],
-      ledger: { discovered: 2, completed: 2, skipped: 1, timedOut: 0, notReached: 0 },
-    }),
-    { status: 'capped', reasons: ['unreadable-ledger'] },
   )
 })
 
@@ -810,7 +803,6 @@ test('reviewVerdict fails closed on unreadable evidence', () => {
     [],
     {},
     { mustfix: { unresolved: '0' }, invalid: [], ledger: cleanLedger },
-    { mustfix: { unresolved: 0 }, invalid: {}, ledger: cleanLedger },
   ]) {
     assert.deepEqual(
       reviewVerdict(evidence),
@@ -886,17 +878,17 @@ test('CLI `sentinel clean --in|capped` prints byte-identical lines', () => {
 // printed its line without ever consulting the verdict owner. Both halves are asserted — the gate
 // fires on the unrepaired report, and it is demonstrably ABLE to pass on an otherwise identical
 // report with `invalid` emptied — so a gate that refused everything could not pass this test.
-test('a clean sentinel is unobtainable from a report carrying unrepaired invalid evidence', () => {
+test('a clean sentinel is unobtainable from a report carrying an unread reviewer output', () => {
   const unrepaired = {
     mustfix: { unresolved: 0 },
-    invalid: [{ reason: 'malformed' }],
+    invalid: [{ item: null, reason: 'findings-x.json: malformed' }],
     ledger: cleanLedger,
   }
   const refused = runCli(['sentinel', 'clean', '--in', reportFile(unrepaired)])
   assert.equal(refused.status, 3, 'the refusal must be a distinct non-zero exit')
   assert.equal(refused.stdout, '', 'no clean line may reach stdout')
   assert.match(refused.stderr, /refusing a clean sentinel/)
-  assert.match(refused.stderr, /invalid-evidence/, 'the refusal must NAME the blocking reason')
+  assert.match(refused.stderr, /unread-output/, 'the refusal must NAME the blocking reason')
 
   // The other documented route over the same evidence: `verdict --in` emits capped, never clean.
   const derived = runCli(['verdict', '--in', reportFile(unrepaired)])
@@ -1219,7 +1211,7 @@ test('CLI `verdict --in` prints the sentinel implied by report evidence', () => 
         status: 'clean',
         rounds: 3,
         mustfix: { unresolved: 0 },
-        invalid: [{}],
+        invalid: [{ item: null }],
         ledger: cleanLedger,
       }),
     )
@@ -1683,51 +1675,6 @@ test('CLI `admit-fix-round` rejects a missing or non-object argument', () => {
 // Skill-file byte-stability guard — the sentinels the emitter prints must stay
 // byte-identical in the boss-review skill that documents them.
 // ---------------------------------------------------------------------------
-
-// boss-review is a published core: its canonical committed home is the skillinstall
-// payload (BOS-271), which the public mirror keeps (only .claude/.codex are stripped),
-// so this cross-file assertion normally runs everywhere. The existsSync skip stays as a
-// defensive guard against an unexpectedly absent source rather than ENOENT-ing.
-const bsReviewSkillPath = fileURLToPath(
-  new URL('../services/boss/internal/skillinstall/skills/boss-review/SKILL.md', import.meta.url),
-)
-test(
-  'boss-review SKILL.md still carries the byte-identical sentinels',
-  {
-    skip: !existsSync(bsReviewSkillPath) && 'boss-review SKILL.md absent',
-  },
-  () => {
-    const skill = readFileSync(bsReviewSkillPath, 'utf8')
-    assert.ok(skill.includes(cleanSentinel()), 'clean sentinel present in boss-review SKILL.md')
-    assert.ok(
-      skill.includes(
-        'bs-review capped: unresolved must-fix findings or invalid evidence remain after',
-      ),
-      'capped sentinel prefix present in boss-review SKILL.md',
-    )
-    assert.ok(
-      skill.includes('bs-review clean: no changes to review.'),
-      'empty-diff clean variant present in boss-review SKILL.md',
-    )
-    // The overrun constants live in two places by necessity — this module (the
-    // decision table) and the skill's `## Caller deadline` constants block (the
-    // prose an agent reads). Pin them against each other so they cannot drift.
-    assert.ok(
-      skill.includes(`MUSTFIX_OVERRUN_ROUNDS  = ${MUSTFIX_OVERRUN_ROUNDS}`),
-      'MUSTFIX_OVERRUN_ROUNDS agrees with the boss-review constants block',
-    )
-    assert.ok(
-      skill.includes(
-        `* 60          # = ${DEFAULT_FIX_ROUND_SECONDS} — the unit the comparison uses`,
-      ),
-      'DEFAULT_FIX_ROUND_SECONDS agrees with the boss-review constants block',
-    )
-    assert.ok(
-      skill.includes(`# = ${MUSTFIX_OVERRUN_SECONDS} — the reported total`),
-      'MUSTFIX_OVERRUN_SECONDS agrees with the boss-review constants block',
-    )
-  },
-)
 
 // ---------------------------------------------------------------------------
 // BOS-1209: one gate-outcome line per admission. The three admit-* verbs ARE

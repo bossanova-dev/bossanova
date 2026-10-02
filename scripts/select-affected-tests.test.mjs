@@ -167,10 +167,8 @@ test('selectTargets maps the build-and-ci reference doc to script tests', () => 
 })
 
 test('selectTargets maps manifest and agent instruction changes to manifest checks', () => {
-  // The two agent-instruction paths also select test-scripts: that target runs
-  // scripts/check-agent-test-guidance.test.mjs, which pins CLAUDE.md in lines AND bytes.
-  // Selecting only test-manifest here left the pin unrunnable in the local affected loop,
-  // so an author first met their own budget in CI (BOS-1207).
+  // The two agent-instruction paths also select test-scripts, which checks AGENTS.md stays a
+  // symlink to CLAUDE.md.
   assert.deepEqual(selectTargets(['AGENTS.md', 'CLAUDE.md']), [
     { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-manifest', env: {} },
@@ -186,22 +184,6 @@ test('selectTargets maps manifest and agent instruction changes to manifest chec
   assert.deepEqual(selectTargets(['docs/testing/test-command-manifest.md']), [
     { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-manifest', env: {} },
-  ])
-})
-
-test('selectTargets maps the pinned skills reference docs to script tests', () => {
-  // scripts/check-agent-test-guidance.test.mjs pins these two pages as well as CLAUDE.md: the
-  // per-rule `**Enforcement.**` leads and worked-negative count in authoring.md, and the Contents
-  // and Reference index links to it in README.md. Routing them only to test-boss left those
-  // assertions unrunnable in the local affected loop, so deleting a lead was green locally and red
-  // in CI (BOS-1207) — the same gap this ticket closed for CLAUDE.md.
-  assert.deepEqual(selectTargets(['docs/skills/authoring.md']), [
-    { kind: 'make', target: 'test-boss', env: {} },
-    { kind: 'make', target: 'test-scripts', env: {} },
-  ])
-  assert.deepEqual(selectTargets(['docs/skills/README.md']), [
-    { kind: 'make', target: 'test-boss', env: {} },
-    { kind: 'make', target: 'test-scripts', env: {} },
   ])
 })
 

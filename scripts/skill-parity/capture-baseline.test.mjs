@@ -16,7 +16,6 @@ import {
   BASELINE_DIR,
   REPO_ROOT,
   computeDagScheduleSignature,
-  computePlanSectionsSignature,
   computeProofSurfaceSignature,
   computeReviewLensSignature,
   stableStringify,
@@ -27,7 +26,6 @@ const SNAPSHOT_NAMES = [
   'review-lens.snapshot.json',
   'proof-surface.snapshot.json',
   'dag-schedule.snapshot.json',
-  'plan-sections.snapshot.json',
 ]
 
 function readFixture(name) {
@@ -88,9 +86,6 @@ test('well-formedness: every committed snapshot is present, valid JSON, and non-
   const dagSchedule = JSON.parse(readSnapshot('dag-schedule.snapshot.json'))
   assert.ok(Array.isArray(dagSchedule.readyIds) && dagSchedule.readyIds.length > 0)
   assert.ok(Array.isArray(dagSchedule.mergeOrder) && dagSchedule.mergeOrder.length > 0)
-
-  const planSections = JSON.parse(readSnapshot('plan-sections.snapshot.json'))
-  assert.ok(Array.isArray(planSections.sections) && planSections.sections.length > 0)
 })
 
 test('signature: boss-review matchLenses over the committed fixture matches the committed snapshot', () => {
@@ -150,40 +145,6 @@ test('signature: dag-scheduler ready/merge order over the committed fixture matc
     merged.add(nextId)
   }
   assert.deepEqual(result.mergeOrder, mergeOrder)
-})
-
-test("signature: boss-plan Step 7 section contract matches the committed snapshot and today's known headings", () => {
-  const markdown = readFileSync(
-    join(
-      REPO_ROOT,
-      'services',
-      'boss',
-      'internal',
-      'skillinstall',
-      'skills',
-      'boss-plan',
-      'references',
-      'headless-drafting-brief.md',
-    ),
-    'utf8',
-  )
-  const result = computePlanSectionsSignature(markdown)
-  assert.deepEqual(result, JSON.parse(readSnapshot('plan-sections.snapshot.json')))
-  assert.deepEqual(result.sections, [
-    '## Summary',
-    '## Approach',
-    '## Key changes',
-    '## Testing',
-    '## Risks / unknowns',
-    '## Premises',
-    '## Acceptance criteria',
-    '## Required proof',
-    '## Proof harness analysis',
-    '## Why this needs a human',
-    '## Open Questions',
-    '## Planning',
-    '## Original notes',
-  ])
 })
 
 test('stableStringify sorts object keys recursively but preserves array order', () => {

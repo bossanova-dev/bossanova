@@ -1,958 +1,170 @@
 # Headless drafting brief (read by the dispatched subagent only)
 
-This reference is the **brief for the single awaited drafting subagent** that the boss-plan
-orchestrator dispatches on the headless (`BOSS_CRON=true`) path. The orchestrator passes you the
-**path** to this file, the ticket data, the target plan path, and the sentinel run context — it
-never pastes this text into its own context. **Nothing here runs on the orchestrator's main
-thread.** The default headless orchestrator path reads neither this brief nor
-`references/interactive-mode.md`.
+You are drafting an implementation-ready plan for one ticket, unattended, inside the single awaited
+subagent the boss-plan orchestrator dispatched. Nobody is watching: **never call
+`AskUserQuestion`**. Decide every fork yourself from the ticket and the code, and record only the
+genuinely controversial ones as open questions. Keep recon and drafting in your own context and
+return only a small metadata object. On the single-ticket path you make **no** tracker writes — only
+the plan file, the description artifact and the sentinel. Only the epic path writes to the tracker
+([`epic.md`](epic.md)).
 
-You are drafting a complete, implementation-ready plan for one Linear ticket, unattended. No human
-is watching — **never call `AskUserQuestion`.** Decide every fork yourself with reasonable defaults
-grounded in the ticket and the codebase, and record the controversial ones as open questions (see
-below). On the non-EPIC path, make zero tracker writes: draft only the local plan file and terminal
-sentinel. Only the EPIC path may perform tracker writes, under the guarded decompose-and-auto-create
-sequence below. Keep the full recon + drafting context inside your own context; you return only a
-small metadata object.
+## Inputs
 
-## Inputs the orchestrator hands you
+- `ISSUE-ID`, `title`, and `DESCRIPTION_SNAPSHOT_PATH`
+  (`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`) — the tracker's **stored**
+  description, written before you were dispatched. It is the only source for `## Original notes`:
+  copy from it, add nothing, and never re-read the tracker description (signed upload URLs rotate).
+  It may be empty.
+- `PLAN_PATH` — where the plan goes: `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md`.
+- `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel you write your outcome to. `RUN_DIR` is
+  under `$TMPDIR` and is not where scratch goes.
+- `<RUN-SCRATCH-ID>` — every local file you write goes in `.linear-plans/run-<RUN-SCRATCH-ID>/`,
+  under a name `node "$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs" families` declares. Never invent a
+  scratch name or write scratch anywhere else.
 
-- `ISSUE-ID`, `title`, and `DESCRIPTION_SNAPSHOT_PATH` —
-  `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md`, the Phase 1 description snapshot
-  written by the orchestrator before this dispatch. Build `## Original notes` from this file only.
-  It holds the tracker's **stored** description, not a rendering of it, and it carries what the
-  tracker stored and nothing added. Copy from it and add nothing: what `--require-verbatim` decides
-  late in the finalize phase is whether that block survived this run unchanged.
-  Do not re-read the tracker description; signed upload URLs can rotate and make the parity gate
-  fail even when the prose is otherwise unchanged. The file may be empty.
-- `PLAN_PATH` — the exact file to write the plan to: `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md`
-  (gitignored scratch; the slug is the issue id + hyphenated title). The orchestrator computed it
-  with
-  `node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`
-  after running the toolbox preamble first — the toolbox dir is passed in as an argument,
-  re-derived in the calling block, so the command never depends on an inherited export.
-- `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel context you write your terminal
-  decision to (see "Write the terminal sentinel" below). `RUN_DIR` is under `$TMPDIR`; it is **not**
-  where scratch goes.
-- The heartbeat path you touch **while working** (see the next section). You DERIVE it from
-  `<RUN-SCRATCH-ID>` and the ticket id rather than being handed it; it is not the sentinel, which is
-  written once, at the end.
-- `<RUN-SCRATCH-ID>` — the suffix of the orchestrator's `.linear-plans/run-<RUN-SCRATCH-ID>/`
-  directory, handed to you with the rest of the brief. Every local file you write goes in that
-  directory, under a basename declared in `$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs`
-  (`node "$BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs" families` prints the set). **Never invent a
-  scratch filename and never write scratch anywhere else**: a name outside that registry is one no
-  cleanup pattern matches, so it survives into a checkout other runs share. It is not the sentinel
-  `RUN_ID`.
+Every block that uses `$BOSS_PLAN_TOOLBOX` starts with the toolbox preamble from SKILL.md (each Bash
+call is a fresh shell).
 
-## Beat the heartbeat while you work — it is the only proof you are alive
+## Heartbeat
 
-Set `HEARTBEAT_PATH=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json"` — the
-declared `dispatch-heartbeat` family, derived from the two ids you already hold, so no orchestrator
-variable has to carry it. The orchestrator has **no other** liveness signal: the run-file sentinel
-records one terminal decision, so its mtime never moves while you work, and a 34-minute draft that
-writes nothing classifies `abandoned` at the staleness window even though it is working. Your
-transcript is not a substitute — reading it is what the harness warns against, and idle time there
-fires while you are alive inside one long call.
-
-**Beat at every step boundary**, with the toolbox that owns the artifact — never `touch`, which
-records no epoch:
+The orchestrator's only sign that you are alive is
+`HEARTBEAT_PATH=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json"`. Beat it at
+every step boundary, and wrap anything that runs longer than a beat interval (the wrapper exits with
+the wrapped command's status):
 
 ```bash
 node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 5: drafting"
 ```
 
-**Wrap any command that runs longer than a beat interval** rather than hoping to beat around it. A
-dispatch blocked inside one long gate call writes nothing between tool calls — the exact silence
-that makes transcript-idle a false oracle — so the beat has to come from the call itself. The
-wrapper exits with the **wrapped command's** status, never the launcher's:
-
 ```bash
 node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" beat "$HEARTBEAT_PATH" --interval 30000 -- make test
 ```
 
-A missing heartbeat is read as `absent`, not as death, so forgetting one beat does not kill you; a
-heartbeat that stops for the whole staleness window does. Never beat it from a background loop that
-outlives your work: that manufactures the liveness it is supposed to observe.
+Never beat from a background loop that outlives your work.
 
-## If you are a RESUMED dispatch, normalize — do not redraft
+## Resuming
 
-A dispatch that died after writing its artifact but before writing its sentinel leaves a complete
-plan behind, and the orchestrator's salvage probe retains that scratch precisely so the work can be
-recovered. **If `PLAN_PATH` already exists and is non-empty when you start, you are that resume.**
-Your job is then to _normalize what is there_ — re-verify it against this brief's contract, fix only
-what fails, then complete Steps 6–9 (secret hygiene, description summary, terminal sentinel, bounded
-metadata) — **not** to redraft it from the description. Redrafting throws away work that was already
-done and paid for, and it re-opens every drafting decision the dead pass had already settled.
+If `PLAN_PATH` already exists and is non-empty when you start, a previous dispatch died after
+drafting. Normalise what is there — check it against this brief, fix only what fails, then do Steps
+6–9 — rather than redrafting. A dead dispatch's returned prose is worth reading, but confirm every
+claim in it against the file it names before relying on it.
 
-Two rules that hold from the orchestrator's side of the same failure, stated here so both ends agree:
+## Step 1 — Triage
 
-- **Resume before re-dispatch.** A stalled or dead dispatch is resumed **once** before anything is
-  re-dispatched from scratch. `toolbox/bs-dispatch-await.mjs`'s `disposition` verb says which of
-  those two a given death is: `resume` when the dispatch may still be live or its artifact survived,
-  `discard` only when the probe found nothing.
-- **A dead dispatch's returned prose is still READ, and verified against source.** Routing ignores
-  it — the run file is the only oracle, and that does not change — but a dead pass's partial findings
-  are evidence a human or a resume can use. Read them, then confirm every claim against the file it
-  names before acting on it. "Not routable" is not "not worth reading"; it means the prose decides
-  nothing on its own.
+- **Trivial** (a copy tweak, one obvious line, no design decisions) — a light plan.
+- **Substantial** — design choices, several files, unknowns.
+- **Epic** — the honest estimate is ≥ 5, or the work is several independently mergeable PRs with at
+  least two genuinely separable pieces. A single ticket is estimated 0/1/2/3; a truly atomic 5 stays
+  one ticket with a `- Atomic-5:` justification under `## Planning`; an 8 is never one ticket. Build
+  it by following [`epic.md`](epic.md) end to end — unless you were given `allowEpic: false` (you are
+  drafting an epic's child), in which case plan it as one ticket.
 
-## Step 1 — Triage triviality
+Set depth from the estimate. Keep a reporter-set priority, otherwise rank against the planned
+backlog.
 
-Read the title + description and classify:
+## Step 2 — Recon
 
-- **TRIVIAL** — copy/doc tweak, a single obvious one-liner, no design decisions (e.g. "Mention
-  setup scripts on the home page"). Use a lightweight plan.
-- **SUBSTANTIAL** — anything with design choices, multiple files, or unknowns.
-- **EPIC** — the honest Fibonacci estimate is **≥ 5**, or the work otherwise spans **multiple
-  independently-shippable PRs**, each a coherent deliverable mergeable on its own. **Estimate is the
-  forcing function:** a single ticket may be estimated only `0/1/2/3`; an honest `5` is EPIC unless
-  it is genuinely atomic & un-splittable (then it survives as one ticket with a recorded `- Atomic-5:`
-  justification under `## Planning`); an `8` is **never** a single-ticket estimate. An epic still
-  requires **≥ 2** genuinely separable children; if the honest estimate is `≤ 3` and you cannot
-  articulate ≥ 2 independent PR-sized pieces it is `SUBSTANTIAL`, not EPIC. When EPIC, follow the
-  decompose-and-auto-create flow below **unless** `allowEpic: false` was passed in your context (you
-  are drafting a child of an epic — the recursion guard: never decompose again; draft this child as a
-  normal single-ticket plan).
+- **Read the ticket's evidence attachments** (notes, findings, logs, transcripts, specs) before
+  fixing scope. A description is often a summary of a longer attached list; scope against the
+  union, let the attachment win where it lists more, and say in the plan how many items you scoped.
+- **View screenshots** with the tracker adapter's image-extract capability; markdown image text shows
+  no pixels.
+- **Read the code** the ticket touches, its module, conventions and tests, and any
+  `docs/solutions/` or `CONCEPTS.md`. Ground claims in real symbols (`path:line`); invent nothing.
+- **Confirm upstream contracts exist** in the merged tree (a field, column, method, config key,
+  another ticket's output). Absent ⇒ bring it into scope or depend on the ticket that delivers it. A
+  Done ticket is not proof its code landed.
+- **Re-measure every number and coordinate** the ticket hands you (`path:line`, counts, sizes) in the
+  current tree; drop or re-cite what no longer resolves.
+- **Re-triage** if recon shows the real size is ≥ 5.
 
-Compute the honest estimate **first** — it drives the triage above — then let it set how deep your
-recon and plan go. Every planned ticket gets a non-null estimate. Honor a reporter-set priority; otherwise rank the ticket (and an
-epic parent) against the current config-resolved planned (`stateName(config, 'planned')`) backlog. If the ticket is TRIVIAL, keep the plan
-proportionate; do not manufacture complexity.
+## Step 3 — Decide what a reviewer would ask
 
-### Epic decompose-and-auto-create (headless, triage = EPIC)
+Work the questions an interviewer would have asked — scope (trim gold-plating), architecture and
+boundaries, code idioms, tests, performance, and a skeptical second read — and record your answers as
+decisions in the plan.
 
-No human confirms, so you auto-create the epic **behind the hard guards** (SKILL.md Phase 2.5 owns
-the guards + ordering discipline; the deterministic core is `$BOSS_PLAN_TOOLBOX/plan-epic-lib.mjs`
-plus this phase's own `$BOSS_PLAN_TOOLBOX/plan-epic-phase25.mjs` — `detectEpicParent`,
-`epicSpecRecoveryGate`, `stalePlanAttachmentSweep`, `epicPhase25WritePlan` — and you never re-derive
-either inline):
+## Step 4 — Open questions
 
-**Precondition — the source ticket MUST be unplanned.** Parent-repurpose-last and idempotent resume
-(re-pick a stranded partial epic via the unplanned sweep — `list_issues` filtered to the
-config-resolved `trackerConfigFor(config).states.unplanned` value, never the literal role word
-`unplanned`) both assume
-the original starts unplanned. If a headless cron named a planned/in-progress source and it triages
-EPIC, **check BOTH spec stores before falling back** — one `get_issue(parent)` returns
-`attachments[]` **and** `description`, so checking both costs **zero** extra calls. Hand that one
-payload to `detectEpicParent(issue)`: it returns
-`{isEpicParent, source, specAttachmentId, ambiguous, reasons}` and owns the store-specific presence
-rule, the attachment-wins-over-legacy ordering, and the duplicate case — `ambiguous: true` means two
-or more `Epic spec (…)` attachments ⇒ **abort loudly, never guess** which is current (a human
-deletes all but one, then re-runs). Never re-derive that classification by hand. An `isEpicParent`
-verdict means an existing epic parent (a fully-built epic is flipped to planned but keeps
-its spec), so route to the idempotent resume/no-op path (complete only missing children, or no-op if
-already built) — **never** the single-ticket fallback, which would re-plan a finished epic as a
-normal buildable ticket. Read the spec with `parseEpicSpec` on the **attachment body**, never on a
-description that merely contains it.
-**Why the two stores are asymmetric:** an
-`Epic spec (…)` attachment is created by nothing but this phase, so a present-but-unreadable one is
-still proof; a **description** is reporter-writable prose, so a bare quoted
-`<!-- boss-plan-epic-spec:` substring is NOT presence, and
-treating it as such would brand a brand-new ticket an unreadable epic parent and abort it on every
-sweep.
-**Identity is checked on an attachment-sourced spec ONLY** — an
-attachment body can be copied or mis-attached from another epic, so it must prove
-`validateSpecIdentity(spec, <ISSUE-ID>)`. A legacy inline spec predates both `schemaVersion` and
-`parentId`, so that check would reject it unconditionally; it is accepted on **provenance** instead —
-it sits in the description of the ticket being resumed, the strongest binding that store offers.
-That is weaker than it sounds (duplicating an issue copies its description), and is accepted only
-because the legacy store is read-only, frozen and slated for removal. A legacy parse that succeeds is
-trusted and recovered as-is; only a legacy parse _failure_ reaches the gate.
-**Unreadable-spec recovery gate** — when the
-spec cannot be read, or an attachment-sourced spec fails `validateSpecIdentity`, the decision is
-`epicSpecRecoveryGate({parent, children, plannedState, epicLabel})`, which owns the ALL-of conjunct
-set and names every failed conjunct separately for the abort log. It applies the same marker
-membership test: a child whose non-empty description carries no epic-child marker is excluded from
-the planned-state and plan-artifact conjuncts and named in `reasons` on BOTH verdicts, so a hand-added
-sub-issue cannot wedge the gate; a missing, empty or truncated description proves nothing about the
-marker and is still judged, fail-closed. An enumeration where NO child carries a marker aborts, for
-the same reason zero children does — nothing proves the epic was ever decomposed. Feed it the
-`list_issues parentId=<parentId> limit=250` enumeration below; where that op omits each child's
-attachments, read them per child — the one extra read this gate may make. Its `action` is only ever
-`'noop'` (enumerate + no-op) or `'abort'`; **falling through to
-the single-ticket path is forbidden** — deliberately not even expressible in that return type,
-because it would re-plan a finished or partial epic as a normal
-buildable ticket. An **unplanned** parent can never satisfy the planned-parent conjunct, so a corrupt spec
-attachment on one aborts every sweep until a human intervenes — deliberate (re-decomposing would
-duplicate children); the remediation is to delete the unreadable `Epic spec (…)` attachment so the
-parent re-decomposes cleanly, or to repair its body. Accepted residual: the gate cannot detect a
-child deleted outright, but that
-failure is non-destructive (a partial epic is left alone, not corrupted). Only a non-unplanned
-source with **neither** store present falls back to a single-ticket `SUBSTANTIAL` plan (record
-the reason). A non-unplanned parent would be invisible to the unplanned sweep and stranded on a
-crash before the final flip.
+Record only genuinely controversial forks, where a reasonable planner could have gone the other way.
+They become the `openQuestions` you return and the plan's `## Open Questions` section (that exact
+casing), and add the `agent-question` label.
 
-1. **Draft a decomposition spec.** Decompose the feature along its **architectural seams,
-   producer-before-consumer**: `contract → persistence → producer → read → ui`. Tag each child with
-   its `layer` and set every `read`/`ui` child `blockedBy` the **producer** child that writes its rows
-   — a read/ui child is not plannable without a producer that populates it (its own sibling child, or,
-   when the producer already exists in the merged tree, an external `blockedBy`; the Step 2 recon
-   confirms which). Never bundle "persistence + read" such that the producer can be dropped. Each child
-   estimate must be **≤ `CHILD_MAX_ESTIMATE`=3** (a `5`/`8` child is rejected — decompose it further).
-   `{ parentId:"<ISSUE-ID>", parent:{title,goal,keyChanges[],priority}, children:[{key,title,goal,keyChanges[],blockedByKeys[],estimate,priority,layer,agentFriendly,openQuestions[]}] }`
-   — `parentId` is the source ticket's own id and is **not optional**: `serializeEpicSpec` omits an
-   absent id rather than inventing one, so an unset `parentId` ships a spec `validateSpecIdentity` can
-   never bind. Set each child `key` with `stableChildKey(child, seen)` (a deterministic title-derived slug, so a
-   fresh-worktree retry re-derives the same keys and its resume markers still match) — and validate it
-   locally: `validateDecomposition` + `assertAcyclic`, then run `validateLayering` (the soft
-   producer-before-consumer check: its **warnings** are advisory — confirm each read/ui child's rows
-   are written by a producer, or add the missing producer — but they never block the epic).
-   **A drafting-bug guard failure** (a `blockedByKeys` cycle or a dangling ref) ⇒
-   **fall back to a single-ticket plan and record the reason** — never emit a broken epic.
-   **A size failure is different:** more than `EPIC_MAX_CHILDREN`=12 children, a child you cannot get to
-   ≤ `CHILD_MAX_ESTIMATE`=3, or an honest ≥ 5 that will not separate into ≥ `EPIC_MIN_CHILDREN`=2
-   PR-sized children ⇒ **`needs-human`** ("too large to auto-plan; split by hand"), **never** a single
-   oversized ticket — the exact monolith this flow exists to avoid.
-2. **Fully plan every child** by drafting each as a synthetic single ticket **with `allowEpic:
-false`** (the recursion guard — a child is never itself decomposed), writing a full plan document
-   plus a separate planContract-v1 description projection per child. The spec never carries plan bodies, so copy back only **the child
-   plan's own `agentFriendly` verdict AND its
-   `openQuestions` list onto its spec entry** — `serializeEpicSpec` defaults an **absent**
-   `agentFriendly` to `true`, so a `needs-human` (`agentFriendly:false`) child left blank here would be
-   persisted as agent-friendly and become eligible for unattended build; and it derives the child's
-   `agentQuestion` (⇒ the `agent-question` label) from a non-empty `openQuestions`, so a child left
-   blank loses its `agent-question` queue signal. **Then re-run `validateDecomposition()` on the completed spec
-   (now carrying each `agentFriendly`) before the first tracker write** — Step 1 validated the spec
-   _before_ these verdicts existed, so the `plan-epic-lib.mjs` non-boolean-`agentFriendly` guard only
-   catches a malformed value (e.g. the string `"false"`, which `serializeEpicSpec` would coerce to `true`)
-   if validation runs again _after_ the copy. On failure, fall back to a single-ticket plan. Run the
-   secret + image-parity gates on every child plan **before the first Linear write**
-   (validate-before-write: a gate failure aborts with zero Linear writes).
+## Step 5 — Draft
 
-   **The interactive path may reuse this step wholesale.** Its Phase 4 "Batch child drafting"
-   (`references/interactive-mode.md`) briefs one batch worker against **this** step and Steps 5–7
-   below, rather than restating them — this brief stays the single normative source for the plan
-   body and the per-child drafting rules. The one difference is ownership of the writes: there a
-   human has approved only the epic _shape_, so the batch worker writes plans, descriptions and one
-   bounded metadata file into the run scratch and the orchestrator does every tracker write in step 3
-   below. Headless has no such approval, which is why the subagent does them here.
+Drafting resolves through the first tier that succeeds:
 
-3. **Create + wire (parent repurpose LAST — the write-atomicity guard).** These tracker writes run
-   here in the drafting subagent, so make them crash-safe by ordering. **First** persist the FULL spec
-   durably — the spec is a **native attachment carrying plain JSON**, so what was one atomic
-   `save_issue` is now an ordered write sequence, and that sequence is
-   `epicPhase25WritePlan({parentId, spec, unplannedState, staleAttachmentIds, labelsToStrip})`
-   (`labelsToStrip` = the `agent-friendly`/`needs-human` exposure roles; **parent-scoped** — it is
-   stage 1's `stripLabels` and nothing else): execute its ops **in emitted order** — `label-strip`,
-   then `spec-upload`, then `stale-delete`, then `create-children` — **minus any stage the
-   preconditions below skip, and on a resume minus every child `reconcileEpicChildren` does NOT
-   report `missing`** (it emits one `createChild` per SPEC child, never per missing child; executing
-   those unfiltered on a resume duplicates every child that already exists). Each entry is
-   `{stage, op, args, runtimeArgs}`, and **`args` is the statically-known subset only**, under the
-   adapter's own key names — `runtimeArgs` names what only you can supply because it does not exist
-   until the previous op ran (the prepare's `size`, the PUT's `file`/`uploadURL`/`headers`, the
-   finalize's `assetUrl`). It owns that ordering
-   (in particular that every destructive delete
-   comes strictly after the spec upload); never re-derive it by hand. It emits **no child `labels`
-   field**: a child's label set is not derivable from the spec (`serializeEpicSpec` persists
-   `agentFriendly`/`agentQuestion`, never a `labels` array), so the content-labels +
-   `agent-question` union at creation stays yours to apply. It does **not** own the stage
-   preconditions below, which stay prose (SKILL.md Phase 2.5 owns the attachment contract:
-   filename `epic-spec.json` / `specAttachmentFilename()`, MIME `application/json` /
-   `SPEC_ATTACHMENT_MIME`, title `Epic spec (<ISSUE-ID>)` / `specAttachmentTitle(<ISSUE-ID>)` — which
-   **must NOT start with `Implementation plan`**, or `bs-epic-lib.mjs`'s `normalizeTicket` mistakes
-   it for the parent's plan artifact — body `serializeEpicSpec(spec)`, and identity by
-   `validateSpecIdentity`, never title alone):
-   - **Stage 1 — label strip only.** The entry carries `stripLabels` OUTSIDE `args`: `save_issue`
-     has **no** "remove these labels" argument — its `labels` **replaces** the whole set — so read
-     the parent's current labels (op `readLabels`), subtract `stripLabels`, and send the result as
-     `labels`. Spreading a `removeLabels` key into the call would either error or silently send
-     `{id}` alone, leaving the parent exposed. Removing any pre-existing
-     `agent-friendly`/`needs-human` label from the parent is cheap, atomic, reversible, and
-     enough on its own: `boss-build` selects a planned ticket carrying `agent-friendly` **and** a
-     plan artifact (`skills/boss-build/SKILL.md`), so breaking one conjunct makes even a mis-selected
-     parent non-selectable from the very first tracker mutation onward rather than through the
-     create→wire→expose window or after a crash (the step-7 flip's strip then only reaffirms it).
-     This is the safety write; **it must not delete anything.**
-   - **Stage 2 — upload the spec, exactly once.** A
-     finalize is **not** idempotent the way the description marker it replaces was — it mints a NEW
-     attachment row every call — so **read `attachments[]` AND the description first, BOTH stores**
-     (scoping this to attachments would miss a legacy parent, and the unplanned sweep landing here is
-     the primary resume route, not just the named-source branch), applying detection's store-specific
-     presence rule: an attachment counts when present, a description only when
-     `parseEpicSpec(description)` returns a spec. Take these in order: **two
-     or more `Epic spec (…)` attachments ⇒ abort loudly** (never guess which is current); otherwise
-     **either** store present ⇒ **skip
-     this stage**, and stage 3 with it (the step-7 flip re-runs that same prefix-scoped strip);
-     discard the spec just drafted, rehydrate the stored spec body into a fresh local
-     `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json` validation scratch file for the terminal sentinel, and
-     continue on the idempotent resume path against **the stored** one (a crash after stage 2
-     leaves exactly this state and the parent is still unplanned, so the sweep re-picks it here). A
-     legacy-sourced resume writes **no** attachment — it keeps its inline marker, carried verbatim
-     through the step-6 save. Otherwise upload — first **set `spec.parentId` to this ticket's id**,
-     since only a bound spec can pass `validateSpecIdentity`. That PUT takes a **file**, so write `serializeEpicSpec(spec)` to
-     `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json` — the exact path SKILL.md's Phase 5 cleanup matches by
-     name. **Verify those bytes BEFORE the PUT:**
-     `validateSpecIdentity(parseEpicSpec(<the file's contents>), <ISSUE-ID>)` must be `ok` — nothing
-     else catches an unbound spec, since `serializeEpicSpec` drops an unset `parentId` silently and
-     `validateDecomposition` never inspects it, so an unbound attachment would upload clean and only
-     turn fatal on a later resume; `ok:false` ⇒ abort while zero children exist. In all other
-     respects it is prepare → PUT → finalize through
-     the **same** mechanism `references/plan-storage.md` steps 1–5 define (including the
-     `uploadRequest.headers` scratch file and its immediate deletion after the PUT, and the step-5
-     read-back that must verify the stored bytes before any child is created), substituting
-     that contract's filename, MIME type and title — never a second hand-rolled upload path. It
-     carries the parent overview + every child's full metadata (key, title, goal, keyChanges,
-     blockedByKeys, estimate, priority, **`agentFriendly` call and its `agentQuestion` decision** — so
-     resume re-applies `agent-question`) and never a plan body. **Any** failure takes the SAFE
-     branch: abort with **zero children created**, the parent still unplanned, so the next unplanned
-     sweep re-picks it.
-   - **Stage 3 — the deferred destructive strip.** Its `staleAttachmentIds` come from the same
-     prefix-scoped sweep the final flip cites, in its **one-arg** form — no parent-overview
-     attachment exists yet, so there is nothing to keep; any stale single-ticket
-     `Implementation plan (…)`
-     **link** is dropped here too. For
-     `tracker-attachment`, `deletePlanAttachment` was already required **before the FIRST epic
-     write** — not here: this stage is skipped on every resume, so gating on its availability at
-     this point would defer the check to the final flip, past child creation and `agent-friendly`
-     exposure, stranding buildable children under an unplanned parent on an adapter that lacks it.
-     A crash between stages 1 and 2 leaves only a removed label — recoverable and
-     non-destructive; resume just re-decomposes from scratch with nothing orphaned.
+```bash
+node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --mode headless --json
+```
 
-   None of the three rewrites the description or moves the ticket out of unplanned (parent-repurpose-
-   last still holds), which is itself crash-safety: after stage 2 Linear holds the **original
-   description AND — unless stage 2 was skipped because a store already existed — the spec
-   attachment**, so resume
-   recovers the spec from whichever store holds it **and** reconstructs the verbatim `## Original notes` + runs the
-   image-parity gate against the still-present original source. Then attach and create
-   children in
-   `topoOrderChildren` order. **Create each child as an unplanned, unexposed shell first** with the
-   `save_issue` contract SKILL.md Phase 2.5 step 4 spells out: `parentId` = the original ticket, the
-   config-resolved **unplanned** state `trackerConfigFor(config).states.unplanned` value (never the
-   literal role word `unplanned`), each child spec's validated `estimate` and `priority`, an
-   `epicChildMarker(key)` resume marker — its canonical emitter, never a hand-written literal
-   comment, so the writer here and the resume-side reader share one definition — embedded in its
-   description, and its content labels, drawn from the same allow-list as Step 9's `labels`
-   (**plus `agent-question` when that child's `openQuestions` is non-empty** — the Phase 4
-   contract, unioned in), but **neither** `agent-friendly` nor `needs-human`. A repo may map the role
-   to a differently-named workflow state, so passing `unplanned` verbatim can make the tracker reject
-   the child or land it in the wrong state. **The child plan attachment's title MUST be exactly
-   `Implementation plan (<child id>)`** (matching the single-ticket convention): `boss-epic`'s
-   `normalizeTicket` recognizes a plan only via a link/attachment whose title **starts with**
-   `Implementation plan`, so an attachment under any other title is exposed `agent-friendly` yet
-   silently skipped by `boss-epic` as "missing a plan". After tracker creation returns the child id,
-   rename that child's local plan scratch file to
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md`, the `child-plan` family, where `<slug>` is
-   `issueSlug(child-id, child-title)`; do not prepend the child id a second time to the `issueSlug` output. The sentinel verifier requires
-   that exact basename, not only the `<PARENT>-child-<key>-` prefix. **On resume, first inspect every adopted
-   shell for that exact canonical attachment. If it is missing, **always redraft** that synthetic
-   child from its persisted spec metadata with `allowEpic:false`, re-run the child secret and
-   image-parity gates, and run prepare → PUT → finalize before any planned-state or exposure write.
-   Plan bodies are never persisted in the spec, so this unconditional redraft is the single
-   documented path, not a size-triggered fallback. Never create only missing metadata or expose an
-   adopted shell whose attachment is absent.** Wire the intra-epic DAG via `epicWiringPlan`
-   (intra-epic edges must come **exclusively** from `epicWiringPlan`; the siblings were just created in
-   the unplanned state). Use the shell's returned id for `preparePlanAttachment` → helper PUT →
-   `finalizePlanAttachment` with the exact title, **then** transition it to the config-resolved planned
-   state `trackerConfigFor(config).states.planned` (never the literal role word `planned`). Only this
-   post-finalization transition gives `boss-epic` the exact parent/planned shape it re-verifies before
-   ready/merge ordering. Never expose a child or move its shell to planned before that sequence
-   succeeds. **Defer the external conflict links until after the parent overview commits** (below): those
-   outward edges mutate **non-epic** backlog tickets, so writing them before the parent gate would
-   strand existing backlog work behind a child that a deterministic parent-gate failure leaves
-   unexposed. **Gate, then
-   SAVE the parent overview BEFORE exposing any child:** re-assert the parent's configured unplanned
-   state first — the tracker's sub-issue rollup can advance it on its own, and a partial epic the
-   unplanned sweep cannot find is stranded — then compose the parent overview now — write it to
-   this run's declared `epic-overview` scratch, `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-overview.md`,
-   rather than to a path you invent, so the gates below read it from disk and Phase 5's single
-   `rm -rf` reaches it — and run its three
-   Phase 4 gates (secret + image-parity + plan-contract with `--mode epic-parent`) FIRST — on a gate failure take the SAFE branch (no exposure, no
-   parent write, abort), so a **deterministic** parent-gate failure (e.g. a dropped image or a secret in
-   the parent's `## Original notes`) never leaves a child `agent-friendly`/`boss-build`-buildable while
-   the parent aborts unplanned. The parent overview embeds the original description verbatim; its
-   **secret gate** (redact any credentials/PII) and **image-parity gate** (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`
-   — every original image URL must survive verbatim in the parent overview's `## Original notes`; on a
-   drop, no parent write, abort) and **plan-contract gate** (`$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs --mode epic-parent`
-   — validate the parent overview's epic-parent sections before attachment finalize or parent save; on
-   a violation, no parent write, abort) run here. Only after all three parent gates pass, attach the parent overview
-   natively, re-assert that state again immediately before the parent description save, and save it onto the original ticket,
-   but keep it unplanned** (a description-only save — defer the unplanned → planned repurpose flip to the
-   very last write below). This is the durable **parent commit**, and it runs **before any child is
-   exposed**: because attachment finalization and saving to Linear are the failure-prone writes, doing them here
-   means a failing configured plan-store operation or Linear parent save surfaces **before** a single child becomes
-   `agent-friendly`, never after — so an exposed child is always backed by an already-published parent,
-   never one that later aborts unplanned. For an **attachment-sourced** spec the old
-   re-append-the-marker requirement is **obsolete**,
-   not dropped by accident: that spec lives outside the description, so this description-replacing save
-   cannot lose it and idempotent resume still recovers the FULL spec from a fully-built parent
-   instead of re-decomposing into DUPLICATE children. **A LEGACY-sourced resume is the exception** —
-   its spec _is_ the inline `<!-- boss-plan-epic-spec:… -->` marker, so carry that marker substring
-   **verbatim** into the composed overview or this save destroys the only store, leaving the parent
-   with neither and the next sweep re-decomposing into duplicates. Carry it; never migrate it to an
-   attachment instead. **Only after the parent overview is saved, run the external
-   conflict links** for each child against the active backlog — **excluding this epic's own child ids
-   AND the epic parent id** from the comparison set (the external pass links each child only against
-   non-epic tickets) — so a deterministic parent-gate abort writes **zero** external edges and never
-   strands backlog work behind an unbuildable child. **Then stamp
-   each child with its OWN plan's agent-friendliness call** (union, never clobber) now that each carries
-   its blocker relations: a child whose plan concluded agent-friendly gets `agent-friendly`; a child
-   whose plan concluded it **needs a human** (`agentFriendly: false`) gets `needs-human` instead —
-   **never** `agent-friendly`. `boss-epic` treats a child as eligible only when it is planned **and**
-   `agent-friendly` **and** has a plan artifact **and** is **not** `needs-human`, so honoring the per-child
-   decision here keeps a human-blocked child out of `boss-build`. This deferred exposure is the moment
-   an agent-friendly child becomes `boss-build`-eligible, and `boss-build`'s "skip a
-   candidate whose blocker relations exist" then keeps blocked children from starting out of DAG order
-   (any crash before exposure leaves children unexposed — no `agent-friendly`/`needs-human`, unbuildable;
-   resume completes wiring + exposure). **Only then**, as the very last write, resolve the `epic` label
-   through `labelName(config, 'epic')`, union it into the parent, and flip unplanned → planned with
-   `estimate = epicParentEstimate(spec)` (the sum of its children's estimates) and
-   `priority = parent.priority`. If the tracker rejects that non-Fibonacci sum, retry without estimate
-   and warn. Do not rely on rejection alone: Linear has been observed accepting an off-scale sum,
-   silently storing a different allowed value, and returning success. After the flip, re-read the
-   parent (`get_issue`) and compare its stored estimate with `epicParentEstimate(spec)`; warn on any
-   difference, whichever direction (it can round up as well as clamp down). The warning is a line in
-   this run's own output, not a tracker write or sentinel field. The parent carries neither
-   `agent-friendly` nor `needs-human`
-   — the overview was already saved above. **Queue label:** this flip's `labels` (read-modify-write:
-   `save_issue` replaces the set; the estimate-less retry too) also drops the planning-queue
-   (`agentPlan`) label when one is configured, never at stage 1 — a partial epic must stay in the
-   queue sweep's input. **Strip stale build metadata with this flip:** a
-   headless sweep can pick an explicitly-named planned/in-progress ticket that was **already planned**,
-   so the original may already carry `agent-friendly` **and** a single-ticket `Implementation plan (…)`
-   link or attachment; a bare state flip would leave the epic parent `boss-build`-selectable, so **remove any
-   pre-existing `agent-friendly`/`needs-human` label and drop any stale single-ticket
-   `Implementation plan (…)` link or attachment** from the parent with (or immediately before) the flip — its only
-   plan artifact is the epic overview from above. Delete exactly the ids
-   `stalePlanAttachmentSweep(attachments, {keepAttachmentId: <the new parent-overview id>})` returns:
-   its predicate is prefix-scoped and nothing else, deliberately, because an
-   unscoped sweep would silently destroy the `Epic spec (…)` attachment on this final flip. Because this
-   unplanned → planned flip is **last**, the parent stays
-   unplanned until the epic is fully wired + exposed: a crash or malformed sentinel at any earlier
-   point (partial child create, unsaved parent overview, or unexposed children) leaves the original
-   ticket unplanned, so the next headless sweep re-picks it and resumes
-   — the orchestrator's safe-branch abort is honest at the sweep level (no epic is stranded), even
-   though this single run wrote to Linear before its sentinel landed.
-   **Idempotent resume (durable — survives a fresh cron worktree where the `.linear-plans/` scratch is
-   gone):** `get_issue` the parent and `parseEpicSpec` the **body of its `Epic spec (<ISSUE-ID>)`
-   attachment** (two or more `Epic spec (…)` attachments ⇒ **abort loudly**, never guess) to recover
-   the **FULL original spec** (parent overview + every child's full
-   metadata), then **`validateSpecIdentity(spec, <ISSUE-ID>)` it** — attachment-sourced specs only,
-   here too and not just on the
-   named-source branch above: the attachment was selected by title, and title alone is not identity.
-   A failure takes the unreadable-spec recovery gate, never a silent resume against another epic's
-   spec. **Legacy store (the one description read that remains):** a parent written by an
-   earlier build carries the spec inline as a `<!-- boss-plan-epic-spec:… -->` description marker
-   instead, and `parseEpicSpec` falls back to that form, so such an epic is still recognised and
-   recovered. Then enumerate the parent's existing children with
-   `list_issues parentId=<parentId> limit=250` (the same op `boss-epic` uses — `get_issue` on the
-   parent does not return the children's descriptions where the child markers live) and join them against
-   the spec with `reconcileEpicChildren(spec, hydratedLiveChildren)` after re-reading each child with
-   `get_issue`, because `list_issues` descriptions can be truncated before the marker. Never adopt by eye, never by title;
-   this matches each live child's `epicChildMarker(key)` marker in its full description against
-   `spec.children[].key` and returns `{adopted, missing, orphans, unmarked, repairs, errors}`. This
-   exists because the per-child marker and the parent spec's `children[].key` are two independent
-   stores that can drift apart: a child gets retitled after creation, and if the parent spec is later
-   regenerated from the new title, resume finds no live child for the now-stale spec key and would
-   otherwise create a duplicate — a second plan attachment and a second branch/PR downstream. The
-   function's invariant is `liveKeys ⊆ specKeys` in an undrifted epic, so a live child whose marker key
-   is NOT a spec key (an **orphan**) is a zero-false-positive drift signal, never a false alarm. Three
-   outcomes: **(1) aligned** (no orphans) — create exactly the spec keys `missing` names; **(2)
-   unambiguous rename** (`repairs` holds exactly one `{specKey, liveKey, id}`, reading
-   `missing.length === 1 && orphans.length === 1` as one retitled child — reported in `repairs` for the
-   run log rather than applied silently, since in principle it could be two unrelated facts) — adopt
-   that child and rewrite **its own** description marker to `epicChildMarker(specKey)` — replacing only
-   the marker substring and **preserving the rest of that description's bytes verbatim**, since the save
-   replaces the description, so a bare `save_issue(id, description: epicChildMarker(specKey))` would
-   wipe the child's `descriptionSummary` plan body — the artifact Phase 4's secret and image-parity
-   gates produced and the one a downstream build agent reads. Repair the
-   CHILD, never the spec key: `specKey` is the namespace `adopted` reports the repaired child under, and
-   the one every sibling's `blockedByKeys` and `epicWiringPlan` resolve through, so re-pointing the spec
-   at `liveKey` would leave those refs dangling and throw mid-wire, AFTER children already exist — the
-   half-built state this phase's validate-before-write design exists to prevent. Rewriting the child's
-   marker instead leaves the next resume aligned. Create nothing for it; **(3) ambiguous drift** (`ok:false` — multiple orphans, duplicate live marker
-   keys, a non-array `liveChildren`, or an unmarked child while `missing` is non-empty) — take the SAFE branch: report `errors`, write nothing, create
-   nothing, never guess. A refusal must never be read as "no children exist": that degrade would report
-   the entire spec as missing and duplicate the whole epic. The marker IS the membership test, so a
-   live child carrying none was never minted by this path and is not evidence the epic is broken —
-   it contributes no live key, so by `liveKeys ⊆ specKeys` it can never collide with a spec key. It is
-   always reported in `unmarked`, and with `missing` empty it is ignored rather than refused, because
-   nothing is created for it and it therefore provably cannot be duplicated; one sub-issue somebody
-   filed by hand under the parent must not wedge the resume forever. Two cases keep the refusal:
-   with `missing` non-empty that child could BE the spec child whose description was overwritten, so
-   creating its key would duplicate it; and a description carrying the list-truncation sentinel is
-   not proof the marker is absent, so it refuses whatever `missing` holds, with its own
-   hydrate-with-`get_issue` diagnostic rather than the genuinely-unmarked one. Create only the spec keys `missing` names —
-   **drafting each missing child from its persisted metadata and wiring it per the persisted
-   `blockedByKeys`, never a fresh re-decomposition** — then finish wiring + **deferred exposure** +
-   repurpose. For an
-   adopted child that was created but not yet exposed (a crash in the create→expose window), its
-   `.linear-plans/` plan is gone, so **read its `agentFriendly` from the recovered spec** to
-   decide the exposure label — a persisted `agentFriendly:false` is re-stamped `needs-human`, never
-   `agent-friendly`. **Already-saved parent overview:** because the parent-overview save above is
-   description-only and keeps the parent unplanned (the unplanned → planned flip is the very last
-   write), a crash in that window re-picks an unplanned parent whose current description is **already
-   the composed overview** (`## Original notes` + child checklist), not the reporter's raw
-   notes. So on resume **detect an already-saved overview and reuse it verbatim** — never recompose
-   `## Original notes` from the transformed description, which would nest the overview / re-embed the
-   notes / trip the image-parity gate (the saved overview already embeds the verbatim original notes and
-   already passed both gates on the first run); then **run the deferred external conflict links
-   BEFORE stamping any child buildable** (a crash could have landed after the parent save but before
-   that pass, so the normal-flow ordering — parent commit → external links → exposure — must hold on
-   resume too, else an agent-friendly root child is exposed without blocking overlapping active backlog
-   work; the links are append-only, so re-running them is a safe no-op for edges already written), and
-   finally finish the missing child exposure and the unplanned → planned flip. Complete only what is
-   missing from the original spec, never duplicate. On that resume no parent save runs, so
-   re-assert the unplanned state before the deferred external links instead.
-   **Intended bytes (the orchestrator's epic reverify reads these).** Phase 2 step 4 write-back-verifies
-   every description this run saved against a scratch file holding exactly the body of that
-   description's **last** save. The parent overview save's body is
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-overview.md` (make any secret-gate redaction in
-   that file before finalize). Each child's description save's body, marker included, is its
-   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.image-guard-new.md`; when the
-   external-link pass re-saves a child's description (the Phase 4 step-5(f) notes /
-   `- Dependencies:` save), write that later save's bytes to the same file after it. On the
-   already-saved-overview resume, write the reused stored overview to the `epic-overview` scratch;
-   for an adopted child whose description this run did not rewrite, write its current stored
-   description to its `image-guard-new` scratch through
-   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" read-description` — the route the orchestrator reads
-   back with, so upload-URL signing cannot fabricate drift. A body edited after its intended file was
-   written (a marker inserted late, say) reports as drift, and that verdict is not resumable.
-
-## Step 2 — Codebase recon
-
-**Enumerate the ticket's attachments and read the evidence ones before you fix scope.** A
-`description` is frequently a _summary_ of evidence that lives in full in an attached file — a
-filed ticket may list only the first few items inline and put the remainder in an attachment, and
-a clipped description reads exactly like a complete one, so nothing in the text itself signals
-that it is a clipping. So before scope is fixed: list the ticket's `attachments[]`, and read the
-body of every attachment that carries **source evidence** rather than process metadata — an
-attached notes / findings / log / report file, a transcript, a spec, a survey, a dump the
-description points at. Judge that by the attachment's shape, not by its title: an attachment the
-description refers to as holding the rest of something is evidence, whatever it is called.
-
-Then treat the description's inline evidence bullets as an **index into** that evidence, never as
-the evidence itself. Scope against the union of the description and the attachment bodies, and
-where an attachment carries more items than the description lists, the attachment is authoritative
-for scope and for the estimate. Say in the plan how many items you scoped against, so a reader can
-tell the plan covered the whole set.
-
-This is the one recon failure that produces a **durably wrong artifact rather than a stalled run**:
-a plan scoped from a clipped description covers a fraction of the reported work, passes every gate,
-and reads as complete to everyone downstream, because nothing after this step knows what was left
-out.
-
-Read the code the ticket touches: the files, the surrounding module, the existing conventions,
-tests, and any relevant `docs/solutions/` or `CONCEPTS.md`. Ground every plan claim in real symbols
-(`file:line`) — do not invent constructor signatures, structs, helpers, or styles. This recon is
-the whole reason the drafting is isolated in a subagent: it accumulates here, in your context, and
-never lands on the orchestrator's main thread.
-
-**View the reporter's screenshots.** When the ticket `description` carries image markdown
-(`![](…)`), an HTML `<img>` tag, or an `uploads.linear.app`/attachment URL, an agent reading that
-markdown as text does **not** see the pixels. Call the tracker adapter's image-extract capability on
-the description markdown to actually view the reporter's screenshots — they often disambiguate what the
-words alone leave ambiguous (a prior web-vs-TUI mix-up would have been resolved on sight).
-
-**Verify every cited upstream contract exists.** For each upstream artifact this plan will build
-against — a GraphQL/proto field, a DB column or migration, a service method, a config key, a data
-pipeline stage, another ticket's output — confirm it **already exists in the merged tree** (grep/read
-it). If it is absent, either pull it into this ticket's scope or add a hard `blockedBy` on the ticket
-that must deliver it. **Never author a step against an artifact you did not confirm exists** — a
-`Done` upstream ticket is not proof its contract actually landed; the code in the merged tree is. This
-is what stops a consumer plan from being written against an assumed-but-absent column/field/service.
-
-**Re-read every coordinate and constant the ticket supplies.** A `file:line`, a byte ratchet, a
-call-site count, a column count or a threshold that arrived in the reporter's notes, in a sibling
-ticket or in an earlier plan is an unverified claim until this run opens the file. Resolve each one
-in the **current** tree before carrying it into the plan: re-read the cited line and confirm the
-symbol is still there, and re-measure every number with the command that produces it (`wc -c`,
-`stat`, an enumerating `rg -n`) rather than a counting flag you did not check. A coordinate that no
-longer resolves is re-cited from the current tree or dropped — never copied forward. This is what
-stops the shape that keeps recurring: a follow-up ticket filed from the review of one PR, whose
-coordinates a sibling PR merged and invalidated before anyone planned it, so a full drafting pass
-produces a plan for work that has already shipped.
-
-**Re-triage after recon.** Recon is where the true size surfaces. Recompute the honest estimate now;
-if it is **≥ 5** and you are not already on the EPIC path, **re-triage to EPIC** (Step 1's
-decompose-and-auto-create) — or, only for a genuinely atomic & un-splittable 5, record the
-`- Atomic-5:` justification. A ticket that looked SUBSTANTIAL but recon proved is a 5+ must not be
-planned as one oversized ticket.
-
-## Step 3 — Work the self-review dimensions yourself
-
-The Bossanova interactive path gets these dimensions from its draft extension; headless has no
-human to answer them, so you work the same dimensions and answer each with a reasonable default,
-recording the decision you would otherwise have surfaced:
-
-- **Scope challenge** — is the ticket asking for the right thing? Trim gold-plating.
-- **Architecture** — where does the change belong; what are the module boundaries and contracts.
-- **Code quality** — the idioms and patterns the implementer should follow.
-- **Tests** — what unit / integration / e2e coverage proves the change.
-- **Performance** — any hot paths, allocations, or query costs to call out.
-- **Outside-voice sanity check** — a skeptical second read: what would a reviewer object to?
-
-Keep depth proportionate to triage. Carry these self-made decisions into the plan exactly as the
-interactive path carries the interview's.
-
-## Step 4 — Record controversial open questions (high bar)
-
-Because no human is steering, track any decision that was genuinely **controversial** — a real fork
-where a reasonable planner could have chosen the other option with comparable merit. Keep the bar
-**high**: record only could-have-gone-either-way calls, never routine or obvious ones (low-bar
-noise defeats the signal). These become the `openQuestions` you return and the plan's
-`## Open Questions` section, and drive the `agent-question` label.
-
-## Step 5 — Resolve drafting, then write the polished plan
-
-- Prose naming a ticket's current workflow state observed at recon dates that observation.
-  Non-EPIC drafts include load-bearing states in `premises`, at most `PREMISE_LIMIT` entries,
-  using Step 8's recon-state semantics.
-
-First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --mode headless --json`
-after running the toolbox preamble first. If that helper is missing in an installed public skill payload, treat discovery as
-`{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
-
-Record every `skipped` entry whose `deliberate` is `false` as
-`extension <name>: skipped (<reason>)` in the ledger, before dispatching. Key that on the entry's
-own `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix
-skill that is not an extension of this core — a markerless helper, or one extending another core —
-and is never reported. Recording is all that is due: a discovery skip is never fatal and never
-changes control flow; the tiers below still resolve exactly as documented.
-
-**Seed the run scratch before you dispatch anything.** Tier 1 hands each extension a `runTmp` and
-anchors the per-dispatch plan target to it, and an extension may anchor its own staging and cleanup
-there too — so `runTmp` is not a value the orchestrator supplies, it is one you create here. Left
-undefined it degrades to an empty string, which collapses every per-dispatch target onto one shared
-root-relative path and defeats the attribution the success predicate below is built on:
+(missing helper ⇒ treat it as `{"extensions":[],"skipped":[]}`). Record each `skipped` entry whose
+`deliberate` is `false` as `extension <name>: skipped (<reason>)`. Create a run temp dir first:
 
 ```bash
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-plan-run.XXXXXX")
 echo "$RUN_TMP"
 ```
 
-Record the printed path; it is the literal `runTmp` you pass in every dispatch below. Remove it with
-`rm -rf` once you have promoted the winning plan to `PLAN_PATH` — on the failure paths too, so a
-dispatch that returned nothing usable still leaves no scratch behind.
+- **Tier 1 — draft extensions.** Run each one **inline in this context**, following the `SKILL.md`
+  read from its descriptor's `skillPath` (resources resolve from `dir`) — never as a nested
+  dispatch, and never through the Skill tool. Give each its own plan target
+  (`<runTmp>/draft-<extension-name>/<basename of PLAN_PATH>`) and the envelope
+  `{role: "draft", core: "boss-plan", context: {mode: "headless", planPath, ticket}, runTmp, outPath}`.
+  One **succeeds** only when its envelope is valid **and** it wrote a non-empty plan at its own
+  target; promote the first success to `PLAN_PATH`. Record every failure as a skip. Any success
+  suppresses tiers 2 and 3.
+- **Tier 2** — a host-native drafting command, if there is one.
+- **Tier 3** — draft it yourself from Steps 2–4.
 
-- **Tier 1:** if a draft extension exists, dispatch each discovered extension with
-  `{ role: "draft", core: "boss-plan", context: { mode: "headless", planPath: PLAN_PATH, ticket },
-runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath` from disk**
-  (`dir` is its directory), passing both `skillPath` and `dir` in the worker brief, and requiring
-  relative extension resources to resolve from `dir`. Pass that `SKILL.md` content into the dispatch
-  as the extension's instructions. Never load a discovered extension by its bare descriptor `name` through the Skill tool:
-  extension skills are dispatched explicitly, never model-matched, so they SHOULD declare
-  `disable-model-invocation: true`, and the Skill tool refuses such a skill.
-  The extension works the dimensions and writes the plan inside this single awaited
-  drafting context.
+Write the plan to `PLAN_PATH`, remove `$RUN_TMP`, and stop there — do not start implementing.
 
-  **Headless Tier 1 runs inline — never a nested dispatch.** On this path "dispatch" means you
-  follow the extension's `SKILL.md` yourself, in this context, never as a further Agent or subagent
-  dispatch: a nested dispatch inside this one awaited drafting context is the recorded
-  double-stall. `--mode headless` is what keeps that safe — an extension whose work fans out its
-  own subagents or can ask the user declares `modes: interactive`, and discovery skips it as
-  `mode-not-declared` (`deliberate: true`, so never a ledger line). **Wrapper ownership:** the
-  extension owns only the plan at its per-dispatch `planPath` and its envelope; you, the drafting
-  subagent running it, own promotion to `PLAN_PATH`, the Step 7 description artifact, the Step 8
-  terminal sentinel and the Step 9 bounded metadata — an extension envelope stands in for none of
-  them.
+**The plan** is free-form Markdown, scaled to the triage: whatever the implementer needs — the
+problem, the approach, the changes, how it will be tested, what "done" means, risks, decisions.
+No headings are required, except that it **ends with `## Original notes`**, whose body is copied from
+`DESCRIPTION_SNAPSHOT_PATH` and runs to the end of the file (`plan-image-guard.mjs --require-verbatim`
+checks it). Some things help the implementer and the guards:
 
-  **Per-dispatch plan target.** The `planPath` you pass is **not** `PLAN_PATH` itself: give each
-  dispatch its own path under `runTmp` (`<runTmp>/draft-<extension-name>/<basename of PLAN_PATH>`),
-  unique to the dispatch you are about to classify, and create its parent directory before
-  dispatching. You promote the winner yourself: copy the file produced by the **first** dispatch that
-  succeeded under the predicate below to `PLAN_PATH`, which is the plan target every later step reads
-  and the one tiers 2 and 3 write directly. A later sibling never overwrites a promoted plan.
+- **One ticket, one PR.** If the plan enumerates two or more independently mergeable tasks, it is an
+  epic — re-triage.
+- **Acceptance criteria** as checkboxes (`- [ ] …`), each demonstrable by a test or gate. A criterion
+  that is only true because a file needed no change is written
+  `` - [ ] (verify-only) <the claim> — check: `<runnable command>` `` — the command in backticks, each
+  `;`/`|`/`&&` segment starting with something runnable (not a bare path, not prose).
+- **Premises** the plan rests on, written the same way (`- [ ] <fact> — check: `<command>``, at most
+  one marked `(central)`). A `path:line` citation is repo-relative and carries a backticked token
+  from that line, so it can be re-checked.
+- When the ticket names a pattern that may recur, list the other sites you found and say which you
+  fix and why.
+- **Proof**: what evidence would show the change works (test output, or — for UI — the screens or
+  flows a reviewer should see). If the repo has a capture harness, name what it should capture.
+- A note that an agent will probably implement this unattended, so nothing is left to "ask the
+  user".
+- **Agent-friendly by default.** Only when an agent genuinely could not do it (physical access,
+  credentials only a human holds, a product call that cannot be made unattended) add
+  `## Why this needs a human` and return `agentFriendly: false`. Size is never the reason.
+- Query-strip every upload URL anywhere in the plan. No tool-call scaffolding, wrapper tags or
+  commentary before or after the plan.
 
-  **Draft success predicate** — one definition, used by every tier gate below. A dispatched draft
-  extension **succeeded** only when both of these hold: it returned a result envelope valid for the
-  requested dispatch, **AND** the requested plan now exists and is non-empty at this dispatch's own
-  `planPath`, the copy promoted to `PLAN_PATH`, **written by this dispatch**. Verify
-  the second conjunct yourself by reading that `planPath` after the dispatch returns; a valid envelope
-  that wrote no plan did **not** succeed. The per-dispatch target is what makes that read an
-  attribution: hand every sibling the **same** `PLAN_PATH` and "a plan is there now"
-  is a test of shared state, not of this extension, so the first extension to
-  write a plan silently credits every sibling dispatched after it, which is the false success this
-  predicate exists to prevent. Do not try to rescue a shared path by comparing it before and after
-  instead — neither half of that comparison holds across arbitrary projects and filesystems, which is
-  where these skills run. Identical bytes are the ordinary output of a deterministic redraft, so a
-  byte comparison records a real dispatch as a skip and drops the run to a lower tier that overwrites
-  its plan; and the modification time need not advance either, because a filesystem whose timestamp
-  resolution is coarser than the rewrite stamps both writes the same. Attribution has to come from
-  the target you chose. Anything else is a failed dispatch: record
-  `extension <name>: skipped (<reason>)` for that extension as you classify it — every failed
-  dispatch is recorded, including when a sibling succeeded, so the ledger shows the whole Tier-1
-  outcome and not just the winner.
-  If at least one extension succeeded under the draft success predicate, tiers 2 and 3 do not run.
-  If **no** extension succeeded under the draft success predicate — whether it failed to load,
-  returned no valid envelope, or returned a valid envelope without producing the plan —
-  fall through to Tier 2, then Tier 3 — the drafting layer is never silently dropped.
+## Step 6 — No secrets
 
-- **Tier 2:** if no extension succeeded under the draft success predicate and the host exposes a native drafting command, use it
-  and compose its `descriptionSummary` to the planContract sections in Step 7.
-- **Tier 3:** if no extension succeeded under the draft success predicate and no host built-in exists, draft directly from
-  Step 3 plus the self-contained plan-body requirements below. This tier has no external skill
-  dependency.
+The plan is visible to everyone with access to the ticket. Write no secrets, tokens, credentials,
+connection strings, private keys, cookies, internal hostnames/IPs or customer PII — including in
+`## Original notes`. Reference where a value lives (`[REDACTED: repo-root .env]`) instead.
 
-Whichever tier runs, **write the plan to `PLAN_PATH`** and **stop after saving the plan file**. Do
-not continue into subagent-driven-development or executing-plans. We only want the plan document
-here.
+## Step 7 — The description
 
-This section is the **shared drafting spec** for both modes — the interactive path
-(`references/interactive-mode.md`) points here too.
-
-**One ticket = one atomic PR.** A single-ticket plan describes **one** atomically-shippable change.
-If the plan you are drafting naturally enumerates **≥ 2** independently-landable tasks (a `Task 1..N`
-list whose tasks could each merge on their own), that is the EPIC signal — stop and **re-triage to
-EPIC** (Step 1's decompose-and-auto-create), do not emit the multi-task single ticket. Multi-task
-scaffolding is legal only **across epic children**, never inside one ticket's plan. This is what stops
-`boss-build` from landing the cheap slice of a "Task 1..N" ticket and closing it partial.
-
-Include, in the plan body, all of the following (scaled to triage):
-
-- A first development step: **"Copy this plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in
-  the implementation PR."**
-- A **## Problem Frame** section that states the defect, the discriminating rule, and the artifact
-  surface the check reads. This is plan-file structure, not part of `descriptionSummary`.
-- A **## Requirements** section that names the plan's durable requirements or invariants. This is
-  plan-file structure, not part of `descriptionSummary`.
-- A **## Implementation Units** section that groups the implementation work at the single-ticket
-  level. This is plan-file structure, not part of `descriptionSummary`.
-- When the ticket names a specific call site, construct, literal claim, or other mechanism that could
-  recur elsewhere, record a repo-wide sibling-class enumeration before fixing implementation scope.
-  Its home is an `### Sibling-class enumeration` table under `## Approach`. List every site the
-  search returns, give each row a verdict (`fix` or `not a defect`) and a reason, and adjudicate the
-  class per site rather than sweeping every match wholesale. The row's
-  reason should name the discriminator that makes the site equivalent or different, such as where the
-  branch actually lives. A one-row table saying the search found only the named site is a complete
-  discharge. Do not write an acceptance criterion that caps the number of changed files. Examples:
-  `exactly two files`, `only these paths`, or equivalent. Scope comes from the enumeration and its
-  verdicts, not from a pre-search file count.
-  **When the plan proposes a whole-tree invariant, the enumeration must include a cross-language
-  existing-owner search.** A repo holds more than one language, and an invariant over the whole
-  tree — every skill payload, every generated mirror, every module manifest — is exactly the kind
-  another language may already own. Search the other languages for that owner before writing the
-  unit (for this repo: `rg -n "<the invariant>" --glob '*.go' --glob '*.ts' --glob '*.mjs'`, quoted
-  so the shell does not eat the glob), and record the result as a row: either the existing-owner it
-  found, in which case the plan extends that owner rather than minting a second, or the searches run
-  and what they returned. An enumeration that searched only the language the ticket happened to name
-  has not enumerated the class.
-- A **## Acceptance criteria** section: concrete, testable pass/fail conditions. **Prefer an
-  assertion**: a claim worth verifying once is usually worth pinning, so write each criterion so a
-  test or a gate demonstrates it. Only where the invariant genuinely cannot be pinned that way —
-  where its correct outcome is "this file needed no change", so it leaves no diff for any
-  changed-path gate to see — write it as a **verify-only** criterion, in this literal form:
-  `` - [ ] (verify-only) <the invariant claimed> — check: `<command a reviewer can re-run>` ``. The
-  `(verify-only)` prefix and the `— check: ` clause are parsed literally by the implementing run,
-  which must record the command it ran and that command's result before it may tick the box. A
-  verify-only criterion whose `— check: ` names no command is not dischargeable — name a command a
-  reviewer could paste, not an intention. **Wrap the command in backticks**: the run's discharge
-  form is parsed with the backticks as delimiters, so that an arrow inside the command is never
-  mistaken for the `→` that introduces the result.
-  **Every segment's head must resolve to something runnable.** The classifier splits the command on
-  `;`, `|`, `&&` and `||`, and each resulting segment's first word must be a shell builtin, a binary
-  on `PATH`, or an executable path — otherwise the criterion is rejected as
-  `command-unresolvable` (as `vacuous-criterion-command-command-unresolvable` from the plan gate).
-  Two shapes fail this and each costs a gate round-trip. A **bare file path** names no runner:
-  `tests/widget.test.mjs` is rejected, `node --test tests/widget.test.mjs`
-  is not. And **prose inside the code span**, where the sentence rather than the command supplies the
-  first word: `Run make test` and `see tests/widget.test.mjs` are both rejected on
-  their `Run` and `see` heads. Backtick the command alone and leave the sentence outside it.
-  A leading `!` negation is fine — `! rg -q needle file` is the way to assert a pattern is absent —
-  but it does not excuse the head after it, and environment assignments, `env`, and
-  `set -o pipefail` are all understood. Note what this rule does **not** catch: it reads only each
-  segment's first word, so `make lint and make test` classifies clean while failing when run. Join
-  commands with `&&`, not with the word "and"; the gate will not catch that one for you.
-  **A criterion that ships a conditional strike licence must carry a drafting-time verification
-  pointer.** A criterion written as "strike this if <condition>" hands the implementing run a
-  licence to delete the criterion on its own reading of a condition nobody checked. Name, in the
-  criterion itself, the command or coordinate that settles the condition — the same `— check: `
-  discipline a premise carries — so the strike licence is exercised against evidence rather than
-  against an impression. A strike licence with no pointer is an unverified premise wearing a
-  criterion's checkbox, and the run that takes it removes the only thing that would have caught it.
-- A **## Premises** section when the plan rests on load-bearing facts that are not themselves
-  acceptance criteria. Write premise bullets with the same checkbox and `— check: `<command>``notation, and mark exactly one central premise with `(central)` when the ticket's goal depends on
-it. Example:``- [ ] (central) the target helper does not already reject stale citations — check:
-  `rg -n "stale citation" skills-toolbox` ``. Do not use premises as a dumping ground for source
-  notes; name only facts the implementer must re-check before dispatch or before review-ready.
-  **A premise that cites `file:line` must carry an anchor**: a backticked token copied from that
-  location, so the claim can be re-checked by machine rather than by re-reading prose. The contract
-  guard resolves it — a bullet whose only inline-code span is its own `— check:` command is
-  `unanchored-premise-citation`, and an anchor absent from every line within five lines of the cited
-  line is `stale-premise-citation`. The escape hatch when no single token names the place is to cite
-  the file **without** a line number.
-  **Every citation must be repo-relative.** The guard resolves each `file:line` it finds in
-  `## Premises` and `## Acceptance criteria` from the **working-tree root**, then opens the file and
-  checks the line exists. A filename-only citation such as `Sidebar.tsx:42` therefore resolves to a
-  path at the root that does not exist and fails as `unresolvable-citation`, however unambiguous the
-  filename reads to a human. Write the whole path from the root — `app/components/Sidebar.tsx:42` —
-  and never a path that climbs out of the tree. **A pinned numeric constant is a premise, not a decoration**:
-  any byte ratchet, call-site count, column count or threshold the plan pins is written as a
-  `## Premises` bullet whose `— check: ` clause names the command that re-measures it, and the
-  number must be one this run measured from disk (Step 8's measured-size rule, which applies to
-  every pinned constant and not only to byte counts).
-  **A negative claim about repo tooling must cite file contents that were read, never a filename
-  match.** "No workflow runs this on a feature branch", "nothing gates that", "no helper owns this"
-  are all claims about what a file _says_, and a filename match — a path listed by `ls`, a hit in a
-  `--files` listing, a name that reads as if it covers the case — is not evidence of content. Open
-  the file and cite the line, or write the claim as a premise whose `— check: ` clause greps the
-  contents. A filename match recorded as a content fact is the shape that put a false CI premise
-  into a plan and survived every gate, because nothing downstream can tell the two apart.
-  **A preferred implementation approach stated by the ticket is a claim to verify, not a
-  constraint to inherit.** The reporter's proposed option may be structurally impossible against the
-  current tree or against the vendor behaviour it assumes. Verify it — against the code, and against
-  the vendor's own documentation when it rests on third-party behaviour — _before_ the approach is
-  locked, and record the verification. When it does not survive, say so in `## Open Questions` and
-  plan the approach that does; a ticket's preference is evidence about intent, never about
-  feasibility.
-- For semantic failure shapes the guard cannot decide safely, write the required judgement into the
-  plan instead of pretending a green check proves it: state-mutating proof needs an offline
-  equivalent named at plan time or a human-only marking; an absence assertion must be shown able to
-  fire; a library option must quote its own scope caveats and name the loaded implementation; a
-  specification CI does not run on a feature branch is not evidenced by a green check set; and a
-  named termination mechanism must cite the code that produces it.
-- A **## Required proof** section: a checklist of artifacts the implementer must produce to pass
-  review, each paired with what it must demonstrate. Proof is captured with the existing `boss-proof`
-  skill (`node scripts/proof.mjs run`), which uploads **stills and video** to the configured public publish store and
-  comments them on the PR. boss-proof captures **both today** — web/marketing MP4 via Playwright
-  (`"capture": "video"`), and TUI via a committed `proof/scenarios/*.scenario.json` replay plus
-  agent-frame video — across the TUI / web / marketing / docs surfaces classified by
-  `node scripts/proof.mjs plan`. For UI/TUI/web work, name the recipes/scenarios and the expected
-  visual evidence; for backend-only work, specify test output/logs and note "no screenshot
-  applicable." Where a still image cannot show the behaviour (animation, multi-step flow), name a
-  **video** recipe/scenario — not a "future" proof type.
-  Scope each proof bullet to ONE surface by naming it (TUI / web / marketing / docs), and for a
-  multi-flow demonstration write one bullet per scene/flow, each pairing the flow with 1–3 SHORT
-  literal on-screen evidence tokens. A fresh-context judge grades the captured proof against these
-  bullets: a bullet whose evidence is not visible in the run's media downgrades the
-  verdict, so write bullets an independent reviewer can check against the stills — never internal
-  claims a screen cannot show.
-- A **## Proof harness analysis** section: before finalizing the proof plan, analyze whether the
-  current proof harness can already prove this change and record the result. Specifically:
-  - **classify proof-applicability** with the _same_ gate the implementer uses —
-    `node scripts/proof.mjs plan` selects recipes/scenarios from the changed paths against
-    `proof/recipes/default.json` `pathRules`. The change is proof-applicable **iff** it touches a
-    capturable surface (a TUI scenario — existing or buildable in-PR per the gap bullet below — /
-    product web / marketing / docs); otherwise state "proof not applicable" (backend-only Go, scripts,
-    proto, prompt/markdown, pure config/types, or test-only diffs). A TUI (`services/boss`) change is
-    proof-applicable even when no scenario is committed yet — the missing scenario is the buildable
-    affordance, not grounds to classify it "not applicable";
-  - state the **surfaces touched** and the **existing recipe/scenario coverage** — name the recipe
-    ids or `proof/scenarios/*.scenario.json` files that already cover the surface (from
-    `proof/recipes/default.json` and `proof/scenarios/`);
-  - **map each acceptance criterion to a concrete proof artifact** — a recipe id, a
-    `proof/scenarios/*.scenario.json` scene + fixture preset, or a stated "no proof applicable —
-    tests/diff are the evidence";
-  - where a needed affordance is **missing but buildable** (a scenario, a fixture preset, a route, a
-    `data-testid`, a recipe), **schedule it as IN-PR work** so the plan ships the means to prove
-    itself — this is exactly the affordance boss-build Step 5 then builds;
-  - record any **external blocker**: a surface no affordance can reach unattended.
-    Keep it headless-safe: **never call `AskUserQuestion`** — decide defaults and record only
-    genuinely controversial forks as open questions.
-- **Autonomous framing**: state explicitly that an autonomous agent will likely implement this
-  unattended, so steps, acceptance criteria, and proof must be unambiguous and self-contained — no
-  "ask the user" gaps.
-- **Agent-friendliness call**: by default this plan is **agent-friendly**. Only if you judge that an
-  autonomous agent genuinely _could not_ complete the task, add a **## Why this needs a human**
-  section naming the specific blocker(s) that put it beyond an agent (e.g. requires physical/hardware
-  access, manual external-account or vendor setup, credentials only a human holds, a product/design
-  judgment call that cannot be made unattended, or real-world verification an agent cannot perform).
-  Complexity alone is **not** a reason — a large but well-specced ticket is still agent-friendly.
-  Omit this section entirely for agent-friendly plans, and set `agentFriendly: true` in your returned
-  metadata (set it `false` and include the section when you do add it).
-- When Step 4 recorded any open question, an **`## Open Questions`** section — spelled with that
-  exact casing, capital `Q` included. The description contract requires the cased form, so a plan
-  file that drifts to `## Open questions` leaves a consumer grepping the plan file finding nothing
-  while the description says the section exists.
-- A terminal **`## Original notes`** section whose body is copied from `DESCRIPTION_SNAPSHOT_PATH`
-  only. Do not retype, summarize, or reconstruct it. The plan attachment is gated with
-  `plan-image-guard.mjs --require-verbatim`, so a model-authored reproduction is not a valid source.
-
-The description-section contract governs `descriptionSummary` only. The plan file may retain
-additional drafting-layer headings and its native structure; do not flatten it to the Step 7
-template. `## Original notes` remains the terminal heading and its body runs to EOF. Every
-query-bearing upload URL anywhere in the plan file must be query-stripped.
-
-**The `##` list is a CLOSED allow-list.** The contract gate rejects any top-level `##` heading
-outside that allow-list as `unknown-section`, so inventing a section — `## Verification surface`, `## Rollout`,
-`## Notes` — blocks the plan outright however useful the content is. When the plan needs structure
-the contract does not name, put it **one level down, as an `###` under `## Approach`**. That is the
-shape that satisfies both the section guard and the dependency extractor, which reads `## Approach`
-for its area candidates. Do not reach for a new `##` and do not omit the content: demote it. The
-sibling-class enumeration is the named case: it is always `### Sibling-class enumeration` under
-`## Approach`.
-
-The Phase 4 contract gate also enforces a producer-side plan-file floor for single-ticket plans:
-the plan file must carry every required description-contract heading, the configured plan-file
-headings `## Problem Frame`, `## Requirements`, and `## Implementation Units`, and at least one
-heading outside `planContract.sections`. Epic-parent overviews and adopted-child redrafts are
-explicit exemption reasons because they are not this single-ticket artifact. No consumer-side path
-requires the plan-file structure; consumers read the description contract and plan-residue checks.
-
-The plan file must contain one plan document. No tool-call scaffolding, XML-ish wrapper tags,
-transcript residue, preamble narrating what you are about to write, or trailing commentary after
-the original-notes body. This file is finalized verbatim as the ticket's canonical plan attachment,
-and Phase 4's contract gate rejects a file whose last non-blank line is a bare closing scaffolding
-tag — the SAFE branch there is a full abort with no tracker write.
-
-## Step 6 — Plan-body secret hygiene
-
-The orchestrator attaches this plan natively to the tracker ticket and runs a hard
-secret gate before doing so. The attachment is visible to everyone with access to that ticket. Do not put yourself on the wrong side of that gate: write **zero**
-secrets, tokens, credentials, connection strings, private keys, session cookies, internal
-hostnames/IPs, or customer PII into the plan — not in your own prose, and not in the verbatim
-`## Original notes` block (the most likely place a secret sneaks in). If the work needs a secret,
-**reference where it lives** (e.g. "the deployment token in repo-root `.env`") instead of inlining
-the value. When in doubt, redact.
-
-## Step 7 — Compose the description summary (byte-identical template)
-
-Lead each `## Key changes` bullet with the edited paths; paths after its description separator are references.
-
-Assemble the Linear description block the orchestrator will write back **verbatim**, then return the
-**path** of the file you assembled it in as `descriptionSummary`. This template is the
-**byte-identical external contract** boss-build and
-bs-sweep-plan consume — do not rename or drop sections. Do NOT add the `- Dependencies:` line — the
-orchestrator appends that itself when it links conflicting dependencies.
-
-When the plan file carries an `### Sibling-class enumeration` block, the description's
-`## Approach` carries the same `###` block after its bullets; the contract gate reports
-`enumeration-dropped` when the plan file has it and the description does not.
-
-The `- Contract: v<N>` bullet under `## Planning` stamps the version of this description-section
-contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Keep it equal to
-`planContract.version` in the repo-root `.boss-skills.json` (v1 today); the sync gate
-`skills-toolbox/plan-contract.test.mjs` fails if the stamp and the config version disagree.
+The tracker description is a short pointer to the plan. Don't add a `- Dependencies:` line (the
+orchestrator does). Template:
 
 ```markdown
 ## Summary
 
-<2-3 sentences: what & why>
-
-## Approach
-
-- <chosen implementation approach, bulleted>
+<2-4 sentences: what will change and why. The plan attachment has the detail.>
 
 ## Key changes
 
-- <module/area>: <what>
-
-## Testing
-
-<unit / e2e / eval coverage the plan calls for>
-
-## Risks / unknowns
-
-- <bullets>
-
-## Premises
-
-- [ ] (central) <load-bearing premise the implementer must re-check> — check: `<command a reviewer can re-run>`
-
-## Acceptance criteria
-
-- [ ] <testable pass/fail condition>
-- [ ] (verify-only) <invariant no diff can demonstrate; use ONLY where no test or gate can pin it> — check: `<command a reviewer can re-run>`
-
-## Required proof
-
-- [ ] (<surface: TUI / web / marketing / docs>) <boss-proof recipe / artifact> — the flow it must
-      demonstrate, with 1–3 short literal on-screen evidence tokens a reviewer can check against the stills
-
-## Proof harness analysis
-
-- Applicability: <proof-applicable (capturable surface, per `node scripts/proof.mjs plan`) | not applicable — tests/diff are the evidence> · Surfaces touched: <TUI / web / marketing / docs / backend-only> · Existing coverage: <recipe ids / scenario files, or none> · Gap → in-PR affordances: <scenario / fixture preset / route / data-testid / recipe to build, or none> · External blockers: <none | the surface no affordance can reach unattended>
+- `<repo-relative path>`: <what>
 
 ## Why this needs a human
 
@@ -966,26 +178,15 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 
 - Contract: v1
 - Agent-friendly: <yes | needs-human (see "Why this needs a human")>
-- The authoritative estimate and priority for this ticket live on the issue, not in this body.
-- Atomic-5: <ONLY when a single ticket is estimated `5` — the explicit reason it is atomic & un-splittable and cannot be an epic. Omit this bullet for `0/1/2/3` tickets.>
 - Plan attachment: `Implementation plan (<ISSUE-ID>)`
-- On implementation: copy the plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in the PR.
 
 ## Original notes
 
 <verbatim prior description if the ticket had one — preserved, never discarded>
 ```
 
-`## Planning` stamps **contract notation only** — never a mutable metadata echo. The estimate and
-the priority are resolved in Phase 4 **after** this body has been uploaded and byte-verified, so a
-value stamped here that the orchestrator then resolves differently costs a delete plus a re-upload
-of an artifact that was supposed to be frozen. Nothing parses these values out of the body; the
-issue's own fields are the authority. Read the estimate or priority from the issue, never from a
-plan body that may predate them.
-
-For headless runs, append the prior description from `DESCRIPTION_SNAPSHOT_PATH` only. Do not fetch,
-reconstruct, or retype it from any other source. Build the summary body as bytes on disk — those
-bytes never travel the return channel, only their path does:
+Build it on disk and append the snapshot — only its path crosses the return channel (which
+HTML-escapes `<`, `>`, `&`):
 
 ```bash
 # The `description` family in $BOSS_PLAN_TOOLBOX/plan-scratch-paths.mjs. A bare `mktemp` here would
@@ -999,56 +200,50 @@ DESCRIPTION_SUMMARY_WITHOUT_ORIGINAL_NOTES
 cat "${DESCRIPTION_SNAPSHOT_PATH:?DESCRIPTION_SNAPSHOT_PATH unset}" >>"$BODY"
 ```
 
-Return the path of `"$BODY"` as `descriptionSummary` — the object `{"path": "<that path>"}`, never
-the file's contents and never a shell capture of them. This is the field's **one legal channel**:
-the return channel HTML-escapes `<`, `>` and `&`, so a block whose `## Original notes` must later
-survive `--require-verbatim` cannot cross it intact, while the file itself is already where every
-downstream gate and the tracker write read from. The guard resolves the reference and runs the
-description contract over the bytes on disk, so a path that names anything but this run's own
-`description` artifact, or a file that is off-contract, is refused exactly as an off-contract inline
-string is.
+Keep `## Original notes` byte-for-byte from the snapshot, except that upload URLs are written
+query-stripped (a signed one must be). Never replace an image with a placeholder; the tracker keeps
+no history, so a dropped URL is gone. Use a fenced block for any literal whose surrounding whitespace
+matters.
 
-**Preserve the whole `## Original notes` block.** Its body must be copied unchanged from
-`DESCRIPTION_SNAPSHOT_PATH`, except that an upload URL may, and a signed upload URL **must**, be
-written in its query-stripped unsigned form. The parity guard compares upload asset identity, so this
-preserves the asset while avoiding a credential-like signature. **Never** replace an image with a
-`[screenshot: …]` text placeholder or any paraphrase: Linear does not expose description history to
-agents, so the rewritten description is the only surviving copy of those URLs, and a paraphrase
-destroys them permanently (this is the exact screenshot-dropping data-loss failure). You MAY
-_additionally_ list the images under a `## Screenshots` bullet list in the plan body for the
-implementer's convenience, but the original URLs must stay intact inside `## Original notes`. A
-mechanical orchestrator-side guard (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`) aborts the Linear
-write if any source image is missing from the description file you composed, so a dropped image
-fails the whole run — do not let it.
-The unsigned-upload rule is plan-wide: query-strip every query-bearing upload URL anywhere in the
-plan file, including URLs outside `## Original notes`.
-For any literal whose leading or trailing whitespace is semantically significant, use a fenced code
-block rather than an inline code span: the tracker's Markdown normalizer can move leading whitespace
-outside inline spans on save. The plan attachment is authoritative wherever the stored description
-and attachment differ, because the attachment is uploaded as raw bytes.
+## Step 8 — Verify, then write the sentinel
 
-## Step 8 — Write the terminal sentinel
+Write a redacted, signature-stripped copy of the snapshot to
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` and check it and the
+description (pass `--allow-empty-original` only when the snapshot really was empty):
 
-Once the plan file is written and non-empty, record your terminal decision to the run-file sentinel
-so the orchestrator can classify the dispatch outcome **from the file only** (never from your
-returned prose). Include `premises` in the sentinel payload as an array of at most `PREMISE_LIMIT`
-`{id, state}` entries for tracker issues whose state your plan relies on.
-`premises[].state` is the state observed at recon, not a predicted state or a pre-dispatch read. Emit `[]` when
-there are no such dependencies; do not omit the key.
+```bash
+BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+# Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
+SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"   # the safe source you just wrote
+NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"                    # the composed description ($BODY from Step 7)
+node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$DESCRIPTION_SNAPSHOT_PATH" \
+  --rewritten "$SAFE_ORIG" --require-safe-source
+node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$NEW" \
+  --require-verbatim --require-unsigned-uploads
+```
+
+Then the contract check, in its own block:
+
+```bash
+BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the same composed description as above
+node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"
+```
+
+Fix anything either reports before writing `ok`. Any size or count you report must be one you just
+measured (`stat`, `wc -c`, an enumerating search); otherwise say `unmeasured`.
+
+Single ticket — `premises` lists at most `PREMISE_LIMIT` `{id, state}` entries (the state you
+observed at recon) for tickets the plan relies on, `[]` when none:
 
 ```bash
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
   "$(jq -nc --arg p "$PLAN_PATH" --argjson premises '[]' '{planPath:$p,premises:$premises}')"
 ```
 
-The sentinel payload's `planPath` is the relative `PLAN_PATH` the orchestrator supplied. Write this
-**only after** the plan file exists. If you cannot produce the plan, do **not** write an `ok`
-sentinel — leave it absent so the orchestrator reads `missing` and takes the safe branch.
-
-**Epic variant.** On an EPIC run (Step 1 triage = EPIC, decompose-and-auto-create completed) there is
-NO single-ticket plan file — you already did every Linear write yourself. Write a **distinct** epic
-sentinel: still `kind`/status `ok`, but the payload marks it an epic and carries **no** `planPath`, so
-the orchestrator branches past Phase 3.5 / Phase 4 straight to cleanup + report:
+Epic — no plan file; the payload carries the epic's ids and artifact paths ([`epic.md`](epic.md)
+lists what each must hold). Set `ISSUE_ID` to the real id and replace every placeholder with the
+real children, plan paths, spec path and guard scratch paths:
 
 ```bash
 ISSUE_ID="<ISSUE-ID>"   # the id the orchestrator handed you (the actual issue id, not the literal <ISSUE-ID>); no shell export exists, so initialize it here before the write
@@ -1063,112 +258,11 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
     '{epic:true, epicParentId:$id, childIds:$childIds, childPlanPaths:{($childId):$childPlan}, epicSpecPaths:$epicSpecPaths, guardScratchPaths:$guardScratchPaths}')"
 ```
 
-`ISSUE_ID` is **not** a shell variable the orchestrator exports (its input is the placeholder
-`<ISSUE-ID>`), so set it explicitly to the actual issue id above — otherwise `$ISSUE_ID` is unset,
-the sentinel records `epicParentId:""`, and the orchestrator's epic reverify reads an empty parent
-id and fails/cleans up as a failed run even though the parent was already repurposed. Replace the
-placeholder path values with **every actual child id**, a `childPlanPaths` object that maps each
-actual child id to that child's actual plan path, and the canonical `.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>.epic-spec.json`
-scratch file whose `parentId` matches the epic parent and whose spec contains every child's stable
-key and title. Do not copy child keys into the sentinel payload; the orchestrator derives key/title
-pairs from the parent-bound spec scratch and matches each reported child id by the exact canonical
-filename. Every `childIds` entry must have its own distinct non-empty child plan path
-whose basename exactly equals `<PARENT>-child-<key>-<issueSlug(CHILD-ID, child-title)>.md`; an unrelated
-non-empty file with the same prefix does not satisfy a missing child. Replace
-the example `guardScratchPaths` array with every child and parent image-parity / safe-source guard
-scratch path this epic created, plus every retained `<child-plan>.md.rejected` structure artifact;
-the field is mandatory even when the array is empty. Include the
-mandatory `epicSpecPaths` field, and put the local epic spec body scratch path in that array whether
-stage 2 uploaded a new spec in this run or rehydrated the durable stored spec during resume. Do
-**not** report attachment header scratch
-paths here: the attachment contract deletes them immediately after their PUT returns, so their
-existence is verified at the PUT boundary rather than by the terminal sentinel. The orchestrator
-refuses an epic sentinel that omits the required epic artifact paths, and still verifies every
-scratch path the sentinel reports.
-Write it only after the epic is fully created + wired and the parent repurposed. If the epic guards
-failed and you fell back to a single-ticket plan, write the single-ticket sentinel above instead.
+Write nothing if you could not produce the plan: an absent sentinel is the safe outcome.
 
-Before writing the sentinel, **self-verify image parity**: first make a safe copy of
-`DESCRIPTION_SNAPSHOT_PATH` at `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` — the
-declared `attachment-guard-orig` family, not a name of your own — with the same mandatory secret/PII
-redactions and upload-signature stripping required for `descriptionSummary`, then anchor that safe copy against the real snapshot before using
-it for the verbatim check. A safe source reproduced from memory makes the verbatim exit 0 vacuous:
-it proves only that two model-authored copies match, not that either one came from the tracker
-snapshot. Then confirm every image URL in that safe source (inline `![](…)`, `<img>`,
-`uploads.linear.app`/attachment URLs) survives verbatim in `descriptionSummary`'s
-`## Original notes`. Run the guard against that safe source — re-deriving the toolbox dir in the same
-block, because this Bash call inherits nothing:
+## Step 9 — Return bounded metadata
 
-```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-# Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
-SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"   # the safe source you just wrote
-NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"                    # the composed description ($BODY from Step 7)
-node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$DESCRIPTION_SNAPSHOT_PATH" \
-  --rewritten "$SAFE_ORIG" --require-safe-source
-node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$NEW" \
-  --require-verbatim --require-unsigned-uploads
-```
-
-The orchestrator additionally passes `--expect-images` from its Phase 1 observation. The verbatim
-check catches a drafting model that rewrites ordinary Markdown links inside `## Original notes`; the
-unsigned-upload check rejects a signature query before the tracker write. Never compare redacted
-`descriptionSummary` against the raw source: required redaction is not a parity failure.
-
-The guard **refuses** an empty or whitespace-only original (exit 1, `cannot verify image parity`)
-rather than certify a comparison it cannot make. `DESCRIPTION_SNAPSHOT_PATH` may legitimately be empty
-(see Inputs), and that is the one case where the refusal is a false alarm: pass
-`--allow-empty-original` then, and only then. If the description was **not** empty, an empty
-`DESCRIPTION_SNAPSHOT_PATH` means your own extraction broke — fix the extraction, never silence it with the flag.
-
-Fix any drop before writing the `ok` sentinel — the orchestrator's mechanical guard will otherwise
-abort the whole run.
-
-**Also self-verify the plan contract**, in a block of its own immediately after that one and before
-the `ok` sentinel — it sources the toolbox preamble again because blocks inherit nothing, so do not
-merge it into the block above. Write the composed `descriptionSummary` to a scratch file and run the
-contract guard over it and the plan file from the repo worktree root:
-
-```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the same composed description as above
-node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"
-```
-
-It prints one stderr line per violation, tagged `duplicate-section`, `enumeration-dropped`, `line-spanning-emphasis`, `merged-list-item`,
-`missing-sections`,
-`not-a-description`, `placeholder-residue`, `plan-file-residue`, `plan-file-structure`,
-`plan-file-structure-exemption`,
-`pr-body-only-evidence`, `premise-reused-as-criterion`, `section-order`, `self-falsified-literal-search`, `stale-premise-citation`,
-`stale-risk-citation`,
-`subject-areas-unresolved`,
-`unanchored-premise-citation`, `unknown-section`, `unmeasured-count-claim`, `unresolvable-citation`, any `vacuous-*` code
-(the dynamic `vacuous-<kind>-command-<reason>` family), or `unreadable-input`. **A non-zero exit
-means write no `ok` sentinel** — fix the description or the plan file and re-run, or leave the
-sentinel absent so the orchestrator reads `missing` and takes the safe branch.
-
-Running it here as well as in the orchestrator's Phase 4 is deliberate, not redundant: failing fast
-here turns an orchestrator-side abort into a self-describing dispatch failure, while the Phase 4
-gate remains the authoritative pre-write gate that does not trust this subagent.
-
-Any byte count or size you report must be one you just measured from disk with `stat` or `wc -c`.
-The same rule governs **every pinned constant** — a call-site count, a column count, a threshold —
-each must be one this run re-measured from the current tree with the command it records as its
-`— check:`, never one copied from the ticket, a sibling plan or an earlier draft. Do not estimate or
-infer sizes from editor output, returned prose, or intended content. If you cannot measure a size,
-report that size as `unmeasured` rather than inventing a number.
-
-## Step 9 — Return only bounded metadata (never the plan content)
-
-Return a single small object — **never the plan file's content** (returning content re-inflates the
-caller, defeating the isolation). Every value here is bounded by construction, `descriptionSummary`
-included: it travels as the **path** of the `description` artifact Step 7 assembled, so no drafted
-text crosses this channel at all.
-
-The object is **strict JSON** — double-quoted keys and strings, no comments, no trailing commas —
-never a JavaScript object literal: the orchestrator adopts it byte-for-byte and the metadata guard
-parses it, so a literal forces a hand conversion. Every path in it is **repo-relative** (the guard
-normalizes an absolute or `./` spelling under the working tree, and refuses one outside it).
+Strict JSON, repo-relative paths, never plan text:
 
 ```json
 {
@@ -1182,35 +276,12 @@ normalizes an absolute or `./` spelling under the working tree, and refuses one 
 }
 ```
 
-- `planPath` — `PLAN_PATH`, the path only, never content.
-- `labels` — the relevant **content labels** to union, and only those: `bug`, `feature`,
-  `improvement`, `docs`, each spelled as the repo's `optionalLabelName` mapping resolves it (the
-  literal when unmapped). Never `agent-friendly`, `needs-human` or `agent-question`, and never a
-  label outside that allow-list — the guard refuses it as `unknown-label`.
-- `agentFriendly` — `true` or `false`; `false` means needs-human and drives the mutually-exclusive
-  label.
-- `estimate` — Fibonacci `0`, `1`, `2` or `3`; a bare `5` ONLY for a recorded atomic and
-  un-splittable single ticket. An `8` is never a single ticket: it becomes an epic or needs-human.
-- `priority` — `1` to `4`.
-- `openQuestions` — one line per recorded controversial fork; may be empty.
-- `descriptionSummary` — the Step 7 artifact, BY REFERENCE: this is the form to send.
+`labels` are content labels (`bug`, `feature`, `improvement`, `docs` — any spelling; the guard maps
+them). `estimate` is 0/1/2/3/5. `priority` is 1–4. `descriptionSummary` is the Step 7 artifact by
+reference (an inline string is still accepted for older extensions). The orchestrator derives
+`agent-friendly` / `needs-human` and `agent-question` itself.
 
-`descriptionSummary` is a union the guard accepts in two forms: the by-reference object above, and a
-legacy inline string carrying the composed `## Summary … ## Original notes` block. **Send the
-reference.** The inline form is retained only so the interactive batch path and third-party draft
-extensions keep validating, and its bytes are the ones this channel corrupts.
-
-`premises` is deliberately absent from this returned metadata object. It rides the run-file sentinel
-payload instead, where the orchestrator already classifies trusted dispatch outcomes.
-
-The orchestrator derives the mutually-exclusive `agent-friendly`/`needs-human` label from
-`agentFriendly`, and unions `agent-question` iff `openQuestions` is non-empty — the label-application
-contract stays orchestrator-owned. Choose the estimate and priority per the guidance in SKILL.md
-Phase 6.
-
-**Epic outcome.** For an EPIC run, return the bounded **epic** object instead — NOT the single-ticket
-shape (the single-ticket metadata does not apply: you already applied the per-child labels/estimate
-on each child and left the parent deliberately unlabeled):
+Epic runs return instead:
 
 ```json
 {
@@ -1220,5 +291,4 @@ on each child and left the parent deliberately unlabeled):
 }
 ```
 
-- `epicParentId` — the repurposed original ticket.
-- `childIds` — **REQUIRED**: every created child, in topo order.
+with `childIds` listing every child in topological order.

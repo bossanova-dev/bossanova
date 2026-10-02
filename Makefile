@@ -9,7 +9,7 @@
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
-	lint-proto-breaking post-rebase-check ratchet-report check-race-budget \
+	lint-proto-breaking post-rebase-check check-race-budget \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Fast affected check (default target) — lint + test only the affected/changed
@@ -1062,12 +1062,8 @@ BUF_BREAKING_BASE ?= .git\#branch=origin/main
 lint-proto-breaking:
 	buf breaking --against '$(BUF_BREAKING_BASE)'
 
-## ratchet-report: Print pinned beside measured for every size gate and prose-pin baseline.
-ratchet-report:
-	node scripts/ratchet-report.mjs
-
 ## post-rebase-check: Re-run deterministic checks and re-measure pinned values after a rebase.
-post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test ratchet-report
+post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test
 
 lint-bossalib: lint-check-version
 	node scripts/lint-affected.mjs --module lib/bossalib

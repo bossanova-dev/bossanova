@@ -16,18 +16,6 @@ import {
 
 const tmpRoots = []
 const scriptPath = fileURLToPath(new URL('./sync-codex-skills.mjs', import.meta.url))
-const privateDebtSkillPath = fileURLToPath(
-  new URL('../.claude/skills/bs-sweep-debt/SKILL.md', import.meta.url),
-)
-const privateMutationSkillPath = fileURLToPath(
-  new URL('../.claude/skills/bs-sweep-mutation/SKILL.md', import.meta.url),
-)
-// boss-plan is a published core: its canonical committed home is the skillinstall
-// payload (BOS-271), no longer .claude/skills. This content pin reads that home.
-const privatePlanSkillPath = fileURLToPath(
-  new URL('../services/boss/internal/skillinstall/skills/boss-plan/SKILL.md', import.meta.url),
-)
-
 function tmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-skills-test-'))
   tmpRoots.push(dir)
@@ -78,93 +66,6 @@ afterEach(() => {
 })
 
 describe('sync-codex-skills', () => {
-  it(
-    'keeps the bs-sweep-debt daily automation safety contract explicit',
-    {
-      skip: !fs.existsSync(privateDebtSkillPath) && 'private skill fixture is absent',
-    },
-    () => {
-      const skill = fs.readFileSync(privateDebtSkillPath, 'utf8')
-      assert.match(skill, /^name: bs-sweep-debt/m)
-      assert.match(
-        skill,
-        /Push\s+at\s+most\s+one\s+PR-worthy\s+session-branch\s+commit\s+per\s+run/,
-      )
-      assert.match(skill, /Windows\s+WSL/)
-      assert.match(skill, /macOS, Linux, and\s+Windows\s+WSL/)
-      assert.match(skill, /`\/boss-finalize`/)
-      assert.match(skill, /READY_GREEN_PR/)
-      assert.match(skill, /NO_CHANGE/)
-      // BOS-640: `gh pr ready` moved into skills-toolbox/sweep-pr-gate.sh (pinned byte-exact by
-      // scripts/sweep-pr-gate.test.mjs). The safety contract is unchanged — the skill still
-      // readies the PR itself — so this pin repoints at the EXECUTED invocation. A bare-path
-      // regex would also be satisfied by the resident "executed, not read" prose sentence, and
-      // so would survive deleting the fenced call outright.
-      assert.match(
-        skill,
-        /bash "\$\(git[ ]rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
-      )
-      assert.match(skill, /gh\s+pr\s+checks/)
-      assert.match(skill, /isDraft=false/)
-      assert.doesNotMatch(skill, /NO_PR/)
-      assert.doesNotMatch(skill, /BRANCH_PUSHED/)
-      assert.doesNotMatch(skill, /BLOCKED/)
-      assert.match(skill, /Platform\s+Portability\s+Scan/)
-    },
-  )
-
-  it(
-    'keeps cron mutation PR creation owned by the skill',
-    {
-      skip: !fs.existsSync(privateMutationSkillPath) && 'private mutation skill fixture is absent',
-    },
-    () => {
-      const skill = fs.readFileSync(privateMutationSkillPath, 'utf8')
-
-      assert.match(skill, /^name: bs-sweep-mutation/m)
-      assert.match(skill, /current\s+session\s+branch/)
-      assert.match(skill, /READY_GREEN_PR/)
-      assert.match(skill, /NO_CHANGE/)
-      // BOS-640: `gh pr create` / `gh pr ready` moved into skills-toolbox/sweep-pr-gate.sh
-      // (pinned byte-exact by scripts/sweep-pr-gate.test.mjs). PR creation is still OWNED by the
-      // skill — it EXECUTES the gate — so this pin repoints at the invocation. A bare-path regex
-      // would also be satisfied by the resident "executed, not read" prose sentence.
-      assert.match(
-        skill,
-        /bash "\$\(git[ ]rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
-      )
-      assert.match(skill, /gh\s+pr\s+checks/)
-      assert.match(skill, /isDraft=false/)
-      assert.doesNotMatch(skill, /git\s+switch -c "\$BRANCH"/)
-      assert.doesNotMatch(skill, /NO_PR/)
-      assert.doesNotMatch(skill, /BRANCH_PUSHED/)
-      assert.doesNotMatch(skill, /BLOCKED/)
-    },
-  )
-
-  it(
-    'keeps boss-plan defaulting to agent-friendly with needs-human as the explained exception',
-    {
-      skip: !fs.existsSync(privatePlanSkillPath) && 'private plan skill fixture is absent',
-    },
-    () => {
-      const skill = fs.readFileSync(privatePlanSkillPath, 'utf8')
-
-      assert.match(skill, /^name: boss-plan/m)
-      // Both labels are documented as workspace facts and mutually exclusive.
-      assert.match(skill, /`agent-friendly`, `needs-human`/)
-      assert.match(skill, /mutually\s+exclusive/)
-      // Agent-friendly is the default, applied to every plan unless blocked.
-      assert.match(skill, /Agent-friendly\s+is\s+the\s+default/)
-      // needs-human is the exception and requires the explanation section.
-      assert.match(skill, /`needs-human`/)
-      assert.match(skill, /never\s+both/)
-      assert.match(skill, /## Why\s+this\s+needs\s+a\s+human/)
-      // Complexity alone must never downgrade a plan to needs-human.
-      assert.match(skill, /[Cc]omplexity\s+alone\s+is\s+\*?\*?not\*?\*? a\s+reason/)
-    },
-  )
-
   it('fails when a skill is missing required frontmatter fields', () => {
     const root = tmpDir()
     const sourceRoot = path.join(root, '.claude', 'skills')

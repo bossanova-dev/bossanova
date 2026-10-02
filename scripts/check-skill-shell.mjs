@@ -31,9 +31,8 @@
 //     gate exists for.
 //
 // (b) TWO AUTHORING ROOTS ONLY — no mirrors. `plugins/bossd-plugin-claude/skilldata/skills/` is
-//     byte-identical to the canonical cores (kept in sync by `make copy-skills`, asserted by the
-//     "plugin mirror SKILL.md is byte-identical to the canonical SKILL.md" tests in
-//     scripts/bs-plan-skill.test.mjs and scripts/boss-build-skill.test.mjs). `.codex/skills/` is a
+//     byte-identical to the canonical cores (kept in sync by `make copy-skills`, asserted by
+//     //services/boss/internal/skillparity). `.codex/skills/` is a
 //     verbatim-body copy of `.claude/skills/` produced by scripts/sync-codex-skills.mjs and gated
 //     by `make codex-skills-check`. Scanning either would triple the runtime and report every
 //     offender two or three times with a mirror path a fixer must NOT edit. So the gate names no

@@ -523,8 +523,11 @@ export const ROLE_SCHEMAS = Object.fromEntries(
   Object.entries(EXTENSION_ROLES).map(([role, spec]) => [role, spec.keys]),
 )
 
+const withWarnings = (result, warnings) => (warnings.length > 0 ? { ...result, warnings } : result)
+
 export function validateResult(envelope, role) {
   const errors = []
+  const warnings = []
   if (!envelope || typeof envelope !== 'object') {
     return { ok: false, errors: ['envelope is not an object'] }
   }
@@ -549,7 +552,11 @@ export function validateResult(envelope, role) {
       errors.push('extension is not a non-empty string')
     }
     if (envelope.role !== role) {
-      errors.push(`envelope role "${envelope.role}" does not match expected "${role}"`)
+      // The caller already knows which role it dispatched (it names the output file), so a
+      // mislabelled envelope is reported, not a reason to discard what the extension found.
+      const message = `envelope role "${envelope.role}" does not match expected "${role}"`
+      if (spec.nonEmpty || spec.kind === 'fields') errors.push(message)
+      else warnings.push(message)
     }
   }
   // Behaviour-shipping roles (`draft`, `methodology`, `agent-driver`) report named top-level fields
@@ -567,19 +574,22 @@ export function validateResult(envelope, role) {
         errors.push(`"${key}" is not a non-empty string`)
       }
     }
-    return { ok: errors.length === 0, errors }
+    return withWarnings({ ok: errors.length === 0, errors }, warnings)
   }
   if (!Array.isArray(envelope.items)) {
     errors.push('items is not an array')
-    return { ok: false, errors }
+    return withWarnings({ ok: false, errors }, warnings)
   }
+  // Findings roles: a malformed item is reported per item and left for the caller's own per-item
+  // triage to normalize or drop. One bad item must not discard every other finding in the envelope.
+  const itemProblems = spec.nonEmpty ? errors : warnings
   envelope.items.forEach((item, idx) => {
     if (!item || typeof item !== 'object') {
-      errors.push(`item ${idx} is not an object`)
+      itemProblems.push(`item ${idx} is not an object`)
       return
     }
     for (const key of requiredKeys) {
-      if (!(key in item)) errors.push(`item ${idx} missing "${key}"`)
+      if (!(key in item)) itemProblems.push(`item ${idx} missing "${key}"`)
     }
     // Roles whose items are a *claim of persistence* need every declared key to carry real text:
     // an empty `noteId` or `path` satisfies the `in` check above while proving nothing was
@@ -593,7 +603,7 @@ export function validateResult(envelope, role) {
       }
     }
   })
-  return { ok: errors.length === 0, errors }
+  return withWarnings({ ok: errors.length === 0, errors }, warnings)
 }
 
 function parseArgs(argv) {

@@ -129,24 +129,6 @@ export function assertRouteSatisfied(outcome, receiptOrStamps) {
       error: 'obligations out of order',
     }
   }
-  const blockedMissing =
-    outcome === 'BLOCKED' ? missing : TERMINAL_ROUTES.BLOCKED.filter((token) => !seen.has(token))
-  if (outcome !== 'BLOCKED' && blockedMissing.length === 0 && unknown.length === 0) {
-    let blockedOrdered = 0
-    for (const token of stampTokens) {
-      if (token === TERMINAL_ROUTES.BLOCKED[blockedOrdered]) blockedOrdered += 1
-    }
-    if (blockedOrdered === TERMINAL_ROUTES.BLOCKED.length) {
-      return { ok: true, honestOutcome: 'BLOCKED', missing, unknown, downgraded: true }
-    }
-    return {
-      ok: false,
-      honestOutcome: 'ROUTE_UNSATISFIED',
-      missing: TERMINAL_ROUTES.BLOCKED.slice(blockedOrdered),
-      unknown,
-      error: 'BLOCKED obligations out of order',
-    }
-  }
   return { ok: false, honestOutcome: 'ROUTE_UNSATISFIED', missing, unknown }
 }
 

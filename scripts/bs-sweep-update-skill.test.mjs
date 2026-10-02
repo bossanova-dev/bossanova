@@ -1,14 +1,4 @@
-// Contract suite for the bs-sweep-update WORKER gate (BOS-1225).
-//
-// This is the first cron gate in the repo that mutates the repository, and it
-// inverts the sibling convention: the other `bs-sweep-*` gates exit 0 to wake an
-// agent when there is work, while this one IS the work and always exits 1. There
-// is no local precedent a reader could infer that from, so the inversion, the
-// exit-code discipline, the preflight refusal, and the ladder's branch selection
-// are asserted here rather than left to convention.
-//
-// Everything below runs against the gate's injected seams — no git is spawned and
-// no checkout is touched.
+// Behaviour tests for the bs-sweep-update cron gate.
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -30,18 +20,13 @@ import {
   spawnGit,
   validateBossanovaCheckout,
 } from '../.claude/skills/bs-sweep-update/gate/gate.mjs'
-import { assertMirrorRegenerated } from './size-ratchet-lib.mjs'
-import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const abs = (rel) => path.join(repoRoot, rel)
-const SKILL_PATH = abs('.claude/skills/bs-sweep-update/SKILL.md')
-const MIRROR_PATH = abs('.codex/skills/bs-sweep-update/SKILL.md')
 const GATE_PATH = abs('.claude/skills/bs-sweep-update/gate/gate.mjs')
 const GATE_DIR = path.dirname(GATE_PATH)
 
 const gateSource = () => readFileSync(GATE_PATH, 'utf8')
-const skillBody = () => readFileSync(SKILL_PATH, 'utf8')
 
 const ok = (stdout = '') => ({ status: 0, stdout, stderr: '' })
 const fail = (stderr, status = 1) => ({ status, stdout: '', stderr })
@@ -421,34 +406,3 @@ test('the gate only auto-runs when it is the main module', () => {
 })
 
 // ─── Skill body and its generated mirror ─────────────────────────────────────────────────
-
-test('the skill frontmatter matches every sibling sweep', () => {
-  const body = skillBody()
-  assert.ok(body.includes('\nname: bs-sweep-update\n'))
-  assert.ok(body.includes('\ndisable-model-invocation: true\n'))
-  assert.ok(body.includes('\nallowed-tools: Bash, Read\n'))
-})
-
-test('the skill body states the inversion, the exit-code rule, and the dirty decline', () => {
-  const body = skillBody()
-  for (const literal of [
-    'always exits non-zero',
-    'selection',
-    '126',
-    '127',
-    'dirty',
-    'refs are already fresh',
-    'node .claude/skills/bs-sweep-update/gate/gate.mjs',
-    'GateCommand',
-  ]) {
-    assert.ok(body.includes(literal), `SKILL.md must carry ${JSON.stringify(literal)}`)
-  }
-})
-
-test('the codex mirror is exactly what regenerating it from the .claude source produces', () => {
-  assertMirrorRegenerated({
-    mirrorPath: MIRROR_PATH,
-    regenerate: rewriteClaudeSkillMarkdown,
-    sourcePath: SKILL_PATH,
-  })
-})

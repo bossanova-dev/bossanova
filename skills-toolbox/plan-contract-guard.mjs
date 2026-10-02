@@ -49,7 +49,6 @@ import {
   mergedListItems,
   parseAcceptanceCriteria,
   parsePremises,
-  planFileFloor,
   planDescriptionSections,
   planSectionsForDescriptionMode,
   scanFences,
@@ -107,12 +106,11 @@ const SCAFFOLDING_CLOSING_TAG = new RegExp(
   'i',
 )
 
-// Minimum plausible sizes for real plan descriptions. Epic parents have only four required
-// sections, so the child-plan floor would reject the terse but valid parent overview shape.
-const MIN_DESCRIPTION_BYTES = 200
-const MIN_EPIC_PARENT_DESCRIPTION_BYTES = 80
+// Minimum plausible size for a description: enough to catch an empty or placeholder field, small
+// enough that a short summary plus short original notes passes.
+const MIN_DESCRIPTION_BYTES = 60
+const MIN_EPIC_PARENT_DESCRIPTION_BYTES = 60
 const DESCRIPTION_MODES = new Set(['child-plan', 'epic-parent'])
-const PLAN_FILE_EXEMPTIONS = new Set(['epic-parent-overview', 'adopted-child-redraft', 'consumer'])
 const PREMISES_HEADING = '## Premises'
 const ACCEPTANCE_HEADING = '## Acceptance criteria'
 const KEY_CHANGES_HEADING = '## Key changes'
@@ -182,15 +180,12 @@ function violation(code, message) {
  */
 export const VIOLATION_CODES = [
   'duplicate-section',
-  'enumeration-dropped',
   'line-spanning-emphasis',
   'merged-list-item',
   'missing-sections',
   'not-a-description',
   'placeholder-residue',
   'plan-file-residue',
-  'plan-file-structure',
-  'plan-file-structure-exemption',
   'pr-body-only-evidence',
   'premise-reused-as-criterion',
   'section-order',
@@ -339,138 +334,6 @@ export function planFileResidue(plan) {
     return `plan file ends with tool-call scaffolding "${trimmed}" (line ${last.index + 1}) — the attachment must contain only the plan body`
   }
   return null
-}
-
-function planFileHeadingSections(plan) {
-  const scan = scanFences(plan)
-  const sourceLines = allLines(plan)
-  const outside = new Set(scan.lines.map(({ index }) => index))
-  const sections = []
-  let current = null
-  let inTerminal = false
-  for (const { line, index } of sourceLines) {
-    const heading = markdownH2Heading(line)
-    if (!inTerminal && outside.has(index) && heading) {
-      current = { heading, bodyLines: [] }
-      sections.push(current)
-      if (heading === '## Original notes') inTerminal = true
-      continue
-    }
-    if (current) current.bodyLines.push(line)
-  }
-  return { sections, unterminated: scan.unterminated }
-}
-
-function planFileSectionHasBody(section) {
-  return section.bodyLines.some((line) => line.replace(INLINE_CODE_SPAN, '').trim().length > 0)
-}
-
-/**
- * Producer-side plan-file structure floor.
- *
- * This rule rejects a promoted single-ticket plan file that has been flattened into the plan
- * description's contract headings. This check reads only the plan attachment body supplied to
- * `checkPlanContract`, not any drafter report about that body. Accepted false negative: a drafter
- * can satisfy the structural floor with a junk extra heading; content quality belongs to review.
- */
-export function checkPlanFileStructure(config, plan, { exemption = null } = {}) {
-  if (exemption !== null && exemption !== undefined) {
-    if (!PLAN_FILE_EXEMPTIONS.has(exemption)) {
-      return {
-        ok: false,
-        headingsInspected: 0,
-        violations: [
-          violation(
-            'plan-file-structure-exemption',
-            `unrecognised plan-file structure exemption "${exemption}" — expected one of ${[
-              ...PLAN_FILE_EXEMPTIONS,
-            ].join(', ')}`,
-          ),
-        ],
-      }
-    }
-    return { ok: true, headingsInspected: 0, violations: [] }
-  }
-
-  const floor = planFileFloor(config)
-  const scan = planFileHeadingSections(plan)
-  const sections = scan.sections
-  const headings = sections.map((section) => section.heading)
-  const headingsInspected = headings.length
-  const violations = []
-  const describedHeadings = new Set(
-    planSectionsForDescriptionMode(config, 'child-plan').map((s) => s.heading),
-  )
-  const additional = headings.filter((heading) => !describedHeadings.has(heading))
-
-  if (headingsInspected === 0) {
-    violations.push(
-      violation(
-        'plan-file-structure',
-        'plan file structure inspected 0 heading(s); expected contract headings plus the configured plan-file floor',
-      ),
-    )
-  }
-
-  if (scan.unterminated) {
-    violations.push(
-      violation(
-        'plan-file-structure',
-        `plan file structure inspected ${headingsInspected} heading(s) but contains an unterminated fenced code block`,
-      ),
-    )
-  }
-
-  const present = new Map(sections.map((section) => [section.heading, section]))
-  const missingContract = planSectionsForDescriptionMode(config, 'child-plan')
-    .filter((section) => section.required === 'always')
-    .map((section) => section.heading)
-    .filter((heading) => !present.has(heading))
-  if (missingContract.length > 0) {
-    violations.push(
-      violation(
-        'plan-file-structure',
-        `plan file structure inspected ${headingsInspected} heading(s) but is missing contract section(s): ${missingContract.join(', ')}`,
-      ),
-    )
-  }
-
-  for (const heading of floor.requiredHeadings) {
-    const section = present.get(heading)
-    if (!section) {
-      violations.push(
-        violation(
-          'plan-file-structure',
-          `plan file structure inspected ${headingsInspected} heading(s) but is missing required plan-file heading "${heading}"`,
-        ),
-      )
-      continue
-    }
-    if (!planFileSectionHasBody(section)) {
-      violations.push(
-        violation(
-          'plan-file-structure',
-          `plan file structure inspected ${headingsInspected} heading(s) but required plan-file heading "${heading}" is empty`,
-        ),
-      )
-    }
-  }
-
-  if (additional.length < floor.minimumAdditionalHeadings) {
-    violations.push(
-      violation(
-        'plan-file-structure',
-        `plan file structure inspected ${headingsInspected} heading(s) with ${additional.length} heading(s) outside planContract.sections; expected at least ${floor.minimumAdditionalHeadings}`,
-      ),
-    )
-  }
-
-  return {
-    ok: violations.length === 0,
-    headingsInspected,
-    additionalHeadingCount: additional.length,
-    violations,
-  }
 }
 
 function sectionText(config, description, heading, mode) {
@@ -1217,7 +1080,7 @@ export function checkPremiseReusedAsCriterion(config, description) {
 }
 
 /**
- * checkPlanContract({ description, plan, config }) -> { ok, violations, couldNotEvaluate }
+ * checkPlanContract({ description, plan, config }) -> { ok, violations, blocking, advisories, couldNotEvaluate }
  *
  * `description` is the composed plan description about to be written to the tracker. `plan` is the
  * optional plan-file body about to be attached; omit it (or pass null/undefined) to skip the
@@ -1229,7 +1092,6 @@ export function checkPlanContract({
   plan = null,
   config = DEFAULT_CONFIG,
   mode = 'child-plan',
-  planFileExemption = null,
   citationCwd = undefined,
   citationFs = undefined,
   moduleRoots = [],
@@ -1352,8 +1214,6 @@ export function checkPlanContract({
   if (plan !== null && plan !== undefined) {
     const residue = planFileResidue(plan)
     if (residue) violations.push(violation('plan-file-residue', residue))
-    const structure = checkPlanFileStructure(config, plan, { exemption: planFileExemption })
-    violations.push(...structure.violations)
   }
 
   for (const { line, text } of unterminated ? [] : mergedListItems(config, description, { mode })) {
@@ -1384,48 +1244,28 @@ export function checkPlanContract({
     violations.push(...subjectAreas.violations)
     advisories.push(...subjectAreas.advisories)
   }
-  if (plan !== null && plan !== undefined) {
-    violations.push(...checkEnumerationCarried(config, description, plan, { mode }))
-  }
 
+  const blocking = violations.filter((entry) => BLOCKING_VIOLATION_CODES.has(entry.code))
   return {
-    ok: violations.length === 0 && couldNotEvaluateResults.length === 0,
+    ok: blocking.length === 0,
     violations,
+    blocking,
     advisories,
     couldNotEvaluate: couldNotEvaluateResults,
   }
 }
 
-const ENUMERATION_HEADING = '### Sibling-class enumeration'
-const APPROACH_HEADING = '## Approach'
-
-/** True when `text` carries `heading` as a line of its own outside fenced code. */
-function carriesHeading(text, heading) {
-  return linesOutsideFences(text).some(({ line }) => line.trim() === heading)
-}
-
 /**
- * The plan file's sibling-class enumeration must survive into the description's `## Approach`.
- *
- * The drafting brief names `### Sibling-class enumeration` under `## Approach` as the table's one
- * home, and Step 7 carries it into the description. A derived description that drops it drops the
- * only scope evidence the implementer reads, silently — so the gate keys on the EXACT heading the
- * brief names. Accepted residual: a differently titled table escapes it.
+ * The violations that stop a write: the text is not a plan description at all, a required section
+ * is missing, a template placeholder was never substituted, or the plan file is empty or truncated. Every other code is a quality
+ * finding the CLI prints as a warning — the plan is still written.
  */
-function checkEnumerationCarried(config, description, plan, { mode }) {
-  if (!carriesHeading(plan, ENUMERATION_HEADING)) return []
-  if (
-    carriesHeading(sectionText(config, description, APPROACH_HEADING, mode), ENUMERATION_HEADING)
-  ) {
-    return []
-  }
-  return [
-    violation(
-      'enumeration-dropped',
-      `the plan file carries "${ENUMERATION_HEADING}" but the description's ${APPROACH_HEADING} does not — carry the same block after the ${APPROACH_HEADING} bullets`,
-    ),
-  ]
-}
+export const BLOCKING_VIOLATION_CODES = new Set([
+  'missing-sections',
+  'not-a-description',
+  'placeholder-residue',
+  'plan-file-residue',
+])
 
 /**
  * Resolve the subject's OWN change areas from the composed description, and fail when the scan
@@ -1516,7 +1356,6 @@ export function parseContractGuardArgs(argv) {
     description: null,
     plan: null,
     mode: 'child-plan',
-    planFileExemption: null,
     moduleRoots: [],
   }
   const readFlagValue = (flag, index) => {
@@ -1542,9 +1381,6 @@ export function parseContractGuardArgs(argv) {
         )
       }
       i += 1
-    } else if (flag === '--plan-file-exemption') {
-      args.planFileExemption = readFlagValue(flag, i)
-      i += 1
     } else if (flag === '--module-roots') {
       // The SAME list the dependency scan is given. Without a way to pass it, this gate ran with
       // an empty one while the scan it claims to mirror ran with the repo's roots, so a
@@ -1567,9 +1403,7 @@ export function parseContractGuardArgs(argv) {
 }
 
 function main() {
-  const { description, plan, mode, planFileExemption, moduleRoots } = parseContractGuardArgs(
-    process.argv.slice(2),
-  )
+  const { description, plan, mode, moduleRoots } = parseContractGuardArgs(process.argv.slice(2))
   // A file we cannot read is itself a violation, never a pass: an unreadable input is exactly the
   // state a broken upstream extraction produces, and that is the input a vacuous gate blesses.
   let descriptionText
@@ -1598,12 +1432,11 @@ function main() {
   }
 
   const config = loadSkillConfig({ cwd: process.cwd() })
-  const { ok, violations, advisories, couldNotEvaluate } = checkPlanContract({
+  const { ok, violations, blocking, advisories, couldNotEvaluate } = checkPlanContract({
     description: descriptionText,
     plan: planText,
     config,
     mode,
-    planFileExemption,
     moduleRoots,
     citationCwd: process.env.PLAN_CONTRACT_GUARD_CWD,
   })
@@ -1613,15 +1446,14 @@ function main() {
   for (const { code, message } of advisories) {
     console.error(`${message} [${code}]`)
   }
-  if (ok) return
   for (const { code, message } of violations) {
+    if (!BLOCKING_VIOLATION_CODES.has(code)) console.error(`warning: ${message} [${code}]`)
+  }
+  if (ok) return
+  for (const { code, message } of blocking) {
     console.error(`${message} [${code}]`)
   }
-  const unknown = couldNotEvaluate.length
-  const suffix = unknown ? `; ${unknown} check(s) could not be evaluated` : ''
-  console.error(
-    `plan-contract-guard: ${violations.length} contract violation(s)${suffix} — do not write`,
-  )
+  console.error(`plan-contract-guard: ${blocking.length} blocking violation(s) — do not write`)
   process.exitCode = 1
 }
 

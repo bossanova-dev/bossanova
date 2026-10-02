@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Pre-generalization skill-behavior baseline capture (BOS-249). Records the
-// CURRENT (pre-generalization) deterministic behavior of four Bossanova skill
+// CURRENT (pre-generalization) deterministic behavior of three Bossanova skill
 // functions into committed JSON snapshots under scripts/skill-parity/baseline/.
 // A later ticket (BOS-248) re-runs the post-refactor skill functions over the
 // SAME inputs and asserts the outputs still match these snapshots — so this
@@ -11,14 +11,13 @@
 //
 // INPUT MODEL — committed fixtures vs. live-read reference sources. Each
 // signature has two inputs: the *scenario* input (frozen) and, for three of the
-// four, a *reference source* read live from the working tree (NOT frozen):
+// two of the three, a *reference source* read live from the working tree (NOT frozen):
 //
 //   signature       scenario input (committed)          reference source (read live)
 //   ------------     ------------------------------      ---------------------------------
 //   review-lens      review-lens.input.json (files)      .boss-skills.json lensMap
 //   proof-surface    proof-surface.input.json (files)    proof/recipes/default.json
 //   dag-schedule     dag-schedule.input.json (nodes)     — (fully self-contained)
-//   plan-sections    — (the template IS the signature)   headless-drafting-brief.md Step 7
 //
 // This is deliberate: the signature is "what TODAY'S real skill (real registry/
 // catalog/template included) produces," so the reference sources are read live
@@ -76,18 +75,11 @@
 //                                // gating), which is a separate concern out of scope here.
 //       }
 //
-//   plan-sections.snapshot.json — boss-plan Step 7 section contract (the
-//     byte-identical ```markdown template under "## Step 7" in
-//     services/boss/internal/skillinstall/skills/boss-plan/references/headless-drafting-brief.md):
-//       {
-//         sections: string[], // ordered "## " heading lines, IN TEMPLATE ORDER
-//                              // (order IS the contract — do not sort)
-//       }
 //
 // Determinism rules: no timestamps/Date.now/Math.random/absolute paths/env
 // values in any snapshot; every set-like collection is sorted with a fixed
 // comparator; order is preserved only where order IS the signature (dag ready/
-// merge order, plan sections); every object's keys are recursively sorted
+// merge order); every object's keys are recursively sorted
 // before stringifying so re-running yields byte-identical files.
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -108,17 +100,6 @@ export const REPO_ROOT = join(SCRIPT_DIR, '..', '..')
 export const BASELINE_DIR = join(SCRIPT_DIR, 'baseline')
 
 const PROOF_CATALOG_PATH = join(REPO_ROOT, 'proof', 'recipes', 'default.json')
-const PLAN_BRIEF_PATH = join(
-  REPO_ROOT,
-  'services',
-  'boss',
-  'internal',
-  'skillinstall',
-  'skills',
-  'boss-plan',
-  'references',
-  'headless-drafting-brief.md',
-)
 
 function byString(a, b) {
   if (a < b) return -1
@@ -213,54 +194,27 @@ export function computeDagScheduleSignature(fixture) {
 
 // --- 4. boss-plan section contract ------------------------------------------
 
-/**
- * @param {string} markdown the full headless-drafting-brief.md content
- * @returns {{ sections: string[] }}
- */
-export function computePlanSectionsSignature(markdown) {
-  const stepIdx = markdown.indexOf('## Step 7')
-  if (stepIdx === -1) {
-    throw new Error('capture-baseline: "## Step 7" heading not found in headless-drafting-brief.md')
-  }
-  const afterStep = markdown.slice(stepIdx)
-  const fenceMarker = '```markdown'
-  const fenceStart = afterStep.indexOf(fenceMarker)
-  if (fenceStart === -1) {
-    throw new Error('capture-baseline: no ```markdown fence found under "## Step 7"')
-  }
-  const afterFenceOpen = afterStep.slice(fenceStart + fenceMarker.length)
-  const fenceEnd = afterFenceOpen.indexOf('```')
-  if (fenceEnd === -1) {
-    throw new Error('capture-baseline: unterminated ```markdown fence under "## Step 7"')
-  }
-  const fenceBody = afterFenceOpen.slice(0, fenceEnd)
-  const sections = fenceBody.split('\n').filter((line) => /^## /.test(line))
-  return { sections }
-}
-
 // --- Fixture I/O + orchestration --------------------------------------------
 
 function readJsonFixture(name) {
   return JSON.parse(readFileSync(join(BASELINE_DIR, name), 'utf8'))
 }
 
-/** Computes all four signatures from their committed real inputs. Pure aside from the reads. */
+/** Computes all three signatures from their committed real inputs. Pure aside from the reads. */
 export function computeAll() {
   const reviewLensFixture = readJsonFixture('review-lens.input.json')
   const proofSurfaceFixture = readJsonFixture('proof-surface.input.json')
   const dagScheduleFixture = readJsonFixture('dag-schedule.input.json')
   const proofCatalog = JSON.parse(readFileSync(PROOF_CATALOG_PATH, 'utf8'))
-  const planBrief = readFileSync(PLAN_BRIEF_PATH, 'utf8')
 
   return {
     'review-lens.snapshot.json': computeReviewLensSignature(reviewLensFixture),
     'proof-surface.snapshot.json': computeProofSurfaceSignature(proofSurfaceFixture, proofCatalog),
     'dag-schedule.snapshot.json': computeDagScheduleSignature(dagScheduleFixture),
-    'plan-sections.snapshot.json': computePlanSectionsSignature(planBrief),
   }
 }
 
-/** Computes and writes all four snapshots (2-space pretty, sorted keys) into `outDir`. */
+/** Computes and writes all three snapshots (2-space pretty, sorted keys) into `outDir`. */
 export function writeAll(outDir = BASELINE_DIR) {
   const snapshots = computeAll()
   for (const [filename, value] of Object.entries(snapshots)) {

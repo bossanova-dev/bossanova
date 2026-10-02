@@ -611,9 +611,19 @@ export function epicDoneBlockers(state) {
     .map((ticket) => ticket.id)
     .filter((id) => !s.needsHuman.includes(id) && !isTerminalTicket(s, id))
   if (nonTerminal.length) blockers.push(`notTerminal:${nonTerminal.join(',')}`)
-  if (!isNonEmptyString(s.finalProgressWrittenAt)) blockers.push('finalProgress:not-written')
-  if (!isNonEmptyString(s.watchCleanupDoneAt)) blockers.push('watchCleanup:not-done')
   return blockers
+}
+
+/**
+ * Bookkeeping the run should finish but that never holds a completed epic open: a progress comment
+ * that failed to post, or watches that were not cleaned up, are reported in the final summary.
+ */
+export function epicDoneWarnings(state) {
+  const s = normalizeEpicState(state)
+  const warnings = []
+  if (!isNonEmptyString(s.finalProgressWrittenAt)) warnings.push('finalProgress:not-written')
+  if (!isNonEmptyString(s.watchCleanupDoneAt)) warnings.push('watchCleanup:not-done')
+  return warnings
 }
 
 /**
@@ -1058,14 +1068,17 @@ function progressStatusForTicket(state, id) {
 // Reconciliation
 // ---------------------------------------------------------------------------
 
-/** Green admission conditions, each judged on an authoritative re-read. All five must hold. */
+/**
+ * Green admission conditions, each judged on an authoritative re-read: checks passing, PR out of
+ * draft, no do-not-merge marker, child chat settled. The ticket's tracker state is not one of them —
+ * a green PR whose child forgot to move the ticket is moved by the driver, not held.
+ */
 export function greenAdmissionBlockers(snapshot = {}) {
   const blockers = []
   if (snapshot.checkVerdict?.state !== 'passing') {
     blockers.push(`checks:${snapshot.checkVerdict?.state ?? 'unknown'}`)
   }
   if (snapshot.prView?.isDraft !== false) blockers.push('pr:draft-or-unknown')
-  if (snapshot.reviewStateMatches !== true) blockers.push('ticket:not-in-review-state')
   if (snapshot.partialMarker === true) blockers.push('pr:partial-marker')
   if (snapshot.chatSettled !== true) blockers.push('chat:unsettled')
   return blockers

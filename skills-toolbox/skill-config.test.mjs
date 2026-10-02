@@ -61,7 +61,6 @@ import {
   isConfiguredForPlanning,
   scanUnmappedRoleClaims,
   planContractVersion,
-  planFileFloor,
   planSections,
   planSectionsForDescriptionMode,
   planDescriptionSections,
@@ -940,88 +939,6 @@ test('mergeConfig replaces reviewDefaults.rounds wholesale', () => {
   assert.deepEqual(reviewDefaultRounds(merged), [
     { capability: 'second-voice', kind: 'cross-agent' },
   ])
-})
-
-test('DEFAULT_CONFIG declares a plan-file floor and planFileFloor reads it', () => {
-  assert.deepEqual(planFileFloor(DEFAULT_CONFIG), {
-    requiredHeadings: ['## Problem Frame', '## Requirements', '## Implementation Units'],
-    minimumAdditionalHeadings: 1,
-  })
-  validateConfig(DEFAULT_CONFIG, 'test')
-})
-
-test('mergeConfig replaces nested planFile arrays wholesale', () => {
-  const merged = mergeConfig(DEFAULT_CONFIG, {
-    planContract: {
-      planFile: {
-        requiredHeadings: ['## Decisions'],
-        minimumAdditionalHeadings: 2,
-      },
-    },
-  })
-  validateConfig(merged, 'test')
-  assert.deepEqual(planFileFloor(merged), {
-    requiredHeadings: ['## Decisions'],
-    minimumAdditionalHeadings: 2,
-  })
-})
-
-test('validateConfig rejects malformed planContract.planFile declarations', () => {
-  for (const planFile of [null, [], 'floor']) {
-    assert.throws(
-      () =>
-        validateConfig(
-          { ...DEFAULT_CONFIG, planContract: { ...DEFAULT_CONFIG.planContract, planFile } },
-          'test',
-        ),
-      /skill-config:.*planContract\.planFile must be an object/,
-    )
-  }
-
-  assert.throws(
-    () =>
-      validateConfig(
-        {
-          ...DEFAULT_CONFIG,
-          planContract: {
-            ...DEFAULT_CONFIG.planContract,
-            planFile: { requiredHeadings: [], minimumAdditionalHeadings: 1 },
-          },
-        },
-        'test',
-      ),
-    /skill-config:.*planContract\.planFile\.requiredHeadings must be a non-empty array/,
-  )
-  assert.throws(
-    () =>
-      validateConfig(
-        {
-          ...DEFAULT_CONFIG,
-          planContract: {
-            ...DEFAULT_CONFIG.planContract,
-            planFile: { requiredHeadings: ['## Decisions', 7], minimumAdditionalHeadings: 1 },
-          },
-        },
-        'test',
-      ),
-    /skill-config:.*planContract\.planFile\.requiredHeadings entries must be non-empty strings/,
-  )
-  for (const minimumAdditionalHeadings of [-1, 1.5, '1', null]) {
-    assert.throws(
-      () =>
-        validateConfig(
-          {
-            ...DEFAULT_CONFIG,
-            planContract: {
-              ...DEFAULT_CONFIG.planContract,
-              planFile: { requiredHeadings: ['## Decisions'], minimumAdditionalHeadings },
-            },
-          },
-          'test',
-        ),
-      /skill-config:.*planContract\.planFile\.minimumAdditionalHeadings must be a non-negative integer/,
-    )
-  }
 })
 
 test('mergeConfig preserves reviewDefaults delta keys beside a rounds override', () => {
@@ -1960,6 +1877,20 @@ test('planContract default is version 1 with today’s ordered section set', () 
   )
 })
 
+// The full description shape boss-plan used to require. Only Summary and Original notes are required
+// now; fixtures that exercise the other sections build from this list.
+const FULL_PLAN_SECTIONS = [
+  '## Summary',
+  '## Approach',
+  '## Key changes',
+  '## Testing',
+  '## Risks / unknowns',
+  '## Acceptance criteria',
+  '## Required proof',
+  '## Planning',
+  '## Original notes',
+]
+
 test('requiredPlanSections excludes the conditional and optional sections', () => {
   const req = requiredPlanSections(DEFAULT_CONFIG)
   assert.ok(!req.includes('## Why this needs a human'))
@@ -1983,28 +1914,15 @@ test('mode-aware section accessors discriminate child-plan and epic-parent contr
   assert.deepEqual(requiredSectionsForDescriptionMode(DEFAULT_CONFIG, 'epic-parent'), [
     '## Summary',
     '## Child tickets',
-    '## Planning',
     '## Original notes',
   ])
-  assert.deepEqual(requiredPlanSections(DEFAULT_CONFIG), [
-    '## Summary',
-    '## Approach',
-    '## Key changes',
-    '## Testing',
-    '## Risks / unknowns',
-    '## Acceptance criteria',
-    '## Required proof',
-    '## Planning',
-    '## Original notes',
-  ])
+  assert.deepEqual(requiredPlanSections(DEFAULT_CONFIG), ['## Summary', '## Original notes'])
 })
 
 // Build a plan description whose ## Planning body carries `planningLine`, laid out in the real
 // emitted order (## Planning before the terminal ## Original notes).
 const planDesc = (planningLine) =>
-  requiredPlanSections(DEFAULT_CONFIG)
-    .join('\n\nx\n\n')
-    .replace('## Planning\n\nx', `## Planning\n\n${planningLine}`)
+  FULL_PLAN_SECTIONS.join('\n\nx\n\n').replace('## Planning\n\nx', `## Planning\n\n${planningLine}`)
 
 const epicParentDesc = () =>
   [
@@ -2050,10 +1968,11 @@ test('planDescriptionSections accepts an explicit epic-parent overview mode', ()
 })
 
 test('validatePlanDescription keeps the default child-plan contract unchanged', () => {
+  // A child-plan description needs only Summary and Original notes; the epic-only heading is
+  // reported as unknown without failing.
   const r = validatePlanDescription(DEFAULT_CONFIG, epicParentDesc())
-  assert.equal(r.ok, false)
-  assert.ok(r.missing.includes('## Approach'))
-  assert.ok(r.missing.includes('## Acceptance criteria'))
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.unknown, ['## Child tickets'])
 })
 
 test('validatePlanDescription warns and falls back for an unknown mode', () => {
@@ -2062,8 +1981,7 @@ test('validatePlanDescription warns and falls back for an unknown mode', () => {
   console.warn = (message) => warnings.push(String(message))
   try {
     const r = validatePlanDescription(DEFAULT_CONFIG, epicParentDesc(), { mode: 'future-parent' })
-    assert.equal(r.ok, false)
-    assert.ok(r.missing.includes('## Approach'))
+    assert.deepEqual(r.unknown, ['## Child tickets'])
   } finally {
     console.warn = originalWarn
   }
@@ -2271,7 +2189,7 @@ test('validatePlanDescription reports a missing required section', () => {
   const desc = '## Summary\n\nx\n\n## Planning\n\n- Contract: v1\n'
   const r = validatePlanDescription(DEFAULT_CONFIG, desc)
   assert.equal(r.ok, false)
-  assert.ok(r.missing.includes('## Approach'))
+  assert.deepEqual(r.missing, ['## Original notes'])
 })
 
 test('validatePlanDescription flags an unsupported future version', () => {
@@ -2292,13 +2210,12 @@ test('validatePlanDescription ignores headings and stamps echoed in ## Original 
   // A plan that omits its own ## Testing section, whose verbatim ## Original notes body happens to
   // echo a `## Testing` heading and a stray `- Contract: v99` from the ticket. Neither may satisfy
   // the contract: the section is still missing and the authoritative version is the ## Planning v1.
-  const emitted = requiredPlanSections(DEFAULT_CONFIG)
-    .filter((h) => h !== '## Testing')
+  const emitted = FULL_PLAN_SECTIONS.filter((h) => h !== '## Summary')
     .join('\n\nx\n\n')
     .replace('## Planning\n\nx', '## Planning\n\n- Contract: v1')
-  const desc = `${emitted}\n\n## Testing\n\n(echoed from the ticket)\n\n- Contract: v99\n`
+  const desc = `${emitted}\n\n## Summary\n\n(echoed from the ticket)\n\n- Contract: v99\n`
   const r = validatePlanDescription(DEFAULT_CONFIG, desc)
-  assert.deepEqual(r.missing, ['## Testing'])
+  assert.deepEqual(r.missing, ['## Summary'])
   assert.equal(r.version, 1)
   assert.equal(r.unsupportedVersion, false)
   assert.equal(r.ok, false)
@@ -2925,13 +2842,11 @@ test('typed helper claims are checked against the matching tracker role namespac
 
 /** A complete, contract-valid v1 description whose `## Acceptance criteria` body is `criteria`. */
 const planBody = (criteria) =>
-  requiredPlanSections(DEFAULT_CONFIG)
-    .map((heading) => {
-      if (heading === '## Acceptance criteria') return `${heading}\n\n${criteria}`
-      if (heading === '## Planning') return `${heading}\n\n- Contract: v1`
-      return `${heading}\n\nbody`
-    })
-    .join('\n\n')
+  FULL_PLAN_SECTIONS.map((heading) => {
+    if (heading === '## Acceptance criteria') return `${heading}\n\n${criteria}`
+    if (heading === '## Planning') return `${heading}\n\n- Contract: v1`
+    return `${heading}\n\nbody`
+  }).join('\n\n')
 
 const publicCriterion = ({ text, checked, verifyOnly, check, result }) => ({
   text,
@@ -4532,9 +4447,9 @@ test('selection: this repo ships the seam INERT, so no registered job narrows ye
 // BOS-1328: an orchestrator-inserted Planning bullet merged into its neighbour passed every gate.
 const planningDescription = (planning, { tail = '' } = {}) =>
   [
-    ...requiredPlanSections(DEFAULT_CONFIG)
-      .filter((h) => h !== '## Planning' && h !== '## Original notes')
-      .map((h) => `${h}\n\nBody.`),
+    ...FULL_PLAN_SECTIONS.filter((h) => h !== '## Planning' && h !== '## Original notes').map(
+      (h) => `${h}\n\nBody.`,
+    ),
     `## Planning\n\n${planning}`,
     `## Original notes\n\nReporter text.${tail}`,
   ].join('\n\n')

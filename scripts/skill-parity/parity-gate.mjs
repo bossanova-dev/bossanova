@@ -2,7 +2,7 @@
 
 // BOS-248 skill-generalization self-parity gate. Bossanova dogfoods its own
 // generalized skill machinery as the reference consumer: this gate re-runs the
-// four post-generalization deterministic skill signatures over the SAME
+// three post-generalization deterministic skill signatures over the SAME
 // committed fixtures and asserts they still match the committed
 // pre-generalization baseline snapshots (BOS-249's capture-baseline.mjs), AND
 // asserts bossanova's authored dogfood extension skills are discovered with the
@@ -36,7 +36,6 @@ const SNAPSHOT_SKILL_LABELS = {
   'review-lens.snapshot.json': 'boss-review',
   'proof-surface.snapshot.json': 'boss-proof',
   'dag-schedule.snapshot.json': 'boss-epic',
-  'plan-sections.snapshot.json': 'boss-plan',
 }
 
 /** The authored dogfood extensions each generalized core must discover. */

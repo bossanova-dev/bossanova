@@ -70,20 +70,9 @@ cap past 5 h, breaks that inequality and has to raise `STALE_SECS` in the same c
 
 ## Selection-Time Eligibility
 
-Step 2's ranked walk is a side-effect-free eligibility pass. The adapter already reads each
-candidate and the candidate's canonical native plan attachment before claim time, so the hard-ABORT
-gate is checked there too: if the ticket or plan requires work on the exhaustive abort list, the
-candidate is skipped and the walk continues.
-
-The skip semantics intentionally match the existing blocker and missing-plan skips. Auto-queue has a
-runner-up list, so it keeps walking. An explicitly named ticket has no runner-up and keeps the
-existing behavior: it stops `NO_CHANGE` when it does not clear the hard-ABORT list. In both paths,
-the gate runs before workspace classification, claim comments, or tracker state moves.
-
-Acceptance criteria that require production access, production credentials, deployed-client IDs, or
-an audit of a live deployed environment are not dischargeable from an isolated worktree. They are
-ineligible for unattended build selection unless the plan has already replaced that production
-precondition with a worktree-local proof.
+Step 2's ranked walk is a side-effect-free eligibility pass: it skips blocked tickets, tickets with
+no plan, `needs-human` tickets and epic parents, and runs before workspace classification, claim
+comments, or tracker state moves.
 
 Epic parents are coordination containers, not buildable implementation targets. In the motivating
 parent/child failure shape, a run resolved the parent epic, then claimed a child issue and starved

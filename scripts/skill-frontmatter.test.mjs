@@ -104,9 +104,7 @@ test('every boss skill extension disables model invocation', () => {
   // silently refused. The correct fix is the other direction: an extension is dispatched
   // EXPLICITLY by its core, never model-matched, so it must not consume listing budget — and
   // the cores now load it by reading the descriptor's `skillPath` from disk, which the flag
-  // cannot break. `TestPublishedCoresDispatchExtensionsByPath` in
-  // services/boss/internal/skillinstall/extension_dispatch_test.go gates the other half: no
-  // published core may go back to dispatching a discovered extension by name.
+  // cannot break.
   const offenders = skillFiles()
     .filter((skill) => {
       const frontmatter = readFrontmatter(skill.path)

@@ -236,9 +236,7 @@ const PAYLOAD_DIR = fileURLToPath(
   new URL('../services/boss/internal/skillinstall/skills/boss-plan/', import.meta.url),
 )
 
-// The extraction rules live in scripts/plan-scratch-token-scan.mjs so that this gate and the
-// payload contract gate in scripts/bs-plan-skill.test.mjs cannot disagree about what counts as a
-// cited token — a second copy would let one of them miss a spelling and still report a clean scan.
+// The extraction rules live in scripts/plan-scratch-token-scan.mjs.
 
 /** @returns {{token: string, file: string, line: number}[]} */
 export function payloadScratchTokens(files = markdownFilesUnder(PAYLOAD_DIR)) {

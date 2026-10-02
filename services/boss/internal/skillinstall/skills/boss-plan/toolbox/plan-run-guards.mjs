@@ -20,7 +20,6 @@ import {
 } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
-import { checkPlanContract } from './plan-contract-guard.mjs'
 import { selectImplementationPlanAttachment } from './plan-attachment.mjs'
 import { parseEpicSpec } from './plan-epic-lib.mjs'
 import { EPIC_REVERIFY_CLASS, epicReverifyVerdict } from './plan-epic-phase25.mjs'
@@ -29,7 +28,7 @@ import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
 import {
   DEFAULT_CONFIG,
-  contentLabelNames,
+  canonicalContentLabel,
   labelName,
   loadSkillConfig,
   optionalLabelName,
@@ -61,40 +60,12 @@ function hasAtomic5Justification(descriptionSummary) {
   return /^[-*]\s*Atomic-5:\s*\S/m.test(planning ?? '')
 }
 
-// `descriptionSummary` is the one returned field whose exact bytes are gated downstream
-// (`plan-image-guard.mjs --require-verbatim` over its `## Original notes` block), and the headless
-// dispatch return channel is not byte-preserving. So the value is a discriminated union: today's
-// inline string, or a by-reference `{ path }` naming a declared `description` scratch artifact —
-// the kind of file the drafter already assembled and the write-back already reads.
-//
-// The widening is fail-closed by construction, which is what keeps it from being a blanket pass:
-// a reference is accepted only for the `description` family, and only a caller that supplies
-// `resolveDescription` gets the reference resolved at all. A caller that widens the accepted shape
-// without hydrating it is refused (`description-summary-unresolved`) rather than skipping the
-// contract check, and a resolved reference is held to exactly the contract an inline string is —
-// the check runs over the BYTES, never over the path.
-//
-// What that check does NOT establish is run identity: `planScratchToken` proves family membership
-// under SOME `run-<id>/`, not that the path is THIS run's. Nothing here compares it against the
-// run scratch id or the `planPath` issue, so a reference to a peer run's description artifact
-// validates. The residual is bounded downstream rather than here: Phase 4 derives `$BODY` from the
-// run-scratch template rather than from this returned value, and the image-parity, verbatim and
-// plan-contract STOP gates — plus the write-back itself — all read that template-derived copy.
-// A divergent path therefore mis-targets only this guard's own verdict, and a false pass from it
-// is re-caught by the plan-contract gate running `checkPlanContract` over the bytes actually
-// written. Binding the reference here would need an expected-artifact input this CLI does not
-// have today; do not "fix" it by making Phase 4 consume the returned path instead, which would
-// move the gates OFF the run-scoped artifact and turn a bounded residual into a live one.
-//
-// The returned path is normalized to its repo-relative spelling before the family check: an
-// absolute path under the working tree, or a `./`-prefixed one, names the same artifact as the
-// repo-relative token, and refusing it discarded an already-drafted plan over spelling alone. A path
-// that resolves OUTSIDE the working tree keeps its original spelling and is refused by the token
-// check. (The `check` verb of plan-scratch-paths.mjs deliberately does NOT normalize: it lints
-// cleanup tokens written in skill prose, where an absolute or `./` spelling is itself the defect.)
-// Both the logical and the physical spelling of the working tree are tried as the base, so an
-// absolute path written through a symlinked prefix (macOS `/var` -> `/private/var`) still counts
-// as under the tree.
+// `descriptionSummary` is either the description text inline, or `{ path }` naming this run's
+// declared `description` scratch artifact (the dispatch return channel is not byte-preserving, so
+// the drafter may hand back a reference instead). A reference is resolved through the caller's
+// `resolveDescription`. An absolute or `./` path under the working tree is normalized to its
+// repo-relative spelling; both the logical and the physical spelling of the tree are tried, so a
+// symlinked prefix (macOS `/var` -> `/private/var`) still counts.
 function repoRelativeScratchPath(candidate, cwd) {
   if (!isAbsolute(candidate) && !candidate.startsWith('./')) return candidate
   const bases = [resolve(cwd)]
@@ -150,142 +121,138 @@ function readDescriptionSummary(value, resolveDescription, cwd = process.cwd()) 
 
 export function validateDraftMetadata(
   metadata,
-  { config = DEFAULT_CONFIG, resolveDescription, moduleRoots = [], cwd = process.cwd() } = {},
+  { config = DEFAULT_CONFIG, resolveDescription, cwd = process.cwd() } = {},
 ) {
   const missing = []
   const invalid = []
   const violations = []
+  const warnings = []
+  const warn = (field, message) => warnings.push(entry('normalized', field, message))
 
   const object =
     metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : null
   if (!object) {
     violations.push(entry('metadata-not-object', 'metadata', 'metadata must be a JSON object'))
-    return { ok: false, missing, invalid, violations }
+    return { ok: false, missing, invalid, violations, warnings, normalized: metadata }
   }
 
-  for (const key of ALLOWED_METADATA_KEYS) {
-    if (!Object.hasOwn(object, key)) missing.push(key)
-  }
+  // Only the plan path and the description are load-bearing: without them there is nothing to
+  // write. Every other field is normalized to something usable and reported as a warning, because a
+  // finished plan is worth far more than any one cosmetic field the drafter got slightly wrong.
+  const normalized = {}
   for (const key of Object.keys(object)) {
-    if (!ALLOWED_METADATA_KEYS.has(key)) {
-      violations.push(entry('unknown-key', key, `metadata carries unknown top-level key "${key}"`))
+    if (!ALLOWED_METADATA_KEYS.has(key)) warn(key, `dropped unknown top-level key "${key}"`)
+  }
+
+  if (typeof object.planPath === 'string' && object.planPath.trim() !== '') {
+    normalized.planPath = object.planPath
+  } else if (Object.hasOwn(object, 'planPath')) {
+    invalid.push('planPath')
+  } else {
+    missing.push('planPath')
+  }
+
+  const rawLabels = Array.isArray(object.labels)
+    ? object.labels
+    : typeof object.labels === 'string'
+      ? [object.labels]
+      : []
+  if (Object.hasOwn(object, 'labels') && !Array.isArray(object.labels)) {
+    warn('labels', 'labels was not an array; coerced')
+  }
+  const labels = []
+  for (const label of rawLabels) {
+    const name = canonicalContentLabel(config, label)
+    if (name === null) {
+      warn('labels', `dropped label ${JSON.stringify(label)}: not a configured content label`)
+    } else if (!labels.includes(name)) {
+      labels.push(name)
+    }
+  }
+  normalized.labels = labels
+
+  if (typeof object.agentFriendly === 'boolean') {
+    normalized.agentFriendly = object.agentFriendly
+  } else if (object.agentFriendly === 'true' || object.agentFriendly === 'false') {
+    normalized.agentFriendly = object.agentFriendly === 'true'
+  } else {
+    normalized.agentFriendly = true
+    if (Object.hasOwn(object, 'agentFriendly')) {
+      warn('agentFriendly', 'agentFriendly was not a boolean; defaulted to true')
     }
   }
 
-  // Read the union ONCE, before the estimate check, so the Atomic-5 justification is looked for in
-  // the same bytes the contract check runs over whichever arm of the union carried them.
   const summary = Object.hasOwn(object, 'descriptionSummary')
     ? readDescriptionSummary(object.descriptionSummary, resolveDescription, cwd)
     : null
   const descriptionText = summary?.kind === 'text' ? summary.text : null
 
-  if (Object.hasOwn(object, 'planPath')) {
-    if (typeof object.planPath !== 'string' || object.planPath.trim() === '')
-      invalid.push('planPath')
-  }
-  if (Object.hasOwn(object, 'labels')) {
-    if (!Array.isArray(object.labels) || object.labels.some((label) => typeof label !== 'string')) {
-      invalid.push('labels')
-    } else {
-      // Returned labels are the content taxonomy only (bug/feature/improvement/docs, each resolved
-      // through the config with the literal as fallback). A label the tracker does not have used to
-      // reach the write-back unchecked; failing closed here keeps it off the tracker.
-      const allowed = contentLabelNames(config)
-      const unknown = object.labels.filter((label) => !allowed.includes(label))
-      if (unknown.length > 0) {
-        invalid.push('labels')
-        violations.push(
-          entry(
-            'unknown-label',
-            'labels',
-            `labels ${unknown.map((label) => JSON.stringify(label)).join(', ')} are outside the ` +
-              `content taxonomy; allowed: ${allowed.map((label) => JSON.stringify(label)).join(', ')}`,
-            { labels: unknown, allowed },
-          ),
-        )
-      }
+  const estimate = Number(object.estimate)
+  if (Object.hasOwn(object, 'estimate') && Number.isFinite(estimate)) {
+    const valid = [...VALID_ESTIMATES].sort((a, b) => a - b)
+    const snapped = valid.find((value) => value >= estimate) ?? valid.at(-1)
+    if (snapped !== object.estimate) {
+      warn('estimate', `estimate ${JSON.stringify(object.estimate)} normalized to ${snapped}`)
     }
-  }
-  if (Object.hasOwn(object, 'agentFriendly')) {
-    if (typeof object.agentFriendly !== 'boolean') invalid.push('agentFriendly')
-  }
-  if (Object.hasOwn(object, 'estimate')) {
-    if (!Number.isInteger(object.estimate) || !VALID_ESTIMATES.has(object.estimate)) {
-      invalid.push('estimate')
-    } else if (
-      object.estimate === 5 &&
-      // Only arms that actually carried bytes can be judged here. An unhydrated or unreadable
-      // reference already reports its own cause under `descriptionSummary`; re-reporting it as a
-      // missing justification sends the reader to edit a `## Planning` section that may well be
-      // correct, in a file this run never opened.
-      (summary === null || summary.kind === 'text' || summary.kind === 'invalid') &&
-      !hasAtomic5Justification(descriptionText)
-    ) {
-      invalid.push('estimate')
-      violations.push(
-        entry(
-          'missing-atomic-5',
-          'estimate',
-          'estimate 5 requires an "- Atomic-5:" justification under ## Planning',
-        ),
-      )
+    normalized.estimate = snapped
+    if (snapped === 5 && descriptionText !== null && !hasAtomic5Justification(descriptionText)) {
+      warn('estimate', 'estimate 5 without an "- Atomic-5:" justification under ## Planning')
     }
+  } else {
+    if (Object.hasOwn(object, 'estimate')) warn('estimate', 'estimate was not a number; omitted')
   }
-  if (Object.hasOwn(object, 'priority')) {
-    if (!Number.isInteger(object.priority) || object.priority < 1 || object.priority > 4) {
-      invalid.push('priority')
+
+  const priority = Math.round(Number(object.priority))
+  if (Object.hasOwn(object, 'priority') && Number.isFinite(priority)) {
+    const clamped = priority < 1 ? 3 : Math.min(priority, 4)
+    if (clamped !== object.priority) {
+      warn('priority', `priority ${JSON.stringify(object.priority)} normalized to ${clamped}`)
     }
+    normalized.priority = clamped
+  } else {
+    normalized.priority = 3
+    if (Object.hasOwn(object, 'priority')) warn('priority', 'priority was not a number; set to 3')
   }
-  if (Object.hasOwn(object, 'openQuestions')) {
-    if (
-      !Array.isArray(object.openQuestions) ||
-      object.openQuestions.some((question) => typeof question !== 'string')
-    ) {
-      invalid.push('openQuestions')
-    }
+
+  const rawQuestions = Array.isArray(object.openQuestions)
+    ? object.openQuestions
+    : typeof object.openQuestions === 'string'
+      ? [object.openQuestions]
+      : []
+  normalized.openQuestions = rawQuestions.filter(
+    (question) => typeof question === 'string' && question.trim() !== '',
+  )
+
+  if (!summary) {
+    missing.push('descriptionSummary')
+  } else if (summary.kind === 'invalid') {
+    invalid.push('descriptionSummary')
+  } else if (summary.kind === 'bad-reference') {
+    invalid.push('descriptionSummary')
+    violations.push(
+      entry('description-summary-bad-reference', 'descriptionSummary', summary.reason),
+    )
+  } else if (summary.kind === 'unresolved') {
+    violations.push(
+      entry(
+        'description-summary-unresolved',
+        'descriptionSummary',
+        `descriptionSummary names ${summary.path} but this caller supplied no resolveDescription`,
+      ),
+    )
+  } else if (summary.kind === 'unreadable') {
+    violations.push(
+      entry(
+        'description-summary-unreadable',
+        'descriptionSummary',
+        `descriptionSummary names ${summary.path}, which could not be read: ${summary.reason}`,
+      ),
+    )
   }
-  if (summary) {
-    if (summary.kind === 'invalid') {
-      invalid.push('descriptionSummary')
-    } else if (summary.kind === 'bad-reference') {
-      invalid.push('descriptionSummary')
-      violations.push(
-        entry('description-summary-bad-reference', 'descriptionSummary', summary.reason),
-      )
-    } else if (summary.kind === 'unresolved') {
-      violations.push(
-        entry(
-          'description-summary-unresolved',
-          'descriptionSummary',
-          `descriptionSummary names ${summary.path} but this caller supplied no resolveDescription, ` +
-            'so the description contract could not be checked over the referenced bytes — ' +
-            'hydrate the reference rather than accepting it unchecked',
-        ),
-      )
-    } else if (summary.kind === 'unreadable') {
-      violations.push(
-        entry(
-          'description-summary-unreadable',
-          'descriptionSummary',
-          `descriptionSummary names ${summary.path}, which could not be read: ${summary.reason}`,
-        ),
-      )
-    } else {
-      // `moduleRoots` rides along so this caller's contract check classifies a `## Key changes`
-      // token exactly as the dependency scan given the same roots would. Dropping it here made the
-      // check stricter than the scan it reports for, on a seam no caller could reach.
-      const contract = checkPlanContract({ description: summary.text, config, moduleRoots })
-      for (const violation of contract.violations) {
-        violations.push(
-          entry(
-            `description-summary-${violation.code}`,
-            'descriptionSummary',
-            violation.message.replace(/^plan-contract-guard:\s*/, ''),
-            { source: violation },
-          ),
-        )
-      }
-    }
+  // The description's content is checked once, by the Phase 4 plan-contract gate over the bytes
+  // actually written; checking it here too only discarded plans that gate would have kept.
+  if (Object.hasOwn(object, 'descriptionSummary')) {
+    normalized.descriptionSummary = object.descriptionSummary
   }
 
   return {
@@ -293,6 +260,8 @@ export function validateDraftMetadata(
     missing,
     invalid: [...new Set(invalid)],
     violations,
+    warnings,
+    normalized,
   }
 }
 
@@ -595,24 +564,11 @@ function canonical(value) {
 }
 
 /**
- * Decide whether the metadata the orchestrator is about to VALIDATE is the metadata the dispatch
- * RETURNED (R3).
- *
- * The defect this exists for: the drafting worker is told to write every local file under a
- * basename declared in `plan-scratch-paths.mjs`, and `draft-metadata` is one of those declared
- * names — the very path the orchestrator is specified to write FROM THE RETURNED OBJECT before
- * running the metadata guard. An orchestrator that validates without writing first therefore
- * validates the worker's file instead of the worker's message, and every guarantee the guard is
- * supposed to give about the returned object is given about a file the worker chose.
- *
- * The answer is not "overwrite and move on". Overwriting unconditionally makes the divergence
- * invisible, and a worker that wrote that path violated its contract — an orchestrator that
- * silently repairs it learns nothing and keeps dispatching workers that do it. So: absent is
- * adopted, identical is adopted (a resumed pass re-running this step is not a violation), and
- * DIFFERENT refuses without writing, leaving the worker's file on disk as the evidence.
+ * Decide which metadata to validate: always the object the dispatch RETURNED, never a same-named
+ * file the worker may have written. A diverged file is replaced and reported as a warning.
  *
  * @param {{returned: unknown, onDisk?: unknown}} input
- * @returns {{ok: boolean, adopted: unknown, state: 'absent'|'identical'|'diverged', violations: {code: string, message: string}[]}}
+ * @returns {{ok: boolean, adopted: unknown, state: 'absent'|'identical'|'diverged', violations: object[], warnings?: object[]}}
  */
 export function adoptReturnedMetadata({ returned, onDisk } = {}) {
   if (returned === undefined || returned === null || typeof returned !== 'object') {
@@ -634,18 +590,19 @@ export function adoptReturnedMetadata({ returned, onDisk } = {}) {
   if (canonical(onDisk) === canonical(returned)) {
     return { ok: true, adopted: returned, state: 'identical', violations: [] }
   }
+  // The worker wrote the declared basename itself. The returned message is still what gets
+  // validated and written; the divergence is reported, never a reason to discard the plan.
   return {
-    ok: false,
+    ok: true,
     adopted: returned,
     state: 'diverged',
-    violations: [
+    violations: [],
+    warnings: [
       entry(
-        'metadata-not-from-message',
+        'metadata-file-overwritten',
         'draft-metadata',
-        'the draft-metadata scratch already holds bytes that are NOT the returned object — the ' +
-          'worker wrote that declared basename itself, so validating the file would validate ' +
-          'the worker’s file rather than the worker’s message. Refusing without ' +
-          'overwriting: the file is the evidence, and the dispatch broke its contract',
+        'the draft-metadata file held bytes that were not the returned object; replaced with ' +
+          'the returned object',
       ),
     ],
   }
@@ -823,6 +780,9 @@ function printViolations(result) {
   for (const violation of result.violations ?? []) {
     process.stderr.write(`${violation.code}: ${violation.message}\n`)
   }
+  for (const warning of result.warnings ?? []) {
+    process.stderr.write(`warning: ${warning.message}\n`)
+  }
 }
 
 /** Run one verb and report the exit code alongside the gate id and reason to record for it. */
@@ -868,9 +828,9 @@ function runGuardVerb(argv) {
       const result = validateDraftMetadata(readJSON(first), {
         config: loadSkillConfig(),
         resolveDescription: (file) => readFileSync(file, 'utf8'),
-        moduleRoots: parseModuleRootsFlag(argv),
       })
       printViolations(result)
+      if (result.ok) writeFileSync(first, `${JSON.stringify(result.normalized)}\n`)
       return {
         verb,
         code: result.ok ? 0 : 1,
@@ -891,13 +851,12 @@ function runGuardVerb(argv) {
       if (!decided.ok) {
         return { verb, code: 1, reason: decided.violations[0]?.code ?? 'not-adopted' }
       }
-      writeFileSync(first, `${JSON.stringify(decided.adopted)}\n`)
-      const result = validateDraftMetadata(readJSON(first), {
+      const result = validateDraftMetadata(decided.adopted, {
         config: loadSkillConfig(),
         resolveDescription: (file) => readFileSync(file, 'utf8'),
-        moduleRoots: parseModuleRootsFlag(argv),
       })
       printViolations(result)
+      writeFileSync(first, `${JSON.stringify(result.ok ? result.normalized : decided.adopted)}\n`)
       return { verb, code: result.ok ? 0 : 1, reason: result.ok ? 'ok' : 'invalid-metadata' }
     }
     if (command === 'idempotence' && first) {

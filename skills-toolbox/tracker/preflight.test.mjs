@@ -269,19 +269,41 @@ test('partial tool visibility is unchanged whether or not a report is supplied',
   assert.deepEqual(withReport.missing, ['mcp__acme-linear__save_issue'])
 })
 
-test('declaration-report name matching is exact', () => {
-  // A near-miss must not silently flip absent to unreachable: case and surrounding whitespace are
-  // exactly how a mis-keyed declaration presents, and calling that "declared" hides the real bug.
-  for (const name of ['ACME-Linear', ' acme-linear', 'acme-linear ', 'acme-linear\n']) {
+test('declaration-report names match ignoring case, separators and surrounding whitespace', () => {
+  for (const name of ['ACME-Linear', ' acme-linear', 'acme_linear ', 'acme-linear\n']) {
     const r = trackerMcpPreflight({
       ...base,
       availableTools: [],
       probeOk: false,
-      declaredServers: [{ name }],
+      declaredServers: [{ name, toolCount: 0 }],
     })
-    assert.equal(r.status, 'absent', `name ${JSON.stringify(name)}`)
-    assert.equal(r.declared, false, `declared ${JSON.stringify(name)}`)
+    assert.equal(r.status, 'unreachable', `name ${JSON.stringify(name)}`)
+    assert.equal(r.declared, true, `declared ${JSON.stringify(name)}`)
   }
+})
+
+test('tracker tools under a differently spelled or named server resolve to that server', () => {
+  const tools = (server) =>
+    ['list_issues', 'get_issue', 'save_issue'].map((op) => `mcp__${server}__${op}`)
+  for (const server of ['acme_linear', 'Acme-Linear', 'linear']) {
+    const r = trackerMcpPreflight({ ...base, availableTools: tools(server), probeOk: false })
+    assert.equal(r.ok, true, `${server}: ${r.message}`)
+    assert.equal(r.resolvedServer, server)
+  }
+  // Codex spells tools without the mcp__ prefix.
+  const codex = trackerMcpPreflight({
+    ...base,
+    availableTools: ['acme_linear__list_issues', 'acme_linear__get_issue'],
+    probeOk: false,
+  })
+  assert.equal(codex.resolvedServer, 'acme_linear')
+  // An unrelated server with one overlapping op name is not the tracker.
+  const unrelated = trackerMcpPreflight({
+    ...base,
+    availableTools: ['mcp__github__get_issue'],
+    probeOk: false,
+  })
+  assert.equal(unrelated.ok, false)
 })
 
 test('duplicate records naming the same server classify once and do not throw', () => {

@@ -62,9 +62,8 @@ The classification itself:
 
 ## Phase 2.5 — Epic decomposition (interactive: propose → confirm → create)
 
-When triage is EPIC, decompose the ticket into a parent + N fully-planned children (SKILL.md Phase
-2.5 owns the guards and ordering discipline; the deterministic core is `$BOSS_PLAN_TOOLBOX/plan-epic-lib.mjs`).
-Interactively:
+When triage is EPIC, decompose the ticket into a parent + N fully-planned children. [`epic.md`](epic.md)
+owns the guards, the spec and the build order; this section only adds the human steps. Interactively:
 
 1. **Draft the decomposition spec** — decompose along architectural seams, producer-before-consumer
    (`contract → persistence → producer → read → ui`), tagging each child's `layer`, keeping every
@@ -99,7 +98,7 @@ Interactively:
    editing; cancel + re-run to iterate.
 4. On **create this epic**, publish + create children in `topoOrderChildren` order, wire the DAG via
    `epicWiringPlan`, add external conflict links, and repurpose the original ticket as the epic
-   parent (SKILL.md Phase 2.5 steps 4–7). The repurpose is **last** — SKILL.md step 7's
+   parent ([`epic.md`](epic.md) build steps 4–7). The repurpose is **last** — that step 7's
    unplanned → planned flip under the parent-label exception (**neither** `agent-friendly` **nor**
    `needs-human`, **stripping** any pre-existing build label + stale single-ticket `Implementation
 plan (…)` link a previously-planned ticket carried, so the epic parent isn't `boss-build`-
@@ -236,8 +235,8 @@ await it. **Tier 1 is unavailable to this dispatch:** a draft extension's envelo
 structural line, not a per-extension skip.
 
 Brief the worker with the **same** shared drafting spec the headless epic path uses: point it at
-`references/headless-drafting-brief.md` **Steps 5–7** for the plan body, and at that file's "Epic
-decompose-and-auto-create" **step 2** for the per-child drafting rules (`allowEpic: false`, and the
+`references/headless-drafting-brief.md` **Steps 5–7** for the plan body, and at
+[`epic.md`](epic.md) build step 2 for the per-child drafting rules (`allowEpic: false`, and the
 `agentFriendly` + `openQuestions` copy-back onto each spec entry). Do not restate the plan-body spec
 here. That brief is the single normative source for it, and this path already links rather than
 duplicates it; a second copy is a second thing to keep in sync, and the copy that drifts is the one
@@ -298,10 +297,6 @@ Follow the resident **## Phase 3 — Plan requirements** section in SKILL.md plu
 details in `references/headless-drafting-brief.md` **Step 5** and **Step 7** (plan-body requirements
 and the description summary template). Write to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md` and stop after
 saving the plan file. Do not continue into subagent-driven-development or executing-plans.
-The single-ticket plan file must retain the shared plan-file floor from that brief: required
-description-contract headings, `## Problem Frame`, `## Requirements`, `## Implementation Units`, and
-at least one heading outside `planContract.sections`. Epic-parent overviews and adopted-child
-redrafts use explicit exemption reasons; consumers do not require this structure.
 
 **Preserve `## Original notes` VERBATIM** (all interactive tiers). When composing
 `## Original notes`, copy the ticket's prior description byte-for-byte from

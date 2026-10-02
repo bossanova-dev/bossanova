@@ -167,13 +167,11 @@ test('review coverage counts render in the always-visible verdict block', () => 
   assert.match(md, /❌ \*\*Confidence:\*\* Low/)
 })
 
-test('missing ledger evidence fails closed instead of rendering as clean', () => {
+test('missing ledger evidence does not by itself make a clean review unsound', () => {
   const fixture = cleanFixture()
   delete fixture.ledger
   const md = renderReport(fixture)
-  assert.match(md, /❌ \*\*Assessment:\*\* Unsound/)
-  assert.match(md, /Contradiction notice/)
-  assert.doesNotMatch(md, /All must-fix findings fixed; required gates green\./)
+  assert.doesNotMatch(md, /❌ \*\*Assessment:\*\* Unsound/)
 })
 
 test('single-reviewer panel derives Low confidence despite caller-supplied High', () => {

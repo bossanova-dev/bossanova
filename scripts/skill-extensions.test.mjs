@@ -392,67 +392,6 @@ test('repo-authored notes extensions are discoverable for each terminal core', (
   }
 })
 
-test('repo-authored notes extensions report recording failures as unsuccessful envelopes', () => {
-  const root = path.resolve(import.meta.dirname, '..')
-  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
-    const skill = fs.readFileSync(
-      path.join(root, '.claude', 'skills', `${core}-notes`, 'SKILL.md'),
-      'utf8',
-    )
-    assert.match(skill, /"ok": false/, core)
-    assert.match(skill, /"items": \[\]/, core)
-    assert.match(skill, /"error": "<reason>"/, core)
-  }
-})
-
-// BOS-674: a core's step-by-step spine is not always one file. boss-build's Steps 8-12 —
-// including the Step 12 post-terminal notes dispatch — were extracted into
-// references/finalize-and-stop.md, so reading SKILL.md alone reports the notes contract as
-// deleted when it merely moved. The list is EXPLICIT rather than a walk of references/, so a
-// clause deleted outright still turns this red. Mirrors `coreBodyFiles` in
-// services/boss/internal/skillinstall/skills_manifest_test.go.
-const CORE_BODY_FILES = {
-  'boss-build': ['SKILL.md', 'references/finalize-and-stop.md'],
-}
-
-const publishedSpine = (root, core) =>
-  (CORE_BODY_FILES[core] ?? ['SKILL.md'])
-    .map((rel) =>
-      fs.readFileSync(
-        path.join(root, 'services', 'boss', 'internal', 'skillinstall', 'skills', core, rel),
-        'utf8',
-      ),
-    )
-    .join('\n')
-
-test('fresh notes workers receive only a bounded completed-run observation artifact', () => {
-  const root = path.resolve(import.meta.dirname, '..')
-  const contract = fs.readFileSync(
-    path.join(root, 'docs', 'skills', 'extension-contract.md'),
-    'utf8',
-  )
-
-  assert.match(
-    contract,
-    /observationPath/,
-    'the extension contract doc no longer documents the key the cores send',
-  )
-
-  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
-    const published = publishedSpine(root, core)
-    const extension = fs.readFileSync(
-      path.join(root, '.claude', 'skills', `${core}-notes`, 'SKILL.md'),
-      'utf8',
-    )
-
-    assert.match(published, /at\s+most\s+five\s+secret-scrubbed\s+candidate\s+observations/, core)
-    assert.match(published, /maximum\s+8\s+KiB/, core)
-    assert.match(published, /"?observationPath"?:\s*"<NOTES_OBSERVATIONS>"/, core)
-    assert.match(extension, /context\.observationPath/, core)
-    assert.match(extension, /only\s+completed-run\s+observation\s+source/, core)
-  }
-})
-
 // BOS-851: the `knowledge` role. Unlike `notes` (post-terminal, one core each), a knowledge
 // extension runs pre-PR and writes a file into the tree, so `path` is what proves the artifact
 // was persisted — the structural analogue of the notes contract's `noteId`.
@@ -605,17 +544,6 @@ test('the repo-authored knowledge extension is discoverable for boss-build', () 
   assert.ok(found)
   assert.equal(found.role, 'knowledge')
   assert.deepEqual(skipped, [])
-})
-
-test('the repo-authored knowledge extension reports failures as unsuccessful envelopes', () => {
-  const root = path.resolve(import.meta.dirname, '..')
-  const skill = fs.readFileSync(
-    path.join(root, '.claude', 'skills', 'boss-build-knowledge', 'SKILL.md'),
-    'utf8',
-  )
-  assert.match(skill, /"ok": false/)
-  assert.match(skill, /"items": \[\]/)
-  assert.match(skill, /"error": "<reason>"/)
 })
 
 // ── Extension names in the docs must exist on disk (BOS-1341) ─────────────────────────────

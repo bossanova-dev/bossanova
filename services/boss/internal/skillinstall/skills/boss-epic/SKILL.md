@@ -6,150 +6,64 @@ allowed-tools: Bash, Read, Glob, Grep, Skill
 
 # boss-epic
 
-## Overview
+Drive every eligible ticket of an epic — a parent's planned, agent-friendly sub-issues, or an
+explicit list — from planned to a **merged PR**, with no human present. `boss-build` ships one
+ticket; `boss-epic` schedules a fleet of them in dependency order, caps concurrency, repairs red PRs
+and merges one at a time so the base never races itself. It schedules and merges; it never
+re-implements boss-build.
 
-Take a whole **epic** — a Linear parent issue whose sub-issues are already
-planned, agent-friendly tickets, or an explicit list of such tickets — and drive
-every eligible ticket from its planned state to a **merged PR**, with **no human present**.
-This is the fan-out sibling of `boss-build`: where `boss-build` ships one
-ticket, `boss-epic` schedules a fleet of them, respecting dependency order,
-capping concurrency, running repair on red PRs, and serializing merges so the
-base branch never races itself.
+Every scheduling decision is computed by tested helpers — `dag-scheduler.mjs` re-exported through
+`bs-epic-lib.mjs`, the lifecycle in `epic-driver.mjs`, reporting in `progress-comment.mjs`. This
+skill does the I/O.
 
-This skill is **prose driving tested primitives**. All scheduling, eligibility,
-dependency-graph, cascade-skip, and merge-ordering decisions are computed by the
-pure, unit-tested DAG scheduler in the installed `boss-epic/toolbox/dag-scheduler.mjs`
-— re-exported through `bs-epic-lib.mjs`, which adds the tracker-coupled
-classify/normalize/parse surface — this skill never re-derives them inline. The
-skill's own job is the I/O, and it reaches every Bossanova coupling through the
-**adapter seams** below: the tracker adapter (assembly, state, progress comment)
-and session-runner adapter (`toolbox/bs-dispatch-await.mjs` for subagent waits).
+## Contract
 
-The unit of work per ticket is a `subSkills.implement` (`/boss-build <TICKET>`)
-session. Do **not** re-implement boss-build's pipeline here; boss-epic only
-schedules and merges.
-
-## Operating Contract
-
-- **Headless and unattended.** After Phase 0, make **zero** `AskUserQuestion`
-  calls — a boss-epic run is fire-and-forget. Every decision has a coded default.
-  Under `BOSS_CRON=true`, never ask at any phase. See Safety rails.
-- **Non-terminal invariant — mechanically enforced.** The lifecycle is owned by
-  `toolbox/epic-driver.mjs`, not by this prose. No final response, success result, "monitoring
-  stopped", or terminal notes outcome while **any** of these holds: a ready eligible ticket; an
-  in-flight ticket; a green queued for merge; an adopted session not reconciled to merged or
-  fail-isolated; a failed ticket whose dependents' cascade is unrecorded; a wake pending
-  reconciliation; external-blocker state not evaluated this cycle. The final-report path **must**
-  call `assertEpicCanTerminate(state)`, which throws naming every blocker; `transitionToDone` is the
-  only DONE path. **A model turn ending is never evidence the run is complete** — launching or
-  adopting work is an intermediate checkpoint. Read "monitor this session" as durable continued
-  orchestration, never as one read and stop.
-- **Status vocabulary — intermediate responses must be machine-distinguishable.** `RUNNING` (work
-  remains, continuation armed) · `RUNNING_BUT_UNWATCHED` (work remains, a required wake mechanism is
-  missing — retry or fail closed) · `BLOCKED` (capability unavailable, no safe fallback) · `DONE`
-  (invariant false, final reconciliation complete). Never "success" for `RUNNING`; never describe a
-  child launch as completion of the epic.
-- **Idempotent start / resumable.** The same invocation re-run after a killed driver rehydrates the
-  persisted state, adopting in-flight work rather than duplicating it (Phase 2).
-- **Serialized merges.** At most one merge in flight, ever — the base branch is
-  advanced one PR at a time, in `nextToMerge` order.
-- **Prefer a callback over blind polling.** Whenever you are about to wait on a
-  child's PR / CI check / merge state, arm callback watches first rather than
-  spinning on the poll — gated on the single `callbacksAvailable(env)` signal
-  (`toolbox/callback/adapter.mjs`: a managed session **and** a `boss` executable
-  that actually resolves; gate false ⇒ log `callbacksUnavailableReason(env)`). Gate true ⇒
-  resolve `selectEpicCallbackTarget` (`toolbox/callback/epic-target.mjs`) from the
-  child PR repository plus verified orchestrator and child identities before any
-  callback operation. A matching orchestrator wins; otherwise a matching child is
-  the target. No verified target ⇒ skip callback registration, re-arm, list, and
-  cleanup, and retain the existing cron/poll reconciliation. Gate false ⇒ skip
-  arming and let `policy.fallbackPoll` alone drive Phase 3 — an explicit no-op,
-  never a failed wait. Protocol:
-  [`references/callback-watches.md`](references/callback-watches.md).
-- **One coordinator, however many roots.** A combined run (repeatable
-  `--epic <REF>`) drives every selected root's children as ONE deduplicated child
-  universe through ONE graph, ONE concurrency budget and ONE serialized merge
-  queue — never a coordinator per root. Hydration, classification, launch,
-  reconciliation and merge key on the **child id**, so a child under several
-  roots is handled **once**; only REPORTING fans back out, one comment per root.
-  Membership is not dependency: sharing a child creates no edge. Detail:
+- **Unattended.** No `AskUserQuestion` after Phase 0 (none at all under `BOSS_CRON=true`); every
+  decision has a coded default.
+- **Never stop early.** The run is over only when `assertEpicCanTerminate(state)` stops throwing:
+  no ready ticket, nothing in flight, no green waiting to merge, no unreconciled adopted session, no
+  unrecorded cascade, no pending wake, external blockers evaluated this cycle. `transitionToDone` is
+  the only way to `DONE`. A turn ending is never evidence the epic is done, and launching work is a
+  checkpoint, not completion.
+- **Status vocabulary** for every intermediate response: `RUNNING` (work remains, a wake is armed),
+  `RUNNING_BUT_UNWATCHED` (work remains, a required wake is missing — retry or fail closed),
+  `BLOCKED` (a capability is unavailable), `DONE`.
+- **Resumable.** Re-running the same invocation rehydrates state and adopts in-flight sessions
+  (Phase 2) — never duplicates them.
+- **One merge at a time**, in `nextToMerge` order.
+- **One coordinator per run.** Repeated `--epic <REF>` roots share one child universe, one graph, one
+  concurrency budget and one merge queue, keyed on the **child id** (a child under several roots is
+  handled once); only reporting fans out, one comment per root. Membership is not a dependency.
   [`references/multi-root.md`](references/multi-root.md).
-- **The parent issue is never mutated.** boss-epic moves only the explicitly
-  enumerated child tickets to `Done`; it never closes or restates the parent —
-  for every selected root.
-- **Empty eligible set is success.** A parent whose children are all already
-  done / not yet planned is a clean no-op, not an error.
-- **Planning-only work is not implementation fan-out.** Route by intent; never send `/boss-plan`, plan-review, or recon through the implementation path:
-  - Implementation work uses the session-runner `createSession` capability with `tmux_unattended: true` — the durable PR-backed run (Phase 3a).
-  - Unattended planning, recon, or plan-review stays inside the driver as a subagent — no session at all.
-  - Visible planning chat uses the session-runner `createPlanningChat` capability (`create_session` with `quick_chat: true`, no worktree/branch/PR).
-  - It must not use `create_session` with `tmux_unattended`; that path is for PR-backed implementation runs only.
+- **Mutate only the enumerated children.** The parent is never closed or edited; a ticket outside
+  the set is never moved, even when it is a blocker.
+- **An empty eligible set is success.**
+- **Implementation only.** Children run as `create_session` with `tmux_unattended: true`. Planning,
+  recon and plan review never go through that path: run them as a subagent, or as a visible planning
+  chat via `createPlanningChat` (`quick_chat: true`).
 
-Workspace facts (resolve at runtime, do not hard-code):
+## Adapter seams
 
-- Tracker identity — the tracker MCP server, the backlog team and its key, and
-  the workflow state names — is supplied by the **tracker adapter** (see Adapter
-  seams), never hard-coded here: the adapter's `operationMap.selectPlanned` owns
-  the eligible (planned-state) queue and knows the review state. Terminal `Done` /
-  `Canceled` are matched by state _type_ (`BLOCKER_CLEARED_STATE_TYPES`), not by
-  literal name.
-- boss MCP tools used: `create_session` (with `tmux_unattended`+`model` — the
-  durable tmux-hosted run path), `get_session`, `list_sessions`,
-  `list_check_snapshots`, `get_chat_statuses`, `merge_session`,
-  `resolve_context`, `list_agents`, and for repair rounds `record_chat` +
-  `send_chat_message` (start a fresh chat in the ticket's own session — see
-  Phase 3c). `get_session_statuses` is session-aggregate only.
-- Session-title convention (the resume anchor): `[<TICKET>] <ticket title>`.
-
-## Adapter seams (the pluggable boundary)
-
-boss-epic's Bossanova coupling is reached through resolver seams, so a different
-tracker or session runner can slot in without touching the phase logic. The
-Bossanova reference impls resolve to today's exact tools and sub-skills —
-**zero behaviour change**.
-
-- **Pure DAG decisions** — `dag-scheduler.mjs`: `buildGraph`,
-  `readyTickets`, `transitiveDependents`, `nextToMerge`,
-  `mergeBlockedExternalBlockers`. Tracker-agnostic; re-exported through
-  `bs-epic-lib.mjs`, so the runnable import shape below is unchanged.
-- **Tracker** — `resolveTrackerAdapter(env)` (`toolbox/tracker/adapter.mjs`).
-  Epic/children assembly (`operationMap.selectPlanned` / `getIssue`),
-  ticket-state writeback (`moveState`), and the single progress comment
-  (`readComments` / `writeComment`) route through its `operationMap`;
-  `normalizeTicket` + `classifyTickets` (in `bs-epic-lib.mjs`) shape and bucket
-  the tickets. Reference `createLinearAdapter` → the Linear MCP tools.
-- **Session runner** — `resolveSessionRunnerAdapter(env)`
-  (`toolbox/session/adapter.mjs`). The boss MCP choreography (`createSession` /
-  `getSession` / `listSessions` / `listCheckSnapshots` / `mergeSession` /
-  `resolveContext` / `listAgents`, plus `recordChat` / `sendChatMessage` and the
-  optional `getSessionStatuses`) and per-ticket dispatch route through its
-  `operationMap` + `subSkills`. Reference `createBossSessionRunnerAdapter` → the
-  boss MCP tools; `subSkills.implement` = `/boss-build`, `subSkills.repair`
-  = `/boss-repair`. The tool/arg names named across Phases 3–4 are exactly this
-  map's entries (`merge_session` carries the mandatory `confirm`). Each entry
-  also declares a **`cli` transport** — the equivalent `boss` invocation and the
-  `response` paths where its JSON carries the same values — or an explicit
-  `cli: null` with a reason where no CLI equivalent exists. Phase 0 step 3 picks
-  the transport; the phases below name the MCP spelling, and a CLI-transport run
-  substitutes the entry's `cli` command for each one.
-- **Callback notifier** — `resolveCallbackAdapter(env)`
-  (`toolbox/callback/adapter.mjs`). One-shot GitHub PR-event watches
-  (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
-add|list|remove`); `policy.availableTriggers` names the full CLI vocabulary and
-  `policy.watchTriggers` keeps the generic green/red/merged default, armed under per-trigger groups **when
-  `callbacksAvailable(env)`** and `selectEpicCallbackTarget` returns a verified
-  target. Register, re-arm, and list use that target's `--chat` plus the child
-  PR's `--repo`; `remove` accepts `--chat` but not `--repo`, so cleanup first uses
-  the scoped list to find ids. (Else `policy.fallbackPoll` alone drives the wait.)
-  A resolved/merged child PR then wakes the epic promptly; every wake
-  **reconciles real session/PR state before acting** (Phase 3b). Full protocol:
+- **Tracker** — `resolveTrackerAdapter(env)` (`toolbox/tracker/adapter.mjs`): assembly
+  (`selectPlanned`, `getIssue`), state writes (`moveState`), the progress comment
+  (`readComments`/`writeComment`/`updateComment`). Workflow states resolve at runtime; Done/Canceled
+  match by state type (`BLOCKER_CLEARED_STATE_TYPES`).
+- **Session runner** — `resolveSessionRunnerAdapter(env)` (`toolbox/session/adapter.mjs`):
+  `createSession`, `getSession`, `listSessions`, `listCheckSnapshots`, `mergeSession`,
+  `resolveContext`, `listAgents`, `recordChat`, `sendChatMessage`, optional `getSessionStatuses`;
+  `subSkills.implement` = `/boss-build`, `subSkills.repair` = `/boss-repair`. Each entry carries its
+  `cli` equivalent (or `cli: null` with a reason); Phase 0 picks the transport and a CLI run uses
+  those commands wherever this document names an MCP tool.
+- **Callbacks** — `resolveCallbackAdapter(env)` (`toolbox/callback/adapter.mjs`): arm only when
+  `callbacksAvailable(env)` **and** `selectEpicCallbackTarget` (`toolbox/callback/epic-target.mjs`)
+  returns a verified target; otherwise the bounded fallback drives the wait.
   [`references/callback-watches.md`](references/callback-watches.md).
+- Session titles are `[<TICKET>] <ticket title>` — the resume anchor.
 
-## The library: how to compute a decision
+## The library
 
-Every scheduling decision is a call into the installed `boss-epic/toolbox/bs-epic-lib.mjs`. Feed it
-JSON on stdin and read JSON on stdout. The canonical invocation shape (reused at
-every call-site — only the imported function and the piped payload change):
+Feed JSON on stdin, read JSON on stdout. Each Bash call is a fresh shell. This block resolves the
+toolbox, the planned and review states, and the per-child wall clock, then classifies tickets:
 
 ```bash
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
@@ -201,51 +115,38 @@ BOSS_EPIC_CHILD_WALL_CLOCK_MIN="$(node --input-type=module -e '
 export BOSS_EPIC_CHILD_WALL_CLOCK_MIN
 # A throwing load yields "" from the substitution above, and `elapsed > ` never fires — the
 # same never-expires child the accessor exists to prevent. Fail closed instead.
-test -n "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN" || { echo "BLOCKED: child wall clock unresolved — skill-config.mjs missing from BOSS_EPIC_TOOLBOX (stale payload: run boss skills install), .boss-skills.json failed to load, or epicDefaults is malformed"; exit 1; }
+if [ -z "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN" ]; then BOSS_EPIC_CHILD_WALL_CLOCK_MIN=360; echo "warning: child wall clock unresolved from config; using 360 minutes" >&2; fi
 echo "$TICKETS_JSON" | node --input-type=module -e '
   const { classifyTickets, normalizeTicket } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
+  const { loadSkillConfig, optionalLabelName } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/skill-config.mjs`)
+  const config = loadSkillConfig({ cwd: process.cwd() })
   const raw = JSON.parse(await new Promise((r) => {
     let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => r(s))
   }))
   const tickets = raw.map(normalizeTicket)
-  process.stdout.write(JSON.stringify(classifyTickets(tickets, process.env.BOSS_EPIC_PLANNED_STATE)))
+  process.stdout.write(JSON.stringify(classifyTickets(tickets, process.env.BOSS_EPIC_PLANNED_STATE, {
+    agentFriendlyLabel: optionalLabelName(config, "agentFriendly") ?? "agent-friendly",
+    needsHumanLabel: optionalLabelName(config, "needsHuman") ?? "needs-human",
+  })))
 '
 ```
 
-Exports available: `normalizeTicket`, `classifyTickets`, `buildGraph`,
-`readyTickets`, `transitiveDependents`, `transitiveDependentCounts`,
-`nextToMerge`, `parseEpicArgs`, `parseTicketRef`, `buildCombinedRun`,
-`mergeBlockedExternalBlockers`, `resolveStateRole`, `resolvePlannedState`,
-`BLOCKER_CLEARED_STATE_TYPES`. Progress projection lives in
-`toolbox/progress-comment.mjs` (`projectProgressByParent`).
-Because
-`buildGraph`/`readyTickets`/`nextToMerge` return `Map`/`Set` values that do not
-round-trip through `JSON.stringify`, keep the multi-step scheduling logic
-(Phase 3) inside a **single** node process per poll cycle that imports the lib,
-rebuilds the graph from the ticket JSON, folds in the live state Sets, and emits
-the plain-array answer (ready ids, next-to-merge id, newly-skipped ids). Never
-persist a `Map`/`Set` across processes — persist the ticket JSON + the id lists.
+Exports: `normalizeTicket`, `classifyTickets`, `buildGraph`, `readyTickets`, `transitiveDependents`,
+`transitiveDependentCounts`, `nextToMerge`, `parseEpicArgs`, `parseTicketRef`, `buildCombinedRun`,
+`mergeBlockedExternalBlockers`, `resolveStateRole`, `resolvePlannedState`, `classifyChildLiveness`,
+`classifyRepairLease`, `BLOCKER_CLEARED_STATE_TYPES`. `buildGraph`/`readyTickets`/`nextToMerge` return
+`Map`/`Set`s, so run each poll cycle's scheduling in **one** node process and persist only ticket JSON
+and id lists.
 
 ## Phase 0 — Preflight
 
-1. **Parse args** via `parseEpicArgs`, which returns a discriminated `mode`:
-   a single positional is the epic **parent** (`mode: 'parent'`); two or more are
-   an **explicit list** of work items (`mode: 'list'`); one or more repeatable
-   `--epic <REF>` select **several epic roots** for one combined run
-   (`mode: 'parents'`). `parentIds` carries the roots in every mode (`[id]`,
-   `[]`, and the first-seen-deduplicated root list); `parentId` is non-null only
-   in `parent` mode. `--epic` may **not** be mixed with positional refs — that
-   mix is ambiguous and is rejected, never guessed.
-   Each positional or `--epic` value may be a
-   bare ticket id (`<TICKET>`) **or a pasted Linear issue URL**
-   (`https://linear.app/<workspace>/issue/<TICKET>/<slug>`) — both resolve to the
-   id. `--parallel N` is an integer 1..8 (default 4); `--agent <name>` defaults
-   to `claude`. Two repeatable operator overrides clear a named external blocker:
-   `--assume-cleared <ref>` unblocks a parked dependent for **launch only**, and
-   `--assume-cleared-and-merge <ref>` additionally lets the serialized merge step
-   (Phase 3d) merge past that blocker's own still-open gate. Both accept a bare
-   id or a Linear URL. The parse returns `{mode, parentId, parentIds, ids,
-parallel, agent, assumeCleared, assumeClearedAndMerge}`.
+1. **Arguments** — `parseEpicArgs` returns `{mode, parentId, parentIds, ids, parallel, agent,
+assumeCleared, assumeClearedAndMerge}`: one positional is a parent, several are an explicit list,
+   repeated `--epic <REF>` select several roots (never mixed with positionals). Refs may be ids or
+   pasted Linear URLs. `--parallel` 1..8 (default 4), `--agent` (default `claude`).
+   `--assume-cleared <ref>` unparks a blocked dependent for launch only;
+   `--assume-cleared-and-merge <ref>` also lets the merge step pass that blocker. A throw stops
+   `BLOCKED: <message>`.
 
    ```bash
    node --input-type=module -e '
@@ -254,32 +155,11 @@ parallel, agent, assumeCleared, assumeClearedAndMerge}`.
    ' -- <TICKET> --parallel 4 --agent claude
    ```
 
-   `parseEpicArgs` throws when neither a positional nor an `--epic` was given,
-   when `--epic` is mixed with positionals, on a positional that is neither a
-   ticket id nor a Linear URL (catches a typo'd flag), `--parallel` out of range,
-   or an `--epic` / `--assume-cleared*` value that is not a ticket id/URL. On a
-   throw, stop with `BLOCKED: <message>` — do not guess.
+   Children run on `MODEL="opus[1m]"` (quoted; bare `claude-opus-5` is the 200K window), passed as
+   `create_session {model}`.
 
-   **Model.** Fan-out runs on Opus — set `MODEL="opus[1m]"` (quoted; bare
-   `claude-opus-5` is 200K) and pass it as `create_session {model: …}`
-   in Phase 3a. No `/model` two-step: the model is a first-class field on the run.
-
-   **`boss` binary.** Resolve it **once** as `BOSS` via the toolbox's
-   `resolveBossBinary`, never by hand. Same order as always (`$BOSS_BIN`, else
-   `boss` on `PATH`, else the repo build `./bin/boss`),
-   but it **stats each candidate before accepting it** — which a bare
-   `${BOSS_BIN:-boss}` never did, so a cron session inheriting `$BOSS_BIN` from a
-   since-reaped worktree short-circuits the fallback chain this order defines.
-   Then take one of **two** branches; there is no third and no other transport:
-
-   - **`ok: true`** → bind the returned `path`; use `"$BOSS"` at every call-site,
-     never a bare `boss` (`$BOSS_BIN` outranks `PATH`, so two arms name a binary a
-     bare `boss` would miss or resolve to a _different_ one).
-   - **`ok: false`** → stop `BLOCKED: boss CLI unavailable — <reason>`, quoting
-     `reason` **verbatim** (it names each candidate and why it lost; a missing
-     `./bin/boss` is what `make build` produces). Never a bare
-     ENOENT, never a silent poll: a missing binary read as a missing capability is
-     the failure this exists to prevent.
+2. **`boss` binary** — resolve it once with `resolveBossBinary` (it stats each candidate:
+   `$BOSS_BIN`, `boss` on `PATH`, `./bin/boss`) and use `"$BOSS"` everywhere:
 
    ```bash
    BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
@@ -297,14 +177,10 @@ parallel, agent, assumeCleared, assumeClearedAndMerge}`.
    rm -f "$BOSS_WHY"; export BOSS
    ```
 
-2. **Verify the tracker MCP** with a cheap read — the adapter's `selectPlanned`
-   capability (`operationMap.selectPlanned`), the same planned-queue list the epic
-   assembly uses (an empty result still proves reachability).
-
-   A failed read has two causes with **opposite** fixes, so classify it with
-   `trackerMcpPreflight` instead of reporting a bare unreachable. Each block is a
-   fresh shell and `$BOSS_EPIC_TOOLBOX` is exported in step 3's, so re-resolve it —
-   and `BOSS`, which a bare `boss` would silently replace:
+3. **Tracker** — a cheap `selectPlanned` read, classified with `trackerMcpPreflight` so a failure says
+   whether to fix the repo's declaration (`absent`) or credentials/network (`unreachable`). Log
+   `tracker preflight: <status> (declared: <true|false|no report>)` either way and call tracker
+   tools through `resolvedServer`:
 
    ```bash
    set -euo pipefail
@@ -334,19 +210,8 @@ parallel, agent, assumeCleared, assumeClearedAndMerge}`.
    '
    ```
 
-   On `ok: false` stop `BLOCKED: <message>` — no spawn, no tracker write. `absent`
-   ⇒ the repo never declared it for this harness: fix the **repo**. `unreachable` ⇒
-   declared but silent: fix **credentials/network**. Log
-   `tracker preflight: <status> (declared: <true|false|no report>)` on **both**
-   paths, so a green run also says which evidence decided it.
-
-3. **Validate a transport before scheduling — MCP _or_ the boss CLI.** Every
-   session operation this skill performs has two possible carriers: the boss MCP
-   tools, and the `boss` CLI. Validate whichever the runtime actually has;
-   BLOCK only when **neither** can carry the run. `list_agents` (or
-   `boss agents --json`) must include the chosen `--agent`; otherwise stop
-   `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`. Derive both
-   required sets from the session adapter, never a hand-maintained list:
+4. **Transport** — the CLI is preferred; MCP when the CLI set is incomplete; `BLOCKED` only when
+   neither is complete. Compare `boss env --json` (`.capabilities.cli`, `.capabilities.mcp`) against:
 
    ```bash
    BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
@@ -361,132 +226,34 @@ parallel, agent, assumeCleared, assumeClearedAndMerge}`.
    '  # → authoritative checklists, one per transport
    ```
 
-   Use `boss env --json`: `.capabilities.mcp` is `availableTools` and
-   `.capabilities.cli` is `availableCliCommands`. Do not use `boss --help`; it
-   lists bare top-level names and cannot prove `boss chat send`. Then diff via
-   `bossEpicTransportPreflight({availableTools, availableCliCommands})` →
-   `{ ok, transport, missing, degraded, partial, inventoryHint }`.
+   `bossEpicTransportPreflight({availableTools, availableCliCommands})` → `{ok, transport, missing,
+degraded, partial, inventoryHint}`. Report `transport: <cli|mcp>` in the opening line, plus
+   `cli-only mode (expected): resolveContext, getSessionStatuses, createPlanningChat` (no CLI
+   equivalents; use their fallbacks) and any `partial:` fields (`boss show --json` lacks
+   `repair_active`, `attention_status.reason`, `pr_mergeable`, `merge_block` — an unreadable signal
+   is "not settled", never green). The chosen `--agent` must appear in `list_agents` /
+   `boss agents --json`.
 
-   The CLI is **preferred, not a fallback**: a complete CLI set wins even when
-   the MCP set is also complete. That preference is what made it safe to stop
-   wiring the boss MCP server by default, so on a managed spawn expect `cli`.
+5. **Repo** — `$BOSS_REPO_ID`, else `resolve_context {working_dir}` (MCP) or `boss env --json` →
+   `session.repo_id` (CLI). None ⇒ `BLOCKED`. Never infer it from a directory name.
 
-   - `transport: 'cli'` — every `cli`-mapped capability is reachable. **Proceed**
-     on the CLI, whether or not MCP is also complete. A runtime missing one tool
-     (historically `merge_session`) runs degraded, it does not stop.
-   - `transport: 'mcp'` — the CLI set is incomplete but the MCP tool set is
-     complete. Proceed on the richer carrier; nothing is degraded.
-   - `ok: false` — neither transport is complete. Stop
-     `BLOCKED: no complete boss transport: <comma-separated missing>; <inventoryHint when non-null>`.
+`AskUserQuestion` is allowed only here, and only on a manual run (`BOSS_CRON` unset).
 
-   Report `transport: <mcp|cli>`, plus `cli-only mode (expected): <capabilities>`
-   and `partial: <capability>(<missing fields>)` when non-empty, in the opening
-   line.
+## Phase 1 — Assemble
 
-   The helper's array is still named `degraded` and that field name does not
-   change, but what it holds has no CLI equivalent **and never will**:
-   `resolveContext`, `getSessionStatuses`, `createPlanningChat` (three, not two
-   — `boss new` has no `--quick-chat`). Report them as
-   `cli-only mode (expected): resolveContext, getSessionStatuses, createPlanningChat`
-   and substitute their documented fallbacks, do not guess. That is the expected
-   steady state of a CLI run, not a fault. Save the word `degraded:` for a
-   capability missing from **both** transports — a real loss, which today is
-   exactly the `ok: false` stop above.
-
-   `partial` = a working transport missing response fields, so deliberately not
-   degraded. Today `getSession`: `boss show --json` carries the lifecycle state
-   and `last_agent_activity_at`, but lacks `repair_active`,
-   `attention_status.reason`, `pr_mergeable`, `merge_block` — auth-death and
-   conflict-after-green routing still need fallbacks. Poll `boss session checks`
-   for CI, and treat an unreadable signal as "not settled", never as a green.
-
-   `bossEpicToolPreflight(availableTools)` → `{ ok, missing }` remains available
-   for MCP-only callers and is unchanged.
-
-4. **Resolve `repo_id`** from `$BOSS_REPO_ID` (set in boss-managed chats) if
-   present, else `resolve_context {working_dir: <cwd>}`. No repo → stop BLOCKED.
-   On the **CLI transport** `resolve_context` does not exist: read
-   `$BOSS_REPO_ID`, falling back to `boss env --json` → `session.repo_id`. If
-   that is empty, this is not a boss session — stop BLOCKED. **Never infer the
-   repo from the directory name or the first `boss ls` row**: in a multi-repo
-   daemon a wrong guess aims every session write at another repository.
-
-5. **Agent choice.** Default `--agent claude`. In Phase 3 every ticket runs as a
-   tmux-hosted `create_session` (`tmux_unattended: true` — the prompt is
-   auto-injected and submitted into a live tmux pane, like a cron run, so the
-   agent proceeds autonomously; the pane survives a `bossd` restart and is
-   attach-safe); repair runs in a fresh chat inside the ticket's session
-   (Phase 3c). QUESTION stalls largely disappear: an unattended
-   `/boss-build` self-decides under `BOSS_CRON` and, if truly stuck, ends
-   BLOCKED (fail-isolated). Non-`claude` agents work the same way, but the
-   settled-green gate still applies: a runner without readable chat status must
-   hold or fail-isolate, never merge from `get_session` + `list_check_snapshots`
-   alone.
-
-`AskUserQuestion` is permitted **only** in Phase 0 and only when
-`BOSS_CRON` is unset (a manual invocation) — e.g. to confirm an ambiguous
-`working_dir`. Once Phase 1 begins it is never used again.
-
-## Phase 1 — Assemble the epic set
-
-1. **Gather tickets.**
-   - Parent mode: `get_issue <parentId>`, then
-     `list_issues parentId=<parentId> limit=250` for the children.
-   - List mode: `get_issue` for each explicitly listed id (no parent).
-   - **Parents mode:** `get_issue` **every** id in `parentIds` and enumerate each
-     root's children as parent mode does — **before** anything is classified,
-     adopted or launched, failing closed on an unreadable root rather than
-     silently shrinking the run. Feed the per-root lists to
-     `buildCombinedRun({parentIds, childrenByParent})` and schedule from its
-     plain, JSON-serializable result: ordered unique `childIds` (the child
-     universe), `childrenByParent` (what each root reports), `parentsByChild`
-     (which roots must show a child).
-   - For every child in the unique child set — **once**, however many roots
-     contain it — `get_issue includeRelations=true` so `blockedBy` relations are
-     present, then `normalizeTicket` each payload.
-
-2. **Classify** via `classifyTickets` → `{eligible, done, skipped}`:
-   - `eligible`: planned + `agent-friendly` + native `Implementation plan (<ISSUE-ID>)`
-     attachment; no `needs-human`. Legacy links require migration/replanning.
-   - `done`: state Done/Canceled — already merged for scheduling purposes.
-   - `skipped`: everything else, each with a `{ticket, reason}` (not-yet-planned,
-     In Progress, In Review, missing plan, `needs-human`, …).
-
-   Classify the **unique** child set only. A skip reason is reported to every
-   root that contains that child; `needs-human` never launches, on any root.
-
-   Immediately print the classification table in the driver chat. **When the
-   eligible set is non-empty** (sessions will spawn), also post the initial
-   progress comment on each selected parent issue (see Reporting) before any session spawns,
-   so a human watching sees the plan up front. When it is empty, skip the initial
-   post — the zero-launch branch (step 3) owns the single comment so the run never
-   create-then-edits.
-
-3. **Empty eligible set → zero-launch success (explicit branch).** No `eligible`
-   tickets means no session will launch. Run Phase 2 reconstruction; if it adopts
-   **no** in-flight session either, this is a **zero-launch** (no-ready /
-   no-inflight) run that spawns **zero** sessions. Do not create an initial comment
-   and then immediately edit a final one — **upsert exactly one** progress comment
-   (edit the existing `<!-- boss-epic-progress -->` comment in place if the marker
-   is present, else create it once) whose body **is** the final summary: the
-   classification table plus a line stating **`no sessions spawned`**. Print the
-   same in the driver chat and **stop success** (a clean no-op, not an error),
-   skipping Phases 3–4. A resume that adopts an in-flight session is **not**
-   zero-launch — it continues to Phase 3.
-
-4. **Build the dependency graph.** ONE graph for the whole run: its nodes are
-   the **unique** eligible children, so a `blockedBy` edge between two roots'
-   children is an ordinary in-set edge once both endpoints are selected, while a
-   blocker outside that set stays external. _Critical wiring contract:_ feed `buildGraph`
-   the **`classifyTickets(...).eligible`** list **plus** fold every `done`
-   ticket's id into the `externallyCleared` Set — **never** the raw full ticket
-   list. `readyTickets` trusts every graph node to be eligible; handing it
-   unclassified tickets would surface not-yet-planned / In Progress / In Review
-   tickets as ready and spawn sessions for unplanned work. A `done` sibling is
-   **not** a graph node, so its `blockedBy` edge is _external_ and clears
-   against `externallyCleared` — never against `merged`. Seeding it with the
-   `done` ids unblocks tickets behind already-done siblings (no step-5
-   `get_issue` needed). `merged` starts empty: only tickets this run merges.
+1. **Gather.** Parent: `get_issue` it and `list_issues parentId=<id> limit=250`. List: `get_issue`
+   each id. Several roots: read **every** root and its children first (fail closed on an unreadable
+   root) and combine with `buildCombinedRun({parentIds, childrenByParent})`. Then `get_issue
+includeRelations=true` each unique child once and `normalizeTicket` it.
+2. **Classify** with `classifyTickets` → `eligible` (planned, `agent-friendly`, an
+   `Implementation plan (<id>)` attachment, not `needs-human`), `done` (Done/Canceled), `skipped`
+   (with reasons). Print the table. When there is work, post the initial progress comment on each
+   root before anything launches.
+3. **Nothing eligible and nothing to adopt** (after Phase 2) ⇒ upsert **one** progress comment that
+   is the final summary (the table plus `no sessions spawned`), print it, stop success.
+4. **Graph.** `buildGraph(eligible)` — eligible tickets only, never the raw list. Seed
+   `externallyCleared` with every `done` id plus both `--assume-cleared*` sets; `merged` starts
+   empty:
 
    ```bash
    # inside the single scheduling process:
@@ -499,43 +266,23 @@ parallel, agent, assumeCleared, assumeClearedAndMerge}`.
    #   const merged = new Set()                                 // this run's merges
    ```
 
-5. **External blockers.** `buildGraph` partitions each ticket's `blockedBy` into
-   in-epic edges vs. external (outside the node set). For each external blocker
-   id, `get_issue` it and mark it `externallyCleared` **iff** its state type is
-   completed/canceled (the same `BLOCKER_CLEARED_STATE_TYPES` rule the library
-   uses). An uncleared external blocker parks its dependents; re-check external
-   blockers **every poll cycle**, so an external ticket finishing mid-run unparks
-   its dependents automatically. Both `--assume-cleared*` overrides are folded
-   into the launch-clearing set above (unparking a dependent behind a gate the
-   operator has decided to proceed past), but launch clearance is looser than
-   **merge** clearance: only `--assume-cleared-and-merge` ids clear the Phase 3d
-   merge-time re-check (`mergeBlockedExternalBlockers`); a plain `--assume-cleared`
-   launches dependents yet the merge step still refuses to merge past that
-   blocker's own still-open gate. Before launching, record the best-case merge
-   count as `eligible - uncleared-external-blocked - cannot-evaluate-here - cascade-skipped`; a blocker
-   owned by a session outside this epic is reported as `cannot-evaluate-here`,
-   distinct from both cleared and blocked, and is never counted as mergeable.
+5. **External blockers.** For each blocker outside the graph, `get_issue` it: completed/canceled
+   clears it; otherwise its dependents park. Re-check every cycle. A blocker owned by a session
+   outside this epic is `cannot-evaluate-here` (neither cleared nor blocked, never counted as
+   mergeable). Record the best-case merge count.
 
-## Phase 2 — Resume reconstruction (driver-owned)
+## Phase 2 — Resume
 
-Rehydrate, never restart. `loadEpicState({epicId, runId, dir})` returns `null` only for a genuinely
-fresh run and **throws** on a corrupt file — starting fresh there relaunches live children. Recover
-the `runId` from the progress comment's own `run` block (`parseProgressRunMetadata`): that is the
-resume join. `reconcileEpic` does the rest, adopting each live session by `tracker_id` or the
-`[<TICKET>] <ticket title>` convention, at most **one** per child. A Done/Canceled child is already
-in `externallyCleared` from Phase 1; an already-`MERGED` session whose ticket still sits in review
-has its bookkeeping completed by the same cycle's merge step. State shape and the join:
+`loadEpicState({epicId, runId, dir})` returns `null` only for a fresh run and throws on a corrupt file
+(starting fresh there would relaunch live children). The `runId` comes from the progress comment's
+`run` block (`parseProgressRunMetadata`). `reconcileEpic` adopts each live session by `tracker_id` or
+title — at most one per child. For several roots, persist root membership and per-root comment ids.
 [`references/epic-driver.md`](references/epic-driver.md).
 
-For a combined run, persist selected-root membership and resolved per-root progress-comment ids
-alongside the ticket JSON. Reload each selected root by its marker so the driver resumes the same
-coordinator and edits existing root comments rather than creating duplicates.
+## Phase 3 — The loop
 
-## Phase 3 — Scheduling loop
-
-Every wake — callback, subscription, bounded fallback, retry, manual resume, or the initial
-invocation — runs **one** `reconcileEpic` cycle; the driver never cares _why_ it woke, and a trigger
-name selects no mutation path. Run it until `assertEpicCanTerminate(state)` stops throwing:
+Every wake (callback, subscription, fallback, retry, manual resume, first run) runs one
+`reconcileEpic` cycle; why it woke selects nothing:
 
 ```bash
 # inside the scheduling process:
@@ -543,21 +290,12 @@ name selects no mutation path. Run it until `assertEpicCanTerminate(state)` stop
 #   // blockers = epicTerminalBlockers(state); non-empty ⇒ arm the next wake and yield RUNNING
 ```
 
-The driver owns the state: the ticket JSON, the id lists `merged`/`failed`/`inFlight`/`greens`/
-`cascadeSkipped`/`externallyCleared`, the run-wide resolved `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`
-budget, per-ticket `sessionId`/`chatId`/PR identity, wall-clock start, repair-round counters, and
-3c's `prevLastRepairHeadSha`/`repairStallSince` — persisted after **every** transition, never only
-at a turn's end, and never as a `Map`/`Set` (a persisted Set reloads empty, so the resume relaunches
-every child).
-A ticket enters `inFlight` at launch (3a) and leaves only when folded into
-`merged` (3d) or `failed` (3e); `greens` is a **subset**
-of `inFlight` — a green keeps its concurrency slot until merged, so
-`readyTickets` never re-lists it and the exit condition holds.
+The driver persists, after **every** transition: the ticket JSON; `merged`, `failed`, `inFlight`,
+`greens` (a subset of `inFlight` — a green keeps its slot until merged), `cascadeSkipped`,
+`externallyCleared` as arrays; the wall-clock budget; per-ticket session/chat/PR ids, start time,
+repair rounds, `prevLastRepairHeadSha` and `repairStallSince`.
 
 ### 3a. Launch
-
-Compute the ready set via `readyTickets` and launch up to
-`parallel - inFlight.size` new sessions:
 
 ```bash
 # inside the scheduling process, after buildGraph + state Sets are assembled:
@@ -567,232 +305,91 @@ Compute the ready set via `readyTickets` and launch up to
 #   process.stdout.write(JSON.stringify(ready.map((t) => t.id)))
 ```
 
-The `readyTickets` set is drawn only from the eligible (planned-state)
-implementation tickets classified in Phase 1, so this `createSession` block is for
-implementation fan-out **only** — never for planning/recon/plan-review subtasks
-(route those per the Operating Contract: subagent, or `createPlanningChat`).
-
-`readyTickets` returns LAUNCH order: descending transitive unlock count
-(`transitiveDependentCounts` over the combined graph — work that frees another
-root's children outranks a terminal leaf), then priority, oldest `createdAt`,
-then the stable identifier. Ranking only ORDERS; it never admits a ticket past an
-uncleared blocker, a cascade-skip or an in-flight slot. Before creating a
-session, re-check the deduplicated in-flight set **and** Phase 2's live session
-reconciliation: a child shared by several roots, or one already active, must
-never receive a second session.
-
-For each ready id, up to the concurrency headroom (best-unlock first — the
-array is already sorted), dispatch **one tmux-hosted unattended run** (the
-session-runner `createSession` capability, prompt = `subSkills.implement`): the
-prompt is auto-injected and submitted into a dedicated tmux pane (cron-style
-delivery), so the agent runs with no TUI attach and the pane
-survives a `bossd` restart:
+`readyTickets` returns launch order (most transitive unlocks first, then priority, age, id) and
+already cascade-skips dependents of failed tickets. Launch up to `parallel - inFlight.size`. Before
+each, re-check that the child has no live session (shared children, adopted sessions). One
+tmux-hosted unattended run per ticket:
 
 ```
 create_session {
   repo_id,
-  tmux_unattended: true,        // durable, restart-surviving, attach-safe
-  model:  "opus[1m]",         // MODEL from Phase 0 — no /model two-step
-  prompt: "/boss-build <TICKET>",   // BARE single-line command — see below
+  tmux_unattended: true,
+  model:  "opus[1m]",
+  prompt: "/boss-build <TICKET>",
   title:  "[<TICKET>] <ticket title>",
-  agent,                       // from Phase 0
+  agent,
   tracker_id:     "<TICKET>",
   tracker_source: "linear",
   tracker_url:    <ticket url>
 }
 ```
 
-**The prompt MUST be the bare single-line slash command — no preamble.** The
-daemon auto-submits a pane's prompt only when it is one trimmed line starting
-with `/` or `$` (`cronChatInputFromPrompt`); a multi-line prompt is pasted but
-left **unsubmitted** and the run never starts. A preamble is unnecessary
-anyway: `tmux_unattended` sessions run with `BOSS_CRON=true`, so
-`/boss-build` self-decides (no questions; ends BLOCKED if truly stuck).
-Repair (3c) follows the same bare-command rule.
+The prompt must be the bare one-line slash command: the daemon submits only a single trimmed line
+starting with `/` or `$`, and a multi-line prompt is pasted but never submitted. The response carries
+`session_id` and the primary `chat_id`; pass both to `recordLaunch` and start the child's wall clock.
 
-The `create_session` **response carries the primary `chat_id` (agent_session_id)
-directly** — feed `session_id` + `chat_id` straight to `recordLaunch` (no sqlite read, no
-`list_chats` round-trip), which adds the id to `inFlight` and forces the status back to `RUNNING`.
-Start its per-ticket wall clock, budget `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`, never a fixed number —
-this is a fresh shell, so carry the integer in the driver state or re-resolve it with the guarded
-snippet in 3c, never by re-running the whole canonical invocation block.
+### 3b. Watch and poll
 
-### 3b. Poll
+Arm callbacks per child entering flight (when available and targeted), **list-verify** them, and add
+a child-session `settled` subscription (`sessionOutcomeMap`, with the child's `--session`). Never arm
+bare `checks_passed` on a child PR — boss-build's PR is a draft and that fires on the first green
+draft commit; arm `policy.draftAwareTriggers` / `policy.epicChildTriggers` (`checks_passed_ready`,
+`ready_for_review`, `merged`, `closed`) and never `policy.forbiddenDraftTriggers`. A `settled`
+subscription can fire mid-flight, so `needsRearm` treats `fired`/`expired`/`canceled` as a hole. The
+fallback wake is an in-session scheduled wake-up — never `boss cron`, and never a backgrounded shell
+loop. A failed arm or verification is a recorded transition (mechanism, next time, reason, retries),
+reported as `RUNNING_BUT_UNWATCHED` or `BLOCKED` when no wake can be armed.
 
-Watches are armed per child entering flight **only when `callbacksAvailable(env)` and
-`selectEpicCallbackTarget` returns a verified target**. A callback wake trims the cadence but never
-replaces this reconciliation — it means _re-read the state below_, never _act on the trigger
-name_; dedup by callback id, and re-arm the child's consumed watches while it is still in flight.
+Each cycle, per in-flight ticket, read `get_session` (state, `last_agent_activity_at`,
+`AGENT_AUTH_FAILED`), `list_check_snapshots`, the real PR state, and the tracked chat's entry in
+`get_chat_statuses {session_id}`; classify with `classifyChildLiveness` and route on its `action`.
 
-**Never arm bare `checks_passed` on a child PR.** boss-build opens its PR as a **draft**
-and CI runs on drafts, so bare `checks_passed` fires on the first green draft commit —
-each premature fire consumes the one-shot watch at a moment that can never be
-merge-eligible. Arm `policy.draftAwareTriggers`: its green member is
-**`checks_passed_ready`** (green **and** not a draft — the merge-eligibility moment),
-plus optionally **`ready_for_review`** for the un-draft flip itself. An epic takes that set plus
-`merged` and `closed` as `policy.epicChildTriggers`; `policy.forbiddenDraftTriggers` names what must
-never be armed. The daemon merge
-gate stays authoritative — a wake is a signal, not proof. Re-arm consumed or expired watches,
-keeping one `group` per trigger so re-arm cancels only same-trigger siblings.
-
-**How the driver waits.** Callbacks are primary; an **in-session scheduled wake-up** (never
-`boss cron` — it starts a new session per fire and outlives the epic) is the bounded fallback.
-**Never** rely on backgrounded shell watchers or sleep loops to hold the wait — session hosts may
-kill them within the turn, and a driver that assumes them stalls silently.
-
-**Arm AND list-verify before yielding, plus a durable child-session `settled` subscription**
-(`sessionOutcomeMap`; pass the child's `--session` explicitly — it defaults to the orchestrator's
-own). An arm that returns clean but is absent from the list read did not take. A `settled`
-subscription can fire **mid-flight** and burn the wake, so `needsRearm` treats
-`fired`/`expired`/`canceled` as a hole while the child stays in flight. Registration or
-verification failure is a **transition**, never a silent continue: record the bounded fallback wake
-(mechanism, next time, reason, retry count) and stay `RUNNING`, else report
-`RUNNING_BUT_UNWATCHED`/`BLOCKED`.
-[`references/epic-driver.md`](references/epic-driver.md) ·
-[`references/callback-watches.md`](references/callback-watches.md).
-
-Each cycle re-reads, per in-flight ticket, `get_session` (state,
-`last_agent_activity_at`, `AGENT_AUTH_FAILED`), `list_check_snapshots` (DisplayStatus), the real
-provider PR state, and `get_chat_statuses {session_id}` for the entry whose `agent_session_id`
-equals the ticket's recorded `chat_id`. Feed only these already-read facts to
-`classifyChildLiveness` (bs-epic-lib) — chat status/readability, aggregate session `state`,
-caller-classified last-message kind (`agent-conclusion`, `usage-limit`, `transient-api-error`, or
-absent), `headShaMoved`, activity staleness, `attention_status` reasons, the wall-clock bit. It
-returns `{verdict, action, reasons}`; route on `action`, never on a liveness proxy.
-
-**Session state carries no push information.** A `state` transition, and a
-`last_check_state` appearing where there was none, both fire when the daemon
-re-polls checks that already exist — they move while the remote branch is
-unchanged, so reading one as a push puts the driver on merge rails against a branch still holding
-only its bootstrap commit. The push oracle is the remote itself (`git rev-list --count
-origin/<base>..origin/<branch>`). An unmoving remote head means
-either the child produced no commit or it has local commits that never pushed; establish whether a
-push happened before reading the head, and record which cause was observed. An unmoving remote head
-is never admissible as evidence of child death — only a `classifyChildLiveness` reason annotation.
-The command and its empty-output-before-first-push guard:
-[`references/epic-driver.md`](references/epic-driver.md).
-
-A green is trustworthy only once that tracked chat has **settled**: `IDLE` or `STOPPED` on **two
-consecutive polls** with the spinner absent. STOPPED +
-missing `last_agent_activity_at` = settled once the second poll agrees. Never gate settled on
-timestamp staleness — a
-spinner's elapsed counter alone advances `last_output_at`, so the test can never pass.
-`WORKING`/`QUESTION`/`WAITING` = still alive, running or parked, and `LIMITED` is the
-usage-limit resume lane, never merge-settled. `UNSPECIFIED` or an
-unreadable status is **unknown**, not settled and not dead; investigate/re-poll.
-`get_session_statuses` is a session-level `get_session_statuses` aggregate across all chats,
-display/diagnostic only — never gate green/settled on it: an older implementation chat can stay
-QUESTION/LIMITED while the tracked repair chat is IDLE/STOPPED + passing. Full vocabulary:
-[`references/merge-recovery.md`](references/merge-recovery.md).
+- **Session state says nothing about pushes.** It moves when the daemon re-polls existing checks.
+  The push oracle is the remote (`git rev-list --count origin/<base>..origin/<branch>`); see
+  [`references/epic-driver.md`](references/epic-driver.md).
+- **Settled** = the tracked chat is `IDLE` or `STOPPED` on two consecutive polls with no spinner.
+  `WORKING`/`QUESTION`/`WAITING` are alive; `LIMITED` is the resume lane; `UNSPECIFIED` or
+  unreadable is unknown. Never gate on timestamps or on the session-wide `get_session_statuses`
+  aggregate. [`references/merge-recovery.md`](references/merge-recovery.md).
 
 ### 3c. Transitions
 
-- **READY_FOR_REVIEW + DisplayStatus Passing + chat SETTLED** (tracked `chat_id`
-  is `IDLE` or `STOPPED` on two consecutive polls, spinner absent) → check the
-  remaining rail
-  conditions before queueing: the PR is **not a draft**, the linked ticket sits
-  in the tracker's **review** state (`$BOSS_EPIC_REVIEW_STATE`), and the PR title/body
-  carries no partial-slice / `do not merge` marker. Its producer is a child build
-  run that ended `PARTIAL`, whose body opens a `## Partial` section with
-  `do not merge — partial: <satisfied>/<total> acceptance criteria`.
-  All five hold → add to the
-  **greens** (merge queue). Do not add a ticket to `greens` while that chat is
-  WORKING, QUESTION, WAITING, LIMITED, UNSPECIFIED, or unreadable. The daemon Blocks an empty/no-op
-  run (a bootstrap-only branch is **not** surfaced as green), so a green here
-  genuinely means real work landed. Reads for each condition:
-  [`references/merge-recovery.md`](references/merge-recovery.md).
-- **GREEN_DRAFT** (Passing + settled, but the PR is still a **draft**) → **hold**,
-  never green. CI on a draft is expected noise, not merge-eligibility; the child
-  has not declared the slice finished. Re-poll until it is marked ready, or route
-  it as an unfinished child.
-- **Passing but chat still WORKING/QUESTION/WAITING** → **hold**: neither green
-  nor repair; re-poll while the tracked `chat_id` finalizes review/comments.
-- **Liveness classifier gate** — before any repair, resume, or wall-clock
-  isolation, classify the child with `classifyChildLiveness` (bs-epic-lib):
-  `alive/hold` → re-poll; `environmental-death/resume` → one wake-to-resume;
-  `agent-blocked/repair` → repair round below; `wall-clock-expired/fail-isolate`
-  → fail-isolate and **never** repair; `unknown/investigate` → read the tracked
-  chat's last message and `waiting_reason`, reclassify if that yields a known
-  last-message kind, otherwise re-poll. An `unknown` verdict never dispatches
-  repair.
-- **Agent-blocked / repair** — only when `classifyChildLiveness` returns
-  `agent-blocked/repair`: a `BLOCKED` aggregate session state must be
-  corroborated by the tracked chat's own agent-conclusion last message. A
-  `BLOCKED` state without that conclusion is `unknown/investigate`, not repair.
-  Then classify the repair lease with `classifyRepairLease` (bs-epic-lib), fed
-  from `get_session` (`repair_active`, `repair_stalled_at`,
-  `last_repair_head_sha`), the driver's `prevLastRepairHeadSha`, and the tracked
-  repair chat's last output time:
-
-  - `'active'` — a repairer holds the lease (the auto-repair plugin is engaged).
-    Do **not** dispatch a second chat — two repairers on one worktree collide;
-    count it as a round and re-poll.
-  - `'stalled'` — a **frozen repair lease**: `repair_active:true` with
-    `last_repair_head_sha` unchanged and repair-chat output stale across ≥2 polls. The round is
-    **exhausted**: count it against the cap immediately, then — rounds remaining → dispatch a fresh
-    round now; cap reached → fail-isolate with a `frozen repair lease` note. Never re-poll a lease
-    already classified `stalled`: that is what makes the loop **terminate**. The head-SHA snapshot
-    bookkeeping: [`references/merge-recovery.md`](references/merge-recovery.md).
-  - `'none'` — no lease held; dispatch below.
-
-  To dispatch, run `subSkills.repair` (`/boss-repair watch`) in a **new
-  chat in the ticket's own session** (the session-runner `recordChat` +
-  `sendChatMessage` capabilities) — clean context, session `model` inherited, same
-  worktree/branch/PR. Never `create_session` for repair: on a PR whose session
-  is live it attaches (`attached_existing: true`) and the supplied prompt is
-  **not** run; only an orphan PR with no session (`attached_existing: false`)
-  mints a fresh session that runs the prompt. Two calls:
+- **Green** — `READY_FOR_REVIEW`, DisplayStatus `Passing`, chat settled, PR **not a draft**, and no
+  `do not merge` / partial marker in its title or body (a child that ended `PARTIAL` carries
+  `do not merge — partial: <n>/<total> acceptance criteria` and a `(partial n/total)` title suffix) ⇒
+  add to `greens`. If the ticket is not yet in the review state, move it there.
+- **Green but draft**, or **passing while the chat is still working** ⇒ hold and re-poll.
+- **Liveness first** — `classifyChildLiveness`: `alive/hold` re-poll; `environmental-death/resume`
+  one resume; `agent-blocked/repair` a repair round; `wall-clock-expired/fail-isolate` fail-isolate
+  (never repair); `unknown/investigate` read the chat's last message and `waiting_reason`, reclassify,
+  else re-poll. Unknown never repairs.
+- **Repair** (only on `agent-blocked/repair`; a `BLOCKED` session needs the chat's own concluding
+  message to count). Check the lease with `classifyRepairLease`: `active` — someone is repairing,
+  count the round and re-poll; `stalled` (repair active, head SHA and output frozen across two polls)
+  — count it as exhausted and dispatch a fresh round, or fail-isolate at the cap with
+  `frozen repair lease`; `none` — dispatch. Dispatch `/boss-repair watch` in a **new chat in the
+  ticket's own session** (never `create_session`, which attaches to a live session without running
+  the prompt):
 
   ```
   record_chat       {session_id, agent_session_id: <fresh uuidgen UUID>,
                      agent_name: agent, title: "[<TICKET>] Repair (round N)"}
   send_chat_message {agent_session_id: <same UUID>, wake_if_asleep: true,
-                     submit: true, message: "/boss-repair watch"}  // submits
+                     submit: true, message: "/boss-repair watch"}
   ```
 
-  Read the repair skill's final terminal line from the tracked repair chat. Normalize the token by
-  stripping backticks, emphasis, any leading label, and surrounding whitespace. `inner-cap-exhausted`
-  counts as a consumed repair round but is not `no-progress`; `no-progress` means the repair ran and
-  changed nothing. Any unreadable or unclassifiable token goes to `repair-unclassifiable`, counts
-  toward the 4-round cap, and is never success.
+  Read the repair chat's terminal token (strip backticks, emphasis and labels):
+  `inner-cap-exhausted` counts a round; `no-progress` means nothing changed; anything unreadable is
+  `repair-unclassifiable` and counts. **Four rounds per ticket**, then fail-isolate. A conflicted
+  green (`pr_mergeable=false`) needs a repair round, not a merge. Track the repair chat in place of
+  the original.
 
-  Cap at **4 repair rounds per ticket** (a plugin-held or frozen-lease round
-  counts too; each
-  capped at 5 passes). A conflicted green (Passing but `pr_mergeable=false`)
-  needs a repair round, not a merge. Track the repair chat in place of
-  the original in `inFlight`; still red after round 4 → fail-isolate.
-
-- **Environmental-death / resume** — a state distinct from BLOCKED: the
-  classifier action is `resume` because the tracked chat is `LIMITED`, the
-  chat's last message is a **usage-limit** banner, or the last message is a
-  **transient API/5xx error** (not an agent conclusion), with no spinner and
-  frozen activity. The usage-limit lane belongs here; a 429/rate cap is not the
-  transient-API detector's 5xx lane. Deliver **one** wake-to-resume —
-  `send_chat_message` with wake + submit, telling it to continue from committed
-  state and not restart completed work. No resume — or a re-error — within one
-  poll cycle → fail-isolate. This is **not** the forbidden BLOCKED-nudge below:
-  BLOCKED is the agent's own decision to stop, an infra-death is the harness
-  dying mid-work. Diagnosis cheat sheet:
-  [`references/merge-recovery.md`](references/merge-recovery.md).
-
-- **Wall clock exceeded** → `classifyChildLiveness` returns
-  `wall-clock-expired/fail-isolate`. The budget is a config knob, not a constant
-  in the driver's behaviour: compare elapsed time against
-  `$BOSS_EPIC_CHILD_WALL_CLOCK_MIN`, which the canonical invocation block resolves via
-  `epicChildWallClockMinutes(config)` (`toolbox/skill-config.mjs`, config key
-  `epicDefaults.childWallClockMinutes`) — the accessor rather than a raw
-  `.boss-skills.json` read, so an absent `epicDefaults` block resolves the
-  built-in default instead of `undefined` (`elapsed > undefined` is always
-  false: a child that can never expire). The canonical invocation block resolved
-  it, but this is a fresh shell where that export is dead, and an empty value
-  makes `elapsed > ` never fire — the same bug. So carry the integer in the
-  Phase 3 state, or re-resolve it here with its own fail-closed guard. Do not
-  re-run the whole canonical invocation block for it: that block also resolves the
-  tracker state roles and classifies the entire ticket list, and carries BLOCKED
-  exits of its own. `$BOSS_EPIC_TOOLBOX` is dead in this shell for the
-  same reason the budget is, so the snippet re-resolves that first — without it
-  the import path is `undefined/skill-config.mjs` and the guard below fires on
-  every cycle.
+- **Environmental death** (chat `LIMITED`, a usage-limit banner, or a transient 5xx as the last
+  message; no spinner; frozen activity) ⇒ one `send_chat_message` (wake + submit) telling it to
+  continue from committed state; no resume or a re-error within a cycle ⇒ fail-isolate.
+- **Wall clock** — compare elapsed time against the budget from
+  `epicChildWallClockMinutes(config)` (`epicDefaults.childWallClockMinutes`, default 360 minutes —
+  children routinely run 2–4 h). Carry it in state, or re-resolve it with its own guard:
 
   ```bash
   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
@@ -807,20 +404,11 @@ QUESTION/LIMITED while the tracked repair chat is IDLE/STOPPED + passing. Full v
   test -n "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN" || { echo "BLOCKED: child wall clock unresolved at 3c — BOSS_EPIC_TOOLBOX unresolved or skill-config.mjs missing from it (stale payload: run boss skills install), .boss-skills.json failed to load, or epicDefaults is malformed"; exit 1; }
   ```
 
-  That built-in default is **360 min**;
-  a repo may override it. It is long on purpose — children routinely run 2-4 h,
-  so a short clock expires on healthy work. Do **not** `stop_session` — leave
-  the session open for a human.
-  Wall-clock expiry is a budget fact, not death evidence, and can never route to
-  repair.
+  Expiry fail-isolates; it is a budget fact, never death evidence, and never repairs.
 
-A BLOCKED run gets a capped repair round only after the classifier returns
-`agent-blocked/repair`, or it is fail-isolated — never a nudge into the original
-chat. Unknown liveness gets investigation/re-poll, never repair.
+Never nudge a BLOCKED child in its original chat.
 
-### 3d. Merge (serialized — at most one merge in flight, ever)
-
-Advance the base branch one PR at a time. Compute the merge target:
+### 3d. Merge — one at a time
 
 ```bash
 # inside the scheduling process:
@@ -828,9 +416,7 @@ Advance the base branch one PR at a time. Compute the merge target:
 #   //   greens: [{id}, ...]   merged: Set of merged ids   (THREE args)
 ```
 
-`nextToMerge` returns the single id mergeable right now (all **in-epic** blockers
-already in `merged`, tie-broken by priority then oldest), or `null`. If non-null,
-**re-check its own external blockers at merge time** before merging:
+Re-check the target's external blockers at merge time:
 
 ```bash
 # inside the scheduling process, for the nextToMerge target:
@@ -842,318 +428,78 @@ already in `merged`, tie-broken by priority then oldest), or `null`. If non-null
 #   // open.length > 0 → skip-with-note this cycle; do NOT merge past the gate.
 ```
 
-`mergeBlockedExternalBlockers` returns the still-open external blocker ids —
-neither resolved (Done/Canceled) nor cleared by `--assume-cleared-and-merge`. If
-non-empty, **skip the merge this cycle with a progress-comment note** (e.g.
-`<TICKET> held: external blocker <ID> still open`) and re-check next cycle; a plain
-`--assume-cleared` (launch-only) does **not** clear this gate. If empty:
+Still-open blockers ⇒ skip this cycle with a progress note (`<TICKET> held: external blocker <ID>
+still open`); only `--assume-cleared-and-merge` clears this gate. Otherwise:
 
-1. `merge_session {id: <session_id>, confirm: true}`. The `confirm: true` is
-   **mandatory** — `merge_session` refuses without it. Never merge outside the
-   `nextToMerge` order.
-2. **Success** → verify `get_session` shows `MERGED`, then `save_issue {id,
-state: "Done"}`, fold the id into `merged` (plus `externallyCleared` for a
-   non-node adopted child — its dependents gate externally and must unpark
-   before the exit check), and refresh the base:
-   `git fetch origin <base>` then `git rebase --no-fork-point FETCH_HEAD` in
-   the driver's repo checkout (skip with a logged note if the driver worktree
-   is not on the base branch or is dirty).
-3. **`FailedPrecondition "PR is not passing"` or a conflict** (a sibling merge
-   just landed and invalidated this green) → demote the ticket from `greens` back
-   to a repair round. This conflict-after-green demotion gets its **own single
-   extra** repair round and does **not** consume the ticket's normal 4-round cap
-   the first time.
-4. **Any other merge error** → never treat the merge as failed until you have
-   re-read the PR's real provider state (an error can follow a merge that
-   landed), and read a rebase refusal as a merge commit on the branch, not as a
-   red PR. Both recipes:
-   [`references/merge-recovery.md`](references/merge-recovery.md).
+1. `merge_session {id: <session_id>, confirm: true}` — `confirm` is mandatory.
+2. Success ⇒ confirm `MERGED`, move the ticket to Done, fold it into `merged` (and
+   `externallyCleared` for an adopted non-node child), then refresh the driver's checkout
+   (`git fetch origin <base>` and `git rebase --no-fork-point FETCH_HEAD`; skip with a note if it is
+   not on the base or is dirty).
+3. `FailedPrecondition "PR is not passing"` or a conflict (a sibling merge invalidated it) ⇒ back to
+   a repair round; the first such demotion gets one extra round outside the cap of four.
+4. Any other error ⇒ re-read the PR's real state before calling it failed (`MERGED` means it landed:
+   finish the bookkeeping, never re-merge). A rebase refusal (`MERGE_STRATEGY_INCOMPATIBLE`) means a
+   merge commit on the branch. [`references/merge-recovery.md`](references/merge-recovery.md).
 
-**Expect drift, and budget for it.** Because merges are serialized and builds are long, a
-late-finishing child WILL sit many merges behind the base by the time its turn comes.
-Two mechanisms absorb that, neither of them this skill's to enable: the daemon's **opt-in
-proactive rebase** (a per-repo setting) keeps in-flight branches current without driver
-action, and the **linear-history invariant** — every child rebases onto the base and never
-merges the base back in — keeps whatever conflict does surface a single-branch replay
-rather than a tangled merge graph. Treat a late drift conflict as a normal repair round
-(step 3 above), not as a child failure.
+Late children will sit behind many merges; the daemon's opt-in proactive rebase and the
+rebase-never-merge rule keep that a normal repair round, not a failure.
 
-### 3e. Fail-isolate bookkeeping
+### 3e. Fail-isolate
 
-To fail-isolate a ticket: add its id to `failed`, **leave the session open**
-(isolate = preserve evidence for a human; never `stop_session`), recompute the
-cascade of now-unreachable dependents via `transitiveDependents(graph,
-failed)`, mark each as skipped with the failed ancestor named in the reason, and
-update the progress comment.
-
-Isolation is **per-ticket, and never a stop**: one ticket failing — a spent wall
-clock included — must not end the run, `stop_session` a sibling, or tear down
-shared scheduling state such as the cron/callback watches other in-flight
-children depend on. The loop continues into its next cycle and keeps launching
-every other ready child. The only further tickets touched are the graph
-dependents skipped above, which are unreachable by dependency rather than by
-association.
+Add the id to `failed`, **leave its session open** for a human (never `stop_session`), skip its
+`transitiveDependents(graph, failed)` naming the failed ancestor, update the comment. One failure
+never stops the run, stops a sibling, or tears down shared watches.
 
 ### 3f. Report every transition
 
-After **every** state change (launch, green, merged, repair kickoff, failed,
-skipped, external-unpark) update the single progress comment on **every selected
-root that contains the changed ticket** (see Reporting) — a shared child must
-show the same state on each. Never post a per-event comment. A failed upsert on
-one root is reported against that root and retried on the next transition; it
-never creates a second coordinator, session, or comment.
+After every launch, green, merge, repair, failure, skip or unpark, update the progress comment on
+every root containing that ticket. Never post a per-event comment. A failed upsert is retried on the
+next transition.
 
 ## Phase 4 — Final report
 
-**Call `assertEpicCanTerminate(state)` first, and let it throw** — a non-empty
-`epicTerminalBlockers` means continue, whatever the last wake appeared to say. Never decide the run
-is over because the turn has no more tool calls. Then `transitionToDone`, which additionally demands
-a final authoritative reconciliation, every eligible ticket merged / fail-isolated /
-cascade-skipped, a successful final progress upsert, and settled-child watch cleanup (a live
-fail-isolated child keeps its watches as evidence). Only then may this phase emit `DONE`.
+Call `assertEpicCanTerminate(state)` and let it throw while anything remains; then `transitionToDone`
+(a final reconciliation, every eligible ticket merged / fail-isolated / skipped, a successful final
+upsert, settled children's watches removed — a live fail-isolated child keeps its watches). Post the
+final summary on each root and in the chat: **merged** (with PRs, in order), **failed-isolated**
+(session, last status, reason), **skipped** (reason or failed ancestor), and **duration**. The parent
+is left for a human to close.
 
-The loop is terminal only over the **whole** deduplicated child universe: every eligible child
-terminal/settled, no ready candidates, no in-flight work, no unresolved reconciliation state. One
-root finishing is not a terminal result; unknown liveness parks rather than resolving to success.
+**Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Roll
+`notesSampleRate` once per run (reuse `NOTES_SAMPLED`); on a miss, stop. Otherwise write at most five
+secret-free observations (≤ 8 KiB) to a temp `observations.md` and dispatch each extension
+(instructions from `skillPath`, bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`) with
+`{"role":"notes","core":"boss-epic","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`;
+validate with `--role notes`. Never fatal.
 
-Post the **final summary** as the last edit of the progress comment on **each** selected root and
-print the same in the driver chat:
+## The progress comment
 
-- **merged** — ticket → PR link, in merge order.
-- **failed-isolated** — ticket → session id + last DisplayStatus + a one-line
-  reason. If any fail-isolated session is still live, keep the cron/callback
-  teardown needed to observe or resume it; clean up only settled child watches.
-- **skipped** — ticket → reason (ineligible, or cascade-skipped under a named
-  failed ancestor).
-- **duration** — wall-clock of the whole run.
-
-If every eligible ticket merged, note that the epic is complete — but **the
-parent issue is left for the human to close**; boss-epic never mutates the
-parent's state, on any selected root.
-
-### Post-terminal notes extensions (repo opt-in)
-
-**Caller suppression — check this before anything else.** A run another boss core dispatched as
-part of its own larger run must not take its own notes: that caller already owns the single
-post-terminal notes dispatch for the whole top-level run, so a nested phase here is exactly the
-duplicate this gate exists to remove. A caller signals that ownership by setting
-`BOSS_NOTES_SUPPRESSED=1` in the dispatched worker's environment. The marker **defaults to not
-suppressed** — unset, empty, or any other value means this run owns its own notes, so a standalone
-invocation still takes them.
-
-A dispatched worker does not inherit that environment, so the caller also states the marker **in the
-invocation**: bind it into the shell that runs the gate below (`BOSS_NOTES_SUPPRESSED=1`) before
-reading it. Left unbound the gate reads a name nothing assigned, takes the not-suppressed branch,
-and ships the duplicate this section exists to remove with both halves still reading as satisfied.
-
-```bash
-if [ "${BOSS_NOTES_SUPPRESSED:-}" = "1" ]; then
-  echo "notes: suppressed (caller owns notes)"   # end the phase here: no discovery, no scratch, no dispatch
-fi
-```
-
-Skipping is all that is due: suppression is never fatal and never changes the terminal outcome.
-
-After final summary and outcome, resolve and run:
-
-```bash
-BOSS_EPIC_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-epic/toolbox"
-if [ ! -d "$BOSS_EPIC_TOOLBOX" ]; then BOSS_EPIC_TOOLBOX="$HOME/.codex/skills/boss-epic/toolbox"; fi
-NOTES_JSON=$(node "$BOSS_EPIC_TOOLBOX/skill-extensions.mjs" discover --core boss-epic --role notes --json)
-```
-
-Record every `NOTES_JSON.skipped` entry whose `deliberate` is `false` as
-`extension <name>: skipped (<reason>)` before dispatching, keying on that field rather than on the
-`reason` text. A `deliberate: true` entry is a same-prefix skill that is not an extension of this
-core — a markerless helper, or one extending another core — and is never reported. Recording is all
-that is due: a skip is never fatal and changes no control flow.
-
-Empty means silent no-op/no scratch.
-
-**Sampling roll — one per run, shared by every reporting phase.** `notesDefaults.sampleRate` (a
-number in `[0,1]`, default `1.0`; `0.33` is the recommended production setting) is the probability
-that a run reports at all. Roll it **once per run** and carry the pair forward — a phase that
-re-rolls turns one configured rate into two independent ones, so a run could pay for one reporting
-phase and skip another. If an earlier phase in this run already rolled, reuse its values verbatim
-and re-export them into this shell rather than rolling again:
-
-```bash
-if [ -z "${NOTES_SAMPLED:-}" ]; then
-  NOTES_SAMPLE_RATE=$(export BOSS_EPIC_TOOLBOX; node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, notesSampleRate } = await import(pathToFileURL(process.env.BOSS_EPIC_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(String(notesSampleRate(loadSkillConfig())))')
-  NOTES_SAMPLED=$(awk -v r="${NOTES_SAMPLE_RATE:-1}" -v s="$$" 'BEGIN{srand(s);print (rand()<r)?"yes":"no"}')
-  export NOTES_SAMPLE_RATE NOTES_SAMPLED
-fi
-if [ "$NOTES_SAMPLED" != "yes" ]; then
-  echo "notes: sampled out (rate ${NOTES_SAMPLE_RATE:-1})"   # end the phase here: no scratch, no dispatch
-fi
-```
-
-An unreadable or malformed rate resolves to `1.0` at both ends — the accessor's own fallback and
-the `${NOTES_SAMPLE_RATE:-1}` default — so a broken config costs a few extra dispatches and never
-silently switches reporting off. Seeding `srand` from the shell PID rather than the clock alone
-keeps two runs that start in the same second from rolling identically. This gate sits **after** the
-empty-`extensions` check, so a repo that never opted in still prints nothing at all.
-
-Once both gates pass, create the terminal-only handoff:
-
-```bash
-NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-epic-notes.XXXXXX")
-NOTES_OBSERVATIONS="$NOTES_RUN_TMP/observations.md"
-```
-
-The owning orchestrator writes at most five secret-scrubbed candidate observations to
-`NOTES_OBSERVATIONS` (maximum 8 KiB): problem + pointer, no transcript/output/user content/secrets;
-empty is valid and this is the worker's only run history.
-
-Dispatch descriptors in ascending `(order, name)` order. Each gets a fresh **awaited** worker (`Task`
-or `spawn_agent`+`wait_agent`) bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms).
-Read `skillPath` (`dir` is its directory), pass both in the brief, and require relative extension
-resources to resolve from `dir`. Pass `SKILL.md` as instructions — never descriptor `name` through
-the Skill tool, which refuses `disable-model-invocation: true`.
-Each receives `{role:"notes",core:"boss-epic",context:{mode:"<interactive if the run
-interacted; else headless>",core:"boss-epic",outcome:"<decided>",repoId:"<BOSS_REPO_ID or
-null>",observationPath:"<NOTES_OBSERVATIONS>"},runTmp:"<NOTES_RUN_TMP>",
-outPath:"<NOTES_RUN_TMP>/notes-<extension-name>.json"}`. Validate via
-`node "$BOSS_EPIC_TOOLBOX/skill-extensions.mjs" validate --role notes --file "<outPath>"`; count
-valid notes, record each error as `extension <name>: skipped (<reason>)`, preserve terminal state,
-then remove `NOTES_RUN_TMP`.
-
-## Reporting contract (single-comment protocol)
-
-Exactly **one** comment **per selected parent issue**, created on the first
-report and **edited in place** thereafter. Find each on resume by the marker
-line, which is the literal first line of the comment body:
-
-```
-<!-- boss-epic-progress -->
-```
-
-In list mode (no parent issue), post it on the first ticket and note that anchor in the driver chat.
-
-Across several roots this is a **projection of one coordinator state**, never
-several states: keep one `ProgressState` over the whole child universe and call
-`projectProgressByParent({state, parentIds, childrenByParent})`
-(`toolbox/progress-comment.mjs`). It returns one `{parentId, state}` per root —
-rows filtered to that root's membership, heading renamed to that root, marker and
-`updatedAt` verbatim — and a shared child is the same row object in each, so it
-renders identical bytes on every parent. Each projection then goes through the
-unchanged `renderProgressComment` + `planProgressCommentUpsert` pair, one write
-per root.
-
-**Do not hand-roll the renderer or the create-vs-update decision** —
-`toolbox/progress-comment.mjs` is the specification and its tests are the contract:
-`buildEpicProgressState(state)` projects the run state onto the schema `validateProgressState` pins
-(an ordered `tickets[]` whose `status` is one of the six `PROGRESS_STATUSES` — map the driver
-vocabulary onto them, queued → `pending` and in-flight or repairing → `building`, carrying any
-round count in `rounds` / `note`), `renderProgressComment` builds the body, and
-`planProgressCommentUpsert({comments, marker, body})` returns the `create`/`update` op the driver
-executes verbatim through the tracker adapter's `writeComment` / `updateComment`. The helpers are
-pure — they never call a tracker.
-
-**Every transition must leave the comment resumable without the previous turn.** The rendered `run`
-block carries `runId`, `phase`, `status`, `lastReconciledAt` and the next wake; each row carries
-session id, tracked chat id, PR, liveness and watch state. A comment saying only "building" is
-insufficient — `parseProgressRunMetadata` is how a fresh driver finds its state file
-([`references/epic-driver.md`](references/epic-driver.md)).
-
-**Never** post per-event comments —
-the single edited comment is the whole audit trail, and its marker is what makes
-resume idempotent. On a **zero-launch** run (no-ready / no-inflight — Phase 1
-step 3) this same single comment is upserted exactly once as the final summary
-carrying `no sessions spawned`; there is no separate initial-then-final edit.
+Exactly one comment per root, first line `<!-- boss-epic-progress -->`, edited in place (list mode:
+on the first ticket). Never hand-roll it: `buildEpicProgressState(state)` → (for several roots)
+`projectProgressByParent({state, parentIds, childrenByParent})` → `renderProgressComment` →
+`planProgressCommentUpsert({comments, marker, body})`, executed verbatim through the tracker adapter
+(`toolbox/progress-comment.mjs`). Statuses map onto the six `PROGRESS_STATUSES` (queued → `pending`,
+in flight or repairing → `building`). Its `run` block (`runId`, phase, status, `lastReconciledAt`,
+next wake) and per-row session, chat, PR, liveness and watch state are what let a fresh driver
+resume without the previous turn.
 
 ## Safety rails
 
-State and honor these explicitly:
+- `merge_session` only with `confirm: true`, only in `nextToMerge` order, one at a time.
+- **A PR is merge-eligible only when all four hold**: the daemon gate is `Passing`; the build chat
+  settled with real changes; the PR is not a draft; no `do not merge` / partial marker. A PR number
+  alone — especially an empty bootstrap draft — is never completion (boss-build adopts that branch
+  and continues).
+- Never `stop_session` a failed ticket.
+- The scheduler's graph is eligible-only; done ids clear externally; tickets outside the set are
+  never mutated or merged.
+- A runner without readable chat status (non-`claude` agents) must hold or fail-isolate — never merge
+  from session state and check snapshots alone.
 
-- **Never `merge_session` without `confirm: true`**, and never merge outside the
-  `nextToMerge` order. At most one merge in flight, ever.
-- **A PR number alone is never completion or merge-readiness.** An open PR —
-  especially an empty draft placeholder — proves only that a branch exists. A
-  ticket is **merge-eligible only when all five hold**: (1) the daemon merge
-  gate is clear (`gate 1` / DisplayStatus `Passing` — the daemon gate is
-  authoritative); (2) the build chat has SETTLED (idle, no spinner, stable
-  across two polls) with real changed files; (3) the PR is **not a draft**;
-  (4) the linked ticket sits in the tracker's **review** state (resolved from
-  the `inReview` role adapter-first by the same `resolveStateRole` as the
-  planned state — the adapter's `states` capability, else the configured
-  `states.inReview` — and exported by the canonical invocation block as
-  `$BOSS_EPIC_REVIEW_STATE`; never a baked-in state name. **Empty ⇒ condition 4
-  cannot hold: never merge, never compare against `""`.** That block does not
-  BLOCK on an empty review state — only `planned` is preflight-critical — so this gate is where
-  it fails closed);
-  (5) the PR title/body carries **no** partial-slice or `do not merge` marker.
-  A child build run that ended `PARTIAL` is that marker's first producer: its body
-  opens a `## Partial` section with
-  `do not merge — partial: <satisfied>/<total> acceptance criteria`, and its title
-  ends ` (partial <satisfied>/<total>)`.
-  Green on a _draft_ PR is expected CI noise, not merge-eligibility. Rationale
-  and the read for each condition:
-  [`references/merge-recovery.md`](references/merge-recovery.md).
-- **Never `stop_session` a failed ticket.** Fail-isolate means leave the session
-  open so a human inherits the evidence.
-- **Never call AskUserQuestion after Phase 0** — the run is fire-and-forget.
-  Under `BOSS_CRON=true`, never call it at all.
-- **Tickets outside the epic set are NEVER mutated.** Only the children
-  explicitly enumerated in Phase 1 are ever moved to `Done`. This is the guard
-  against a foreign `blocks` relation dragging an unrelated ticket into the
-  merge set: `buildGraph` classifies such a relation as an _external_ blocker
-  (a node outside the graph), so it can gate readiness but can never be merged
-  or restated by this skill.
-- **The graph fed to the scheduler is eligible-only** (Phase 1 wiring): nodes
-  are `classifyTickets(...).eligible`; `done` ids are folded into
-  `externallyCleared` (a done sibling is not a node — its edge is external).
-  Never feed `readyTickets` the raw ticket list.
+## Setup
 
-## Edge cases
-
-- Parent with zero planned children → empty eligible set → **zero-launch branch**
-  (Phase 1 step 3): one progress comment upserted with `no sessions spawned`,
-  stop success.
-- All children already Done → empty eligible set (`done` bucket →
-  `externallyCleared`) → same **zero-launch branch**: one comment upserted with
-  `no sessions spawned` (noting "already complete"), stop success.
-- External blocker never clears → its dependents stay parked and are skipped;
-  the final report names the uncleared external ticket.
-- Dependency cycle inside the epic → `readyTickets` never marks the cycle
-  members ready (each keeps an unmerged in-epic blocker); reported as
-  skipped/blocked. `transitiveDependents` is cycle-safe.
-- Driver killed mid-run → relaunch the identical command; Phase 2 adopts
-  in-flight sessions and the marker comment.
-- Merge-commit deadlock → `merge_session` fails with a rebase refusal
-  (`MERGE_STRATEGY_INCOMPATIBLE`) while the PR reads CLEAN. Diagnose with
-  `git rev-list --merges --count origin/<base>..<branch>` (any count `> 0` on a
-  rebase-strategy repo); the daemon auto-squashes when the repo allows squash, so
-  re-invoke `merge_session` **once**. Recovery paths and the linear-history
-  prevention invariant (a `git merge` of the base ref is forbidden — always
-  rebase): [`references/merge-recovery.md`](references/merge-recovery.md).
-- Stranded merge mid-run → on **any** `merge_session` error, re-read the PR's
-  actual provider state before treating the merge as failed. `MERGED` means it
-  landed: complete the bookkeeping (ticket → its done state, fold into `merged`,
-  release the merge slot) and **never re-merge or fail-isolate**. `merge_session`
-  is idempotent, so the safe generic move is re-read, then retry once.
-- Empty draft PR placeholder — a draft PR with no real file changes and no check
-  evidence, present _before/without_ a settled run (e.g. bossd's bootstrap
-  draft). This is **not** completion and **not** a settled no-op. Such an
-  empty draft PR placeholder routes the child `/boss-build` to
-  **adopt the existing branch/session** and continue implementation:
-  never restart selection/planning, and never fail-isolate merely because a PR
-  exists — a PR number alone is not completion or merge-readiness. Contrast the
-  settled no-op below.
-- Empty/no-op run → a run that genuinely _settled_ with no changes: the daemon
-  Blocks it, so the driver sees BLOCKED and fail-isolates — it never
-  merges an empty PR.
-- Non-`claude` agent → runs unattended the same way (tmux-hosted run + repair in
-  a fresh chat), but the settled-green gate is mandatory. A runner without
-  readable chat status must hold or fail-isolate; it must not merge from
-  `get_session` state + `list_check_snapshots` alone.
-
-## Setup (one-time, outside this skill)
-
-- Plan the epic's children first (each needs the planned state +
-  `agent-friendly` + an Implementation-plan link), e.g. via
-  `boss-plan` / `bs-sweep-plan`.
-- Invoke `/boss-epic <TICKET>` (parent, id or pasted Linear URL) or
-  `/boss-epic <TICKET-A> <TICKET-B> …` (explicit list), optionally `--parallel N`,
-  `--agent <name>`, and the `--assume-cleared` / `--assume-cleared-and-merge`
-  operator overrides.
+Plan the children first (planned, `agent-friendly`, a plan attachment — `boss-plan`). Then
+`/boss-epic <TICKET>` (a parent id or URL), `/boss-epic <A> <B> …` (a list), or `--epic <A> --epic
+<B>` (several roots), with optional `--parallel N`, `--agent <name>` and the `--assume-cleared*`
+overrides.

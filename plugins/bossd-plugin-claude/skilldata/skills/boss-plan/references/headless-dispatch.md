@@ -81,8 +81,8 @@ after it returns (a landed sentinel with a non-live heartbeat exits 0 immediatel
 
 ## The subagent holds Phase 2.5 tracker-write authority
 
-On an EPIC triage the dispatched subagent performs **every** Phase 2.5 tracker write itself, in this
-order:
+On an EPIC triage the dispatched subagent performs **every** epic tracker write itself
+([`epic.md`](epic.md)), in this order:
 
 1. upload the epic spec attachment to the parent;
 2. create each child issue, fully planned, in stable topological order;
@@ -157,18 +157,11 @@ tracker write on either attempt.
 
 ## Validate the object that was returned, not a file at its path
 
-`<ISSUE-ID>.draft-metadata.json` is a **declared** scratch family, and the brief tells the worker to
-write its local files under declared basenames. So the worker can write the very path the
-orchestrator is specified to write the returned object to — and an orchestrator that validates
-without writing first validates the worker's file instead of the worker's message. Every guarantee
-the metadata guard gives is then a guarantee about a file the worker chose.
-
-`node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" adopt-metadata "$METADATA" "$RETURNED_METADATA"` is
-the whole rule. It adopts the returned object when the path is absent or already identical, and
-refuses with `metadata-not-from-message` when the path holds something else — **without**
-overwriting it, because that file is the evidence that the dispatch broke its contract and an
-orchestrator that silently repaired it would keep dispatching workers that do the same. Adoption is
-not a way around validation: what it adopts is then held to the ordinary metadata contract.
+`node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" adopt-metadata "$METADATA" "$RETURNED_METADATA"`
+validates the object the dispatch **returned** (never a same-named file the worker may have written),
+normalizes cosmetic fields — label spelling, estimate, priority, optional fields — and writes the
+normalized object to `$METADATA`, printing a `warning:` line for each change. It fails only when the
+plan path or the description is missing or unusable.
 
 ### Assign `$RETURNED_METADATA` with a quoted heredoc, never an inline quoted literal
 
@@ -176,9 +169,7 @@ The returned object travels as argv, which is the only form the orchestrator hol
 it to a file first would reintroduce the substitution this rule exists to refuse. That makes the
 **assignment** the hazard, not the guard. Drafted JSON routinely carries an apostrophe (a ticket
 title, a summary), and an apostrophe inside a single-quoted shell literal ends the literal: the
-variable then holds truncated JSON, `adopt-metadata` refuses it as malformed, and the SAFE branch
-`rm -rf`s a run scratch whose plan had already passed re-verification. The refusal is correct; the
-input was wrong before the guard ever saw it.
+variable then holds truncated JSON and `adopt-metadata` cannot parse it.
 
 Assign it with a **quoted** heredoc, whose delimiter suppresses every expansion and needs no
 escaping for `'`, `"`, `$` or backticks:
@@ -191,14 +182,8 @@ RETURNED_JSON
 ```
 
 An unquoted `<<RETURNED_JSON` is not this rule: it would expand `$` and backticks inside the
-drafted text. A false refusal is the harm to design against here — refusing cannot deadlock a run,
-but discarding a good plan costs the whole dispatch.
-
-`adopt-metadata` also refuses a dispatch that returned **nothing** (`metadata-not-returned`). That is
-the same separation `bs-dispatch-await.mjs` draws between artifact readiness and message readiness: a
-landed sentinel says the artifact is there, never that the message arrived, and with no message in
-hand the file at the path is the only thing left to validate — which is exactly the substitution this
-rule exists to refuse.
+drafted text. `adopt-metadata` also refuses a dispatch that returned **nothing**
+(`metadata-not-returned`).
 
 ## Liveness is settled on the heartbeat, not on the seed clock
 

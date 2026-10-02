@@ -1077,7 +1077,7 @@ test('validateResult accepts a well-formed round envelope', () => {
   assert.deepEqual(validateResult(envelope, 'round'), { ok: true, errors: [] })
 })
 
-test('validateResult rejects a round envelope missing a findings key', () => {
+test('validateResult accepts a findings envelope with a malformed item, reporting it as a warning', () => {
   const envelope = {
     ok: true,
     extension: 'boss-review-ce',
@@ -1085,8 +1085,8 @@ test('validateResult rejects a round envelope missing a findings key', () => {
     items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't' }],
   }
   const result = validateResult(envelope, 'round')
-  assert.equal(result.ok, false)
-  assert.ok(result.errors.some((e) => /missing "detail"/.test(e)))
+  assert.equal(result.ok, true)
+  assert.ok(result.warnings.some((e) => /missing "detail"/.test(e)))
 })
 
 test('validateResult accepts a well-formed surface envelope', () => {
@@ -1126,14 +1126,16 @@ test('validateResult rejects ok:false without an error field, with a fallback re
   assert.ok(result.errors.some((e) => /ok:false/.test(e) && /no error detail/.test(e)))
 })
 
-test('validateResult rejects a role mismatch', () => {
-  const envelope = { ok: true, extension: 'x', role: 'surface', items: [] }
-  const result = validateResult(envelope, 'lens')
-  assert.equal(result.ok, false)
-  assert.ok(result.errors.some((e) => /role/.test(e)))
+test('validateResult warns on a findings-role mismatch and rejects one for a persistence role', () => {
+  const lens = validateResult({ ok: true, extension: 'x', role: 'surface', items: [] }, 'lens')
+  assert.equal(lens.ok, true)
+  assert.ok(lens.warnings.some((e) => /role/.test(e)))
+  const notes = validateResult({ ok: true, extension: 'x', role: 'lens', items: [] }, 'notes')
+  assert.equal(notes.ok, false)
+  assert.ok(notes.errors.some((e) => /role/.test(e)))
 })
 
-test('validateResult rejects items missing required keys', () => {
+test('validateResult reports findings items missing required keys as warnings', () => {
   const envelope = {
     ok: true,
     extension: 'x',
@@ -1141,8 +1143,8 @@ test('validateResult rejects items missing required keys', () => {
     items: [{ severity: 'Warning', title: 't' }], // missing section + detail
   }
   const result = validateResult(envelope, 'plan-reviewer')
-  assert.equal(result.ok, false)
-  assert.ok(result.errors.length >= 1)
+  assert.equal(result.ok, true)
+  assert.ok(result.warnings.length >= 1)
 })
 
 test('validateResult never throws on a non-object envelope', () => {

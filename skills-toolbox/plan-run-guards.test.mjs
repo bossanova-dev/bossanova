@@ -83,24 +83,6 @@ test('validateDraftMetadata accepts a well-formed bounded metadata object', () =
   assert.deepEqual(result.violations, [])
 })
 
-test('validateDraftMetadata hands moduleRoots to the contract check', () => {
-  // The same list the dependency scan gets. Without it the contract check ran with an empty one
-  // and rejected a `## Key changes` naming a marked bare module name that the scan resolves fine.
-  const bareModule = metadata({
-    descriptionSummary: descriptionSummary().replace(
-      '- `skills-toolbox/plan-run-guards.mjs`: the bounded change.',
-      '- `bossalib`: the shared library.',
-    ),
-  })
-  const codes = (result) => result.violations.map((violation) => violation.code)
-  assert.ok(
-    codes(validateDraftMetadata(bareModule)).includes(
-      'description-summary-subject-areas-unresolved',
-    ),
-  )
-  assert.deepEqual(validateDraftMetadata(bareModule, { moduleRoots: ['bossalib'] }).violations, [])
-})
-
 test('validateDraftMetadata rejects missing descriptionSummary', () => {
   const value = metadata()
   delete value.descriptionSummary
@@ -109,46 +91,81 @@ test('validateDraftMetadata rejects missing descriptionSummary', () => {
   assert.deepEqual(result.missing, ['descriptionSummary'])
 })
 
-test('validateDraftMetadata rejects strict type and estimate violations', () => {
-  assert.deepEqual(validateDraftMetadata(metadata({ agentFriendly: 'false' })).invalid, [
-    'agentFriendly',
-  ])
-  assert.deepEqual(validateDraftMetadata(metadata({ estimate: 8 })).invalid, ['estimate'])
-
-  const noAtomic = validateDraftMetadata(metadata({ estimate: 5 }))
-  assert.equal(noAtomic.ok, false)
-  assert.ok(noAtomic.invalid.includes('estimate'))
-  assert.ok(noAtomic.violations.some((violation) => violation.code === 'missing-atomic-5'))
-
-  const withAtomic = validateDraftMetadata(
+test('validateDraftMetadata normalizes cosmetic fields instead of refusing the plan', () => {
+  const result = validateDraftMetadata(
     metadata({
-      estimate: 5,
-      descriptionSummary: descriptionSummary([
-        '- Contract: v1',
-        '- Atomic-5: one indivisible cutover',
-      ]),
+      agentFriendly: 'false',
+      estimate: 8,
+      priority: 0,
+      openQuestions: 'one question',
+      transcript: 'raw run log',
     }),
   )
-  assert.equal(withAtomic.ok, true)
+  assert.equal(result.ok, true, JSON.stringify(result.violations))
+  assert.equal(result.normalized.agentFriendly, false)
+  assert.equal(result.normalized.estimate, 5)
+  assert.equal(result.normalized.priority, 3)
+  assert.deepEqual(result.normalized.openQuestions, ['one question'])
+  assert.equal(Object.hasOwn(result.normalized, 'transcript'), false)
+  assert.ok(result.warnings.length >= 4, JSON.stringify(result.warnings))
+
+  assert.equal(validateDraftMetadata(metadata({ estimate: 4 })).normalized.estimate, 5)
+  assert.equal(validateDraftMetadata(metadata({ priority: 9 })).normalized.priority, 4)
+  const missingOptional = metadata()
+  delete missingOptional.agentFriendly
+  delete missingOptional.priority
+  const defaulted = validateDraftMetadata(missingOptional)
+  assert.equal(defaulted.ok, true)
+  assert.equal(defaulted.normalized.agentFriendly, true)
+  assert.equal(defaulted.normalized.priority, 3)
 })
 
-test('validateDraftMetadata rejects unknown keys and leaked plan bodies in descriptionSummary', () => {
-  const unknown = validateDraftMetadata(metadata({ transcript: 'raw run log' }))
-  assert.equal(unknown.ok, false)
-  assert.ok(unknown.violations.some((violation) => violation.code === 'unknown-key'))
+test('validateDraftMetadata warns, never refuses, on an estimate 5 with no Atomic-5 line', () => {
+  const result = validateDraftMetadata(metadata({ estimate: 5 }))
+  assert.equal(result.ok, true)
+  assert.ok(result.warnings.some((warning) => /Atomic-5/.test(warning.message)))
+})
 
-  const leaked = validateDraftMetadata(
+test('validateDraftMetadata maps labels onto the configured names and drops the rest', () => {
+  // The incident: a drafter returned `feature` where the repo maps the role to `Feature`, and the
+  // finished plan was discarded.
+  const mapped = {
+    ...DEFAULT_CONFIG,
+    trackerConfig: {
+      linear: { labels: { bug: 'Bug', feature: 'Feature', docs: 'Documentation' } },
+    },
+  }
+  const result = validateDraftMetadata(
+    metadata({ labels: ['feature', 'BUG', 'docs', 'improvement', 'agent-friendly', 'refactor'] }),
+    { config: mapped },
+  )
+  assert.equal(result.ok, true, JSON.stringify(result.violations))
+  assert.deepEqual(result.normalized.labels, ['Feature', 'Bug', 'Documentation', 'improvement'])
+  assert.equal(result.warnings.filter((w) => w.field === 'labels').length, 2)
+
+  assert.deepEqual(validateDraftMetadata(metadata({ labels: 'bug' })).normalized.labels, ['bug'])
+  assert.deepEqual(validateDraftMetadata(metadata({ labels: [] })).normalized.labels, [])
+})
+
+test('validateDraftMetadata refuses only a missing plan path or an unusable description', () => {
+  const noPlan = metadata()
+  delete noPlan.planPath
+  assert.deepEqual(validateDraftMetadata(noPlan).missing, ['planPath'])
+  assert.deepEqual(validateDraftMetadata(metadata({ planPath: '' })).invalid, ['planPath'])
+})
+
+test('validateDraftMetadata leaves the description contract to the Phase 4 gate', () => {
+  // A description the contract gate would reject still passes here: Phase 4 checks the bytes it
+  // actually writes, and keeps the plan when it fails.
+  const result = validateDraftMetadata(
     metadata({
       descriptionSummary: descriptionSummary().replace(
         '## Planning',
-        '## Extra Plan Body\n\nx\n\n## Planning',
+        '## Extra\n\nx\n\n## Planning',
       ),
     }),
   )
-  assert.equal(leaked.ok, false)
-  assert.ok(
-    leaked.violations.some((violation) => violation.code === 'description-summary-unknown-section'),
-  )
+  assert.equal(result.ok, true, JSON.stringify(result.violations))
 })
 
 // ---------------------------------------------------------------------------
@@ -245,39 +262,6 @@ test('validateDraftMetadata refuses an absolute or ./ reference that resolves ou
   }
 })
 
-// BOS-1329 R9: returned labels are the content taxonomy only, resolved through the config.
-test('validateDraftMetadata rejects a label outside the content taxonomy with unknown-label', () => {
-  const result = validateDraftMetadata(
-    metadata({ labels: ['improvement', 'agent-friendly', 'refactor'] }),
-  )
-  assert.equal(result.ok, false)
-  assert.ok(result.invalid.includes('labels'))
-  const violation = result.violations.find((entry) => entry.code === 'unknown-label')
-  assert.ok(violation, JSON.stringify(result.violations))
-  assert.deepEqual(violation.labels, ['agent-friendly', 'refactor'])
-  assert.match(violation.message, /"agent-friendly", "refactor"/)
-  assert.deepEqual(violation.allowed, ['bug', 'feature', 'improvement', 'docs'])
-})
-
-test('validateDraftMetadata accepts taxonomy literals and a config-mapped display name', () => {
-  for (const labels of [['bug'], ['improvement'], ['bug', 'feature', 'improvement', 'docs'], []]) {
-    const result = validateDraftMetadata(metadata({ labels }))
-    assert.equal(result.ok, true, `${labels}: ${JSON.stringify(result.violations)}`)
-  }
-  const mapped = {
-    ...DEFAULT_CONFIG,
-    trackerConfig: { linear: { labels: { bug: 'Bug', docs: 'Documentation' } } },
-  }
-  assert.equal(
-    validateDraftMetadata(metadata({ labels: ['Bug', 'Documentation'] }), { config: mapped }).ok,
-    true,
-  )
-  // Once a role is mapped, its bare literal is no longer a label the tracker has.
-  const literal = validateDraftMetadata(metadata({ labels: ['bug'] }), { config: mapped })
-  assert.equal(literal.ok, false)
-  assert.ok(literal.violations.some((entry) => entry.code === 'unknown-label'))
-})
-
 test('validateDraftMetadata refuses a malformed reference object and non-union values', () => {
   const malformed = validateDraftMetadata(
     metadata({ descriptionSummary: { path: DESCRIPTION_REF, inline: 'also this' } }),
@@ -299,31 +283,6 @@ test('validateDraftMetadata refuses a malformed reference object and non-union v
   }
 })
 
-test('validateDraftMetadata runs the description contract over the RESOLVED bytes', () => {
-  // Proves the resolver reads bytes rather than pattern-matching a path: the reference is the
-  // same accepted one as the passing case above, and only the file's content differs.
-  const truncated = descriptionSummary().replace(
-    /## Required proof\n\nBounded metadata summary prose for ## Required proof\.\n\n/,
-    '',
-  )
-  assert.ok(!truncated.includes('## Required proof'), 'the fixture must drop a required section')
-
-  const result = validateDraftMetadata(
-    metadata({ descriptionSummary: { path: DESCRIPTION_REF } }),
-    {
-      resolveDescription: () => truncated,
-    },
-  )
-
-  assert.equal(result.ok, false)
-  assert.ok(
-    result.violations.some(
-      (violation) => violation.code === 'description-summary-missing-sections',
-    ),
-    `expected description-summary-missing-sections, got ${JSON.stringify(result.violations.map((v) => v.code))}`,
-  )
-})
-
 test('validateDraftMetadata reports an unreadable reference rather than throwing', () => {
   const result = validateDraftMetadata(
     metadata({ descriptionSummary: { path: DESCRIPTION_REF } }),
@@ -338,104 +297,6 @@ test('validateDraftMetadata reports an unreadable reference rather than throwing
   assert.ok(
     result.violations.some((violation) => violation.code === 'description-summary-unreadable'),
   )
-})
-
-test('the Atomic-5 justification is read from the resolved bytes of a by-reference summary', () => {
-  // The estimate-5 sub-check reads the same union arm the contract check does; a reference whose
-  // bytes carry the justification must not be refused for a justification it does carry.
-  const withAtomic = validateDraftMetadata(
-    metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } }),
-    {
-      resolveDescription: () =>
-        descriptionSummary(['- Contract: v1', '- Atomic-5: one indivisible cutover']),
-    },
-  )
-  assert.equal(withAtomic.ok, true, JSON.stringify(withAtomic.violations))
-
-  const without = validateDraftMetadata(
-    metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } }),
-    { resolveDescription: () => descriptionSummary() },
-  )
-  assert.equal(without.ok, false)
-  assert.ok(without.violations.some((violation) => violation.code === 'missing-atomic-5'))
-})
-
-test('an estimate-5 arm that carried no bytes is not also accused of missing its Atomic-5', () => {
-  // Regression: reading the union once, above the estimate check, made `descriptionText` null on
-  // every non-`text` arm — so an unhydrated or unreadable reference fabricated `missing-atomic-5`
-  // on top of its real cause, sending the reader to edit a `## Planning` section in a file this
-  // run never opened. Only arms that actually carried bytes may be judged for the justification.
-  const assertNoFabricatedAtomic5 = (result, expectedCode) => {
-    const codes = result.violations.map((violation) => violation.code)
-    assert.equal(result.ok, false, JSON.stringify(codes))
-    assert.ok(
-      codes.includes(expectedCode),
-      `expected ${expectedCode}, got ${JSON.stringify(codes)}`,
-    )
-    assert.ok(
-      !codes.includes('missing-atomic-5'),
-      `a non-text arm must not fabricate missing-atomic-5, got ${JSON.stringify(codes)}`,
-    )
-    assert.ok(
-      !result.invalid.includes('estimate'),
-      `a non-text arm must not mark estimate invalid, got ${JSON.stringify(result.invalid)}`,
-    )
-  }
-
-  // No resolver: the shape is well-formed, the cause is that nobody hydrated it.
-  assertNoFabricatedAtomic5(
-    validateDraftMetadata(metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } })),
-    'description-summary-unresolved',
-  )
-
-  // Unreadable: hydration was attempted and failed; that is the cause, and the only one.
-  assertNoFabricatedAtomic5(
-    validateDraftMetadata(
-      metadata({ estimate: 5, descriptionSummary: { path: DESCRIPTION_REF } }),
-      {
-        resolveDescription: () => {
-          throw new Error('ENOENT: no such file')
-        },
-      },
-    ),
-    'description-summary-unreadable',
-  )
-
-  // A reference outside the description family never got as far as bytes either.
-  assertNoFabricatedAtomic5(
-    validateDraftMetadata(metadata({ estimate: 5, descriptionSummary: { path: PLAN_REF } }), {
-      resolveDescription: () => descriptionSummary(),
-    }),
-    'description-summary-bad-reference',
-  )
-
-  // Unchanged for every shape that was legal before the union existed: an inline string still
-  // carries its own bytes, and an absent key still leaves estimate 5 with nothing to justify it.
-  const inline = validateDraftMetadata(
-    metadata({
-      estimate: 5,
-      descriptionSummary: descriptionSummary(['- Contract: v1', '- Atomic-5: one cutover']),
-    }),
-  )
-  assert.equal(inline.ok, true, JSON.stringify(inline.violations))
-
-  const inlineWithout = validateDraftMetadata(metadata({ estimate: 5 }))
-  assert.ok(inlineWithout.violations.some((violation) => violation.code === 'missing-atomic-5'))
-  assert.ok(inlineWithout.invalid.includes('estimate'))
-
-  const absent = metadata({ estimate: 5 })
-  delete absent.descriptionSummary
-  const absentResult = validateDraftMetadata(absent)
-  assert.ok(
-    absentResult.violations.some((violation) => violation.code === 'missing-atomic-5'),
-    'a missing descriptionSummary still cannot justify an estimate 5',
-  )
-  assert.ok(absentResult.invalid.includes('estimate'))
-
-  // `invalid` is deliberately still judged — an empty string behaved that way before the union.
-  const empty = validateDraftMetadata(metadata({ estimate: 5, descriptionSummary: '' }))
-  assert.ok(empty.violations.some((violation) => violation.code === 'missing-atomic-5'))
-  assert.deepEqual(empty.invalid, ['estimate', 'descriptionSummary'])
 })
 
 // The CLI verb is the boundary the orchestrator actually invokes, and it is the only place the
@@ -460,16 +321,6 @@ test('the metadata CLI hydrates a by-reference descriptionSummary from disk', ()
     encoding: 'utf8',
   })
   assert.equal(pass.status, 0, pass.stderr)
-
-  const bad = writeByReferenceFixture({
-    descriptionBytes: descriptionSummary().replace('## Required proof', '## Not A Real Section'),
-  })
-  const fire = spawnSync(process.execPath, [GUARD, 'metadata', bad.metadataPath], {
-    cwd: bad.dir,
-    encoding: 'utf8',
-  })
-  assert.equal(fire.status, 1)
-  assert.match(fire.stderr, /description-summary-/)
 
   const missing = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-ref-'))
   const missingMetadata = path.join(missing, 'metadata.json')
@@ -1231,7 +1082,7 @@ test('the metadata verb records its own verb id for both a pass and a fire', () 
   const good = path.join(dir, 'good.json')
   const bad = path.join(dir, 'bad.json')
   writeFileSync(good, JSON.stringify(metadata()))
-  writeFileSync(bad, JSON.stringify({ ...metadata(), estimate: 4 }))
+  writeFileSync(bad, JSON.stringify({ ...metadata(), planPath: '' }))
 
   const pass = runGuardRecording(['metadata', good], outcomes)
   assert.equal(pass.status, 0, pass.stderr)
@@ -1239,7 +1090,7 @@ test('the metadata verb records its own verb id for both a pass and a fire', () 
 
   const fire = runGuardRecording(['metadata', bad], outcomes)
   assert.equal(fire.status, 1)
-  assert.match(fire.stderr, /invalid estimate/)
+  assert.match(fire.stderr, /invalid planPath/)
   assert.deepEqual(recordedOutcomes(outcomes)[1], [
     'plan-run-guards.metadata',
     'fire',
@@ -1356,23 +1207,17 @@ test('planIdempotencePrecheck is unchanged for an issue that legitimately carrie
 // same-named file the worker could have written at that path.
 // ---------------------------------------------------------------------------
 
-test('adoptReturnedMetadata refuses when the on-disk file is not the returned object', () => {
-  // The defect: `draft-metadata` is a DECLARED scratch family, and the drafting worker is told to
-  // write its local files under declared basenames — so the worker can write the very path the
-  // orchestrator is specified to write from the returned object before validating.
+test('adoptReturnedMetadata adopts the returned object over a diverged file, with a warning', () => {
   const returned = metadata()
-  const workerWrote = metadata({ estimate: 1, agentFriendly: false })
-  const diverged = adoptReturnedMetadata({ returned, onDisk: workerWrote })
-  assert.equal(diverged.ok, false)
+  const diverged = adoptReturnedMetadata({ returned, onDisk: metadata({ estimate: 1 }) })
+  assert.equal(diverged.ok, true)
   assert.equal(diverged.state, 'diverged')
+  assert.deepEqual(diverged.adopted, returned)
   assert.deepEqual(
-    diverged.violations.map((v) => v.code),
-    ['metadata-not-from-message'],
+    diverged.warnings.map((w) => w.code),
+    ['metadata-file-overwritten'],
   )
 
-  // Able to fire both other ways, so the refusal is the DIVERGENCE's doing: an absent file is
-  // adopted, and an equal one is adopted even with its keys in a different write order (a resumed
-  // pass re-running this step is not a contract violation).
   assert.deepEqual(
     [adoptReturnedMetadata({ returned }).state, adoptReturnedMetadata({ returned }).ok],
     ['absent', true],
@@ -1394,48 +1239,31 @@ test('adoptReturnedMetadata refuses a dispatch that returned no message at all',
   }
 })
 
-test('adopt-metadata CLI writes the returned object, and leaves a diverged file untouched', () => {
+test('adopt-metadata CLI writes the normalized returned object over whatever was on disk', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-adopt-'))
   const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
-  const returned = metadata()
+  const returned = metadata({ labels: ['IMPROVEMENT'], estimate: 8 })
 
-  // Nothing on disk: the returned object is what lands, and what gets validated.
-  const fresh = spawnSync(
+  writeFileSync(metadataPath, JSON.stringify(metadata({ estimate: 1 })))
+  const run = spawnSync(
     process.execPath,
     [GUARD, 'adopt-metadata', metadataPath, JSON.stringify(returned)],
     { encoding: 'utf8' },
   )
-  assert.equal(fresh.status, 0, fresh.stderr)
-  assert.deepEqual(JSON.parse(readFileSync(metadataPath, 'utf8')), returned)
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stderr, /warning:/)
+  const written = JSON.parse(readFileSync(metadataPath, 'utf8'))
+  assert.deepEqual(written.labels, ['improvement'])
+  assert.equal(written.estimate, 5)
 
-  // A worker-authored file that differs: refuse, and do NOT overwrite. The file is the evidence
-  // that the dispatch broke its contract; an orchestrator that silently repaired it would keep
-  // dispatching workers that do this.
-  const workerWrote = metadata({ estimate: 1 })
-  writeFileSync(metadataPath, JSON.stringify(workerWrote))
-  const refused = spawnSync(
-    process.execPath,
-    [GUARD, 'adopt-metadata', metadataPath, JSON.stringify(returned)],
-    { encoding: 'utf8' },
-  )
-  assert.equal(refused.status, 1)
-  assert.match(refused.stderr, /metadata-not-from-message/)
-  assert.deepEqual(
-    JSON.parse(readFileSync(metadataPath, 'utf8')),
-    workerWrote,
-    'the diverged file must survive the refusal',
-  )
-
-  // The adopted object is still held to the ordinary metadata contract, so adoption is not a way
-  // around validation: an invalid returned object fails after it is written.
   const invalidPath = path.join(dir, 'BOS-2.draft-metadata.json')
   const invalid = spawnSync(
     process.execPath,
-    [GUARD, 'adopt-metadata', invalidPath, JSON.stringify(metadata({ estimate: 8 }))],
+    [GUARD, 'adopt-metadata', invalidPath, JSON.stringify(metadata({ planPath: '' }))],
     { encoding: 'utf8' },
   )
   assert.equal(invalid.status, 1)
-  assert.match(invalid.stderr, /estimate/)
+  assert.match(invalid.stderr, /planPath/)
 })
 
 // ---------------------------------------------------------------------------

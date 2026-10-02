@@ -37,18 +37,21 @@ function planAttachmentTitle(issueID) {
 }
 
 function matchesImplementationPlanAttachment(attachment, issueID, { mode }) {
-  const title = planAttachmentTitle(issueID)
-  if (mode === 'exact') return attachment?.title === title
+  if (mode === 'exact') return attachment?.title === planAttachmentTitle(issueID)
+  // Anything that reads like a plan is one: a title or filename mentioning "plan", or a Markdown
+  // attachment titled with the issue id.
+  const title = typeof attachment?.title === 'string' ? attachment.title : ''
+  const filename = attachment?.filename || attachment?.url || ''
   return (
-    isMarkdown(attachment) &&
-    typeof attachment?.title === 'string' &&
-    attachment.title.includes(issueID)
+    /\bplan\b/i.test(title) ||
+    /\bplan\b/i.test(filename) ||
+    (isMarkdown(attachment) && issueID !== undefined && title.includes(issueID))
   )
 }
 
 /**
- * Select a canonical plan attachment. Exact title wins; the Markdown fallback
- * keeps older tracker payloads usable while never treating arbitrary files as plans.
+ * Select the plan attachment. The canonical `Implementation plan (<ID>)` title wins, then the
+ * newest Markdown attachment titled like a plan, then the newest attachment titled like a plan.
  */
 export function selectImplementationPlanAttachment(attachments, issueID) {
   const list = Array.isArray(attachments) ? attachments.filter(Boolean) : []
@@ -56,11 +59,11 @@ export function selectImplementationPlanAttachment(attachments, issueID) {
     matchesImplementationPlanAttachment(attachment, issueID, { mode: 'exact' }),
   )
   if (exact.length > 0) return newest(exact)
-  return newest(
-    list.filter((attachment) =>
-      matchesImplementationPlanAttachment(attachment, issueID, { mode: 'permissive' }),
-    ),
+  const planLike = list.filter((attachment) =>
+    matchesImplementationPlanAttachment(attachment, issueID, { mode: 'permissive' }),
   )
+  const markdown = planLike.filter(isMarkdown)
+  return newest(markdown.length > 0 ? markdown : planLike)
 }
 
 /**

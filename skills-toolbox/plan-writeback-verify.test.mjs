@@ -158,11 +158,11 @@ test('tier 2: a declared emphasis-span restructuring around an inline code span 
 
 test('tier 3 via the semantic conjunct: declared transforms only, but a section is missing', () => {
   const intended = description()
-  const stored = intended.replace(/^- /gm, '* ').replace(/## Required proof\n\n[^\n]*\n\n/, '')
+  const stored = intended.replace(/^- /gm, '* ').replace(/## Summary\n\n[^\n]*\n\n/, '')
   const result = verify(intended, stored)
   assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
   assert.match(result.reason, /contract/i)
-  assert.match(result.reason, /## Required proof/)
+  assert.match(result.reason, /## Summary/)
 })
 
 test('tier 3 via the asset conjunct: declared transforms only, but an upload identity is lost', () => {
@@ -423,37 +423,33 @@ test('verifyWriteback rejects an unknown mode instead of falling back to child-p
   )
 })
 
-test('verifyWriteback in epic-parent mode validates against the PARENT contract, not the child one', () => {
-  // The finding: a CORRECTLY stored epic-parent overview was adjudicated against the hard-coded
-  // child-plan contract, so it came back `drift` at the worst possible moment — already stored,
-  // non-zero exit, scratch retained, corrective rewrite forbidden. Same bytes, two modes, two
-  // verdicts is the whole point of the seam.
-  const parent = [
+test('verifyWriteback validates against the contract of the mode it is given', () => {
+  // A stored description without `## Child tickets` is a fine child plan and a broken epic overview.
+  // Same bytes, two modes, two verdicts is the whole point of the seam.
+  const overview = [
     '## Summary\n\nDecompose the epic into shippable children.',
-    '## Child tickets\n\n- one child per shippable slice',
     '## Planning\n\n- Contract: v1',
     `## Original notes\n\n${NOTES}`,
   ].join('\n\n')
-  const stored = parent.replace(/^- /gm, '* ')
-  assert.notEqual(stored, parent, 'the fixture must actually differ')
+  const stored = overview.replace(/^- /gm, '* ')
+  assert.notEqual(stored, overview, 'the fixture must actually differ')
 
   const asChild = verifyWriteback({
     config: configWith(ALL_TRANSFORMS),
-    intendedText: parent,
+    intendedText: overview,
     storedText: stored,
     mode: 'child-plan',
   })
-  assert.equal(asChild.verdict, WRITEBACK_VERDICTS.DRIFT)
-  assert.match(asChild.reason, /contract/i)
+  assert.equal(asChild.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
 
   const asParent = verifyWriteback({
     config: configWith(ALL_TRANSFORMS),
-    intendedText: parent,
+    intendedText: overview,
     storedText: stored,
     mode: 'epic-parent',
   })
-  assert.equal(asParent.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
-  assert.equal(asParent.exitCode, 0)
+  assert.equal(asParent.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.match(asParent.reason, /contract/i)
   assert.deepEqual(WRITEBACK_DESCRIPTION_MODES, ['child-plan', 'epic-parent'])
 })
 
@@ -584,7 +580,7 @@ test('each content-loss conjunct records its own distinct cause', () => {
     return readFileSync(outcomes, 'utf8').trim().split('\n').pop().split('\t')[3]
   }
   assert.equal(
-    causeOf(description().replace('## Required proof', '## Not a contract section')),
+    causeOf(description().replace('## Summary', '## Not a contract section')),
     'contract',
   )
   assert.equal(causeOf(description().replace(`![shot](${UPLOAD})`, '')), 'uploads')
@@ -1306,10 +1302,10 @@ test('the unattributed reason states which comparison its coordinate indexes', (
 test('a drift cause still reports the RAW first-difference coordinate', () => {
   // The other half of the split. The same fixture shape, plus a lost contract section: a content
   // loss IS at the first raw difference, so that branch must be untouched by the change above.
-  const intended = description({ sections: { '## Summary': '- one\n- two' } })
+  const intended = description({ sections: { '## Approach': '- one\n- two' } })
   const stored = intended
     .replace('- one\n- two', '* one\n* two')
-    .replace(/## Required proof\n\n[^\n]*\n\n/, '')
+    .replace(/## Summary\n\n[^\n]*\n\n/, '')
   const result = verify(intended, stored)
   assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
   assert.equal(result.cause, WRITEBACK_CAUSES.CONTRACT)

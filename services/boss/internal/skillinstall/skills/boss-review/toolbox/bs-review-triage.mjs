@@ -28,7 +28,6 @@ export const MONOCLASS_MAJORITY_THRESHOLD = 0.75
 
 // Severity merges upward: Critical > Warning > Suggestion.
 const SEVERITY_RANK = { Suggestion: 1, Warning: 2, Critical: 3 }
-const PROSE_CLASS_EXTENSIONS = /\.(adoc|markdown|md|mdx|rst|txt)$/i
 
 function isRepoRelativePath(file) {
   return !isAbsolute(file) && !relative('', file).startsWith('..')
@@ -46,16 +45,11 @@ function countOccurrences(text, needle) {
 }
 
 function validatePatch(item, { repoRoot = process.cwd() } = {}) {
-  const proseClass = PROSE_CLASS_EXTENSIONS.test(item.file)
-  if (!Object.hasOwn(item, 'patch')) {
-    return proseClass
-      ? { reason: 'prose-class finding requires patch or patch:null with patchReason' }
-      : { meta: { kind: 'narrative' } }
-  }
+  if (!Object.hasOwn(item, 'patch')) return { meta: { kind: 'narrative' } }
 
   if (item.patch === null) {
     if (typeof item.patchReason !== 'string' || item.patchReason.trim() === '') {
-      return { reason: 'patch:null requires non-empty patchReason' }
+      return { meta: { kind: 'narrative' } }
     }
     return { meta: { kind: 'null-with-reason', reason: item.patchReason } }
   }
@@ -101,54 +95,83 @@ function validatePatch(item, { repoRoot = process.cwd() } = {}) {
   }
 }
 
+const SEVERITY_SYNONYMS = {
+  critical: 'Critical',
+  blocker: 'Critical',
+  high: 'Critical',
+  error: 'Critical',
+  warning: 'Warning',
+  warn: 'Warning',
+  medium: 'Warning',
+  major: 'Warning',
+  suggestion: 'Suggestion',
+  low: 'Suggestion',
+  minor: 'Suggestion',
+  info: 'Suggestion',
+  nit: 'Suggestion',
+  nitpick: 'Suggestion',
+}
+
 /**
- * Validate one findings item against the repo's reviewer findings contract.
- * Returns a human-readable reason string when invalid, or `null` when valid.
- * @param {unknown} item
- * @returns {string|null}
+ * Coerce a reviewer finding's cosmetic fields into the contract instead of rejecting it: severity
+ * case and common synonyms (an unrecognised severity is treated as a Warning, so nothing real is
+ * downgraded), a numeric-string line, a missing detail.
  */
-function validateFinding(item, opts = {}) {
+export function normalizeFinding(item) {
+  if (item === null || typeof item !== 'object' || Array.isArray(item)) return item
+  const out = { ...item }
+  if (!Object.hasOwn(SEVERITY_RANK, out.severity)) {
+    out.severity =
+      SEVERITY_SYNONYMS[
+        String(out.severity ?? '')
+          .trim()
+          .toLowerCase()
+      ] ?? 'Warning'
+  }
+  if (out.line === undefined || out.line === '') out.line = null
+  if (typeof out.line === 'string' && /^\d+$/.test(out.line.trim())) out.line = Number(out.line)
+  if (out.line !== null && (!Number.isInteger(out.line) || out.line < 1)) out.line = null
+  if (out.detail === undefined || out.detail === null) out.detail = ''
+  if (typeof out.detail !== 'string') out.detail = String(out.detail)
+  return out
+}
+
+/**
+ * Validate one (normalized) findings item. Returns `{ reason }` when it cannot be used, otherwise
+ * `{ meta, item }` with the item as it should be triaged.
+ */
+function validateFinding(raw, opts = {}) {
+  const item = normalizeFinding(raw)
   if (item === null || typeof item !== 'object' || Array.isArray(item)) {
     return { reason: 'item is not an object' }
   }
-  const { severity, file, line, title, detail, lens } = item
+  const { file, title, lens } = item
   if (typeof file !== 'string' || file.trim() === '') return { reason: 'missing or blank file' }
   if (typeof title !== 'string' || title.trim() === '') return { reason: 'missing or blank title' }
-  // Deliberately NOT `.trim() === ''` like `file`/`title` above: a blank detail
-  // on one occurrence is legal because a duplicate occurrence may supply the
-  // real one, and only the merge in `triageFindings` knows whether any did.
-  // The all-blank verdict is made there, per group, once every occurrence is in.
-  if (typeof detail !== 'string') return { reason: 'missing or non-string detail' }
-  if (!Object.hasOwn(SEVERITY_RANK, severity))
-    return { reason: `unknown severity: ${String(severity)}` }
-  if (line !== null && !Number.isInteger(line)) return { reason: 'line must be an integer or null' }
   if (typeof lens !== 'string' || lens.trim() === '') return { reason: 'missing or blank lens' }
-  // The finding's OWN coordinate is adjudicated here rather than only inside the
-  // patch branch. `validatePatch` resolves a path only for an OBJECT patch: a
-  // `patch: null` finding returns at the null-with-reason branch, and a finding
-  // with no `patch` key at all returns as narrative, so both used to publish a
-  // wholly unresolved `file`/`line`. One module adjudicates that claim — the same
-  // one a plan citation goes through — so a coordinate a plan body would reject
-  // cannot be accepted from a reviewer.
-  //
-  // The coordinate is handed over STRUCTURED: formatting `file` and `line` into one
-  // string for the adjudicator to re-split is a lossy round trip this caller has no
-  // reason to take, and `validatePatch` below now resolves through that same module.
-  //
-  // `git: null` because a path claim needs no git, and handing triage a runner
-  // would spawn a process per finding for an answer it never reads.
-  const [coordinate] = verifyDispatchClaims([{ kind: 'path', file, line }], {
-    repoRoot: opts.repoRoot ?? process.cwd(),
-    git: null,
-  })
-  // Anything short of `verified` fails closed. `refuted` is a fabricated
-  // coordinate; `unverifiable` (a path escaping the root, an unreadable root) is
-  // a coordinate this check has no authority over — and an unverifiable claim is
-  // never promoted to verified, so neither may be published as a finding.
+  // A finding must cite a file that exists: a fabricated path is not a finding. A line that does
+  // not resolve (past EOF, say) only loses its line — the file-level finding still stands.
+  const repoRoot = opts.repoRoot ?? process.cwd()
+  const verify = (line) =>
+    verifyDispatchClaims([{ kind: 'path', file, line }], { repoRoot, git: null })[0]
+  let coordinate = verify(item.line)
+  if (coordinate.verdict !== 'verified' && item.line !== null) {
+    const fileOnly = verify(null)
+    if (fileOnly.verdict === 'verified') {
+      item.line = null
+      coordinate = fileOnly
+    }
+  }
   if (coordinate.verdict !== 'verified') {
     return { reason: `file does not resolve: ${coordinate.reason}` }
   }
-  return validatePatch(item, opts)
+  const patch = validatePatch(item, opts)
+  if (patch.reason) {
+    // An unusable patch is the reviewer's suggested fix being wrong, not the finding being wrong.
+    const { patch: _dropped, ...rest } = item
+    return { meta: { kind: 'narrative' }, item: rest, patchDropped: patch.reason }
+  }
+  return { ...patch, item }
 }
 
 function invalidReason(item) {
@@ -402,19 +425,26 @@ export function triageFindings(
   }
 
   const invalid = []
+  const patchDropped = []
   const groups = new Map() // dedupe key -> accumulator
 
   for (const candidate of items) {
     const source = candidate?.[FINDING_SOURCE]
-    const item = source ? candidate.item : candidate
-    const validation = validateFinding(item, { repoRoot })
+    const raw = source ? candidate.item : candidate
+    const validation = validateFinding(raw, { repoRoot })
     if (validation.reason) {
       invalid.push(
-        source ? { item, reason: validation.reason, source } : { item, reason: validation.reason },
+        source
+          ? { item: raw, reason: validation.reason, source }
+          : { item: raw, reason: validation.reason },
       )
       continue
     }
+    const item = validation.item
     const patchMeta = validation.meta
+    if (validation.patchDropped) {
+      patchDropped.push({ item: raw, reason: validation.patchDropped })
+    }
 
     const key = keyFor(item)
     let group = groups.get(key)
@@ -529,7 +559,14 @@ export function triageFindings(
     nullWithReason: mustFix.filter((record) => record.patch === null).length,
   }
 
-  return { mustFix, pool, invalid, patchSummary, patchPlan: { items: patchPlan.items } }
+  return {
+    mustFix,
+    pool,
+    invalid,
+    patchDropped,
+    patchSummary,
+    patchPlan: { items: patchPlan.items },
+  }
 }
 
 /**
@@ -634,6 +671,16 @@ function readFindingsDir(dir, { lensEntries = null, expectedOutputs = null } = {
       // JSON.parse messages carry no filename, so name it here.
       rejectFile(name, null, `${name}: ${err.message}`)
       continue
+    }
+    // A bare `{ findings: [...] }` wrapper (not an extension envelope) is the array it wraps.
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      Array.isArray(parsed.findings) &&
+      !('ok' in parsed || 'extension' in parsed || 'role' in parsed || 'items' in parsed)
+    ) {
+      parsed = parsed.findings
     }
     if (Array.isArray(parsed)) {
       // A superseded file's FINDINGS are skipped too, not just its failures.

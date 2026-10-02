@@ -64,11 +64,9 @@ func initCmd() *cobra.Command {
 			"The report also prints the MCP server declaration each coding-agent harness needs.\n" +
 			"Those files belong to the harness, so this command never writes them -- but a repo\n" +
 			"that names a tracker MCP server in .boss-skills.json and never declares it to the\n" +
-			"harness is broken, and the declaration's server key must be BYTE-IDENTICAL to the\n" +
-			"trackerConfig.<tracker>.mcpServer value: same case, same hyphens, no underscore\n" +
-			"substitution. A key that differs still connects and still lists as healthy; it\n" +
-			"fails only when a skill invokes a tool, because each harness builds its tool names\n" +
-			"from the key it was given.\n\n" +
+			"harness is broken. Declare it under the trackerConfig.<tracker>.mcpServer name;\n" +
+			"the skills also find it under another spelling (case, hyphens, underscores) or\n" +
+			"another name, as long as it publishes the tracker's tools.\n\n" +
 			"Not to be confused with `boss config init`, which initialises bossd plugin\n" +
 			"settings in settings.json and has nothing to do with .boss-skills.json.",
 		// Reject positional operands: the target directory is selected via --dir,
@@ -326,18 +324,10 @@ var skippedBlocks = []struct{ name, reason string }{
 // operator picks one, and the same string then has to appear in both files.
 const mcpServerPlaceholder = "<mcpServer>"
 
-// mcpKeyRule is the whole reason these declarations are printed at all. The
-// failure it describes is silent in the only two places an operator would think
-// to look: the harness connects to the server fine, and a health listing reports
-// it healthy, because neither one knows what name the config *meant*. Tool names
-// are built from the declaration key, so a key that differs from
-// trackerConfig.<tracker>.mcpServer by nothing more than a hyphen turned into an
-// underscore produces tool names no skill ever asks for, and the mismatch only
-// surfaces at the first invocation.
-const mcpKeyRule = "The server key above must be BYTE-IDENTICAL to trackerConfig.<tracker>.mcpServer\n" +
-	"in .boss-skills.json: same case, same hyphens, no underscore substitution. A key\n" +
-	"that differs still connects and still lists as healthy -- it fails only when a\n" +
-	"skill invokes a tool, because each harness builds tool names from this key.\n"
+// mcpKeyRule is printed under each declaration the report shows.
+const mcpKeyRule = "Use the trackerConfig.<tracker>.mcpServer name from .boss-skills.json as the server\n" +
+	"key above. The skills also resolve the server under another spelling or name, as\n" +
+	"long as it publishes the tracker's tools.\n"
 
 // harness is a coding-agent harness that discovers MCP servers its own native
 // way, from a file this command deliberately never writes: the file belongs to

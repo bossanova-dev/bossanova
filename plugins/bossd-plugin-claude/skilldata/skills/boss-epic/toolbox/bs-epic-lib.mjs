@@ -51,9 +51,13 @@ function firstPlanUrl(entries) {
 // legacy metadata, but never let one launch a child session.
 function canonicalPlanAttachment(attachments, issueID) {
   if (!Array.isArray(attachments)) return null
-  const title = `Implementation plan (${issueID})`
+  const id = String(issueID ?? '').toLowerCase()
+  const isPlan = (title) => {
+    const lower = String(title ?? '').toLowerCase()
+    return lower.startsWith('implementation plan') && (id === '' || lower.includes(id))
+  }
   return attachments
-    .filter((attachment) => attachment?.title === title)
+    .filter((attachment) => isPlan(attachment?.title))
     .reduce((newest, attachment) => {
       if (!newest || Date.parse(attachment.createdAt || '') > Date.parse(newest.createdAt || '')) {
         return attachment
@@ -181,10 +185,20 @@ export function resolvePlannedState({ adapterStates, trackerConfigStates } = {})
  * marking every ticket eligible or none — a mis-configured repo must not spawn
  * sessions for unplanned work.
  */
-export function classifyTickets(tickets, plannedState) {
+export function classifyTickets(
+  tickets,
+  plannedState,
+  { agentFriendlyLabel = 'agent-friendly', needsHumanLabel = 'needs-human' } = {},
+) {
   if (typeof plannedState !== 'string' || plannedState.length === 0) {
     throw new Error('classifyTickets: plannedState (the configured planned-state name) is required')
   }
+  // Label and state names are compared the way a person reads them: case, spacing, `-` and `_`
+  // do not make `Agent-Friendly` a different label from `agent_friendly`.
+  const key = (value) =>
+    String(value ?? '')
+      .toLowerCase()
+      .replace(/[\s_-]+/g, '')
   const eligible = []
   const done = []
   const skipped = []
@@ -193,8 +207,8 @@ export function classifyTickets(tickets, plannedState) {
       done.push(ticket)
       continue
     }
-    const labels = ticket.labels ?? []
-    if (labels.includes('needs-human')) {
+    const labels = new Set((ticket.labels ?? []).map(key))
+    if (labels.has(key(needsHumanLabel))) {
       skipped.push({ ticket, reason: `${ticket.id}: needs-human label present` })
       continue
     }
@@ -205,14 +219,14 @@ export function classifyTickets(tickets, plannedState) {
       })
       continue
     }
-    if (ticket.stateName !== plannedState) {
+    if (key(ticket.stateName) !== key(plannedState)) {
       skipped.push({
         ticket,
         reason: `${ticket.id}: state is ${ticket.stateName}, expected ${plannedState}`,
       })
       continue
     }
-    if (!labels.includes('agent-friendly')) {
+    if (!labels.has(key(agentFriendlyLabel))) {
       skipped.push({ ticket, reason: `${ticket.id}: missing agent-friendly label` })
       continue
     }

@@ -1020,7 +1020,7 @@
       "id": "web-cron-list",
       "surface": "web",
       "title": "Web Cron Jobs",
-      "description": "Cron Jobs settings page (/settings/cron): the table with Name, Repo, Daemon, and Status column headers and no run-timing columns, populated with fixture jobs from two daemons sorted ascending by name, including an enabled Running job and a failed job.",
+      "description": "Cron Jobs settings page (/settings/cron): the table with Name, Repo, Daemon, and Status column headers and no run-timing columns, populated with fixture jobs from two daemons sorted ascending by name, including an enabled Running job and a failed job. The Running row's Run-now action button shows a spinner in place of the play triangle, while the Failed and other non-running rows keep the play triangle.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/cron",

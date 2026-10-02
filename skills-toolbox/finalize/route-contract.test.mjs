@@ -41,7 +41,7 @@ test('terminal routes cover exactly the four published outcomes', () => {
   }
 })
 
-test('REVIEW_READY refuses absent stamps, downgrades on BLOCKED stamps, and passes when fully stamped', () => {
+test('REVIEW_READY reports absent stamps, never downgrades to BLOCKED, and passes when fully stamped', () => {
   const { receipt, runId } = fixture()
   let result = cli(['assert', '--outcome', 'REVIEW_READY', '--receipt', receipt, '--run-id', runId])
   assert.equal(result.status, 1)
@@ -59,9 +59,11 @@ test('REVIEW_READY refuses absent stamps, downgrades on BLOCKED stamps, and pass
       runId,
     ])
   }
+  // Only the cleanup stamps: the receipt is incomplete, which is bookkeeping. It must not rewrite a
+  // finished REVIEW_READY run into BLOCKED.
   result = cli(['assert', '--outcome', 'REVIEW_READY', '--receipt', receipt, '--run-id', runId])
-  assert.equal(result.status, 0)
-  assert.equal(result.stdout.trim(), 'BLOCKED')
+  assert.equal(result.status, 1)
+  assert.equal(result.stdout.trim(), 'ROUTE_UNSATISFIED')
 
   fs.rmSync(receipt)
 

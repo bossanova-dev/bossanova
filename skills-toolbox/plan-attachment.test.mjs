@@ -82,6 +82,30 @@ test('selectImplementationPlanAttachment falls back to the newest Markdown attac
   assert.equal(attachment.id, 'new')
 })
 
+test('selectImplementationPlanAttachment accepts any attachment titled like a plan', () => {
+  for (const title of ['implementation plan', 'Plan for the migration', 'PLAN']) {
+    assert.equal(
+      selectImplementationPlanAttachment([{ id: 'p', title }], 'BOS-999')?.id,
+      'p',
+      title,
+    )
+  }
+  // A Markdown plan wins over a non-Markdown one when neither has the canonical title.
+  const picked = selectImplementationPlanAttachment(
+    [
+      {
+        id: 'link',
+        title: 'Plan (draft)',
+        url: 'https://example.com/doc',
+        createdAt: '2026-03-01T00:00:00Z',
+      },
+      { id: 'md', title: 'Plan', filename: 'plan.md', createdAt: '2026-01-01T00:00:00Z' },
+    ],
+    'BOS-999',
+  )
+  assert.equal(picked.id, 'md')
+})
+
 test('selectImplementationPlanAttachment returns null for non-plan attachments', () => {
   assert.equal(
     selectImplementationPlanAttachment(

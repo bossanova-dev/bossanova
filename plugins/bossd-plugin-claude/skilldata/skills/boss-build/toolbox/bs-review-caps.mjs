@@ -140,19 +140,32 @@ export function reviewVerdict(evidence = undefined) {
     return { status: 'capped', reasons: ['unreadable-evidence'] }
   }
   const unresolved = evidence.mustfix?.unresolved
-  const invalid = evidence.invalid
-  if (!Number.isInteger(unresolved) || unresolved < 0 || !Array.isArray(invalid)) {
+  const invalid = Array.isArray(evidence.invalid) ? evidence.invalid : []
+  if (!Number.isInteger(unresolved) || unresolved < 0) {
     return { status: 'capped', reasons: ['unreadable-evidence'] }
-  }
-  const ledger = evidence.ledger
-  if (!validLedgerCoverage(ledger)) {
-    return { status: 'capped', reasons: ['unreadable-ledger'] }
   }
   const reasons = []
   if (unresolved > 0) reasons.push('unresolved-mustfix')
-  if (invalid.length > 0) reasons.push('invalid-evidence')
-  if (ledger.discovered > 0 && ledger.completed === 0) reasons.push('no-coverage')
+  // A reviewer whose whole output went unread is a lens that did not run. One malformed finding
+  // inside an output that WAS read is reported, but does not make an otherwise-clean review capped.
+  if (invalid.some(isUnreadOutput)) reasons.push('unread-output')
+  // The ledger is bookkeeping: an unreadable one never caps, it only removes the coverage check.
+  const ledger = evidence.ledger
+  if (validLedgerCoverage(ledger) && ledger.discovered > 0 && ledger.completed === 0) {
+    reasons.push('no-coverage')
+  }
   return reasons.length ? { status: 'capped', reasons } : { status: 'clean', reasons: [] }
+}
+
+/**
+ * True when an invalid entry stands for a reviewer output that could not be read at all (a missing,
+ * unparseable or wrong-shaped file, or a selected lens that wrote nothing), rather than one bad
+ * finding inside an output that was read. File-level reasons are prefixed with the file name.
+ */
+export function isUnreadOutput(entry) {
+  if (!entry || typeof entry !== 'object') return true
+  const reason = typeof entry.reason === 'string' ? entry.reason : ''
+  return entry.item === null || /^[^\s:]+\.json: /.test(reason) || /produced no output/.test(reason)
 }
 
 /**
@@ -502,8 +515,9 @@ export function reviewConfidence(evidence = {}) {
   if (Number.isInteger(evidence?.mustfix?.unresolved) && evidence.mustfix.unresolved > 0) {
     reasons.push('unresolved-mustfix')
   }
-  if (Array.isArray(evidence?.invalid) && evidence.invalid.length > 0)
-    reasons.push('invalid-evidence')
+  if (Array.isArray(evidence?.invalid) && evidence.invalid.some(isUnreadOutput)) {
+    reasons.push('unread-output')
+  }
   const ledger = evidence?.ledger
   if (ledger && typeof ledger === 'object' && !Array.isArray(ledger)) {
     if (Number.isInteger(ledger.notReached) && ledger.notReached > 0)
@@ -518,7 +532,7 @@ export function reviewConfidence(evidence = {}) {
     'single-sample-panel',
     'round-cap-hit',
     'unresolved-mustfix',
-    'invalid-evidence',
+    'unread-output',
     'not-reached-reviewer',
     'timed-out-reviewer',
     'vanished-finding',

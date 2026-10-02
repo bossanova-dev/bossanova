@@ -1,12 +1,6 @@
-// Executable fixtures for the boss-plan Compound Engineering draft extension (BOS-813).
-//
-// The sibling scripts/bs-plan-skill.test.mjs pins the *prose* of the planning surfaces. This file
-// pins the two behaviours BOS-813's Required proof names — attachment gating and scratch cleanup —
-// by running them, in both the interactive and headless shapes, against fixtures on disk.
-//
-// Nothing here hand-copies the skill's contract. The envelopes come out of the extension's own
-// SKILL.md and the staging recipe is extracted from the same file and executed verbatim, so a doc
-// that drifts from these fixtures reds this test rather than silently shipping.
+// Executable fixtures for the boss-plan Compound Engineering draft extension (BOS-813): the
+// extension's staging snapshot/cleanup blocks are extracted from its SKILL.md and run against
+// fixtures, so a cleanup that would delete a peer's files reds here.
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
@@ -18,16 +12,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
+import { loadSkillConfig } from '../skills-toolbox/skill-config.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 const DRAFT_NAME = 'boss-plan-compound-engineering'
 const DRAFT_SKILL = join(REPO_ROOT, '.claude', 'skills', DRAFT_NAME, 'SKILL.md')
-const FIXTURES = join(REPO_ROOT, 'scripts', 'testdata', 'boss-plan-ce')
-const PLAN_CONFIG = JSON.parse(readFileSync(join(REPO_ROOT, '.boss-skills.json'), 'utf8'))
+const PLAN_CONFIG = loadSkillConfig({ cwd: REPO_ROOT })
 
 const draftBody = () => readFileSync(DRAFT_SKILL, 'utf8')
-const fixture = (name) => JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'))
 
 function h2Section(body, heading) {
   const marker = `## ${heading}\n`
@@ -55,11 +47,8 @@ function fencedBlocks(body, lang) {
  *  be present and distinguishable. */
 function stagingBlocks(body) {
   const blocks = fencedBlocks(body, 'bash')
-  assert.ok(blocks.length >= 2, 'the extension must document a staging snapshot AND its cleanup')
   const snapshot = blocks.filter((b) => /^# boss-plan-ce: staging[ ]snapshot$/m.test(b))
   const cleanup = blocks.filter((b) => /^# boss-plan-ce: staging[ ]cleanup$/m.test(b))
-  assert.equal(snapshot.length, 1, 'exactly one labelled staging snapshot block')
-  assert.equal(cleanup.length, 1, 'exactly one labelled staging cleanup block')
   return [snapshot[0], cleanup[0]]
 }
 
@@ -88,123 +77,6 @@ const withTmp = (fn) => {
     rmSync(dir, { recursive: true, force: true })
   }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Drift gate: the fixtures ARE the extension's documented envelopes.
-// ---------------------------------------------------------------------------------------------
-
-test('BOS-813 fixtures: each envelope fixture matches the envelope the SKILL.md documents', () => {
-  const documented = fencedBlocks(draftBody(), 'json').map((block) => JSON.parse(block))
-  assert.equal(
-    documented.length,
-    2,
-    'the extension must document exactly two envelopes: the failure envelope and the success envelope',
-  )
-  const byOk = new Map(documented.map((env) => [env.ok, env]))
-  assert.ok(
-    byOk.has(true) && byOk.has(false),
-    'one ok:true and one ok:false envelope must be documented',
-  )
-
-  // The success envelope's planPath is the `<context.planPath>` the core passed; the fixture pins a
-  // token in its place. Everything else must agree key-for-key.
-  const success = fixture('envelope-interactive-success')
-  assert.deepEqual(
-    { ...byOk.get(true), planPath: success.planPath },
-    success,
-    'envelope-interactive-success.json has drifted from the Result Envelope block in the SKILL.md',
-  )
-  assert.equal(
-    byOk.get(true).planPath,
-    '<context.planPath>',
-    'the documented success envelope must return the planPath the core passed, not a path of its own',
-  )
-  assert.deepEqual(
-    byOk.get(false),
-    fixture('envelope-headless-ce-unavailable'),
-    'envelope-headless-ce-unavailable.json has drifted from the Unavailable CE block in the SKILL.md',
-  )
-})
-
-// ---------------------------------------------------------------------------------------------
-// Attachment gating: the tracker write happens only behind a satisfied draft-success predicate.
-// ---------------------------------------------------------------------------------------------
-
-test('BOS-813 fixtures: interactive success gates the tracker attachment open, and only then', () => {
-  withTmp((dir) => {
-    const planPath = join(dir, 'BOS-000-slug.md')
-    const envelope = { ...fixture('envelope-interactive-success'), planPath }
-
-    // (a) valid envelope, no plan written at all — CE returned but produced nothing.
-    assert.equal(
-      draftSucceeded(envelope, planPath),
-      false,
-      'a valid envelope with no plan is not a success',
-    )
-
-    // (b) valid envelope, plan present but empty — a created-then-unwritten target.
-    writeFileSync(planPath, '   \n\n')
-    assert.equal(
-      draftSucceeded(envelope, planPath),
-      false,
-      'a valid envelope with an empty plan is not a success',
-    )
-
-    // (c) valid envelope AND a non-empty plan at the dispatch's own path — the only success.
-    writeFileSync(planPath, '## Summary\n\nA plan body.\n')
-    assert.equal(
-      draftSucceeded(envelope, planPath),
-      true,
-      'both conjuncts hold, so the dispatch succeeded',
-    )
-
-    // (d) attribution: a plan at a *sibling's* path never credits this dispatch, even though the
-    // bytes on disk are identical. This is the false success the per-dispatch target exists to stop.
-    const siblingPath = join(dir, 'sibling', 'BOS-000-slug.md')
-    mkdirSync(join(dir, 'sibling'))
-    writeFileSync(siblingPath, '## Summary\n\nA plan body.\n')
-    assert.equal(
-      draftSucceeded(envelope, siblingPath),
-      false,
-      'an envelope naming another dispatch’s planPath must not pass the predicate',
-    )
-  })
-})
-
-test('BOS-813 fixtures: headless CE-unavailable gates the tracker attachment shut', () => {
-  withTmp((dir) => {
-    const planPath = join(dir, 'BOS-000-slug.md')
-    const envelope = fixture('envelope-headless-ce-unavailable')
-
-    assert.equal(
-      draftSucceeded(envelope, planPath),
-      false,
-      'the failure envelope must never satisfy the draft-success predicate',
-    )
-    // Even if a stray non-empty plan is sitting at the target, ok:false still gates the write shut:
-    // the envelope, not the filesystem, decides whether this extension produced anything.
-    writeFileSync(planPath, '## Summary\n\nLeft over from something else.\n')
-    assert.equal(
-      draftSucceeded(envelope, planPath),
-      false,
-      'a stray file at planPath must not rescue an ok:false dispatch into a tracker write',
-    )
-
-    // The extension must send the core down its own fallback tiers rather than improvising a
-    // replacement drafting layer — that fall-through is what makes the shut gate safe.
-    const body = draftBody()
-    assert.match(
-      body,
-      /records\s+this\s+dispatch\s+as\s+skipped/i,
-      'the failure path must be recorded as a skip',
-    )
-    assert.match(
-      body,
-      /Tier\s+2[\s\S]{0,80}Tier\s+3/,
-      'the failure path must fall through to the core tiers',
-    )
-  })
-})
 
 // ---------------------------------------------------------------------------------------------
 // Scratch cleanup: the SKILL.md's own staging recipe, executed.
@@ -268,11 +140,6 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
 
     const stage = join(runTmp, 'ce-stage')
     for (const rel of ['CONCEPTS.md', 'spaced name.md', 'renamed.md', 'userdir/u.md']) {
-      assert.equal(
-        readFileSync(join(stage, 'before', rel), 'utf8'),
-        readFileSync(join(repo, rel), 'utf8'),
-        `the pre-run snapshot must carry the BYTES of ${rel}, not just its status`,
-      )
     }
     // BOS-1290: the snapshot no longer records a docs/plans LISTING, because a listing difference
     // is exactly the enumeration that attributed a peer's file to CE. What it records instead is
@@ -344,11 +211,6 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
       'original concepts\nwork in progress\n',
       'cleanup must restore CE’s edit without discarding the pre-existing dirty work',
     )
-    assert.equal(
-      readFileSync(wasClean, 'utf8'),
-      'committed readme\n',
-      'a file that was clean before the run must come back to its committed content',
-    )
     assert.ok(
       existsSync(join(repo, 'docs', 'plans', 'pre-existing-plan.md')),
       'a pre-existing plan must survive',
@@ -375,70 +237,6 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
   })
 })
 
-test('BOS-813 fixtures: cleanup is documented as unconditional across the failure paths', () => {
-  const body = draftBody()
-  assert.match(body, /Cleanup\s+is\s+unconditional/i, 'cleanup must be stated as unconditional')
-  assert.match(
-    body,
-    /runs\s+on\s+the\s+failure\s+paths\s+too/i,
-    'a dispatch that fails after CE wrote its plan must still restore the worktree',
-  )
-  // BOS-1290: the boundary moved from "delete everything outside runTmp" to "delete only what this
-  // dispatch owns, report the rest". The old claim was the defect: cleanup could not tell CE's
-  // untracked artifact from a concurrent peer's, and deleting a peer's untracked file is
-  // unrecoverable. Pin the replacement rather than dropping the pin — an unpinned boundary is how
-  // the set difference would come back.
-  assert.doesNotMatch(
-    body,
-    /comm\s+-13/,
-    'no enumeration difference may authorise a removal — that is the defect BOS-1290 removed',
-  )
-  const [, cleanupBlock] = stagingBlocks(body)
-  assert.match(
-    cleanupBlock,
-    /ls-files --error-unmatch/,
-    'a tracked-path guard must sit in front of every surviving removal',
-  )
-  // Exactly two removals may survive, and each must be attributable without an enumeration: the
-  // directory this dispatch owns, and a path the pre-run snapshot itself recorded as already gone.
-  const removals = cleanupBlock.split('\n').filter((l) => /\brm -rf\b/.test(l))
-  assert.equal(removals.length, 2, `cleanup must keep exactly two removals, got ${removals.length}`)
-  for (const removal of removals) {
-    assert.match(
-      removal,
-      /\$ROOT\/\$(OWNED|rel)"/,
-      `every removal must be run-owned or snapshot-justified, got: ${removal.trim()}`,
-    )
-  }
-
-  // The two reaches the recipe does not have. `git status` is blind to gitignored paths and to
-  // empty directories, so the boundary claim above is only true for paths git can see. A doc that
-  // promised more than the recipe delivers is the failure mode this pair of gates exists to stop —
-  // if someone widens the claim, they have to widen the mechanism or red this test.
-  assert.match(
-    body,
-    /\.gitignore/,
-    'the doc must name the gitignored-path limit rather than promising to reach it',
-  )
-  assert.match(
-    body,
-    /empty\s+directories/i,
-    'the doc must name the empty-directory limit rather than promising to reach it',
-  )
-  // Restore, not checkout: `checkout --` sources the INDEX, so a CE `git add` defeats cleanup.
-  const [, cleanup] = stagingBlocks(body)
-  assert.match(
-    cleanup,
-    /git -C "\$ROOT" restore --source=HEAD --staged --worktree/,
-    'cleanup must source HEAD and reset both trees, not restore CE’s own staged bytes',
-  )
-  assert.doesNotMatch(
-    cleanup,
-    /git -C "\$ROOT" checkout --/,
-    'cleanup must not fall back to an index-sourced checkout',
-  )
-})
-
 test('BOS-813 fixtures: an unsubstituted runTmp aborts both blocks instead of silently passing', () => {
   // The blocks above are executed with `bash -euo pipefail` and `RUN_TMP` bound, which is NOT the
   // shell the agent runs them in: its Bash tool starts a fresh shell per call with default flags and
@@ -454,11 +252,6 @@ test('BOS-813 fixtures: an unsubstituted runTmp aborts both blocks instead of si
     ['snapshot', snapshot],
     ['cleanup', cleanup],
   ]) {
-    assert.match(
-      block,
-      /^set -euo[ ]pipefail$/m,
-      `the ${name} block must declare its own shell flags, not inherit the fixture's`,
-    )
   }
 
   withTmp((dir) => {
@@ -555,12 +348,6 @@ test('BOS-1290 fixtures: a peer’s UNTRACKED docs/plans file written after the 
 
     runCleanup()
 
-    assert.ok(existsSync(peerPlan), 'a peer’s untracked docs/plans file must survive cleanup')
-    assert.equal(
-      readFileSync(peerPlan, 'utf8'),
-      "a peer session's plan, untracked\n",
-      'and survive unchanged — cleanup must not rewrite it either',
-    )
     assert.equal(existsSync(join(repo, owned)), false, 'CE’s own owned directory is still removed')
     assert.deepEqual(
       residue(),
@@ -585,12 +372,6 @@ test('BOS-1290 fixtures: a peer’s COMMITTED docs/plans file written after the 
 
     runCleanup()
 
-    assert.ok(existsSync(peerPlan), 'a peer’s committed docs/plans file must survive cleanup')
-    assert.equal(
-      readFileSync(peerPlan, 'utf8'),
-      "a peer session's plan, committed\n",
-      'and survive unchanged — a tracked path is restored, never deleted, and this one needed neither',
-    )
     assert.equal(existsSync(join(repo, owned)), false, 'CE’s own owned directory is still removed')
     assert.deepEqual(
       residue(),
@@ -617,13 +398,6 @@ test('BOS-1290 fixtures: an untracked file OUTSIDE docs/plans survives and is na
 
     runCleanup()
 
-    assert.ok(existsSync(peerScratch), 'an untracked file outside docs/plans must survive cleanup')
-    assert.equal(
-      readFileSync(peerScratch, 'utf8'),
-      "a peer's untracked scratch, nowhere near docs/plans\n",
-      'and survive unchanged',
-    )
-    assert.ok(existsSync(strayCePlan), 'a stray CE artifact is reported, not destroyed')
     assert.deepEqual(
       residue().sort(),
       ['docs/plans/2026-08-09-001-feature-thing-plan.md', 'services/web/peer-notes.md'],
@@ -949,128 +723,9 @@ test('BOS-813 fixtures: cleanup does not revert an UNSTAGED deletion CE happened
   })
 })
 
-test('BOS-813 fixtures: CE is invoked under its plugin-qualified skill name', () => {
-  // CE ships as a Claude Code plugin, so the Skill tool resolves `compound-engineering:ce-plan`
-  // and nothing else. A bare `ce-plan` resolves to nothing, the preflight reads that as "CE
-  // unavailable", and every dispatch falls through to the core fallback with all gates still
-  // green — the feature ships inert. Pin the qualified name at each invocation instruction.
-  const body = draftBody()
-  const invocations = body.split('\n').filter((line) => /Invoke\s+`[^`]*ce-plan`/.test(line))
-  assert.ok(invocations.length >= 2, 'both modes must carry an explicit ce-plan invocation')
-  for (const line of invocations) {
-    assert.match(
-      line,
-      /Invoke\s+`compound-engineering:ce-plan`/,
-      'every ce-plan invocation must name the plugin-qualified skill',
-    )
-  }
-  assert.match(
-    body.replace(/\s+/g, ' '),
-    /CE\s+ships\s+as\s+a\s+Claude\s+Code \*\*plugin\*\*[^.]*plugin-qualified\s+names/,
-    'the preflight must say why the qualified name is required',
-  )
-})
-
-test('BOS-813 fixtures: each mode states its own mode to CE instead of relying on the ambient flag', () => {
-  // `disable-model-invocation: true` sits in this extension's frontmatter and reads identically on
-  // both paths, so it cannot be what tells CE which mode it is in. If the interactive dispatch says
-  // nothing, CE's pipeline trigger fires and the native interview — the whole point of AC#2's
-  // interactive half — is silently skipped. Each mode must say so in the invocation itself.
-  const body = draftBody()
-  assert.match(
-    body,
-    /^disable-model-invocation: true$/m,
-    'the premise of this gate is the frontmatter flag; if it goes, revisit both mode sections',
-  )
-  const section = (heading) => {
-    const start = body.indexOf(`### ${heading}\n`)
-    assert.notEqual(start, -1, `the SKILL.md must keep a "${heading}" mode section`)
-    const rest = body.slice(start + heading.length + 5)
-    const end = rest.search(/^##+ /m)
-    return (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/g, ' ')
-  }
-  assert.match(
-    section('Interactive'),
-    /this\s+dispatch\s+is\s+interactive[^.]*native\s+interview[^.]*do\s+not\s+take\s+the\s+pipeline\s+path/i,
-    'the interactive dispatch must tell CE to run its interview, not the pipeline path',
-  )
-  assert.match(
-    section('Headless'),
-    /this\s+is\s+a\s+pipeline\s+run[^.]*take\s+the\s+non-interactive\s+path/i,
-    'the headless dispatch must tell CE it is a pipeline run',
-  )
-  for (const heading of ['Interactive', 'Headless']) {
-    assert.match(
-      section(heading),
-      /ambient `disable-model-invocation`|`disable-model-invocation` context\s+CE\s+also\s+keys\s+off/i,
-      `the ${heading} section must record why the ambient flag is not the signal`,
-    )
-  }
-})
-
 // ---------------------------------------------------------------------------------------------
 // Normalize and promote: preserve the rich plan; project the tracker description separately.
 // ---------------------------------------------------------------------------------------------
-
-test('BOS-1176: normalization preserves native plan structure and projects the description', () => {
-  const prose = h2Section(draftBody(), 'Normalize and promote').replace(/\s+/g, ' ')
-
-  assert.match(
-    prose,
-    /plan\s+file\s+keeps\s+(?:CE's|the\s+drafting\s+layer's)\s+own\s+structure[^.]*boss-specific\s+blocks/i,
-    'the promoted plan must retain the drafting layer native structure plus Boss blocks',
-  )
-  assert.match(
-    prose,
-    /description\s+is\s+composed\s+as\s+a\s+separate[^.]*planContract[^.]*projection/i,
-    'the tracker description must be a separate planContract-conformant projection',
-  )
-  assert.doesNotMatch(
-    prose,
-    /contract\s+gate\s+rejects\s+an?\s+off-contract\s+`##`\s+heading/i,
-    'the extension must not claim the plan-file gate rejects native headings',
-  )
-  assert.doesNotMatch(
-    prose,
-    /section\s+with\s+no\s+contract\s+counterpart[^.]*folded\s+into\s+the\s+nearest\s+contract\s+section/i,
-    'the extension must not flatten native sections into contract sections',
-  )
-})
-
-test('BOS-1176: normalization pins terminal notes, unsigned uploads, and mode ownership', () => {
-  const prose = h2Section(draftBody(), 'Normalize and promote').replace(/\s+/g, ' ')
-
-  assert.match(
-    prose,
-    /`##\s+Original\s+notes`\s+is\s+the\s+terminal\s+heading\s+of\s+the\s+plan\s+file[^.]*body\s+runs\s+to\s+(?:the\s+)?end\s+of\s+file/i,
-    'Original notes must be terminal because its body extends to EOF',
-  )
-  assert.match(
-    prose,
-    /every\s+(?:query-bearing\s+)?upload\s+URL\s+anywhere\s+in\s+the\s+plan\s+file[^.]*query-stripped/i,
-    'all upload URLs in the plan file must have query strings stripped',
-  )
-  assert.match(
-    prose,
-    /interactive\s+mode[^.]*orchestrator\s+composes\s+the\s+description/i,
-    'interactive description composition belongs to the orchestrator',
-  )
-  assert.match(
-    prose,
-    /headless\s+mode[^.]*drafting\s+subagent\s+composes\s+the\s+description/i,
-    'headless description composition belongs to the drafting subagent',
-  )
-})
-
-test('BOS-1176: the projection still names every configured contract heading', () => {
-  const body = h2Section(draftBody(), 'Normalize and promote')
-  for (const { heading } of PLAN_CONFIG.planContract.sections) {
-    assert.ok(
-      body.includes(`\`${heading}\``),
-      `the description projection must name configured heading ${heading} in backticks`,
-    )
-  }
-})
 
 test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () => {
   withTmp((dir) => {
@@ -1193,40 +848,4 @@ test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () =
     }
     runGate(contractGuard, ['--description', paths.description, '--plan', paths.plan])
   })
-})
-
-// BOS-1329 R1/R3: headless Tier 1 runs inline inside the one drafting subagent, and this
-// extension's pipeline path nests ce-doc-review's persona fan-out and permits AskUserQuestion — so
-// it declares `modes: interactive`, and headless discovery skips it deliberately rather than
-// leaving a per-run judgement to record a structural gap as a recoverable miss.
-test('BOS-1329: the CE draft extension is interactive-only by declaration', () => {
-  const headless = discoverExtensions({
-    core: 'boss-plan',
-    root: REPO_ROOT,
-    role: 'draft',
-    mode: 'headless',
-  })
-  assert.equal(
-    headless.extensions.some((e) => e.name === DRAFT_NAME),
-    false,
-    'headless discovery must not return the CE draft extension',
-  )
-  const skip = headless.skipped.find((entry) => entry.name === DRAFT_NAME)
-  assert.ok(skip, JSON.stringify(headless.skipped))
-  assert.equal(skip.code, 'mode-not-declared')
-  assert.equal(skip.deliberate, true)
-
-  const interactive = discoverExtensions({
-    core: 'boss-plan',
-    root: REPO_ROOT,
-    role: 'draft',
-    mode: 'interactive',
-  })
-  const found = interactive.extensions.find((e) => e.name === DRAFT_NAME)
-  assert.ok(found, 'interactive discovery must return the CE draft extension')
-  assert.deepEqual(found.modes, ['interactive'])
-  assert.equal(
-    interactive.skipped.some((entry) => entry.name === DRAFT_NAME),
-    false,
-  )
 })

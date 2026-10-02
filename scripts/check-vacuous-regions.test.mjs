@@ -33,7 +33,6 @@ import test from 'node:test'
 import {
   SCANNED_ROOTS,
   SCAN_EXCLUSIONS,
-  UNFALSIFIABLE_PROSE_PIN_FILES,
   findVacuousRegions,
   findVacuousRegionsInRepo,
 } from './check-vacuous-regions.mjs'
@@ -135,50 +134,6 @@ test('raw-section-window detects hand-rolled next-heading terminators', () => {
   assert.deepEqual(
     offenders.map((o) => o.line),
     [1, 2, 3, 4],
-  )
-})
-
-test('unfalsifiable-prose-pin detects whole-document flattened prohibitions', () => {
-  const source = [
-    "const flat = skill.replace(/\\s+/g, ' ')",
-    'assert.doesNotMatch(flat, /git\\s+push/)',
-  ].join('\n')
-
-  const offenders = findVacuousRegions(source).filter((o) => o.rule === 'unfalsifiable-prose-pin')
-  assert.deepEqual(
-    offenders.map((o) => ({ line: o.line, receiver: o.receiver })),
-    [{ line: 2, receiver: 'flat' }],
-  )
-})
-
-test('unfalsifiable-prose-pin detects unbounded whole-file prohibitions', () => {
-  const offenders = findVacuousRegions('assert.doesNotMatch(source, /git\\s+push/)').filter(
-    (o) => o.rule === 'unfalsifiable-prose-pin',
-  )
-  assert.deepEqual(
-    offenders.map((o) => ({ line: o.line, receiver: o.receiver })),
-    [{ line: 1, receiver: 'source' }],
-  )
-})
-
-test('unfalsifiable-prose-pin allows bounded prohibitions and reasoned opt-outs', () => {
-  const bounded = [
-    "const section = sectionRegion(skill, '## Rule')",
-    'assert.doesNotMatch(section, /git\\s+push/)',
-  ].join('\n')
-  const optedOut = [
-    "const flat = skill.replace(/\\s+/g, ' ')",
-    '// gate-region-ok: flattened whole-doc check is a historical corpus audit',
-    'assert.doesNotMatch(flat, /git\\s+push/)',
-  ].join('\n')
-
-  assert.deepEqual(
-    findVacuousRegions(bounded).filter((o) => o.rule === 'unfalsifiable-prose-pin'),
-    [],
-  )
-  assert.deepEqual(
-    findVacuousRegions(optedOut).filter((o) => o.rule === 'unfalsifiable-prose-pin'),
-    [],
   )
 })
 
@@ -433,10 +388,6 @@ test('SCAN_EXCLUSIONS holds exactly this test file and nothing else', () => {
   // leave the gate's coverage with no comment anywhere naming it. Pinned by exact value.
   assert.deepEqual(SCAN_EXCLUSIONS, ['scripts/check-vacuous-regions.test.mjs'])
   assert.deepEqual(SCANNED_ROOTS, ['scripts', 'skills-toolbox'])
-  assert.deepEqual(UNFALSIFIABLE_PROSE_PIN_FILES, [
-    'scripts/boss-build-skill.test.mjs',
-    'scripts/boss-review-skill.test.mjs',
-  ])
 })
 
 test('the repo scan honours SCAN_EXCLUSIONS and skips node_modules', () => {
@@ -446,7 +397,6 @@ test('the repo scan honours SCAN_EXCLUSIONS and skips node_modules', () => {
   const files = {
     'scripts/real-gate.mjs': OFFENCE,
     'scripts/gcp-lb-affinity.test.mjs': 'assert.doesNotMatch(source, /x/)',
-    'scripts/boss-build-skill.test.mjs': 'assert.doesNotMatch(source, /x/)',
     'scripts/check-vacuous-regions.test.mjs': OFFENCE,
     'scripts/node_modules/vendored.mjs': OFFENCE,
     'skills-toolbox/helper.mjs': OFFENCE,
@@ -477,9 +427,5 @@ test('the repo scan honours SCAN_EXCLUSIONS and skips node_modules', () => {
   const found = findVacuousRegionsInRepo(repoRoot, { fs: stubFs })
   const relative = found.map((o) => path.relative(repoRoot, o.file).split(path.sep).join('/'))
 
-  assert.deepEqual(relative.sort(), [
-    'scripts/boss-build-skill.test.mjs',
-    'scripts/real-gate.mjs',
-    'skills-toolbox/helper.mjs',
-  ])
+  assert.deepEqual(relative.sort(), ['scripts/real-gate.mjs', 'skills-toolbox/helper.mjs'])
 })

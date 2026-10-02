@@ -35,9 +35,7 @@ orchestrator's own after-return check and the restarted-orchestrator recovery be
 spellings.
 
 Each shell invocation is a fresh process, so nothing set in the first block survives into the
-second. Re-assign every variable in the block that uses it; `:?` aborts rather than letting an unset
-`PLAN_DOC` become a bare `:(exclude)`, which excludes _everything_ and turns the check into a silent
-pass. Keep the helper's default `--untracked all`: at `-unormal` git collapses an untracked
+second. Re-assign every variable in the block that uses it. Keep the helper's default `--untracked all`: at `-unormal` git collapses an untracked
 directory to a single `.claude/` entry that no per-file exclusion matches, silently restoring an
 every-run false positive that stops the check discriminating.
 
@@ -49,11 +47,9 @@ verdict line at all) means stop and report, never clean.
 **Before the dispatch**, as one invocation:
 
 ```bash
-PLAN_DOC="docs/plans/<the file Step 4 saved>"   # also record this in the run notes
 T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
 [ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
 node "$T/worktree-state.mjs" \
-  --exclude "${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 # …must print `verdict: clean`. Only once it does, record the HEAD the dispatch starts from *and* which
 # dispatch is starting — substitute the task's number for N:
@@ -77,15 +73,12 @@ than assuming the per-task one:
   as `chore(ext-<name>)` and re-assess that extension's entire Step-5 scope, never a single task
   inside it.
 
-**After the subagent returns**, as a second self-contained invocation — same `PLAN_DOC`, same
-pathspec:
+**After the subagent returns**, as a second self-contained invocation — same pathspec:
 
 ```bash
-PLAN_DOC="docs/plans/<the file Step 4 saved>"   # re-set: this is a new shell
 T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
 [ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
 node "$T/worktree-state.mjs" \
-  --exclude "${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 # must print `verdict: clean`
 git log --oneline "$(cut -d' ' -f1 "$(git rev-parse --git-dir)/boss-build-pre-dispatch-head")..HEAD"
@@ -98,7 +91,7 @@ returned contract named (all of them when the subagent never returned to name an
 ```bash
 git add -- <the attributed residue paths>
 # --only commits exactly these paths. A plain `git commit` would commit the whole index, which can
-# hold a path the check above deliberately excluded ($PLAN_DOC, a daemon artifact) staged earlier
+# hold a path the check above deliberately excluded (a daemon artifact) staged earlier
 # and therefore invisible to the check — swept in silently.
 git commit --only -m "chore(task-N): recover uncommitted subagent work" \
   -- <the same attributed paths>  # substitute the dispatch's label
@@ -132,17 +125,11 @@ interruption, inventory that committed state before dispatching anything:
 
 ```bash
 git log --oneline "$BASE_REF..HEAD"
-# residue from a subagent that died before committing — scoped exactly like the Step 5 check,
-# so the plan deliverable and host artifacts don't read as residue. Exclude the single
-# "$PLAN_DOC" Step 4 copied, never the whole docs/plans directory: a directory-wide exclusion
-# would also hide a stray edit to another plan doc, which IS residue. Re-set PLAN_DOC in the
-# same invocation — `:?` aborts rather than letting an unset variable become a bare
-# `:(exclude)`, which excludes everything and reports a clean tree that isn't.
-PLAN_DOC="docs/plans/<the file Step 4 saved>"
+# residue from a subagent that died before committing — scoped exactly like the Step 5 check, so
+# host artifacts don't read as residue.
 T="${BOSS_BUILD_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox}"
 [ -f "$T/worktree-state.mjs" ] || T="$HOME/.codex/skills/boss-build/toolbox"
 node "$T/worktree-state.mjs" \
-  --exclude "${PLAN_DOC:?PLAN_DOC unset — re-read it from the run notes}" \
   --exclude .claude/scheduled_tasks.lock --exclude .claude/settings.local.json -- .
 ```
 

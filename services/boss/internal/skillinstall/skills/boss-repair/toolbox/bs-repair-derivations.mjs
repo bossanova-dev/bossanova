@@ -8,9 +8,8 @@
 // push, and a reply citing a follow-up record reads exactly like a reply whose record exists. A
 // report that cannot tell ran-and-found-nothing from never-ran is not a report.
 //
-// The decisions live here rather than in instruction prose for the reason the escalation ladder in
-// bs-repair-escalation.mjs already establishes: a derivation written as prose can be skipped
-// silently and cannot be tested, and an untested derivation is re-decided from scratch by every
+// The decisions live here rather than in instruction prose because a derivation written as prose
+// can be skipped silently and cannot be tested, and an untested derivation is re-decided from scratch by every
 // reader. The skill body carries the call, the verdicts, and the action per verdict — never a
 // restatement of the derivation.
 //

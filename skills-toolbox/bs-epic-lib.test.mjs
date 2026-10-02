@@ -219,6 +219,24 @@ test('classifyTickets: needs-human, missing plan, not-planned, In Progress all s
   assert.equal(skipped.length, 4)
   for (const s of skipped) assert.ok(s.reason.length > 0)
 })
+test('classifyTickets: labels and state match regardless of case and separators, and honour config names', () => {
+  const { eligible, skipped } = classifyTickets(
+    [
+      t('BOS-1', { labels: ['Agent-Friendly'], stateName: 'todo' }),
+      t('BOS-2', { labels: ['agent_friendly', 'Needs Human'] }),
+      t('BOS-3', { labels: ['ready-for-agents'] }),
+    ],
+    'Todo',
+    { agentFriendlyLabel: 'ready-for-agents' },
+  )
+  assert.deepEqual(
+    eligible.map((tk) => tk.id),
+    ['BOS-3'],
+  )
+  const defaults = classifyTickets([t('BOS-1', { labels: ['Agent-Friendly'] })], 'Todo')
+  assert.equal(defaults.eligible.length, 1)
+  assert.match(skipped.find((entry) => entry.ticket.id === 'BOS-2').reason, /needs-human/)
+})
 test('classifyTickets: Done child counts as done, not skipped', () => {
   const { done } = classifyTickets(
     [t('BOS-1', { stateName: 'Done', stateType: 'completed' })],

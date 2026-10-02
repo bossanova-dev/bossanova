@@ -2,12 +2,8 @@
 //
 // One scanner for the `.linear-plans/…` path tokens a skill's prose cites.
 //
-// Two gates need it and they read different surfaces: skills-toolbox/plan-scratch-paths.test.mjs
-// walks the published boss-plan payload directory on disk, while scripts/bs-plan-skill.test.mjs
-// already holds the payload documents plus the repo-local CE draft extension in memory. A second
-// copy of the extraction rules would let the two disagree about what counts as a token, and the
-// gate that missed one would still report a clean scan — so the rules live here and both import
-// them.
+// Used by skills-toolbox/plan-scratch-paths.test.mjs, which walks the published boss-plan payload
+// directory on disk.
 //
 // Node built-ins only — cron worktrees are dependency-free.
 

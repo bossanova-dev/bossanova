@@ -54,27 +54,15 @@ syntax, arguments or flags from an index row.
 
 ## Launching a session to run work unattended
 
-Supplying a prompt when you create a session means you want that work to **run**, not sit idle. Both surfaces default to launching the agent so the work actually starts:
+A prompt at creation means the work should **run**: `boss new --repo R --prompt P` is implicitly
+`--detach`, and `create_session` with a `prompt` defaults to headless (`agent_launched: true`; its
+`agent_session_id` is the chat to read with `get_chat_transcript` or message with
+`send_chat_message`). Pass `attended: true` only when a human will drive the session.
 
-- **CLI:** `boss new --repo R --prompt P` runs non-interactively — `--detach` is implicit when `--repo` and `--prompt` are both given.
-- **MCP:** a `create_session` call with a non-empty `prompt` and no `attended` opt-in defaults to headless (equivalent to `detach:true`). The result reports `agent_launched: true`.
-
-Opt into an idle session (created but no agent started, awaiting a human attach) only when a human will drive it interactively: pass `attended: true` to `create_session`. That result reports `agent_launched: false` and carries a `next_action` hint.
-
-**Post-launch verification (MCP).** After `create_session`, check `agent_launched`:
-
-- `agent_launched: true` — an agent started; the session's `agent_session_id` is its primary chat. Address it with `send_chat_message` / `get_chat_transcript`.
-- `agent_launched: false` — no agent ran. Either you passed `attended: true`, or the create was prompt-less, or the daemon attached to a pre-existing session (`attached_existing: true`, in which case your prompt was NOT run). To start work: call `start_chat` on the session, or re-create with `detach: true` (headless) or `tmux_unattended: true` (durable pane). Follow the `next_action` / `note` hint in the result.
-
-Canonical recipe — spawn a session to run a task unattended and collect the result:
-
-```
-create_session { repo_id: R, prompt: P }          # defaults to headless; expect agent_launched: true
-# then, using the returned agent_session_id:
-get_chat_transcript { agent_session_id: <id> }     # read progress / final result
-```
-
-If a `create_session` result comes back with `agent_launched: false` when you expected the work to run, you (or a caller) opted into attended mode — start it with `start_chat`, or re-create with `detach: true` / `tmux_unattended: true`.
+`agent_launched: false` means no agent ran — you asked for `attended`, gave no prompt, or the daemon
+attached to an existing session (`attached_existing: true`, your prompt was **not** run). Start it
+with `start_chat`, or re-create with `detach: true` (headless) or `tmux_unattended: true` (durable
+pane); the result's `next_action` says which.
 
 ## Cron repair workflow
 
@@ -134,7 +122,7 @@ A selector is a set of `key:value` terms over six dimensions:
 - `repo:<repo-id>` — every chat on that repo's sessions
 - `agent:<name>` — every chat run by that agent runner (e.g. `claude`, `codex`)
 - `account:<account-id>` — every chat running under that named account (chats on the default account are not addressable this way)
-- `daemon:<daemon-id>` — every chat on that daemon. Naming another daemon here does NOT reach it: chat rows carry an empty daemon id, so this term resolves to zero targets on **every** daemon, not just this one. Addressing other daemons is what `--cross-daemon` (`cross_daemon` on the MCP tool) is for: bosso fans the broadcast out to the tenant's other live daemons, and each re-resolves the selector against its own chats — so pair it with a `repo:`/`agent:`/`chat:` selector, which is what those daemons can actually match. Delivery is best-effort: a daemon offline at fan-out time never receives it (bosso holds no store-and-forward queue), and a fan-out reaching more than 32 other daemons is refused outright rather than truncated
+- `daemon:<daemon-id>` — matches nothing today (chat rows carry no daemon id). To reach other daemons use `--cross-daemon` (`cross_daemon` on the MCP tool) with a `repo:`/`agent:`/`chat:` selector: bosso fans it out to the tenant's live daemons, best-effort (an offline daemon never gets it; more than 32 daemons is refused)
 
 `,` joins terms inside one clause: different dimensions are **AND**ed, repeated values of the same dimension are **OR**ed. `+` joins clauses, and clauses are **OR**ed. (Up to 16 clauses, and 64 values per dimension per clause.)
 

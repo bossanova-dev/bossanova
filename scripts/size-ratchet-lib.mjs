@@ -48,9 +48,8 @@
 // being measured at all. Per-call-site residuals are the `residual` parameter's job.
 //
 // THE MEASUREMENT RECORDER (BOS-1341) reports, it never decides. With `SIZE_RATCHET_REPORT_DIR`
-// set, both primitives append one JSON row per call before their verdict so
-// `scripts/ratchet-report.mjs` can print pinned beside measured after a rebase; unset, it writes
-// nothing and changes no verdict.
+// set, both primitives append one JSON row per call before their verdict, so a caller can print
+// pinned beside measured after a rebase; unset, it writes nothing and changes no verdict.
 //
 // WHY A SECOND PRIMITIVE, AND WHY IT IS ASYMMETRIC (BOS-1208). `assertExactSize` prices a
 // deletion and an addition identically: both red, and both clear by the same one-line repin.
@@ -78,10 +77,6 @@
 // pin, and it is the right price there; the budget is for artifacts sitting in a skill run's
 // context path, where a deletion is the outcome the mechanism should be paying for.
 //
-// `scripts/check-raw-size-ratchets.mjs` is the gate that stops the open-coded shape coming
-// back. Its scan is parser-free, so the prose in this file deliberately never spells the
-// forbidden comparison verbatim; that is what lets both files pass the gate with no opt-out.
-
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

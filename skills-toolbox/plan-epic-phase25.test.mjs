@@ -1276,7 +1276,7 @@ test('S6: child bodies are contract-checked and write-back verified against the 
   // Byte-identical, so the write-back comparison is tier 1 — only the contract check catches it.
   const malformed = epicReverifyVerdict(
     rvInput((i) => {
-      const body = rvChildBody('c1', { drop: '## Testing' })
+      const body = rvChildBody('c1', { drop: '## Summary' })
       setStored(i, 'BOS-901', body)
       i.childBodies['BOS-901'].intended = body
     }),

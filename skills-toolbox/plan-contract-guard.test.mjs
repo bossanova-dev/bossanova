@@ -16,7 +16,6 @@ import {
   checkPlanContract,
   DYNAMIC_VIOLATION_CODE_PREFIXES,
   VIOLATION_CODES,
-  checkPlanFileStructure,
   checkPrBodyOnlyEvidence,
   checkVerifyOnlyCommandVacuity,
   checkSelfFalsifiedLiteralSearch,
@@ -52,9 +51,24 @@ const KEY_CHANGES_BLOCK =
   '## Key changes\n\n- `skills-toolbox/plan-contract-guard.mjs`: the substantive change.\n' +
   '- `skills-toolbox/plan-contract-guard.test.mjs`: coverage for it.'
 
+// A full description of the shape boss-plan used to require. Only Summary and Original notes are
+// required now; the rest are optional sections the checks below still exercise.
+const CONFORMANT_HEADINGS = [
+  '## Summary',
+  '## Approach',
+  '## Key changes',
+  '## Testing',
+  '## Risks / unknowns',
+  '## Acceptance criteria',
+  '## Required proof',
+  '## Planning',
+  '## Original notes',
+]
+
 const conformant = (planningLine = '- Contract: v1') =>
-  `${requiredPlanSections(DEFAULT_CONFIG)
-    .map((h) => `${h}\n\nSubstantive body prose for this section, long enough to be a real plan.`)
+  `${CONFORMANT_HEADINGS.map(
+    (h) => `${h}\n\nSubstantive body prose for this section, long enough to be a real plan.`,
+  )
     .join('\n\n')
     .replace(
       '## Planning\n\nSubstantive body prose for this section, long enough to be a real plan.',
@@ -191,9 +205,10 @@ describe('checkPlanContract — conformant input', () => {
   })
 
   test('description modes discriminate in both directions', () => {
+    // A child-plan description only requires Summary and Original notes, so an epic overview read
+    // as a child passes, with its off-contract heading reported as a warning.
     const epicAsChild = checkPlanContract({ description: epicParentConformant() })
-    assert.equal(epicAsChild.ok, false)
-    assert.ok(codes(epicAsChild).includes('missing-sections'))
+    assert.equal(epicAsChild.ok, true)
     assert.ok(codes(epicAsChild).includes('unknown-section'))
 
     const childAsEpic = checkPlanContract({ description: conformant(), mode: 'epic-parent' })
@@ -206,13 +221,16 @@ describe('checkPlanContract — conformant input', () => {
 describe('checkPlanContract — each violation code fires', () => {
   test('missing-sections fires when a required heading is absent', () => {
     const description = conformant().replace(
-      '## Testing\n\nSubstantive body prose for this section, long enough to be a real plan.\n\n',
+      '\n\n## Original notes\n\nSubstantive body prose for this section, long enough to be a real plan.',
       '',
     )
     const result = checkPlanContract({ description })
     assert.equal(result.ok, false)
     assert.ok(codes(result).includes('missing-sections'))
-    assert.match(result.violations.find((v) => v.code === 'missing-sections').message, /## Testing/)
+    assert.match(
+      result.violations.find((v) => v.code === 'missing-sections').message,
+      /## Original notes/,
+    )
   })
 
   test('missing-sections fires on a stamped version newer than the contract', () => {
@@ -227,7 +245,7 @@ describe('checkPlanContract — each violation code fires', () => {
   test('unknown-section fires on an off-contract heading and names the config remedy', () => {
     const description = conformant().replace('## Planning', '## Notes\n\nx\n\n## Planning')
     const result = checkPlanContract({ description })
-    assert.equal(result.ok, false)
+    assert.equal(result.ok, true)
     const found = result.violations.find((v) => v.code === 'unknown-section')
     assert.ok(found)
     assert.match(found.message, /## Notes/)
@@ -244,7 +262,7 @@ describe('checkPlanContract — each violation code fires', () => {
       .join('\n\n')
       .replace(`## Planning\n\n${body}`, '## Planning\n\n- Contract: v1')}\n`
     const result = checkPlanContract({ description })
-    assert.equal(result.ok, false)
+    assert.equal(result.ok, true)
     assert.ok(codes(result).includes('section-order'))
     // Ordering must be the ONLY complaint: nothing is missing and nothing is off-contract.
     assert.ok(!codes(result).includes('missing-sections'))
@@ -288,7 +306,7 @@ describe('checkPlanContract — each violation code fires', () => {
       '## Planning\n\n- Contract: v1\n\n## Child tickets',
     )
     const result = checkPlanContract({ description, mode: 'epic-parent' })
-    assert.equal(result.ok, false)
+    assert.equal(result.ok, true)
     const found = result.violations.find((v) => v.code === 'section-order')
     assert.ok(found)
     assert.match(
@@ -344,103 +362,6 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.ok(codes(result).includes('plan-file-residue'))
   })
 
-  test('plan-file-structure blocks a flattened plan with exactly the description headings', () => {
-    const flattened = conformant()
-    const result = checkPlanContract({ description: conformant(), plan: flattened })
-    assert.equal(result.ok, false)
-    const messages = result.violations.map((v) => v.message).join('\n')
-    assert.match(messages, /inspected \d+ heading/)
-    assert.match(messages, /outside planContract\.sections/)
-  })
-
-  test('plan-file-structure passes a plan carrying contract headings plus the configured floor', () => {
-    const result = checkPlanFileStructure(DEFAULT_CONFIG, documentingPlan)
-    assert.equal(result.ok, true)
-    assert.equal(result.headingsInspected > 0, true)
-    assert.deepEqual(result.violations, [])
-  })
-
-  test('plan-file-structure reports zero headings as a violation', () => {
-    const result = checkPlanFileStructure(DEFAULT_CONFIG, 'plain prose only')
-    assert.equal(result.ok, false)
-    assert.equal(result.headingsInspected, 0)
-    assert.match(result.violations.map((v) => v.message).join('\n'), /inspected 0 heading/)
-  })
-
-  test('plan-file-structure blocks bypass shapes from the input grammar', () => {
-    const withReplacement = (replacement) =>
-      documentingPlan.replace(
-        '## Problem Frame\n\nThe plan attachment',
-        `${replacement}\n\nThe plan attachment`,
-      )
-
-    for (const [label, plan] of [
-      ['bold pseudo-heading', withReplacement('**Problem Frame**')],
-      ['heading only inside a fenced block', withReplacement('```md\n## Problem Frame\n```')],
-      [
-        'heading only inside an inline code span',
-        withReplacement('The heading is `## Problem Frame`.'),
-      ],
-      [
-        'declared block present but empty',
-        documentingPlan.replace(
-          '## Requirements\n\n- R1: Preserve richer plan structure.',
-          '## Requirements\n\n',
-        ),
-      ],
-      ['four-space indented code heading', withReplacement('    ## Problem Frame')],
-    ]) {
-      const result = checkPlanFileStructure(DEFAULT_CONFIG, plan)
-      assert.equal(result.ok, false, `${label} must be blocked`)
-      assert.ok(codes(result).includes('plan-file-structure'), `${label} must use structure code`)
-    }
-  })
-
-  test('plan-file-structure does not count headings inside terminal Original notes', () => {
-    const plan = documentingPlan
-      .replace(
-        '## Problem Frame\n\nThe plan attachment has structure beyond the description projection.\n\n',
-        '',
-      )
-      .replace('Original reporter notes.', 'Original reporter notes.\n\n## Problem Frame\n\nquoted')
-    const result = checkPlanFileStructure(DEFAULT_CONFIG, plan)
-    assert.equal(result.ok, false)
-    assert.ok(codes(result).includes('plan-file-structure'))
-    assert.match(
-      result.violations.map((v) => v.message).join('\n'),
-      /missing required plan-file heading "## Problem Frame"/,
-    )
-  })
-
-  test('plan-file-structure rejects unterminated fences instead of counting hidden headings', () => {
-    const plan = documentingPlan.replace(
-      '## Requirements\n\n- R1: Preserve richer plan structure.',
-      '~~~md\n## Requirements\n\n- R1: Preserve richer plan structure.',
-    )
-    assert.equal(hasUnterminatedFence(plan), true)
-    const result = checkPlanFileStructure(DEFAULT_CONFIG, plan)
-    assert.equal(result.ok, false)
-    assert.ok(codes(result).includes('plan-file-structure'))
-    assert.match(
-      result.violations.map((v) => v.message).join('\n'),
-      /unterminated fenced code block/,
-    )
-  })
-
-  test('plan-file-structure exemptions are explicit and closed', () => {
-    for (const exemption of ['epic-parent-overview', 'adopted-child-redraft', 'consumer']) {
-      const result = checkPlanFileStructure(DEFAULT_CONFIG, 'plain prose only', { exemption })
-      assert.equal(result.ok, true, `${exemption} must exempt the floor`)
-      assert.deepEqual(result.violations, [])
-    }
-
-    const unknown = checkPlanFileStructure(DEFAULT_CONFIG, 'plain prose only', {
-      exemption: 'future-shape',
-    })
-    assert.equal(unknown.ok, false)
-    assert.deepEqual(codes(unknown), ['plan-file-structure-exemption'])
-  })
-
   test('subject-areas-unresolved fires on an arealess `## Key changes`, and not on repo-relative paths', () => {
     // The point of the code is its TIMING: this gate already runs before the attachment finalize,
     // where the same fact was previously raised by the post-finalize dependency scan whose remedy
@@ -478,41 +399,8 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.equal(skipped.length, 1)
     assert.match(skipped[0].message, /skipped — epic-parent mode has no ## Key changes section/)
 
-    // Suppressed where another code already reports the defect.
-    const missing = conformant().replace(KEY_CHANGES_BLOCK, '')
-    assert.ok(codes(checkPlanContract({ description: missing })).includes('missing-sections'))
-    assert.deepEqual(sourceAdvisories(checkPlanContract({ description: missing })), [])
     const unterminated = conformant().replace('## Testing', '```\n## Testing')
     assert.deepEqual(sourceAdvisories(checkPlanContract({ description: unterminated })), [])
-  })
-
-  test('enumeration-dropped fires when the plan file carries the enumeration and Approach does not', () => {
-    const enumeration =
-      '### Sibling-class enumeration\n\n| Site | Verdict |\n| --- | --- |\n| a | fix |'
-    const planWith = documentingPlan.replace(
-      '## Approach\n\nUse the existing guard.',
-      `## Approach\n\nUse the existing guard.\n\n${enumeration}`,
-    )
-    assert.notEqual(planWith, documentingPlan, 'the fixture must carry the heading')
-    const body = 'Substantive body prose for this section, long enough to be a real plan.'
-    const carried = conformant().replace(
-      `## Approach\n\n${body}`,
-      `## Approach\n\n- ${body}\n\n${enumeration}`,
-    )
-
-    const dropped = checkPlanContract({ description: conformant(), plan: planWith })
-    assert.deepEqual(codes(dropped), ['enumeration-dropped'])
-    assert.deepEqual(codes(checkPlanContract({ description: carried, plan: planWith })), [])
-    assert.deepEqual(
-      codes(checkPlanContract({ description: conformant(), plan: documentingPlan })),
-      [],
-    )
-    // A heading only inside a fenced example in the plan is documentation, not the table.
-    const fenced = documentingPlan.replace(
-      '## Approach\n\nUse the existing guard.',
-      `## Approach\n\nUse the existing guard.\n\n\`\`\`md\n${enumeration}\n\`\`\``,
-    )
-    assert.deepEqual(codes(checkPlanContract({ description: conformant(), plan: fenced })), [])
   })
 
   test('subject-areas-unresolved names the path-shaped tokens it could not resolve', () => {
@@ -536,13 +424,6 @@ describe('checkPlanContract — each violation code fires', () => {
       description: epicParentConformant(),
       mode: 'epic-parent',
     })
-    assert.equal(codes(result).includes('subject-areas-unresolved'), false)
-  })
-
-  test('subject-areas-unresolved is not raised on top of missing-sections', () => {
-    const withoutKeyChanges = conformant().replace(`${KEY_CHANGES_BLOCK}\n\n`, '')
-    const result = checkPlanContract({ description: withoutKeyChanges })
-    assert.ok(codes(result).includes('missing-sections'))
     assert.equal(codes(result).includes('subject-areas-unresolved'), false)
   })
 
@@ -1428,7 +1309,7 @@ describe('checkPlanContract — each violation code fires', () => {
     )
 
     const full = checkPlanContract({ description: conformant(), citationCwd: '' })
-    assert.equal(full.ok, false)
+    assert.equal(full.ok, true)
     assert.deepEqual(full.violations, [])
     assert.deepEqual(
       full.couldNotEvaluate.map((item) => item.code),
@@ -1637,7 +1518,7 @@ describe('checkPlanContract — the scoping guarantees', () => {
     assert.ok(codes(checkPlanContract({ description: withToken })).includes('placeholder-residue'))
     // A genuinely missing section is still reported when the fences are balanced.
     const missing = conformant().replace(
-      '## Testing\n\nSubstantive body prose for this section, long enough to be a real plan.\n\n',
+      '\n\n## Original notes\n\nSubstantive body prose for this section, long enough to be a real plan.',
       '',
     )
     assert.ok(codes(checkPlanContract({ description: missing })).includes('missing-sections'))
@@ -1689,31 +1570,15 @@ describe('CLI', () => {
     ])
   })
 
-  test('the CLI exemption flag suppresses only the plan-file structure floor', () => {
-    const flattened = conformant()
-    const blocked = runCli(conformant(), flattened)
-    assert.notEqual(blocked.status, 0)
-    assert.match(blocked.stderr, /\[plan-file-structure\]/)
-
-    const exempt = runCli(conformant(), flattened, null, {
-      modeArgs: ['--plan-file-exemption', 'consumer'],
-    })
-    assert.equal(exempt.status, 0, `expected consumer exemption to pass: ${exempt.stderr}`)
-
-    const residue = runCli(conformant(), `${flattened}\n</invoke>\n`, null, {
-      modeArgs: ['--plan-file-exemption', 'consumer'],
-    })
-    assert.notEqual(residue.status, 0)
-    assert.match(residue.stderr, /\[plan-file-residue\]/)
-  })
-
   test('violations exit non-zero with one tagged stderr line each', () => {
     const res = runCli('the full markdown plan description as specified in Step 7 of the brief')
     assert.notEqual(res.status, 0, 'a violating description must exit non-zero')
-    const tagged = res.stderr.split('\n').filter((l) => /\[[a-z-]+\]$/.test(l.trim()))
+    const tagged = res.stderr
+      .split('\n')
+      .filter((l) => !l.startsWith('warning:') && /\[[a-z-]+\]$/.test(l.trim()))
     assert.ok(tagged.length >= 1, `expected tagged violation lines, got: ${res.stderr}`)
     assert.ok(tagged.every((l) => /\[(not-a-description|missing-sections)\]$/.test(l.trim())))
-    assert.match(res.stderr, /contract violation\(s\) — do not write/)
+    assert.match(res.stderr, /blocking violation\(s\) — do not write/)
   })
 
   test('an unreadable description is a violation tagged [unreadable-input], never a pass', () => {
@@ -1722,13 +1587,12 @@ describe('CLI', () => {
     assert.match(res.stderr, /\[unreadable-input\]/)
   })
 
-  test('could-not-evaluate emits a tagged CLI line and exits non-zero', () => {
+  test('could-not-evaluate is reported on a tagged CLI line without blocking the write', () => {
     const res = runCli(conformant(), null, null, {
       env: { ...process.env, PLAN_CONTRACT_GUARD_CWD: '' },
     })
-    assert.notEqual(res.status, 0, 'an unknown citation check must not exit 0')
+    assert.equal(res.status, 0, res.stderr)
     assert.match(res.stderr, /\[citation-could-not-evaluate\]/)
-    assert.match(res.stderr, /could not be evaluated/)
   })
 
   test('accepts --mode epic-parent and defaults to child-plan', () => {
@@ -1736,10 +1600,9 @@ describe('CLI', () => {
     const accepted = runCli(epic, null, null, { modeArgs: ['--mode', 'epic-parent'] })
     assert.equal(accepted.status, 0, `expected epic-parent mode to pass: ${accepted.stderr}`)
 
-    const rejected = runCli(epic)
-    assert.notEqual(rejected.status, 0, 'default child-plan mode must reject an epic overview')
-    assert.match(rejected.stderr, /\[missing-sections\]/)
-    assert.match(rejected.stderr, /\[unknown-section\]/)
+    const asChild = runCli(epic)
+    assert.equal(asChild.status, 0, asChild.stderr)
+    assert.match(asChild.stderr, /warning: .*\[unknown-section\]/)
   })
 
   test('rejects an unknown --mode and a missing --mode value', () => {
@@ -1792,7 +1655,7 @@ describe('CLI', () => {
       withRecording,
     )
     assert.notEqual(fire.status, 0, 'a violating description must still exit non-zero')
-    assert.match(fire.stderr, /contract violation\(s\) — do not write/)
+    assert.match(fire.stderr, /blocking violation\(s\) — do not write/)
     assert.deepEqual(
       read().map((line) => line.split('\t').slice(1, 3)),
       [
@@ -1863,7 +1726,6 @@ describe('exported helpers', () => {
       description: 'd.md',
       plan: 'p.md',
       mode: 'child-plan',
-      planFileExemption: null,
       moduleRoots: [],
     })
     assert.throws(() => parseContractGuardArgs([]), /--description <path> is required/)
@@ -1874,7 +1736,6 @@ describe('exported helpers', () => {
       description: 'd.md',
       plan: null,
       mode: 'epic-parent',
-      planFileExemption: null,
       moduleRoots: [],
     })
     assert.throws(
@@ -1884,26 +1745,6 @@ describe('exported helpers', () => {
     assert.throws(
       () => parseContractGuardArgs(['--description', 'd.md', '--mode', '--plan', 'p.md']),
       /--mode <value> is required/,
-    )
-  })
-
-  test('parseContractGuardArgs accepts a plan-file exemption reason', () => {
-    assert.deepEqual(
-      parseContractGuardArgs([
-        '--description',
-        'd.md',
-        '--plan',
-        'p.md',
-        '--plan-file-exemption',
-        'adopted-child-redraft',
-      ]),
-      {
-        description: 'd.md',
-        plan: 'p.md',
-        mode: 'child-plan',
-        planFileExemption: 'adopted-child-redraft',
-        moduleRoots: [],
-      },
     )
   })
 

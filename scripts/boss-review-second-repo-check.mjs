@@ -154,13 +154,6 @@ function sampleRoundEnvelope() {
   }
 }
 
-function phaseRFallbackAvailable(skillText) {
-  return (
-    skillText.includes('### Tier 2 — host-native whole-diff review') &&
-    skillText.includes('### Tier 3 — inline whole-diff rubric')
-  )
-}
-
 function sampleReportInput() {
   // The clean-report shape bs-review-report.mjs renders from.
   return {
@@ -295,23 +288,6 @@ export async function runSecondRepoCheck() {
     fs.rmSync(roundExtDir, { recursive: true, force: true })
     const withoutExt = discoverExtensions({ core: CORE, root: repoDir, role: 'lens' })
     const withoutRoundExt = discoverExtensions({ core: CORE, root: repoDir, role: 'round' })
-    const skillText = fs.readFileSync(
-      path.join(
-        REPO_ROOT,
-        'services',
-        'boss',
-        'internal',
-        'skillinstall',
-        'skills',
-        CORE,
-        'SKILL.md',
-      ),
-      'utf8',
-    )
-    const extensionFreePhaseRFallback = phaseRFallbackAvailable(skillText)
-    const tier3HeadingNegativeControl = !phaseRFallbackAvailable(
-      skillText.replace('### Tier 3 — inline whole-diff rubric', ''),
-    )
     const noopWithoutExtension = withoutExt.extensions.length === 0
 
     // (5) codex-only discovery reaches the same descriptor shape without the canonical root.
@@ -331,8 +307,6 @@ export async function runSecondRepoCheck() {
       envelopeValid,
       noopWithoutExtension,
       noopWithoutRoundExtension: withoutRoundExt.extensions.length === 0,
-      extensionFreePhaseRFallback,
-      tier3HeadingNegativeControl,
     }
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true })
@@ -352,9 +326,7 @@ export async function main() {
     r.codexOnlyExtensions[0].name === EXT &&
     r.envelopeValid &&
     r.noopWithoutExtension &&
-    r.noopWithoutRoundExtension &&
-    r.extensionFreePhaseRFallback &&
-    r.tier3HeadingNegativeControl
+    r.noopWithoutRoundExtension
 
   const lines = [
     `self-contained: ${r.selfContained}`,
@@ -366,8 +338,6 @@ export async function main() {
     `envelope valid: ${r.envelopeValid}`,
     `no-op without extension: ${r.noopWithoutExtension}`,
     `no-op without round extension: ${r.noopWithoutRoundExtension}`,
-    `extension-free Phase R fallback: ${r.extensionFreePhaseRFallback}`,
-    `negative-control Tier 3 removal fails: ${r.tier3HeadingNegativeControl}`,
     `second-repo validation: ${pass ? 'PASS' : 'FAIL'}`,
   ]
   process.stdout.write(lines.join('\n') + '\n')

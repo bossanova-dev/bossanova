@@ -70,7 +70,7 @@
 // escaping alphabet, because it is not hiding inside an HTML comment.
 //
 // API SHAPES (chosen + pinned in plan-epic-lib.test.mjs):
-//   validateDecomposition(spec)  -> { ok: boolean, errors: string[] }   (structured, never throws)
+//   validateDecomposition(spec)  -> { ok, errors, warnings } (normalizes spec in place, never throws)
 //   assertAcyclic(spec)          -> void; THROWS Error naming the cycle path on a cycle
 //   topoOrderChildren(spec)      -> child[] in stable topological creation order (THROWS on cycle)
 //   epicWiringPlan(spec, createdIdByKey) -> wiring[]  (THROWS on a missing id)
@@ -172,11 +172,73 @@ export function epicParentEstimate(spec) {
  * Cycle detection is NOT done here — that is `assertAcyclic`'s job (a dangling
  * ref is structural; a cycle is graph-shaped).
  */
+function normalizePriority(value, where, warnings) {
+  const n = Math.round(Number(value))
+  if (TODO_PRIORITIES.has(n)) {
+    if (n !== value) warnings.push(`${where}: priority ${JSON.stringify(value)} read as ${n}`)
+    return n
+  }
+  const clamped = Number.isFinite(n) && n > 4 ? 4 : 3
+  warnings.push(`${where}: priority ${JSON.stringify(value)} normalized to ${clamped}`)
+  return clamped
+}
+
+/**
+ * Coerce a drafted decomposition's cosmetic fields in place (priority, estimate, layer case,
+ * string booleans, a bare string where a list belongs), so a finished epic plan is not thrown away
+ * over spelling. Returns the warnings describing each change.
+ */
+export function normalizeDecomposition(spec) {
+  const warnings = []
+  if (!spec || typeof spec !== 'object') return warnings
+  if (spec.parent && typeof spec.parent === 'object') {
+    spec.parent.priority = normalizePriority(spec.parent.priority, 'parent', warnings)
+  }
+  if (!Array.isArray(spec.children)) return warnings
+  spec.children.forEach((child, i) => {
+    if (!child || typeof child !== 'object') return
+    const where = isNonEmptyString(child.key) ? `child "${child.key}"` : `child #${i + 1}`
+    child.priority = normalizePriority(child.priority, where, warnings)
+    const estimate = Number(child.estimate)
+    const fib = [...FIB_ESTIMATES].sort((a, b) => a - b)
+    const snapped = Number.isFinite(estimate)
+      ? (fib.find((value) => value >= estimate) ?? fib.at(-1))
+      : CHILD_MAX_ESTIMATE
+    if (snapped !== child.estimate) {
+      warnings.push(`${where}: estimate ${JSON.stringify(child.estimate)} normalized to ${snapped}`)
+    }
+    child.estimate = snapped
+    if (snapped > CHILD_MAX_ESTIMATE) {
+      warnings.push(
+        `${where}: estimate ${snapped} is above the single-PR size of ${CHILD_MAX_ESTIMATE}`,
+      )
+    }
+    if (typeof child.layer === 'string') child.layer = child.layer.trim().toLowerCase()
+    if (child.layer != null && !CHILD_LAYERS.has(child.layer)) {
+      warnings.push(`${where}: dropped unknown layer ${JSON.stringify(child.layer)}`)
+      delete child.layer
+    }
+    if (child.agentFriendly != null && typeof child.agentFriendly !== 'boolean') {
+      const text = String(child.agentFriendly).trim().toLowerCase()
+      // Anything other than an explicit "true" goes to a human rather than the unattended queue.
+      child.agentFriendly = text === 'true'
+      warnings.push(
+        `${where}: agentFriendly ${JSON.stringify(text)} read as ${child.agentFriendly}`,
+      )
+    }
+    for (const field of ['blockedByKeys', 'keyChanges', 'openQuestions']) {
+      if (typeof child[field] === 'string') child[field] = [child[field]]
+    }
+  })
+  return warnings
+}
+
 export function validateDecomposition(spec) {
   const errors = []
   if (!spec || typeof spec !== 'object') {
-    return { ok: false, errors: ['decomposition spec must be an object'] }
+    return { ok: false, errors: ['decomposition spec must be an object'], warnings: [] }
   }
+  const warnings = normalizeDecomposition(spec)
 
   const parent = spec.parent
   if (!parent || typeof parent !== 'object') {
@@ -184,9 +246,6 @@ export function validateDecomposition(spec) {
   } else {
     if (!isNonEmptyString(parent.title)) errors.push('parent overview is missing a title')
     if (!isNonEmptyString(parent.goal)) errors.push('parent overview is missing a goal')
-    if (!TODO_PRIORITIES.has(parent.priority)) {
-      errors.push('parent overview has an invalid priority (must be 1, 2, 3, or 4)')
-    }
   }
 
   const children = spec.children
@@ -241,41 +300,6 @@ export function validateDecomposition(spec) {
     ) {
       errors.push(`${where} needs a non-empty keyChanges array of non-empty strings`)
     }
-    if (!FIB_ESTIMATES.has(child.estimate)) {
-      errors.push(
-        `${where} has an invalid estimate (must be a Fibonacci value: 0, 1, 2, 3, 5, or 8)`,
-      )
-    } else if (child.estimate > CHILD_MAX_ESTIMATE) {
-      // The forcing function: a child must land in one reviewable PR. An honest
-      // 5/8 is a monolith-in-disguise — reject it so the planner decomposes it
-      // further into ≤CHILD_MAX_ESTIMATE-pt children rather than smuggling the
-      // oversized unit through as a single epic child.
-      errors.push(
-        `${where} has estimate ${child.estimate}, above the single-PR ceiling of ${CHILD_MAX_ESTIMATE}; decompose it further`,
-      )
-    }
-    if (!TODO_PRIORITIES.has(child.priority)) {
-      errors.push(`${where} has an invalid priority (must be 1, 2, 3, or 4)`)
-    }
-    // `layer` is optional (a non-pipeline child may omit it), but when present it
-    // must name a real architectural seam so the producer-before-consumer soft
-    // check (validateLayering) can reason about it. An unknown layer is a spec
-    // bug — reject it rather than silently ignore a mislabelled seam.
-    if (child.layer != null && !CHILD_LAYERS.has(child.layer)) {
-      errors.push(
-        `${where} has an unknown layer "${child.layer}" (must be one of contract, persistence, producer, read, ui, or omitted)`,
-      )
-    }
-    // `agentFriendly` is optional (omitted ⇒ agent-friendly default), but when
-    // present it must be a real boolean. serializeEpicSpec persists it as
-    // `agentFriendly !== false`, so a truthy non-boolean — e.g. the string
-    // "false" from a drafted JSON spec — would be coerced to `true` and a crash
-    // before deferred exposure would let resume stamp an otherwise needs-human
-    // child `agent-friendly`, making it boss-build-eligible. Reject it here
-    // (validate-before-write) so the epic falls back to a single-ticket plan.
-    if (child.agentFriendly != null && typeof child.agentFriendly !== 'boolean') {
-      errors.push(`${where} has a non-boolean agentFriendly (must be true or false, or omitted)`)
-    }
     // A non-array `blockedByKeys` (e.g. the bare string "c1") must be rejected,
     // not silently coerced to []: coercion would drop a real dependency edge and
     // let a malformed epic pass validation with a missing blocker.
@@ -289,7 +313,7 @@ export function validateDecomposition(spec) {
     }
   })
 
-  return { ok: errors.length === 0, errors }
+  return { ok: errors.length === 0, errors, warnings }
 }
 
 /**

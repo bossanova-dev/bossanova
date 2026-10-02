@@ -359,21 +359,38 @@ test('a group with a real detail still promotes normally', () => {
 // ---------------------------------------------------------------------------
 
 test('malformed items land in invalid with a reason, never in mustFix/pool', () => {
-  const items = [
-    finding({ file: '' }),
-    finding({ file: undefined }),
-    finding({ title: '' }),
-    finding({ severity: 'Nope' }),
-  ]
+  const items = [finding({ file: '' }), finding({ file: undefined }), finding({ title: '' })]
   const { mustFix, pool, invalid } = triageFindings(items)
   assert.equal(mustFix.length, 0)
   assert.equal(pool.length, 0)
-  assert.equal(invalid.length, 4)
+  assert.equal(invalid.length, 3)
   for (const entry of invalid) {
     assert.ok('item' in entry)
     assert.equal(typeof entry.reason, 'string')
     assert.ok(entry.reason.length > 0)
   }
+})
+
+test('severity case and synonyms are normalized; an unknown severity counts as a Warning', () => {
+  const { mustFix, pool, invalid } = triageFindings([
+    finding({ severity: 'critical', title: 'a' }),
+    finding({ severity: 'High', title: 'b' }),
+    finding({ severity: 'nit', title: 'c' }),
+    finding({ severity: 'Nope', title: 'd' }),
+  ])
+  assert.deepEqual(invalid, [])
+  assert.deepEqual(
+    mustFix.map((entry) => [entry.title, entry.severity]),
+    [
+      ['a', 'Critical'],
+      ['b', 'Critical'],
+      ['d', 'Warning'],
+    ],
+  )
+  assert.deepEqual(
+    pool.map((entry) => [entry.title, entry.severity]),
+    [['c', 'Suggestion']],
+  )
 })
 
 // --- BOS-1025: monoclass round classification ------------------------------
@@ -484,18 +501,9 @@ test('BOS-1025: carried observations append in round order without mutating earl
   assert.equal(second[0].paragraph, first[0].paragraph)
 })
 
-test('missing or non-string detail is invalid rather than producing an incomplete finding', () => {
-  const { mustFix, pool, invalid } = triageFindings([
-    finding({ detail: undefined }),
-    finding({ detail: 42 }),
-  ])
-  assert.equal(mustFix.length, 0)
-  assert.equal(pool.length, 0)
-  assert.equal(invalid.length, 2)
-  assert.deepEqual(
-    invalid.map((entry) => entry.reason),
-    ['missing or non-string detail', 'missing or non-string detail'],
-  )
+test('a missing or non-string detail is coerced to a string rather than rejecting the finding', () => {
+  const { invalid } = triageFindings([finding({ detail: 42 })])
+  assert.deepEqual(invalid, [])
 })
 
 test('a valid patch is carried into a must-fix group and patch plan', () => {
@@ -530,7 +538,7 @@ test('a valid patch is carried into a must-fix group and patch plan', () => {
   }
 })
 
-test('patch anchors matching zero or two times are invalid and name the match count', () => {
+test('patch anchors matching zero or two times drop the patch, keep the finding, and name the count', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
   try {
     writeRepoFile(repoRoot, 'docs/review.md', 'repeat\nrepeat\n')
@@ -548,9 +556,10 @@ test('patch anchors matching zero or two times are invalid and name the match co
       ],
       { repoRoot },
     )
-    assert.equal(result.mustFix.length, 0)
+    assert.deepEqual(result.invalid, [])
+    assert.deepEqual(result.patchPlan.items, [])
     assert.deepEqual(
-      result.invalid.map((entry) => entry.reason),
+      result.patchDropped.map((entry) => entry.reason),
       [
         'patch.old_string matched 0 times in docs/review.md',
         'patch.old_string matched 2 times in docs/review.md',
@@ -575,14 +584,17 @@ test('overlapping patch anchors are counted as distinct matches', () => {
       { repoRoot },
     )
 
-    assert.equal(result.mustFix.length, 0)
-    assert.equal(result.invalid[0].reason, 'patch.old_string matched 2 times in docs/review.md')
+    assert.deepEqual(result.patchPlan.items, [])
+    assert.equal(
+      result.patchDropped[0].reason,
+      'patch.old_string matched 2 times in docs/review.md',
+    )
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
   }
 })
 
-test('malformed and missing-file patches are invalid without crashing', () => {
+test('malformed and missing-file patches are dropped without crashing', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
   try {
     writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
@@ -605,9 +617,10 @@ test('malformed and missing-file patches are invalid without crashing', () => {
       }),
     ]
     const result = triageFindings(cases, { repoRoot })
-    assert.equal(result.invalid.length, 4)
+    assert.deepEqual(result.invalid, [])
+    assert.deepEqual(result.patchPlan.items, [])
     assert.deepEqual(
-      result.invalid.map((entry) => entry.reason),
+      result.patchDropped.map((entry) => entry.reason),
       [
         'patch.file missing or blank',
         'patch.new_string missing or non-string',
@@ -703,22 +716,23 @@ test('stale uniqueness is rechecked against current bytes before a patch is acce
       ],
       { repoRoot },
     )
-    assert.equal(result.mustFix.length, 0)
-    assert.equal(result.invalid[0].reason, 'patch.old_string matched 2 times in docs/review.md')
+    assert.equal(result.mustFix.length, 1)
+    assert.equal(result.mustFix[0].patch, undefined)
+    assert.equal(
+      result.patchDropped[0].reason,
+      'patch.old_string matched 2 times in docs/review.md',
+    )
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
   }
 })
 
-test('prose-class findings require patch or patch:null with non-empty patchReason', () => {
+test('a prose-class finding with no patch is a narrative finding', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
   try {
     writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
     const missing = triageFindings([finding({ file: 'docs/review.md' })], { repoRoot })
-    assert.equal(
-      missing.invalid[0].reason,
-      'prose-class finding requires patch or patch:null with patchReason',
-    )
+    assert.deepEqual(missing.invalid, [])
 
     const accepted = triageFindings(
       [
@@ -824,7 +838,7 @@ test('CLI categorize reads every findings-*.json in a round-namespaced dir and p
 // spreads arrays reports it as "nothing found" — indistinguishable from a clean
 // review. The object wrapper is the realistic shape (a reviewer returning
 // `{"findings": [...]}` instead of a bare array), so it is asserted by name.
-test('CLI categorize reports a non-array findings file as invalid instead of dropping it', () => {
+test('CLI categorize unwraps a {findings:[...]} file and reports a non-array file by name', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
   try {
     writeFileSync(
@@ -837,15 +851,13 @@ test('CLI categorize reports a non-array findings file as invalid instead of dro
     const { stdout, stderr, status } = runCli(['categorize', dir])
     assert.equal(status, 0, stderr)
     const parsed = JSON.parse(stdout)
-    assert.equal(parsed.invalid.length, 2)
-    const reasons = parsed.invalid.map((entry) => entry.reason).sort()
-    assert.deepEqual(reasons, [
-      'findings-bare.json: top level is not a list of findings',
-      'findings-wrapped.json: top level is not a list of findings',
-    ])
-    // The well-formed sibling file is still triaged normally.
-    assert.equal(parsed.pool.length, 1)
-    assert.deepEqual(parsed.pool[0].lenses, ['gemini'])
+    assert.deepEqual(
+      parsed.invalid.map((entry) => entry.reason),
+      ['findings-bare.json: top level is not a list of findings'],
+    )
+    // Both files cite the same finding, so they merge into one group that both reviewers reported.
+    assert.equal(parsed.mustFix.length, 1)
+    assert.deepEqual([...parsed.mustFix[0].lenses].sort(), ['gemini', 'wrapped'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -881,7 +893,7 @@ test('CLI categorize lists file-level rejections ahead of item-level ones', () =
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
   try {
     // Sorts LAST by filename, so only the deliberate ordering can put it first.
-    writeFileSync(join(dir, 'findings-zz-wrapped.json'), JSON.stringify({ findings: [] }))
+    writeFileSync(join(dir, 'findings-zz-wrapped.json'), JSON.stringify({ unexpected: [] }))
     writeFileSync(join(dir, 'findings-aa-items.json'), JSON.stringify([finding({ title: '' })]))
 
     const { stdout, stderr, status } = runCli(['categorize', dir])
@@ -1172,7 +1184,7 @@ test('CLI categorize marks a selected reviewer with no output as invalid', () =>
   }
 })
 
-test('CLI categorize rejects failed or mis-roled extension envelopes before triage', () => {
+test('CLI categorize rejects a failed extension envelope and keeps a mislabelled one', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
   try {
     writeFileSync(
@@ -1202,12 +1214,11 @@ test('CLI categorize rejects failed or mis-roled extension envelopes before tria
     const { stdout, stderr, status } = runCli(['categorize', dir])
     assert.equal(status, 0, stderr)
     const parsed = JSON.parse(stdout)
-    assert.equal(parsed.mustFix.length, 0)
-    assert.equal(parsed.pool.length, 1)
-    assert.deepEqual(parsed.pool[0].lenses, ['bare'])
-    assert.equal(parsed.invalid.length, 2)
+    // A mislabelled role is reported but its findings are kept; a handled failure is not read.
+    assert.equal(parsed.invalid.length, 1)
     assert.match(parsed.invalid[0].reason, /extension reported failure \(ok:false\)/)
-    assert.match(parsed.invalid[1].reason, /does not match expected "round"/)
+    assert.equal(parsed.mustFix.length, 1)
+    assert.deepEqual([...parsed.mustFix[0].lenses].sort(), ['bare', 'round-wrong-role'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -1448,10 +1459,10 @@ test('CLI categorize still reads a rostered bare array', () => {
 
 // An arbitrary wrapper is NOT the envelope contract and must stay invalid --
 // otherwise the round-1 silent-drop guard would be widened into a guess.
-test('CLI categorize still rejects a wrapper object that is not the envelope shape', () => {
+test('CLI categorize rejects an object that is neither a list, a {findings} wrapper nor an envelope', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-triage-'))
   try {
-    writeFileSync(join(dir, 'findings-guess.json'), JSON.stringify({ findings: [finding()] }))
+    writeFileSync(join(dir, 'findings-guess.json'), JSON.stringify({ results: [finding()] }))
     const { stdout } = runCli(['categorize', dir])
     const parsed = JSON.parse(stdout)
     assert.equal(parsed.invalid.length, 1)
@@ -1519,12 +1530,15 @@ test('a finding with no patch key at all is still held to its own coordinate', (
       { repoRoot },
     )
     assert.deepEqual(
-      result.mustFix.map((entry) => entry.title),
-      ['resolves'],
+      result.mustFix.map((entry) => [entry.title, entry.line]),
+      [
+        ['resolves', 2],
+        ['past the end', null],
+      ],
     )
     assert.deepEqual(
       result.invalid.map((entry) => entry.item.title),
-      ['past the end', 'no such file'],
+      ['no such file'],
     )
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
@@ -1547,7 +1561,7 @@ test('a finding whose file escapes the repo root is unverifiable, so it is not p
   }
 })
 
-test('a patch whose file is a symlink out of the repo is rejected, not silently applied', () => {
+test('a patch whose file is a symlink out of the repo is dropped, never applied', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
   const outside = mkdtempSync(join(tmpdir(), 'bs-review-triage-outside-'))
   try {
@@ -1568,9 +1582,8 @@ test('a patch whose file is a symlink out of the repo is rejected, not silently 
       ],
       { repoRoot },
     )
-    assert.equal(result.mustFix.length, 0)
-    assert.equal(result.invalid.length, 1)
-    assert.equal(result.invalid[0].reason, 'patch.file escapes repo root')
+    assert.deepEqual(result.patchPlan.items, [])
+    assert.equal(result.patchDropped[0].reason, 'patch.file escapes repo root')
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
     rmSync(outside, { recursive: true, force: true })
@@ -1593,8 +1606,8 @@ test('a patch whose file is a directory is rejected rather than thrown out of', 
       ],
       { repoRoot },
     )
-    assert.equal(result.invalid.length, 1)
-    assert.equal(result.invalid[0].reason, 'patch.file not found: docs')
+    assert.deepEqual(result.patchPlan.items, [])
+    assert.equal(result.patchDropped[0].reason, 'patch.file not found: docs')
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
   }
@@ -1623,12 +1636,11 @@ test('BOS-1243: a patch naming the repo root itself is rejected, not thrown out 
       ],
       { repoRoot },
     )
-    assert.equal(result.mustFix.length, 0)
-    assert.equal(result.invalid.length, 1)
+    assert.deepEqual(result.patchPlan.items, [])
     // The pinned contract string, byte-for-byte. It reads oddly for a path that IS the
     // root rather than one outside it, but callers match on it; a more accurate wording
     // would be a silent break, so the inaccuracy stays recorded here instead.
-    assert.equal(result.invalid[0].reason, 'patch.file escapes repo root')
+    assert.equal(result.patchDropped[0].reason, 'patch.file escapes repo root')
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
   }
@@ -1651,8 +1663,8 @@ test('the patch-branch rejection reason is unchanged: `patch.file not found: <fi
       ],
       { repoRoot },
     )
-    assert.equal(result.invalid.length, 1)
-    assert.equal(result.invalid[0].reason, 'patch.file not found: docs/missing.md')
+    assert.equal(result.patchDropped.length, 1)
+    assert.equal(result.patchDropped[0].reason, 'patch.file not found: docs/missing.md')
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
   }

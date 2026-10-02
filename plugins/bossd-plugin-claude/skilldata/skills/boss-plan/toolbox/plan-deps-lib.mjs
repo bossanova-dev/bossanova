@@ -32,8 +32,8 @@
 // ---------------------------------------------------------------------------
 // The two inlined constants
 // ---------------------------------------------------------------------------
-// `DEFAULT_CLEARED_STATE_TYPES` + `DEFAULT_CANCELED_STATE_TYPES` and
-// `DEFAULT_PRIORITY_ORDER` are deliberate COPIES of values that also live in
+// `DEFAULT_CLEARED_STATE_TYPES` + `DEFAULT_CANCELED_STATE_TYPES` are deliberate
+// COPIES of values that also live in
 // non-vendored toolbox modules. They are copied rather than imported because
 // importing either would drag a tracker-named, network-capable module into this
 // project-agnostic payload's import closure (this module may import
@@ -67,14 +67,16 @@
 //      [ids]}` — and there is no `blocks` verb, so `write` names the issue that
 //      receives the save. Returning `'blocks'` and leaving the caller to
 //      re-derive the receiving side makes an inversion a silent corruption.
-//   3. Ambiguous orientation is its OWN outcome, not an arbitrary edge. It
-//      returns `edge: 'none'` with a `question`, and questions route to a
-//      different destination than notes.
+//   3. Only the caller's LOGICAL verdict orients an edge. Nothing here guesses
+//      a direction from priority or age, so there is no arbitrary edge to
+//      write and no orientation question to ask.
 //
-// Containment still reports an overlap, but an overlap basis BLOCKS only on
-// `areasOverlap`'s `fileShared` — the same file named on both sides. A
-// directory-only overlap is `edge: 'relatedTo'` / `directory-overlap` with
-// `write: null`, and its note and any orientation question quote `shared`.
+// An overlap basis NEVER blocks. Two tickets touching the same files is merge-order
+// surface, not a prerequisite, so an overlap is always a non-blocking `relatedTo`
+// (`file-overlap` when a file is named on both sides, `directory-overlap` for
+// containment only) with `write: null`, and its note quotes `shared`. Only a
+// caller's LOGICAL verdict — this ticket needs the other's feature — produces a
+// blocking `blockedBy` write.
 //
 // `semantic judgment stays with the model`: "this ticket needs the other's
 // feature" is not a function of two strings, so the caller supplies it as a
@@ -139,13 +141,11 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'candidate-landed',
   'prerequisite-satisfied',
   'prerequisite-canceled',
-  // Between rungs 4 and 5 — an overlap no file is named on both sides of.
+  // Between rungs 4 and 5 — an overlap is always a non-blocking relation.
+  'file-overlap',
   'directory-overlap',
   // Rung 5 — orientation.
   'oriented-by-logical',
-  'oriented-by-priority',
-  'oriented-by-age',
-  'ambiguous-orientation',
   // Rung 6 — started-side downgrade.
   'downgraded-subject-started',
   'downgraded-candidate-started',
@@ -183,13 +183,6 @@ export const DEFAULT_CLEARED_STATE_TYPES = Object.freeze(['completed'])
 
 /** State types that mean a candidate's work was DROPPED, not delivered. */
 export const DEFAULT_CANCELED_STATE_TYPES = Object.freeze(['canceled'])
-
-/**
- * Priority ordering, most- to least-urgent: 1 > 2 > 3 > 4 > 0. `0` means "no
- * priority set" and is therefore the WEAKEST, which is why a plain
- * `a.priority - b.priority` inverts every comparison that involves it.
- */
-export const DEFAULT_PRIORITY_ORDER = Object.freeze([1, 2, 3, 4, 0])
 
 // ---------------------------------------------------------------------------
 // Module-private tuning defaults
@@ -445,38 +438,10 @@ function landedEvidence(issue) {
   return value === '' ? null : value
 }
 
-function priorityValue(priority) {
-  if (typeof priority === 'number' && Number.isFinite(priority)) return priority
-  // The object form `{value, name}` some adapters return must rank identically
-  // to the bare number, or an adapter swap silently reorders every edge.
-  if (priority && typeof priority === 'object' && typeof priority.value === 'number') {
-    return Number.isFinite(priority.value) ? priority.value : null
-  }
-  return null
-}
-
-/** Rank through the priority ORDER, never by subtraction. Unknown/null ranks last. */
-function priorityRank(priority, order) {
-  const value = priorityValue(priority)
-  const index = value === null ? -1 : order.indexOf(value)
-  return index === -1 ? order.length : index
-}
-
-function createdAtMillis(issue) {
-  const raw = text(issue?.createdAt).trim()
-  if (raw === '') return null
-  const millis = new Date(raw).getTime()
-  return Number.isFinite(millis) ? millis : null
-}
-
 // A note carries its own `reason` so a caller reading `notes` alone can still tell
 // WHICH rung produced the line without re-deriving it from the prose.
 function note(severity, destination, candidate, reason, body) {
   return { severity, destination, candidate, reason, text: body }
-}
-
-function question(candidate, body) {
-  return { destination: 'open-questions', candidate, text: body }
 }
 
 /** The label a note or question uses for an issue: identifier when present, else id. */
@@ -1072,13 +1037,12 @@ function normalizeLogical(verdict) {
  *                                prerequisite for; a logical prerequisite the
  *                                subject needs survives being completed, and a
  *                                CANCELED one is a warning, not a satisfaction
- *   4½. directory overlap      — an OVERLAP basis with an empty `fileShared`
- *                                (containment only) is a non-blocking
- *                                `relatedTo`, never oriented and never a question
+ *   4½. overlap                — an OVERLAP basis is always a non-blocking
+ *                                `relatedTo` (`file-overlap` or
+ *                                `directory-overlap`), never oriented and never a
+ *                                question
  *   5. orientation            — a LOGICAL basis is already oriented by its own
- *                                verdict; an overlap orients by priority ORDER,
- *                                then older createdAt, else ambiguous-orientation
- *                                with a question
+ *                                verdict
  *   6. started-side downgrade  — symmetric: whichever side would RECEIVE the
  *                                blocking write, if it has already started (or
  *                                sits in a state we cannot classify), gets a
@@ -1118,7 +1082,6 @@ export function classifyDependencyEdge(input = {}) {
     stateRoles = {},
     clearedStateTypes = DEFAULT_CLEARED_STATE_TYPES,
     canceledStateTypes = DEFAULT_CANCELED_STATE_TYPES,
-    priorityOrder = DEFAULT_PRIORITY_ORDER,
     repoWideTokens,
     areaAliases,
   } = input
@@ -1191,8 +1154,7 @@ export function classifyDependencyEdge(input = {}) {
     return result({ ...base, reason: 'candidate-not-schedulable' })
   }
 
-  // Rung 3 — establish a basis. No basis means STOP: orientation is unreachable
-  // from here, which is what stops priority from serializing disjoint tickets.
+  // Rung 3 — establish a basis. No basis means STOP.
   // Normalized to arrays HERE, not inside `areasOverlap`: that helper raises on a non-array (the
   // per-candidate `.some(t => areasOverlap(a, t))` misuse is invisible otherwise), while the ladder
   // keeps this module's never-throws promise and already answers a non-array subject set by NAME,
@@ -1275,7 +1237,7 @@ export function classifyDependencyEdge(input = {}) {
   }
 
   // `(shared: a, b)` — the evidence a human needs to tell merge-conflict surface
-  // from a prerequisite at a glance, carried by the question and the note alike.
+  // from a prerequisite at a glance, carried by the note.
   const sharedSuffix = ` (shared: ${overlap.shared.join(', ')})`
   const unidentifiable = () =>
     result({
@@ -1291,63 +1253,36 @@ export function classifyDependencyEdge(input = {}) {
       ),
     })
 
-  // Between rungs 4 and 5 — directory overlap. A blocking edge on an overlap
-  // basis needs the same FILE named on both sides; containment where one side is
-  // only a directory is merge-order evidence at most. It never reaches
-  // orientation, so it can neither invent a direction nor raise a question. The
-  // relation still needs both ids, so the write guard runs first here too.
-  if (basis === 'overlap' && overlap.fileShared.length === 0) {
+  // Between rungs 4 and 5 — overlap. Shared files are merge-order surface, not a
+  // prerequisite, so an overlap never blocks: it is recorded as a non-blocking
+  // relation whichever way the files are shared. It never reaches orientation, so it
+  // can neither invent a direction nor raise a question. The relation still needs
+  // both ids, so the write guard runs first here too.
+  if (basis === 'overlap') {
     if (issueKey(subject) === null || issueKey(candidate) === null) return unidentifiable()
+    const fileLevel = overlap.fileShared.length > 0
+    const reason = fileLevel ? 'file-overlap' : 'directory-overlap'
     return result({
       ...base,
       edge: 'relatedTo',
       basis,
-      reason: 'directory-overlap',
+      reason,
       note: note(
         'info',
         'planning',
         candidateName,
-        'directory-overlap',
-        `${subjectName} and ${candidateName} overlap only at directory level, so this is merge-order surface, not a prerequisite: recorded as a non-blocking relation${sharedSuffix}.`,
+        reason,
+        fileLevel
+          ? `${subjectName} and ${candidateName} change the same files, so whichever lands second may need a rebase: recorded as a non-blocking relation${sharedSuffix}.`
+          : `${subjectName} and ${candidateName} overlap only at directory level, so this is merge-order surface, not a prerequisite: recorded as a non-blocking relation${sharedSuffix}.`,
       ),
     })
   }
 
-  // Rung 5 — orientation. A LOGICAL basis arrives ALREADY oriented: the caller's
-  // verdict named which side is the prerequisite, and neither priority nor age may
-  // overrule it. Only an overlap — where no one has said which way the dependency
-  // runs — is oriented by priority ORDER, then by older createdAt.
-  const order = Array.isArray(priorityOrder) ? [...priorityOrder] : [...DEFAULT_PRIORITY_ORDER]
-  const subjectRank = priorityRank(subject.priority, order)
-  const candidateRank = priorityRank(candidate.priority, order)
-  let edge = null
-  let reason = null
-  if (basis === 'logical') {
-    edge = logical.direction
-    reason = 'oriented-by-logical'
-  } else if (subjectRank !== candidateRank) {
-    // The more urgent ticket lands first, so the less urgent one is blocked by it.
-    edge = candidateRank < subjectRank ? 'blockedBy' : 'blocks'
-    reason = 'oriented-by-priority'
-  } else {
-    const subjectMillis = createdAtMillis(subject)
-    const candidateMillis = createdAtMillis(candidate)
-    if (subjectMillis === null || candidateMillis === null || subjectMillis === candidateMillis) {
-      // Epic children are created in one batch and routinely share a timestamp.
-      // An arbitrary edge here is a coin flip written into the tracker.
-      return result({
-        ...base,
-        basis,
-        reason: 'ambiguous-orientation',
-        question: question(
-          candidateName,
-          `${subjectName} and ${candidateName} conflict but their link direction is genuinely balanced (equal priority, no usable creation order). Which must land first?${sharedSuffix}`,
-        ),
-      })
-    }
-    edge = candidateMillis < subjectMillis ? 'blockedBy' : 'blocks'
-    reason = 'oriented-by-age'
-  }
+  // Rung 5 — orientation. Only a LOGICAL basis reaches here, and it arrives ALREADY
+  // oriented: the caller's verdict named which side is the prerequisite.
+  const edge = logical.direction
+  const reason = 'oriented-by-logical'
 
   // Which side RECEIVES the blocking write. Both the write guard below and rung 6
   // need it: the receiving side is the one that must be nameable, and the one that

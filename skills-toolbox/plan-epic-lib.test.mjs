@@ -85,22 +85,20 @@ test('epicParentEstimate sums every child estimate', () => {
 
 test('validateDecomposition: a well-formed 2-child epic is ok with no errors', () => {
   const res = validateDecomposition(linearSpec(2))
-  assert.deepEqual(res, { ok: true, errors: [] })
+  assert.deepEqual(res, { ok: true, errors: [], warnings: [] })
 })
 
-test('validateDecomposition: a parent priority must be a planned priority', () => {
-  const missing = linearSpec(2)
-  delete missing.parent.priority
-  const invalid = linearSpec(2)
-  invalid.parent.priority = 0
-  assert.match(
-    validateDecomposition(missing).errors.join('\n'),
-    /parent overview has an invalid priority/,
-  )
-  assert.match(
-    validateDecomposition(invalid).errors.join('\n'),
-    /parent overview has an invalid priority/,
-  )
+test('validateDecomposition: a missing or out-of-range priority is normalized, not rejected', () => {
+  const spec = linearSpec(2)
+  delete spec.parent.priority
+  spec.children[0].priority = 0
+  spec.children[1].priority = '5'
+  const res = validateDecomposition(spec)
+  assert.equal(res.ok, true, res.errors.join('\n'))
+  assert.equal(spec.parent.priority, 3)
+  assert.equal(spec.children[0].priority, 3)
+  assert.equal(spec.children[1].priority, 4)
+  assert.equal(res.warnings.length, 3)
 })
 
 test('validateDecomposition: the max-size epic is accepted', () => {
@@ -141,13 +139,13 @@ test('validateDecomposition: a dangling blockedByKeys ref is rejected', () => {
   assert.match(res.errors.join('\n'), /unknown key "nope"/)
 })
 
-test('validateDecomposition: a non-array blockedByKeys is rejected (not silently coerced)', () => {
-  const res = validateDecomposition({
-    parent: { title: 't', goal: 'g' },
+test('validateDecomposition: a bare-string blockedByKeys is read as a one-key list', () => {
+  const spec = {
+    parent: { title: 't', goal: 'g', priority: 2 },
     children: [child('c1'), child('c2', { blockedByKeys: 'c1' })],
-  })
-  assert.equal(res.ok, false)
-  assert.match(res.errors.join('\n'), /non-array blockedByKeys/)
+  }
+  assert.equal(validateDecomposition(spec).ok, true)
+  assert.deepEqual(spec.children[1].blockedByKeys, ['c1'])
 })
 
 test('validateDecomposition: a child using the reserved key "parent" is rejected', () => {
@@ -179,27 +177,27 @@ test('validateDecomposition: missing or empty keyChanges is rejected', () => {
   assert.match(res.errors.join('\n'), /child "c2" needs a non-empty keyChanges array/)
 })
 
-test('validateDecomposition: an out-of-range estimate is rejected', () => {
-  const res = validateDecomposition({
-    parent: { title: 't', goal: 'g' },
-    children: [child('c1', { estimate: 4 }), child('c2', { estimate: 7 })],
-  })
-  assert.equal(res.ok, false)
-  assert.match(res.errors.join('\n'), /child "c1" has an invalid estimate/)
-  assert.match(res.errors.join('\n'), /child "c2" has an invalid estimate/)
+test('validateDecomposition: an off-scale estimate snaps up to the Fibonacci scale', () => {
+  const spec = {
+    parent: { title: 't', goal: 'g', priority: 2 },
+    children: [child('c1', { estimate: 2.5 }), child('c2', { estimate: '1' })],
+  }
+  const res = validateDecomposition(spec)
+  assert.equal(res.ok, true)
+  assert.deepEqual(
+    spec.children.map((c) => c.estimate),
+    [3, 1],
+  )
 })
 
-test('validateDecomposition: a child estimate above the single-PR ceiling (5 or 8) is rejected', () => {
-  // The forcing function: a Fibonacci-valid but oversized child (5/8) must be
-  // decomposed further, never carried as one epic child — this is what prevents
-  // the monolith-as-one-child failure mode.
+test('validateDecomposition: a child above the single-PR size is a warning, not a rejection', () => {
   const res = validateDecomposition({
     parent: { title: 't', goal: 'g', priority: 2 },
     children: [child('c1', { estimate: 5 }), child('c2', { estimate: 8 })],
   })
-  assert.equal(res.ok, false)
-  assert.match(res.errors.join('\n'), /child "c1" has estimate 5, above the single-PR ceiling of 3/)
-  assert.match(res.errors.join('\n'), /child "c2" has estimate 8, above the single-PR ceiling of 3/)
+  assert.equal(res.ok, true)
+  assert.match(res.warnings.join('\n'), /child "c1": estimate 5 is above the single-PR size of 3/)
+  assert.match(res.warnings.join('\n'), /child "c2": estimate 8 is above the single-PR size of 3/)
 })
 
 test('validateDecomposition: children at or below the ceiling (0..3) are accepted', () => {
@@ -212,48 +210,37 @@ test('validateDecomposition: children at or below the ceiling (0..3) are accepte
       child('c4', { estimate: 3 }),
     ],
   })
-  assert.deepEqual(res, { ok: true, errors: [] })
+  assert.deepEqual(res, { ok: true, errors: [], warnings: [] })
 })
 
-test('validateDecomposition: an unknown layer is rejected; a known layer (or omitted) is accepted', () => {
-  const bad = validateDecomposition({
+test('validateDecomposition: layer case is folded and an unknown layer is dropped', () => {
+  const spec = {
     parent: { title: 't', goal: 'g', priority: 2 },
-    children: [child('c1', { layer: 'frontend' }), child('c2')],
-  })
-  assert.equal(bad.ok, false)
-  assert.match(bad.errors.join('\n'), /child "c1" has an unknown layer "frontend"/)
+    children: [child('c1', { layer: 'frontend' }), child('c2', { layer: 'UI' })],
+  }
+  const res = validateDecomposition(spec)
+  assert.equal(res.ok, true)
+  assert.equal(Object.hasOwn(spec.children[0], 'layer'), false)
+  assert.equal(spec.children[1].layer, 'ui')
+  assert.match(res.warnings.join('\n'), /dropped unknown layer "frontend"/)
+})
 
-  const good = validateDecomposition({
-    parent: { title: 't', goal: 'g', keyChanges: ['x'], priority: 2 },
+test('validateDecomposition: a non-boolean agentFriendly is read strictly, never coerced to true', () => {
+  // serializeEpicSpec persists `agentFriendly !== false`, so the string "false" left as-is would make
+  // a needs-human child boss-build-eligible. Only an explicit "true" reads as true.
+  const spec = {
+    parent: { title: 't', goal: 'g', priority: 2 },
     children: [
-      child('c1', { layer: 'producer' }),
-      child('c2', { layer: 'read', blockedByKeys: ['c1'] }),
+      child('c1', { agentFriendly: 'false' }),
+      child('c2', { agentFriendly: 1 }),
+      child('c3', { agentFriendly: 'TRUE' }),
     ],
-  })
-  assert.deepEqual(good, { ok: true, errors: [] })
-})
-
-test('validateDecomposition: an out-of-range priority is rejected', () => {
-  const res = validateDecomposition({
-    parent: { title: 't', goal: 'g' },
-    children: [child('c1', { priority: 0 }), child('c2', { priority: 5 })],
-  })
-  assert.equal(res.ok, false)
-  assert.match(res.errors.join('\n'), /child "c1" has an invalid priority/)
-  assert.match(res.errors.join('\n'), /child "c2" has an invalid priority/)
-})
-
-test('validateDecomposition: a non-boolean agentFriendly is rejected (not coerced true)', () => {
-  // A drafted spec can carry the string "false"; serializeEpicSpec persists
-  // `agentFriendly !== false`, so "false" would be coerced to agent-friendly and
-  // let resume stamp an otherwise needs-human child boss-build-eligible. Reject it.
-  const res = validateDecomposition({
-    parent: { title: 't', goal: 'g' },
-    children: [child('c1', { agentFriendly: 'false' }), child('c2', { agentFriendly: 1 })],
-  })
-  assert.equal(res.ok, false)
-  assert.match(res.errors.join('\n'), /child "c1" has a non-boolean agentFriendly/)
-  assert.match(res.errors.join('\n'), /child "c2" has a non-boolean agentFriendly/)
+  }
+  assert.equal(validateDecomposition(spec).ok, true)
+  assert.deepEqual(
+    spec.children.map((c) => c.agentFriendly),
+    [false, false, true],
+  )
 })
 
 test('validateDecomposition: a real boolean agentFriendly (or omitted) is accepted', () => {
@@ -261,7 +248,7 @@ test('validateDecomposition: a real boolean agentFriendly (or omitted) is accept
     parent: { title: 't', goal: 'g', priority: 2 },
     children: [child('c1', { agentFriendly: false }), child('c2', { agentFriendly: true })],
   })
-  assert.deepEqual(res, { ok: true, errors: [] })
+  assert.deepEqual(res, { ok: true, errors: [], warnings: [] })
   // Omitted entirely (the linearSpec children carry no agentFriendly) also passes.
   assert.equal(validateDecomposition(linearSpec(2)).ok, true)
 })
@@ -274,7 +261,7 @@ test('validateDecomposition: a fully-valid spec with metadata is ok', () => {
       child('c2', { keyChanges: ['services/b'], estimate: 3, priority: 1 }),
     ],
   })
-  assert.deepEqual(res, { ok: true, errors: [] })
+  assert.deepEqual(res, { ok: true, errors: [], warnings: [] })
 })
 
 test('validateDecomposition: a missing parent overview is rejected', () => {

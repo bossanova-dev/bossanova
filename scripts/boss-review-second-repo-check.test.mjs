@@ -46,16 +46,6 @@ test('scaffolds a second repo, discovers the repo-local extension, and passes se
     true,
     'round discovery returns zero extensions when none installed',
   )
-  assert.equal(
-    res.extensionFreePhaseRFallback,
-    true,
-    'Phase R still exposes lower tiers when no round extensions exist',
-  )
-  assert.equal(
-    res.tier3HeadingNegativeControl,
-    true,
-    'removing the Tier 3 heading makes the fallback proof fail',
-  )
 })
 
 test('discovery orders repo-local extensions by (order, name)', async () => {

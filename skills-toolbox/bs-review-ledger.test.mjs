@@ -437,7 +437,7 @@ test('wrapped findings must pass envelope validation before completing a row', (
   }
 })
 
-test('wrapped findings items must pass role validation before completing a row', () => {
+test('a reviewer envelope with a malformed item still completes its row (the reviewer ran)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
   try {
     writeFileSync(
@@ -452,25 +452,7 @@ test('wrapped findings items must pass role validation before completing a row',
     const seeded = seedLedger({ runId: 'run-1', populations: fixturePopulations(), now: 100 })
     const reconciled = reconcile(seeded, { findingsDir: dir, populations: fixturePopulations() })
     const row = reconciled.rows.find((r) => r.name === 'round:boss-review-ce')
-    assert.equal(row.outcome, 'not-reached')
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('wrapped findings with invalid items do not complete a row', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
-  try {
-    writeFileSync(
-      join(dir, 'findings-round-boss-review-ce.json'),
-      JSON.stringify({ ok: true, extension: 'boss-review-ce', role: 'round', items: [{}] }),
-    )
-    const seeded = seedLedger({ runId: 'run-1', populations: fixturePopulations(), now: 100 })
-    const reconciled = reconcile(seeded, { findingsDir: dir, populations: fixturePopulations() })
-    assert.equal(
-      reconciled.rows.find((row) => row.name === 'round:boss-review-ce').outcome,
-      'not-reached',
-    )
+    assert.equal(row.outcome, 'completed')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

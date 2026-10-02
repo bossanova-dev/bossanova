@@ -188,37 +188,28 @@ export const DEFAULT_CONFIG = Object.freeze({
   // `areaAliases` (a path -> its generated mirrors). Empty by default so the published cores stay
   // project-agnostic; the step-5 scan unions these with the per-run payload.
   planDependencies: { moduleRoots: [], repoWideTokens: [], areaAliases: {} },
-  // Versioned wire contract for the `##`-section plan description that boss-plan emits and
-  // boss-build / bs-sweep-plan consume. `version` is the integer contract
-  // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
-  // ordered heading set as emitted, each classed `always` (every plan carries it),
-  // conditional (`needs-human` / `open-questions`), or `optional` (recognised, never
-  // required — see PLAN_SECTION_REQUIRED_KINDS). v1 == today's exact section set —
-  // introducing the stamp IS the versioning; no sections were added, removed, or renamed.
+  // The `##`-section contract for the tracker DESCRIPTION boss-plan writes. The plan itself lives in
+  // the plan attachment; the description is a short summary plus the reporter's original notes, so
+  // only those two are required. The other headings are recognised (older plans carry them, and a
+  // short `## Key changes` list feeds the dependency scan) but never required. `version` is stamped
+  // in-band as `- Contract: v<N>` under `## Planning`.
   planContract: {
     version: 1,
     sections: [
       { heading: '## Summary', required: 'always' },
-      { heading: '## Approach', required: 'always' },
-      { heading: '## Key changes', required: 'always' },
-      { heading: '## Testing', required: 'always' },
-      { heading: '## Risks / unknowns', required: 'always' },
+      { heading: '## Approach', required: 'optional' },
+      { heading: '## Key changes', required: 'optional' },
+      { heading: '## Testing', required: 'optional' },
+      { heading: '## Risks / unknowns', required: 'optional' },
       { heading: '## Premises', required: 'optional' },
-      { heading: '## Acceptance criteria', required: 'always' },
-      { heading: '## Required proof', required: 'always' },
+      { heading: '## Acceptance criteria', required: 'optional' },
+      { heading: '## Required proof', required: 'optional' },
       { heading: '## Proof harness analysis', required: 'optional' },
       { heading: '## Why this needs a human', required: 'needs-human' },
       { heading: '## Open Questions', required: 'open-questions' },
-      { heading: '## Planning', required: 'always' },
+      { heading: '## Planning', required: 'optional' },
       { heading: '## Original notes', required: 'always' },
     ],
-    // Producer-side floor for the attached plan file. This is deliberately a sibling of
-    // `sections`: arrays in repo config replace wholesale during mergeConfig(), so a repo that
-    // declares `planFile.requiredHeadings` owns the full list rather than extending this default.
-    planFile: {
-      requiredHeadings: ['## Problem Frame', '## Requirements', '## Implementation Units'],
-      minimumAdditionalHeadings: 1,
-    },
   },
 })
 
@@ -989,30 +980,6 @@ export function validateConfig(config, source) {
       )
     }
   }
-  if (
-    !config.planContract.planFile ||
-    typeof config.planContract.planFile !== 'object' ||
-    Array.isArray(config.planContract.planFile)
-  ) {
-    fail('planContract.planFile must be an object')
-  }
-  if (
-    !Array.isArray(config.planContract.planFile.requiredHeadings) ||
-    config.planContract.planFile.requiredHeadings.length === 0
-  ) {
-    fail('planContract.planFile.requiredHeadings must be a non-empty array')
-  }
-  for (const heading of config.planContract.planFile.requiredHeadings) {
-    if (typeof heading !== 'string' || heading.length === 0) {
-      fail('planContract.planFile.requiredHeadings entries must be non-empty strings')
-    }
-  }
-  if (
-    !Number.isInteger(config.planContract.planFile.minimumAdditionalHeadings) ||
-    config.planContract.planFile.minimumAdditionalHeadings < 0
-  ) {
-    fail('planContract.planFile.minimumAdditionalHeadings must be a non-negative integer')
-  }
 }
 
 // --- Detected happy defaults ----------------------------------------------
@@ -1702,6 +1669,27 @@ export function contentLabelNames(config) {
   return CONTENT_LABEL_ROLES.map((role) => optionalLabelName(config, role) ?? role)
 }
 
+const labelKey = (value) =>
+  String(value)
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '')
+
+/**
+ * Map a label a drafter returned onto the configured content-taxonomy display name, matching the
+ * role key or the display name case-, space-, `-`- and `_`-insensitively (`feature`, `Feature`,
+ * `FEATURE` all resolve). Returns null for a label outside the taxonomy.
+ * @returns {string|null}
+ */
+export function canonicalContentLabel(config, label) {
+  if (typeof label !== 'string' || label.trim() === '') return null
+  const key = labelKey(label)
+  for (const role of CONTENT_LABEL_ROLES) {
+    const name = optionalLabelName(config, role) ?? role
+    if (labelKey(role) === key || labelKey(name) === key) return name
+  }
+  return null
+}
+
 /** Resolve a configured GitHub PR-label display name by its stable role. */
 export function githubLabelName(config, role) {
   return trackerRoleName(config, 'githubLabels', role)
@@ -1885,16 +1873,6 @@ export function planSections(config) {
   return config.planContract.sections
 }
 
-/**
- * The producer-side structure floor for attached plan files.
- *
- * `requiredHeadings` and other arrays replace wholesale through mergeConfig(); repo overrides are
- * therefore complete declarations, not extensions of DEFAULT_CONFIG.
- */
-export function planFileFloor(config) {
-  return config.planContract.planFile
-}
-
 /** Headings whose `required === 'always'`, in order — the child-plan sections every plan MUST carry. */
 // Mode-blind by design: epic-parent callers use requiredSectionsForDescriptionMode explicitly.
 export function requiredPlanSections(config) {
@@ -1904,7 +1882,7 @@ export function requiredPlanSections(config) {
 const EPIC_PARENT_PLAN_SECTIONS = Object.freeze([
   Object.freeze({ heading: '## Summary', required: 'always' }),
   Object.freeze({ heading: '## Child tickets', required: 'always' }),
-  Object.freeze({ heading: '## Planning', required: 'always' }),
+  Object.freeze({ heading: '## Planning', required: 'optional' }),
   Object.freeze({ heading: '## Original notes', required: 'always' }),
 ])
 
@@ -2003,8 +1981,18 @@ export function markdownH2Heading(line) {
  * section rule instead of re-deriving it — a duplicate splitter would drift from the validator.
  * @returns {{ heading: string, bodyLines: string[] }[]}
  */
+const headingKey = (heading) =>
+  String(heading ?? '')
+    .replace(/[\s:]+$/, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+
 function splitPlanDescriptionSections(contractSections, description) {
   const terminalHeading = contractSections[contractSections.length - 1]?.heading
+  // A heading that differs from a contract heading only in case, spacing or a trailing colon IS that
+  // section (`## Acceptance Criteria` is `## Acceptance criteria`); it is reported under the
+  // contract spelling so every lookup by heading finds it.
+  const canonical = new Map(contractSections.map((s) => [headingKey(s.heading), s.heading]))
   const outside = new Set(scanFences(description).lines.map(({ index }) => index))
   const sections = []
   let current = null
@@ -2012,7 +2000,8 @@ function splitPlanDescriptionSections(contractSections, description) {
   const lines = String(description ?? '').split('\n')
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    const heading = markdownH2Heading(line)
+    const raw = markdownH2Heading(line)
+    const heading = raw ? (canonical.get(headingKey(raw)) ?? raw) : raw
     if (!inTerminal && outside.has(index) && heading) {
       current = { heading, bodyLines: [] }
       sections.push(current)

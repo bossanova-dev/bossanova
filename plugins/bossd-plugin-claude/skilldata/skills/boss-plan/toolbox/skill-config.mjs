@@ -43,6 +43,54 @@ export function globToRegExp(glob) {
 }
 
 /** Project-agnostic happy defaults — the fallback when no config file is present. */
+/**
+ * Workflow state names a tracker block gets when it does not name its own — Linear's stock names.
+ * A repo overrides only the roles that differ (e.g. `{"unplanned": "Triage"}`).
+ */
+export const DEFAULT_TRACKER_STATES = Object.freeze({
+  unplanned: 'Backlog',
+  planned: 'Todo',
+  inProgress: 'In Progress',
+  inReview: 'In Review',
+})
+
+/** Pipeline label names a tracker block gets when it does not name its own. */
+export const DEFAULT_PIPELINE_LABELS = Object.freeze({
+  agentFriendly: 'agent-friendly',
+  needsHuman: 'needs-human',
+  agentPlan: 'agent-plan',
+  agentQuestion: 'agent-question',
+  epic: 'epic',
+})
+
+/**
+ * Fill each declared tracker block's defaults: the MCP server name (the adapter's own name — the
+ * preflight resolves the session's actual spelling), the stock state names and the standard
+ * pipeline labels, each overridable per key. A repo therefore declares only its team and whatever
+ * differs. Blocks are filled only where declared: a repo with no tracker block stays unconfigured.
+ */
+export function withTrackerDefaults(config) {
+  const blocks = config?.trackerConfig
+  if (!blocks || typeof blocks !== 'object' || Array.isArray(blocks)) return config
+  const filled = {}
+  for (const [adapter, tc] of Object.entries(blocks)) {
+    if (!tc || typeof tc !== 'object' || Array.isArray(tc)) {
+      filled[adapter] = tc
+      continue
+    }
+    const object = (value) =>
+      value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+    filled[adapter] = {
+      ...tc,
+      mcpServer:
+        typeof tc.mcpServer === 'string' && tc.mcpServer.length > 0 ? tc.mcpServer : adapter,
+      states: { ...DEFAULT_TRACKER_STATES, ...object(tc.states) },
+      labels: { ...DEFAULT_PIPELINE_LABELS, ...object(tc.labels) },
+    }
+  }
+  return { ...config, trackerConfig: filled }
+}
+
 export const DEFAULT_CONFIG = Object.freeze({
   // Deliberately NOT a copy of any one checkout's lensMap — the inverse of the pin this
   // block used to carry. The published cores install into every user's GLOBAL skill
@@ -1217,7 +1265,7 @@ export function loadSkillConfig({ cwd = process.cwd() } = {}) {
     cwd: file ? dirname(file) : cwd,
     keys: DETECTED_COMMAND_KEYS.filter((key) => !(key in declared)),
   })
-  const merged = mergeConfig(mergeConfig(DEFAULT_CONFIG, detected), user)
+  const merged = withTrackerDefaults(mergeConfig(mergeConfig(DEFAULT_CONFIG, detected), user))
   validateConfig(merged, file || '(defaults)')
   return merged
 }

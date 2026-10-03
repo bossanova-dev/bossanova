@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { trackerMcpPreflight } from './preflight.mjs'
+import { resolveTrackerMcpServer, trackerMcpPreflight } from './preflight.mjs'
 
 const operationMap = {
   getIssue: { tool: 'mcp__acme-linear__get_issue' },
@@ -357,4 +357,47 @@ test('a report carrying the snake_case field names the CLI emits is understood',
   assert.equal(r.status, 'unreachable')
   assert.match(r.message, /0 tools/)
   assert.match(r.message, /unauthenticated/)
+})
+
+test('resolveTrackerMcpServer matches the configured name across case and -/_ spellings', () => {
+  const expected = ['mcp__acme-linear__get_issue', 'mcp__acme-linear__save_issue']
+  for (const server of ['acme_linear', 'Acme-Linear', 'acme-linear']) {
+    const availableTools = [`mcp__${server}__get_issue`, `mcp__${server}__save_issue`]
+    assert.equal(
+      resolveTrackerMcpServer({ mcpServer: 'acme-linear', expected, availableTools }),
+      server,
+    )
+  }
+})
+
+test('resolveTrackerMcpServer falls back to an unprefixed linear server', () => {
+  const expected = ['mcp__acme-linear__get_issue', 'mcp__acme-linear__save_issue']
+  const tools = (server) => [`mcp__${server}__get_issue`, `mcp__${server}__save_issue`]
+  assert.equal(
+    resolveTrackerMcpServer({
+      mcpServer: 'acme-linear',
+      expected,
+      availableTools: tools('linear'),
+    }),
+    'linear',
+  )
+  // Two servers publish the same operations and neither is the configured name: the unprefixed
+  // one wins, whichever is listed first.
+  assert.equal(
+    resolveTrackerMcpServer({
+      mcpServer: 'acme-linear',
+      expected,
+      availableTools: [...tools('other_tracker'), ...tools('linear')],
+    }),
+    'linear',
+  )
+  // The configured name still beats the fallback.
+  assert.equal(
+    resolveTrackerMcpServer({
+      mcpServer: 'acme-linear',
+      expected,
+      availableTools: [...tools('linear'), ...tools('acme_linear')],
+    }),
+    'acme_linear',
+  )
 })

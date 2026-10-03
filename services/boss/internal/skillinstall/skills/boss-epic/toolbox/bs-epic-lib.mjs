@@ -20,6 +20,7 @@ export {
   nextToMerge,
 } from './dag-scheduler.mjs'
 import { mergeBlockedExternalBlockers as mergeBlockedExternalBlockersPure } from './dag-scheduler.mjs'
+import { DEFAULT_TRACKER_STATES } from './skill-config.mjs'
 
 // Inlined from the former linear-deps-lib.mjs so this toolbox module is
 // self-contained (a prior inlining). Linear state.type values that mean a blocker no
@@ -153,7 +154,7 @@ export function resolveStateRole({ role, adapterStates, trackerConfigStates } = 
     const value = source[role]
     return typeof value === 'string' && value.trim() !== '' ? value : null
   }
-  return pick(adapterStates) ?? pick(trackerConfigStates)
+  return pick(adapterStates) ?? pick(trackerConfigStates) ?? pick(DEFAULT_TRACKER_STATES)
 }
 
 /**

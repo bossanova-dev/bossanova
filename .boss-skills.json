@@ -380,29 +380,6 @@
     ],
     "testRoots": ["**/*_test.go", "**/*.test.mjs", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts"]
   },
-  "env": {
-    "headlessSignals": [
-      {
-        "var": "BOSS_CRON",
-        "equals": "true"
-      },
-      {
-        "var": "BS_HEADLESS",
-        "equals": "1"
-      },
-      {
-        "var": "OPENCLAW_SESSION",
-        "present": true
-      }
-    ],
-    "headlessWhenNoTty": true
-  },
-  "adapters": {
-    "tracker": "linear",
-    "finalize": "boss-finalize",
-    "publish": "proof",
-    "sessionRunner": "bossd"
-  },
   "trackerConfig": {
     "linear": {
       "mcpServer": "bossanova-linear",
@@ -412,19 +389,11 @@
       "states": {
         "backlog": "Backlog",
         "unplanned": "Unplanned",
-        "planned": "Todo",
-        "inProgress": "In Progress",
-        "inReview": "In Review",
         "done": "Done",
         "canceled": "Canceled",
         "duplicate": "Duplicate"
       },
       "labels": {
-        "agentPlan": "agent-plan",
-        "agentFriendly": "agent-friendly",
-        "needsHuman": "needs-human",
-        "agentQuestion": "agent-question",
-        "epic": "epic",
         "bug": "bug"
       },
       "githubLabels": {
@@ -438,9 +407,6 @@
       "bucket": "bossanova-proof-production",
       "baseUrl": "https://proof.bossanova.dev"
     }
-  },
-  "planStorage": {
-    "kind": "tracker-attachment"
   },
   "reviewLedger": {
     "dir": ".git/boss-review-ledgers"

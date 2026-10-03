@@ -1597,3 +1597,72 @@ test('CLI discover --mode filters, and an unknown --mode exits 2 before scanning
   const help = runCli(['--help'])
   assert.ok(help.stdout.includes('--mode'), 'usage must document --mode')
 })
+
+function writeBuiltin(builtinDir, name, role) {
+  const dir = path.join(builtinDir, name)
+  fs.mkdirSync(dir, { recursive: true })
+  const fm = [
+    '---',
+    'x-boss-extension:',
+    '  extends: boss-plan',
+    `  role: ${role}`,
+    '---',
+    '',
+  ].join('\n')
+  fs.writeFileSync(path.join(dir, 'EXTENSION.md'), fm)
+  return dir
+}
+
+test('discoverExtensions includes a core-shipped built-in extension, marked builtin', () => {
+  const root = scratchRoot()
+  const builtinDir = path.join(scratchRoot(), 'extensions')
+  const dir = writeBuiltin(builtinDir, 'boss-plan-ce', 'draft')
+  const { extensions } = discoverExtensions({ core: 'boss-plan', root, role: 'draft', builtinDir })
+  assert.deepEqual(extensions, [
+    {
+      name: 'boss-plan-ce',
+      dir,
+      skillPath: path.join(dir, 'EXTENSION.md'),
+      role: 'draft',
+      order: 100,
+      builtin: true,
+    },
+  ])
+})
+
+test('a repo-local extension replaces the built-in of the same name', () => {
+  const root = scratchRoot()
+  const local = writeSkill(root, 'boss-plan-ce', [
+    'x-boss-extension:',
+    '  extends: boss-plan',
+    '  role: draft',
+  ])
+  const builtinDir = path.join(scratchRoot(), 'extensions')
+  writeBuiltin(builtinDir, 'boss-plan-ce', 'draft')
+  const { extensions } = discoverExtensions({ core: 'boss-plan', root, role: 'draft', builtinDir })
+  assert.equal(extensions.length, 1)
+  assert.equal(extensions[0].dir, local)
+  assert.equal(extensions[0].builtin, undefined)
+})
+
+test('builtinExtensions:false in .boss-skills.json turns built-ins off', () => {
+  const root = scratchRoot()
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({ builtinExtensions: false }),
+  )
+  const builtinDir = path.join(scratchRoot(), 'extensions')
+  writeBuiltin(builtinDir, 'boss-plan-ce', 'draft')
+  const { extensions, skipped } = discoverExtensions({ core: 'boss-plan', root, builtinDir })
+  assert.deepEqual(extensions, [])
+  assert.deepEqual(skipped, [])
+})
+
+test('a missing built-in directory is a no-op', () => {
+  const root = scratchRoot()
+  const builtinDir = path.join(scratchRoot(), 'absent')
+  assert.deepEqual(discoverExtensions({ core: 'boss-plan', root, builtinDir }), {
+    extensions: [],
+    skipped: [],
+  })
+})

@@ -218,7 +218,7 @@ export function serverKey(name) {
  * hint, not a contract: a server registered as `bossanova_linear`, `Bossanova-Linear` or plain
  * `linear` is the same tracker when it publishes the tracker's operations. Matches the configured
  * name first (ignoring case and separators), then any server publishing at least half (and at least
- * two) of the expected operations. Returns the server name as the session spells it, or '' when none qualifies.
+ * two) of the expected operations, preferring the unprefixed name (`linear`) on a tie. Returns the server name as the session spells it, or '' when none qualifies.
  */
 export function resolveTrackerMcpServer({
   mcpServer = '',
@@ -240,10 +240,16 @@ export function resolveTrackerMcpServer({
   for (const server of byServer.keys()) {
     if (wanted !== '' && serverKey(server) === wanted) return server
   }
+  // Most operations wins. On a tie, prefer the configured name without its prefix (`linear` for
+  // `acme-linear`), the usual spelling of the tracker's own unprefixed server.
+  const unprefixed = (server) => wanted !== '' && wanted.endsWith(serverKey(server))
   let best = ''
   let bestCount = 0
   for (const [server, found] of byServer) {
-    if (found.size > bestCount) {
+    if (
+      found.size > bestCount ||
+      (found.size === bestCount && unprefixed(server) && !unprefixed(best))
+    ) {
       best = server
       bestCount = found.size
     }

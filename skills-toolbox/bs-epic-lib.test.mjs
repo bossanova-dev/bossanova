@@ -1105,27 +1105,26 @@ test('resolveStateRole: the adapter WINS when both sources carry the role', () =
   )
 })
 
-test('resolveStateRole: neither source ⇒ null (the caller fails closed)', () => {
-  assert.equal(resolveStateRole({ role: 'planned' }), null)
+test('resolveStateRole: neither source ⇒ the stock state name, or null for a role with no default', () => {
+  assert.equal(resolveStateRole({ role: 'planned' }), 'Todo')
   assert.equal(
     resolveStateRole({ role: 'planned', adapterStates: {}, trackerConfigStates: {} }),
-    null,
+    'Todo',
   )
-  // A role the adapter answers null for, exactly as the states() contract requires.
+  // A role the adapter answers null for falls through to the stock name too.
   assert.equal(
     resolveStateRole({
       role: 'planned',
       adapterStates: { planned: null },
       trackerConfigStates: {},
     }),
-    null,
+    'Todo',
   )
+  assert.equal(resolveStateRole({ role: 'nonsense' }), null, 'a role with no default is null')
   assert.equal(resolveStateRole(), null, 'a bare call must not throw')
 })
 
 test('resolveStateRole: a blank adapter value falls THROUGH to config, never wins', () => {
-  // A whitespace-only state name is exactly as unusable as an absent one; letting it
-  // win would BLOCK a repo whose config held a perfectly good name.
   for (const blank of ['', '   ', '\n', '\t ']) {
     assert.equal(
       resolveStateRole({
@@ -1136,25 +1135,21 @@ test('resolveStateRole: a blank adapter value falls THROUGH to config, never win
       'Ready',
       `adapter value ${JSON.stringify(blank)} must fall through`,
     )
-    // ...and with no config behind it, a blank resolves null rather than ''.
     assert.equal(
       resolveStateRole({ role: 'planned', adapterStates: { planned: blank } }),
-      null,
-      `adapter value ${JSON.stringify(blank)} must resolve null, not itself`,
+      'Todo',
+      `adapter value ${JSON.stringify(blank)} must fall through to the stock name, not itself`,
     )
   }
 })
 
-test('resolveStateRole: malformed sources resolve null instead of throwing', () => {
-  // The adapter probe is a CLI read the caller may hand over unparsed/garbled; a throw
-  // here would defeat the very fallback this helper exists to perform.
+test('resolveStateRole: malformed sources fall back instead of throwing', () => {
   for (const bad of ['nope', 42, [], true, () => {}]) {
     assert.equal(
       resolveStateRole({ role: 'planned', adapterStates: bad, trackerConfigStates: bad }),
-      null,
-      `malformed source ${JSON.stringify(bad)} must resolve null`,
+      'Todo',
+      `malformed source ${JSON.stringify(bad)} must fall back to the stock name`,
     )
-    // A malformed adapter source must still let a good config answer.
     assert.equal(
       resolveStateRole({
         role: 'planned',
@@ -1165,7 +1160,7 @@ test('resolveStateRole: malformed sources resolve null instead of throwing', () 
     )
   }
   // A non-string state value is not a name.
-  assert.equal(resolveStateRole({ role: 'planned', adapterStates: { planned: 7 } }), null)
+  assert.equal(resolveStateRole({ role: 'planned', adapterStates: { planned: 7 } }), 'Todo')
 })
 
 test('resolvePlannedState delegates to resolveStateRole for the planned role', () => {
@@ -1174,10 +1169,10 @@ test('resolvePlannedState delegates to resolveStateRole for the planned role', (
   assert.equal(resolvePlannedState({ adapterStates }), 'Scheduled')
   assert.equal(resolvePlannedState({ trackerConfigStates }), 'Ready')
   assert.equal(resolvePlannedState({ adapterStates, trackerConfigStates }), 'Scheduled')
-  assert.equal(resolvePlannedState({}), null)
-  assert.equal(resolvePlannedState(), null)
+  assert.equal(resolvePlannedState({}), 'Todo')
+  assert.equal(resolvePlannedState(), 'Todo')
   // It must read the `planned` role specifically, not the first/any entry.
-  assert.equal(resolvePlannedState({ adapterStates: { inReview: 'Under Review' } }), null)
+  assert.equal(resolvePlannedState({ adapterStates: { inReview: 'Under Review' } }), 'Todo')
   assert.equal(
     resolvePlannedState({
       adapterStates,
@@ -1192,10 +1187,7 @@ test('a resolved planned state feeds classifyTickets, whose empty-state throw st
   // backstop, so a caller that skips the BLOCK still cannot schedule unplanned work.
   const planned = resolvePlannedState({ adapterStates: { planned: 'Todo' } })
   assert.equal(classifyTickets([t('BOS-1')], planned).eligible.length, 1)
-  assert.throws(
-    () => classifyTickets([t('BOS-1')], resolvePlannedState({})),
-    /plannedState .* is required/,
-  )
+  assert.throws(() => classifyTickets([t('BOS-1')], ''), /plannedState .* is required/)
 })
 
 // --- combined-run keying agreement ----------------------------------------

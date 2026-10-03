@@ -1,9 +1,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const DEFAULT_ORDER = 100
 export const DEFAULT_EXTENSION_ROOTS = ['.claude/skills', '.codex/skills']
+
+// Extensions a published core ships with itself, beside its vendored toolbox:
+// `<core>/extensions/<core>-<suffix>/EXTENSION.md`. They are scanned after the repo roots, so a
+// repo-local extension with the same name replaces one, and `"builtinExtensions": false` in
+// `.boss-skills.json` turns them all off. The file is EXTENSION.md, not SKILL.md, so no harness
+// registers it as a standalone skill. From the canonical skills-toolbox/ copy this directory does
+// not exist, which makes it a no-op there.
+export const BUILTIN_EXTENSIONS_DIR = fileURLToPath(new URL('../extensions/', import.meta.url))
+const BUILTIN_EXTENSION_FILE = 'EXTENSION.md'
 
 // The SINGLE role table. Discovery (`KNOWN_EXTENSION_ROLES`) and validation (`ROLE_SCHEMAS`) are
 // both derived from it, so a role cannot exist for one and not the other — the two registries were
@@ -341,7 +350,15 @@ export function resolveExtensionRoots(root, config = loadExtensionDiscoveryConfi
     })
 }
 
-function discoverExtensionsInRoot({ core, role, mode, skillsDir, seenNames }) {
+function discoverExtensionsInRoot({
+  core,
+  role,
+  mode,
+  skillsDir,
+  seenNames,
+  fileName = 'SKILL.md',
+  builtin = false,
+}) {
   const extensions = []
   const skipped = []
   let entries = []
@@ -355,9 +372,9 @@ function discoverExtensionsInRoot({ core, role, mode, skillsDir, seenNames }) {
     if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue
     if (seenNames.has(entry.name)) continue
     seenNames.add(entry.name)
-    const skillPath = path.join(skillsDir, entry.name, 'SKILL.md')
+    const skillPath = path.join(skillsDir, entry.name, fileName)
     if (!fs.existsSync(skillPath)) {
-      skipped.push(skipEntry(entry.name, 'no-skill-md', 'no SKILL.md'))
+      skipped.push(skipEntry(entry.name, 'no-skill-md', `no ${fileName}`))
       continue
     }
     let marker = null
@@ -488,12 +505,20 @@ function discoverExtensionsInRoot({ core, role, mode, skillsDir, seenNames }) {
     if (marker.lens !== undefined) descriptor.lens = marker.lens
     if (marker.capability !== undefined) descriptor.capability = marker.capability
     if (marker.modes !== undefined) descriptor.modes = marker.modes
+    if (builtin) descriptor.builtin = true
     extensions.push(descriptor)
   }
   return { extensions, skipped }
 }
 
-export function discoverExtensions({ core, root, role, mode, roots }) {
+export function discoverExtensions({
+  core,
+  root,
+  role,
+  mode,
+  roots,
+  builtinDir = BUILTIN_EXTENSIONS_DIR,
+}) {
   // An unknown requested mode is a caller bug, not a property of any extension, so it throws rather
   // than silently admitting every undeclared extension. `main` validates `--mode` before this.
   if (mode !== undefined && !EXTENSION_MODES.includes(mode)) {
@@ -501,14 +526,19 @@ export function discoverExtensions({ core, root, role, mode, roots }) {
       `unknown mode ${JSON.stringify(mode)}; valid modes are ${EXTENSION_MODES.join(', ')}`,
     )
   }
+  const config =
+    Array.isArray(roots) || root === undefined ? {} : loadExtensionDiscoveryConfig(root)
   const scanRoots = Array.isArray(roots)
-    ? roots.map((candidate) => path.resolve(candidate))
-    : resolveExtensionRoots(root)
+    ? roots.map((candidate) => ({ skillsDir: path.resolve(candidate) }))
+    : resolveExtensionRoots(root, config).map((skillsDir) => ({ skillsDir }))
+  if (builtinDir && config.builtinExtensions !== false) {
+    scanRoots.push({ skillsDir: builtinDir, fileName: BUILTIN_EXTENSION_FILE, builtin: true })
+  }
   const extensions = []
   const skipped = []
   const seenNames = new Set()
-  for (const skillsDir of scanRoots) {
-    const discovered = discoverExtensionsInRoot({ core, role, mode, skillsDir, seenNames })
+  for (const scanRoot of scanRoots) {
+    const discovered = discoverExtensionsInRoot({ core, role, mode, seenNames, ...scanRoot })
     extensions.push(...discovered.extensions)
     skipped.push(...discovered.skipped)
   }

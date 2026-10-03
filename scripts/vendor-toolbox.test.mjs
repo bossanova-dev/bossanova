@@ -650,6 +650,8 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'bossd-present.mjs',
     'bs-dispatch-await.mjs',
     'bs-epic-lib.mjs',
+    // bs-record-notes.mjs backs the built-in notes extension (extensions/boss-epic-notes).
+    'bs-record-notes.mjs',
     'bs-run-sentinel.mjs',
     'callback/adapter.mjs',
     'callback/boss.mjs',
@@ -681,6 +683,13 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'tracker/preflight.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
+  // Every core that ships a built-in notes extension must ship the helper it runs.
+  for (const core of ['boss-build', 'boss-epic', 'boss-plan', 'boss-repair', 'boss-review']) {
+    assert.ok(
+      VENDOR_MAP[core].includes('bs-record-notes.mjs'),
+      `${core} must vendor bs-record-notes.mjs`,
+    )
+  }
   // Asserted BY NAME, not by count: the planning core's finalize phase invokes the write-back
   // verification by path, so an installed tree without it is a gate that cannot RUN rather than a
   // gate that fails, and a count assertion would stay green while the wrong helper was listed.

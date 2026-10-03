@@ -535,7 +535,7 @@ test('createLinearAdapter reads the linear config block when another tracker is 
   }
 })
 
-test('createLinearAdapter fails fast when trackerConfig.mcpServer is unavailable', () => {
+test('createLinearAdapter fails fast with no tracker config, and defaults mcpServer to the adapter name', () => {
   const dirs = [
     fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-no-config-')),
     fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-no-mcp-server-')),
@@ -543,17 +543,14 @@ test('createLinearAdapter fails fast when trackerConfig.mcpServer is unavailable
   try {
     fs.writeFileSync(
       path.join(dirs[1], '.boss-skills.json'),
-      JSON.stringify({
-        adapters: { tracker: 'linear' },
-        trackerConfig: { linear: { team: 'Acme' } },
-      }),
+      JSON.stringify({ trackerConfig: { linear: { team: 'Acme' } } }),
     )
-    for (const cwd of dirs) {
-      assert.throws(
-        () => createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {}, cwd }),
-        /mcpServer/,
-      )
-    }
+    assert.throws(
+      () => createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {}, cwd: dirs[0] }),
+      /mcpServer/,
+    )
+    const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {}, cwd: dirs[1] })
+    assert.ok(adapter, 'a team-only config is enough: mcpServer defaults to "linear"')
   } finally {
     for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true })
   }

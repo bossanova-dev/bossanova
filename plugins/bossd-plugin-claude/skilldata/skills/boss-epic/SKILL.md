@@ -180,7 +180,9 @@ assumeCleared, assumeClearedAndMerge}`: one positional is a parent, several are 
 3. **Tracker** — a cheap `selectPlanned` read, classified with `trackerMcpPreflight` so a failure says
    whether to fix the repo's declaration (`absent`) or credentials/network (`unreachable`). Log
    `tracker preflight: <status> (declared: <true|false|no report>)` either way and call tracker
-   tools through `resolvedServer`:
+   tools through `resolvedServer`. MCP servers can still be connecting when a session starts: if no
+   tracker tools are in your tool list yet, wait about 20 seconds and look again, up to three times,
+   before classifying:
 
    ```bash
    set -euo pipefail

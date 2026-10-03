@@ -83,6 +83,7 @@ import {
   VERIFY_ONLY_CHECK,
   VERIFY_ONLY_CHECKED,
   VERIFY_ONLY_RESULT,
+  withTrackerDefaults,
 } from './skill-config.mjs'
 
 test('keyChangesSection preserves wrapped paths and ignores fenced or original-note headings', () => {
@@ -4566,4 +4567,55 @@ test('path-operand-absent carries the operand path for a caller with more contex
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+test('a team-only tracker block gets the default server, states and pipeline labels', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skill-config-minimal-'))
+  try {
+    writeFileSync(
+      join(dir, '.boss-skills.json'),
+      JSON.stringify({
+        trackerConfig: { linear: { team: 'Tech', states: { unplanned: 'Unplanned' } } },
+      }),
+    )
+    const config = loadSkillConfig({ cwd: dir })
+    const tc = trackerConfigFor(config)
+    assert.equal(tc.mcpServer, 'linear')
+    assert.deepEqual(tc.states, {
+      unplanned: 'Unplanned',
+      planned: 'Todo',
+      inProgress: 'In Progress',
+      inReview: 'In Review',
+    })
+    assert.equal(labelName(config, 'agentFriendly'), 'agent-friendly')
+    assert.equal(labelName(config, 'epic'), 'epic')
+    assert.equal(optionalLabelName(config, 'bug'), null, 'content labels stay literal')
+    assert.equal(isConfiguredForPlanning(config), true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('tracker defaults never configure a repo that declares no tracker block', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skill-config-none-'))
+  try {
+    writeFileSync(join(dir, '.boss-skills.json'), '{}')
+    const config = loadSkillConfig({ cwd: dir })
+    assert.equal(trackerConfigFor(config), null)
+    assert.equal(isConfiguredForPlanning(config), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('explicit tracker names override the defaults per key', () => {
+  const config = withTrackerDefaults({
+    trackerConfig: {
+      linear: { team: 'T', mcpServer: 'acme-linear', labels: { agentFriendly: 'Agent Friendly' } },
+    },
+  })
+  const tc = config.trackerConfig.linear
+  assert.equal(tc.mcpServer, 'acme-linear')
+  assert.equal(tc.labels.agentFriendly, 'Agent Friendly')
+  assert.equal(tc.labels.needsHuman, 'needs-human')
 })

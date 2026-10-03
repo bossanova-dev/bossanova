@@ -88,8 +88,8 @@ Only when all three hold: **T1** at least one in-scope criterion satisfied and c
 that really ran (the acceptance-criteria certification ran over the full list and raised no must-fix
 against that criterion — a seed verdict or `BOSS_BS_REVIEW=0` certifies nothing, and `0/<total>` is
 never PARTIAL); **T2** the branch is green (a settled CI reading on the readied PR); **T3** everything
-left undone is an unmet in-scope criterion (no other open must-fix, no missing API bump, no
-unattributed residue, the reviewed tip shipped). A failed T1/T3 on a green branch is REVIEW_READY with
+left undone is an unmet in-scope criterion (no other open must-fix, no unattributed residue, the
+reviewed tip shipped). A failed T1/T3 on a green branch is REVIEW_READY with
 the items published; a failed T2 is BLOCKED.
 
 - Title: `[<ISSUE-ID>] <issue title> (partial <satisfied>/<total>)`.
@@ -108,7 +108,7 @@ the items published; a failed T2 is BLOCKED.
 ## BLOCKED
 
 - PR stays (or is put back to) draft; ticket stays in `.inProgress`; `please-review` removed.
-- Blocker comment on the ticket: which cause (red gates / unpushable / missing API bump), the failing
+- Blocker comment on the ticket: which cause (red gates / unpushable), the failing
   check or finding at `file:line`, what was tried, and where the work is (`push-branch.mjs`'s
   `pushed`: the session branch, the `rescue` ref it names, or — only when both failed — the unpushed
   SHAs). Include both coverage tokens under their own headings, and the base-drift note when there is

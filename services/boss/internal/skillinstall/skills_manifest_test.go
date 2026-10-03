@@ -434,8 +434,9 @@ type identityRule struct {
 //
 // Coverage matches the invariant documented in CLAUDE.md ("boss-* skills are published globally"):
 // project MCP servers / tool namespaces, the proof store, the "internal" self-label, and the
-// BOS backlog — its team, project key, direct ticket identifiers (BOS-123), and the hard-coded
-// `Unplanned`/`Todo` state names. Patterns are precise on purpose: the backlog-team rule anchors on
+// BOS backlog — its team, project key, direct ticket identifiers (BOS-123), and its `Unplanned`
+// state name. Linear's stock state names (Backlog, Todo, In Progress, In Review) are the documented
+// defaults in skill-config.mjs, not Bossanova identity. Patterns are precise on purpose: the backlog-team rule anchors on
 // `team … Bossanova` so it does not sweep in incidental prose that merely names the product
 // (e.g. "Bossanova cloud login").
 var forbiddenIdentity = []identityRule{
@@ -455,9 +456,8 @@ var forbiddenIdentity = []identityRule{
 	{token: "key BOS", normalize: true, re: regexp.MustCompile("key\\s+`?BOS`?")},
 	// BOS backlog ticket identifiers: BOS-123 and the BOS-NN/BOS-Y placeholder forms.
 	{token: "BOS-<id>", normalize: true, re: regexp.MustCompile(`\bBOS-[0-9A-Za-z]+`)},
-	// Hard-coded Linear state names baked into the portable core.
+	// Bossanova's own unplanned-state name baked into the portable core.
 	{token: "Unplanned", normalize: true, re: regexp.MustCompile(`\bUnplanned\b`)},
-	{token: "Todo", normalize: true, re: regexp.MustCompile(`\bTodo\b`)},
 }
 
 // knownIdentityLeaks is the tolerated-leak allowlist. The de-hard-code epic (BOS-449) migrated
@@ -561,7 +561,7 @@ func TestIdentityLeakScanFailsClosedOnEmptyPayload(t *testing.T) {
 // skillinstall FS the boss CLI extracts, and the on-disk claude plugin mirror bossd ships) for
 // forbidden Bossanova identifiers — project MCP servers / tool namespaces (bossanova-*,
 // mcp__bossanova-*), the R2 publish store, the "Internal Bossanova" self-label, and the BOS backlog
-// (team=Bossanova, key BOS, BOS-123 ticket ids, and the hard-coded Unplanned/Todo state names). Any
+// (team=Bossanova, key BOS, BOS-123 ticket ids, and the hard-coded Unplanned state name). Any
 // such token in any core fails the build; knownIdentityLeaks (the tolerated-leak allowlist) is
 // empty, so nothing is tolerated.
 func TestPublishedCoresAreProjectAgnostic(t *testing.T) {
@@ -947,6 +947,10 @@ var knownForeignSkillRefs = map[string]map[string]bool{
 // where the named reviewer is absent), so scanning .mjs would ratchet against the config seam
 // rather than against a leak.
 //
+// A core's built-in extensions (`<core>/extensions/**`) are exempt for the same reason: each one is
+// an optional integration whose whole job is to name one third-party skill, and its contract is to
+// fail its envelope when that skill is absent so the core falls through to its own tiers.
+//
 // Both shipped payloads are scanned (the embedded skillinstall FS the boss CLI extracts and the
 // on-disk claude plugin mirror bossd ships), because either one alone can be the copy a user's
 // global skill directory is populated from.
@@ -969,6 +973,9 @@ func TestPublishedCoresNameNoForeignSkills(t *testing.T) {
 			}
 			scanned++
 			rel := strings.TrimPrefix(path, "skills/")
+			if isBuiltinExtension(rel) {
+				return nil
+			}
 			for _, token := range foreignSkillRefs(string(data)) {
 				if observed[rel] == nil {
 					observed[rel] = map[string]bool{}
@@ -998,6 +1005,13 @@ func TestPublishedCoresNameNoForeignSkills(t *testing.T) {
 			}
 		}
 	}
+}
+
+// isBuiltinExtension reports whether a payload path (relative to skills/) is inside a core's
+// built-in extensions directory, `<core>/extensions/...`.
+func isBuiltinExtension(rel string) bool {
+	parts := strings.SplitN(rel, "/", 3)
+	return len(parts) == 3 && parts[1] == "extensions"
 }
 
 // TestForeignSkillRefsDetection pins the classifier itself: the forms it must catch (so the gate

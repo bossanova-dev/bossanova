@@ -23,11 +23,11 @@ summary (cost extraction matches a line-leading token).
 - `PARTIAL` — branch green and pushed, at least one in-scope acceptance criterion satisfied **and**
   certified by the review, and everything left undone is an unmet in-scope criterion. Ticket stays
   **in-progress**; PR ready but marked do-not-merge; never `please-review`.
-- `BLOCKED` — exactly three causes: **(1)** quality gates are red after the repair cap, **(2)** the
-  branch cannot be pushed, **(3)** a required API-version bump or down-convert transform is missing
-  (a must-fix from the repo's API-compatibility lens that the review could not close). Ticket stays
-  **in-progress** with a blocker comment (`file:line`, what was tried); PR left draft. Nothing else
-  is BLOCKED — not open findings, not an unreadable review, not an uncertified criterion.
+- `BLOCKED` — only when the run physically cannot finish: **(1)** quality gates are still red after
+  the repair cap, or **(2)** the branch cannot be pushed. Ticket stays **in-progress** with a blocker
+  comment (`file:line`, what was tried); PR left draft. Nothing else is BLOCKED — not open findings
+  of any kind, not an unreadable review, not an uncertified criterion. boss-build builds what the
+  plan says; judging the work belongs to the planner and the human reviewer.
 - `NO_CHANGE` — no eligible candidate, claim lost with no runner-up, a foreign branch carrying other
   work, a peer already holding the worktree lock, or nothing committable after claiming (ticket
   restored to its entry state).
@@ -111,7 +111,8 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    cleanly** (Step 12). Discard scratch files and temp dirs you created.
 10. **Bookkeeping warns, capability blocks.** A drifted install, an incomplete route receipt, or a
     failed ledger write prints `warning: <what> — bookkeeping only, work state unaffected` and the
-    run continues. A missing toolbox or helper is a hard stop.
+    run continues. A missing toolbox or helper script is a hard stop; tracker tools not yet in your
+    tool list are not (see **Tracker**).
 
 ## Mode
 
@@ -199,7 +200,9 @@ A stale-but-present installed file warns and the run continues; an `absent`, `mo
 
 **Tracker.** Make one cheap read through the adapter (e.g. the backlog team's statuses), then
 classify it with `trackerMcpPreflight` (`toolbox/tracker/preflight.mjs`), passing your **own tool
-list** — never a harness config file:
+list** — never a harness config file. MCP servers can still be connecting when a session starts: if
+no tracker tools are in your tool list yet, wait about 20 seconds and look again, up to three times,
+before classifying.
 
 ```bash
 node --input-type=module -e '
@@ -568,8 +571,8 @@ printf 'REVIEW_VERDICT=%s\n' "$REVIEW_VERDICT" \
 publish `none: review stack did not run (disabled by BOSS_BS_REVIEW=0)` / cross-model
 `skipped: disabled`.
 
-An unreviewed or capped branch is never fatal: it ships, saying so in the PR. Only the three
-`BLOCKED` causes block.
+An unreviewed or capped branch is never fatal: it ships, saying so in the PR. Only red gates and an
+unpushable branch block.
 
 ## Step 6.5: Knowledge extensions (repo opt-in)
 
@@ -655,8 +658,6 @@ Re-inject the tag only if boss-repair added untagged non-empty commits (then pus
 wait for CI again). Run `commands.testReadiness` (else `commands.testFull`) once over the final tree,
 uncached; it must pass. Then decide:
 
-- **A required API-version bump or transform is missing** (an open must-fix from the
-  API-compatibility lens) ⇒ `BLOCKED` cause 3. Name it in the PR body; do not ready.
 - **Every in-scope criterion is met** (each `- [x]` demonstrated by the diff/tests, or a
   `(verify-only)` criterion carrying its recorded check) **and no review finding is open** ⇒
   `REVIEW_READY`.

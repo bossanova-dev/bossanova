@@ -58,6 +58,8 @@ export const VENDOR_MAP = {
     'claude-review.mjs',
     'skill-config.mjs',
     'skill-extensions.mjs',
+    // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
+    'bs-record-notes.mjs',
     // test-selection.mjs (BOS-1264) is the portable affected-test decision helper: it turns
     // a changed-file set into a test-file set from the `testSelection` config block, or fails
     // safe to a full run when it cannot classify the diff with confidence. It ships into the
@@ -159,6 +161,8 @@ export const VENDOR_MAP = {
     'finalize/route-contract.mjs',
     'finalize/push-branch.mjs',
     'skill-extensions.mjs',
+    // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
+    'bs-record-notes.mjs',
     'pr-ownership.mjs',
     // pr-check-state.mjs is the single agent-callable check-state verdict the finalize and
     // callback-watch references cite by path. Those steps run in user repos with no repo-root
@@ -265,6 +269,8 @@ export const VENDOR_MAP = {
     'session/adapter.mjs',
     'session/boss.mjs',
     'skill-extensions.mjs',
+    // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
+    'bs-record-notes.mjs',
   ],
   // skill-config.mjs exposes loadSkillConfig + isConfiguredForRepo, the direct deps of
   // boss-plan's Phase 0 preflight self-disable. boss-plan ships to user repos via the
@@ -360,6 +366,8 @@ export const VENDOR_MAP = {
     'plan-secret-scan.mjs',
     'plan-slug.mjs',
     'skill-extensions.mjs',
+    // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
+    'bs-record-notes.mjs',
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
     // (the install is a copy, not a link), so the skill compares the two at startup.
     'toolbox-drift.mjs',
@@ -399,6 +407,8 @@ export const VENDOR_MAP = {
     'worktree-state.mjs',
     'dag-scheduler.mjs',
     'skill-extensions.mjs',
+    // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
+    'bs-record-notes.mjs',
     // skill-config.mjs exposes notesSampleRate, which the post-terminal notes phase reads to
     // take its per-run sampling roll. boss-repair installs into user repos that have no
     // repo-root skills-toolbox/, and it cannot reach into another core's copy — that core may

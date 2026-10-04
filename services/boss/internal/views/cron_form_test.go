@@ -323,7 +323,7 @@ func TestCronFormView_SaveCueVisibleAfterSubmitError(t *testing.T) {
 	}
 }
 
-func huhFormHeight(form any) int {
+func huhFormHeight(form *huh.Form) int {
 	return int(reflect.ValueOf(form).Elem().FieldByName("height").Int())
 }
 

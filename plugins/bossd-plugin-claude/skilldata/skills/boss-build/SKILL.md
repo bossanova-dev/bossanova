@@ -77,7 +77,6 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Are the checks green / is the merge state blocking? | `node pr-check-state.mjs classify\|merge-state …`                           |
 | Wait for CI without guessing                        | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)       |
 | May I stop watching CI?                             | `node callback/ci-watch.mjs classify …`                                     |
-| Which tests should this diff run?                   | `decideTestSelection` in `test-selection.mjs`                               |
 | Is the verify-only evidence well-formed?            | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`            |
 | What is left before this terminal state is honest?  | `node finalize/route-contract.mjs assert --outcome <state> …`               |
 
@@ -655,8 +654,8 @@ comment names the failing check, `file:line`, and what was tried.
 ## Step 9: Decide the route and finalize
 
 Re-inject the tag only if boss-repair added untagged non-empty commits (then push with lease and
-wait for CI again). Run `commands.testReadiness` (else `commands.testFull`) once over the final tree,
-uncached; it must pass. Then decide:
+wait for CI again). Green CI on the head is the full test run; do not repeat it locally. Then
+decide:
 
 - **Every in-scope criterion is met** (each `- [x]` demonstrated by the diff/tests, or a
   `(verify-only)` criterion carrying its recorded check) **and no review finding is open** ⇒
@@ -670,8 +669,8 @@ Readying, on every non-BLOCKED route:
 
 ```bash
 # Gate mergeability before readying. GitHub may report UNKNOWN briefly after a push, so poll with
-# a bound; CONFLICTING or any dirty mergeStateStatus means rebase onto the base, run the
-# configured commands.postRebase check, push, wait for checks, and re-read mergeability.
+# a bound; CONFLICTING or any dirty mergeStateStatus means rebase onto the base, re-run the tests
+# relevant to the change (## Verification), push, wait for checks, and re-read mergeability.
 for attempt in 1 2 3 4 5 6; do
   PR_STATE="$(gh pr view "$PR_NUMBER" --json isDraft,mergeable,mergeStateStatus)"
   MERGEABLE="$(printf '%s' "$PR_STATE" | jq -r .mergeable)"
@@ -681,9 +680,7 @@ for attempt in 1 2 3 4 5 6; do
 done
 if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_STATE" = "BLOCKED" ]; then
   git rebase "origin/$BASE_BRANCH"
-  POST_REBASE_CHECK="$(node --input-type=module -e 'import{pathToFileURL as u}from"node:url"; const m=await import(u(process.env.BOSS_BUILD_TOOLBOX+"/skill-config.mjs").href); process.stdout.write(m.command(m.loadSkillConfig({cwd:process.cwd()}),"postRebase")||"")')"
-  test -n "$POST_REBASE_CHECK" || { echo "commands.postRebase is not configured"; exit 1; }
-  sh -c "$POST_REBASE_CHECK"
+  # Re-run the relevant tests here (## Verification) before pushing.
   git push --force-with-lease origin "$SESSION_BRANCH"
   # The push re-opened the CI wait: arm (callback-watches.md Protocol step 1), then the bounded
   # poll (Protocol step 5) until CI_WAIT_STATE=settled; anything else goes back to Step 8.
@@ -819,11 +816,10 @@ Then print the terminal state.
 
 ## Verification
 
-Before readiness, call `decideTestSelection` (`toolbox/test-selection.mjs`) with the config, the
-changed files and the test-file universe, and log its `report`. `narrow` runs
-`commands.testAffected`; `full`, an error, or anything uninterpretable runs `commands.testFull`. An
-empty selection is never a pass. Readiness runs `commands.testReadiness` (else `testFull`) once over
-the final tree, never cached.
+Locally, run only the tests relevant to the change: `commands.testAffected` when the repo has one,
+otherwise the tests covering what you changed, through the repo's own runner. A selection that ran
+nothing is not a pass. Do not run the full suite locally: CI on the PR is the full check, and Step 8
+waits for it. Only when the PR gets no CI checks at all, run `commands.test` once before readying.
 
 ## Cron gate
 

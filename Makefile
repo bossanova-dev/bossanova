@@ -609,9 +609,9 @@ ifneq ($(wildcard services/web/package.json),)
 endif
 
 ## test-full: Alias for the exhaustive suite (`make test-all`). Kept for the agent
-## command ladder / docs that name the "full" suite explicitly. Bazel- and Go-cached
-## as-is; the readiness receipt runs it under BOSS_GATE_FORCE_UNCACHED=1
-## (commands.testReadiness), which adds --nocache_test_results and GO_TEST_COUNT=1.
+## command ladder / docs that name the "full" suite explicitly (commands.test). Bazel-
+## and Go-cached as-is; BOSS_GATE_FORCE_UNCACHED=1 adds --nocache_test_results and
+## GO_TEST_COUNT=1.
 ## Like test-all it does not run test-warehouse or test-bosso-postgres.
 test-full:
 	$(MAKE) test-all

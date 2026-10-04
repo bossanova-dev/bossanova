@@ -22,7 +22,7 @@
       "id": "db",
       "skill": "database-review",
       "glob": "**/migrations/**",
-      "fallbackRubric": "review through an inline schema/migration rubric: audit each changed column/table against the database-design standard \u2014 boolean prefixes (is_/has_/should_/can_), count form ({noun}_count not num_*), timestamp form ({event}_at as TEXT ISO-8601, never an epoch integer in an _at column), date form ({event}_on), snake_case identifiers, and foreign-key naming ({singular_table}_id)"
+      "fallbackRubric": "review through an inline schema/migration rubric: audit each changed column/table against the database-design standard — boolean prefixes (is_/has_/should_/can_), count form ({noun}_count not num_*), timestamp form ({event}_at as TEXT ISO-8601, never an epoch integer in an _at column), date form ({event}_on), snake_case identifiers, and foreign-key naming ({singular_table}_id)"
     },
     {
       "id": "api",
@@ -33,7 +33,7 @@
         "services/bosso/internal/server/**",
         "services/web/src/api.ts"
       ],
-      "fallbackRubric": "review through an inline API-contract rubric: classify each change as additive, behavioural, or a wire break \u2014 an added field or procedure is safe, while a behavioural change (a client built against the old code observing a different response value, default, validation, ordering, error code, or side effect) and a wire break (a removed, renumbered, or retyped field) are compatibility events that must be handled deliberately by whatever versioning discipline this project already uses, and never shipped silently; where the project does version its API, require that the change add a version rather than mutate an existing one, that any compatibility shim target only the affected procedure, convert toward the older client rather than upgrading it, guard every type assertion so it cannot panic, and be a no-op for every other method, proved by a unit test that the shim fires one version back and is a no-op at the newest version, an end-to-end test through the real server, and a client version pin that stays consistent; treat internal-only behaviour no external client can observe, a security fix, and a bug fix that restores documented behaviour as deliberate exemptions rather than demanding a bump; then apply Go/gRPC hygiene: deliberate error codes, edge-case validation, context honoured, reserved tags on field removal, and snake_case field names with is_/has_/should_/can_ boolean prefixes"
+      "fallbackRubric": "review through an inline API-contract rubric: classify each change as additive, behavioural, or a wire break — an added field or procedure is safe, while a behavioural change (a client built against the old code observing a different response value, default, validation, ordering, error code, or side effect) and a wire break (a removed, renumbered, or retyped field) are compatibility events that must be handled deliberately by whatever versioning discipline this project already uses, and never shipped silently; where the project does version its API, require that the change add a version rather than mutate an existing one, that any compatibility shim target only the affected procedure, convert toward the older client rather than upgrading it, guard every type assertion so it cannot panic, and be a no-op for every other method, proved by a unit test that the shim fires one version back and is a no-op at the newest version, an end-to-end test through the real server, and a client version pin that stays consistent; treat internal-only behaviour no external client can observe, a security fix, and a bug fix that restores documented behaviour as deliberate exemptions rather than demanding a bump; then apply Go/gRPC hygiene: deliberate error codes, edge-case validation, context honoured, reserved tags on field removal, and snake_case field names with is_/has_/should_/can_ boolean prefixes"
     }
   ],
   "reviewDefaults": {
@@ -53,16 +53,10 @@
     ]
   },
   "commands": {
-    "build": "make build",
-    "lint": "make lint",
-    "format": "make format",
-    "testSmoke": "make test-smoke",
+    "test": "make test-full",
     "testAffected": "make test-affected",
-    "testFull": "make test-full",
     "testReadiness": "BOSS_GATE_FORCE_UNCACHED=1 make test-full",
-    "testModule": "make test-{module}",
-    "testUncached": "BOSS_GATE_FORCE_UNCACHED=1 make test-affected",
-    "postRebase": "make post-rebase-check"
+    "testUncached": "BOSS_GATE_FORCE_UNCACHED=1 make test-affected"
   },
   "gateCache": {
     "eligible": {
@@ -106,279 +100,6 @@
   },
   "test": {
     "manifestPath": "docs/testing/test-command-manifest.md"
-  },
-  "testSelection": {
-    "rules": [
-      {
-        "changed": "services/boss/**",
-        "tests": ["services/boss/**/*_test.go"]
-      },
-      {
-        "changed": "services/bossd/**",
-        "tests": ["services/bossd/**/*_test.go"]
-      },
-      {
-        "changed": "services/bosso/**",
-        "tests": ["services/bosso/**/*_test.go"]
-      },
-      {
-        "changed": "services/mcp/**",
-        "tests": ["services/mcp/**/*_test.go"]
-      },
-      {
-        "changed": "services/mcp-gateway/**",
-        "tests": ["services/mcp-gateway/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-claude/**",
-        "tests": ["plugins/bossd-plugin-claude/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-codex/**",
-        "tests": ["plugins/bossd-plugin-codex/**/*_test.go", "services/bossd/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-dependabot/**",
-        "tests": ["plugins/bossd-plugin-dependabot/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-linear/**",
-        "tests": ["plugins/bossd-plugin-linear/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-opencode/**",
-        "tests": ["plugins/bossd-plugin-opencode/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-repair/**",
-        "tests": ["plugins/bossd-plugin-repair/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-sentry/**",
-        "tests": ["plugins/bossd-plugin-sentry/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-stub-runner/**",
-        "tests": ["plugins/bossd-plugin-stub-runner/**/*_test.go"]
-      },
-      {
-        "changed": "docs/analytics/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/web/src/analytics/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/web/src/api.ts",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/docs/openapi/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/boss/internal/views/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/bosso/internal/server/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/marketing/src/components/pricing/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/marketing/src/pages/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "services/web/src/pages/**",
-        "tests": ["lib/bossalib/**/*_test.go"]
-      },
-      {
-        "changed": "plugins/bossd-plugin-claude/skilldata/**",
-        "tests": ["services/boss/**/*_test.go", "scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "docs/skills/**",
-        "tests": ["services/boss/**/*_test.go"]
-      },
-      {
-        "changed": "services/docs/docs/skills/**",
-        "tests": ["services/boss/**/*_test.go"]
-      },
-      {
-        "changed": "services/web/**",
-        "tests": [
-          "services/web/**/*.test.ts",
-          "services/web/**/*.test.tsx",
-          "services/web/**/*.spec.ts"
-        ]
-      },
-      {
-        "changed": "services/marketing/**",
-        "tests": ["services/marketing/**/*.test.mjs", "services/marketing/**/*.spec.ts"]
-      },
-      {
-        "changed": "services/docs/**",
-        "tests": [
-          "services/docs/**/*.test.mjs",
-          "services/docs/**/*.test.ts",
-          "services/docs/**/*.test.tsx"
-        ]
-      },
-      {
-        "changed": "lib/ui-tokens/**",
-        "tests": [
-          "services/web/**/*.test.ts",
-          "services/web/**/*.test.tsx",
-          "services/marketing/**/*.test.mjs",
-          "services/docs/**/*.test.mjs"
-        ]
-      },
-      {
-        "changed": "skills-toolbox/**",
-        "tests": ["skills-toolbox/**/*.test.mjs", "scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "scripts/**",
-        "tests": ["scripts/**/*.test.mjs", "skills-toolbox/**/*.test.mjs"]
-      },
-      {
-        "changed": ".claude/skills/**",
-        "tests": ["scripts/**/*.test.mjs", "services/boss/**/*_test.go"]
-      },
-      {
-        "changed": ".codex/skills/**",
-        "tests": ["scripts/**/*.test.mjs", "services/boss/**/*_test.go"]
-      },
-      {
-        "changed": "docs/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "proof/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "PRODUCT.md",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "README.md",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "buf.yaml",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "buf.gen.yaml",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "CLAUDE.md",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "AGENTS.md",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/docs/docs/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/bossd/internal/tmux/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/boss/internal/views/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/boss/internal/accountflow/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/boss/internal/auth/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/boss/cmd/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/boss/internal/tuidriver/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/boss/internal/skillinstall/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/bosso/cmd/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/web/src/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/marketing/src/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "services/*/Dockerfile.k8s",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "docs/email-course/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "lib/bossalib/bossmcp/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      },
-      {
-        "changed": "lib/bossalib/config/**",
-        "tests": ["scripts/**/*.test.mjs"]
-      }
-    ],
-    "sharedFiles": [
-      "lib/bossalib/**",
-      "proto/**",
-      "go.work",
-      "go.work.sum",
-      "MODULE.bazel",
-      "MODULE.bazel.lock",
-      ".bazelrc",
-      ".bazelversion",
-      "**/BUILD.bazel",
-      "**/*.bzl",
-      "Makefile",
-      "**/Makefile",
-      "package.json",
-      "**/package.json",
-      "pnpm-lock.yaml",
-      "pnpm-workspace.yaml",
-      "turbo.json",
-      ".github/**",
-      ".boss-skills.json",
-      "**/testdata/**",
-      "scripts/*-lib.mjs",
-      "**/tsconfig*.json",
-      "**/vite.config.*",
-      "**/vitest.config.*",
-      "**/playwright.config.*",
-      ".golangci.yml",
-      ".prettierrc",
-      ".prettierignore",
-      "docs/testing/test-command-manifest.md"
-    ],
-    "testRoots": ["**/*_test.go", "**/*.test.mjs", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts"]
   },
   "trackerConfig": {
     "linear": {

@@ -5,6 +5,8 @@ import { isStagingHost } from './scripts/generate-robots.mjs'
 
 const posthogHost = process.env.PUBLIC_POSTHOG_HOST ?? 'https://k.bossanova.dev'
 const posthogProjectToken = process.env.PUBLIC_POSTHOG_PROJECT_TOKEN
+// GA4 (docs/analytics/google-analytics.md); set only by the production build.
+const ga4MeasurementId = process.env.PUBLIC_GA4_MEASUREMENT_ID
 const bossEnv = process.env.PUBLIC_BOSS_ENV ?? 'production'
 const buildSha = process.env.PUBLIC_BUILD_SHA
 const docsUrl = process.env.PUBLIC_DOCS_URL?.trim() || 'https://docs.bossanova.dev'
@@ -34,6 +36,7 @@ const config: Config = {
   customFields: {
     posthogHost,
     posthogProjectToken,
+    ga4MeasurementId,
     bossEnv,
     buildSha,
   },

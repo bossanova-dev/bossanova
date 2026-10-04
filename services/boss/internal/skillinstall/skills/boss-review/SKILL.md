@@ -67,7 +67,6 @@ if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skill
 | Is the confirming round a no-op?                                  | `node bs-review-caps.mjs admit-confirming-round '<json>'`                                    |
 | Are fixes oscillating?                                            | `node bs-review-caps.mjs oscillation --in <json>`                                            |
 | Full or delta scope for the next round?                           | `nextReviewRoundMode` in `bs-review-report.mjs`                                              |
-| Which tests should the fix batch run?                             | `decideTestSelection` in `test-selection.mjs`                                                |
 | What confidence does the evidence support?                        | `node bs-review-caps.mjs confidence --in "$REPORT_JSON"`                                     |
 | Render the report                                                 | `node bs-review-report.mjs --in "$REPORT_JSON"`                                              |
 | Which sentinel line?                                              | `node bs-review-caps.mjs verdict --in "$REPORT_JSON"`                                        |
@@ -416,9 +415,9 @@ Each round:
    before the round closes. Give it the run's carried observations as provisional hints about defect
    classes the previous round exposed. If one fix changes the bytes another item cites, split the
    batch into two dependency-ordered sub-batches (once per pass).
-3. **Gate once per batch.** Run the affected module tests and lint after the whole batch is committed
-   — `decideTestSelection` picks `commands.testAffected` on `narrow`, `commands.testFull` otherwise
-   (log its `report`). A red gate is fixed forward with another commit in the same batch. Check
+3. **Gate once per batch.** Run lint and the tests relevant to the batch after it is committed
+   (`commands.testAffected` when the repo has one, otherwise the tests covering what changed; never
+   the full suite — CI runs that). A red gate is fixed forward with another commit in the same batch. Check
    markdown hunks by eye after any delegated edit: the formatter does not reflow prose, so a split
    sentence passes `--check`. Record **Fixed** and **Leave as-is** entries.
 4. **Confirm.** Ask `admit-confirming-round` (`tipUnchanged`, `fixedCount`, `verifiedCount`,

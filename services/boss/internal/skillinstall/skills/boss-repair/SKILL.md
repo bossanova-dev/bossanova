@@ -34,7 +34,6 @@ if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/bo
 | Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`            |
 | Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …` |
 | What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                 |
-| Which tests should this diff run?                | `decideTestSelection` in `toolbox/test-selection.mjs`       |
 | Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`      |
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
@@ -101,9 +100,9 @@ judgement.
    may be something" — never report "nothing to repair" without having looked.
 2. **Repair**, review feedback first (its content does not go stale), then conflicts, then failing
    checks (re-check the head per rule 4 before acting on CI). See the notes below for each.
-3. **Verify locally.** Run the repo's formatter and the test gate `decideTestSelection` picks for the
-   current diff (`commands.testAffected` for a usable `narrow` decision, otherwise
-   `commands.testFull`); re-decide after every change. Quote each gate's own final summary line in
+3. **Verify locally.** Run the repo's formatter and the tests relevant to the change
+   (`commands.testAffected` when the repo has one, otherwise the tests covering what you changed);
+   CI re-runs the full suite after the push. Quote each gate's own final summary line in
    the report; a result you did not run is reported as not run, never as a pass. Take a verdict from
    the command's own exit status, not through a pipe (a pipeline reports its tail's status).
 4. **Commit and push** small, descriptive commits. Follow the repo's commit conventions.
@@ -122,8 +121,8 @@ Rebase onto the base (rule 1). For each conflicted file, understand both sides �
 sources rather than hand-editing them; keep both sides of independent additions to append-only
 registries; for a disputed measurement or count, re-measure after the rebase rather than picking a
 side. Continue with `GIT_EDITOR=true git rebase --continue`; skip a replayed commit that became
-genuinely empty. After the rebase completes, run the repo's `commands.postRebase` check if one is
-configured, and grep for any call shape this branch refactored — including in files the base added.
+genuinely empty. After the rebase completes, re-run the relevant tests and grep for any call shape
+this branch refactored — including in files the base added.
 Push with `--force-with-lease`. If a conflict is too tangled to settle safely, leave a PR comment
 naming the files and report it as a residual.
 

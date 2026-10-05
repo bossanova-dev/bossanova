@@ -199,15 +199,19 @@ CHECK_DIR="$(mktemp -d)"
 HEAD_SHA="$(gh pr view --json headRefOid -q .headRefOid)"
 gh pr checks --json name,state,bucket > "$CHECK_DIR/checks.json"
 gh api "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate --slurp > "$CHECK_DIR/runs.json"
+gh run list --commit "$HEAD_SHA" --json name,workflowName,status,conclusion,headSha,event --limit 100 > "$CHECK_DIR/workflow-runs.json"
 node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify \
   --head-sha "$HEAD_SHA" --observed-sha "$HEAD_SHA" \
-  --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json"
+  --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json" \
+  --workflow-runs "$CHECK_DIR/workflow-runs.json"
 ```
 
 - `green` — done (`provesGreen: true` means a gate actually ran and the set was compared with the
   prior head).
-- `pending` — keep waiting, except reason `absent-gate` (a gate the prior head had is missing; it
-  will never arrive) — report it.
+- `pending` — keep waiting (a head workflow run still queued or running is `pending` too), except
+  reason `absent-gate` (a gate the prior head had is missing; it will never arrive) — report it with
+  its `absentGateRemedy`: `re-trigger-absent-gate`, or `reported-on-prior-head` (it already passed
+  on the prior head and will not re-run; treat it as advisory or read `merge-state`).
 - `unknown` — unobserved; report it, never call it green.
 - `failing` — find the failing check (`gh pr checks --json name,state,bucket`), read only the failing
   log lines (`gh run view <run-id> --log-failed | tail`, or in a subagent), fix, push, re-check. A

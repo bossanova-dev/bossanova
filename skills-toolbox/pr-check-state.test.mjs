@@ -424,20 +424,19 @@ test('classifyChecks — a SUCCESS prior context absent from the head still repo
 })
 
 // `absent-gate` names its remedy. The verdict says a gate the prior head carried is missing from
-// this one, but two different situations wear that shape and only one is worth re-triggering: a
-// context that CANNOT attach to this head (a workflow whose triggers a push cannot produce, so a
-// draft PR never gets it) versus a job that genuinely went missing. Neither resolves by waiting.
+// this one, but two situations wear that shape and only one is worth re-triggering: a context that
+// already REPORTED on the prior head and will not re-run (a ready-only advisory bot), versus a job
+// that genuinely went missing. Neither resolves by waiting.
 //
-// ADDITIVE ONLY. The structural input is caller-supplied and defaults to empty, and the verdict's
-// existing fields keep their current values for every existing caller.
+// A name the caller declares `structurallyAbsentContexts` no longer reaches the arm at all: waiting
+// provably cannot restore it, so it stops holding the verdict. `absent` still lists it.
 
-test('ABSENT_GATE_REMEDIES is frozen and names exactly the four outcomes', () => {
+test('ABSENT_GATE_REMEDIES is frozen and names exactly the three outcomes', () => {
   assert.ok(Object.isFrozen(ABSENT_GATE_REMEDIES))
   assert.deepEqual([...Object.values(ABSENT_GATE_REMEDIES)].sort(), [
-    'mixed-absent-gates',
     'none',
     're-trigger-absent-gate',
-    'structurally-unreachable',
+    'reported-on-prior-head',
   ])
 })
 
@@ -459,17 +458,40 @@ test('absentGateRemedy — with no caller input every absent gate is worth re-tr
   assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.RETRIGGER)
 })
 
-test('absentGateRemedy — an all-structural absent set is structurally unreachable', () => {
+test('classifyChecks — an all-declared absent set no longer holds the verdict at pending', () => {
   const verdict = absentGateVerdict(['pr_agent', 'web-e2e'])
-  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.STRUCTURAL)
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.equal(verdict.reason, CHECK_REASONS.OK)
   assert.deepEqual(verdict.structurallyAbsent, ['pr_agent', 'web-e2e'])
+  assert.deepEqual(verdict.absent, ['pr_agent', 'web-e2e'], 'absent keeps every name')
+  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.NONE)
+  assert.equal(provesGreenAgrees(verdict), true)
 })
 
-test('absentGateRemedy — a partly-structural absent set is mixed, never silenced', () => {
+test('classifyChecks — a partly-declared absent set stays absent-gate and names the re-trigger', () => {
   const verdict = absentGateVerdict(['pr_agent'])
-  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.MIXED)
+  assert.equal(verdict.state, CHECK_STATES.PENDING)
+  assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.RETRIGGER)
   assert.deepEqual(verdict.structurallyAbsent, ['pr_agent'])
   assert.deepEqual(verdict.absent, ['pr_agent', 'web-e2e'], 'absent is unchanged')
+})
+
+test('classifyChecks — --structurally-absent resolves a lone absent name out of pending, and not a second undeclared one', () => {
+  const head = { check_runs: [checkRun('test-go', 'completed', 'success')] }
+  const lone = classifyChecks({
+    checkRuns: head,
+    priorContexts: ['test-go', 'pr_agent'],
+    structurallyAbsentContexts: ['pr_agent'],
+  })
+  assert.notEqual(lone.state, CHECK_STATES.PENDING)
+  assert.equal(lone.state, CHECK_STATES.GREEN)
+  const second = classifyChecks({
+    checkRuns: head,
+    priorContexts: ['test-go', 'pr_agent', 'web-e2e'],
+    structurallyAbsentContexts: ['pr_agent'],
+  })
+  assert.equal(second.reason, CHECK_REASONS.ABSENT_GATE)
 })
 
 test('absentGateRemedy — a verdict that is not absent-gate has no remedy to name', () => {
@@ -484,18 +506,35 @@ test('absentGateRemedy — a verdict that is not absent-gate has no remedy to na
   }
 })
 
-test('the structural input is additive — it changes no existing field or predicate', () => {
-  // The one invariant that makes this safe to ship: a caller can use the input to silence a real
-  // missing gate in the REMEDY, and must not be able to use it to change the verdict.
-  const without = absentGateVerdict(undefined)
-  const withAll = absentGateVerdict(['pr_agent', 'web-e2e'])
-  for (const key of ['state', 'reason', 'total', 'passed', 'pending', 'priorKnown']) {
-    assert.equal(withAll[key], without[key], key)
+test('absentGateRemedy — absent contexts that reported SUCCESS or NEUTRAL on the prior head will not re-run', () => {
+  const head = { checks: [bucketRow('test-go', 'SUCCESS', 'pass')] }
+  const prior = {
+    checks: [
+      bucketRow('test-go', 'SUCCESS', 'pass'),
+      bucketRow('pr_agent', 'SUCCESS', 'pass'),
+      bucketRow('cubic · AI code reviewer', 'NEUTRAL', 'pass'),
+    ],
   }
-  assert.deepEqual(withAll.absent, without.absent)
-  assert.equal(isGreen(withAll), isGreen(without))
-  assert.equal(provesGreen(withAll), provesGreen(without))
-  assert.equal(provesGreenReason(withAll), provesGreenReason(without))
+  const verdict = classifyChecks({ buckets: head, priorContexts: prior })
+  assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(verdict.reportedOnPrior, ['cubic · AI code reviewer', 'pr_agent'])
+  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.REPORTED_ON_PRIOR_HEAD)
+
+  // A names-only prior carries no conclusion, so the fail-closed re-trigger stays the default.
+  const namesOnly = classifyChecks({
+    buckets: head,
+    priorContexts: ['test-go', 'pr_agent', 'cubic · AI code reviewer'],
+  })
+  assert.deepEqual(namesOnly.reportedOnPrior, [])
+  assert.equal(absentGateRemedy(namesOnly), ABSENT_GATE_REMEDIES.RETRIGGER)
+
+  // One undeclared absent name that did NOT report on the prior head keeps the re-trigger.
+  const mixed = classifyChecks({
+    buckets: head,
+    priorContexts: { checks: [...prior.checks, bucketRow('web-e2e', 'FAILURE', 'fail')] },
+  })
+  assert.equal(absentGateRemedy(mixed), ABSENT_GATE_REMEDIES.RETRIGGER)
+  for (const v of [verdict, namesOnly, mixed]) assert.equal(provesGreenAgrees(v), true)
 })
 
 test('CLI classify — the absent-gate remedy is printed beside the existing reported fields', () => {
@@ -519,9 +558,286 @@ test('CLI classify — the absent-gate remedy is printed beside the existing rep
   const declared = runCli([...base, '--structurally-absent', 'pr_agent'])
   assert.equal(declared.status, 0, declared.stderr)
   const parsed = JSON.parse(declared.stdout)
-  assert.equal(parsed.absentGateRemedy, ABSENT_GATE_REMEDIES.STRUCTURAL)
+  assert.equal(parsed.state, CHECK_STATES.GREEN)
+  assert.equal(parsed.absentGateRemedy, ABSENT_GATE_REMEDIES.NONE)
   assert.deepEqual(parsed.absent, ['pr_agent'], 'the absent set itself is unchanged')
   assert.deepEqual(parsed.structurallyAbsent, ['pr_agent'])
+})
+
+// ---------------------------------------------------------------------------
+// Shape tolerance: the same nodes classify the same whichever flag delivered them.
+
+const ROLLUP_NODES = [
+  {
+    __typename: 'CheckRun',
+    name: 'test-go',
+    status: 'COMPLETED',
+    conclusion: 'SUCCESS',
+    workflowName: 'test-go',
+  },
+  {
+    __typename: 'CheckRun',
+    name: 'lint',
+    status: 'COMPLETED',
+    conclusion: 'SUCCESS',
+    workflowName: 'lint',
+  },
+  {
+    __typename: 'CheckRun',
+    name: 'web-e2e',
+    status: 'COMPLETED',
+    conclusion: 'SKIPPED',
+    workflowName: 'web',
+  },
+  {
+    __typename: 'CheckRun',
+    name: 'cubic · AI code reviewer',
+    status: 'COMPLETED',
+    conclusion: 'NEUTRAL',
+  },
+  { __typename: 'StatusContext', context: 'pr_agent', state: 'SUCCESS' },
+]
+
+test('classifyChecks — rollup nodes handed to --checks classify identically to --rollup', () => {
+  const pick = (v) => ({
+    state: v.state,
+    reason: v.reason,
+    total: v.total,
+    passed: v.passed,
+    skipped: v.skipped,
+    unclassified: v.unclassified,
+  })
+  const viaRollup = classifyChecks({ rollup: { statusCheckRollup: ROLLUP_NODES } })
+  assert.equal(viaRollup.state, CHECK_STATES.GREEN)
+  assert.equal(viaRollup.reason, CHECK_REASONS.OK)
+  for (const [label, verdict] of [
+    ['bare nodes via buckets', classifyChecks({ buckets: ROLLUP_NODES })],
+    ['rollup object via buckets', classifyChecks({ buckets: { statusCheckRollup: ROLLUP_NODES } })],
+    [
+      'rollup object via checkRuns',
+      classifyChecks({ checkRuns: { statusCheckRollup: ROLLUP_NODES } }),
+    ],
+    ['bare nodes via rollup', classifyChecks({ rollup: ROLLUP_NODES })],
+  ]) {
+    assert.deepEqual(pick(verdict), pick(viaRollup), label)
+  }
+})
+
+test('CLI classify — a whole statusCheckRollup object handed to --checks is not no-checks', () => {
+  const result = runCli([
+    'classify',
+    '--checks',
+    JSON.stringify({ statusCheckRollup: ROLLUP_NODES }),
+  ])
+  assert.equal(result.status, 0, result.stderr)
+  const parsed = JSON.parse(result.stdout)
+  assert.equal(parsed.state, CHECK_STATES.GREEN)
+  assert.equal(parsed.total, ROLLUP_NODES.length)
+})
+
+// ---------------------------------------------------------------------------
+// Head workflow-run evidence. Green is only decidable once every workflow run for the head SHA has
+// completed; until then the attached check set is still growing.
+
+const HEAD = 'head123'
+const run = (workflowName, status, conclusion = '', headSha = HEAD) => ({
+  name: workflowName,
+  workflowName,
+  status,
+  conclusion,
+  headSha,
+  event: 'pull_request',
+})
+const greenHead = {
+  checks: [bucketRow('test-go', 'SUCCESS', 'pass'), bucketRow('lint', 'SUCCESS', 'pass')],
+}
+
+test('classifyChecks — a queued head run holds an all-success attached set at pending', () => {
+  const verdict = classifyChecks({
+    headSHA: HEAD,
+    buckets: greenHead,
+    workflowRuns: [run('test-go', 'completed', 'success'), run('bazel', 'queued')],
+  })
+  assert.equal(verdict.state, CHECK_STATES.PENDING)
+  assert.equal(verdict.reason, CHECK_REASONS.PENDING)
+  assert.deepEqual(verdict.pendingRuns, ['bazel'])
+  assert.equal(verdict.workflowRunsKnown, true)
+  assert.equal(provesGreenAgrees(verdict), true)
+})
+
+test('classifyChecks — a failed check beside a queued run is still failing', () => {
+  const verdict = classifyChecks({
+    headSHA: HEAD,
+    buckets: { checks: [bucketRow('test-go', 'FAILURE', 'fail')] },
+    workflowRuns: [run('bazel', 'in_progress')],
+  })
+  assert.equal(verdict.state, CHECK_STATES.FAILING)
+  assert.equal(verdict.reason, CHECK_REASONS.FAILED)
+})
+
+test('classifyChecks — runs for another SHA are ignored', () => {
+  const verdict = classifyChecks({
+    headSHA: HEAD,
+    buckets: greenHead,
+    workflowRuns: [run('test-go', 'completed', 'success'), run('bazel', 'queued', '', 'oldsha')],
+  })
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.deepEqual(verdict.pendingRuns, [])
+})
+
+test('classifyChecks — REST actions/runs objects and slurped pages are read like gh run list', () => {
+  const rest = (runs) => ({
+    total_count: runs.length,
+    workflow_runs: runs.map((r) => ({
+      name: r.workflowName,
+      status: r.status,
+      conclusion: r.conclusion,
+      head_sha: r.headSha,
+    })),
+  })
+  const runs = [run('test-go', 'completed', 'success'), run('bazel', 'waiting')]
+  for (const payload of [rest(runs), [rest(runs.slice(0, 1)), rest(runs.slice(1))]]) {
+    const verdict = classifyChecks({ headSHA: HEAD, buckets: greenHead, workflowRuns: payload })
+    assert.deepEqual(verdict.pendingRuns, ['bazel'])
+    assert.equal(verdict.state, CHECK_STATES.PENDING)
+  }
+})
+
+test('classifyChecks — a run list that may be truncated is unreadable, never green', () => {
+  const full = Array.from({ length: 100 }, (_, i) => run(`wf-${i}`, 'completed', 'success'))
+  assert.equal(
+    classifyChecks({ headSHA: HEAD, buckets: greenHead, workflowRuns: full }).reason,
+    CHECK_REASONS.UNREADABLE,
+  )
+  const partial = {
+    total_count: 3,
+    workflow_runs: [{ name: 'test-go', status: 'completed', head_sha: HEAD }],
+  }
+  const verdict = classifyChecks({ headSHA: HEAD, buckets: greenHead, workflowRuns: partial })
+  assert.equal(verdict.state, CHECK_STATES.UNKNOWN)
+  assert.equal(verdict.workflowRunsKnown, false)
+})
+
+test('classifyChecks — omitting workflowRuns reports no run evidence and changes nothing else', () => {
+  const verdict = classifyChecks({ buckets: greenHead })
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.equal(verdict.workflowRunsKnown, false)
+  assert.deepEqual(verdict.pendingRuns, [])
+  assert.deepEqual(verdict.notTriggered, [])
+})
+
+test('classifyChecks — 18 prior contexts and 3 green head contexts with queued runs is pending, not absent-gate', () => {
+  const priorNames = Array.from({ length: 18 }, (_, i) => `ctx-${i}`)
+  const head = { checks: priorNames.slice(0, 3).map((n) => bucketRow(n, 'SUCCESS', 'pass')) }
+  const verdict = classifyChecks({
+    headSHA: HEAD,
+    buckets: head,
+    priorContexts: priorNames,
+    workflowRuns: [run('ctx-0', 'completed', 'success'), run('bazel', 'queued')],
+  })
+  assert.equal(verdict.state, CHECK_STATES.PENDING)
+  assert.equal(verdict.reason, CHECK_REASONS.PENDING)
+  assert.equal(verdict.absent.length, 15)
+  assert.equal(absentGateRemedy(verdict), ABSENT_GATE_REMEDIES.NONE)
+})
+
+test('classifyChecks — an empty head run list discounts nothing as not-triggered', () => {
+  const prior = {
+    checks: [
+      { name: 'test-go', state: 'SUCCESS', bucket: 'pass', workflow: 'test-go' },
+      { name: 'guard', state: 'SUCCESS', bucket: 'pass', workflow: 'plugin-distribution (guard)' },
+    ],
+  }
+  const head = {
+    checks: [{ name: 'test-go', state: 'SUCCESS', bucket: 'pass', workflow: 'test-go' }],
+  }
+  const verdict = classifyChecks({
+    headSHA: HEAD,
+    buckets: head,
+    priorContexts: prior,
+    workflowRuns: [],
+  })
+  assert.equal(verdict.state, CHECK_STATES.PENDING)
+  assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(verdict.notTriggered, [])
+  assert.deepEqual(verdict.absent, ['guard'])
+  assert.equal(provesGreenAgrees(verdict), true)
+})
+
+test('classifyChecks — a prior context whose workflow has no run on the head did not trigger', () => {
+  const prior = {
+    checks: [
+      { name: 'test-go', state: 'SUCCESS', bucket: 'pass', workflow: 'test-go' },
+      { name: 'guard', state: 'SUCCESS', bucket: 'pass', workflow: 'plugin-distribution (guard)' },
+    ],
+  }
+  const head = {
+    checks: [{ name: 'test-go', state: 'SUCCESS', bucket: 'pass', workflow: 'test-go' }],
+  }
+  const verdict = classifyChecks({
+    headSHA: HEAD,
+    buckets: head,
+    priorContexts: prior,
+    workflowRuns: [run('test-go', 'completed', 'success')],
+  })
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.equal(verdict.reason, CHECK_REASONS.OK)
+  assert.deepEqual(verdict.notTriggered, ['guard'])
+  assert.deepEqual(verdict.absent, ['guard'])
+  assert.equal(provesGreenAgrees(verdict), true)
+
+  // A head run of that workflow completed while the context is still missing: a lost job.
+  const lost = classifyChecks({
+    headSHA: HEAD,
+    buckets: head,
+    priorContexts: prior,
+    workflowRuns: [
+      run('test-go', 'completed', 'success'),
+      run('plugin-distribution (guard)', 'completed', 'success'),
+    ],
+  })
+  assert.equal(lost.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(lost.notTriggered, [])
+
+  // Without run evidence nothing is discounted.
+  const blind = classifyChecks({ headSHA: HEAD, buckets: head, priorContexts: prior })
+  assert.equal(blind.reason, CHECK_REASONS.ABSENT_GATE)
+
+  // The rollup's `workflowName` carries the workflow just as `gh pr checks`' `workflow` does.
+  const viaRollup = classifyChecks({
+    headSHA: HEAD,
+    buckets: head,
+    priorContexts: {
+      statusCheckRollup: [
+        { name: 'test-go', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'test-go' },
+        {
+          name: 'guard',
+          status: 'COMPLETED',
+          conclusion: 'SUCCESS',
+          workflowName: 'plugin-distribution (guard)',
+        },
+      ],
+    },
+    workflowRuns: [run('test-go', 'completed', 'success')],
+  })
+  assert.deepEqual(viaRollup.notTriggered, ['guard'])
+})
+
+test('CLI classify — --workflow-runs is read and its verdict fields are printed', () => {
+  const result = runCli([
+    'classify',
+    '--head-sha',
+    HEAD,
+    '--checks',
+    JSON.stringify(greenHead),
+    '--workflow-runs',
+    JSON.stringify([run('bazel', 'queued')]),
+  ])
+  assert.equal(result.status, 0, result.stderr)
+  const parsed = JSON.parse(result.stdout)
+  assert.equal(parsed.reason, CHECK_REASONS.PENDING)
+  assert.deepEqual(parsed.pendingRuns, ['bazel'])
+  assert.equal(parsed.workflowRunsKnown, true)
 })
 
 test('contextNames — extracts names from all three payload shapes and from a bare name list', () => {
@@ -893,6 +1209,7 @@ test('CLI — every flag each verb reads is accepted', () => {
     ['classify', ['--read-error', 'quota exhausted']],
     ['classify', ['--accept-no-gate-ran']],
     ['classify', ['--structurally-absent', 'pr_agent']],
+    ['classify', ['--workflow-runs', JSON.stringify([])]],
     ['merge-state', ['--merge-state', 'CLEAN']],
     ['merge-state', ['--check-state', 'green']],
     ['merge-state', ['--check-reason', 'ok']],
@@ -1264,6 +1581,28 @@ test('provesGreenAgrees — the boolean and the reason agree on every verdict cl
     classifyChecks({ buckets: [skipped], priorContexts: ['test-go'] }),
     classifyChecks({ buckets: [skipped], priorContexts: ['test-go'], acceptNoGateRan: true }),
     classifyChecks({ buckets: [pass], priorContexts: ['test-go'], readError: 'boom' }),
+    classifyChecks({
+      buckets: [pass],
+      priorContexts: ['test-go', 'pr_agent'],
+      structurallyAbsentContexts: ['pr_agent'],
+    }),
+    classifyChecks({
+      buckets: [pass],
+      priorContexts: [pass, { name: 'pr_agent', state: 'SUCCESS', bucket: 'pass' }],
+    }),
+    classifyChecks({
+      buckets: [pass],
+      priorContexts: ['test-go'],
+      workflowRuns: [{ name: 'bazel', status: 'queued' }],
+    }),
+    classifyChecks({
+      buckets: [pass],
+      priorContexts: [
+        pass,
+        { name: 'guard', state: 'SUCCESS', bucket: 'pass', workflow: 'guard-wf' },
+      ],
+      workflowRuns: [{ name: 'test-go', status: 'completed', conclusion: 'success' }],
+    }),
   ]
   for (const verdict of verdicts) {
     assert.equal(

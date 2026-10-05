@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/boss/internal/client"
@@ -269,9 +271,13 @@ func runCallbackListWithClient(cmd *cobra.Command, c client.BossClient) error {
 		req.Trigger = &s
 	}
 
-	callbacks, err := c.ListGithubCallbacks(cmd.Context(), req)
+	prNumber, err := callbackPRFilter(cmd)
 	if err != nil {
-		return fmt.Errorf("list github callbacks: %w", err)
+		return err
+	}
+	callbacks, err := listScopedCallbacks(cmd, c, req, prNumber)
+	if err != nil {
+		return err
 	}
 	if cmd.Flags().Changed("id") {
 		id, _ := cmd.Flags().GetString("id")
@@ -415,12 +421,223 @@ func callbackListColumns(ids, prs, triggers, states, chats, expiries []string) [
 	}
 }
 
-func runCallbackRemove(cmd *cobra.Command, id string) error {
+func runCallbackRemove(cmd *cobra.Command, args []string) error {
+	all, err := validateCallbackRemoveArgs(cmd, args)
+	if err != nil {
+		return err
+	}
 	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
-	return runCallbackRemoveWithClient(cmd, c, id)
+	if all {
+		return runCallbackRemoveAllWithClient(cmd, c)
+	}
+	return runCallbackRemoveWithClient(cmd, c, args[0])
+}
+
+// validateCallbackRemoveArgs enforces that `remove` names exactly one target:
+// either a positional <callback-id> or --all, never both and never neither. The
+// scope flags (--pr, --repo) and --json only describe a bulk removal, so they
+// are refused beside a single id rather than silently ignored. It runs before
+// the client is built so a malformed invocation never reaches the daemon.
+func validateCallbackRemoveArgs(cmd *cobra.Command, args []string) (all bool, err error) {
+	all, _ = cmd.Flags().GetBool("all")
+	switch {
+	case all && len(args) > 0:
+		return false, codedError(codeInvalidArgument, fmt.Errorf("pass either <callback-id> or --all, not both"))
+	case !all && len(args) == 0:
+		return false, codedError(codeInvalidArgument, fmt.Errorf("pass a <callback-id> to remove one callback, or --all to remove every active callback for the chat"))
+	}
+	if !all {
+		for _, name := range []string{"pr", "repo", "json"} {
+			if cmd.Flags().Changed(name) {
+				return false, codedError(codeInvalidArgument, fmt.Errorf("--%s only applies with --all", name))
+			}
+		}
+	}
+	return all, nil
+}
+
+// callbackPRFilter reads the optional --pr filter, returning 0 when --pr was
+// not given. The filter is applied client-side on pr_number (the list RPC has
+// no PR field), which keeps this a CLI-only change with no API version bump.
+func callbackPRFilter(cmd *cobra.Command) (int32, error) {
+	if !cmd.Flags().Changed("pr") {
+		return 0, nil
+	}
+	pr, err := cmd.Flags().GetInt32("pr")
+	if err != nil {
+		return 0, err
+	}
+	if pr <= 0 {
+		return 0, codedError(codeInvalidArgument, fmt.Errorf("--pr must be a positive PR number, got %d", pr))
+	}
+	return pr, nil
+}
+
+// listScopedCallbacks is the one scoped read `list` and `remove --all` share, so
+// the two can never disagree about which rows a scope selects. The server-side
+// filters travel in req; prNumber (0 = any) narrows the result client-side. It
+// returns a fresh slice, never the client's own backing array.
+func listScopedCallbacks(cmd *cobra.Command, c client.BossClient, req *pb.ListGithubCallbacksRequest, prNumber int32) ([]*pb.GithubCallback, error) {
+	callbacks, err := c.ListGithubCallbacks(cmd.Context(), req)
+	if err != nil {
+		return nil, fmt.Errorf("list github callbacks: %w", err)
+	}
+	out := make([]*pb.GithubCallback, 0, len(callbacks))
+	for _, cb := range callbacks {
+		if prNumber != 0 && cb.GetPrNumber() != prNumber {
+			continue
+		}
+		out = append(out, cb)
+	}
+	return out, nil
+}
+
+// callbackStateActive is the armed, not-yet-matched state.
+const callbackStateActive = "active"
+
+// callbackLiveStates are the non-terminal states `remove --all` removes and
+// its post-condition counts. A leased or triggered row has not delivered yet
+// and still wakes the chat, so leaving one behind would be a silent armed
+// watch; a terminal row (delivered/canceled/expired) is no longer live, so one
+// that finished between the list and the delete must not fail the cleanup.
+var callbackLiveStates = map[string]bool{callbackStateActive: true, "leased": true, "triggered": true}
+
+// callbackRemoveAllJSON is the stable, documented schema emitted by
+// `boss callback remove --all --json`. Like githubCallbackJSON, field names are
+// a machine contract: renames are breaking changes. removed lists every
+// selected id that is no longer active after the removal (deleted now, or
+// already gone when the delete ran); remaining_active lists every id the
+// post-condition re-list still found active — non-empty means the cleanup
+// failed and the command exited non-zero. pr_number is null when --pr was not
+// given.
+type callbackRemoveAllJSON struct {
+	Removed         []string `json:"removed"`
+	RemainingActive []string `json:"remaining_active"`
+	Chat            string   `json:"chat"`
+	PRNumber        *int32   `json:"pr_number"`
+}
+
+// runCallbackRemoveAllWithClient removes every active callback owned by the
+// resolved chat (optionally narrowed by --pr / --repo), then re-lists the same
+// scope and fails, naming every id, when any active row remains. Both the
+// zero-match case and success print an explicit count, so "matched nothing"
+// and "cleaned up" are each stated rather than read off silence.
+func runCallbackRemoveAllWithClient(cmd *cobra.Command, c client.BossClient) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	chat, err := resolveCallbackChat(cmd)
+	if err != nil {
+		return err
+	}
+	prNumber, err := callbackPRFilter(cmd)
+	if err != nil {
+		return err
+	}
+	// No server-side state filter: listActive keeps every live state.
+	req := &pb.ListGithubCallbacksRequest{TargetChatId: &chat}
+	if cmd.Flags().Changed("repo") {
+		slug, _ := cmd.Flags().GetString("repo")
+		owner, repo, err := githubcallback.SplitRepo(slug)
+		if err != nil {
+			return err
+		}
+		req.RepoOwner = &owner
+		req.RepoName = &repo
+	}
+
+	// listActive re-applies the chat and state scope client-side as well: the
+	// post-condition must count only this chat's active rows even if a daemon
+	// ever widened its server-side filtering.
+	listActive := func() ([]*pb.GithubCallback, error) {
+		rows, err := listScopedCallbacks(cmd, c, req, prNumber)
+		if err != nil {
+			return nil, err
+		}
+		active := rows[:0]
+		for _, cb := range rows {
+			if cb.GetTargetChatId() == chat && callbackLiveStates[strings.ToLower(cb.GetState())] {
+				active = append(active, cb)
+			}
+		}
+		return active, nil
+	}
+
+	selected, err := listActive()
+	if err != nil {
+		return err
+	}
+	var deleteErrs []error
+	for _, cb := range selected {
+		id := cb.GetId()
+		resp, err := c.DeleteGithubCallback(cmd.Context(), chat, id)
+		if err != nil {
+			// A row that fired or expired between the list and the delete is
+			// gone, which is what this command wants.
+			if connect.CodeOf(err) == connect.CodeNotFound {
+				continue
+			}
+			deleteErrs = append(deleteErrs, fmt.Errorf("remove github callback %s: %w", id, err))
+			continue
+		}
+		switch outcome := resp.GetOutcome(); outcome {
+		case "", "deleted", "not_found":
+		default:
+			deleteErrs = append(deleteErrs, fmt.Errorf("remove github callback %s: outcome %q", id, outcome))
+		}
+	}
+
+	remaining, err := listActive()
+	if err != nil {
+		return errors.Join(append(deleteErrs, fmt.Errorf("verify cleanup: %w", err))...)
+	}
+	remainingIDs := make([]string, 0, len(remaining))
+	still := make(map[string]bool, len(remaining))
+	for _, cb := range remaining {
+		remainingIDs = append(remainingIDs, cb.GetId())
+		still[cb.GetId()] = true
+	}
+	removedIDs := make([]string, 0, len(selected))
+	for _, cb := range selected {
+		if !still[cb.GetId()] {
+			removedIDs = append(removedIDs, cb.GetId())
+		}
+	}
+
+	var failure error
+	if len(remainingIDs) > 0 {
+		deleteErrs = append(deleteErrs, fmt.Errorf("cleanup incomplete: %d active callback(s) remain for chat %s%s: %s",
+			len(remainingIDs), chat, callbackPRSuffix(prNumber), strings.Join(remainingIDs, ", ")))
+	}
+	if len(deleteErrs) > 0 {
+		failure = errors.Join(deleteErrs...)
+	}
+
+	if asJSON {
+		out := callbackRemoveAllJSON{Removed: removedIDs, RemainingActive: remainingIDs, Chat: chat}
+		if prNumber != 0 {
+			pr := prNumber
+			out.PRNumber = &pr
+		}
+		if failure != nil {
+			return emitJSONReportedFailure(cmd, out, failure)
+		}
+		return emitJSON(cmd, out)
+	}
+	line := fmt.Sprintf("Removed %d callback(s) for chat %s%s; %d active remain", len(removedIDs), chat, callbackPRSuffix(prNumber), len(remainingIDs))
+	if len(remainingIDs) > 0 {
+		line += ": " + strings.Join(remainingIDs, ", ")
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), line+".")
+	return failure
+}
+
+func callbackPRSuffix(prNumber int32) string {
+	if prNumber == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" PR #%d", prNumber)
 }
 
 func runCallbackRemoveWithClient(cmd *cobra.Command, c client.BossClient, id string) error {
@@ -492,6 +709,30 @@ func triggerLabel(trigger string) string {
 	return trigger
 }
 
+// callbackAddSignatureHint is appended when `boss callback add` is handed an
+// event-shaped flag. `--on` is borrowed from `boss broadcast subscribe`, and
+// `--trigger` / `--pr` guess at a flag form; add takes both positionally.
+const callbackAddSignatureHint = "boss callback add takes the PR and trigger positionally: " +
+	"boss callback add <pr> <trigger> --message <prompt> (--on belongs to boss broadcast subscribe)"
+
+// callbackAddEventFlags are the unknown flags that earn the signature hint.
+var callbackAddEventFlags = map[string]bool{"on": true, "trigger": true, "pr": true}
+
+// callbackAddFlagErrorHook wraps the root flagErrorHook for `add`: an unknown
+// --on/--trigger/--pr returns the original error plus the real signature, and
+// every other rejection is exactly what the root hook would have produced.
+// cobra consults a command's own FlagErrorFunc before its parent's, so this
+// must delegate rather than replace. The result is still an INVALID_ARGUMENT
+// codedError, so the emitRootJSONFailure backstop renders it under --json.
+func callbackAddFlagErrorHook(cmd *cobra.Command, err error) error {
+	var notExist *pflag.NotExistError
+	if errors.As(err, &notExist) && notExist.GetSpecifiedShortnames() == "" &&
+		callbackAddEventFlags[notExist.GetSpecifiedName()] {
+		return codedError(codeInvalidArgument, fmt.Errorf("%w; %s", err, callbackAddSignatureHint))
+	}
+	return flagErrorHook(cmd, err)
+}
+
 func callbackCmd() *cobra.Command {
 	callback := &cobra.Command{
 		Use:   "callback",
@@ -523,7 +764,8 @@ func callbackCmd() *cobra.Command {
 	add.Flags().String("group", "", "Optional group id; siblings in a group cancel each other on first fire")
 	add.Flags().Bool("on-transition", false, "Fire only after the trigger transitions from unsatisfied to satisfied")
 	add.Flags().Bool("independent-watch", false, "This watch is meant to outlive any sibling, so do not warn that a mutually exclusive callback is armed under another group. Records intent; it changes nothing about when the callback fires")
-	add.Flags().Bool("json", false, "Emit the created callback as a stable JSON schema")
+	add.Flags().Bool("json", false, "Emit the created callback as a stable JSON schema on stdout only")
+	add.SetFlagErrorFunc(callbackAddFlagErrorHook)
 
 	list := &cobra.Command{
 		Use:     "list",
@@ -538,18 +780,24 @@ func callbackCmd() *cobra.Command {
 	list.Flags().String("trigger", "", "Filter by trigger ("+strings.Join(githubcallback.ValidTriggerStrings(), ", ")+")")
 	list.Flags().String("state", "", "Filter by state (active, leased, triggered, delivered, canceled, expired)")
 	list.Flags().String("id", "", "Filter by callback id")
-	list.Flags().Bool("json", false, "Emit a stable JSON schema instead of a table")
+	list.Flags().Int32("pr", 0, "Filter by pull request number (matched on pr_number)")
+	list.Flags().Bool("json", false, "Emit a stable JSON schema instead of a table, on stdout only")
 
 	remove := &cobra.Command{
-		Use:     "remove <callback-id>",
+		Use:     "remove (<callback-id> | --all)",
 		Aliases: []string{"rm"},
-		Short:   "Remove a GitHub callback by id",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCallbackRemove(cmd, args[0])
-		},
+		Short:   "Remove a GitHub callback by id, or every active callback for the chat",
+		Long: "Remove one callback by id, or with --all every active callback owned by the " +
+			"resolved chat (optionally narrowed by --pr and --repo), then re-list that scope " +
+			"and exit non-zero naming any id still active.",
+		Args: cobra.RangeArgs(0, 1),
+		RunE: runCallbackRemove,
 	}
 	remove.Flags().String("chat", "", "Owning chat id (default: $BOSS_AGENT_SESSION_ID). Honoured locally as well as remotely: it is the ownership guard, so removing a callback owned by another chat is refused, and it is the routing key for a remote daemon")
+	remove.Flags().Bool("all", false, "Remove every active callback owned by the chat (instead of one <callback-id>), then verify none remain")
+	remove.Flags().Int32("pr", 0, "With --all: only callbacks for this pull request number")
+	remove.Flags().String("repo", "", "With --all: only callbacks for this repository (owner/repo)")
+	remove.Flags().Bool("json", false, "With --all: emit {removed, remaining_active, chat, pr_number} as JSON on stdout only")
 
 	callback.AddCommand(add, list, remove)
 	return callback

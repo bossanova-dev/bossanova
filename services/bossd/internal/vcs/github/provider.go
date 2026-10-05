@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -423,6 +424,59 @@ func (p *Provider) getPRMergeability(ctx context.Context, repoPath string, prID 
 		return nil, fmt.Errorf("parse PR mergeability: %w", err)
 	}
 	return &raw, nil
+}
+
+// workflowRunsPageSize is the single page ListWorkflowRuns requests. A page
+// that comes back full may have been cut short, so it is refused rather than
+// trusted as the complete run set.
+const workflowRunsPageSize = 100
+
+// ListWorkflowRuns returns the GitHub Actions workflow runs for headSHA. It
+// reads REST `actions/runs?head_sha=` (like getPRMergeability, so it stays off
+// the GraphQL quota). A full page, or a total_count larger than the runs
+// returned, is an error: a truncated list can hide the one queued run that
+// makes a green check set premature, so the caller must fail closed.
+func (p *Provider) ListWorkflowRuns(ctx context.Context, repoPath, headSHA string) ([]vcs.WorkflowRun, error) {
+	if headSHA == "" {
+		return nil, errors.New("list workflow runs: head SHA is empty")
+	}
+	nwo := repoFlag(repoPath)
+	if _, _, ok := splitNWO(nwo); !ok {
+		return nil, fmt.Errorf("invalid GitHub repo: %s", nwo)
+	}
+	out, err := p.runGH(ctx, "api", workflowRunsPath(nwo, headSHA))
+	if err != nil {
+		return nil, fmt.Errorf("list workflow runs: %w", err)
+	}
+	var raw struct {
+		TotalCount   int `json:"total_count"`
+		WorkflowRuns []struct {
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			HeadSHA    string `json:"head_sha"`
+		} `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parse workflow runs: %w", err)
+	}
+	if len(raw.WorkflowRuns) >= workflowRunsPageSize || raw.TotalCount > len(raw.WorkflowRuns) {
+		return nil, fmt.Errorf("list workflow runs: %d of %d runs returned for %s; the list may be truncated",
+			len(raw.WorkflowRuns), raw.TotalCount, headSHA)
+	}
+	runs := make([]vcs.WorkflowRun, 0, len(raw.WorkflowRuns))
+	for _, r := range raw.WorkflowRuns {
+		runs = append(runs, vcs.WorkflowRun{Name: r.Name, Status: r.Status, Conclusion: r.Conclusion, HeadSHA: r.HeadSHA})
+	}
+	return runs, nil
+}
+
+// workflowRunsPath builds the REST path ListWorkflowRuns reads.
+func workflowRunsPath(nwo, headSHA string) string {
+	q := url.Values{}
+	q.Set("head_sha", headSHA)
+	q.Set("per_page", strconv.Itoa(workflowRunsPageSize))
+	return fmt.Sprintf("repos/%s/actions/runs?%s", nwo, q.Encode())
 }
 
 // GetCheckResults returns CI check results for a pull request.

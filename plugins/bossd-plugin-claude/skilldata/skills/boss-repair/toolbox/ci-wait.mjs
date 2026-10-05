@@ -18,13 +18,16 @@
 //     counted by the next `run`, and three in a row end the wait rather than retrying forever.
 //
 // The verdict itself is `classifyChecks` from ./pr-check-state.mjs, called in-process; this module
-// restates none of its rules, it only maps them onto the CI_WAIT_STATE vocabulary:
+// restates none of its rules, it only maps them onto the CI_WAIT_STATE vocabulary. Every reading
+// carries the head SHA's workflow runs (`gh run list --commit`), so a set read before the head's
+// workflows attached their jobs is `pending`, not green; a runs read that fails never settles.
 //
-//   settled   green                                     terminal
+//   settled   green on two consecutive reads of the     terminal
+//             same head, the second no smaller
 //   failed    failing                                   terminal
 //   timeout   budget exhausted while still waiting      terminal (carries `trend`)
-//   unknown   anything the classifier will not call     terminal
-//             green or red, plus `delay-inert` and
+//   unknown   anything the classifier will not call     terminal (an `absent-gate` one carries
+//             green or red, plus `delay-inert` and      `absentGateRemedy`)
 //             `repeated-interruption`
 //   continue  chunk used up, budget left                NOT terminal — issue `run` again in a new
 //                                                       call; never assign it to CI_WAIT_STATE
@@ -46,7 +49,13 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { isMainModule } from './main-module.mjs'
-import { CHECK_REASONS, CHECK_STATES, classifyChecks } from './pr-check-state.mjs'
+import {
+  CHECK_REASONS,
+  CHECK_STATES,
+  WORKFLOW_RUNS_LIMIT,
+  absentGateRemedy,
+  classifyChecks,
+} from './pr-check-state.mjs'
 
 export const CEILING_MS = 570000
 export const DEFAULTS = Object.freeze({
@@ -153,10 +162,15 @@ function seconds(ms) {
   return `${Math.round(ms / 1000)}s`
 }
 
-// takeReading performs one read — the rollup, then the named-context payload only when the rollup
-// carries a null-shaped node — and classifies it. Each `gh` call gets `min(readTimeoutMs, time left
-// before deadline)`, so the pair together can never outlive the chunk. It never throws: a failed
-// read is `unreadable`.
+// takeReading performs one read — the rollup, then the head SHA's workflow runs, then the
+// named-context payload only when the rollup carries a null-shaped node — and classifies it. Each
+// `gh` call gets `min(readTimeoutMs, time left before deadline)`, so the reads together can never
+// outlive the chunk. It never throws: a failed read is `unreadable`.
+//
+// The runs read is what makes green decidable: without it a check set read before the head's
+// workflows attached their jobs is indistinguishable from a complete one. A failed runs read
+// therefore downgrades a reading that would be green or absent-gate to `unreadable` (keep waiting);
+// a failing or pending reading needs no run evidence and keeps its own verdict.
 async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, now }) {
   const timeoutFor = () => Math.min(readTimeoutMs, deadline - now())
   const view = await read({ what: 'view', pr, timeoutMs: timeoutFor() })
@@ -165,23 +179,42 @@ async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, n
     return { atMs: now(), headSha: '', verdict }
   }
   const headSha = typeof view.headSha === 'string' ? view.headSha : ''
-  let verdict = classifyChecks({
-    headSHA: headSha,
-    observedSHA: headSha,
-    rollup: view.payload ?? null,
-    priorContexts,
-  })
+  let runsError = 'no time left to read workflow runs'
+  let workflowRuns = null
+  if (headSha === '') {
+    runsError = 'no head SHA to read workflow runs for'
+  } else if (timeoutFor() >= READ_FLOOR_MS) {
+    const runs = await read({ what: 'runs', pr, headSha, timeoutMs: timeoutFor() })
+    if (runs?.ok) {
+      workflowRuns = runs.payload ?? []
+      runsError = null
+    } else {
+      runsError = runs?.error ?? 'workflow runs read failed'
+    }
+  }
+  const classify = (buckets) =>
+    classifyChecks({
+      headSHA: headSha,
+      observedSHA: headSha,
+      rollup: view.payload ?? null,
+      buckets,
+      priorContexts,
+      workflowRuns,
+    })
+  let verdict = classify(null)
   if (verdict.reason === CHECK_REASONS.UNCLASSIFIED && timeoutFor() >= READ_FLOOR_MS) {
     const checks = await read({ what: 'checks', pr, timeoutMs: timeoutFor() })
-    if (checks?.ok) {
-      verdict = classifyChecks({
-        headSHA: headSha,
-        observedSHA: headSha,
-        rollup: view.payload ?? null,
-        buckets: checks.payload ?? null,
-        priorContexts,
-      })
-    }
+    if (checks?.ok) verdict = classify(checks.payload ?? null)
+  }
+  if (
+    runsError !== null &&
+    (verdict.state === CHECK_STATES.GREEN || verdict.reason === CHECK_REASONS.ABSENT_GATE)
+  ) {
+    verdict = classifyChecks({
+      headSHA: headSha,
+      observedSHA: headSha,
+      readError: `workflow runs: ${runsError}`,
+    })
   }
   return { atMs: now(), headSha, verdict }
 }
@@ -189,8 +222,17 @@ async function takeReading({ read, pr, readTimeoutMs, deadline, priorContexts, n
 function recordReading(record, reading) {
   record.reads += 1
   record.updatedAtMs = reading.atMs
+  const v = reading.verdict
+  // What the last reading says about missing and unfinished work, so a terminal verdict names it.
+  record.lastDetail = {
+    absent: v.absent ?? [],
+    notTriggered: v.notTriggered ?? [],
+    pendingRuns: v.pendingRuns ?? [],
+    absentGateRemedy: absentGateRemedy(v),
+  }
   record.readings.push({
     atMs: reading.atMs,
+    headSha: reading.headSha,
     state: reading.verdict.state,
     reason: reading.verdict.reason,
     // An unreadable read counted nothing; a zero here would read as a fall to the trend.
@@ -200,6 +242,23 @@ function recordReading(record, reading) {
   if (record.readings.length > READINGS_KEPT) {
     record.readings.splice(0, record.readings.length - READINGS_KEPT)
   }
+}
+
+// confirmsGreen: a green reading only ends the wait when the reading before it, on the same head,
+// was green too and carried no more checks. One green read can be a partial set caught between two
+// workflows attaching their jobs; two in a row with a set that did not shrink is the settled shape.
+function confirmsGreen(record) {
+  const n = record.readings.length
+  if (n < 2) return false
+  const [prev, last] = [record.readings[n - 2], record.readings[n - 1]]
+  return (
+    prev.state === CHECK_STATES.GREEN &&
+    last.state === CHECK_STATES.GREEN &&
+    prev.headSha === last.headSha &&
+    Number.isFinite(prev.total) &&
+    Number.isFinite(last.total) &&
+    prev.total <= last.total
+  )
 }
 
 function totalBudget(record) {
@@ -219,7 +278,8 @@ function resumable(record) {
 // runChunk is the whole wait for one tool call. Every side effect is injected:
 //   state   a per-PR store: { load(headSha), latest(), save(record), remove(headSha) };
 //           `load('')` is the placeholder used while no read has named the head yet
-//   read    async ({what: 'view'|'checks', pr, timeoutMs}) → {ok, headSha?, payload?, error?}
+//   read    async ({what: 'view'|'runs'|'checks', pr, headSha?, timeoutMs})
+//           → {ok, headSha?, payload?, error?}; `runs` carries the head SHA it reads runs for
 //   sleep   async (ms) → void; the elapsed wall time is verified against `now`
 //   now     () → epoch ms
 //   options {pr, budgetMs, intervalMs, chunkMs, readTimeoutMs, extend, extendMs, priorContexts}
@@ -329,6 +389,10 @@ export async function runChunk({ state, read, sleep, now, options }) {
       trend,
       extended: record.extended,
       interruptedChunks: record.interruptedChunks,
+      absent: record.lastDetail?.absent ?? [],
+      notTriggered: record.lastDetail?.notTriggered ?? [],
+      pendingRuns: record.lastDetail?.pendingRuns ?? [],
+      absentGateRemedy: record.lastDetail?.absentGateRemedy ?? 'none',
       stateFile: state.pathFor?.(record.headSha) ?? null,
       ...extra,
     }
@@ -367,7 +431,10 @@ export async function runChunk({ state, read, sleep, now, options }) {
   for (;;) {
     reads += 1
     const decision = mapVerdict(reading.verdict)
-    if (!decision.wait) return close(decision.state, decision.reason)
+    // A green read settles only once a second read of the same head confirms it; until then it is
+    // one more interval of waiting like any pending read.
+    const unconfirmed = decision.state === WAIT_STATES.SETTLED && !confirmsGreen(record)
+    if (!decision.wait && !unconfirmed) return close(decision.state, decision.reason)
 
     let elapsed = now() - record.startedAtMs
     if (elapsed >= totalBudget(record)) {
@@ -496,13 +563,29 @@ export function fileStore({ dir, pr }) {
   }
 }
 
+const RUN_LIST_FIELDS = 'name,workflowName,status,conclusion,headSha,event'
+
+function ghArgs({ what, pr, headSha }) {
+  if (what === 'view') return ['pr', 'view', String(pr), '--json', 'headRefOid,statusCheckRollup']
+  if (what === 'runs') {
+    return [
+      'run',
+      'list',
+      '--commit',
+      headSha,
+      '--json',
+      RUN_LIST_FIELDS,
+      '--limit',
+      String(WORKFLOW_RUNS_LIMIT),
+    ]
+  }
+  return ['pr', 'checks', String(pr), '--json', 'name,state,bucket']
+}
+
 export function ghReader({ spawn = spawnSync } = {}) {
-  return async ({ what, pr, timeoutMs }) => {
-    const args =
-      what === 'view'
-        ? ['pr', 'view', String(pr), '--json', 'headRefOid,statusCheckRollup']
-        : ['pr', 'checks', String(pr), '--json', 'name,state,bucket']
-    const res = spawn('gh', args, {
+  return async ({ what, pr, headSha = '', timeoutMs }) => {
+    if (what === 'runs' && headSha === '') return { ok: false, error: 'no head SHA' }
+    const res = spawn('gh', ghArgs({ what, pr, headSha }), {
       encoding: 'utf8',
       timeout: Math.max(1, Math.floor(timeoutMs)),
       killSignal: 'SIGKILL',

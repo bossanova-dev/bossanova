@@ -740,11 +740,11 @@ bounded poll, capped by `policy.settleCap` (3) cycles. Then by source:
 
 ## Step 11: Proof (REVIEW_READY only, never fatal)
 
-Classify with `node scripts/proof.mjs plan` (read `recipes`, `surfaces`, `order`) and run the
-change's browser recipes explicitly: `node scripts/proof.mjs run --recipe <id> …`. Its own PR
-comment is the only proof channel — never hand-write "proof skipped". TUI proof is driven by the
-Step 5 scenario. `node scripts/proof.mjs doctor` explains missing prerequisites. Every failure is
-recorded and ignored. [`references/proof-capture.md`](references/proof-capture.md).
+Classify with `node scripts/proof.mjs plan`, then run a bare `node scripts/proof.mjs run`: it
+captures `recipeLeg` and the `order` surfaces, or posts its own note when both are empty;
+`--recipe` only narrows. Its comment is the only proof channel — never hand-write "proof skipped".
+TUI proof is the Step 5 scenario; `doctor` names missing prerequisites. Every failure is recorded
+and ignored. [`references/proof-capture.md`](references/proof-capture.md).
 
 ## Step 12: Stop cleanly
 
@@ -792,6 +792,9 @@ fi
 rm -f "$RC_ERR"
 ```
 
+- On every route with a PR, first `boss callback remove --all --pr "$PR_NUMBER" --repo <owner/name> --json`; a non-zero
+  exit is a failed cleanup to report (callback-watches.md step 6). Nothing is re-armed except below,
+  and `$WATCH_LIST_JSON` must be listed after this cleanup, never reused from before it.
 - On `REVIEW_READY` / `PARTIAL`, decide whether you may stop watching CI:
 
 ```bash

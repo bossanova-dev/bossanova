@@ -336,8 +336,15 @@ dash-dash flag:
 plan output:
   plan accepts no baseline flag: --base and --since are not parsed. It diffs
   against the BASE_REF environment variable (default origin/main), or against
-  the --changed-file list when one is given. Consume the recipes, surfaces and
-  order fields of its JSON; there is no top-level surface scalar.
+  the --changed-file list when one is given. Its JSON keys, in order:
+  changedFiles; recipes (every path-matched recipe as {id, surface, title} --
+  full definitions stay in proof/recipes/default.json); recipeLeg (the recipe
+  ids a bare run captures: the --recipe ids, else the classifier's recipe-surface
+  set); surfaces; order (the agent surfaces run drives); forcedNoSurface (true
+  when every surface in order was forced onto a diff with nothing to show, so
+  run defers forced-no-surface). Consume the recipeLeg, order and
+  forcedNoSurface fields to know what run captures; there is no top-level
+  surface scalar.
 
 Proof-surface parity:
   There is no parity command. Proof-surface parity is a snapshot gate --
@@ -398,18 +405,13 @@ async function main() {
       requiredProofBullets,
       briefSurface: briefSurfaceOverride(),
     })
-    console.log(
-      JSON.stringify(
-        {
-          changedFiles,
-          recipes: selected,
-          surfaces: surfacePlan.surfaces,
-          order: surfacePlan.order,
-        },
-        null,
-        2,
-      ),
-    )
+    const output = buildPlanOutput({
+      changedFiles,
+      selected,
+      explicitRecipe: args.recipes.length > 0,
+      surfacePlan,
+    })
+    console.log(JSON.stringify(output, null, 2))
     return
   }
 
@@ -505,13 +507,23 @@ async function main() {
     }
   }
 
+  // BOS-1354 F3b: capture exactly the set `plan` reports as `recipeLeg` — the
+  // explicit ids, or the classifier's recipe-surface set. Before this a bare run
+  // captured EVERY path-matched id (all 85 web recipes on a marketing+web diff),
+  // which is neither what `plan` said nor what the agent path's recipe leg runs.
+  const recipePath = recipePathSelection({
+    explicitRecipe,
+    selected,
+    classifiedRecipes: plan.recipes,
+  })
+
   // Preflight ffmpeg/ffprobe only when a browser-video recipe is selected for a
   // run. Still runs (and the `plan` command above) must not require ffmpeg. The
   // probe itself lives in `videoRecipeToolchainMissing` (BOS-1250) so this path
   // and the agent path's recipe leg cannot drift; the two paths keep their own
   // reactions to a miss — this one throws with an install hint, the agent leg
   // defers that surface `env-unavailable` rather than unwinding its sibling legs.
-  if (videoRecipeToolchainMissing(selected).length > 0) {
+  if (videoRecipeToolchainMissing(recipePath).length > 0) {
     throw new Error(
       'ffmpeg and ffprobe are required for video proof recipes — install ffmpeg (e.g. brew install ffmpeg)',
     )
@@ -534,7 +546,7 @@ async function main() {
 
   // Keep the source .webm when we're not uploading (dry-run / BOSS_PROOF_UPLOAD=0)
   // so `proof-postprocess-video.mjs --proof-dir` can re-run the pipeline locally.
-  const captures = selected.map((recipe) =>
+  const captures = recipePath.map((recipe) =>
     captureRecipe({ recipe, localDir, registry: surfaceRegistry, keepWebm: !shouldUpload }),
   )
   const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`
@@ -545,7 +557,7 @@ async function main() {
     runId,
     publicBaseUrl,
     captures,
-    title: resolveProofTitle({ recipes: selected }),
+    title: resolveProofTitle({ recipes: recipePath }),
     verdict: hasFailure ? 'failed' : 'passed',
     genAiLive: false,
     brief: { genAi: false },
@@ -606,6 +618,21 @@ async function main() {
   )
 
   if (hasFailure) {
+    // BOS-1354 F2: a failed capture used to exit 1 and post NOTHING, so the
+    // failure was invisible on the PR. Post an honest `capture-failed` note
+    // (best-effort; printed locally when uploads are off or there is no PR) and
+    // keep the exit code.
+    postDeferredComment({
+      prNumber,
+      dryRun: args.dryRun,
+      commentBody: captureFailedCommentBody({
+        marker: proofCommentMarker(prNumber),
+        commit,
+        prNumber,
+        captures,
+      }),
+      tmpPrefix: 'proof-capture-failed-',
+    })
     process.exitCode = 1
     return
   }
@@ -1342,6 +1369,91 @@ export function resolveSurfacePlan({
     scoped,
     recipes: classified.recipes,
   }
+}
+
+/**
+ * BOS-1354 F3b: the recipes the standalone recipe path captures — the explicit
+ * `--recipe` selection when given, otherwise the classifier's recipe-surface set
+ * (`resolveSurfacePlan(...).recipes`), never every path-matched recipe. `plan`
+ * derives `recipeLeg` from this same helper so the two cannot drift. Pure.
+ * @param {{ explicitRecipe: boolean, selected: object[], classifiedRecipes: object[] }} opts
+ * @returns {object[]}
+ */
+export function recipePathSelection({ explicitRecipe, selected, classifiedRecipes }) {
+  return explicitRecipe ? (selected ?? []) : (classifiedRecipes ?? [])
+}
+
+/**
+ * BOS-1354 F3/F3b/F7: the `plan` command's JSON, in its contract key order.
+ * `recipes` is compact (`{id, surface, title}` only — full definitions stay in
+ * the catalog), `recipeLeg` names exactly what a bare `run` captures through the
+ * recipe leg, and `forcedNoSurface` predicts the `forced-no-surface` deferral
+ * `runAgentSurfaces` applies as its first gate. Pure.
+ * @param {{
+ *   changedFiles: string[],
+ *   selected: object[],
+ *   explicitRecipe: boolean,
+ *   surfacePlan: { surfaces: object, order: string[], recipes: object[] },
+ * }} opts
+ */
+export function buildPlanOutput({ changedFiles, selected, explicitRecipe, surfacePlan }) {
+  const recipeLeg = recipePathSelection({
+    explicitRecipe,
+    selected,
+    classifiedRecipes: surfacePlan.recipes,
+  }).map((recipe) => recipe.id)
+  return {
+    changedFiles,
+    recipes: selected.map(({ id, surface, title }) => ({ id, surface, title })),
+    recipeLeg,
+    surfaces: surfacePlan.surfaces,
+    order: surfacePlan.order,
+    forcedNoSurface:
+      surfacePlan.order.length > 0 &&
+      forcedSurfaceUndemonstrable({ changedFiles, recipes: surfacePlan.recipes }),
+  }
+}
+
+/** Upper bound on each failed recipe's error text in the capture-failed note. */
+export const CAPTURE_FAILED_ERROR_MAX_CHARS = 500
+
+/**
+ * BOS-1354 F2: the deferred note a failed standalone recipe capture posts. Lists
+ * each failed recipe id with its (bounded) error and a `--recipe` re-run hint
+ * naming exactly the failed ids. Pure.
+ * @param {{
+ *   marker: string,
+ *   commit: string,
+ *   prNumber: string,
+ *   captures: Array<{ recipeId: string, status: string, error?: string }>,
+ * }} opts
+ * @returns {string}
+ */
+export function captureFailedCommentBody({ marker, commit, prNumber, captures }) {
+  const failed = (captures ?? []).filter((capture) => capture.status === 'failed')
+  const bound = (text) => {
+    const flat = String(text ?? 'unknown error')
+      .replaceAll(/\s+/g, ' ')
+      .trim()
+    return flat.length > CAPTURE_FAILED_ERROR_MAX_CHARS
+      ? `${flat.slice(0, CAPTURE_FAILED_ERROR_MAX_CHARS)}…`
+      : flat
+  }
+  const details = [
+    '**Failed recipes:**',
+    ...failed.map((capture) => `- \`${capture.recipeId}\`: ${bound(capture.error)}`),
+  ].join('\n')
+  const recaptureHint = [
+    'node scripts/proof.mjs run',
+    ...failed.map((capture) => `--recipe ${capture.recipeId}`),
+  ].join(' ')
+  return renderDeferredComment({
+    marker,
+    manifest: { commit, prNumber, deferred: true },
+    reasonCode: 'capture-failed',
+    details,
+    recaptureHint,
+  })
 }
 
 /**

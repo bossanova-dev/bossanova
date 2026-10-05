@@ -1160,6 +1160,7 @@ ${attachStageScript(recipe)}
 ${notificationStageScript(recipe)}
 ${organizationStageScript(recipe)}
 ${sessionOrganizationStageScript(recipe)}
+${accountsOrganizationStageScript(recipe)}
 ${cronOrganizationStageScript(recipe)}
 ${repositoryOrganizationStageScript(recipe)}
 ${daemonLabelCollisionStageScript(recipe)}
@@ -1240,6 +1241,53 @@ function sessionOrganizationStageScript(recipe) {
         organizationId: orgBySessionId[session.id] ?? 'org-proof-acme',
       })),
       daemons: (fixture.daemons ?? []).map((daemon) => ({
+        ...daemon,
+        organizationId: orgByDaemonId[daemon.id] ?? 'org-proof-acme',
+      })),
+    };
+  });`
+}
+
+// Recipes whose subject is the accounts list's daemon and organization filters
+// (BOS-1354). The accounts page fans out over the ONLINE INVENTORY daemons
+// (services/web/tests/e2e/fakes/api.ts, accountFixtureDaemonId) and lists each
+// daemon's accounts, so the shared fixture's standby@anthropic.com row -- bound
+// to daemon-proof-standby -- only appears once that daemon is in inventory
+// `daemons`. BOS-1236 moved it to `sessionDaemons` (it serves the sessions
+// picker, not inventory), which left both recipes with no Standby row to narrow
+// to. Each row inherits its daemon's organization, and the Organization facet
+// is offered only to a caller with two or more organizations, so the same
+// Acme/Globex split as sessionOrganizationStageScript makes Globex narrow to
+// exactly the standby row.
+//
+// Recipe-scoped for the reason sessionOrganizationStageScript states: the shared
+// fixture carries no organization data for recipes that have not opted in, and
+// adding the standby daemon to inventory everywhere would add a row to every
+// daemon-listing capture. Writes `window.bossanovaE2e` only, for the same
+// reason that staging does -- it extends the shared fixture, which lives there
+// alone, so mirroring it would hide the fixture behind a half-populated mirror.
+// 'daemon-proof' stays FIRST: the fake binds unattributed accounts, default cron
+// jobs and repos to the first online daemon.
+function accountsOrganizationStageScript(recipe) {
+  const stagedRecipeIds = ['web-accounts-filter-flow', 'web-accounts-org-filter-flow']
+  if (!stagedRecipeIds.includes(recipe?.id)) {
+    return ''
+  }
+  return `
+  await page.addInitScript(() => {
+    const orgByDaemonId = { 'daemon-proof-standby': 'org-proof-globex' };
+    const fixture = window.bossanovaE2e ?? {};
+    const daemons = [
+      ...(fixture.daemons ?? []).filter((daemon) => daemon.id !== 'daemon-proof-standby'),
+      { id: 'daemon-proof-standby', displayName: 'Standby daemon' },
+    ];
+    window.bossanovaE2e = {
+      ...fixture,
+      organizations: [
+        { id: 'org-proof-acme', workosOrgId: 'workos-proof-acme', name: 'Acme', memberCount: 2 },
+        { id: 'org-proof-globex', workosOrgId: 'workos-proof-globex', name: 'Globex', memberCount: 2 },
+      ],
+      daemons: daemons.map((daemon) => ({
         ...daemon,
         organizationId: orgByDaemonId[daemon.id] ?? 'org-proof-acme',
       })),

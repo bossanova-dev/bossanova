@@ -327,9 +327,10 @@ func newRegistry() map[string]Prose {
 				"one goes idle, bounded by `--timeout`. `boss tail <agent-session-id>` " +
 				"shows what it last said. `boss show <session-id>` and `boss session " +
 				"checks` give session and PR state. To be woken instead of polling, " +
-				"`boss callback add` fires once when a pull request reaches a chosen " +
-				"state, and `boss broadcast subscribe --on settled` fires when a session " +
-				"reaches an outcome.",
+				"`boss callback add <pr> <trigger> --message <prompt>` fires once when a " +
+				"pull request reaches a chosen state (the PR and trigger are positional; " +
+				"it has no `--on` flag), and `boss broadcast subscribe --on settled` fires " +
+				"when a session reaches an outcome.",
 		},
 		"boss cron add": {
 			Long: "Create a recurring job. Every fire starts a new session running " +
@@ -393,7 +394,11 @@ func newRegistry() map[string]Prose {
 				"never cancel each other and the losing leg stays armed until it " +
 				"expires. Put both triggers in one `--group` to fix that, or pass " +
 				"`--independent-watch` when the watch is genuinely meant to outlive its " +
-				"sibling. The create always succeeds either way.",
+				"sibling. The create always succeeds either way. `--json` writes the " +
+				"documented schema to stdout only; advisories (that split-pair warning, " +
+				"the skill-refresh hold line, a stale-binary note) go to stderr, so parse " +
+				"stdout alone and never merge the streams with `2>&1`. The group key in " +
+				"that schema is `group_id`, not `group`.",
 			Examples: []Example{
 				{
 					Command:     `boss callback add 123 merged --message "PR #123 merged — pull main and redeploy"`,
@@ -436,15 +441,41 @@ func newRegistry() map[string]Prose {
 			},
 		},
 		"boss callback list": {
+			Long: "List registered callbacks, optionally filtered by chat, repository, " +
+				"trigger, state, id, or `--pr <n>` (matched on `pr_number`, so no `jq` " +
+				"filter is needed to scope a listing to one pull request). `--json` writes " +
+				"an array of the same schema as `boss callback add --json` to stdout " +
+				"only; advisories go to stderr, so never merge the streams with `2>&1` " +
+				"before parsing. The group key is `group_id`.",
 			Examples: []Example{
 				{Command: "boss callback list"},
 				{Command: "boss callback list --id cb_abc123"},
 				{Command: "boss callback list --repo acme/widget --trigger merged"},
+				{Command: "boss callback list --chat \"$BOSS_AGENT_SESSION_ID\" --pr 123 --json"},
 				{Command: "boss callback list --json"},
 			},
 		},
 		"boss callback remove": {
-			Examples: []Example{{Command: "boss callback remove cb_abc123"}},
+			Long: "Remove one callback by id, or pass `--all` to remove every live " +
+				"(`active`, `leased` or `triggered`) callback owned by the resolved chat (`--chat`, else " +
+				"`$BOSS_AGENT_SESSION_ID`), optionally narrowed by `--pr` and `--repo`. " +
+				"`--all` never touches another chat's callbacks. After removing, it " +
+				"re-lists the same scope and exits non-zero naming every id still " +
+				"active, so a cleanup that left a watch armed is a failure rather than " +
+				"silence. Success always prints the count, including " +
+				"`Removed 0 callback(s) for chat <id>; 0 active remain.` when nothing " +
+				"matched. A callback that fired or expired between the list and the " +
+				"delete counts as gone. With `--json` it writes " +
+				"`{\"removed\":[…],\"remaining_active\":[…],\"chat\":\"…\",\"pr_number\":n|null}` " +
+				"to stdout only (a non-empty `remaining_active` comes with a non-zero " +
+				"exit); advisories go to stderr.",
+			Examples: []Example{
+				{Command: "boss callback remove cb_abc123"},
+				{
+					Command:     `boss callback remove --all --pr 123 --json`,
+					Explanation: `tear down every watch this chat armed on PR #123, and prove none remain`,
+				},
+			},
 		},
 
 		// --- Notes ---

@@ -69,9 +69,15 @@ function memStore() {
 
 // harness: `script` is a function (request, index) → response; each response may carry `costMs`,
 // the fake time the read takes (default 0). `sleep` advances the clock unless `inert`.
-function harness({ script, start = T0, inert = false }) {
+//
+// The head workflow-runs read is answered by `runs` (request, index) → response instead, and is
+// recorded in `runCalls` rather than `calls`, so a script indexed by its own reads keeps its
+// meaning. The default is a successful read with no runs — every head run completed.
+const completedRuns = () => ({ ok: true, payload: [] })
+function harness({ script, runs = completedRuns, start = T0, inert = false }) {
   let clock = start
   const calls = []
+  const runCalls = []
   const sleeps = []
   return {
     now: () => clock,
@@ -79,8 +85,13 @@ function harness({ script, start = T0, inert = false }) {
       clock += ms
     },
     calls,
+    runCalls,
     sleeps,
     read: async (req) => {
+      if (req.what === 'runs') {
+        runCalls.push({ ...req, atMs: clock })
+        return runs(req, runCalls.length - 1)
+      }
       calls.push({ ...req, atMs: clock })
       const res = script(req, calls.length - 1)
       clock += typeof res?.costMs === 'function' ? res.costMs(req) : (res?.costMs ?? 0)
@@ -628,20 +639,28 @@ test('R9: runChunk ends settled, failed and unknown on the classifier verdicts',
     const { verdict } = await run(h, memStore())
     assert.equal(verdict.state, state)
     assert.equal(verdict.reason, reason)
-    assert.equal(h.sleeps.length, 0, 'a terminal first read takes no delay')
+    // Green waits one interval for a confirming read; every other terminal read ends at once.
+    const settled = state === WAIT_STATES.SETTLED
+    assert.equal(h.sleeps.length, settled ? 1 : 0, `${state}: delays taken`)
+    assert.equal(verdict.reads, settled ? 2 : 1, `${state}: reads`)
   }
   // absent-gate is terminal even though the classifier calls it pending.
   const h = harness({ script: () => view(HEAD_A, [passing('a')]) })
   const absent = await run(h, memStore(), { priorContexts: ['a', 'deploy'] })
   assert.equal(absent.verdict.state, WAIT_STATES.UNKNOWN)
   assert.equal(absent.verdict.reason, 'absent-gate')
+  // The terminal verdict names what is missing and the remedy for it.
+  assert.deepEqual(absent.verdict.absent, ['deploy'])
+  assert.equal(absent.verdict.absentGateRemedy, 're-trigger-absent-gate')
+  assert.deepEqual(absent.verdict.notTriggered, [])
+  assert.deepEqual(absent.verdict.pendingRuns, [])
 })
 
 test('R9: no-checks keeps waiting, then settles once checks attach', async () => {
   const h = harness({ script: (_req, i) => view(HEAD_A, i < 2 ? [] : [passing('a')]) })
   const { verdict } = await run(h, memStore())
   assert.equal(verdict.state, WAIT_STATES.SETTLED)
-  assert.equal(verdict.reads, 3)
+  assert.equal(verdict.reads, 4, 'two no-checks reads, then a green read and its confirmation')
 })
 
 test('R9: a null-shaped node is reconciled against gh pr checks before it may terminate', async () => {
@@ -655,8 +674,103 @@ test('R9: a null-shaped node is reconciled against gh pr checks before it may te
   assert.equal(verdict.state, WAIT_STATES.SETTLED)
   assert.deepEqual(
     h.calls.map((c) => c.what),
-    ['view', 'checks'],
+    ['view', 'checks', 'view', 'checks'],
   )
+})
+
+// ---------------------------------------------------------------------------
+// Head workflow-run evidence and the confirmation read.
+
+const headRun = (name, status, conclusion = '') => ({
+  name,
+  workflowName: name,
+  status,
+  conclusion,
+  headSha: HEAD_A,
+  event: 'pull_request',
+})
+
+test('runs: a green read with a queued head run waits, and settles only after a confirming green read', async () => {
+  const h = harness({
+    script: () => view(HEAD_A, [passing('a'), passing('b')]),
+    runs: (_req, i) => ({
+      ok: true,
+      payload: i === 0 ? [headRun('a', 'completed', 'success'), headRun('bazel', 'queued')] : [],
+    }),
+  })
+  const { verdict } = await run(h, memStore())
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.equal(verdict.reads, 3, 'pending on queued runs, then green, then the confirming green')
+  assert.equal(h.runCalls[0].headSha, HEAD_A, 'runs are read for the head the view named')
+  assert.deepEqual(verdict.pendingRuns, [])
+})
+
+test('runs: a first-read green with completed runs settles on the second read, never on read 1', async () => {
+  const h = harness({
+    script: () => view(HEAD_A, [passing('a')]),
+    runs: () => ({ ok: true, payload: [headRun('a', 'completed', 'success')] }),
+  })
+  const { verdict } = await run(h, memStore())
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.equal(verdict.reads, 2)
+  assert.equal(h.sleeps.length, 1)
+})
+
+test('runs: a green read whose check set shrank is not confirmed by the read before it', async () => {
+  // Read 1 sees 2 green checks, read 2 sees 1: the larger earlier set does not confirm the smaller.
+  const h = harness({
+    script: (_req, i) => view(HEAD_A, i === 0 ? [passing('a'), passing('b')] : [passing('a')]),
+  })
+  const { verdict } = await run(h, memStore())
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.equal(verdict.reads, 3, 'a shrunk set (2 → 1) needs one more matching read')
+})
+
+test('runs: a failed runs read never settles, but a red check still fails', async () => {
+  const h = harness({
+    script: () => view(HEAD_A, [passing('a')]),
+    runs: () => ({ ok: false, error: 'HTTP 502' }),
+  })
+  const { verdict } = await run(h, memStore(), { chunkMs: 120_000 })
+  assert.equal(verdict.state, WAIT_STATES.CONTINUE)
+  assert.ok(verdict.reads > 2)
+
+  const store = memStore()
+  const red = harness({
+    script: () => view(HEAD_A, [failing('a')]),
+    runs: () => ({ ok: false, error: 'HTTP 502' }),
+  })
+  assert.equal((await run(red, store)).verdict.state, WAIT_STATES.FAILED)
+
+  // A run list at the cap may be truncated: unreadable, keep waiting.
+  const capped = harness({
+    script: () => view(HEAD_A, [passing('a')]),
+    runs: () => ({
+      ok: true,
+      payload: Array.from({ length: 100 }, (_, i) => headRun(`wf${i}`, 'completed', 'success')),
+    }),
+  })
+  assert.equal(
+    (await run(capped, memStore(), { chunkMs: 120_000 })).verdict.state,
+    WAIT_STATES.CONTINUE,
+  )
+})
+
+test('runs: a prior context whose workflow did not run on the head settles instead of absent-gate', async () => {
+  const h = harness({
+    script: () => view(HEAD_A, [{ ...passing('test-go'), workflowName: 'test-go' }]),
+    runs: () => ({ ok: true, payload: [headRun('test-go', 'completed', 'success')] }),
+  })
+  const prior = {
+    checks: [
+      { name: 'test-go', state: 'SUCCESS', bucket: 'pass', workflow: 'test-go' },
+      { name: 'guard', state: 'SUCCESS', bucket: 'pass', workflow: 'plugin-distribution' },
+    ],
+  }
+  const { verdict } = await run(h, memStore(), { priorContexts: prior })
+  assert.equal(verdict.state, WAIT_STATES.SETTLED)
+  assert.deepEqual(verdict.notTriggered, ['guard'])
+  assert.deepEqual(verdict.absent, ['guard'])
 })
 
 // ---------------------------------------------------------------------------
@@ -720,6 +834,21 @@ test('ghReader: passes the timeout to gh, tolerates pending exit 8, fails closed
     return { status: 8, stdout: '[]' }
   }
   const read = ghReader({ spawn })
+  assert.equal((await read({ what: 'runs', pr: 3, headSha: HEAD_A, timeoutMs: 77 })).ok, false)
+  assert.deepEqual(seen.pop().args, [
+    'run',
+    'list',
+    '--commit',
+    HEAD_A,
+    '--json',
+    'name,workflowName,status,conclusion,headSha,event',
+    '--limit',
+    '100',
+  ])
+  assert.deepEqual(await read({ what: 'runs', pr: 3, timeoutMs: 5 }), {
+    ok: false,
+    error: 'no head SHA',
+  })
   assert.deepEqual(await read({ what: 'view', pr: 3, timeoutMs: 1234 }), {
     ok: true,
     headSha: HEAD_A,

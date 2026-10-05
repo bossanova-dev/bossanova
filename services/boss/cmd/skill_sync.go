@@ -1191,6 +1191,7 @@ func runSkillGate(out io.Writer, only string) error {
 	payload := selectedSkillPayload{srcRoot: srcRoot, fromSource: true}
 	repoRoot := repoRootFromSourceRoot(srcRoot)
 	var gateErr error
+	behindHeaderDone := false
 	for _, target := range skillInstallAgents {
 		if only != "" && target.command != only {
 			continue
@@ -1222,6 +1223,14 @@ func runSkillGate(out io.Writer, only string) error {
 		}
 		if len(unexplained) > 0 {
 			gateErr = errors.Join(gateErr, fmt.Errorf("skill drift detected"))
+			if !behindHeaderDone {
+				// Once per gate run, flush left so no consumer reads it as a row:
+				// a stale checkout judges every direction against an old HEAD.
+				behindHeaderDone = true
+				if n := skillCheckoutBehindCount(repoRoot); n > 0 {
+					_, _ = fmt.Fprintf(out, "boss skills gate: this checkout is %d commit(s) behind origin/HEAD — directions are judged against HEAD\n", n)
+				}
+			}
 			// The count is this agent tree's own, stated as such: the gate
 			// prints one section per tree, so a count taken over the whole
 			// output is a multiple of any one tree's.
@@ -1335,6 +1344,10 @@ const (
 	// path contains, so a reinstall would replace bytes this checkout cannot
 	// restore.
 	skillDriftUnrecoverable skillDriftDirection = "unrecoverable"
+	// skillDriftAhead is a revision origin/HEAD reaches and this checkout's HEAD
+	// does not: the installed copy is newer than the checkout, so a reinstall
+	// from here would downgrade it.
+	skillDriftAhead skillDriftDirection = "ahead"
 	// skillDriftUnknown is an undecided lookup: git failed, the object is not
 	// present locally, or the bounded lookback ended without a match. Treated as
 	// unrecoverable for the remedy decision, but labelled honestly.
@@ -1442,15 +1455,41 @@ func skillTopLevelEntryDirection(dir, rel string) skillDriftDirection {
 // resolveSkillDriftAncestry hashes the installed file as a git blob and asks
 // whether that blob is the content of sourcePath at any commit reachable from
 // HEAD, in one bounded git log per path rather than one per commit.
+//
+// A blob HEAD never reached may still be one origin/HEAD reaches: the checkout
+// itself is stale and the installed copy is newer. That second walk runs only
+// for an otherwise-unrecoverable answer, and any failure in it (origin/HEAD
+// unresolvable, git erroring) leaves the answer unrecoverable — the stricter
+// refusal is the floor, never weakened by a lookup that did not complete.
 func resolveSkillDriftAncestry(repoRoot, installedPath, sourcePath string) skillDriftDirection {
 	blob, err := skillDriftHistoryGit(repoRoot, "hash-object", "--", installedPath)
 	if err != nil || blob == "" {
 		return skillDriftUnknown
 	}
-	out, err := skillDriftHistoryGit(repoRoot, "log", "--format=%H", "--raw", "--no-renames",
-		"--abbrev=40", fmt.Sprintf("-n%d", skillDriftHistoryLookback), "HEAD", "--", sourcePath)
+	found, commits, err := skillDriftHistoryHasBlob(repoRoot, blob, "HEAD", sourcePath)
 	if err != nil {
 		return skillDriftUnknown
+	}
+	if found {
+		return skillDriftBehind
+	}
+	if commits >= skillDriftHistoryLookback {
+		return skillDriftUnknown
+	}
+	if ahead, _, err := skillDriftHistoryHasBlob(repoRoot, blob, "HEAD..origin/HEAD", sourcePath); err == nil && ahead {
+		return skillDriftAhead
+	}
+	return skillDriftUnrecoverable
+}
+
+// skillDriftHistoryHasBlob walks sourcePath's history over revRange, bounded by
+// skillDriftHistoryLookback, and reports whether blob is any revision of it
+// along with how many commits the walk visited.
+func skillDriftHistoryHasBlob(repoRoot, blob, revRange, sourcePath string) (bool, int, error) {
+	out, err := skillDriftHistoryGit(repoRoot, "log", "--format=%H", "--raw", "--no-renames",
+		"--abbrev=40", fmt.Sprintf("-n%d", skillDriftHistoryLookback), revRange, "--", sourcePath)
+	if err != nil {
+		return false, 0, err
 	}
 	commits := 0
 	for _, line := range strings.Split(out, "\n") {
@@ -1469,14 +1508,25 @@ func resolveSkillDriftAncestry(repoRoot, installedPath, sourcePath string) skill
 		}
 		for _, candidate := range fields[2:4] {
 			if candidate == blob {
-				return skillDriftBehind
+				return true, commits, nil
 			}
 		}
 	}
-	if commits >= skillDriftHistoryLookback {
-		return skillDriftUnknown
+	return false, commits, nil
+}
+
+// skillCheckoutBehindCount is how many commits this checkout's HEAD lacks from
+// origin/HEAD, or 0 when that cannot be read. It is informational only.
+func skillCheckoutBehindCount(repoRoot string) int {
+	out, err := checkoutGitOutput(repoRoot, "rev-list", "--count", "HEAD..origin/HEAD")
+	if err != nil {
+		return 0
 	}
-	return skillDriftUnrecoverable
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func skillDriftEntriesWithDirection(repoRoot, dir string, entries []libskillinstall.DriftEntry) []skillDriftEntry {
@@ -1495,6 +1545,12 @@ const skillRemedyUnverifiedNote = "reinstall direction unverified: no checkout h
 
 const skillRemedyWithheldLead = "reinstall withheld — it would overwrite installed content this checkout cannot restore:"
 
+// skillRemedyDowngradeLead is the withheld lead when every withheld path is
+// newer than this checkout rather than lost to it: the content is restorable
+// from origin/HEAD, but a reinstall from here would replace it with an older
+// revision. It keeps the "reinstall withheld" prefix consumers key on.
+const skillRemedyDowngradeLead = "reinstall withheld — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:"
+
 // skillRemedyUndecidedLead is the withheld lead for a safety decision that
 // could not be computed at all. Failing to read the installed tree while
 // deciding whether a reinstall destroys it is not evidence that it does not,
@@ -1511,6 +1567,8 @@ const skillRemedyNextActionDestroys = "next: move the listed paths out of the sk
 
 const skillRemedyNextActionUndecided = "next: re-run this check once the skills directory is readable and no longer changing underneath it"
 
+const skillRemedyNextActionDowngrade = "next: update this checkout to origin/HEAD, then re-run this check"
+
 // skillRemedyAdvice is a composed reinstall prescription: either a runnable
 // command or an explicit refusal naming what the command would have destroyed.
 type skillRemedyAdvice struct {
@@ -1520,6 +1578,9 @@ type skillRemedyAdvice struct {
 	// lead overrides the withheld headline when nothing could be enumerated.
 	lead     string
 	destroys []skillDriftEntry
+	// downgrade marks a refusal whose every withheld path is newer than this
+	// checkout, so the way out is updating the checkout, not moving files.
+	downgrade bool
 }
 
 // withheldLead is the headline for a refusal, naming why it refused.
@@ -1534,6 +1595,9 @@ func (a skillRemedyAdvice) withheldLead() string {
 func (a skillRemedyAdvice) nextAction() string {
 	if len(a.destroys) == 0 {
 		return skillRemedyNextActionUndecided
+	}
+	if a.downgrade {
+		return skillRemedyNextActionDowngrade
 	}
 	return skillRemedyNextActionDestroys
 }
@@ -1555,16 +1619,27 @@ func composeSkillInstallRemedy(payload selectedSkillPayload, entries []skillDrif
 		return skillRemedyAdvice{command: command, unverified: true}
 	}
 	var destroys []skillDriftEntry
+	lost := false
 	for _, entry := range entries {
 		switch entry.direction {
 		case skillDriftLossless, skillDriftBehind:
 			// A reinstall here adds or moves forward; nothing is lost.
+		case skillDriftAhead:
+			// Restorable from origin/HEAD, but a reinstall from here moves it
+			// backwards, so the command is withheld all the same.
+			destroys = append(destroys, entry)
 		case skillDriftUnrecoverable, skillDriftUnknown:
 			destroys = append(destroys, entry)
+			lost = true
 		}
 	}
 	if len(destroys) == 0 {
 		return skillRemedyAdvice{command: command}
+	}
+	if !lost {
+		// Every withheld path is merely newer. Any genuine loss alongside it
+		// keeps the stricter destructive lead and next action instead.
+		return skillRemedyAdvice{withheld: true, destroys: destroys, lead: skillRemedyDowngradeLead, downgrade: true}
 	}
 	return skillRemedyAdvice{withheld: true, destroys: destroys}
 }

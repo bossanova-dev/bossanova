@@ -216,7 +216,7 @@ read are the authoritative filter, and both run again on every wake regardless o
      # single watch whose trigger name is the whole space-joined string, and no real trigger at all.
      printf '%s\n' "$DRAFT_AWARE_TRIGGERS" | while IFS= read -r T; do
        [ -n "$T" ] || continue
-       boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
+       boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json </dev/null
      done
    fi
    ```
@@ -252,9 +252,13 @@ read are the authoritative filter, and both run again on every wake regardless o
    one whose conclusion is absent while `gh pr checks` reports the same named context as successful
    — against that named context before the node can contribute `unknown`, and its `green` /
    `failing` / `pending` / `unknown` map onto `ready` / red / `not-yet` / `could-not-evaluate`
-   respectively. Pass the prior head's context names as `--prior` whenever the run has them: a
-   path-filtered follow-up push shrinks the check set, and the reason `absent-gate` is what
-   separates a gate that vanished from one that is merely queued. Decide the merge-state half with
+   respectively. Pass the prior head's `gh pr checks --json name,state,bucket,workflow` payload as
+   `--prior` whenever the run has it (a bare array of names still works): a path-filtered follow-up
+   push shrinks the check set, and the reason `absent-gate` is what separates a gate that vanished
+   from one that is merely queued. Pass `gh run list --commit "$HEAD_SHA" --json
+name,workflowName,status,conclusion,headSha,event --limit 100` as `--workflow-runs`: a head run
+   still queued or running holds the verdict at `pending`, so green is decided only once every head
+   workflow run has completed. Decide the merge-state half with
    the same helper's `merge-state` subcommand, whose `UNSTABLE`-with-nothing-failing verdict is
    pending rather than red.
 

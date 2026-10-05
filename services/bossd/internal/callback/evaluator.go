@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/recurser/bossalib/models"
@@ -22,10 +23,12 @@ type evaluatorStore interface {
 }
 
 // prStatusProvider is the subset of vcs.Provider the evaluator queries for
-// authoritative PR/check state.
+// authoritative PR/check state, plus the head SHA's workflow runs (which only
+// the github provider offers; it is deliberately not on vcs.Provider).
 type prStatusProvider interface {
 	GetPRStatus(ctx context.Context, repoPath string, prID int) (*vcs.PRStatus, error)
 	GetCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error)
+	ListWorkflowRuns(ctx context.Context, repoPath, headSHA string) ([]vcs.WorkflowRun, error)
 }
 
 // Evaluator verifies authoritative GitHub state for a PR and fires (triggers)
@@ -93,7 +96,13 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 		return fmt.Errorf("get check results %s#%d: %w", rp, prNumber, err)
 	}
 
-	satisfied := satisfiedTriggers(status, checks)
+	// The runs read only matters when the attached check set is green, so it is
+	// skipped otherwise to spare the API quota.
+	runsSettled := false
+	if vcs.EvaluateChecks("", checks, nil).IsGreen() {
+		runsSettled = e.runsSettled(ctx, rp, prNumber, status)
+	}
+	satisfied := satisfiedTriggers(status, checks, runsSettled)
 	now := e.now()
 	for _, cb := range cbs {
 		if !satisfied[cb.Trigger] {
@@ -169,19 +178,49 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// runsSettled reports whether every GitHub Actions workflow run for the PR's
+// head SHA has completed. A check set read before the head's workflows have
+// attached their jobs is green on the jobs it has so far, so checks_passed is
+// only decidable once nothing is still queued or running. An empty head SHA or
+// a failed runs read is not settled: it is logged and suppresses only the
+// checks-passed pair, never the other triggers on the same evaluation.
+func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, status *vcs.PRStatus) bool {
+	if status == nil || status.HeadSHA == "" {
+		e.logger.Warn().Str("repo", rp).Int("pr", prNumber).
+			Msg("callback evaluator: no head SHA; checks_passed held until workflow runs are readable")
+		return false
+	}
+	runs, err := e.provider.ListWorkflowRuns(ctx, rp, status.HeadSHA)
+	if err != nil {
+		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).Str("head_sha", status.HeadSHA).
+			Msg("callback evaluator: list workflow runs failed; checks_passed held")
+		return false
+	}
+	for _, run := range runs {
+		if run.HeadSHA != "" && run.HeadSHA != status.HeadSHA {
+			continue
+		}
+		if !strings.EqualFold(run.Status, "completed") {
+			return false
+		}
+	}
+	return true
+}
+
 // satisfiedTriggers derives which triggers the authoritative state currently
 // satisfies. A trigger absent from the map is not satisfied.
 //
 //   - merged:               PR is merged.
 //   - closed:               PR is closed and NOT merged (PRStateMerged is distinct).
-//   - checks_passed:        check verdict is green.
+//   - checks_passed:        check verdict is green AND every head workflow run
+//     has completed (runsSettled).
 //   - checks_failed:        at least one completed check failed/timed_out/cancelled.
 //   - ready_for_review:     PR is open and not a draft (the draft-to-ready flip).
 //   - checks_passed_ready:  checks_passed AND the PR is open and not a draft.
 //
 // Pending checks satisfy neither passed nor failed; a completed failure still
 // satisfies checks_failed even if other checks are still pending.
-func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult) map[models.GithubCallbackTrigger]bool {
+func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, runsSettled bool) map[models.GithubCallbackTrigger]bool {
 	out := make(map[models.GithubCallbackTrigger]bool, 6)
 	openAndReady := false
 	if status != nil {
@@ -202,7 +241,7 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult) map[model
 	if checkVerdict.State == vcs.CheckVerdictFailing {
 		out[models.GithubCallbackTriggerChecksFailed] = true
 	}
-	checksPassed := checkVerdict.IsGreen()
+	checksPassed := checkVerdict.IsGreen() && runsSettled
 	if checksPassed {
 		out[models.GithubCallbackTriggerChecksPassed] = true
 	}

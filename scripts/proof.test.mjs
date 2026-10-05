@@ -10,7 +10,10 @@ import { silenceConsole } from './quiet-test-console.mjs'
 import {
   __resetTuiAgentBridgeCache,
   agentSurface,
+  buildPlanOutput,
   buildTuiAgentBridge,
+  CAPTURE_FAILED_ERROR_MAX_CHARS,
+  captureFailedCommentBody,
   defaultBinFresh,
   docsSiteBuildInputPresent,
   evaluateRunPreflight,
@@ -24,6 +27,7 @@ import {
   shouldPostDocsBuildCheck,
   shouldCleanupRunDir,
   planRecipeSurfaceRuns,
+  recipePathSelection,
   tuiAgentBridgeEnv,
   tuiAgentCanCapture,
   tuiAgentUsable,
@@ -50,6 +54,7 @@ import {
   validateSurfaceRun,
 } from './proof-agent-drivers.mjs'
 import { runTuiWithReplayFallback } from './proof-tui-agent.mjs'
+import { regionUntilNext } from './gate-region-lib.mjs'
 
 // Silence the code-under-test's console output (DEGRADED warnings + run-file
 // manifest JSON dumps) so a passing run stays quiet. See quiet-test-console.mjs.
@@ -67,6 +72,7 @@ const PREFLIGHT_IDS = [
   'ffmpeg',
   'chromium',
   'web-node-modules',
+  'real-stack-binaries',
   'go-toolchain',
   'gh-auth',
   'git-credential',
@@ -84,6 +90,11 @@ function preflightLookups(present) {
     }),
     webDepsPresent: () => has('web-node-modules'),
     goToolchainPresent: () => has('go-toolchain'),
+    realStackBinariesPresent: () => has('real-stack-binaries'),
+    realStackBinariesUnavailableReason: () => ({
+      status: 'missing',
+      detail: 'make build && make plugins\nmissing from bin/: bossd, bosso',
+    }),
     ghAuthOk: () => has('gh-auth'),
     gitCredentialOk: () => has('git-credential'),
   }
@@ -173,6 +184,7 @@ test('evaluateRunPreflight: dry-run drops upload/push creds from the required se
     'ffmpeg',
     'chromium',
     'web-node-modules',
+    'real-stack-binaries',
     'agg',
     'go-toolchain',
   ])
@@ -183,6 +195,35 @@ test('evaluateRunPreflight: dry-run drops upload/push creds from the required se
     env: {},
   })
   assert.equal(decision, null, 'a dry-run must not defer on missing R2/gh credentials')
+})
+
+test('evaluateRunPreflight: absent real-stack binaries defer the web surface env-unavailable', () => {
+  const present = new Set(PREFLIGHT_IDS)
+  present.delete('real-stack-binaries')
+  const decision = evaluateRunPreflight({
+    surface: 'web',
+    shouldUpload: true,
+    lookups: preflightLookups(present),
+    env: {},
+  })
+  assert.ok(decision, 'a web run without the real-stack binaries must defer, not run Playwright')
+  assert.equal(decision.reasonCode, 'env-unavailable')
+  assert.deepEqual(decision.missing, ['real-stack-binaries'])
+  const check = decision.report.checks.find((c) => c.id === 'real-stack-binaries')
+  assert.match(check.detail, /missing from bin\/: bossd, bosso/)
+  // TUI and recipe runs are unaffected by the same gap.
+  for (const surface of ['tui', 'recipe']) {
+    assert.equal(
+      evaluateRunPreflight({
+        surface,
+        shouldUpload: true,
+        lookups: preflightLookups(present),
+        env: {},
+      }),
+      null,
+      `${surface} must not defer on absent real-stack binaries`,
+    )
+  }
 })
 
 test('evaluateRunPreflight threads chromium detail and status into the report', () => {
@@ -1923,8 +1964,18 @@ test('BOS-789: plan emits no top-level surface scalar for a backend-only diff', 
   // so it read "web" while the authoritative map said no surface at all.
   const out = runPlan('services/bossd/internal/session/session.go', '--json')
   assert.ok(!('surface' in out), `plan must not emit a surface scalar; got ${Object.keys(out)}`)
-  assert.deepEqual(Object.keys(out), ['changedFiles', 'recipes', 'surfaces', 'order'])
+  // BOS-1354: the key order now carries recipeLeg and forcedNoSurface.
+  assert.deepEqual(Object.keys(out), [
+    'changedFiles',
+    'recipes',
+    'recipeLeg',
+    'surfaces',
+    'order',
+    'forcedNoSurface',
+  ])
   assert.deepEqual(out.recipes, [])
+  assert.deepEqual(out.recipeLeg, [])
+  assert.equal(out.forcedNoSurface, false)
   assert.deepEqual(out.surfaces, { tui: false, web: false })
   assert.deepEqual(out.order, [])
 })
@@ -1955,6 +2006,173 @@ test('BOS-1285: plan reports no surface for a test-only TUI diff', () => {
   const out = runPlan('services/boss/internal/views/home_test.go')
   assert.deepEqual(out.surfaces, { tui: false, web: false })
   assert.deepEqual(out.order, [])
+})
+
+// ── BOS-1354: plan is compact and states exactly what run captures ──────────
+
+test('BOS-1354: plan output for one services/web/src file stays under 16 KiB', () => {
+  const { BOSS_PROOF_BRIEF, BOSS_PROOF_AGENT_SURFACE, ...cleanEnv } = process.env
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/proof.mjs', 'plan', '--changed-file', 'services/web/src/lib/x.ts'],
+    { cwd: repoRootForTest, encoding: 'utf8', env: cleanEnv },
+  )
+  assert.equal(result.status, 0, result.stderr)
+  assert.ok(
+    Buffer.byteLength(result.stdout) <= 16384,
+    `plan printed ${Buffer.byteLength(result.stdout)} bytes`,
+  )
+  const out = JSON.parse(result.stdout)
+  assert.ok(out.recipes.length > 0, 'the broad web rule still matches web recipes')
+  for (const recipe of out.recipes) {
+    assert.deepEqual(Object.keys(recipe), ['id', 'surface', 'title'])
+  }
+  // Web recipes are proved live by the web agent, never by the recipe leg.
+  assert.deepEqual(out.recipeLeg, [])
+  assert.deepEqual(out.order, ['web'])
+})
+
+test('BOS-1354: plan reports a marketing-only recipeLeg for a web package + marketing diff', () => {
+  const out = runPlan(
+    'services/web/package.json',
+    '--changed-file',
+    'services/marketing/src/pages/index.astro',
+  )
+  assert.ok(
+    out.recipes.some((recipe) => recipe.surface === 'web'),
+    'the path rules still match web recipes',
+  )
+  assert.ok(out.recipeLeg.length > 0, 'marketing recipes are captured by the recipe leg')
+  const surfaceOf = new Map(out.recipes.map((recipe) => [recipe.id, recipe.surface]))
+  for (const id of out.recipeLeg) assert.equal(surfaceOf.get(id), 'marketing', id)
+  assert.deepEqual(out.order, [])
+  assert.equal(out.forcedNoSurface, false)
+})
+
+test('BOS-1354: plan with explicit --recipe reports exactly those ids as recipeLeg', () => {
+  const out = runPlan('services/web/src/lib/x.ts', '--recipe', 'marketing-home')
+  assert.deepEqual(out.recipeLeg, ['marketing-home'])
+})
+
+test('recipePathSelection: explicit ids when --recipe is given, classified set otherwise', () => {
+  const selected = [{ id: 'web-a' }, { id: 'marketing-a' }]
+  const classifiedRecipes = [{ id: 'marketing-a' }]
+  assert.deepEqual(
+    recipePathSelection({ explicitRecipe: true, selected, classifiedRecipes }),
+    selected,
+  )
+  assert.deepEqual(
+    recipePathSelection({ explicitRecipe: false, selected, classifiedRecipes }),
+    classifiedRecipes,
+  )
+  assert.deepEqual(
+    recipePathSelection({ explicitRecipe: false, selected, classifiedRecipes: undefined }),
+    [],
+  )
+})
+
+test('buildPlanOutput: recipeLeg follows recipePathSelection on the default catalog', () => {
+  const changedFiles = ['services/web/package.json', 'services/marketing/src/pages/index.astro']
+  const surfacePlan = resolveSurfacePlan({ catalog: defaultCatalog, changedFiles, env: {} })
+  const selected = selectRecipes(defaultCatalog, changedFiles)
+  const out = buildPlanOutput({ changedFiles, selected, explicitRecipe: false, surfacePlan })
+  assert.deepEqual(
+    out.recipeLeg,
+    surfacePlan.recipes.map((recipe) => recipe.id),
+  )
+  assert.ok(selected.length > out.recipeLeg.length, 'run no longer captures every matched id')
+})
+
+test('buildPlanOutput: forcedNoSurface is true for a forced skills-payload-only diff', () => {
+  const changedFiles = [
+    'services/boss/internal/skillinstall/skills/boss-build/SKILL.md',
+    'services/boss/internal/skillinstall/skills/boss-build/toolbox/x.mjs',
+  ]
+  const surfacePlan = resolveSurfacePlan({
+    catalog: defaultCatalog,
+    changedFiles,
+    requiredProofBullets: ['(tui) The boss TUI home screen shows the new column.'],
+    env: {},
+  })
+  assert.deepEqual(surfacePlan.order, ['tui'], 'the bullet forces the TUI surface')
+  const out = buildPlanOutput({
+    changedFiles,
+    selected: selectRecipes(defaultCatalog, changedFiles),
+    explicitRecipe: false,
+    surfacePlan,
+  })
+  assert.equal(out.surfaces.tui, true)
+  assert.equal(out.forcedNoSurface, true)
+})
+
+test('buildPlanOutput: forcedNoSurface is false when the forced diff holds product source', () => {
+  const changedFiles = [
+    'services/boss/internal/skillinstall/skills/boss-build/SKILL.md',
+    'services/bossd/internal/session/session.go',
+  ]
+  const surfacePlan = resolveSurfacePlan({
+    catalog: defaultCatalog,
+    changedFiles,
+    requiredProofBullets: ['(tui) The boss TUI home screen shows the new column.'],
+    env: {},
+  })
+  assert.deepEqual(surfacePlan.order, ['tui'])
+  const out = buildPlanOutput({
+    changedFiles,
+    selected: selectRecipes(defaultCatalog, changedFiles),
+    explicitRecipe: false,
+    surfacePlan,
+  })
+  assert.equal(out.forcedNoSurface, false)
+})
+
+test('buildPlanOutput: forcedNoSurface is false when order is empty', () => {
+  const changedFiles = ['docs/notes.md']
+  const surfacePlan = resolveSurfacePlan({ catalog: defaultCatalog, changedFiles, env: {} })
+  assert.deepEqual(surfacePlan.order, [])
+  const out = buildPlanOutput({ changedFiles, selected: [], explicitRecipe: false, surfacePlan })
+  assert.equal(out.forcedNoSurface, false)
+})
+
+// ── BOS-1354 F2: a failed recipe capture posts a deferred note ─────────────────
+
+test('captureFailedCommentBody names each failed recipe, bounds errors, and hints the re-run', () => {
+  const long = `selector not found ${'x'.repeat(2000)}`
+  const body = captureFailedCommentBody({
+    marker: '<!-- proof-marker -->',
+    commit: 'abc1234',
+    prNumber: '42',
+    captures: [
+      { recipeId: 'marketing-home', status: 'failed', error: 'Timeout 30000ms\nwaiting for x' },
+      { recipeId: 'marketing-pricing', status: 'captured' },
+      { recipeId: 'marketing-cloud', status: 'failed', error: long },
+    ],
+  })
+  assert.ok(body.startsWith('<!-- proof-marker -->\n'))
+  assert.match(body, /### Proof deferred/)
+  assert.match(body, /recipe capture failed/)
+  assert.ok(!body.includes('environment limitation'))
+  assert.match(body, /- `marketing-home`: Timeout 30000ms waiting for x/)
+  assert.match(body, /- `marketing-cloud`: selector not found x+…/)
+  assert.ok(!body.includes('marketing-pricing'), 'a captured recipe is not listed')
+  const cloudLine = body.split('\n').find((line) => line.startsWith('- `marketing-cloud`'))
+  assert.ok(
+    cloudLine.length <= '- `marketing-cloud`: '.length + CAPTURE_FAILED_ERROR_MAX_CHARS + 1,
+    'the error is bounded',
+  )
+  assert.match(
+    body,
+    /```bash\nnode scripts\/proof\.mjs run --recipe marketing-home --recipe marketing-cloud\n```/,
+  )
+  assert.match(body, /\*\*Commit:\*\* `abc1234`/)
+})
+
+test('main() posts captureFailedCommentBody on a failed capture and keeps exit 1', () => {
+  const source = fs.readFileSync(path.join(repoRootForTest, 'scripts', 'proof.mjs'), 'utf8')
+  const body = regionUntilNext(source, '  if (hasFailure) {', '\n  }\n', 'main() hasFailure branch')
+  assert.match(body, /postDeferredComment\(/)
+  assert.match(body, /captureFailedCommentBody\(/)
+  assert.match(body, /process\.exitCode = 1/)
 })
 
 test('BOS-789: an unknown proof command names the accepted set and points at --help', () => {
@@ -2041,7 +2259,7 @@ test('PROOF_USAGE states that plan takes no baseline flag and names the fields t
   // Anchored to the sentence, not to the bare words: `recipes` also occurs in
   // the `plan` command description, so a `\brecipes\b` probe stayed green with
   // the whole "Consume the …" sentence deleted — a vacuous third of the gate.
-  assert.match(PROOF_USAGE, /Consume the recipes, surfaces and\s+order fields/)
+  assert.match(PROOF_USAGE, /Consume the recipeLeg, order and\s+forcedNoSurface fields/)
 })
 
 test('PROOF_USAGE points proof-surface parity at the snapshot gate, not a proof.mjs verb', () => {

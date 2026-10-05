@@ -210,6 +210,17 @@ type CheckResult struct {
 	Conclusion   *CheckConclusion
 }
 
+// WorkflowRun is one GitHub Actions workflow run for a commit. Status is the
+// provider's raw run status ("queued", "in_progress", "completed", ...); a run
+// whose status is anything other than "completed" means the commit's check set
+// may still be growing.
+type WorkflowRun struct {
+	Name       string
+	Status     string
+	Conclusion string
+	HeadSHA    string
+}
+
 // ReviewComment represents a review comment on a PR.
 type ReviewComment struct {
 	Author string

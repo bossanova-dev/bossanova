@@ -34,6 +34,22 @@ const UPLOAD_ENV = [
   'CLOUDFLARE_ACCOUNT_ID',
 ]
 
+/**
+ * The built binaries the web agent's real-stack Playwright run needs in
+ * `<repoRoot>/bin` (every web agent run sets E2E_REAL). Must stay equal to the
+ * `required` list in services/web/tests/e2e/real/global-setup.ts
+ * (`assertRequiredBinaries`); proof-doctor.test.mjs pins the parity.
+ */
+export const REAL_STACK_BINARIES = [
+  'bossd',
+  'bosso',
+  'bossd-plugin-stub-runner',
+  'bossd-plugin-claude',
+]
+
+/** The command that produces REAL_STACK_BINARIES. */
+const REAL_STACK_BUILD_COMMAND = 'make build && make plugins'
+
 /** Credentials needed to push the PR comment / gallery (D15). */
 const PUSH = ['gh-auth', 'git-credential']
 
@@ -63,6 +79,13 @@ export const DOCTOR_CHECKS = [
     kind: 'probe',
     probeKey: 'webDepsPresent',
     label: 'services/web/node_modules',
+  },
+  {
+    id: 'real-stack-binaries',
+    kind: 'probe',
+    probeKey: 'realStackBinariesPresent',
+    detailKey: 'realStackBinariesUnavailableReason',
+    label: `real-stack binaries in bin/ (${REAL_STACK_BUILD_COMMAND})`,
   },
   {
     id: 'go-toolchain',
@@ -111,7 +134,14 @@ export function requiredIdsForSurface(surface, { shouldUpload = true, liveAgent 
   const uploadAndPush = shouldUpload ? [...UPLOAD_ENV, ...PUSH] : []
   const base = {
     tui: ['PROOF_ANTHROPIC_API_KEY', 'agg', 'ffmpeg', 'go-toolchain', ...uploadAndPush],
-    web: ['PROOF_ANTHROPIC_API_KEY', 'ffmpeg', 'chromium', 'web-node-modules', ...uploadAndPush],
+    web: [
+      'PROOF_ANTHROPIC_API_KEY',
+      'ffmpeg',
+      'chromium',
+      'web-node-modules',
+      'real-stack-binaries',
+      ...uploadAndPush,
+    ],
     recipe: ['ffmpeg', 'chromium', 'web-node-modules', ...uploadAndPush],
     docs: shouldUpload ? [...PUSH] : [],
     all: DOCTOR_CHECKS.map((c) => c.id),
@@ -362,6 +392,30 @@ function chromiumUnavailableReason(headlessShellStatus) {
 }
 
 /**
+ * The REAL_STACK_BINARIES absent from `<repoRoot>/bin`, in list order. Pure over
+ * `fileExists` so it unit-tests without a real bin/ directory.
+ * @param {{ repoRoot: string, fileExists?: (p: string) => boolean }} opts
+ * @returns {string[]}
+ */
+export function missingRealStackBinaries({ repoRoot, fileExists = fs.existsSync }) {
+  return REAL_STACK_BINARIES.filter((name) => !fileExists(path.join(repoRoot, 'bin', name)))
+}
+
+/**
+ * The doctor detail for absent real-stack binaries: the build command first, then
+ * each absent binary by name.
+ * @param {string[]} missing
+ * @returns {{ status: 'ok'|'missing', detail?: string }}
+ */
+export function realStackBinariesUnavailableReason(missing) {
+  if (missing.length === 0) return { status: 'ok' }
+  return {
+    status: 'missing',
+    detail: `${REAL_STACK_BUILD_COMMAND}\nmissing from bin/: ${missing.join(', ')}`,
+  }
+}
+
+/**
  * Builds the real probe seams used by the `doctor` CLI and the run preflight.
  * Values are read but never returned/printed — only presence booleans escape.
  * @param {{ repoRoot: string, env?: NodeJS.ProcessEnv }} opts
@@ -391,6 +445,9 @@ export function defaultDoctorLookups({ repoRoot, env = process.env }) {
     chromiumUnavailableReason: () => chromiumUnavailableReason(resolveHeadlessShellStatus()),
     webDepsPresent: () => fs.existsSync(path.join(repoRoot, 'services', 'web', 'node_modules')),
     goToolchainPresent: () => binOnPath('go', { env }),
+    realStackBinariesPresent: () => missingRealStackBinaries({ repoRoot }).length === 0,
+    realStackBinariesUnavailableReason: () =>
+      realStackBinariesUnavailableReason(missingRealStackBinaries({ repoRoot })),
     // BOS-142: the live-agent chat pane is driven through bossd's claude plugin,
     // which must be built (`make plugins`) into bin/ before a live scene can run.
     claudePluginBuilt: () => fs.existsSync(path.join(repoRoot, 'bin', 'bossd-plugin-claude')),

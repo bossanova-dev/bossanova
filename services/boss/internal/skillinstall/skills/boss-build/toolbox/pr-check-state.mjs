@@ -133,33 +133,61 @@ function classifyEntry({ status, conclusion, bucket }) {
   return 'unclassified'
 }
 
-function asArray(payload, key) {
+// Every envelope key a check payload arrives under. A normaliser accepts any of them rather than
+// only its own, because handing a whole `gh pr view --json statusCheckRollup` object to `--checks`
+// is the natural mistake, and it used to read as `no-checks` — a set that is too small to prove
+// anything, reported as if nothing had attached at all.
+const ENVELOPE_KEYS = Object.freeze(['statusCheckRollup', 'checks', 'check_runs', 'workflow_runs'])
+
+function envelopeArray(object) {
+  if (!object || typeof object !== 'object' || Array.isArray(object)) return null
+  for (const key of ENVELOPE_KEYS) {
+    if (Array.isArray(object[key])) return object[key]
+  }
+  return null
+}
+
+function asArray(payload) {
   if (payload == null) return []
   if (Array.isArray(payload)) {
     // `gh api --paginate --slurp` yields an ARRAY OF PAGE OBJECTS, each carrying the key. Without
     // this branch every page object maps to a nameless entry and is filtered out, so a paginated
     // read silently reports zero checks — which is exactly the too-small-to-prove-green misreading
     // this module exists to close. Flatten the pages instead.
-    if (payload.some((page) => page && typeof page === 'object' && Array.isArray(page[key]))) {
-      return payload.flatMap((page) =>
-        page && typeof page === 'object' && Array.isArray(page[key]) ? page[key] : [],
-      )
+    if (payload.some((page) => envelopeArray(page) !== null)) {
+      return payload.flatMap((page) => envelopeArray(page) ?? [])
     }
     return payload
   }
-  if (typeof payload === 'object' && Array.isArray(payload[key])) return payload[key]
-  return []
+  return envelopeArray(payload) ?? []
+}
+
+// The workflow a check context belongs to: `workflowName` on a rollup CheckRun, `workflow` on a
+// `gh pr checks --json …,workflow` row. Carried so a prior-head context can be matched against the
+// head's workflow runs (`notTriggered`); `nameOf` deliberately keeps its own precedence.
+function workflowOf(node) {
+  for (const key of ['workflowName', 'workflow']) {
+    const value = node?.[key]
+    if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  }
+  return ''
 }
 
 // normalizeRollup reads a `gh pr view --json statusCheckRollup` payload (the object or the bare
 // array). GraphQL splits the vocabulary across `status`/`conclusion` for check runs and `state` for
 // commit statuses, so both are carried through.
+//
+// Every normaliser reads the node's OWN fields whichever flag delivered it: the same rollup nodes
+// handed to `--checks` used to read `state` only, drop a CheckRun's `conclusion`, and classify
+// `unclassified` — a green set reported as unknown purely because of which flag carried it.
 export function normalizeRollup(payload) {
-  return asArray(payload, 'statusCheckRollup')
+  return asArray(payload)
     .map((node) => ({
       name: nameOf(node),
       status: node?.status ?? '',
       conclusion: node?.conclusion ?? node?.state ?? '',
+      bucket: node?.bucket ?? '',
+      workflow: workflowOf(node),
       source: 'rollup',
     }))
     .filter((entry) => entry.name !== '')
@@ -169,12 +197,13 @@ export function normalizeRollup(payload) {
 // separate a gate that ran and passed from one that never attached — that is what the two-SHA
 // comparison below is for — but it IS the payload that resolves a null-shaped rollup node.
 export function normalizeBuckets(payload) {
-  return asArray(payload, 'checks')
+  return asArray(payload)
     .map((node) => ({
       name: nameOf(node),
       status: node?.status ?? '',
-      conclusion: node?.state ?? '',
+      conclusion: node?.state ?? node?.conclusion ?? '',
       bucket: node?.bucket ?? '',
+      workflow: workflowOf(node),
       source: 'buckets',
     }))
     .filter((entry) => entry.name !== '')
@@ -184,14 +213,55 @@ export function normalizeBuckets(payload) {
 // the only one of the three keyed to an explicit SHA, which is what makes it the authority on which
 // contexts attached to that SHA at all.
 export function normalizeCheckRuns(payload) {
-  return asArray(payload, 'check_runs')
+  return asArray(payload)
     .map((node) => ({
       name: nameOf(node),
       status: node?.status ?? '',
-      conclusion: node?.conclusion ?? '',
+      conclusion: node?.conclusion ?? node?.state ?? '',
+      bucket: node?.bucket ?? '',
+      workflow: workflowOf(node),
       source: 'check-runs',
     }))
     .filter((entry) => entry.name !== '')
+}
+
+// The `gh run list` default `--limit`-style cap the shipped recipes pass. A bare run list holding
+// at least this many runs may have been cut short, and a truncated list can hide a queued run, so it
+// is read as unreadable rather than as complete.
+export const WORKFLOW_RUNS_LIMIT = 100
+
+// normalizeWorkflowRuns reads the head SHA's GitHub Actions workflow runs: the
+// `gh run list --commit <sha> --json name,workflowName,status,conclusion,headSha,event` array, the
+// REST `actions/runs?head_sha=` object (`workflow_runs`, `head_sha`, `name`), or a
+// `--paginate --slurp` page array of those objects. Runs for a SHA other than `headSHA` are dropped
+// when `headSHA` is set.
+//
+// Returns `{known, truncated, runs}`. `known` is false when no payload was supplied; `truncated`
+// is true when the payload cannot be complete — a bare list at the cap, or a REST `total_count`
+// larger than the runs it carried — so the caller fails closed instead of trusting a partial list.
+export function normalizeWorkflowRuns(payload, headSHA = '') {
+  if (payload == null) return { known: false, truncated: false, runs: [] }
+  const nodes = asArray(payload)
+  let truncated = false
+  if (Array.isArray(payload) && envelopeArray(payload[0]) === null) {
+    truncated = nodes.length >= WORKFLOW_RUNS_LIMIT
+  } else {
+    const pages = Array.isArray(payload) ? payload : [payload]
+    const totals = pages.map((page) => Number(page?.total_count)).filter(Number.isFinite)
+    if (totals.length > 0 && Math.max(...totals) > nodes.length) truncated = true
+  }
+  const runs = nodes
+    .filter((node) => node && typeof node === 'object')
+    .map((node) => ({
+      name: typeof node.name === 'string' ? node.name.trim() : '',
+      workflow: workflowOf(node) || (typeof node.name === 'string' ? node.name.trim() : ''),
+      status: upper(node.status),
+      conclusion: upper(node.conclusion),
+      headSha: String(node.headSha ?? node.head_sha ?? '').trim(),
+    }))
+    .filter((run) => run.workflow !== '')
+    .filter((run) => headSHA === '' || run.headSha === '' || run.headSha === headSHA)
+  return { known: true, truncated, runs }
 }
 
 // mergeEntries folds every payload into one name → classification map. Reading order is
@@ -211,7 +281,12 @@ function mergeEntries(sources) {
         name: entry.name,
         conclusion: entry.conclusion ?? '',
         bucket: entry.bucket ?? '',
+        // The workflow name is a property of the context, not of the winning reading, so a payload
+        // that carries it is never outvoted by a more severe one that does not.
+        workflow: entry.workflow || prior?.workflow || '',
       })
+    } else if (!prior.workflow && entry.workflow) {
+      prior.workflow = entry.workflow
     }
   }
   return merged
@@ -262,6 +337,15 @@ function didNotRun(entry) {
   // Any other non-empty conclusion means it reported; never discount it.
   if (cc !== '') return false
   return String(entry?.bucket ?? '').toUpperCase() === 'SKIPPING'
+}
+
+// Did this prior-SHA entry REPORT a passing-or-advisory result? A context that concluded SUCCESS or
+// NEUTRAL on the prior head and is missing from this one is usually a check that does not re-run on
+// a follow-up push (a ready-only advisory bot), so re-triggering will not restore it. A bare name
+// carries no conclusion and is never counted here — that keeps the re-trigger default fail-closed.
+function reportedOnPriorHead(entry) {
+  const cc = upper(entry?.conclusion)
+  return cc === 'SUCCESS' || cc === 'NEUTRAL'
 }
 
 // diffCheckSets is the two-SHA comparison that closes the absent-versus-pending gap. A path-filtered
@@ -370,6 +454,7 @@ const CLASSIFY_CHECKS_KEYS = Object.freeze([
   'readError',
   'acceptNoGateRan',
   'structurallyAbsentContexts',
+  'workflowRuns',
 ])
 
 const MERGE_STATE_KEYS = Object.freeze([
@@ -388,16 +473,24 @@ const MERGE_STATE_KEYS = Object.freeze([
 //   headSHA        the SHA the caller believes is the PR head
 //   observedSHA    the SHA the payloads were actually read against
 //   rollup         `gh pr view --json statusCheckRollup`
-//   buckets        `gh pr checks --json name,state,bucket`
+//   buckets        `gh pr checks --json name,state,bucket[,workflow]`
 //   checkRuns      `gh api repos/{owner}/{repo}/commits/{sha}/check-runs`
 //   priorContexts  the prior SHA's payload, or a bare array of its context names
 //   readError      any non-null value means the read failed; the verdict is `unreadable`
 //   acceptNoGateRan  the caller explicitly accepts a set in which nothing ran
 //   structurallyAbsentContexts  context names the CALLER asserts cannot attach to this head at all.
-//                  Read only by `absentGateRemedy`; it changes no state, no reason and no
-//                  predicate. Caller-supplied rather than derived, because deriving it would mean
-//                  reading a workflow file and this module is offline by contract — and the module
-//                  cannot verify the claim it is handed either way.
+//                  A declared name no longer holds the verdict at `absent-gate`: waiting cannot
+//                  restore it, so it is subtracted before the absent arm and reported in
+//                  `structurallyAbsent`. This deliberately lets a caller mis-declare its way out of
+//                  `pending` for the names it declares — visibly, since `absent` still lists them.
+//                  Caller-supplied rather than derived, because deriving it would mean reading a
+//                  workflow file and this module is offline by contract.
+//   workflowRuns   the head SHA's workflow runs (see `normalizeWorkflowRuns`). Green is only
+//                  decidable once every head run has completed: a run that has not means the check
+//                  set is still growing, so the verdict is `pending` and the absent arm is deferred.
+//                  Once every run has completed, a prior context whose workflow has NO run on the
+//                  head did not trigger (a path filter) and never will — reported in `notTriggered`
+//                  and not held at `absent-gate`. Omitted, behaviour is exactly as before.
 export function classifyChecks(options) {
   assertOptions(options, 'classifyChecks', CLASSIFY_CHECKS_KEYS)
   const {
@@ -410,6 +503,7 @@ export function classifyChecks(options) {
     readError = null,
     acceptNoGateRan = false,
     structurallyAbsentContexts = [],
+    workflowRuns = null,
   } = options ?? {}
   const merged = mergeEntries([
     ...normalizeRollup(rollup),
@@ -428,6 +522,33 @@ export function classifyChecks(options) {
       .filter((name) => name !== ''),
   )
 
+  const runs = normalizeWorkflowRuns(workflowRuns, headSHA || observedSHA)
+  const runsKnown = runs.known && !runs.truncated
+  const pendingRuns = runsKnown
+    ? [...new Set(runs.runs.filter((r) => r.status !== 'COMPLETED').map((r) => r.workflow))].sort()
+    : []
+
+  // The prior side's own entries, for the two facts `absent` cannot carry by name alone: which
+  // workflow each context belongs to, and whether it reported a result on the prior head.
+  const priorEntries = new Map(
+    priorContexts == null ? [] : normalizeDiffSide(priorContexts).map((e) => [e.name, e]),
+  )
+  const headRunWorkflows = new Set(runs.runs.flatMap((r) => [r.workflow, r.name]))
+  // An empty run list cannot tell a path-filtered workflow from runs Actions has not created yet (or
+  // a dropped push event), so discounting needs at least one head run as evidence the list is live.
+  const notTriggered =
+    runsKnown && pendingRuns.length === 0 && runs.runs.length > 0
+      ? diff.absent.filter((name) => {
+          const workflow = priorEntries.get(name)?.workflow ?? ''
+          // A head run of the context's workflow that COMPLETED while the context is still missing
+          // is a genuinely lost job, so only a workflow with no head run at all is discounted.
+          return workflow !== '' && !headRunWorkflows.has(workflow)
+        })
+      : []
+  const structurallyAbsent = diff.absent.filter((name) => declaredStructural.has(name))
+  const discounted = new Set([...structurallyAbsent, ...notTriggered])
+  const blockingAbsent = diff.absent.filter((name) => !discounted.has(name))
+
   const verdict = {
     state: CHECK_STATES.UNKNOWN,
     reason: CHECK_REASONS.NO_CHECKS,
@@ -435,11 +556,17 @@ export function classifyChecks(options) {
     observedSHA,
     total: merged.size,
     ...counts,
+    // Every absent name, whatever discounts it — the existing field contract. The two subsets
+    // below say which of them no longer hold the verdict, and why.
     absent: diff.absent,
-    // The declared subset of `absent`, never a substitute for it. `absent` keeps every name, so no
-    // existing field or predicate moves; only `absentGateRemedy` reads this.
-    structurallyAbsent: diff.absent.filter((name) => declaredStructural.has(name)),
+    structurallyAbsent,
+    notTriggered,
+    // Absent names that concluded SUCCESS or NEUTRAL on the prior head; `absentGateRemedy` reads
+    // it to tell a check that will not re-run from one a fresh head can restore.
+    reportedOnPrior: diff.absent.filter((name) => reportedOnPriorHead(priorEntries.get(name))),
     priorKnown: diff.priorKnown,
+    workflowRunsKnown: runsKnown,
+    pendingRuns,
   }
 
   if (readError != null) {
@@ -454,7 +581,18 @@ export function classifyChecks(options) {
   } else if (counts.unclassified > 0) {
     verdict.state = CHECK_STATES.UNKNOWN
     verdict.reason = CHECK_REASONS.UNCLASSIFIED
-  } else if (diff.absent.length > 0) {
+  } else if (runs.known && runs.truncated) {
+    // A run list that may have been cut short can hide the one queued run that matters, so it is
+    // no evidence at all — the same fail-closed reading as a failed read.
+    verdict.state = CHECK_STATES.UNKNOWN
+    verdict.reason = CHECK_REASONS.UNREADABLE
+  } else if (pendingRuns.length > 0) {
+    // A head workflow run that has not completed means the check set is still growing: every
+    // context it will attach is invisible yet, so the attached set proves nothing and an absent
+    // name may still arrive. Pending, and the absent arm waits for the runs to finish.
+    verdict.state = CHECK_STATES.PENDING
+    verdict.reason = CHECK_REASONS.PENDING
+  } else if (blockingAbsent.length > 0) {
     // Absent before pending: both are non-green, but only one of them resolves by waiting, and
     // reporting the wrong one is what sends a run into an unbounded wait for a job that will never
     // report.
@@ -549,21 +687,22 @@ export function provesGreenReason(verdict) {
 // the prior head carried is missing from this one and that waiting never resolves it — but two
 // different situations wear that shape and only one is worth re-triggering:
 //
-//   structurally-unreachable — the context CANNOT attach to this head. A workflow whose triggers a
-//                              push cannot produce is the recorded case: it fires on the pull
-//                              request being opened, reopened or readied, so a draft PR's pushes
-//                              never produce it and no amount of re-running will.
-//   re-trigger-absent-gate   — a job that genuinely went missing, which a fresh head can restore.
+//   reported-on-prior-head — every blocking absent context concluded SUCCESS or NEUTRAL on the prior
+//                            head. Re-triggering will not restore it (a ready-only advisory bot, a
+//                            check that does not re-run). The caller either treats it as advisory —
+//                            declares it `--structurally-absent` — or reads `merge-state`: a required
+//                            context that is missing keeps the PR `BLOCKED`.
+//   re-trigger-absent-gate — anything else; the fail-closed default. A prior given as bare names
+//                            carries no conclusion and lands here.
 //
-// ADDITIVE ONLY, in the same shape as `provesGreenReason` above: this reports on a verdict, it does
-// not participate in computing one. The structural set is the caller's assertion and this module
-// cannot check it, so it is confined to the remedy — a caller can mis-declare its way to a
-// misleading REMEDY, never to a green verdict or an emptied `absent` set.
+// Computed over the BLOCKING absent names only (`absent` minus `structurallyAbsent` minus
+// `notTriggered`): a declared or not-triggered name no longer reaches the `absent-gate` arm at all,
+// so it can never be what the remedy is about. ADDITIVE in the same shape as `provesGreenReason`
+// above: this reports on a verdict, it does not participate in computing one.
 export const ABSENT_GATE_REMEDIES = Object.freeze({
   NONE: 'none',
-  STRUCTURAL: 'structurally-unreachable',
   RETRIGGER: 're-trigger-absent-gate',
-  MIXED: 'mixed-absent-gates',
+  REPORTED_ON_PRIOR_HEAD: 'reported-on-prior-head',
 })
 
 export function absentGateRemedy(verdict) {
@@ -573,16 +712,16 @@ export function absentGateRemedy(verdict) {
   // `absent` too, and naming a re-trigger remedy there would point at a missing job while a gate
   // that already ran was red.
   if (verdict.reason !== CHECK_REASONS.ABSENT_GATE) return ABSENT_GATE_REMEDIES.NONE
-  const absent = Array.isArray(verdict.absent) ? verdict.absent : []
-  const structural = new Set(
-    Array.isArray(verdict.structurallyAbsent) ? verdict.structurallyAbsent : [],
+  const list = (field) => new Set(Array.isArray(verdict[field]) ? verdict[field] : [])
+  const discounted = new Set([...list('structurallyAbsent'), ...list('notTriggered')])
+  const reported = list('reportedOnPrior')
+  const blocking = (Array.isArray(verdict.absent) ? verdict.absent : []).filter(
+    (name) => !discounted.has(name),
   )
-  const lost = absent.filter((name) => !structural.has(name))
-  // Fail-closed on both edges: nothing declared, or anything left undeclared, still names the
-  // re-trigger the caller can actually perform.
-  if (structural.size === 0) return ABSENT_GATE_REMEDIES.RETRIGGER
-  if (lost.length > 0) return ABSENT_GATE_REMEDIES.MIXED
-  return ABSENT_GATE_REMEDIES.STRUCTURAL
+  if (blocking.length > 0 && blocking.every((name) => reported.has(name))) {
+    return ABSENT_GATE_REMEDIES.REPORTED_ON_PRIOR_HEAD
+  }
+  return ABSENT_GATE_REMEDIES.RETRIGGER
 }
 
 // The boolean and the reason are one predicate reported two ways, and `main()` prints BOTH onto the
@@ -829,6 +968,7 @@ const CLI_FLAGS = Object.freeze({
     'read-error',
     'accept-no-gate-ran',
     'structurally-absent',
+    'workflow-runs',
   ]),
   'merge-state': Object.freeze([
     'merge-state',
@@ -890,6 +1030,7 @@ export function main(argv) {
         typeof flags['structurally-absent'] === 'string'
           ? flags['structurally-absent'].split(',')
           : [],
+      workflowRuns: readPayload(flags, 'workflow-runs'),
     })
     return {
       ...verdict,

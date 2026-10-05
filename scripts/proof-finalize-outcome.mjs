@@ -103,6 +103,10 @@ export function classifySurfaceOutcomes(surfaceRuns) {
  *     proof/scenarios/*.scenario.json) → 1 — proof is required for TUI;
  *   - a pipeline crash (`pipeline-error`) → 1.
  *
+ * `capture-failed` (BOS-1354) is deliberately absent: only the standalone
+ * recipe path posts it, and that path sets its own exit 1 without aggregating.
+ * The agent path's recipe leg records a failed capture as `no-media` (→ 0).
+ *
  * The `softened` flag is the rollback lever (see `softenTuiExit`): when an entry
  * is marked `softened: true` its contribution is forced to 0. That is the only
  * escape hatch — it is applied at the impure boundary (proof-agent-finalize.mjs)

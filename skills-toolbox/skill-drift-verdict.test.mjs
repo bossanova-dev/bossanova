@@ -2,7 +2,15 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -16,6 +24,7 @@ import {
   SKILL_DRIFT_VERDICTS,
   classifySkillDrift,
   inferRunningCore,
+  installedReferenceChecker,
   isUnsupportedFlagOutput,
   main,
   parseSkillGateOutput,
@@ -126,7 +135,7 @@ test('the verdict vocabulary is exactly five values and is frozen', () => {
   ])
 })
 
-test('the kind and direction vocabularies match the gate: exactly five kinds, four directions', () => {
+test('the kind and direction vocabularies match the gate: exactly five kinds, five directions', () => {
   assert.deepEqual([...SKILL_DRIFT_KINDS].sort(), [
     'absent',
     'broken-symlink',
@@ -135,6 +144,7 @@ test('the kind and direction vocabularies match the gate: exactly five kinds, fo
     'unexpected',
   ])
   assert.deepEqual([...SKILL_DRIFT_DIRECTIONS].sort(), [
+    'ahead',
     'behind',
     'lossless',
     'unknown',
@@ -145,28 +155,33 @@ test('the kind and direction vocabularies match the gate: exactly five kinds, fo
 // ---------------------------------------------------------------------------
 // Totality: every kind x every direction
 
-test('every one of the five kinds x four directions maps to a verdict, with no pair unasserted', () => {
+test('every one of the five kinds x five directions maps to a verdict, with no pair unasserted', () => {
   // The table is written out in full rather than derived from the same sets the module uses: a
   // table generated from CAPABILITY_KINDS would agree with any reshuffling of it.
   const expected = {
     'absent|lossless': 'blocking',
     'absent|behind': 'blocking',
+    'absent|ahead': 'blocking',
     'absent|unrecoverable': 'blocking',
     'absent|unknown': 'blocking',
     'mode|lossless': 'blocking',
     'mode|behind': 'blocking',
+    'mode|ahead': 'blocking',
     'mode|unrecoverable': 'blocking',
     'mode|unknown': 'blocking',
     'broken-symlink|lossless': 'blocking',
     'broken-symlink|behind': 'blocking',
+    'broken-symlink|ahead': 'blocking',
     'broken-symlink|unrecoverable': 'blocking',
     'broken-symlink|unknown': 'blocking',
     'content|lossless': 'advisory',
     'content|behind': 'advisory',
+    'content|ahead': 'advisory-withheld',
     'content|unrecoverable': 'advisory-withheld',
     'content|unknown': 'advisory-withheld',
     'unexpected|lossless': 'advisory',
     'unexpected|behind': 'advisory',
+    'unexpected|ahead': 'advisory-withheld',
     'unexpected|unrecoverable': 'advisory-withheld',
     'unexpected|unknown': 'advisory-withheld',
   }
@@ -181,7 +196,7 @@ test('every one of the five kinds x four directions maps to a verdict, with no p
       assert.equal(classify(gate(row('x/y.mjs', kind, direction))).verdict, expected[key], key)
     }
   }
-  assert.equal(pairs.length, 20)
+  assert.equal(pairs.length, 25)
   assert.deepEqual(pairs.sort(), Object.keys(expected).sort())
 })
 
@@ -700,6 +715,8 @@ test('the running core is inferred from the vendored location, through a symlink
     assert.equal(run.status, 0, run.stdout + run.stderr)
     assert.match(run.stdout, /missing from cores this run does not load \(boss-epic\)/)
   }
+  // The running core's own absent file blocks when its installed body names it.
+  writeFileSync(path.join(copy.root, 'ns', 'boss-plan', 'SKILL.md'), 'Run toolbox/x.mjs.\n')
   const ownAbsent = spawnSync(process.execPath, [copy.viaLink, 'classify', '--status', '1'], {
     input: gate(row('boss-plan/toolbox/x.mjs', 'absent', 'lossless')),
     encoding: 'utf8',
@@ -725,6 +742,247 @@ test('--core overrides inference, repeats, and a valueless --core widens to the 
   // A dropped value must not quietly keep the narrower inferred scope.
   assert.equal(status(['--core']), 1)
   assert.equal(status(['--core', 'boss-unknown']), 1)
+})
+
+// ---------------------------------------------------------------------------
+// Direction wording: only a row the checkout is ahead of may be called lagging
+
+const DOWNGRADE_LEAD =
+  '  reinstall withheld — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:'
+const DESTRUCTIVE_LEAD =
+  '  reinstall withheld — it would overwrite installed content this checkout cannot restore:'
+
+test('a content/ahead row is withheld and worded as newer, never as lagging', () => {
+  const output = gate(
+    row('boss-plan/toolbox/tracker/cli.mjs', 'content', 'ahead'),
+    DOWNGRADE_LEAD,
+    '    boss-plan/toolbox/tracker/cli.mjs (content, ahead)',
+    '  next: update this checkout to origin/HEAD, then re-run this check',
+  )
+  const result = classifySkillDrift({ exitStatus: 1, output, cores: ['boss-plan'] })
+  assert.equal(result.verdict, 'advisory-withheld')
+  assert.equal(result.blocking, false)
+  assert.equal(result.remedy.withheld, true)
+  assert.equal(result.remedy.command, null)
+  const text = renderSkillDriftVerdict(result).join('\n')
+  assert.ok(!/\blag\b/.test(text), text)
+  assert.match(
+    text,
+    /installed copies are NEWER than this checkout \(it is behind origin\/HEAD\): boss-plan\/toolbox\/tracker\/cli\.mjs \(content, ahead\) — do not reinstall from this checkout; update it and re-run/,
+  )
+  assert.ok(!/run: /.test(text), text)
+})
+
+test('an unrecoverable or unknown row is never called lagging', () => {
+  for (const direction of ['unrecoverable', 'unknown']) {
+    const text = render(gate(row('a/b.mjs', 'content', direction), DESTRUCTIVE_LEAD))
+    assert.ok(!/\blag\b/.test(text), `${direction}: ${text}`)
+    assert.match(
+      text,
+      new RegExp(
+        `installed copies differ from checkout source in a way this checkout cannot place: a/b\\.mjs \\(content, ${direction}\\)`,
+      ),
+      direction,
+    )
+  }
+})
+
+test('a behind row keeps the lag sentence byte for byte', () => {
+  const text = render(gate(row('a/b.mjs', 'content', 'behind'), '  run `boss skills install`'))
+  assert.equal(
+    text,
+    'warning: installed boss skills drift from checkout source; this run executes 1 installed ' +
+      "path(s) that lag checkout source, so its behaviour can differ from the checkout's: " +
+      'a/b.mjs (content, behind) — run: boss skills install',
+  )
+})
+
+test('a mixed-direction report names each direction group in its own clause', () => {
+  const text = render(
+    gate(
+      row('a/behind.mjs', 'content', 'behind'),
+      row('a/ahead.mjs', 'content', 'ahead'),
+      row('a/lost.mjs', 'unexpected', 'unrecoverable'),
+      DESTRUCTIVE_LEAD,
+    ),
+  )
+  const line = text.split('\n')[0]
+  assert.match(
+    line,
+    /this run executes 1 installed path\(s\) that lag checkout source[^;]*a\/behind\.mjs/,
+  )
+  assert.match(line, /installed copies are NEWER than this checkout[^;]*a\/ahead\.mjs/)
+  assert.match(line, /cannot place: a\/lost\.mjs \(unexpected, unrecoverable\)/)
+  // Each path lands in its own group only.
+  assert.ok(!/lag checkout source[^;]*a\/ahead\.mjs/.test(line), line)
+  assert.ok(!/lag checkout source[^;]*a\/lost\.mjs/.test(line), line)
+  assert.match(line, /withheld its reinstall remedy/)
+})
+
+test('a blocking report withheld only for a downgrade points at updating the checkout', () => {
+  const text = render(
+    gate(row('a/x.mjs', 'absent', 'lossless'), row('a/b.mjs', 'content', 'ahead'), DOWNGRADE_LEAD),
+  )
+  assert.match(text, /^BLOCKED: /)
+  assert.match(text, /repair: .*update the checkout to origin\/HEAD/)
+  assert.ok(!text.includes('named as unrecoverable'), text)
+  // With a genuine loss beside it, the destructive repair wording stays.
+  const mixed = render(
+    gate(
+      row('a/x.mjs', 'absent', 'lossless'),
+      row('a/b.mjs', 'content', 'ahead'),
+      row('a/c.mjs', 'content', 'unrecoverable'),
+      DESTRUCTIVE_LEAD,
+    ),
+  )
+  assert.match(mixed, /named as unrecoverable first/)
+})
+
+// ---------------------------------------------------------------------------
+// Unreferenced absent files: unreleased helpers the executed body never calls
+
+const UNRELEASED = 'boss-plan/toolbox/unreleased-helper.mjs'
+
+test('an in-scope absent file the installed cores never reference is advisory', () => {
+  const asked = []
+  const result = classifySkillDrift({
+    exitStatus: 1,
+    output: gate(row(UNRELEASED, 'absent', 'lossless'), '  run `boss skills install`'),
+    cores: ['boss-plan'],
+    isReferenced: (p) => {
+      asked.push(p)
+      return false
+    },
+  })
+  assert.deepEqual(asked, [UNRELEASED])
+  assert.equal(result.verdict, 'advisory')
+  assert.equal(result.reason, 'unreferenced-absent')
+  assert.equal(result.blocking, false)
+  const text = renderSkillDriftVerdict(result).join('\n')
+  assert.ok(!/^BLOCKED/m.test(text), text)
+  assert.match(
+    text,
+    /warning: checkout adds 1 file\(s\) the installed boss-plan never reference \(unreleased; they decide nothing here\): boss-plan\/toolbox\/unreleased-helper\.mjs \(absent, lossless\)/,
+  )
+})
+
+test('an absent file stays blocking when referenced, unknown, throwing, or out of the absent kind', () => {
+  const output = gate(row(UNRELEASED, 'absent', 'lossless'))
+  for (const [label, isReferenced] of [
+    ['referenced', () => true],
+    ['unknown', () => null],
+    ['default', undefined],
+    [
+      'throws',
+      () => {
+        throw new Error('scan failed')
+      },
+    ],
+    ['non-boolean', () => 0],
+  ]) {
+    const result = classifySkillDrift({ exitStatus: 1, output, cores: ['boss-plan'], isReferenced })
+    assert.equal(result.verdict, 'blocking', label)
+    assert.equal(result.reason, 'absent-capability', label)
+  }
+  // mode and broken-symlink rows, and an absent directory key, are never downgraded.
+  for (const line of [
+    row(UNRELEASED, 'mode', 'lossless'),
+    row(UNRELEASED, 'broken-symlink', 'lossless'),
+    row('boss-plan/toolbox/newdir/', 'absent', 'lossless'),
+    row('boss-plan/SKILL.md', 'absent', 'lossless'),
+    row('boss-plan/references/SKILL.md', 'absent', 'lossless'),
+  ]) {
+    const result = classifySkillDrift({
+      exitStatus: 1,
+      output: gate(line),
+      cores: ['boss-plan'],
+      isReferenced: () => false,
+    })
+    assert.equal(result.verdict, 'blocking', line)
+  }
+})
+
+test('an unreferenced absent row beside a referenced one still blocks on the referenced one', () => {
+  const result = classifySkillDrift({
+    exitStatus: 1,
+    output: gate(
+      row(UNRELEASED, 'absent', 'lossless'),
+      row('boss-plan/toolbox/used.mjs', 'absent', 'lossless'),
+    ),
+    cores: ['boss-plan'],
+    isReferenced: (p) => p.endsWith('used.mjs'),
+  })
+  assert.equal(result.verdict, 'blocking')
+  assert.deepEqual(
+    result.evidence.map((r) => r.path),
+    ['boss-plan/toolbox/used.mjs'],
+  )
+  const text = renderSkillDriftVerdict(result).join('\n')
+  assert.match(text, /checkout adds 1 file\(s\) the installed boss-plan never reference/)
+})
+
+test('the real reference checker answers null from the canonical source copy', () => {
+  const check = installedReferenceChecker(pathToFileURL(SCRIPT_PATH).href, ['boss-plan'])
+  assert.equal(check(UNRELEASED), null)
+})
+
+test('the real reference checker answers null for whole-tree scope', (t) => {
+  const copy = vendoredCopy('boss-plan')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  const check = installedReferenceChecker(pathToFileURL(copy.direct).href, [null])
+  assert.equal(check(UNRELEASED), null)
+})
+
+test('the real reference checker answers null when a core in scope is not installed', (t) => {
+  const copy = vendoredCopy('boss-build')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  // boss-build's closure also loads boss-review and boss-finalize, which this fixture lacks.
+  const check = installedReferenceChecker(pathToFileURL(copy.direct).href, ['boss-build'])
+  assert.equal(check('boss-build/toolbox/unreleased-helper.mjs'), null)
+})
+
+test('the CLI over a vendored copy downgrades only an absent file its SKILL.md never names', (t) => {
+  const copy = vendoredCopy('boss-plan')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  const skillMd = path.join(copy.root, 'ns', 'boss-plan', 'SKILL.md')
+  const input = gate(row(UNRELEASED, 'absent', 'lossless'))
+  const run = (script) =>
+    spawnSync(process.execPath, [script, 'classify', '--status', '1'], { input, encoding: 'utf8' })
+
+  writeFileSync(skillMd, '# boss-plan\n\nRun "$BOSS_PLAN_TOOLBOX/other.mjs".\n')
+  for (const script of [copy.direct, copy.viaLink]) {
+    const unreferenced = run(script)
+    assert.equal(unreferenced.status, 0, unreferenced.stdout + unreferenced.stderr)
+    assert.match(
+      unreferenced.stdout,
+      /checkout adds 1 file\(s\) the installed boss-plan never reference/,
+    )
+    assert.ok(!/^BLOCKED/m.test(unreferenced.stdout), unreferenced.stdout)
+  }
+
+  writeFileSync(skillMd, '# boss-plan\n\nRun "$BOSS_PLAN_TOOLBOX/unreleased-helper.mjs".\n')
+  const referenced = run(copy.viaLink)
+  assert.equal(referenced.status, 1, referenced.stdout)
+  assert.match(referenced.stdout, /^BLOCKED: /)
+
+  // A reference in a file type outside any extension allowlist still counts.
+  writeFileSync(skillMd, '# boss-plan\n')
+  const script = path.join(copy.root, 'ns', 'boss-plan', 'toolbox', 'run-step')
+  writeFileSync(script, '#!/usr/bin/env python3\nimport unreleased_helper  # unreleased-helper.mjs\n')
+  const extensionless = run(copy.viaLink)
+  assert.equal(extensionless.status, 1, extensionless.stdout)
+  assert.match(extensionless.stdout, /^BLOCKED: /)
+  rmSync(script)
+
+  // The canonical source copy has no installed namespace to read, so it fails closed.
+  writeFileSync(skillMd, '# boss-plan\n')
+  const canonical = spawnSync(
+    process.execPath,
+    [SCRIPT_PATH, 'classify', '--status', '1', '--core', 'boss-plan'],
+    { input, encoding: 'utf8' },
+  )
+  assert.equal(canonical.status, 1, canonical.stdout)
+  assert.match(canonical.stdout, /^BLOCKED: /)
 })
 
 // ---------------------------------------------------------------------------

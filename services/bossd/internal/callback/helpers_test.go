@@ -131,12 +131,17 @@ func newFileStore(t *testing.T) *db.SQLiteGithubCallbackStore {
 	return db.NewGithubCallbackStore(d)
 }
 
-// fakeProvider is a fake vcs provider returning canned PR status + checks.
+// fakeProvider is a fake vcs provider returning canned PR status + checks +
+// head workflow runs. Zero runs and no runsErr means every head run completed.
 type fakeProvider struct {
 	status    *vcs.PRStatus
 	statusErr error
 	checks    []vcs.CheckResult
 	checksErr error
+	runs      []vcs.WorkflowRun
+	runsErr   error
+	runsCalls int
+	runsSHA   string
 }
 
 func (f *fakeProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
@@ -145,6 +150,12 @@ func (f *fakeProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRS
 
 func (f *fakeProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
 	return f.checks, f.checksErr
+}
+
+func (f *fakeProvider) ListWorkflowRuns(_ context.Context, _, headSHA string) ([]vcs.WorkflowRun, error) {
+	f.runsCalls++
+	f.runsSHA = headSHA
+	return f.runs, f.runsErr
 }
 
 // scriptedProvider is a mutex-guarded vcs provider whose status/checks can be
@@ -173,6 +184,11 @@ func (s *scriptedProvider) GetCheckResults(_ context.Context, _ string, _ int) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.checks, nil
+}
+
+// ListWorkflowRuns reports every head run completed.
+func (s *scriptedProvider) ListWorkflowRuns(_ context.Context, _, _ string) ([]vcs.WorkflowRun, error) {
+	return nil, nil
 }
 
 // conclusion returns a pointer to a CheckConclusion.

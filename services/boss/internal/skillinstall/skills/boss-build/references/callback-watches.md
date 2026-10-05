@@ -104,7 +104,7 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    # watch whose trigger name is the whole space-joined string, and no real trigger at all.
    printf '%s\n' "$WATCH_TRIGGERS" | while IFS= read -r T; do
      [ -n "$T" ] || continue
-     boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --json
+     boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --independent-watch --message "$MSG" --expires-in "$WATCH_EXPIRY" --json </dev/null
    done
    ```
 
@@ -144,10 +144,13 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    the same verdict the bounded poll below uses, it reconciles a null-shaped node against the named
    context before that node can contribute `unknown`, and its `green` / `failing` / `pending` /
    `unknown` map onto `ready` / red / `not-yet` / `could-not-evaluate` respectively. Pass the prior
-   head's context names as `--prior` whenever the run has them: a path-filtered follow-up push
-   shrinks the check set, and the reason `absent-gate` is what separates a gate that vanished from
-   one that is merely queued. Decide the merge-state half with the same helper's `merge-state`
-   subcommand.
+   head's `gh pr checks --json name,state,bucket,workflow` payload as `--prior` whenever the run has
+   it (a bare array of names still works): a path-filtered follow-up push shrinks the check set, and
+   the reason `absent-gate` is what separates a gate that vanished from one that is merely queued.
+   Pass `gh run list --commit "$HEAD_SHA" --json name,workflowName,status,conclusion,headSha,event
+--limit 100` as `--workflow-runs`: a head run still queued or running holds the verdict at
+   `pending`, and a prior context whose workflow has no run on the head is `notTriggered`, not
+   absent. Decide the merge-state half with the same helper's `merge-state` subcommand.
 
    A check count of zero is not a pass. An empty commit that skips CI can produce a head SHA with no
    merge workflow runs; a rollup containing only third-party checks can satisfy a bare non-empty
@@ -209,8 +212,10 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    The verdict is `classifyChecks` from `$BOSS_BUILD_TOOLBOX/pr-check-state.mjs`, and the helper
    restates none of its rules: a null-shaped rollup node is reconciled against the named contexts
    of `gh pr checks` before it may terminate the wait; `green` is `settled`, `failing` is `failed`,
-   pending and an empty or unreadable rollup keep waiting, and every other shape — `absent-gate`,
-   no gate ran, a delay that did not elapse (`delay-inert`) — is `unknown`.
+   pending and an empty or unreadable rollup keep waiting, and every other shape — `absent-gate`
+   (the verdict carries its `absentGateRemedy`), no gate ran, a delay that did not elapse
+   (`delay-inert`) — is `unknown`. It settles only once every head workflow run has completed and
+   green has held for two reads; a failed workflow-runs read never settles.
 
    On `CI_WAIT_STATE=timeout` the wait expired with the checks still unsettled; on
    `CI_WAIT_STATE=unknown` a read landed on a rollup this wait will not call green. **Both are
@@ -222,8 +227,16 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    re-enters through the consumer after the poll itself was made fail-closed.
 
 6. **Clean up on wait exit.** When the wait phase ends (green + readied, or routed to BLOCKED/Stop),
-   remove every live watch returned by the scoped list where practical (`boss callback remove <id>`,
-   or let `--expires-in` reap them).
+   run `boss callback remove --all --pr "$PR" --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" --json`
+   (`--repo` keeps a same-numbered PR in another repo out of scope). It removes every live
+   (`active`/`leased`/`triggered`) watch this chat owns on the PR, re-lists the same scope, and exits non-zero with the survivors in
+   `remaining_active`; treat that as a failed cleanup to report, never as done. A run that matched
+   nothing still prints `Removed 0 …; 0 active remain.`, so silence is never the success signal. Do
+   not leave cleanup to `--expires-in`: repeated re-pushes and Step 10 settle arms accumulate one
+   watch each, and every one left armed fires into a chat whose run is over. A re-push after Step 12
+   (a post-terminal follow-up in the same chat) re-opens the wait, so it ends with the same Step 12
+   cleanup. On `REVIEW_READY`/`PARTIAL`, Step 12's `ci-watch.mjs classify` runs after the cleanup,
+   sees zero live watches, and re-arms exactly the `missingTriggers` the handoff still owes, once.
 
 ## Invariants
 

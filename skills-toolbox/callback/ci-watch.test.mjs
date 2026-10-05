@@ -480,3 +480,144 @@ test('CLI classify — an absent or empty trigger list exits non-zero naming --t
     assert.equal(result.stdout, '', args.join(' '))
   }
 })
+
+// ---------------------------------------------------------------------------
+// Presence-only flags (BOS-1352). `parseFlags` consumes a following non-`--` token as a value, so
+// `--callbacks-available true` once stored the STRING "true" and the strict `=== true` read took
+// the callbacks-UNAVAILABLE branch — the inverse of what the caller wrote.
+
+// A baseline that makes each presence-only flag decide the verdict on its own.
+const PRESENCE_BASELINE = {
+  'callbacks-available': [
+    'classify',
+    '--triggers',
+    'checks_passed',
+    '--target-chat',
+    CHAT,
+    '--pr',
+    String(PR),
+  ],
+  'target-unverified': [
+    'classify',
+    '--triggers',
+    'checks_passed',
+    '--callbacks-available',
+    '--target-chat',
+    CHAT,
+    '--pr',
+    String(PR),
+  ],
+  'poll-completed': ['classify', '--triggers', 'checks_passed', '--callbacks-available'],
+}
+
+function verdictOf(args) {
+  const result = runCli(args)
+  assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`)
+  return JSON.parse(result.stdout)
+}
+
+test('CLI classify — every presence-only flag is the set the baselines cover', () => {
+  // Keeps the three-way table below honest: a new presence-only flag must get a baseline here.
+  const help = runCli(['--help']).stdout
+  const marked = help
+    .split('\n')
+    .filter((line) => /presence-only/.test(line))
+    .map((line) => line.trim().split(/\s+/)[0].replace(/^--/, ''))
+  assert.deepEqual(marked.sort(), Object.keys(PRESENCE_BASELINE).sort())
+})
+
+for (const [flag, baseline] of Object.entries(PRESENCE_BASELINE)) {
+  test(`CLI classify — --${flag} true is bare --${flag}, false is its absence, anything else is refused`, () => {
+    const bare = verdictOf([...baseline, `--${flag}`])
+    const absent = verdictOf(baseline)
+    // Each baseline was chosen so the flag changes the reason; otherwise the equalities below
+    // would pass vacuously.
+    assert.notEqual(
+      bare.reason,
+      absent.reason,
+      `--${flag} must decide the verdict in this baseline`,
+    )
+
+    for (const spelling of ['true', 'TRUE', 'True']) {
+      const explicit = verdictOf([...baseline, `--${flag}`, spelling])
+      assert.equal(explicit.state, bare.state, `--${flag} ${spelling}`)
+      assert.equal(explicit.reason, bare.reason, `--${flag} ${spelling}`)
+    }
+    for (const spelling of ['false', 'FALSE']) {
+      const explicit = verdictOf([...baseline, `--${flag}`, spelling])
+      assert.equal(explicit.state, absent.state, `--${flag} ${spelling}`)
+      assert.equal(explicit.reason, absent.reason, `--${flag} ${spelling}`)
+    }
+
+    const rejected = runCli([...baseline, `--${flag}`, 'maybe'])
+    assert.notEqual(rejected.status, 0)
+    assert.match(rejected.stderr, new RegExp(`--${flag} is presence-only; got "maybe"`))
+    assert.equal(rejected.stdout, '', 'no verdict is printed for a rejected invocation')
+  })
+}
+
+test('CLI classify — --callbacks-available true no longer reads as callbacks unavailable', () => {
+  // The reproduction from the note, verbatim.
+  const verdict = verdictOf([
+    'classify',
+    '--triggers',
+    'checks_passed',
+    '--callbacks-available',
+    'true',
+  ])
+  assert.notEqual(verdict.reason, CI_WATCH_REASONS.CALLBACKS_UNAVAILABLE)
+  assert.notEqual(verdict.state, CI_WATCH_STATES.POLLED)
+})
+
+// ---------------------------------------------------------------------------
+// --help. It used to exit 1 with `unknown command: --help`.
+
+test('CLI --help, -h, help and classify --help print usage naming every flag and exit 0', () => {
+  for (const args of [['--help'], ['-h'], ['help'], ['classify', '--help'], ['classify', '-h']]) {
+    const result = runCli(args)
+    assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`)
+    assert.equal(result.stderr, '', args.join(' '))
+    assert.match(result.stdout, /classify/, args.join(' '))
+    const lines = result.stdout.split('\n')
+    for (const name of [
+      'check-verdict',
+      'pr-view',
+      'callbacks-available',
+      'unavailable-reason',
+      'target-chat',
+      'pr',
+      'target-unverified',
+      'watches',
+      'triggers',
+      'now',
+      'min-remaining',
+      'poll-completed',
+      'arm-attempts',
+      'arm-error',
+    ]) {
+      const line = lines.find((l) => l.trim().split(/\s+/)[0] === `--${name}`)
+      assert.ok(line, `${args.join(' ')}: usage is missing --${name}`)
+      assert.equal(
+        /presence-only/.test(line),
+        Object.keys(PRESENCE_BASELINE).includes(name),
+        `--${name} presence-only marking`,
+      )
+    }
+    for (const state of Object.values(CI_WATCH_STATES)) {
+      assert.ok(
+        lines.some((l) => l.trim().split(/\s+/)[0] === state),
+        `usage is missing state ${state}`,
+      )
+    }
+  }
+})
+
+test('CLI unknown command still exits non-zero and points at --help', () => {
+  for (const args of [[], ['clasify']]) {
+    const result = runCli(args)
+    assert.notEqual(result.status, 0, args.join(' '))
+    assert.match(result.stderr, /unknown command/)
+    assert.match(result.stderr, /--help/)
+    assert.equal(result.stdout, '')
+  }
+})

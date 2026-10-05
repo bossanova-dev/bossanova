@@ -917,6 +917,19 @@ export function deferredReasonMessage(reasonCode, { missing } = {}) {
       'error output are shown below. It is not a problem with the change itself.'
     )
   }
+  if (reasonCode === 'capture-failed') {
+    // BOS-1354: a deterministic recipe capture (the standalone `--recipe` /
+    // recipe-leg path) failed. Before this code the run exited 1 and posted
+    // nothing, so the failure was invisible on the PR. NEVER an "environment
+    // limitation" — a missing prerequisite defers `env-unavailable` before any
+    // capture starts, so a failure here is a real capture failure to fix.
+    return (
+      'A deterministic proof recipe capture failed this run, so no media was posted for ' +
+      'the recipes listed below. This is a failed capture, not a missing prerequisite: ' +
+      'check each recipe step against the current UI (or the error shown) and re-run the ' +
+      'named recipes with the command below.'
+    )
+  }
   if (reasonCode === 'agent-incomplete') {
     // A ran-but-did-not-finish agent, OR a degraded capture (e.g. a
     // timeout-killed ffmpeg encode that soft-fails to no media). This is a

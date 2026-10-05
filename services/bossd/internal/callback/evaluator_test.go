@@ -13,14 +13,18 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
+// testHeadSHA is the head SHA every test PRStatus carries; checks_passed
+// requires one, because it reads the head's workflow runs.
+const testHeadSHA = "0123456789abcdef0123456789abcdef01234567"
+
 func prStatus(state vcs.PRState) *vcs.PRStatus {
-	return &vcs.PRStatus{State: state}
+	return &vcs.PRStatus{State: state, HeadSHA: testHeadSHA}
 }
 
 // prStatusDraft builds a PRStatus with an explicit draft flag, for the
 // draft-aware ready_for_review / checks_passed_ready triggers.
 func prStatusDraft(state vcs.PRState, draft bool) *vcs.PRStatus {
-	return &vcs.PRStatus{State: state, Draft: draft}
+	return &vcs.PRStatus{State: state, Draft: draft, HeadSHA: testHeadSHA}
 }
 
 // TestEvaluatePR_TriggerMapping verifies that a single ungrouped active callback
@@ -513,6 +517,118 @@ func TestFlow_DraftNoiseSuppressedThenSingleUnDraftFire(t *testing.T) {
 	}
 }
 
+// TestSatisfiedTriggers_RunsSettledGatesChecksPassed verifies that a green
+// check set satisfies checks_passed / checks_passed_ready only once every head
+// workflow run has completed, and that the gate touches no other trigger.
+func TestSatisfiedTriggers_RunsSettledGatesChecksPassed(t *testing.T) {
+	green := []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}
+	red := []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionFailure)}
+	open := prStatusDraft(vcs.PRStateOpen, false)
+
+	held := satisfiedTriggers(open, green, false)
+	if held[models.GithubCallbackTriggerChecksPassed] || held[models.GithubCallbackTriggerChecksPassedReady] {
+		t.Errorf("unsettled runs: checks_passed pair satisfied = %v, want neither", held)
+	}
+	if !held[models.GithubCallbackTriggerReadyForReview] {
+		t.Errorf("unsettled runs: ready_for_review must still be satisfied")
+	}
+	settled := satisfiedTriggers(open, green, true)
+	if !settled[models.GithubCallbackTriggerChecksPassed] || !settled[models.GithubCallbackTriggerChecksPassedReady] {
+		t.Errorf("settled runs: checks_passed pair = %v, want both", settled)
+	}
+	if !satisfiedTriggers(open, red, false)[models.GithubCallbackTriggerChecksFailed] {
+		t.Errorf("unsettled runs: checks_failed must still be satisfied by a completed failure")
+	}
+	if !satisfiedTriggers(prStatus(vcs.PRStateMerged), green, false)[models.GithubCallbackTriggerMerged] {
+		t.Errorf("unsettled runs: merged must still be satisfied")
+	}
+}
+
+// TestEvaluatePR_WorkflowRunsGateChecksPassed drives EvaluatePR end to end
+// against the head workflow-run read.
+func TestEvaluatePR_WorkflowRunsGateChecksPassed(t *testing.T) {
+	green := []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}
+	inProgress := []vcs.WorkflowRun{
+		{Name: "test", Status: "completed", Conclusion: "success", HeadSHA: testHeadSHA},
+		{Name: "bazel", Status: "in_progress", HeadSHA: testHeadSHA},
+	}
+	completed := []vcs.WorkflowRun{
+		{Name: "test", Status: "completed", Conclusion: "success", HeadSHA: testHeadSHA},
+		// A run for another SHA never holds this head.
+		{Name: "bazel", Status: "queued", HeadSHA: "ffffffffffffffffffffffffffffffffffffffff"},
+	}
+	cases := []struct {
+		name     string
+		status   *vcs.PRStatus
+		runs     []vcs.WorkflowRun
+		runsErr  error
+		trigger  models.GithubCallbackTrigger
+		wantFire bool
+	}{
+		{"run in progress, checks_passed", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GithubCallbackTriggerChecksPassed, false},
+		{"run in progress, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GithubCallbackTriggerChecksPassedReady, false},
+		{"run in progress, merged pr, merged", prStatus(vcs.PRStateMerged), inProgress, nil, models.GithubCallbackTriggerMerged, true},
+		{"all runs completed, checks_passed", prStatusDraft(vcs.PRStateOpen, false), completed, nil, models.GithubCallbackTriggerChecksPassed, true},
+		{"all runs completed, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), completed, nil, models.GithubCallbackTriggerChecksPassedReady, true},
+		{"runs read error, checks_passed", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GithubCallbackTriggerChecksPassed, false},
+		{"runs read error, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GithubCallbackTriggerChecksPassedReady, false},
+		{"runs read error, ready_for_review", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GithubCallbackTriggerReadyForReview, true},
+		{"runs read error, merged pr, merged", prStatus(vcs.PRStateMerged), nil, errors.New("gh api 502"), models.GithubCallbackTriggerMerged, true},
+		{"empty head sha, checks_passed", &vcs.PRStatus{State: vcs.PRStateOpen}, nil, nil, models.GithubCallbackTriggerChecksPassed, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+				TargetChatID: "chat-1",
+				RepoOwner:    "acme",
+				RepoName:     "widgets",
+				PRNumber:     7,
+				Trigger:      tc.trigger,
+				Message:      "hello",
+			})
+			prov := &fakeProvider{status: tc.status, checks: green, runs: tc.runs, runsErr: tc.runsErr}
+			ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+			if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+				t.Fatalf("EvaluatePR: %v (a runs-read error must not fail the evaluation)", err)
+			}
+			got := getState(t, store, cb.ID)
+			want := models.GithubCallbackStateActive
+			if tc.wantFire {
+				want = models.GithubCallbackStateTriggered
+			}
+			if got != want {
+				t.Errorf("state = %q, want %q", got, want)
+			}
+			if tc.status.HeadSHA != "" && prov.runsSHA != tc.status.HeadSHA {
+				t.Errorf("runs read for %q, want the head SHA %q", prov.runsSHA, tc.status.HeadSHA)
+			}
+		})
+	}
+}
+
+// TestEvaluatePR_RunsNotReadWhenChecksNotGreen verifies the runs read is
+// skipped when the attached set is not green, sparing the API quota.
+func TestEvaluatePR_RunsNotReadWhenChecksNotGreen(t *testing.T) {
+	store := newStore(t)
+	mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1",
+		RepoOwner:    "acme",
+		RepoName:     "widgets",
+		PRNumber:     7,
+		Trigger:      models.GithubCallbackTriggerChecksPassed,
+		Message:      "hello",
+	})
+	prov := &fakeProvider{status: prStatusDraft(vcs.PRStateOpen, false), checks: []vcs.CheckResult{pendingCheck("build")}}
+	ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("EvaluatePR: %v", err)
+	}
+	if prov.runsCalls != 0 {
+		t.Errorf("runs read %d times for a pending set, want 0", prov.runsCalls)
+	}
+}
+
 // countingProvider counts GetPRStatus calls for fast-path assertions.
 type countingProvider struct {
 	statusCalls int
@@ -524,6 +640,10 @@ func (c *countingProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs
 }
 
 func (c *countingProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
+	return nil, nil
+}
+
+func (c *countingProvider) ListWorkflowRuns(_ context.Context, _, _ string) ([]vcs.WorkflowRun, error) {
 	return nil, nil
 }
 

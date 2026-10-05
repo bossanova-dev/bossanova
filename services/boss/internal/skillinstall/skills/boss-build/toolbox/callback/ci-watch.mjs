@@ -412,6 +412,58 @@ const CLASSIFY_BOOLEAN_FLAGS = Object.freeze([
   'poll-completed',
 ])
 
+// A presence-only flag given an attached value. `parseFlags` consumes any non-`--` token after a
+// flag as its value, so `--callbacks-available true` stored the STRING "true", and the read below
+// — a strict `=== true` — took the callbacks-UNAVAILABLE branch: the opposite of what was written.
+// Coerce the two spellings a caller can mean (`true` / `false`, case-insensitive) and refuse every
+// other value by name, so a presence-only flag is either honoured or loudly rejected.
+function normalisePresenceFlags(verb, shape, flags, valueless) {
+  for (const name of valueless) {
+    const value = flags[name]
+    if (value === undefined || value === true) continue
+    const lowered = String(value).toLowerCase()
+    if (lowered === 'true') flags[name] = true
+    else if (lowered === 'false') flags[name] = false
+    else {
+      throw new Error(
+        `ci-watch: ${verb}(${shape}) — --${name} is presence-only; got ${JSON.stringify(value)}`,
+      )
+    }
+  }
+  return flags
+}
+
+const HELP_TOKENS = Object.freeze(['--help', '-h', 'help'])
+
+// Usage is derived from the same constants the parser enforces, so the list can never drift from
+// what `classify` accepts.
+export function usage() {
+  const width = Math.max(...CLASSIFY_FLAGS.map((name) => name.length)) + 2
+  const flagLines = CLASSIFY_FLAGS.map((name) => {
+    const label = `--${name}`.padEnd(width + 2)
+    return CLASSIFY_BOOLEAN_FLAGS.includes(name)
+      ? `  ${label} presence-only (an explicit true/false is accepted; any other value is refused)`
+      : `  ${label} <value>`
+  })
+  const states = Object.values(CI_WATCH_STATES).map((state) =>
+    BLOCKING_STATES.includes(state) ? `  ${state} (blocking)` : `  ${state}`,
+  )
+  return [
+    'usage: ci-watch.mjs classify --triggers <t1,t2,...> [flags]',
+    '       ci-watch.mjs --help | -h | help',
+    '',
+    'classify prints one JSON verdict on stdout and exits 0; a rejected invocation exits non-zero',
+    'with the reason on stderr and nothing on stdout.',
+    '',
+    'classify flags:',
+    ...flagLines,
+    '',
+    'verdict states:',
+    ...states,
+    '',
+  ].join('\n')
+}
+
 function assertKnownFlags(verb, flags, accepted, valueless = []) {
   const shape = accepted.map((name) => `--${name}`).join(', ')
   for (const [name, value] of Object.entries(flags)) {
@@ -427,10 +479,17 @@ function assertKnownFlags(verb, flags, accepted, valueless = []) {
 
 export function main(argv) {
   const [cmd, ...rest] = argv
+  if (
+    HELP_TOKENS.includes(cmd) ||
+    (cmd === 'classify' && (rest.includes('--help') || rest.includes('-h')))
+  ) {
+    return usage()
+  }
   const flags = parseFlags(rest)
 
   if (cmd === 'classify') {
     const shape = assertKnownFlags('classify', flags, CLASSIFY_FLAGS, CLASSIFY_BOOLEAN_FLAGS)
+    normalisePresenceFlags('classify', shape, flags, CLASSIFY_BOOLEAN_FLAGS)
     const triggers =
       typeof flags.triggers === 'string'
         ? flags.triggers
@@ -465,12 +524,16 @@ export function main(argv) {
     })
   }
 
-  throw new Error(`unknown command: ${cmd ?? '(none)'} (expected "classify")`)
+  throw new Error(
+    `unknown command: ${cmd ?? '(none)'} (expected "classify"; run with --help for usage)`,
+  )
 }
 
 if (isMainModule(import.meta.url)) {
   try {
-    process.stdout.write(`${JSON.stringify(main(process.argv.slice(2)))}\n`)
+    const result = main(process.argv.slice(2))
+    // `main` returns the usage text for a help request and a verdict object otherwise.
+    process.stdout.write(typeof result === 'string' ? result : `${JSON.stringify(result)}\n`)
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
     process.exitCode = 1

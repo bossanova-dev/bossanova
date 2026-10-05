@@ -1,0 +1,32 @@
+{
+  "total_count": 3,
+  "workflow_runs": [
+    {
+      "id": 1001,
+      "name": "test-go",
+      "head_branch": "feature",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 1002,
+      "name": "bazel",
+      "head_branch": "feature",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "event": "pull_request",
+      "status": "in_progress",
+      "conclusion": null
+    },
+    {
+      "id": 1003,
+      "name": "test-warehouse",
+      "head_branch": "feature",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "event": "push",
+      "status": "queued",
+      "conclusion": null
+    }
+  ]
+}

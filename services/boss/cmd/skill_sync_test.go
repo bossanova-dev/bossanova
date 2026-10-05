@@ -1417,6 +1417,119 @@ func TestRunSkillGate(t *testing.T) {
 		}
 	})
 
+	// setupAheadCheckout installs a revision only origin/HEAD reaches: the
+	// checkout commits a second revision, points origin/main at it, installs
+	// it, and then resets one commit behind.
+	setupAheadCheckout := func(t *testing.T) (home string) {
+		t.Helper()
+		home = setupSkillStartupTest(t)
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, gateSkillFS())
+		commitCheckoutAsOriginHead(t, root)
+		if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("origin revision\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, root, "add", ".")
+		runGit(t, root, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "origin revision")
+		runGit(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, root, "reset", "--quiet", "--hard", "HEAD~1")
+		t.Chdir(root)
+		return home
+	}
+
+	t.Run("installed copy ahead of the checkout withholds a downgrade", func(t *testing.T) {
+		setupAheadCheckout(t)
+
+		var out bytes.Buffer
+		err := runSkillGate(&out, "claude")
+		if err == nil || !strings.Contains(err.Error(), "skill drift detected") {
+			t.Fatalf("runSkillGate error = %v, want skill drift detected", err)
+		}
+		got := out.String()
+		assertGateOutputHidesGateFlag(t, got)
+		if strings.Contains(got, "run `") || strings.Contains(got, "skills install") {
+			t.Fatalf("output = %q, want no runnable reinstall command for a downgrade", got)
+		}
+		for _, want := range []string{
+			"boss/SKILL.md (content, ahead)",
+			skillRemedyDowngradeLead,
+			"next: update this checkout to origin/HEAD",
+			"\nboss skills gate: this checkout is 1 commit(s) behind origin/HEAD — directions are judged against HEAD\n",
+		} {
+			if !strings.Contains("\n"+got, want) {
+				t.Fatalf("output = %q, want %q", got, want)
+			}
+		}
+		if strings.Contains(got, skillRemedyWithheldLead) || strings.Contains(got, skillRemedyNextActionDestroys) {
+			t.Fatalf("output = %q, a pure downgrade must not use the destructive lead or next action", got)
+		}
+		if n := strings.Count(got, "behind origin/HEAD —"); n != 1 {
+			t.Fatalf("output = %q, want the behind-count header exactly once, got %d", got, n)
+		}
+	})
+
+	t.Run("a failed origin walk leaves the newer install unrecoverable", func(t *testing.T) {
+		setupAheadCheckout(t)
+		original := skillDriftHistoryGit
+		t.Cleanup(func() { skillDriftHistoryGit = original })
+		skillDriftHistoryGit = func(repoRoot string, args ...string) (string, error) {
+			for _, arg := range args {
+				if arg == "HEAD..origin/HEAD" {
+					return "", errors.New("origin walk unavailable")
+				}
+			}
+			return original(repoRoot, args...)
+		}
+
+		var out bytes.Buffer
+		if err := runSkillGate(&out, "claude"); err == nil {
+			t.Fatalf("runSkillGate returned nil, want drift\n%s", out.String())
+		}
+		got := out.String()
+		if !strings.Contains(got, "boss/SKILL.md (content, unrecoverable)") {
+			t.Fatalf("output = %q, want a failed origin walk to stay unrecoverable", got)
+		}
+		for _, want := range []string{skillRemedyWithheldLead, skillRemedyNextActionDestroys} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("output = %q, want %q", got, want)
+			}
+		}
+		if strings.Contains(got, "run `") {
+			t.Fatalf("output = %q, want the reinstall command withheld", got)
+		}
+	})
+
+	t.Run("a genuine loss beside a newer install keeps the destructive refusal", func(t *testing.T) {
+		home := setupAheadCheckout(t)
+		nsDir := filepath.Join(home, ".claude", "skills", libskillinstall.Namespace)
+		if err := os.WriteFile(filepath.Join(nsDir, "boss-build", "SKILL.md"), []byte("never committed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		var out bytes.Buffer
+		if err := runSkillGate(&out, "claude"); err == nil {
+			t.Fatalf("runSkillGate returned nil, want drift\n%s", out.String())
+		}
+		got := out.String()
+		for _, want := range []string{
+			"boss/SKILL.md (content, ahead)",
+			"boss-build/SKILL.md (content, unrecoverable)",
+			skillRemedyWithheldLead,
+			skillRemedyNextActionDestroys,
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("output = %q, want %q", got, want)
+			}
+		}
+		if strings.Contains(got, skillRemedyDowngradeLead) {
+			t.Fatalf("output = %q, the stricter destructive refusal must win", got)
+		}
+	})
+
 	t.Run("absent installed file is labelled distinctly from a content difference", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		root := t.TempDir()

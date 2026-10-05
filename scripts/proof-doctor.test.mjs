@@ -9,10 +9,13 @@ import {
   DOCTOR_CHECKS,
   LIVE_AGENT_CHECKS,
   PROOF_ENV_KEYS,
+  REAL_STACK_BINARIES,
   binOnPath,
   defaultDoctorLookups,
   doctorReport,
   formatDoctorReport,
+  missingRealStackBinaries,
+  realStackBinariesUnavailableReason,
   requiredHeadlessShellBuild,
   requiredIdsForSurface,
 } from './proof-doctor.mjs'
@@ -38,6 +41,9 @@ function lookupsWith(present) {
     }),
     webDepsPresent: () => has('web-node-modules'),
     goToolchainPresent: () => has('go-toolchain'),
+    realStackBinariesPresent: () => has('real-stack-binaries'),
+    realStackBinariesUnavailableReason: () =>
+      realStackBinariesUnavailableReason(has('real-stack-binaries') ? [] : REAL_STACK_BINARIES),
     ghAuthOk: () => has('gh-auth'),
     gitCredentialOk: () => has('git-credential'),
     claudePluginBuilt: () => has('bossd-plugin-claude'),
@@ -488,4 +494,80 @@ test('defaultDoctorLookups exposes claudePluginBuilt for the live plugin probe',
   assert.equal(typeof lookups.claudePluginBuilt, 'function')
   // No plugin binary under a bogus repo root → probes false, never throws.
   assert.equal(lookups.claudePluginBuilt(), false)
+})
+
+// ── BOS-1354 F1: real-stack binaries are a web-surface prerequisite ─────────
+
+test('requiredIdsForSurface: only web requires real-stack-binaries', () => {
+  assert.ok(requiredIdsForSurface('web').includes('real-stack-binaries'))
+  assert.ok(requiredIdsForSurface('web', { shouldUpload: false }).includes('real-stack-binaries'))
+  for (const surface of ['tui', 'recipe', 'docs']) {
+    assert.ok(
+      !requiredIdsForSurface(surface).includes('real-stack-binaries'),
+      `${surface} must not require the real-stack binaries`,
+    )
+  }
+})
+
+test('REAL_STACK_BINARIES equals the required list in the real-stack global setup', () => {
+  const source = fs.readFileSync(
+    path.join(repoRootForTest, 'services', 'web', 'tests', 'e2e', 'real', 'global-setup.ts'),
+    'utf8',
+  )
+  const match = source.match(/const required = (\[[^\]]*\])/)
+  assert.ok(match, 'global-setup.ts must still declare `const required = [...]`')
+  const required = JSON.parse(match[1].replaceAll("'", '"'))
+  assert.deepEqual(REAL_STACK_BINARIES, required)
+})
+
+test('missingRealStackBinaries probes <repoRoot>/bin/<name> and keeps list order', () => {
+  const present = new Set([path.join('/repo', 'bin', 'bosso')])
+  const missing = missingRealStackBinaries({ repoRoot: '/repo', fileExists: (p) => present.has(p) })
+  assert.deepEqual(missing, ['bossd', 'bossd-plugin-stub-runner', 'bossd-plugin-claude'])
+  assert.deepEqual(missingRealStackBinaries({ repoRoot: '/repo', fileExists: () => true }), [])
+})
+
+test('doctorReport: any absent real-stack binary fails web and names each absent binary', () => {
+  for (const absent of REAL_STACK_BINARIES) {
+    withTempDir('proof-doctor-bin-', (repoRoot) => {
+      fs.mkdirSync(path.join(repoRoot, 'bin'))
+      for (const name of REAL_STACK_BINARIES) {
+        if (name !== absent) fs.writeFileSync(path.join(repoRoot, 'bin', name), '')
+      }
+      const real = defaultDoctorLookups({ repoRoot, env: { PATH: '' } })
+      const lookups = {
+        ...lookupsWith(new Set(ALL_IDS)),
+        realStackBinariesPresent: real.realStackBinariesPresent,
+        realStackBinariesUnavailableReason: real.realStackBinariesUnavailableReason,
+      }
+      const report = doctorReport({ surface: 'web', lookups })
+      assert.deepEqual(report.missing, ['real-stack-binaries'], `${absent} absent`)
+      const check = report.checks.find((c) => c.id === 'real-stack-binaries')
+      assert.equal(check.status, 'missing')
+      assert.match(check.detail, /make build && make plugins/)
+      assert.match(check.detail, new RegExp(`missing from bin/: ${absent}$`))
+      for (const name of REAL_STACK_BINARIES.filter((n) => n !== absent)) {
+        assert.ok(!check.detail.split(': ').at(-1).split(', ').includes(name))
+      }
+      // A TUI run does not care about the real-stack binaries.
+      assert.equal(doctorReport({ surface: 'tui', lookups }).ok, true)
+    })
+  }
+})
+
+test('doctorReport: a bin/ with none of the binaries names all four in the detail', () => {
+  withTempDir('proof-doctor-bin-', (repoRoot) => {
+    const report = doctorReport({
+      surface: 'web',
+      shouldUpload: false,
+      lookups: defaultDoctorLookups({ repoRoot, env: { PATH: '' } }),
+    })
+    assert.ok(report.missing.includes('real-stack-binaries'))
+    const check = report.checks.find((c) => c.id === 'real-stack-binaries')
+    assert.equal(
+      check.detail.split('\n')[1],
+      `missing from bin/: ${REAL_STACK_BINARIES.join(', ')}`,
+    )
+    assert.match(formatDoctorReport(report), /\[MISSING\] real-stack binaries in bin\//)
+  })
 })

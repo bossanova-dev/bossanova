@@ -1491,6 +1491,12 @@ default. Widening the former never widens the latter implicitly. Watches match t
 default; transition matching is an explicit opt-in that suppresses an initially satisfied match and
 makes the watch eligible on a later evaluation. It does not guarantee a false-to-true edge.
 
+A callback is _live_ until it reaches a terminal outcome — delivered, canceled, or expired. "Active"
+names only the freshly armed stage; a callback that has matched or been claimed for delivery is no
+longer active but is still live and will still wake its waiter. Anything that removes or counts a
+run's remaining callbacks must select by liveness, not by the active stage, or it leaves behind
+exactly the ones closest to firing.
+
 ### Callback group
 
 A cancellation scope shared by callbacks armed for the same pull request: when one member is selected
@@ -2692,6 +2698,12 @@ A proof run has read-only siblings that answer questions about it without perfor
 be captured for this diff, and whether this host can capture a given surface at all. Those siblings
 share the run's option vocabulary but not its effects, which is why an option a run reads may be
 merely tolerated by a sibling rather than consumed by it.
+
+The preview sibling is honest only when it reports the run's own selection and gates — which
+recipes the run's recipe leg will capture, and whether the run will defer a forced surface as having
+nothing to show — rather than an answer computed in parallel. The host-capability sibling is what
+turns a missing prerequisite into an **environment-unavailable** deferral instead of a capture
+failure, so a prerequisite the run would fail on belongs among its checks.
 
 ### Proof surface
 

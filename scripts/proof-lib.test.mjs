@@ -3243,6 +3243,16 @@ test('deferredReasonMessage(budget-exceeded): honest, never "environment limitat
   assert.ok(/change itself is fine/.test(msg))
 })
 
+// BOS-1354: a failed standalone recipe capture posts a dedicated deferred note.
+test('deferredReasonMessage(capture-failed): dedicated failed-capture copy, never "environment limitation"', () => {
+  const msg = deferredReasonMessage('capture-failed')
+  assert.ok(!msg.includes('environment limitation'))
+  assert.match(msg, /recipe capture failed/)
+  assert.match(msg, /not a missing prerequisite/)
+  assert.match(msg, /re-run the\s+named recipes/)
+  assert.notEqual(msg, deferredReasonMessage('some-unhandled-code'))
+})
+
 // BOS-220: `scenario-missing` is an AUTHORING nudge (a TUI PR shipped no committed
 // proof/scenarios/*.scenario.json), never an "environment limitation" — the fix is
 // in the author's hands. It points at the BOS-219 validate/run --dry-run loop.

@@ -21,7 +21,7 @@ import {
   collectProofAuditTextScript,
 } from './proof-playwright-runner.mjs'
 import { OVERLAY_CAPTION_CSS as SPEC_OVERLAY_CAPTION_CSS } from './proof-caption-spec.mjs'
-import { precedes, region } from './gate-region-lib.mjs'
+import { precedes, region, regionUntilNext } from './gate-region-lib.mjs'
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const runnerPath = path.join(repoRoot, 'scripts/proof-playwright-runner.mjs')
@@ -148,6 +148,58 @@ test('buildSpec stages the newsletter opt-in only for its own recipe', () => {
   const recipe = catalog.recipes.find((candidate) => candidate.id === 'web-newsletter-opt-in')
   assert.ok(recipe, 'web-newsletter-opt-in recipe is missing from the catalog')
   assert.doesNotThrow(() => validateRecipe(recipe))
+})
+
+// BOS-1354 F4: the accounts filter recipes need the standby daemon in INVENTORY
+// daemons (the fake's accounts list fans out over them) plus two organizations.
+test('buildSpec stages the standby daemon and two organizations only for the accounts filter recipes', () => {
+  const specFor = (id) =>
+    buildSpec({
+      recipe: { id, surface: 'web', route: '/settings/accounts' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+  for (const id of ['web-accounts-filter-flow', 'web-accounts-org-filter-flow']) {
+    const spec = specFor(id)
+    const staging = regionUntilNext(
+      spec,
+      "const orgByDaemonId = { 'daemon-proof-standby': 'org-proof-globex' }",
+      '});',
+      `${id} accounts staging`,
+    )
+    assert.match(staging, /\{ id: 'daemon-proof-standby', displayName: 'Standby daemon' \}/)
+    assert.match(staging, /\.\.\.\(fixture\.daemons \?\? \[\]\)/, 'daemon-proof stays first')
+    assert.match(staging, /id: 'org-proof-acme'[^}]*name: 'Acme'/)
+    assert.match(staging, /id: 'org-proof-globex'[^}]*name: 'Globex'/)
+    assert.match(staging, /organizationId: orgByDaemonId\[daemon\.id\] \?\? 'org-proof-acme'/)
+    assert.doesNotMatch(staging, /__BOSSANOVA_E2E__/, 'extends the bossanovaE2e-only fixture')
+  }
+  for (const id of ['web-sessions', 'web-accounts-list', 'web-daemons']) {
+    const spec = specFor(id)
+    assert.doesNotMatch(spec, /orgByDaemonId/, `${id} must not carry the accounts staging`)
+    assert.doesNotMatch(spec, /org-proof-globex/, `${id} must carry no organization data`)
+    assert.doesNotMatch(
+      spec,
+      /daemons: \[[^\]]*daemon-proof-standby/,
+      `${id} keeps the standby daemon out of inventory daemons`,
+    )
+  }
+})
+
+test('the accounts filter recipes staged with the standby row exist and validate', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  for (const id of ['web-accounts-filter-flow', 'web-accounts-org-filter-flow']) {
+    const recipe = catalog.recipes.find((candidate) => candidate.id === id)
+    assert.ok(recipe, `${id} recipe is missing from the catalog`)
+    assert.doesNotThrow(() => validateRecipe(recipe))
+    assert.ok(
+      recipe.steps.some((step) => step.selector === 'text=standby@anthropic.com'),
+      `${id} narrows to the standby row the staging makes reachable`,
+    )
+  }
 })
 
 test('the runner assigns the mirror fixture global in exactly one place', () => {

@@ -16,11 +16,13 @@
 // three chances to disagree — and because the disagreement is invisible until the run that needed
 // the missing file is already past its preflight.
 //
-// Scope limit (load-bearing, do not "fix"): the gate's stdout and its exit status are the ENTIRE
-// input. This module runs no command, reads no file and reaches for no repository. It ships
-// vendored inside globally installed cores, where there is no checkout to consult and where the
-// gate has already performed the only comparison that can be performed. Everything it knows, it
-// parses; anything it cannot parse, it refuses to call clean.
+// Scope limit (load-bearing, do not "fix"): the gate's stdout and its exit status are the whole
+// account of the drift. This module runs no command and reads NO checkout. It ships vendored
+// inside globally installed cores, where there is no checkout to consult and where the gate has
+// already performed the only comparison that can be performed. The one thing it may read besides
+// that output is the installed cores it ships beside: whether the body this run executes calls a
+// file the checkout adds can only be answered there, never in the checkout. Everything else it
+// knows, it parses; anything it cannot parse or read, it refuses to call clean.
 //
 // Fail-closed in both directions. An unrecognised kind or direction token is `undecided`, and so
 // is a non-zero gate whose output carries no parseable drift row at all — the shape that a
@@ -30,12 +32,14 @@
 // Scope: the verdict is about the tree THIS RUN executes, not the whole installed tree. Rows under
 // the running core, and under the sibling cores it loads in-run, decide; rows under any other core
 // are still reported, but decide nothing. The running core is read from where this module sits —
-// a vendored copy lives at `<skills>/<core>/toolbox/` — or given by `--core`. That location and the
-// flag are the only inputs besides the gate's own output; no checkout is read. An unrecognised or
-// unlocatable core falls back to whole-tree scope, which is the fail-closed direction.
+// a vendored copy lives at `<skills>/<core>/toolbox/` — or given by `--core`. That location, the
+// flag, and the installed cores in scope (read only to ask whether they mention an absent file) are
+// the only inputs besides the gate's own output; no checkout is read. An unrecognised or
+// unlocatable core falls back to whole-tree scope, which is the fail-closed direction, and an
+// installed tree that cannot be located or scanned leaves every absent row blocking.
 
-import { readFileSync, realpathSync } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // The direct-invocation predicate has exactly one definition repo-wide (enforced by
@@ -62,10 +66,13 @@ export const SKILL_DRIFT_KINDS = Object.freeze([
   'broken-symlink',
 ])
 
-// The gate's own direction vocabulary (`skillDriftDirection` in the boss CLI). Exactly four.
+// The gate's own direction vocabulary (`skillDriftDirection` in the boss CLI). Exactly five.
+// `ahead` is an installed copy NEWER than the checkout: a revision origin/HEAD reaches and the
+// checkout's HEAD does not.
 export const SKILL_DRIFT_DIRECTIONS = Object.freeze([
   'lossless',
   'behind',
+  'ahead',
   'unrecoverable',
   'unknown',
 ])
@@ -77,10 +84,10 @@ export const SKILL_DRIFT_DIRECTIONS = Object.freeze([
 const CAPABILITY_KINDS = new Set(['absent', 'mode', 'broken-symlink'])
 
 // Directions for which the gate refuses to offer a reinstall, because it would overwrite installed
-// bytes the checkout cannot restore. The tree still runs, so this stays on the advisory side: only
-// the REMEDY is unsafe, and withholding the command while still warning is the decision the gate
-// itself already made.
-const WITHHELD_DIRECTIONS = new Set(['unrecoverable', 'unknown'])
+// bytes the checkout cannot restore, or downgrade bytes newer than the checkout. The tree still
+// runs, so this stays on the advisory side: only the REMEDY is unsafe, and withholding the command
+// while still warning is the decision the gate itself already made.
+const WITHHELD_DIRECTIONS = new Set(['ahead', 'unrecoverable', 'unknown'])
 
 // Ascending severity; the aggregate verdict of a mixed report is its most severe row. `blocking`
 // outranks `undecided` so a report carrying both names the stop it can actually prove rather than
@@ -118,6 +125,12 @@ const CORE_NAME = /^boss(-[a-z0-9-]+)?$/
 // top-level link into the namespaced payload. Anything else — the canonical source copy, a test
 // fixture, an unreadable path — infers no core.
 export function inferRunningCore(moduleUrl = import.meta.url) {
+  return locateRunningCore(moduleUrl)?.core ?? null
+}
+
+// The running core and the installed namespace directory that holds it (`<namespace>/<core>/`), or
+// null when this module does not sit in a core's toolbox.
+function locateRunningCore(moduleUrl) {
   let file
   try {
     file = fileURLToPath(moduleUrl)
@@ -131,8 +144,55 @@ export function inferRunningCore(moduleUrl = import.meta.url) {
   }
   const toolbox = dirname(file)
   if (basename(toolbox) !== 'toolbox') return null
-  const core = basename(dirname(toolbox))
-  return core.startsWith('boss-') && CORE_NAME.test(core) ? core : null
+  const coreDir = dirname(toolbox)
+  const core = basename(coreDir)
+  if (!core.startsWith('boss-') || !CORE_NAME.test(core)) return null
+  return { core, namespace: dirname(coreDir) }
+}
+
+// Whether any file under dir mentions needle. Every regular file is read, whatever its extension:
+// an allowlist would turn a reference in an unlisted file type into a false 'unreferenced'. Throws on anything it cannot read, and on a
+// nested directory link (which it will not follow), so the caller can fail closed.
+function treeMentions(dir, needle) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    let isDir = entry.isDirectory()
+    let isFile = entry.isFile()
+    if (entry.isSymbolicLink()) {
+      const target = statSync(full)
+      if (target.isDirectory()) throw new Error(`directory link not followed: ${full}`)
+      isFile = target.isFile()
+      isDir = false
+    }
+    if (isDir) {
+      if (treeMentions(full, needle)) return true
+    } else if (isFile) {
+      if (readFileSync(full, 'utf8').includes(needle)) return true
+    }
+  }
+  return false
+}
+
+// The real `isReferenced` for a module at moduleUrl judging the given cores: does any text file of
+// those installed cores mention the drifted path's basename? `true` or `false` when every core was
+// scanned, `null` (unknown, which blocks) when the namespace cannot be located — the canonical
+// source copy, a test fixture — when there is no core scope, or when any scan throws.
+export function installedReferenceChecker(moduleUrl = import.meta.url, cores = []) {
+  const located = locateRunningCore(moduleUrl)
+  const scope = scopeForCores(cores)
+  if (located === null || scope === null) return () => null
+  return (path) => {
+    const name = basename(String(path))
+    if (name === '') return null
+    try {
+      for (const core of [...scope].sort()) {
+        if (treeMentions(join(located.namespace, core), name)) return true
+      }
+      return false
+    } catch {
+      return null
+    }
+  }
 }
 
 // The set of cores in scope for the given core names, or null for whole-tree scope. Any name the
@@ -228,21 +288,51 @@ export function parseSkillGateOutput(output = '') {
 // An out-of-scope row can raise the aggregate no higher than this: it is reported, never decisive.
 const OUT_OF_SCOPE_CEILING = SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD
 
+// Whether an `isReferenced` answer, or its failure, says the file is unreferenced. Only a literal
+// `false` does; anything else — `true`, `null`, a throw, a stray value — is unknown or referenced,
+// and keeps the row blocking.
+function answeredUnreferenced(isReferenced, path) {
+  try {
+    return isReferenced(path) === false
+  } catch {
+    return false
+  }
+}
+
+// A skill's SKILL.md is loaded by invocation, never by name, so no reference scan can vouch for its
+// absence: an absent entry point always blocks.
+function isImplicitEntryPoint(path) {
+  return basename(String(path)) === 'SKILL.md'
+}
+
 // The verdict on one gate observation: its exit status and its captured output, plus the cores
-// whose rows decide (`cores`; empty or absent means the whole tree).
-export function classifySkillDrift({ exitStatus = 0, output = '', cores = [] } = {}) {
+// whose rows decide (`cores`; empty or absent means the whole tree). `isReferenced(path)` answers
+// whether the installed cores in scope mention an absent file: `false` downgrades an in-scope
+// `absent` file row to advisory (`unreferenced-absent`, an unreleased file the executed body never
+// calls); `true` or `null` (unknown, the default) leaves it blocking.
+export function classifySkillDrift({
+  exitStatus = 0,
+  output = '',
+  cores = [],
+  isReferenced = () => null,
+} = {}) {
   const parsed = parseSkillGateOutput(output)
   const scope = scopeForCores(cores)
   const rows = parsed.rows.map((row) => {
-    const verdict = verdictForDriftRow(row.kind, row.direction)
-    return {
-      ...row,
-      verdict,
-      // An unreadable row — unparseable, or parsed with a kind or direction outside the gate's
-      // vocabulary — stays in scope whatever its path: what it names cannot be trusted, and the
-      // out-of-scope ceiling would otherwise demote its `undecided` to advisory.
-      inScope: verdict === SKILL_DRIFT_VERDICTS.UNDECIDED || rowInScope(row.path, scope),
-    }
+    let verdict = verdictForDriftRow(row.kind, row.direction)
+    // An unreadable row — unparseable, or parsed with a kind or direction outside the gate's
+    // vocabulary — stays in scope whatever its path: what it names cannot be trusted, and the
+    // out-of-scope ceiling would otherwise demote its `undecided` to advisory.
+    const inScope = verdict === SKILL_DRIFT_VERDICTS.UNDECIDED || rowInScope(row.path, scope)
+    const unreferenced =
+      inScope &&
+      row.kind === 'absent' &&
+      verdict === SKILL_DRIFT_VERDICTS.BLOCKING &&
+      !String(row.path).endsWith('/') &&
+      !isImplicitEntryPoint(row.path) &&
+      answeredUnreferenced(isReferenced, row.path)
+    if (unreferenced) verdict = SKILL_DRIFT_VERDICTS.ADVISORY
+    return { ...row, verdict, inScope, ...(unreferenced ? { unreferenced: true } : {}) }
   })
   const base = {
     rows,
@@ -284,12 +374,15 @@ export function classifySkillDrift({ exitStatus = 0, output = '', cores = [] } =
   }
   const matching = rows.filter((row) => row.inScope && row.verdict === verdict)
   const evidence = matching.length > 0 ? matching : rows
-  const reason = {
-    blocking: 'absent-capability',
-    undecided: 'unreadable-drift-row',
-    'advisory-withheld': 'remedy-withheld',
-    advisory: 'stale-record',
-  }[verdict]
+  const reason =
+    matching.length > 0 && matching.every((row) => row.unreferenced)
+      ? 'unreferenced-absent'
+      : {
+          blocking: 'absent-capability',
+          undecided: 'unreadable-drift-row',
+          'advisory-withheld': 'remedy-withheld',
+          advisory: 'stale-record',
+        }[verdict]
   return decided(verdict, reason, evidence)
 }
 
@@ -305,21 +398,69 @@ const uniqueLabels = (rows) => [
 // unaffected is exactly what cannot be made about them when they are in scope.
 const EXECUTED_STALE_KINDS = new Set(['content', 'unexpected'])
 
-// The warning for capability rows under cores this run does not load. Reported, never dropped:
-// they are real drift, just not this run's.
+const coresOf = (rows) => [...new Set(rows.map((row) => row.path.split('/')[0]))].sort().join(', ')
+
+// The warnings for rows that are reported but decide nothing: capability rows under cores this run
+// does not load, and absent files the installed cores in scope never reference. Reported, never
+// dropped: they are real drift, just not drift this run can trip over.
 function outOfScopeCapabilityLines(result) {
-  const rows = (result.outOfScope ?? []).filter((row) => CAPABILITY_KINDS.has(row.kind))
-  if (rows.length === 0) return []
-  const labels = uniqueLabels(rows)
-  return [
-    `warning: ${labels.length} installed path(s) are missing from cores this run does not load ` +
-      `(${[...new Set(rows.map((row) => row.path.split('/')[0]))].sort().join(', ')}); they decide nothing ` +
-      `here: ${labels.join(', ')}`,
-  ]
+  const lines = []
+  const foreign = (result.outOfScope ?? []).filter((row) => CAPABILITY_KINDS.has(row.kind))
+  if (foreign.length > 0) {
+    const labels = uniqueLabels(foreign)
+    lines.push(
+      `warning: ${labels.length} installed path(s) are missing from cores this run does not load ` +
+        `(${coresOf(foreign)}); they decide nothing here: ${labels.join(', ')}`,
+    )
+  }
+  const unreleased = (result.rows ?? []).filter((row) => row.unreferenced)
+  if (unreleased.length > 0) {
+    const labels = uniqueLabels(unreleased)
+    lines.push(
+      `warning: checkout adds ${labels.length} file(s) the installed ${coresOf(unreleased)} never ` +
+        `reference (unreleased; they decide nothing here): ${labels.join(', ')}`,
+    )
+  }
+  return lines
 }
 
+// The executed-stale rows grouped by what their direction says about the installed copy, one
+// clause per non-empty group: older than the checkout (a reinstall moves it forward), newer than
+// the checkout (a reinstall from here would downgrade it), or a difference the checkout cannot
+// place. Only the first group may be called lagging.
+function executedStaleClauses(rows) {
+  const group = (directions) => uniqueLabels(rows.filter((row) => directions.has(row.direction)))
+  const lag = group(new Set(['lossless', 'behind']))
+  const newer = group(new Set(['ahead']))
+  const unplaced = group(new Set(['unrecoverable', 'unknown']))
+  const clauses = []
+  if (lag.length > 0) {
+    clauses.push(
+      `this run executes ${lag.length} installed path(s) that lag checkout source, so its ` +
+        `behaviour can differ from the checkout's: ${lag.join(', ')}`,
+    )
+  }
+  if (newer.length > 0) {
+    clauses.push(
+      `installed copies are NEWER than this checkout (it is behind origin/HEAD): ${newer.join(', ')}` +
+        ' — do not reinstall from this checkout; update it and re-run',
+    )
+  }
+  if (unplaced.length > 0) {
+    clauses.push(
+      `installed copies differ from checkout source in a way this checkout cannot place: ${unplaced.join(', ')}`,
+    )
+  }
+  return clauses
+}
+
+// Whether the only withheld direction in a report is `ahead`, so its refusal is a downgrade the
+// operator fixes by updating the checkout rather than a loss fixed by moving files.
+const onlyDowngradeWithheld = (directions) =>
+  directions.includes('ahead') && !directions.some((d) => d === 'unrecoverable' || d === 'unknown')
+
 export function renderSkillDriftVerdict(result) {
-  const { verdict, remedy, evidence = [], reason, rows = [] } = result
+  const { verdict, remedy, evidence = [], reason, rows = [], directions = [] } = result
   if (verdict === SKILL_DRIFT_VERDICTS.CLEAN) return []
   const executedStale = rows.filter((row) => row.inScope && EXECUTED_STALE_KINDS.has(row.kind))
   if (
@@ -327,9 +468,9 @@ export function renderSkillDriftVerdict(result) {
       verdict === SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD) &&
     executedStale.length > 0
   ) {
-    // Not "work state unaffected": these are copies this run executes, and they lag the source
-    // whose behaviour the run is expected to have.
-    const labels = uniqueLabels(executedStale)
+    // Not "work state unaffected": these are copies this run executes, and they differ from the
+    // source whose behaviour the run is expected to have — in the direction each row's own label
+    // states, never assumed to be lag.
     const where =
       verdict === SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD
         ? 'the gate withheld its reinstall remedy, so there is no command to offer — read the gate output above for the next action'
@@ -337,9 +478,8 @@ export function renderSkillDriftVerdict(result) {
           ? `run: ${remedy.command}`
           : 'see gate output above'
     return [
-      `warning: installed boss skills drift from checkout source; this run executes ${labels.length} ` +
-        `installed path(s) that lag checkout source, so its behaviour can differ from the checkout's: ` +
-        `${labels.join(', ')} — ${where}`,
+      `warning: installed boss skills drift from checkout source; ` +
+        `${executedStaleClauses(executedStale).join('; ')} — ${where}`,
       ...outOfScopeCapabilityLines(result),
     ]
   }
@@ -378,8 +518,11 @@ export function renderSkillDriftVerdict(result) {
       ' the step that invokes one of these and reports it as that step failing.',
     remedy.command
       ? `  repair: ${remedy.command}`
-      : '  repair: the gate withheld its reinstall command — move or delete the paths it named as' +
-        ' unrecoverable first, then re-run it.',
+      : onlyDowngradeWithheld(directions)
+        ? '  repair: the gate withheld its reinstall command because installed copies are newer than' +
+          ' this checkout — update the checkout to origin/HEAD first, then re-run it.'
+        : '  repair: the gate withheld its reinstall command — move or delete the paths it named as' +
+          ' unrecoverable first, then re-run it.',
   ]
   // Only when the gate's own command lacks the build step: a command that already rebuilds the
   // plugins needs no second instruction to do so.
@@ -430,10 +573,12 @@ export function main(argv, { stdin, stdout = process.stdout, moduleUrl = import.
   // rather than clean: defaulting the other way would turn a dropped flag into a silent pass.
   const flag = argv.indexOf('--status')
   const status = flag !== -1 && argv[flag + 1] !== undefined ? Number(argv[flag + 1]) : 1
+  const cores = coreFlags(argv) ?? [inferRunningCore(moduleUrl)]
   const result = classifySkillDrift({
     exitStatus: status,
     output: stdin !== undefined ? stdin : readStdin(),
-    cores: coreFlags(argv) ?? [inferRunningCore(moduleUrl)],
+    cores,
+    isReferenced: installedReferenceChecker(moduleUrl, cores),
   })
   for (const line of renderSkillDriftVerdict(result)) stdout.write(`${line}\n`)
   return result.blocking ? 1 : 0

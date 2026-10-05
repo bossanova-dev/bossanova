@@ -320,6 +320,8 @@ test('productSourcePresent is false for a prose/harness/skills-only diff', () =>
     'skills-toolbox/',
     '.claude/',
     '.codex/',
+    'services/boss/internal/skillinstall/skills/',
+    'plugins/bossd-plugin-claude/skilldata/',
   ])
   assert.equal(
     productSourcePresent([
@@ -343,6 +345,26 @@ test('productSourcePresent is false for a prose/harness/skills-only diff', () =>
   )
   assert.equal(productSourcePresent([]), false)
   assert.equal(productSourcePresent(null), false)
+})
+
+// BOS-1354 (F7): a skills-payload-only diff — skill Markdown AND helper .mjs —
+// raises no TUI surface by path and holds no product source, so a surface a
+// required-proof bullet forces onto it defers `forced-no-surface`.
+test('skills payload Markdown and .mjs never raise the TUI surface and are not product source', () => {
+  const payload = [
+    'services/boss/internal/skillinstall/skills/boss-build/SKILL.md',
+    'services/boss/internal/skillinstall/skills/boss-build/references/proof-capture.md',
+    'services/boss/internal/skillinstall/skills/boss-build/toolbox/worktree-state.mjs',
+    'plugins/bossd-plugin-claude/skilldata/skills/boss-build/toolbox/worktree-state.mjs',
+  ]
+  for (const file of payload) {
+    assert.equal(classifyTuiSurface([file]), false, file)
+    assert.equal(productSourcePresent([file]), false, file)
+  }
+  assert.equal(classifyTuiSurface(payload), false)
+  assert.equal(productSourcePresent(payload), false)
+  // The boss binary's own Go under skillinstall/ stays product source.
+  assert.equal(productSourcePresent(['services/boss/internal/skillinstall/embed.go']), true)
 })
 
 test('productSourcePresent treats the hand-written RPC client as product source', () => {

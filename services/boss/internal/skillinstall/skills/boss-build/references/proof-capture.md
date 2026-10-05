@@ -8,23 +8,30 @@ outcome below is recorded and ignored, never routed to BLOCKED.
 
 ## The single proof channel
 
-`node scripts/proof.mjs run --recipe <id> --recipe <id>` posts its own PR comment, and its
-structured deferred note is the **only** proof channel for browser recipes. A session **never**
+`node scripts/proof.mjs run` posts its own PR comment, and its structured deferred note is the
+**only** proof channel. A session **never**
 hand-writes skip prose or a "proof skipped: …" one-line note, and never invents its own
 "no recipe matched → write a PR note" fallback. When proof cannot run — no UI surface, a missing
 prerequisite, or a pipeline bug — you still run the proof pipeline and let it post the honest
 structured note. It classifies the outcome for you:
 
-- **no-ui-surface** — the change has nothing to render; the note says so and exits 0.
-- **env-unavailable** — a required key or toolchain is missing; the note embeds the doctor report
-  naming exactly what is absent, and exits 0 so a human can provision it.
+- **no-ui-surface** — the change has nothing to render; the note says so and contributes exit 0.
+- **forced-no-surface** — a `## Required proof` bullet forced a surface onto a diff with no product
+  source and no recipe; nothing to capture, contributes exit 0. `plan` predicts it as
+  `forcedNoSurface: true`.
+- **env-unavailable** — a required key, toolchain or built binary is missing; the note embeds the
+  doctor report naming exactly what is absent, and contributes exit 0 so a human can provision it.
 - **scenario-missing** — a TUI change shipped without a committed `proof/scenarios/*.scenario.json`
-  demonstrating it; the policy is that the note names the missing scenario and contributes exit 1,
-  because proof is required for TUI. Author a scenario (below) so the deterministic TUI proof can run,
-  and still read the manifest's `clamped` array before trusting a green process exit.
+  **and** the TUI agent cannot capture (no proof key, or recipe mode); contributes exit 1. With a key,
+  a scenario-less TUI diff runs the agent leg instead, whose brief may defer
+  **no-ui-surface** (exit 0) when the diff touches no `services/boss/internal/views/` or `fixtures/`
+  file. Read the manifest's `clamped` array before trusting a green process exit either way.
+- **capture-failed** — a deterministic recipe capture failed; the note names each failed recipe with
+  its error and the `--recipe` re-run command, and contributes exit 1.
 - **pipeline-error** — a proof-pipeline bug (render/encode/bridge crash); the note names the failing
-  stage and never blames the environment; exits 1 as an internal retry signal only.
-- **agent-incomplete** — a real surface the agent could not demonstrate; exits 1 (internal signal).
+  stage and never blames the environment; contributes exit 1 as an internal retry signal only.
+- **agent-incomplete** — a real surface the agent could not demonstrate; contributes exit 1
+  (internal signal).
 
 None of these exit codes gate finalization — Steps 8–9 already ran. The posted note, never any
 hand-written prose, is the source of truth for reviewers.
@@ -43,9 +50,10 @@ for a deferral or for the process exit status, and say in the PR body which code
 present.
 
 A web surface still needs the agent driver. Step 11 runs the pipeline only, so on a web-only diff in
-an unattended run `agent-incomplete` is expected, not a misconfiguration. A fresh worktree can also
-hit the built-binary preflight before that; treat a web still as unobtainable unattended rather than
-building binaries solely to chase it.
+an unattended run `agent-incomplete` is expected, not a misconfiguration. A fresh worktree without
+the real-stack binaries in `bin/` defers the web surface `env-unavailable` (exit 0), with the doctor
+detail naming each missing binary; treat a web still as unobtainable unattended rather than building
+binaries solely to chase it.
 
 An attached pane cannot be captured. The runner drives the TUI over the NDJSON bridge; once the
 program hands the terminal to a wrapped process with `tea.Exec`, the bridge stops being read, so an
@@ -87,25 +95,25 @@ with the doctor output embedded, so a human can provision it.
 ## Running it
 
 ```bash
-node scripts/proof.mjs plan                         # classify; read `recipes`, `surfaces`, `order`
-node scripts/proof.mjs run                          # capture what `plan` just selected
+node scripts/proof.mjs plan                         # read `recipeLeg`, `order`, `forcedNoSurface`
+node scripts/proof.mjs run                          # capture exactly what `plan` reported
 node scripts/proof.mjs run --recipe <id> --recipe <id>   # narrow to specific recipe ids
 ```
 
-There is no "default preset". A bare `run` captures what your diff selected rather than a fixed
-catalog set: the recipe catalog (`proof/recipes/default.json`) maps changed paths to recipe ids
-through its `pathRules`, so the selection is derived from your diff and is already scoped to the
-change. Read `plan` first, and read `order` alongside `recipes`: a surface `order` names is proved
-**live by the agent**, so the ids in `recipes` that belong to it are deliberately not captured by the
-recipe leg. The ids `run` must account for — captured, or named in the run's per-surface summary
-with a reason code — are the recipe-surface ids `order` does not claim. Pass `--recipe` when you
-deliberately want a narrower set than the diff selected, for example to re-run one failing capture.
-The TUI surface is proved by a committed `proof/scenarios/*.scenario.json`, not by `--recipe`.
+There is no "default preset". The recipe catalog (`proof/recipes/default.json`) maps changed paths to
+recipe ids through its `pathRules`; `plan` lists every match in `recipes` as `{id, surface, title}`.
+Not every match is captured: a surface `order` names is proved **live by the agent**, so its recipes
+are deliberately left to that agent. `recipeLeg` names exactly the recipe ids a bare `run` captures
+through the recipe leg, and `order` the agent surfaces it drives — those are what `run` must account
+for, captured or named in the per-surface summary with a reason code. Pass `--recipe` only to narrow,
+for example to re-run one failing capture. The TUI surface is proved by a committed
+`proof/scenarios/*.scenario.json`, not by `--recipe`.
 
-When `plan` prints **zero recipes** (`recipes: []`) and an empty `order`, the change has no
-capturable browser surface — that is an expected outcome, not a failure to work around. Let `run`
-post its own honest note and cite the diff and tests as the evidence. Do **not** invent a recipe id,
-pass an unrelated one to produce a video, or hand-write a proof note. If a page you actually changed
+When `plan` prints an empty `recipeLeg` and an empty `order`, or `forcedNoSurface: true`, the change
+has no capturable surface — an expected outcome, not a failure to work around. One bare `run` posts
+its own honest note, and that note is the terminal proof outcome: no further runs, and cite the diff
+and tests as the evidence. Do **not** invent a recipe id, pass an unrelated one to produce a video,
+or hand-write a proof note. If a page you actually changed
 has no matching path rule, the gap is a missing entry in the catalog: fix it as its own change
 rather than capturing something unrelated to stand in for it.
 
@@ -115,17 +123,23 @@ the terminal state, and respect proof's own privacy refusals.
 
 ## Scenario authoring (TUI) — required for a TUI-touching PR
 
-Any PR that touches the TUI surface (`services/boss/internal/views/`, `tuidriver/`, `client/`,
-`cmd/`, `proto/`, and the other TUI prefixes) **must commit a `proof/scenarios/*.scenario.json`**
-demonstrating its specific change. The scenario is the deterministic, LLM-free replacement for the
+A scenario is owed when `node scripts/proof.mjs plan` reports `surfaces.tui: true` **and** the change
+alters what a TUI screen shows; such a PR **must commit a `proof/scenarios/*.scenario.json`**
+demonstrating its specific change. Do not judge this from path prefixes yourself — `plan` already
+applies them (a contract, generated-client or test-only edit raises no TUI surface on its own). The scenario is the deterministic, LLM-free replacement for the
 flaky live-agent TUI capture: it drives the real TUI through named scenes over the NDJSON bridge and
 asserts what each settled screen shows — so the proof is reproducible with **no** `PROOF_ANTHROPIC_API_KEY`.
 
-If the diff ships without one, the intended policy is a **scenario-missing** deferred note that
-contributes exit 1 — proof is required for TUI — so author the scenario now, as part of the change,
-not as an afterthought. A green exit does not make a scenario-less TUI PR safe: the run can instead
-upload a downgraded stub, with the honest signal only in the manifest's `clamped` array. A scenario
-gates **only its own PR** — never add path rules, and never edit another PR's scenario.
+If a TUI-visible diff ships without one, the outcome depends on the TUI agent: keyless (or recipe
+mode) it is **scenario-missing** (exit 1); with a key the agent leg runs and may defer
+**no-ui-surface** (exit 0) or upload a downgraded stub, with the honest signal only in the manifest's
+`clamped` array. Neither makes a scenario-less TUI PR safe, so author the scenario now, as part of
+the change. A scenario gates **only its own PR** — never add path rules, and never edit another PR's
+scenario.
+
+**Declining a scenario.** When `surfaces.tui` is true but the diff changes no rendered output —
+argument threading, comments, startup wiring — do not author a filler scenario. State that reasoning
+in the PR body and accept whatever outcome the pipeline posts; proof never gates finalization.
 
 Author it and iterate to green **before** finalize:
 

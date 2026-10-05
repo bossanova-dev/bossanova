@@ -194,18 +194,22 @@ if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skill
 CHECK_DIR="$(git rev-parse --git-dir)/boss-repair-checks"
 mkdir -p "$CHECK_DIR"
 HEAD_SHA="$(gh pr view --json headRefOid -q .headRefOid)" || exit 1
-gh pr checks --json name,state,bucket > "$CHECK_DIR/checks.json"
+gh pr checks --json name,state,bucket,workflow > "$CHECK_DIR/checks.json"
 gh api "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?per_page=100" --paginate --slurp > "$CHECK_DIR/runs.json"
+gh run list --commit "$HEAD_SHA" --json name,workflowName,status,conclusion,headSha,event --limit 100 > "$CHECK_DIR/workflow-runs.json"
 node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify \
   --head-sha "$HEAD_SHA" --observed-sha "$HEAD_SHA" \
   --checks "$CHECK_DIR/checks.json" --check-runs "$CHECK_DIR/runs.json" \
-  --prior "$CHECK_DIR/prior-contexts.json"
+  --workflow-runs "$CHECK_DIR/workflow-runs.json" --prior "$CHECK_DIR/prior-contexts.json"
 ```
 
-Before you push, save the current head's check names (a JSON array of names) to
-`$CHECK_DIR/prior-contexts.json`: a path-filtered push can shrink the check set, and without the
-previous set the classifier cannot tell "all gates passed" from "fewer gates ran" (`provesGreen` stays
-false).
+Before you push, copy the current head's `checks.json` payload to `$CHECK_DIR/prior-contexts.json`
+(a bare JSON array of names is still accepted): a path-filtered push can shrink the check set, and
+without the previous set the classifier cannot tell "all gates passed" from "fewer gates ran"
+(`provesGreen` stays false). The payload's `workflow` and conclusions let the classifier drop a
+context whose workflow did not run on the new head (`notTriggered`) and name the
+`reported-on-prior-head` remedy. A head workflow run still queued or running holds the verdict at
+`pending`.
 
 **GraphQL quota.** GitHub's GraphQL quota runs out before REST. When a `gh pr …` read is
 rate-limited, use REST and say so in the report (start the line with `DEGRADED_READ`):
@@ -281,9 +285,26 @@ Run passes in a loop, at most **5 repair passes**:
 6. **Done** when checks are green, mergeability is not `CONFLICTING`, and review feedback is `clean`
    or `parked` with every fixed or declined thread resolved. Re-poll review feedback after checks go
    green — that is when fresh threads appear. Before exiting, make sure something will still observe
-   the PR: `node "$BOSS_REPAIR_TOOLBOX/callback/ci-watch.mjs" classify` — `unwatched` means arm the
-   `missingTriggers` it names (once) before exiting; `settled`, `watched` and `polled` may exit.
-   Remove the watches you registered.
+   the PR (`$CHECK_VERDICT_JSON` is the classify output above, `$PR_VIEW_JSON` is
+   `gh pr view --json state,isDraft,mergedAt,mergeStateStatus`, `$WATCH_LIST_JSON` is
+   `boss callback list --chat "$BOSS_AGENT_SESSION_ID" --json`):
+
+   ```bash
+   node "$BOSS_REPAIR_TOOLBOX/callback/ci-watch.mjs" classify \
+     --check-verdict "$CHECK_VERDICT_JSON" --pr-view "$PR_VIEW_JSON" --watches "$WATCH_LIST_JSON" \
+     --target-chat "$BOSS_AGENT_SESSION_ID" --pr "$PR_NUMBER" \
+     --triggers "$(
+       node --input-type=module -e '
+         import{pathToFileURL as u}from"node:url"
+         const {resolveCallbackAdapter}=await import(u(process.env.BOSS_REPAIR_TOOLBOX+"/callback/adapter.mjs").href)
+         process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join(","))
+       '
+     )" \
+     ${CALLBACKS_AVAILABLE:+--callbacks-available} --arm-attempts "$ARM_ATTEMPTS"
+   ```
+
+   `unwatched` means arm the `missingTriggers` it names (once) before exiting; `settled`, `watched`
+   and `polled` may exit. Remove the watches you registered.
 
 End with the report plus a final line naming why the loop ended — exactly one of `green`, `parked`,
 `no-progress`, `max-attempts`, `blocked` (a human must act) — with the number of passes used and the

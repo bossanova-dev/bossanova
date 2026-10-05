@@ -442,9 +442,25 @@ export function proofHarnessOnlyDiff(changedFiles) {
  * BOS-1285: path prefixes that hold no product source at all — documentation,
  * the proof/build harness, the agent-skill payload. A change confined to them
  * cannot alter what ANY surface renders, directly or behaviourally.
+ *
+ * BOS-1354 (F7): the published skill payload
+ * (`services/boss/internal/skillinstall/skills/`) and its plugin embed mirror
+ * (`plugins/bossd-plugin-claude/skilldata/`) are agent instructions and helper
+ * scripts, never rendered by any surface. Without them a skills-payload `.mjs`
+ * read as product source, so a `## Required proof` bullet that forced the TUI
+ * surface onto a skills-only diff ran the agent instead of deferring
+ * `forced-no-surface`.
  * @type {readonly string[]}
  */
-export const NON_PRODUCT_PREFIXES = ['docs/', 'scripts/', 'skills-toolbox/', '.claude/', '.codex/']
+export const NON_PRODUCT_PREFIXES = [
+  'docs/',
+  'scripts/',
+  'skills-toolbox/',
+  '.claude/',
+  '.codex/',
+  'services/boss/internal/skillinstall/skills/',
+  'plugins/bossd-plugin-claude/skilldata/',
+]
 
 /**
  * BOS-1285: the tier-B prefixes whose contents are MACHINE-GENERATED, and so

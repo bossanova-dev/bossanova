@@ -480,3 +480,58 @@ func TestE2E_GitHub_ErrorPropagation(t *testing.T) {
 		t.Errorf("error should surface gh message, got: %v", err)
 	}
 }
+
+func TestE2E_GitHub_ListWorkflowRuns(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	f := newFakeGH(t)
+	f.expect(ghResponder{
+		match:  argsStartWith("api", "repos/owner/repo/actions/runs?head_sha="+sha+"&per_page=100"),
+		stdout: fixture(t, "workflow_runs.json"),
+	})
+	runs, err := newProvider(f).ListWorkflowRuns(context.Background(), testRepo, sha)
+	if err != nil {
+		t.Fatalf("ListWorkflowRuns: %v", err)
+	}
+	want := []vcs.WorkflowRun{
+		{Name: "test-go", Status: "completed", Conclusion: "success", HeadSHA: sha},
+		{Name: "bazel", Status: "in_progress", Conclusion: "", HeadSHA: sha},
+		{Name: "test-warehouse", Status: "queued", Conclusion: "", HeadSHA: sha},
+	}
+	if len(runs) != len(want) {
+		t.Fatalf("got %d runs, want %d: %+v", len(runs), len(want), runs)
+	}
+	for i := range want {
+		if runs[i] != want[i] {
+			t.Errorf("run %d = %+v, want %+v", i, runs[i], want[i])
+		}
+	}
+	if calls := f.callsContaining("actions/runs"); len(calls) != 1 || len(calls[0].Args) != 2 {
+		t.Errorf("want exactly one REST call with no extra flags, got %+v", calls)
+	}
+}
+
+func TestE2E_GitHub_ListWorkflowRuns_FailsClosed(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	full := `{"total_count":100,"workflow_runs":[` + strings.TrimSuffix(strings.Repeat(`{"name":"w","status":"completed","head_sha":"`+sha+`"},`, 100), ",") + `]}`
+	for name, tc := range map[string]struct {
+		stdout string
+		err    error
+		sha    string
+		repo   string
+	}{
+		"truncated total_count": {stdout: `{"total_count":3,"workflow_runs":[{"name":"a","status":"completed"}]}`, sha: sha, repo: testRepo},
+		"full page":             {stdout: full, sha: sha, repo: testRepo},
+		"gh error":              {err: errors.New("HTTP 502"), sha: sha, repo: testRepo},
+		"unparseable":           {stdout: "not json", sha: sha, repo: testRepo},
+		"empty head sha":        {sha: "", repo: testRepo},
+		"invalid repo":          {sha: sha, repo: "not-a-repo"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeGH(t)
+			f.expect(ghResponder{match: argsStartWith("api"), stdout: tc.stdout, err: tc.err})
+			if _, err := newProvider(f).ListWorkflowRuns(context.Background(), tc.repo, tc.sha); err == nil {
+				t.Fatal("ListWorkflowRuns succeeded, want an error")
+			}
+		})
+	}
+}

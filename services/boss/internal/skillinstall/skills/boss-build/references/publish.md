@@ -23,19 +23,30 @@ Linear issue: <url>
 
 ## Autonomous decisions
 - <decision + rationale> (every task contract's decisions, the orchestrator's own, the base-drift
-  note, and anything a human must verify outside the worktree)
+  note)
+
+## Human follow-up
+- [ ] <anything a human must verify outside the worktree>
+- none
+
+## Open questions
+- [ ] <unresolved plan question>
+- none
 
 ## Cross-model review
 <clean | findings-fixed (<per-finding dispositions>) | skipped: <reason> | error: <reason>>
 
 ## Review coverage
-<full | full (skipped: <rounds>) | quick: <reason> | none: review stack did not run (<reason>) |
- none: review verdict unreadable (<reason>) | none: review coverage unknown (<reason>)>
+<full | reduced (<misses>) | quick: <reason>[; reduced (<misses>)] |
+ none: review stack did not run (<reason>) | none: review verdict unreadable (<reason>) |
+ none: review coverage unknown (<reason>)>
 ```
 
 - The first line must be `Linear issue: <url>` — downstream review keys off it.
 - **Never omit** `## Cross-model review` or `## Review coverage`: an absent section reads as
   "passed clean" / "full coverage". Publish the token the run actually earned, never a cleaner one.
+- `full` / `reduced (…)` and a `skipped: …` cross-model token are copied verbatim from the review's
+  `bs-review-ledger.mjs tokens` output; on the quick tier append `; reduced (…)` when it said so.
 - `quick: <reason>` states which part of the depth rule picked it (e.g.
   `quick: no lens glob matched and 4 changed files is below the 20-file threshold`), so a reader can
   re-check it.
@@ -45,7 +56,16 @@ Linear issue: <url>
   `reason` and a `remedy`. A failing item is an unmet in-scope criterion, not a blocker. You may
   reclassify a criterion as verify-only yourself when "no change was needed" is genuinely the right
   outcome — run the check, record it, and note the reclassification under `## Autonomous decisions`.
-- Copy the plan's open questions (for `agent-question` tickets) into the body.
+- Always include `## Human follow-up` and `## Open questions`. Each contains only checklist
+  items (`- [ ]` open, `- [x]` done), or a single `- none` when empty; in the template choose
+  items or `- none`, never both. Heading matching is case-insensitive and fenced blocks are ignored.
+  Any other non-blank line makes the section malformed. Run
+  `node "$BOSS_BUILD_TOOLBOX/completion-gate.mjs" followups --body-file <path>` beside the
+  evidence validator and fix its reported problems before publishing; a malformed section is
+  recoverable, not a blocker.
+- Copy the plan's open questions (for `agent-question` tickets) into `## Open questions` as
+  `- [ ]` items. Only a human resolves them. Put outside-worktree verification under
+  `## Human follow-up`, also open until verified.
 - The phrase `do not merge` never appears in a title or body except as the PARTIAL marker below —
   boss-epic's merge gate matches it. Rephrase any finding that contains it.
 

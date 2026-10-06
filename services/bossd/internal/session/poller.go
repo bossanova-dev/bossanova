@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -40,6 +42,18 @@ type Poller struct {
 	logger         zerolog.Logger
 	done           chan struct{}
 	firstPoll      chan struct{}
+	health         WebhookHealth // optional; nil polls every repo every interval
+	now            func() time.Time
+
+	lastPollMu sync.Mutex
+	lastPoll   map[string]time.Time // session ID -> last scheduled check
+
+	// sweepMu serialises the scheduled sweep with on-demand PollPR calls and
+	// guards events/closed, so PollPR can never send on the channel after Run
+	// has closed it.
+	sweepMu sync.Mutex
+	events  chan<- SessionEvent
+	closed  bool
 }
 
 // NewPoller creates a new check poller. A zero sessionTimeout selects
@@ -64,7 +78,17 @@ func NewPoller(
 		logger:         logger,
 		done:           make(chan struct{}),
 		firstPoll:      make(chan struct{}),
+		now:            time.Now,
+		lastPoll:       make(map[string]time.Time),
 	}
+}
+
+// SetWebhookHealth wires the webhook-delivery tracker. A session in a repo whose
+// webhooks reach the daemon is checked at webhookSafetyNetInterval instead of
+// every sweep; the webhook dispatcher's PollPR covers its changes as they
+// happen. Must be called before Run. nil-safe.
+func (p *Poller) SetWebhookHealth(h WebhookHealth) {
+	p.health = h
 }
 
 // Run starts the polling loop. It sends events on the returned channel and
@@ -72,15 +96,23 @@ func NewPoller(
 // channel to prevent blocking.
 func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 	ch := make(chan SessionEvent, 64)
+	p.sweepMu.Lock()
+	p.events = ch
+	p.sweepMu.Unlock()
 	safego.Go(p.logger, func() {
 		defer close(p.done)
-		defer close(ch)
+		defer func() {
+			p.sweepMu.Lock()
+			p.closed = true
+			close(ch)
+			p.sweepMu.Unlock()
+		}()
 
 		ticker := time.NewTicker(p.interval)
 		defer ticker.Stop()
 
 		// Poll immediately on start, then on each tick.
-		p.poll(ctx, ch)
+		p.sweep(ctx, ch)
 		close(p.firstPoll)
 
 		for {
@@ -88,11 +120,94 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				p.poll(ctx, ch)
+				p.sweep(ctx, ch)
 			}
 		}
 	})
 	return ch
+}
+
+func (p *Poller) sweep(ctx context.Context, ch chan<- SessionEvent) {
+	p.sweepMu.Lock()
+	defer p.sweepMu.Unlock()
+	p.poll(ctx, ch)
+}
+
+// PollPR checks every pollable session on repoOriginURL#prNumber now, outside
+// the schedule. The webhook dispatcher calls it after each delivery for the PR:
+// webhooks never carry ChecksPassed, so a session on the webhook safety-net
+// interval relies on this to advance on green promptly. It waits for an
+// in-progress sweep rather than racing it, and is a no-op before Run or after
+// Run has stopped.
+func (p *Poller) PollPR(ctx context.Context, repoOriginURL string, prNumber int) {
+	p.sweepMu.Lock()
+	defer p.sweepMu.Unlock()
+	if p.events == nil || p.closed || ctx.Err() != nil {
+		return
+	}
+	if err := p.pollPR(ctx, p.events, repoOriginURL, prNumber); err != nil {
+		p.logger.Warn().Err(err).
+			Str("repo_origin_url", repoOriginURL).
+			Int("pr", prNumber).
+			Msg("poller: on-demand PR poll")
+	}
+}
+
+func (p *Poller) pollPR(ctx context.Context, ch chan<- SessionEvent, repoOriginURL string, prNumber int) error {
+	listCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
+	repo, err := p.repos.GetByOrigin(listCtx, repoOriginURL)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("get repo by origin %q: %w", repoOriginURL, err)
+	}
+	sessions, err := p.listActiveSessions(ctx, repo.ID)
+	if err != nil {
+		return fmt.Errorf("list sessions for repo %q: %w", repo.ID, err)
+	}
+	for _, sess := range sessions {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if !pollableState(sess.State) || sess.PRNumber == nil || *sess.PRNumber != prNumber {
+			continue
+		}
+		p.markPolled(sess.ID, p.now())
+		p.checkSessionBounded(ctx, ch, repo, sess)
+	}
+	return nil
+}
+
+// dueForCheck reports whether a session's PR should be checked this sweep, and
+// records the check when it is. Every session is due every sweep unless its
+// repo's webhooks reach the daemon, in which case it is due once per
+// webhookSafetyNetInterval.
+func (p *Poller) dueForCheck(repoOriginURL, sessionID string, now time.Time) bool {
+	p.lastPollMu.Lock()
+	defer p.lastPollMu.Unlock()
+	if p.health != nil && p.health.WebhookDeliveryHealthy(repoOriginURL) {
+		if last, ok := p.lastPoll[sessionID]; ok && now.Sub(last) < webhookSafetyNetInterval {
+			return false
+		}
+	}
+	p.lastPoll[sessionID] = now
+	return true
+}
+
+func (p *Poller) markPolled(sessionID string, now time.Time) {
+	p.lastPollMu.Lock()
+	defer p.lastPollMu.Unlock()
+	p.lastPoll[sessionID] = now
+}
+
+// pruneLastPoll drops schedule entries for sessions no longer pollable.
+func (p *Poller) pruneLastPoll(seen map[string]struct{}) {
+	p.lastPollMu.Lock()
+	defer p.lastPollMu.Unlock()
+	for id := range p.lastPoll {
+		if _, ok := seen[id]; !ok {
+			delete(p.lastPoll, id)
+		}
+	}
 }
 
 // Done returns a channel that is closed when the Run goroutine exits.
@@ -125,6 +240,9 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 		return
 	}
 
+	now := p.now()
+	seen := make(map[string]struct{})
+	defer p.pruneLastPoll(seen)
 	for _, repo := range repos {
 		if ctx.Err() != nil {
 			return
@@ -143,6 +261,10 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 				continue
 			}
 			if sess.PRNumber == nil {
+				continue
+			}
+			seen[sess.ID] = struct{}{}
+			if !p.dueForCheck(repo.OriginURL, sess.ID, now) {
 				continue
 			}
 
@@ -179,7 +301,10 @@ func (p *Poller) checkSessionBounded(ctx context.Context, ch chan<- SessionEvent
 	sessCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
 	defer cancel()
 
-	p.checkSession(sessCtx, ch, repo, sess)
+	// A scheduled sweep is a background read: it shares the provider's short
+	// read cache with the display poller and the callback reconcile, which poll
+	// the same PRs on their own clocks.
+	p.checkSession(vcs.WithCachedReads(sessCtx), ch, repo, sess)
 
 	// Distinguish a per-session timeout from ordinary parent-ctx cancellation
 	// (shutdown) so a slow-or-hung provider stays visible — now naming the

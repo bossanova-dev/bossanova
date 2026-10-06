@@ -52,6 +52,7 @@ export const DEFAULT_TRACKER_STATES = Object.freeze({
   planned: 'Todo',
   inProgress: 'In Progress',
   inReview: 'In Review',
+  done: 'Done',
 })
 
 /** Pipeline label names a tracker block gets when it does not name its own. */
@@ -91,6 +92,8 @@ export function withTrackerDefaults(config) {
   return { ...config, trackerConfig: filled }
 }
 
+// completionDefaults.allowMerge is opt-in: only literal true authorizes a completion merge.
+// No default key is shipped; absent means off.
 export const DEFAULT_CONFIG = Object.freeze({
   // Deliberately NOT a copy of any one checkout's lensMap — the inverse of the pin this
   // block used to carry. The published cores install into every user's GLOBAL skill
@@ -202,6 +205,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
   env: {
     headlessSignals: [
+      { var: 'BOSS_UNATTENDED', equals: 'true' },
       { var: 'BOSS_CRON', equals: 'true' },
       { var: 'BS_HEADLESS', equals: '1' },
       { var: 'OPENCLAW_SESSION', present: true },
@@ -331,19 +335,30 @@ export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
  * - `emphasis-delimiter-whitespace-migration` — whitespace moving across an emphasis delimiter,
  *   e.g. `**1.** ` stored as `**1. **`.
  * - `emphasis-span-restructuring` — one emphasis span containing an inline code span rewritten as
- *   emphasis + code + emphasis. Renders identically; adds bytes.
+ *   emphasis + code + emphasis (medial), as code + emphasis (leading) or emphasis + code
+ *   (trailing), including a split that wraps across one line break. Renders identically; adds
+ *   bytes. Emphasis deleted or demoted, and a split across a blank line, stay drift.
  * - `trailing-whitespace-trimming` — trailing spaces/tabs removed from a line.
  * - `terminal-newline-trimming` — trailing newlines removed from the end of the document.
  * - `table-delimiter-row-normalization` — the dash run inside each cell of a table delimiter row
- *   rewritten to a different length, e.g. `| --- | --- |` stored as `| -- | -- |`. Alignment
+ *   rewritten to a different length, or the row re-padded, e.g. `| --- | --- |` stored as
+ *   `| -- | -- |` and `|---|---|---|` stored as `| -- | -- | -- |`. Alignment
  *   colons are NOT part of this transform: a cell's colons carry alignment where its dash count
  *   carries nothing, so a row that lost one is a semantic change and stays drift.
  * - `block-boundary-blank-line-normalization` — a blank line inserted or removed at a LIST block
- *   boundary: between a list and the heading that follows it, or between two adjacent list items.
+ *   boundary: between a list and the heading that follows it, between two adjacent list items, or
+ *   between a paragraph and a following list item that can interrupt it (a bullet item, or an
+ *   ordered item numbered `1.` / `1)`; a `3.` item cannot, so that blank line stays drift).
  *   Unlike the transforms above this one is not purely cosmetic — a blank line inside a list makes
- *   the list loose, which changes the rendered markup — so it is a deliberate widening, bounded to
- *   those two boundaries and never dropping a line that carries text. That bound is what keeps a
+ *   the list loose, which changes the rendered markup, including when the "paragraph" line is
+ *   really a lazy continuation inside a list — so it is a deliberate widening, bounded to those
+ *   three boundaries and never dropping a line that carries text. That bound is what keeps a
  *   dropped list item, and two lists merged across the paragraph that separated them, drift.
+ * - `backslash-escape-insertion` — a backslash escape inserted before `_` or `*` (the two characters
+ *   measured), e.g. `stg_<source>__` stored as `stg\_<source>\_\_`. An escaped backslash (`\\_`)
+ *   is a different character and stays drift, and a backslash inside an inline code span, a
+ *   fenced block or an indented code block is literal and is never touched. Accepted residual of
+ *   a side-agnostic rule: a literal `\*a\*` and an italic `*a*` compare equal.
  */
 export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'unordered-list-marker-substitution',
@@ -353,6 +368,7 @@ export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'terminal-newline-trimming',
   'table-delimiter-row-normalization',
   'block-boundary-blank-line-normalization',
+  'backslash-escape-insertion',
 ])
 
 const DESCRIPTION_NORMALIZATION_TRANSFORM_SET = new Set(DESCRIPTION_NORMALIZATION_TRANSFORMS)
@@ -2073,6 +2089,7 @@ const PLANNING_BULLET_KEYS = Object.freeze([
   'Contract',
   'Agent-friendly',
   'Atomic-5',
+  'Oversized-child',
   'Plan attachment',
   'On implementation',
   'Dependencies',
@@ -2808,7 +2825,7 @@ function searchPatternAndPaths(segment) {
     if (token.startsWith('-')) {
       if (/^(?:-e|--regexp)$/.test(token)) pattern = segment[++index] ?? null
       else if (token.startsWith('--regexp=')) pattern = token.slice('--regexp='.length)
-      else if (/^(?:--glob|--type|--context|-[ABC])$/.test(token)) index += 1
+      else if (/^(?:--glob|--type|--context|--max-count|-[ABCm])$/.test(token)) index += 1
       continue
     }
     if (pattern === null) pattern = token
@@ -2896,6 +2913,132 @@ function goTestRunFinding(segment, cwd) {
     code: 'selection-matches-no-test',
     message: `the go test -run pattern matches no test function in the concrete package: ${run.packagePath}`,
   }
+}
+
+/**
+ * Remedies for the advisory command findings that carry one. The same text is appended to the
+ * finding's message (so a `warning:` line is actionable on its own) and returned by
+ * `commandFindingRemedy`, so the two cannot drift.
+ */
+const ADVISORY_COMMAND_REMEDIES = Object.freeze({
+  'pipefail-early-exit-reader':
+    'Write the output to a file first (cmd > out; grep -q X out), or count the whole stream (grep -c) instead of exiting on the first hit.',
+  'unscoped-negative-directory-search':
+    "Scope the search to the file type the claim is about (--include='*.sql', rg -g '*.sql'), or exclude test files (*_test.*).",
+  'go-build-writes-output':
+    'Use go build -o /dev/null <pkg>, go vet <pkg>, or go build ./... so nothing is written into the working directory.',
+})
+
+function remediedAdvisory(code, message) {
+  return advisory(code, `${message} — ${ADVISORY_COMMAND_REMEDIES[code]}`)
+}
+
+/**
+ * A reader that exits on its first hit: `grep`/`rg` with `-q`/`--quiet`/`--silent` (bundled short
+ * flags such as `-qE` included) or a `-m N`/`--max-count` cap, and `head`. Downstream of a pipe it
+ * closes the pipe early, the writer takes SIGPIPE, and under pipefail a PASSING check exits 141.
+ * A counting reader (`grep -c`) drains the stream and is not one.
+ */
+function isEarlyExitReader(segment) {
+  const [head, ...args] = segment
+  if (head === 'head') return true
+  if (head !== 'grep' && head !== 'rg') return false
+  return args.some(
+    (token) =>
+      token === '--quiet' ||
+      token === '--silent' ||
+      token === '--max-count' ||
+      token.startsWith('--max-count=') ||
+      /^-[A-Za-z]*q[A-Za-z]*$/.test(token) ||
+      /^-[A-Za-z]*m\d*$/.test(token),
+  )
+}
+
+function hasPipefailEarlyExitReader(command, segments, separatorsAfter) {
+  if (!/\bpipefail\b/.test(command)) return false
+  return segments.some(
+    (segment, index) =>
+      index > 0 && separatorsAfter[index - 1] === '|' && isEarlyExitReader(segment),
+  )
+}
+
+const RECURSIVE_GREP_FLAG_RE = /^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$/
+const FILE_TYPE_SCOPE_RE =
+  /^(?:--(?:include|exclude|exclude-dir|glob|type|type-not|iglob)(?:=|$)|-[gtT])/
+
+/**
+ * A NEGATED recursive search over an existing directory with no file-type scoping. The negative
+ * claim is about one kind of file (migration SQL, a config), but a directory-wide search also
+ * matches the tests and guards that name the forbidden token, so the check goes red while the
+ * intended claim holds. Distinct from `unscoped-premise-search`, which covers a search with NO path
+ * operand. The directory is not walked for test files: fixtures and guards that name a token are not
+ * reliably `_test` files, and an advisory does not justify a filesystem walk.
+ */
+function isUnscopedNegativeDirectorySearch(segment, rawSegment, cwd) {
+  if (rawSegment?.[0] !== '!') return false
+  const [head, ...args] = segment
+  if (head === 'grep') {
+    if (!args.some((token) => RECURSIVE_GREP_FLAG_RE.test(token))) return false
+  } else if (head !== 'rg') {
+    return false
+  }
+  if (args.some((token) => FILE_TYPE_SCOPE_RE.test(token))) return false
+  const search = searchPatternAndPaths(segment)
+  if (!search) return false
+  return search.paths.some((path) => {
+    if (/[*?[$~]/.test(path)) return false
+    try {
+      return statSync(isAbsolute(path) ? path : join(cwd, path)).isDirectory()
+    } catch {
+      return false
+    }
+  })
+}
+
+const GO_BUILD_VALUE_FLAGS = new Set([
+  '-asmflags',
+  '-buildmode',
+  '-buildvcs',
+  '-C',
+  '-compiler',
+  '-coverpkg',
+  '-covermode',
+  '-gccgoflags',
+  '-gcflags',
+  '-installsuffix',
+  '-ldflags',
+  '-mod',
+  '-modfile',
+  '-overlay',
+  '-p',
+  '-pgo',
+  '-pkgdir',
+  '-tags',
+  '-toolexec',
+])
+
+/**
+ * `go build <one package>` with no `-o`: building a single main package writes a binary named after
+ * the directory into the working directory, which fails when a same-named directory exists
+ * (`go build ./cmd/` next to `cmd/`). The classifier does not track `cd`, so it flags the risky
+ * shape rather than a proven clash — advisory only.
+ */
+function isGoBuildWritingOutput(segment) {
+  if (segment[0] !== 'go' || segment[1] !== 'build') return false
+  const operands = []
+  for (let index = 2; index < segment.length; index += 1) {
+    const token = segment[index]
+    if (token === '-o' || token.startsWith('-o=') || token === '--o' || token.startsWith('--o=')) {
+      return false
+    }
+    if (GO_BUILD_VALUE_FLAGS.has(token.replace(/^--/, '-'))) {
+      index += 1
+      continue
+    }
+    if (token.startsWith('-')) continue
+    operands.push(token)
+  }
+  return operands.length === 1 && !operands[0].includes('...')
 }
 
 /**
@@ -3044,6 +3187,36 @@ export function classifyCheckCommand(
       'a pipeline without pipefail reports the tail command status rather than the failing command',
     )
   }
+  // The pipe rule above passes any pipeline that carries pipefail, which is exactly the shape that
+  // turns an early-exit reader's SIGPIPE into a false red (141 on a passing check).
+  if (hasPipefailEarlyExitReader(trimmed, segments, separatorsAfter)) {
+    advisoryFindings.push(
+      remediedAdvisory(
+        'pipefail-early-exit-reader',
+        'a reader that exits on its first hit closes the pipe early, the writer takes SIGPIPE, and pipefail reports 141 for a passing check',
+      ),
+    )
+  }
+  if (
+    segments.some((segment, index) =>
+      isUnscopedNegativeDirectorySearch(segment, rawSegments[index], cwd),
+    )
+  ) {
+    advisoryFindings.push(
+      remediedAdvisory(
+        'unscoped-negative-directory-search',
+        'a directory-wide negative search also matches the tests and guards that name the forbidden token',
+      ),
+    )
+  }
+  if (segments.some(isGoBuildWritingOutput)) {
+    advisoryFindings.push(
+      remediedAdvisory(
+        'go-build-writes-output',
+        'building one main package without -o writes a binary named after the directory into the working directory, which fails when a same-named directory exists',
+      ),
+    )
+  }
   if (tokens[0] === 'git' && tokens[1] === 'grep' && tokens.includes('-E') && /\\b/.test(trimmed)) {
     recordVacuityRisk(
       'git-grep-word-boundary',
@@ -3137,8 +3310,11 @@ function parseCheckboxSection(config, description, heading, fn) {
   assertConfigFirst(config, fn)
   const section = planDescriptionSections(config, description).find((s) => s.heading === heading)
   if (!section) return []
+  return parseCheckboxBody(section.bodyLines.join('\n'))
+}
 
-  const body = section.bodyLines.join('\n')
+/** The checkbox bullets of one section BODY (no headings), with the same grammar for every caller. */
+function parseCheckboxBody(body) {
   const outside = new Set(scanFences(body).lines.map(({ index }) => index))
   const lines = body.split('\n')
   const raw = []
@@ -3247,26 +3423,80 @@ export function parseAcceptanceCriteria(config, description) {
  * @returns {{ text: string, claim: string, check: string | null, central: boolean, duplicateCentral: boolean }[]}
  */
 export function parsePremises(config, description) {
-  const premises = parseCheckboxSection(config, description, PREMISES_HEADING, 'parsePremises').map(
-    (premise) => {
-      const central = CENTRAL_PREMISE_MARKER_RE.test(premise.text)
-      const claim = (central ? premise.text.replace(CENTRAL_PREMISE_MARKER_RE, '') : premise.text)
-        .replace(VERIFY_ONLY_CHECK + (premise.check === null ? '' : `\`${premise.check}\``), '')
-        .trim()
-      return {
-        text: premise.text,
-        claim,
-        check: premise.check,
-        central,
-        duplicateCentral: false,
-      }
-    },
-  )
+  return toPremises(parseCheckboxSection(config, description, PREMISES_HEADING, 'parsePremises'))
+}
+
+function toPremises(items) {
+  const premises = items.map((premise) => {
+    const central = CENTRAL_PREMISE_MARKER_RE.test(premise.text)
+    const claim = (central ? premise.text.replace(CENTRAL_PREMISE_MARKER_RE, '') : premise.text)
+      .replace(VERIFY_ONLY_CHECK + (premise.check === null ? '' : `\`${premise.check}\``), '')
+      .trim()
+    return {
+      text: premise.text,
+      claim,
+      check: premise.check,
+      central,
+      duplicateCentral: false,
+    }
+  })
   const central = premises.filter((premise) => premise.central)
   if (central.length > 1) {
     for (const premise of central) premise.duplicateCentral = true
   }
   return premises
+}
+
+const ATX_HEADING_RE = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$/
+const PREMISE_HEADING_RE = /premise/i
+
+/**
+ * Parse a free-form plan FILE into its criterion and premise checkbox bullets.
+ *
+ * Since the attachment became the plan and the description only points at it, acceptance criteria
+ * and premises live in the plan file under whatever headings the drafter chose (`## Acceptance
+ * criteria`, `### Done means`, …). The heading-scoped description parsers never see them, so this
+ * one is heading-AGNOSTIC: the plan is split at every ATX heading outside fenced code, parsing stops
+ * at the terminal contract heading (`## Original notes`, reporter text), and each checkbox bullet is
+ * a PREMISE when its nearest preceding heading contains "premise" and a CRITERION otherwise. A
+ * premise misread as a criterion is only linted under the stricter criterion tier, which the
+ * contract guard reports as warnings anyway.
+ *
+ * The bullet grammar is `parseCheckboxBody`, shared with `parseAcceptanceCriteria` / `parsePremises`,
+ * so item shapes match theirs exactly. `text` is the pre-terminal plan text the items came from, for
+ * callers that compare an item against the rest of the plan.
+ *
+ * @returns {{ criteria: object[], premises: object[], text: string }}
+ */
+export function parsePlanCheckItems(config, plan) {
+  assertConfigFirst(config, 'parsePlanCheckItems')
+  const source = String(plan ?? '')
+  const contract = planSectionsForDescriptionMode(config, 'child-plan')
+  const terminalKey = headingKey(contract[contract.length - 1]?.heading ?? '')
+  const outside = new Set(scanFences(source).lines.map(({ index }) => index))
+  const lines = source.split('\n')
+  const sections = [{ heading: '', bodyLines: [] }]
+  const kept = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].replace(/\r$/, '')
+    const atx = outside.has(index) ? ATX_HEADING_RE.exec(line) : null
+    if (atx) {
+      const heading = `${atx[1]} ${atx[2]}`
+      if (terminalKey && headingKey(heading) === terminalKey) break
+      sections.push({ heading, bodyLines: [] })
+    } else {
+      sections[sections.length - 1].bodyLines.push(line)
+    }
+    kept.push(line)
+  }
+  const criteria = []
+  const premiseItems = []
+  for (const section of sections) {
+    const items = parseCheckboxBody(section.bodyLines.join('\n'))
+    if (PREMISE_HEADING_RE.test(section.heading)) premiseItems.push(...items)
+    else criteria.push(...items)
+  }
+  return { criteria, premises: toPremises(premiseItems), text: kept.join('\n') }
 }
 
 /**
@@ -3365,5 +3595,11 @@ export function commandFindingRemedy(code) {
   if (code === 'git-grep-word-boundary') {
     return 'Use git grep -P for \\b, or anchor with a character class git grep -E does interpret.'
   }
+  if (Object.hasOwn(ADVISORY_COMMAND_REMEDIES, code)) return ADVISORY_COMMAND_REMEDIES[code]
   return 'Use a command whose head resolves to an executable PATH binary or executable repo-relative script.'
+}
+
+/** A completion extension may merge only with an explicit boolean opt-in. */
+export function completionMergeAllowed(config) {
+  return config?.completionDefaults?.allowMerge === true
 }

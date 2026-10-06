@@ -2173,10 +2173,15 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	// so the add below doesn't fail with "already exists".
 	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
 
-	// git worktree add -b <branch> <path> origin/<baseBranch>
+	// git worktree add --no-track -b <branch> <path> origin/<baseBranch>
+	//
+	// --no-track: starting from a remote-tracking ref would otherwise record the
+	// BASE as the new branch's upstream (branch.autoSetupMerge), so `@{u}` named
+	// origin/<base> and a bare `git push` was refused (BOS-1363). The branch is
+	// made to track itself (setSelfTracking) below instead.
 	worktreeAddStarted := time.Now()
 	if _, err := runGit(ctx, opts.RepoPath,
-		"worktree", "add", "-b", branch, wtPath, "origin/"+opts.BaseBranch,
+		"worktree", "add", "--no-track", "-b", branch, wtPath, "origin/"+opts.BaseBranch,
 	); err != nil {
 		if isBranchAlreadyExistsGitOutput(err) {
 			return nil, ErrBranchExists
@@ -2189,6 +2194,14 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	// still ahead of us (BOS-717). See CreateOpts.OnWorktreeReady.
 	if opts.OnWorktreeReady != nil {
 		opts.OnWorktreeReady(ctx, branch, wtPath)
+	}
+
+	// Make the branch track itself. After OnWorktreeReady so a failure leaves a
+	// worktree the caller already knows it owns, and still inside the clone
+	// gate: .git/config is shared by every worktree of this clone, so two
+	// concurrent creates must not interleave these writes.
+	if err := setSelfTracking(ctx, opts.RepoPath, branch); err != nil {
+		return nil, err
 	}
 
 	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
@@ -2628,12 +2641,37 @@ func (m *Manager) addResurrectedWorktree(ctx context.Context, opts ResurrectOpts
 			Str("start_point", startPoint).
 			Msg("resurrect: local branch missing, recreating from start point")
 		if _, err := runGit(ctx, opts.RepoPath,
-			"worktree", "add", "-b", opts.BranchName, opts.WorktreePath, startPoint,
+			"worktree", "add", "--no-track", "-b", opts.BranchName, opts.WorktreePath, startPoint,
 		); err != nil {
 			return resurrectAddError("worktree add (recreate branch)", opts.RepoPath, opts.WorktreePath, err)
 		}
+		// Same tracking as a fresh Create, whichever start point won. The caller
+		// holds the clone gate, which serializes this .git/config write.
+		if err := setSelfTracking(ctx, opts.RepoPath, opts.BranchName); err != nil {
+			return err
+		}
 	}
 
+	return nil
+}
+
+// setSelfTracking points branch's upstream at its own name on origin
+// (branch.<b>.remote = origin, branch.<b>.merge = refs/heads/<b>), so a bare
+// `git push` targets origin/<branch> from the start, and `@{u}` / `@{push}`
+// name origin/<branch> once it exists (before the first push they fail to
+// resolve rather than silently naming the base). `git branch --set-upstream-to`
+// cannot do this for a new branch because origin/<branch> does not exist yet;
+// plain config writes can. The writes land in the clone's shared .git/config,
+// so callers must hold the clone gate.
+func setSelfTracking(ctx context.Context, repoPath, branch string) error {
+	for _, kv := range [][2]string{
+		{"branch." + branch + ".remote", "origin"},
+		{"branch." + branch + ".merge", "refs/heads/" + branch},
+	} {
+		if _, err := runGit(ctx, repoPath, "config", kv[0], kv[1]); err != nil {
+			return fmt.Errorf("set branch self-tracking (%s): %w", kv[0], err)
+		}
+	}
 	return nil
 }
 

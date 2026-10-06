@@ -1,6 +1,6 @@
 ---
 name: boss-plan
-description: Plan a tracker backlog ticket. Grabs the next unplanned issue by priority (or a ticket ID you provide), resolves drafting through boss-plan draft extensions or portable fallbacks, attaches the plan natively to the tracker issue, then writes a summary, labels, Fibonacci estimate, and priority before moving it from the unplanned to the planned state. Interactive by default; runs fully headless when BOSS_CRON=true.
+description: Plan a tracker backlog ticket. Grabs the next unplanned issue by priority (or a ticket ID you provide), resolves drafting through boss-plan draft extensions or portable fallbacks, attaches the plan natively to the tracker issue, then writes a summary, labels, Fibonacci estimate, and priority before moving it from the unplanned to the planned state. Interactive by default; runs fully headless when BOSS_UNATTENDED=true (or legacy BOSS_CRON=true).
 ---
 
 # boss-plan
@@ -11,9 +11,11 @@ are a capable engineer: this document states what a planned ticket must look lik
 answer questions reliably, and the gates that protect the reporter's original notes and keep secrets
 out of the tracker. How you research and write the plan is up to you.
 
-**Modes.** Interactive by default (a draft extension may ask questions). With `BOSS_CRON=true` it is
-fully headless: **never** call `AskUserQuestion`, dispatch one awaited drafting subagent, decide
-every fork yourself, and record the controversial ones as open questions.
+**Modes.** Interactive by default (a draft extension may ask questions). With `BOSS_UNATTENDED=true`
+or its legacy spelling `BOSS_CRON=true` — bossd sets both on every unattended run, including any
+prompt-carrying `boss new`, so never fake the mode in prompt text — it is fully headless: **never**
+call `AskUserQuestion`, dispatch one awaited drafting subagent, decide every fork yourself, and
+record the controversial ones as open questions.
 
 ## What a planned ticket is
 
@@ -55,21 +57,21 @@ Every block that uses the toolbox starts with this preamble (each Bash call is a
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 ```
 
-| Question                                     | Ask                                                                          |
-| -------------------------------------------- | ---------------------------------------------------------------------------- |
-| Is this repo configured for planning?        | `isConfiguredForPlanning(config)` in `skill-config.mjs`                      |
-| Is the ticket already planned?               | `node plan-run-guards.mjs idempotence <payload> --selected-id <id>`          |
-| Read / write the description exactly         | `node tracker/cli.mjs read-description \| write-description …`               |
-| Upload / read / delete the plan attachment   | [`references/plan-storage.md`](references/plan-storage.md)                   |
-| Normalise the drafter's metadata             | `node plan-run-guards.mjs adopt-metadata <file> <json>`                      |
-| Did a secret slip in?                        | `node plan-secret-scan.mjs <files>`                                          |
-| Did the reporter's images and notes survive? | `node plan-image-guard.mjs …`                                                |
-| Is the description a plan description?       | `node plan-contract-guard.mjs --description … --plan …`                      |
-| Have referenced tickets moved since recon?   | `node plan-run-guards.mjs premises …`                                        |
-| Which tickets does this conflict with?       | `planDependencyEdges` in `plan-deps-lib.mjs` (Phase 4 step 5)                |
-| Did the description land as written?         | `node plan-writeback-verify.mjs --intended … --stored …`                     |
-| What scratch names may I use?                | `node plan-scratch-paths.mjs families`                                       |
-| Is a save failure safe to retry?             | `node tracker/cli.mjs classify-outcome --observed "<err>" --operation write` |
+| Question                                     | Ask                                                                                |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Is this repo configured for planning?        | `isConfiguredForPlanning(config)` in `skill-config.mjs`                            |
+| Is the ticket already planned?               | `node plan-run-guards.mjs idempotence <payload> --selected-id <id>`                |
+| Read / write the description exactly         | `node tracker/cli.mjs read-description \| write-description …`                     |
+| Upload / read / delete the plan attachment   | [`references/plan-storage.md`](references/plan-storage.md)                         |
+| Normalise the drafter's metadata             | `node plan-run-guards.mjs adopt-metadata <file> <json>`                            |
+| Did a secret slip in?                        | `node plan-secret-scan.mjs <files>`                                                |
+| Did the reporter's images and notes survive? | `node plan-image-guard.mjs …`                                                      |
+| Is the description a plan description?       | `node plan-contract-guard.mjs --description … --plan …`                            |
+| Have referenced tickets moved since recon?   | `node plan-run-guards.mjs premises …`                                              |
+| Which tickets does this conflict with?       | `planDependencyEdges` in `plan-deps-lib.mjs` (Phase 4 step 5)                      |
+| Did the description land as written?         | `node plan-writeback-verify.mjs --intended … --stored …`                           |
+| What scratch names may I use?                | `node plan-scratch-paths.mjs families`                                             |
+| Is a tracker failure safe to retry?          | `node tracker/cli.mjs classify-outcome --observed "<err>" --operation read\|write` |
 
 ## Rules
 
@@ -149,7 +151,9 @@ fi
 
 Require the plan-attachment ops — `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" operations --require
 preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment` (exit 2 names
-what is missing: stop before any write) — and confirm the tracker answers a cheap read.
+what is missing: stop before any write) — and confirm the tracker answers a cheap read. A failed
+read: classify it with `--operation read` and follow its action line (a retryable edge error is not
+"tracker unreachable").
 
 ## Phase 1 — Select the issue
 
@@ -413,7 +417,7 @@ BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.
 ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md"
 PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
 if CONTRACT_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_FILE" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)" 2>&1)"; then
-  :
+  if [ -n "$CONTRACT_REPORT" ]; then printf '%s\n' "$CONTRACT_REPORT" >&2; fi
 else
   printf '%s\n' "$CONTRACT_REPORT" >&2
   echo "plan-contract gate failed (guard message above) — no Linear write, aborting" >&2
@@ -436,11 +440,13 @@ Then:
    (execute the `{tool, args}` it emits for `descriptor-emitted`; fall back to an inline
    description only when stderr names a missing `writeDescription` op), plus labels, estimate,
    priority and the planned state. A rejected estimate: retry without it and warn. A failure
-   `classify-outcome` calls `indeterminate`: read the issue back before any retry.
+   `classify-outcome` calls `indeterminate`: read the issue back before any retry. If the read-back
+   shows it did not land and the one retry fails the same way, split it: save everything except
+   labels, then the merged labels in a labels-only write, and name the split in the run report.
 4. **Link dependencies** — I/O only; `plan-deps-lib.mjs` decides every edge:
 
    a. Fetch candidates (planned, in-progress, in-review, plus every related id):
-   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --id <related id>…`.
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --id <ISSUE-ID> --id <related id>…`.
    Read only the receipt and `jq -r '.[] | [.identifier, .title, .stateName] | @tsv'`; a
    non-zero exit means _could not evaluate_.
    b. Judge real logical dependencies yourself, with direction: `logicalDependencies[<id>] =
@@ -449,14 +455,14 @@ Then:
    coarsened) and becomes a non-blocking `relatedTo` link — touching the same files is a rebase
    risk, not a prerequisite.
    c. Write the scan input to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json`
-   (`subject` with the same fields as a candidate, `declaredRelatedIds`, `logicalDependencies`,
-   plus any `moduleRoots`/`repoWideTokens`/`areaAliases` overrides) and classify:
+   (`declaredRelatedIds`, `logicalDependencies`, optional `childrenByParentId`, plus any
+   `moduleRoots`/`repoWideTokens`/`areaAliases` overrides — no `subject`) and classify:
 
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
    DEPS_IN=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.deps-in.json"
    CANDIDATES=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json"
-   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),p=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));if(Object.hasOwn(p,"candidates"))throw Error("candidates must come from file");const rows=JSON.parse(require("node:fs").readFileSync(process.argv[2],"utf8"));if(!Array.isArray(rows))throw Error("candidate file must be an array");const roots=require("node:child_process").execFileSync("git",["ls-tree","--name-only","HEAD"],{encoding:"utf8"}).trim().split("\n").filter(Boolean),i=d.withScanDefaults(g,{...p,candidates:rows});i.moduleRoots=[...new Set([...i.moduleRoots,...roots])];const a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]});const v=d.validateDependencyScanInput(i);if(!v.ok){for(const f of v.defects)console.error(f.code,f.id,f.remedy);process.exitCode=1;return}const s=a(i.subject);i.subjectAreas=s.areas;i.subjectUnresolvedAreas=s.unresolved;i.candidates=i.candidates.map(x=>({...x,areas:a(x).areas}));const r=d.planDependencyEdges(i),V=d.dependencyScanVerdict(r);console.error("subjectAreas "+JSON.stringify(s.areas)+" unresolved "+JSON.stringify(s.unresolved)+" referenced "+JSON.stringify(s.referenced)+" candidatesWithoutAreas "+r.candidatesWithoutAreas+" "+V.verdict+" compared="+V.compared+" edges="+V.edges+" "+V.reasons);console.log(JSON.stringify({...r,verdict:V}))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN" "$CANDIDATES"
+   node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" deps "$DEPS_IN" "$CANDIDATES" --subject <ISSUE-ID>
    # Remove the consumed scan input.
    rm -f "$DEPS_IN"
    ```
@@ -464,10 +470,11 @@ Then:
    Read the stderr line (`subjectAreas`, unresolved tokens, verdict) before writing anything.
    d. Act on the result: write each `edge.write` with `appendDependency` (append-only); `relatedTo`
    edges with `appendRelatedTo` when the adapter has it, else a `## Planning` note; `notes` under
-   `## Planning`; `questions` under `## Open Questions` plus `agent-question`. An epic parent in
-   `skipped` (`expandChildren`) — add its children as `--id` and re-run (at most twice, excluding
-   parents already expanded). `could-not-evaluate` is reported as such, never as "no
-   dependencies"; an unresolved area is declared in `moduleRoots` and re-run.
+   `## Planning`; `questions` under `## Open Questions` plus `agent-question`. A `skipped` entry
+   with `expandChildren` true — add its children as `--id` and re-run (at most twice, excluding
+   parents already expanded). `no-candidates` is a clean result: record nothing.
+   `could-not-evaluate` is reported as such, never as "no dependencies"; an unresolved area is
+   code-marked or declared in `moduleRoots` and re-run.
    e. Before each blocking write, read both tickets' relations and skip a write that would form a
    cycle. A blocker whose PR is merged (`gh pr view <url> --json state,mergeCommit`) gets
    `landed: {evidence}` and a re-run instead. Pass those reads to `transitiveBlockWarnings`:
@@ -546,6 +553,15 @@ most five secret-free observations (≤ 8 KiB) to a temp `observations.md` and d
 (instructions from its `skillPath`, bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`) with
 `{"role":"notes","core":"boss-plan","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`;
 validate with `--role notes`. Never fatal.
+
+## Phase 7 — Self-archive
+
+The very last action on every terminal path, after the report and any notes dispatch:
+`node "$BOSS_PLAN_TOOLBOX/session-self-archive.mjs" --outcome <planned|noop|epic|empty-queue|blocked|failed> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>`
+— add `--suppressed` when a calling skill or your prompt owns the session. Act on its `verdict`:
+`archive` — the archive is launched and will close this pane; end the turn with one line. `ask` —
+ask whether to archive now; on yes re-run with `--confirmed`, on no stop. `skip` — print the
+`reason` and stop; never an error.
 
 ## Cron gate
 

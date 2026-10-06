@@ -57,12 +57,26 @@ type CallbackEvaluator interface {
 	EvaluatePR(ctx context.Context, repoOwner, repoName string, prNumber int) error
 }
 
+// PRPoller runs the state-machine poller's checks for one PR on demand. The
+// webhook translation never emits ChecksPassed (a green check suite carries no
+// event), so without this a session whose repo is on the slow webhook
+// safety-net poll would wait for that interval to advance on green.
+type PRPoller interface {
+	PollPR(ctx context.Context, repoOriginURL string, prNumber int)
+}
+
+// prPollTimeout bounds a detached on-demand state-machine poll.
+const prPollTimeout = 2 * time.Minute
+
 // WebhookDispatcher routes PR-scoped webhook events to the display poller.
 type WebhookDispatcher struct {
 	refresher      PRRefresher
 	emitter        SessionEventEmitter
 	reviewComments ReviewCommentProvider
 	evaluator      CallbackEvaluator
+	invalidator    vcs.ReadInvalidator
+	prPoller       PRPoller
+	health         *WebhookHealth
 	logger         zerolog.Logger
 	// evalDoneHook, when set (tests only), receives the done channel of each
 	// detached callback-evaluation goroutine so a test can await completion.
@@ -95,6 +109,28 @@ func (d *WebhookDispatcher) WithEvaluator(evaluator CallbackEvaluator) *WebhookD
 	return d
 }
 
+// WithReadInvalidator attaches the VCS provider's read cache so a webhook drops
+// the PR's cached state before anything re-reads it. Returns d for chaining.
+func (d *WebhookDispatcher) WithReadInvalidator(invalidator vcs.ReadInvalidator) *WebhookDispatcher {
+	d.invalidator = invalidator
+	return d
+}
+
+// WithPRPoller attaches the state-machine poller, run detached for the PR after
+// each webhook. Returns d for chaining.
+func (d *WebhookDispatcher) WithPRPoller(poller PRPoller) *WebhookDispatcher {
+	d.prPoller = poller
+	return d
+}
+
+// WithWebhookHealth attaches the tracker every delivery is recorded in, which
+// lets GitHub pollers slow down for repos whose webhooks arrive. Returns d for
+// chaining.
+func (d *WebhookDispatcher) WithWebhookHealth(health *WebhookHealth) *WebhookDispatcher {
+	d.health = health
+	return d
+}
+
 // eventTypeRequiresPR reports whether a GitHub webhook event type is
 // intrinsically scoped to a pull request, so a missing PR number signals a
 // resolution bug rather than routine non-PR traffic. The values match the
@@ -121,6 +157,9 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	if d.refresher == nil {
 		return fmt.Errorf("webhook dispatcher refresher not wired")
 	}
+	// Any delivery — PR-scoped or not — proves webhooks reach this daemon for
+	// the repo.
+	d.health.RecordDelivery(ev.GetRepoOriginUrl())
 
 	payloadPR := d.maybeEmitRealtime(ctx, ev)
 
@@ -146,6 +185,14 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 			Msg("webhook: no PR number resolved; skipping dispatch")
 		return nil
 	}
+
+	// The PR just changed: drop its cached reads first, so the callback
+	// evaluation, the state-machine poll and the display refresh below all read
+	// GitHub rather than a pre-webhook answer.
+	if d.invalidator != nil {
+		d.invalidator.InvalidatePR(ev.GetRepoOriginUrl(), prNumber)
+	}
+	d.pollPR(ctx, ev.GetRepoOriginUrl(), prNumber)
 
 	// Fire durable GitHub callbacks for the affected PR by verifying
 	// authoritative state. Launched detached (see evaluateCallbacks): the
@@ -198,6 +245,23 @@ func (d *WebhookDispatcher) evaluateCallbacks(ctx context.Context, repoOriginURL
 				Int("pull_request", prNumber).
 				Msg("callback evaluation failed")
 		}
+	})
+	if d.evalDoneHook != nil {
+		d.evalDoneHook(done)
+	}
+}
+
+// pollPR runs the state-machine poller for the PR, detached for the same reason
+// as evaluateCallbacks: it makes GitHub round-trips and must stay off the
+// webhook acknowledgement path.
+func (d *WebhookDispatcher) pollPR(ctx context.Context, repoOriginURL string, prNumber int) {
+	if d.prPoller == nil || prNumber <= 0 {
+		return
+	}
+	pollCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), prPollTimeout)
+	done := safego.Go(d.logger, func() {
+		defer cancel()
+		d.prPoller.PollPR(pollCtx, repoOriginURL, prNumber)
 	})
 	if d.evalDoneHook != nil {
 		d.evalDoneHook(done)

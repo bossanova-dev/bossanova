@@ -63,6 +63,7 @@ export const VENDOR_MAP = {
   ],
   'boss-build': [
     'main-module.mjs',
+    'completion-gate.mjs',
     // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
     // the skill prose cites; it imports bs-run-sentinel.mjs and dag-scheduler.mjs,
     // both already ship here for the review sentinel and tracker scheduler.
@@ -88,6 +89,10 @@ export const VENDOR_MAP = {
     // detector must resolve inside an installed boss-build toolbox — the review stack runs in
     // user repos that have no repo-root skills-toolbox/ to reach back into.
     'base-drift.mjs',
+    // BOS-1359: post-rebase-audit.mjs names what a clean rebase silently changed; Step 6's
+    // base-drift rebase and Step 9's readying rebase call it by path. It imports base-drift.mjs
+    // (above) and main-module.mjs, both already vendored here.
+    'post-rebase-audit.mjs',
     // worktree-state.mjs (BOS-1330) is the clean/dirty/unknown verdict every cleanliness decision in
     // this core asks instead of reading `git status` typed into the agent's shell, which a
     // command-rewriting hook can replace with `ok` or nothing. The sites run in user repos with no
@@ -372,6 +377,13 @@ export const VENDOR_MAP = {
     // eight-line probe. It is sourced rather than executed, so it stays 0644, and it must
     // ship inside the toolbox it resolves — the source line names its path directly.
     'boss-plan-env.sh',
+    // session-self-archive.mjs (BOS-1372) is Phase 7's decision and detached-archive launcher: the
+    // finished plan session archives itself only when nothing it would destroy is still in use. It
+    // imports boss-binary.mjs (the daemon reads and the archive run the exact resolved CLI path),
+    // which boss-plan did not ship before, so both must be here or the installed helper fails at
+    // ESM link time.
+    'boss-binary.mjs',
+    'session-self-archive.mjs',
   ],
   // session/boss.mjs backs the transport preflight boss-repair runs before Phase 1; like
   // boss-build's copy it ships here because a published core must resolve its own helpers,
@@ -393,6 +405,12 @@ export const VENDOR_MAP = {
     // worktree-state.mjs (BOS-1330) — the shape-validated cleanliness verdict; see boss-build's
     // entry. boss-repair decides cleanliness by path from its own installed toolbox.
     'worktree-state.mjs',
+    // BOS-1359: the Conflicts section runs post-rebase-audit.mjs after every base sync, in a
+    // consuming repo with no repo-root skills-toolbox/ and no guarantee boss-build is installed.
+    'post-rebase-audit.mjs',
+    // BOS-1359: post-rebase-audit.mjs imports its git runner and changed-path helper from
+    // base-drift.mjs, so it ships here too or the audit cannot resolve.
+    'base-drift.mjs',
     'dag-scheduler.mjs',
     'skill-extensions.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).

@@ -10,6 +10,7 @@ import {
   classifyProbe,
   interpretResult,
   removeTierAProbeRoot,
+  resolveLegFitTimeout,
   reviewPreamble,
   resolveAgentBin,
   sanitizeOutput,
@@ -81,6 +82,15 @@ export function resolveTimeoutMs(env = process.env) {
   if (raw == null || !/^[0-9]+$/.test(String(raw))) return DEFAULT_TIMEOUT_MS
   const n = Number(raw)
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS
+}
+
+// resolveRunTimeoutMs(env) → the timeout run() uses when none is passed:
+// resolveTimeoutMs clamped strictly below the extension leg (fitTimeoutToLeg),
+// printing one stderr line naming both numbers whenever it clamps.
+export function resolveRunTimeoutMs(env = process.env, { stderr = process.stderr } = {}) {
+  const fit = resolveLegFitTimeout('claude-review', resolveTimeoutMs(env), env)
+  if (fit.note) stderr.write(`${fit.note}\n`)
+  return fit.timeoutMs
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +304,8 @@ export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
 // with cwd=repo, stdin=/dev/null and a process-group timeout kill. Captures
 // stdout, sanitizes it, and returns the result. Never throws; non-zero exit is
 // captured, not thrown. When `timeoutMs` is omitted the env-overridable default
-// (BOSS_CROSS_REVIEW_TIMEOUT_MS) applies.
+// (BOSS_CROSS_REVIEW_TIMEOUT_MS) applies, clamped below the extension leg by
+// resolveRunTimeoutMs.
 //
 // stderr IS captured but only as a bounded, sanitized *tail* (last
 // `maxStderrBytes`): the pipe is continuously drained so a chatty claude can
@@ -316,7 +327,7 @@ export async function run({
     return { ok: false, output: '', stderr: '', timedOut: false }
   }
 
-  const effectiveTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : resolveTimeoutMs(env)
+  const effectiveTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : resolveRunTimeoutMs(env)
 
   // Feed the diff, don't make the agent fetch it. Best-effort and failure-safe:
   // a non-git `repo` (as in the unit tests) just yields '' → instruct-mode.

@@ -1016,3 +1016,86 @@ func TestTerminalStreamClientOpenStreamLogoutCancelsBeforeWaitingForBlockedAttac
 		t.Fatal("terminal openStream did not return after stalled logout")
 	}
 }
+
+// TestTerminalStreamClientOpenStreamClosesAttachBeforeCancelOnBoundedPath
+// extends the attach-ordering guarantee to the BOS-1375 bounded teardown:
+// when logout cancels a stream whose reader ignores cancellation, the active
+// attach is still closed before the cancel, and openStream still returns once
+// the bounded reader join gives up.
+func TestTerminalStreamClientOpenStreamClosesAttachBeforeCancelOnBoundedPath(t *testing.T) {
+	authState := NewAuthState()
+	stream := newWedgedTerminalStream()
+	factory := newCloseOrderAttachFactory()
+	clock := newFakeClock()
+	tmuxName := "boss-rep-chat-bounded"
+	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		Opener:        &fixedTerminalOpener{stream: stream},
+		AuthState:     authState,
+		TmuxClient:    &tmux.Client{},
+		Chats:         &fakeChatLookup{rows: map[string]chatRow{"claude-bounded": {TmuxSessionName: &tmuxName}}},
+		AttachFactory: factory.build,
+		Clock:         clock,
+		PingInterval:  boundedTeardownPing,
+	})
+
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-bounded",
+			ChatId:   "claude-bounded",
+			Cols:     80,
+			Rows:     24,
+		}},
+	}
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		errCh <- client.openStream(context.Background())
+	}()
+	t.Cleanup(func() {
+		stream.release()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("openStream was not joined at cleanup")
+		}
+	})
+
+	var attach *closeOrderAttach
+	select {
+	case attach = <-factory.created:
+	case <-time.After(time.Second):
+		t.Fatal("terminal attach was not created")
+	}
+	waitForTerminalAttachPublished(t, client, "att-bounded", errCh)
+
+	authState.MarkNeedsLogin()
+
+	select {
+	case canceledAtClose := <-attach.closeAfterCancel:
+		if canceledAtClose {
+			t.Fatal("terminal attach Close was called after attach context cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal attach Close was not called after logout")
+	}
+
+	// The reader ignores the cancel, so openStream is now in the bounded
+	// join. Drive both stages; there is no conn-close capability.
+	waitForPendingTimerAt(t, clock, boundedTeardownPing, "bounded join first stage")
+	clock.Advance(boundedTeardownPing)
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("openStream error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal openStream did not return on the bounded path after logout")
+	}
+	if !attach.closed.Load() {
+		t.Fatal("terminal attach Close was not called on logout")
+	}
+}

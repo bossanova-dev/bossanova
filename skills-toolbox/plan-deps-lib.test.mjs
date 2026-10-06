@@ -3210,3 +3210,254 @@ test('GIG-461 referenced: every return shape and free-text root-file provenance'
     assert.deepEqual(result.areas, [])
   }
 })
+
+// ---------------------------------------------------------------------------
+// BOS-1362 — a complete candidate set, honest epic-parent and empty-backlog results,
+// and root files that are never silently dropped
+// ---------------------------------------------------------------------------
+
+function epicFixture() {
+  const parent = {
+    ...candidate({ id: 'uuid-p', identifier: 'TCK-P', labels: ['Epic'] }),
+    parentId: null,
+    areas: ['app/api'],
+  }
+  const child = {
+    ...candidate({ id: 'uuid-c', identifier: 'TCK-C' }),
+    parentId: 'uuid-p',
+    areas: ['app/web'],
+  }
+  return { parent, child }
+}
+
+function epicRun(candidates, over = {}) {
+  return planDependencyEdges({
+    subject: { ...subject(), parentId: null, areas: ['app/api'] },
+    candidates,
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+    ...over,
+  })
+}
+
+test('BOS-1362: an epic parent whose child is in a complete set is expanded in-set', () => {
+  const { parent, child } = epicFixture()
+  const complete = epicRun([parent, child], { candidateSetComplete: true })
+  const parentSkip = complete.skipped.find((entry) => entry.identifier === 'TCK-P')
+  assert.equal(parentSkip.expansion, 'in-set')
+  assert.equal(parentSkip.expandChildren, false)
+  assert.deepEqual(parentSkip.children, ['TCK-C'])
+  assert.equal(complete.candidateSetComplete, true)
+  assert.equal(
+    complete.compared,
+    2,
+    'the child is compared once, as the queued candidate it already was — never re-enqueued',
+  )
+  // A child keyed by identifier rather than uuid still names its parent.
+  const byIdentifier = epicRun([parent, { ...child, parentId: 'TCK-P' }], {
+    candidateSetComplete: true,
+  })
+  assert.deepEqual(byIdentifier.skipped.find((entry) => entry.identifier === 'TCK-P').children, [
+    'TCK-C',
+  ])
+
+  // Back-compat: without the flag the caller is still sent to fetch the children.
+  const incomplete = epicRun([parent, child])
+  const pending = incomplete.skipped.find((entry) => entry.identifier === 'TCK-P')
+  assert.equal(pending.expansion, 'pending')
+  assert.equal(pending.expandChildren, true)
+  assert.equal(pending.children, undefined)
+  assert.equal(incomplete.candidateSetComplete, false)
+})
+
+test('BOS-1362: an epic parent with no active child in a complete set is answered, not re-asked', () => {
+  const { parent } = epicFixture()
+  const result = epicRun([parent], { candidateSetComplete: true })
+  const parentSkip = result.skipped.find((entry) => entry.identifier === 'TCK-P')
+  assert.equal(parentSkip.expansion, 'in-set')
+  assert.deepEqual(parentSkip.children, [])
+  assert.equal(parentSkip.expandChildren, false)
+  // Supplied children still win over the in-set read.
+  const { child } = epicFixture()
+  const supplied = epicRun([parent], {
+    candidateSetComplete: true,
+    childrenByParentId: { 'uuid-p': [child] },
+  })
+  assert.equal(supplied.skipped.find((entry) => entry.identifier === 'TCK-P').expansion, 'supplied')
+})
+
+test('BOS-1362: a supplied or in-set epic parent adds no epic-parent note and earns no save', () => {
+  const { parent, child } = epicFixture()
+  const supplied = epicRun([parent], { childrenByParentId: { 'uuid-p': [child] } })
+  assert.deepEqual(
+    supplied.notes.filter((entry) => entry.reason === 'epic-parent'),
+    [],
+    'the "compare against its active children instead" note is stale once the children were compared',
+  )
+  assert.equal(dependencyScanVerdict(supplied).verdict, 'no-dependencies')
+  assert.equal(dependencyScanVerdict(supplied).recordToDescription, false)
+
+  const inSet = epicRun([parent, child], { candidateSetComplete: true })
+  assert.deepEqual(
+    inSet.notes.filter((entry) => entry.reason === 'epic-parent'),
+    [],
+  )
+  assert.equal(dependencyScanVerdict(inSet).recordToDescription, false)
+
+  // Non-vacuity: while the note is still an instruction it ships, and earns a save.
+  const pending = epicRun([parent, child])
+  assert.equal(pending.notes.filter((entry) => entry.reason === 'epic-parent').length, 1)
+  assert.equal(dependencyScanVerdict(pending).recordToDescription, true)
+  const capped = epicRun([parent], { maxExpansionDepth: 0 })
+  assert.equal(capped.skipped[0].expansion, 'depth-capped')
+  assert.equal(capped.notes.filter((entry) => entry.reason === 'epic-parent').length, 1)
+})
+
+test('supplied children of an epic parent at the depth cap read depth-capped, keep the note, and go unexamined', () => {
+  const { parent } = epicFixture()
+  const child = {
+    ...candidate({ id: 'uuid-c', identifier: 'TCK-C' }),
+    parentId: 'uuid-p',
+    areas: ['app/api'],
+  }
+  const supplied = { childrenByParentId: { 'uuid-p': [child] } }
+  const capped = epicRun([parent], { ...supplied, maxExpansionDepth: 0 })
+  const parentSkip = capped.skipped.find((entry) => entry.identifier === 'TCK-P')
+  assert.equal(
+    parentSkip.expansion,
+    'depth-capped',
+    'the cap wins over supplied children it never queued',
+  )
+  assert.equal(parentSkip.expandChildren, false)
+  assert.notEqual(parentSkip.note, null, 'a capped parent keeps its epic-parent note')
+  assert.equal(capped.notes.filter((entry) => entry.reason === 'epic-parent').length, 1)
+  assert.equal(
+    capped.compared,
+    1,
+    'only the parent was evaluated; the supplied child past the cap was not',
+  )
+  assert.equal(
+    [...capped.edges, ...capped.skipped].some((entry) => entry.identifier === 'TCK-C'),
+    false,
+  )
+  // Non-vacuity: one rung of headroom queues and examines the same child.
+  const within = epicRun([parent], { ...supplied, maxExpansionDepth: 1 })
+  assert.equal(within.skipped.find((entry) => entry.identifier === 'TCK-P').expansion, 'supplied')
+  assert.equal(within.compared, 2)
+})
+
+test('BOS-1362: a complete set holding only the subject is no-candidates, not could-not-evaluate', () => {
+  const only = { ...subject(), parentId: null, areas: ['app/api'] }
+  const complete = planDependencyEdges({
+    subject: only,
+    candidates: [only],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+    candidateSetComplete: true,
+  })
+  assert.equal(complete.compared, 0)
+  assert.deepEqual(
+    complete.notes.filter((entry) => entry.reason === 'no-candidates-compared'),
+    [],
+  )
+  assert.deepEqual(dependencyScanVerdict(complete), {
+    verdict: 'no-candidates',
+    compared: 0,
+    edges: 0,
+    relatedTo: 0,
+    reasons: [],
+    recordToDescription: false,
+  })
+
+  const incomplete = planDependencyEdges({
+    subject: only,
+    candidates: [only],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(dependencyScanVerdict(incomplete).verdict, 'could-not-evaluate')
+  assert.deepEqual(dependencyScanVerdict(incomplete).reasons, ['no-candidates-compared'])
+  assert.equal(dependencyScanVerdict(incomplete).recordToDescription, true)
+
+  // A subject whose own areas are broken is still not a clean result.
+  const unresolved = planDependencyEdges({
+    subject: only,
+    candidates: [only],
+    subjectUnresolvedAreas: ['skill.md'],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+    candidateSetComplete: true,
+  })
+  assert.equal(dependencyScanVerdict(unresolved).verdict, 'could-not-evaluate')
+  assert.deepEqual(dependencyScanVerdict(unresolved).reasons, ['subject-unresolved-areas'])
+  // A truthy non-boolean is not the flag.
+  const loose = planDependencyEdges({ subject: only, candidates: [only], candidateSetComplete: 1 })
+  assert.equal(dependencyScanVerdict(loose).verdict, 'could-not-evaluate')
+})
+
+test('BOS-1362: a known root file is an area when marked or a split lead, unresolved elsewhere', () => {
+  const ROOT_FILES = ['Makefile', '.bazelrc', '.boss-skills.json']
+  const withRoots = (body) =>
+    areas(planBody(`${body}\n`), { moduleRoots: ['scripts'], rootFiles: ROOT_FILES })
+  const without = (body) => areas(planBody(`${body}\n`), { moduleRoots: ['scripts'] })
+  const pick = (result) => ({
+    areas: result.areas,
+    unresolved: result.unresolved,
+    referenced: result.referenced,
+  })
+
+  assert.deepEqual(pick(withRoots('- Makefile: add a target')), {
+    areas: ['makefile'],
+    unresolved: [],
+    referenced: [],
+  })
+  assert.deepEqual(pick(withRoots('- `.bazelrc`: x')), {
+    areas: ['.bazelrc'],
+    unresolved: [],
+    referenced: [],
+  })
+  assert.deepEqual(pick(withRoots('- Edit the root Makefile and .bazelrc to add X')), {
+    areas: [],
+    unresolved: ['makefile', '.bazelrc'],
+    referenced: [],
+  })
+  assert.deepEqual(pick(withRoots('- `scripts/x.mjs`: called from the Makefile')), {
+    areas: ['scripts/x.mjs'],
+    unresolved: [],
+    referenced: ['makefile'],
+  })
+
+  // Without rootFiles every one of these returns what it returned before.
+  assert.deepEqual(pick(without('- Makefile: add a target')), {
+    areas: [],
+    unresolved: [],
+    referenced: [],
+  })
+  assert.deepEqual(pick(without('- `.bazelrc`: x')), {
+    areas: [],
+    unresolved: ['.bazelrc'],
+    referenced: [],
+  })
+  assert.deepEqual(pick(without('- Edit the root Makefile and .bazelrc to add X')), {
+    areas: [],
+    unresolved: ['.bazelrc'],
+    referenced: [],
+  })
+
+  // The shape the dependency step used before: the whole root listing unioned into
+  // `moduleRoots`. An unmarked root file outside a lead vanished entirely; a known
+  // root file is tested first, so the same listing now reports it.
+  const legacyRoots = { moduleRoots: ['scripts', ...ROOT_FILES] }
+  const prose = planBody('- Edit the root Makefile and .bazelrc to add X\n')
+  assert.deepEqual(pick(areas(prose, legacyRoots)), { areas: [], unresolved: [], referenced: [] })
+  assert.deepEqual(pick(areas(prose, { ...legacyRoots, rootFiles: ROOT_FILES })), {
+    areas: [],
+    unresolved: ['makefile', '.bazelrc'],
+    referenced: [],
+  })
+  assert.deepEqual(pick(without('- `scripts/x.mjs`: called from the Makefile')), {
+    areas: ['scripts/x.mjs'],
+    unresolved: [],
+    referenced: [],
+  })
+})

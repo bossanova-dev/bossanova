@@ -518,6 +518,64 @@ func reportDaemonServicePath(out io.Writer) bool {
 	return installedOK && installedPath != nextPath
 }
 
+// reportDaemonServiceSettingsPath prints the BOSS_SETTINGS_PATH the INSTALLED
+// service carries ("default" when it carries none) and warns when that is a
+// different settings file from the one this CLI invocation resolved.
+//
+// On the unattended substrate the LaunchAgent plist is removed and the profile
+// is baked into the root watchdog's ProgramArguments, so that plist is read
+// instead.
+func reportDaemonServiceSettingsPath(out io.Writer) {
+	installed, installedOK := daemon.InstalledServiceSettingsPath()
+	if sup := daemon.LoadSupervisionModeStatus(); daemonUnattendedSubstrateOwnsVerdict(sup) && sup.Unattended.PlistPath != "" {
+		installed, installedOK = daemon.InstalledWatchdogSettingsPath(sup.Unattended.PlistPath)
+	}
+	resolved, resolveErr := config.Path()
+	defaultPath := ""
+	if dir, err := config.DefaultAppDataDir(); err == nil {
+		defaultPath = filepath.Join(dir, "settings.json")
+	}
+	for _, line := range daemonServiceSettingsLines(installed, installedOK, resolved, resolveErr, defaultPath) {
+		_, _ = fmt.Fprintln(out, line)
+	}
+}
+
+// daemonServiceSettingsLines renders the service-settings report as a pure
+// function of what was observed, so every branch is testable without a real
+// service file.
+//
+// A mismatch is a WARNING, not a failure: a user may run doctor from a shell
+// pointed at another profile on purpose. It names both paths and the reinstall
+// command, because the alternative an operator would reach for — a restart —
+// keeps the installed value by design.
+func daemonServiceSettingsLines(installed string, installedOK bool, resolved string, resolveErr error, defaultPath string) []string {
+	if !installedOK {
+		return []string{"service settings: unknown (no service file, or its " + daemon.ServiceSettingsPathEnv + " could not be read)"}
+	}
+
+	effective, label := installed, installed
+	if installed == "" {
+		effective, label = defaultPath, "default"
+		if defaultPath != "" {
+			label = "default (" + defaultPath + ")"
+		}
+	}
+	lines := []string{"service settings: " + label}
+
+	switch {
+	case resolveErr != nil:
+		lines = append(lines, fmt.Sprintf(
+			"service settings: not compared (warning) — this command could not resolve its own settings path: %v", resolveErr))
+	case effective == "":
+		// The default could not be resolved, so there is nothing to compare.
+	case filepath.Clean(resolved) != filepath.Clean(effective):
+		lines = append(lines, fmt.Sprintf(
+			"service settings: mismatch (warning) — the installed service starts bossd with %s, but this command resolved %s; to point the service at this profile run '%s=%s boss daemon install --force'",
+			effective, resolved, daemon.ServiceSettingsPathEnv, resolved))
+	}
+	return lines
+}
+
 // daemonAuthProbeTimeout bounds the GetAuthState call. Short on purpose: this
 // runs inside a diagnostic, and the failure mode it is checking for is a
 // daemon that does not answer. A doctor that hangs waiting for a wedged daemon
@@ -1511,6 +1569,11 @@ func runDaemonDoctor(cmd *cobra.Command) error {
 	if servicePathStale {
 		_, _ = fmt.Fprintln(out, "service PATH: stale — the running daemon still uses the installed PATH; run 'boss daemon restart'")
 	}
+	// BOS-1368: which settings file the login-started daemon reads. Advisory
+	// only — it never touches the exit status — because inspecting another
+	// profile from this shell is legitimate. Cross-platform, so it sits above
+	// the darwin early return with the service-PATH check it sits beside.
+	reportDaemonServiceSettingsPath(out)
 	// The live-auth check runs on every platform and BEFORE the macOS-only
 	// early return below. An upstream credential wedge has nothing to do with
 	// launchd, and putting the call after that return would make the whole

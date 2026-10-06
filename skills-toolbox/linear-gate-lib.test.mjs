@@ -312,6 +312,29 @@ test('linearRequest retries an HTTP 429 and resolves', async () => {
   assert.equal(calls, 2)
 })
 
+// A 5xx answers for the response, not the request: a mutation that got one may already have
+// applied (a non-idempotent create once did), so it is sent once and settled by the caller.
+test('linearRequest sends an operation: write call that got an HTTP 500 exactly once', async () => {
+  let calls = 0
+  const fetchImpl = async () => {
+    calls += 1
+    if (calls === 1) return { ok: false, status: 500, json: async () => ({}) }
+    return { ok: true, status: 200, json: async () => ({ data: { ok: true } }) }
+  }
+  await assert.rejects(
+    () =>
+      linearRequest({
+        apiKey: 'k',
+        query: 'mutation M { attachmentCreate { success } }',
+        fetchImpl,
+        operation: 'write',
+        sleep: noSleep,
+      }),
+    /HTTP 500/,
+  )
+  assert.equal(calls, 1, 'a 5xx write may have applied and must not be re-sent')
+})
+
 test('linearRequest never retries a missing key or a GraphQL error', async () => {
   let calls = 0
   const countingFetch = async () => {

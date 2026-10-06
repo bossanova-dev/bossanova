@@ -1328,3 +1328,352 @@ func TestSessionTokenHolder_RotationFansOutToBothOpeners(t *testing.T) {
 		t.Errorf("after rotation, terminal opener token = %q, want rotated (rotation must fan out to both openers)", got)
 	}
 }
+
+// ---- BOS-1375: bounded reader join in openStream ----
+
+// errWedgedStreamReleased is what a wedgedTerminalStream's Receive returns
+// once the test (or its conn close) releases it.
+var errWedgedStreamReleased = errors.New("wedged stream released")
+
+// wedgedTerminalStream reproduces the incident's reader at the fake level:
+// Receive delivers queued frames but ignores the stream context entirely, so
+// cancelling it does not wake a parked Receive. Only release (the test, or a
+// conn close in the variants below) lets Receive return. Send drops
+// everything — the writer never blocks.
+type wedgedTerminalStream struct {
+	recv        chan *pb.TerminalClientMessage
+	unwedge     chan struct{}
+	unwedgeOnce sync.Once
+	// receives counts Receive calls (including the one currently parked).
+	receives atomic.Int32
+	// released closes when a Receive returns because of release.
+	released     chan struct{}
+	releasedOnce sync.Once
+}
+
+func newWedgedTerminalStream() *wedgedTerminalStream {
+	return &wedgedTerminalStream{
+		recv:     make(chan *pb.TerminalClientMessage, 64),
+		unwedge:  make(chan struct{}),
+		released: make(chan struct{}),
+	}
+}
+
+func (s *wedgedTerminalStream) Send(*pb.TerminalServerMessage) error { return nil }
+
+func (s *wedgedTerminalStream) Receive() (*pb.TerminalClientMessage, error) {
+	s.receives.Add(1)
+	select {
+	case m := <-s.recv:
+		return m, nil
+	case <-s.unwedge:
+		s.releasedOnce.Do(func() { close(s.released) })
+		return nil, errWedgedStreamReleased
+	}
+}
+
+func (s *wedgedTerminalStream) CloseRequest() error { return nil }
+
+func (s *wedgedTerminalStream) release() {
+	s.unwedgeOnce.Do(func() { close(s.unwedge) })
+}
+
+// connClosableWedgedStream adds the optional terminalConnCloser capability;
+// closeConn decides what a conn close does to the wedged reader.
+type connClosableWedgedStream struct {
+	*wedgedTerminalStream
+	closeConn  func() error
+	connCloses atomic.Int32
+}
+
+func (s *connClosableWedgedStream) CloseConn() error {
+	s.connCloses.Add(1)
+	return s.closeConn()
+}
+
+// fixedTerminalOpener hands openStream one prepared stream.
+type fixedTerminalOpener struct {
+	stream terminalBidiStream
+}
+
+func (o *fixedTerminalOpener) TerminalStream(context.Context) terminalBidiStream {
+	return o.stream
+}
+
+// boundedTeardownPing is the ping interval the bounded-teardown tests run
+// with: the heartbeat's unit and the bound's first stage. It is distinct from
+// terminalReaderAbandonGrace and the far-off ready timeout, so a pending fake
+// timer at exactly now+d names which stage armed it.
+const boundedTeardownPing = 2 * time.Second
+
+// boundedTeardownClient wires a client whose heartbeat cancels the stream
+// after one silent beat, on a fake clock, with logs captured.
+func boundedTeardownClient(t *testing.T, opener terminalStreamOpener) (*TerminalStreamClient, *fakeClock, *TerminalHealth, *syncBuffer) {
+	t.Helper()
+	clock := newFakeClock()
+	health := NewTerminalHealth()
+	logs := &syncBuffer{}
+	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		Opener:            opener,
+		Chats:             &fakeChatLookup{},
+		TmuxClient:        tmux.NewClient(tmux.WithCommandFactory((&recordingCmdFactory{}).factory)),
+		AttachFactory:     newFakeAttachFactory().build,
+		Logger:            zerolog.New(logs),
+		Clock:             clock,
+		Health:            health,
+		ReadyTimeout:      time.Hour,
+		PingInterval:      boundedTeardownPing,
+		MissedBeatsBudget: 1,
+	})
+	return client, clock, health, logs
+}
+
+// waitForPendingTimerAt waits until the fake clock holds an unfired timer due
+// exactly d after virtual now — i.e. the goroutine under test has reached the
+// clock.After call that arms that stage.
+func waitForPendingTimerAt(t *testing.T, clock *fakeClock, d time.Duration, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		clock.mu.Lock()
+		at := clock.now.Add(d)
+		found := false
+		for _, tm := range clock.timers {
+			if !tm.fired && !tm.stopped && tm.deadline.Equal(at) {
+				found = true
+				break
+			}
+		}
+		clock.mu.Unlock()
+		if found {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("no pending %s timer (%s) within 2s", what, d)
+}
+
+// startWedgedOpenStream readies the stream, runs openStream, lets the
+// heartbeat watchdog cancel it (the incident's cancel source), and waits until
+// the bounded join has armed its first stage. It returns openStream's result
+// channel.
+func startWedgedOpenStream(t *testing.T, client *TerminalStreamClient, clock *fakeClock, health *TerminalHealth, s *wedgedTerminalStream) <-chan error {
+	t.Helper()
+	s.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ready{Ready: &pb.TerminalReady{}}}
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		errCh <- client.openStream(context.Background())
+	}()
+	t.Cleanup(func() {
+		// Join openStream even when an assertion failed mid-test.
+		s.release()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("openStream was not joined at cleanup")
+		}
+	})
+
+	waitForN(t, "ready gate passes", 2*time.Second, health.Healthy)
+	waitForPendingTimerAt(t, clock, boundedTeardownPing, "heartbeat")
+	clock.Advance(boundedTeardownPing) // one silent beat: watchdog cancels
+	waitForPendingTimerAt(t, clock, boundedTeardownPing, "bounded join first stage")
+	return errCh
+}
+
+// receiveOpenStreamErr reads openStream's result, failing rather than hanging
+// when it does not arrive.
+func receiveOpenStreamErr(t *testing.T, errCh <-chan error, what string) error {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatalf("openStream did not return: %s", what)
+		return nil
+	}
+}
+
+// TestTerminalOpenStream_ReaderExitsPromptlyNeedsNoEscalation is the happy
+// path: a reader that honours cancellation exits inside the first stage, so no
+// conn close, no abandonment, and no bound timer at all.
+func TestTerminalOpenStream_ReaderExitsPromptlyNeedsNoEscalation(t *testing.T) {
+	t.Parallel()
+	stream := newFakeTerminalStream()
+	stream.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ready{Ready: &pb.TerminalReady{}}}
+	// fakeTerminalOpener binds the stream to the stream context, so this
+	// Receive honours cancellation.
+	client, clock, health, _ := boundedTeardownClient(t, &fakeTerminalOpener{
+		nextStream: func() *fakeTerminalStream { return stream },
+	})
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.openStream(context.Background()) }()
+	waitForN(t, "ready gate passes", 2*time.Second, health.Healthy)
+	waitForPendingTimerAt(t, clock, boundedTeardownPing, "heartbeat")
+	clock.Advance(boundedTeardownPing)
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("openStream error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("openStream did not return after the watchdog cancelled a cooperative stream")
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 0 || snap.ReadersAbandoned != 0 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 0, 0", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+}
+
+// TestTerminalOpenStream_EscalatesToConnCloseAfterOnePingInterval: a reader
+// that ignores cancellation but returns once its connection is closed is
+// recovered by the second stage, exactly once, without abandonment.
+func TestTerminalOpenStream_EscalatesToConnCloseAfterOnePingInterval(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged}
+	stream.closeConn = func() error { wedged.release(); return nil }
+	client, clock, health, logs := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	if got := stream.connCloses.Load(); got != 0 {
+		t.Fatalf("conn closed %d times before the first stage elapsed", got)
+	}
+	clock.Advance(boundedTeardownPing)
+
+	err := receiveOpenStreamErr(t, errCh, "after conn close released the reader")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	if got := stream.connCloses.Load(); got != 1 {
+		t.Fatalf("CloseConn calls = %d, want 1", got)
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 1 || snap.ReadersAbandoned != 0 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 1, 0", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+	if !strings.Contains(logs.String(), "closing the stream's connection") {
+		t.Fatalf("missing conn-close warning in logs:\n%s", logs.String())
+	}
+}
+
+// TestTerminalOpenStream_BlockingConnCloseDoesNotBlockTeardown: the conn
+// close runs off the Run goroutine, so a close that itself wedges cannot hold
+// openStream past the grace.
+func TestTerminalOpenStream_BlockingConnCloseDoesNotBlockTeardown(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged}
+	unblock := make(chan struct{})
+	closeReturned := make(chan struct{})
+	stream.closeConn = func() error {
+		defer close(closeReturned)
+		<-unblock
+		return nil
+	}
+	t.Cleanup(func() {
+		// Join the dispatched close goroutine: unblock it and wait.
+		close(unblock)
+		select {
+		case <-closeReturned:
+		case <-time.After(2 * time.Second):
+			t.Error("dispatched CloseConn did not return after unblock")
+		}
+	})
+	client, clock, health, _ := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	clock.Advance(boundedTeardownPing)
+	waitForN(t, "conn close dispatched", 2*time.Second, func() bool { return stream.connCloses.Load() == 1 })
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+
+	if err := receiveOpenStreamErr(t, errCh, "with CloseConn still blocked"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	if got := health.Snapshot().ReadersAbandoned; got != 1 {
+		t.Fatalf("ReadersAbandoned = %d, want 1", got)
+	}
+}
+
+// TestTerminalOpenStream_AbandonsReaderThatIgnoresConnClose: after both
+// stages the reader is abandoned — counted, logged with its attempt, never
+// joined — and outbound is left open, because the abandoned reader may still
+// write pongs to it.
+func TestTerminalOpenStream_AbandonsReaderThatIgnoresConnClose(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged}
+	stream.closeConn = func() error { return nil }
+	client, clock, health, logs := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	clock.Advance(boundedTeardownPing)
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+
+	if err := receiveOpenStreamErr(t, errCh, "after the abandon grace"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 1 || snap.ReadersAbandoned != 1 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 1, 1", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "abandoning reader goroutine") || !strings.Contains(out, `"attempt":1`) ||
+		!strings.Contains(out, `"goroutine":"terminal stream reader"`) {
+		t.Fatalf("abandon log does not name the reader and attempt:\n%s", out)
+	}
+
+	// The abandoned reader progresses late: each ping makes it send a pong to
+	// outbound. Had teardown closed outbound, a pong send would panic (the
+	// select picks the closed-channel send on roughly every other try) and
+	// unwind the reader before its next Receive. Reaching the Receive after
+	// the last ping proves every send hit an open channel.
+	const pings = 32
+	before := wedged.receives.Load()
+	for i := range pings {
+		wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ping{Ping: &pb.TerminalPing{Seq: uint64(i)}}}
+	}
+	waitForN(t, "abandoned reader handles every ping", 2*time.Second, func() bool {
+		return wedged.receives.Load() >= before+pings
+	})
+	wedged.release()
+	select {
+	case <-wedged.released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("abandoned reader did not return after release")
+	}
+	if strings.Contains(logs.String(), "recovered from panic") {
+		t.Fatalf("abandoned reader panicked:\n%s", logs.String())
+	}
+}
+
+// TestTerminalOpenStream_BoundWithoutConnCloseCapability: a stream that does
+// not offer terminalConnCloser skips the close and is abandoned after both
+// stages all the same.
+func TestTerminalOpenStream_BoundWithoutConnCloseCapability(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	client, clock, health, logs := boundedTeardownClient(t, &fixedTerminalOpener{stream: wedged})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	clock.Advance(boundedTeardownPing)
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+
+	if err := receiveOpenStreamErr(t, errCh, "without a conn-close capability"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 0 || snap.ReadersAbandoned != 1 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 0, 1", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+	if !strings.Contains(logs.String(), "has no connection to close") {
+		t.Fatalf("missing no-capability warning in logs:\n%s", logs.String())
+	}
+}

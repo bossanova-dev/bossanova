@@ -295,6 +295,27 @@ test('selectTargets adds test-warehouse to bosso migrations WITHOUT dropping tes
   )
 })
 
+test('selectTargets adds test-hermes-plugin to the Hermes plugin sources WITHOUT dropping test-boss', () => {
+  // The plugin is Python run by a stdlib unittest suite no Go module rule reaches, and
+  // services/boss/internal/hermes go:embeds it, so both gates must run.
+  for (const file of [
+    'services/boss/internal/hermes/plugin/__init__.py',
+    'services/boss/internal/hermes/plugin/skills/orchestrator/SKILL.md',
+    'services/boss/internal/hermes/plugin/tests/test_register.py',
+  ]) {
+    assert.deepEqual(
+      selectTargets([file]).map(({ target }) => target),
+      ['test-hermes-plugin', 'test-boss'],
+      file,
+    )
+  }
+  // The Go renderer beside the plugin is test-boss alone.
+  assert.deepEqual(
+    selectTargets(['services/boss/internal/hermes/hermes.go']).map(({ target }) => target),
+    ['test-boss'],
+  )
+})
+
 test('selectTargets adds script tests to plugin skilldata WITHOUT dropping plugin and boss readers', () => {
   assert.deepEqual(
     selectTargets(['plugins/bossd-plugin-claude/skilldata/skills/boss-build/SKILL.md']),

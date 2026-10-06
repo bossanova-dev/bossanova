@@ -13,7 +13,9 @@
 // observability of the self-heal loop — MarkHealthy/MarkUnhealthy drive the
 // one-shot ready-confirmed / teardown log lines, and the counters
 // (ready-confirmed, ready-timeout, forced-re-register) are surfaced on the
-// escalation warn log via Snapshot(). Healthy() is exercised by the unit
+// escalation warn log via Snapshot(). The BOS-1375 bounded-teardown counters
+// (reader conn-close, reader abandoned) are surfaced the same way on the
+// teardown's own warn/error lines. Healthy() is exercised by the unit
 // tests to assert the readiness gate flips state correctly.
 package upstream
 
@@ -38,6 +40,16 @@ type TerminalHealth struct {
 	readyConfirmed    uint64
 	readyTimeouts     uint64
 	forcedReRegisters uint64
+
+	// BOS-1375 bounded-teardown counters. readerConnCloses bumps each time
+	// openStream's reader did not exit within one ping interval of the
+	// stream being cancelled and the teardown escalated to closing the
+	// stream's connection; readersAbandoned bumps each time the reader still
+	// had not exited after the grace that follows, and was abandoned. Both
+	// should stay at zero now that cancellation aborts the HTTP/2 stream;
+	// a non-zero value means some other path is blocking the reader.
+	readerConnCloses uint64
+	readersAbandoned uint64
 }
 
 // TerminalHealthSnapshot is a value copy of the counters for logging and
@@ -47,6 +59,8 @@ type TerminalHealthSnapshot struct {
 	ReadyConfirmed    uint64
 	ReadyTimeouts     uint64
 	ForcedReRegisters uint64
+	ReaderConnCloses  uint64
+	ReadersAbandoned  uint64
 }
 
 // NewTerminalHealth returns a signal in the unhealthy (not-yet-confirmed)
@@ -120,6 +134,29 @@ func (h *TerminalHealth) NoteForcedReRegister() {
 	h.mu.Unlock()
 }
 
+// NoteReaderConnClose bumps the reader-conn-close counter (a cancelled
+// stream's reader outlived the first teardown stage, so its connection was
+// closed).
+func (h *TerminalHealth) NoteReaderConnClose() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.readerConnCloses++
+	h.mu.Unlock()
+}
+
+// NoteReaderAbandoned bumps the abandoned-reader counter (a cancelled
+// stream's reader outlived the whole bounded teardown and was abandoned).
+func (h *TerminalHealth) NoteReaderAbandoned() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.readersAbandoned++
+	h.mu.Unlock()
+}
+
 // Snapshot returns a consistent copy of the state and counters.
 func (h *TerminalHealth) Snapshot() TerminalHealthSnapshot {
 	if h == nil {
@@ -132,5 +169,7 @@ func (h *TerminalHealth) Snapshot() TerminalHealthSnapshot {
 		ReadyConfirmed:    h.readyConfirmed,
 		ReadyTimeouts:     h.readyTimeouts,
 		ForcedReRegisters: h.forcedReRegisters,
+		ReaderConnCloses:  h.readerConnCloses,
+		ReadersAbandoned:  h.readersAbandoned,
 	}
 }

@@ -3396,6 +3396,19 @@ func run(opts runOpts) error {
 		// reverse-stream CreateSessionCommands. Server is wired post-hoc
 		// (after srv.New, below) — same pattern as cmdHandlerStream.Waker.
 		creatorAdapter = &upstream.SessionCreatorAdapter{Logger: log.Logger}
+		// webhookHealth lets the GitHub pollers drop to a slow safety-net
+		// interval for repos whose webhooks reach this daemon over the stream.
+		// It reads streamClient lazily: the closure runs only after the stream
+		// is up, by which point the assignment below has happened.
+		webhookHealth := upstream.NewWebhookHealth(func() (time.Time, bool) {
+			if streamClient == nil {
+				return time.Time{}, false
+			}
+			return streamClient.StreamOpenSince()
+		})
+		poller.SetWebhookHealth(webhookHealth)
+		displayPoller.SetWebhookHealth(webhookHealth)
+		callbackEvaluator.SetWebhookHealth(webhookHealth)
 		streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
 			Client:       client,
 			AuthToken:    authToken,          // WorkOS JWT → Authorization header
@@ -3412,11 +3425,15 @@ func run(opts runOpts) error {
 			Events:         streamBus,
 			TokenProvider:  tokenProvider,
 			CommandHandler: cmdHandler,
-			Webhooks:       upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, ghProvider, log.Logger).WithEvaluator(callbackEvaluator),
-			Attacher:       attacher,
-			Creator:        creatorAdapter,
-			ReRegister:     reRegister,
-			AuthState:      authState,
+			Webhooks: upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, ghProvider, log.Logger).
+				WithEvaluator(callbackEvaluator).
+				WithReadInvalidator(ghProvider).
+				WithPRPoller(poller).
+				WithWebhookHealth(webhookHealth),
+			Attacher:   attacher,
+			Creator:    creatorAdapter,
+			ReRegister: reRegister,
+			AuthState:  authState,
 			// Every DaemonStream registration builds a fresh DaemonState
 			// on bosso, stranding any terminal sender bound to the prior
 			// state (2026-07-11 incident). Cycle the TerminalStream so its

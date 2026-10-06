@@ -76,6 +76,9 @@ export function runGit(repo, args) {
     cwd: repo,
     encoding: 'utf8',
     env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    // spawnSync's default maxBuffer is 1 MiB; a content diff over a long base advance exceeds it,
+    // and the overflow surfaces as `res.error` (ENOBUFS) — failed closed, but useless at scale.
+    maxBuffer: 256 * 1024 * 1024,
   })
   if (res.error) return { status: -1, stdout: '', stderr: String(res.error.message || res.error) }
   return {
@@ -473,7 +476,7 @@ export function formatDriftNote(report) {
 
 // The subcommand + flag surface. `--help` used to be rejected by the flag loop below
 // as an unknown argument, with no usage printed at all — the listless path. The
-// pre-scan ahead of the loop is the shape scripts/proof.mjs already uses.
+// pre-scan ahead of the loop is the shape the repo's proof CLI already uses.
 export const BASE_DRIFT_USAGE = `usage: node base-drift.mjs check --base <ref> [--head <ref>] [--repo <dir>] [--fetch-failed]
 
 subcommands:

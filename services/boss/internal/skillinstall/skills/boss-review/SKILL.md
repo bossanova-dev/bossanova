@@ -61,7 +61,7 @@ if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skill
 | How should I batch these parallel dispatches?                     | `planBatches` in `bs-dispatch-await.mjs`                                                     |
 | Merge, dedupe and split all findings of one pass                  | `node bs-review-triage.mjs categorize <dir> --lens-entries-file … --expected-outputs-file …` |
 | Register a fallback reviewer's output so a missing file is unread | `node bs-review-triage.mjs expect <roster.json> <filename>`                                  |
-| Seed / record / reconcile / summarise the dispatch ledger         | `node bs-review-ledger.mjs seed\|record\|reconcile\|coverage …`                              |
+| Seed / record / reconcile / summarise the dispatch ledger         | `node bs-review-ledger.mjs seed\|record\|reconcile\|coverage\|tokens …`                      |
 | How many fix rounds may I run?                                    | `node bs-review-caps.mjs rounds`                                                             |
 | May I start another fix round?                                    | `node bs-review-caps.mjs admit-fix-round '<json>'`                                           |
 | Is the confirming round a no-op?                                  | `node bs-review-caps.mjs admit-confirming-round '<json>'`                                    |
@@ -288,6 +288,10 @@ They are not a tier: they never substitute for, or suppress, a whole-branch roun
 
 - Skip an entry (`skipped (covered by extension <name>)`) when a round extension that **ran
   successfully** declares the same `capability`.
+- Record every refused entry — covered, probe not `ready`, or caller deadline — on its
+  `default:<capability>` row (`bs-review-ledger.mjs record … --cause "<reason>"`), the cause quoting
+  the probe's printed classification (`probe: not_authed`) or the refusal
+  (`caller deadline: <n>s left, needs <m>s`).
 - `kind: cross-agent` — admit only when `node "$BOSS_REVIEW_TOOLBOX/$SECOND_VOICE-review.mjs" probe`
   prints `ready`. The worker runs
   `node "<toolbox>/<second-voice>-review.mjs" run --base "<merge-base>" --head HEAD --falsification-reference "<path>"`
@@ -451,8 +455,9 @@ With no deadline, skip every check here: the round cap is the only limit.
   remain (`deadline - now >= cost`). "The deadline has not arrived yet" is not the check: a leg cannot
   be stopped once started.
 - **Default rounds cost `LEG + 1200`**, because their findings commit the run to a fix round. If the
-  initial roster cannot afford that, drop the default rounds (`Phase D: skipped (caller deadline)`)
-  and re-check the rest at `LEG`. A refused default round is a normal outcome, not a cap.
+  initial roster cannot afford that, drop the default rounds (`Phase D: skipped (caller deadline)`,
+  each `record`ed with that cause) and re-check the rest at `LEG`. A refused default round is a
+  normal outcome, not a cap.
 - **A refused guaranteed leg** (a lens, a whole-branch tier, a confirming round): dispatch nothing
   further, record `<phase>: skipped (caller deadline)`, and report — the verdict will be `capped`,
   never `clean`. A refused notes dispatch is just skipped.
@@ -469,11 +474,15 @@ ledger once more (same `reconcile` call as above) and read its coverage:
 
 ```bash
 LEDGER_COVERAGE=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" coverage --in "$BOSS_REVIEW_LEDGER_PATH")
+COVERAGE_TOKENS=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" tokens --in "$BOSS_REVIEW_LEDGER_PATH" \
+  --populations "$(LENSES_JSON="$LENSES_JSON" ROUNDS_JSON="$ROUNDS_JSON" DEFAULT_ROUNDS_JSON="$DEFAULT_ROUNDS_JSON" node --input-type=module -e 'const lenses=JSON.parse(process.env.LENSES_JSON), rounds=JSON.parse(process.env.ROUNDS_JSON).extensions||[], defaultRounds=JSON.parse(process.env.DEFAULT_ROUNDS_JSON); process.stdout.write(JSON.stringify({lenses,rounds,defaultRounds}))')")
 DISPATCH_BATCH_AUDIT="$(node "$BOSS_REVIEW_TOOLBOX/bs-dispatch-batch-audit.mjs" audit --run-tmp "$RUN_TMP" --format text 2>&1)" || true
 ```
 
-The batch audit is report-only; add its text to the evidence. The report JSON (the renderer owns the
-layout — never hand-write the markdown):
+The batch audit is report-only; add its text to the evidence. `COVERAGE_TOKENS`
+(`{coverage, crossModel:{ran, token}, misses}`) is the only source of the caller's published
+coverage and cross-model tokens: return it verbatim, never a narrated summary. The report JSON
+(the renderer owns the layout — never hand-write the markdown):
 
 ```jsonc
 {
@@ -488,6 +497,7 @@ layout — never hand-write the markdown):
   "panel": { "initial": [], "reviewers": [], "reporting": [], "silent": [], "missing": [] },
   "agreement": { /* reviewAgreement(...) from bs-review-caps.mjs, incl. vanishedFindings */ },
   "ledger": { /* LEDGER_COVERAGE; missing or malformed caps the report */ },
+  "coverageTokens": { /* COVERAGE_TOKENS verbatim */ },
   "prUrl": "…", "issueUrl": "…",     // optional; give the follow-up prompt its links
   "verdict": {
     "assessment": "Sound" | "Unsound",

@@ -377,7 +377,50 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 			raw.RequestHeader().Set("X-Daemon-Token", tok)
 		}
 	}
+	abortStreamOnCancel(ctx, raw)
 	return connectBidiAdapter{stream: raw}
+}
+
+// abortableStream is the part of connect's *BidiStreamForClient that
+// abortStreamOnCancel drives.
+type abortableStream interface {
+	CloseRequest() error
+	CloseResponse() error
+}
+
+// abortStreamOnCancel makes cancelling ctx actually tear down the HTTP/2
+// stream behind s (BOS-1375). ctx must be the stream's own per-attempt
+// context, which both openStream callers guarantee: the hook stays registered
+// until ctx is done.
+//
+// On its own a cancel is a no-op once the response has started. x/net/http2
+// observes ctx only in writeRequest's selects, which run after the request
+// body is exhausted, and a bidi request body is connect's io.Pipe — which
+// nothing closes — so the HTTP/2 writer stays parked reading the pipe,
+// abortStream never runs, and a reader blocked on the response body is never
+// woken. A half-open peer (end-stream envelope sent, no END_STREAM/RST) then
+// wedges the stream until the daemon restarts, and every recovery path —
+// heartbeat watchdog, CycleStream, logout, shutdown — funnels through that
+// cancel. So, on cancel:
+//
+//   - CloseRequest closes connect's request pipe (an atomic CAS plus
+//     PipeWriter.Close, safe concurrently with Send): writeRequestBody
+//     returns, writeRequest reaches its select, sees ctx.Done and aborts the
+//     stream.
+//   - CloseResponse closes the response body (BreakWithError plus
+//     abortStream, which also broadcasts the conn's flow-control cond). It
+//     covers the shape CloseRequest cannot: a writer parked in
+//     awaitFlowControl because the peer stopped granting WINDOW_UPDATE.
+//
+// Errors are ignored: the stream is being torn down either way. The hook runs
+// on its own goroutine (context.AfterFunc), so a slow close never blocks the
+// cancelling caller. If it fires before the first Send, connect starts the
+// request on an already-cancelled context, which fails immediately.
+func abortStreamOnCancel(ctx context.Context, s abortableStream) {
+	context.AfterFunc(ctx, func() {
+		_ = s.CloseRequest()
+		_ = s.CloseResponse()
+	})
 }
 
 // connectBidiAdapter bridges connect's BidiStreamForClient (which has all
@@ -1712,6 +1755,15 @@ func (c *StreamClient) markStreamClosed() {
 	}
 	c.streamOpen = false
 	c.streamOpenedAt = time.Time{}
+}
+
+// StreamOpenSince reports when the current DaemonStream opened and whether one
+// is open now. WebhookHealth uses it: webhooks only reach the daemon over an
+// open stream, and only deliveries since it opened prove the current pipe.
+func (c *StreamClient) StreamOpenSince() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.streamOpenedAt, c.streamOpen
 }
 
 func (c *StreamClient) wasConnected() bool {

@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "hermes",
+    srcs = ["hermes.go"],
+    embedsrcs = [
+        "plugin/__init__.py",
+        "plugin/config.py",
+        "plugin/mcp_client.py",
+        "plugin/proxy.py",
+        "plugin/skills/orchestrator/SKILL.md",
+    ],
+    importpath = "github.com/recurser/boss/internal/hermes",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = ["@com_github_modelcontextprotocol_go_sdk//mcp"],
+)
+
+go_test(
+    name = "hermes_test",
+    srcs = ["hermes_test.go"],
+    embed = [":hermes"],
+    deps = [
+        "//lib/bossalib/bossmcp",
+        "@com_github_modelcontextprotocol_go_sdk//mcp",
+    ],
+)

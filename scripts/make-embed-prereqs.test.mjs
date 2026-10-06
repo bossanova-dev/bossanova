@@ -44,7 +44,17 @@ const embedTargets = [
   {
     target: 'bin/boss',
     // go:embed all:skills — every file type, recursively.
-    payloads: [{ dir: 'services/boss/internal/skillinstall/skills', recursive: true }],
+    payloads: [
+      { dir: 'services/boss/internal/skillinstall/skills', recursive: true },
+      // go:embed plugin/*.py plugin/skills/*/SKILL.md — the Hermes plugin sources,
+      // never its tests/ or __pycache__/.
+      { dir: 'services/boss/internal/hermes/plugin', filter: (name) => name.endsWith('.py') },
+      {
+        dir: 'services/boss/internal/hermes/plugin/skills',
+        recursive: true,
+        filter: (name) => name === 'SKILL.md',
+      },
+    ],
   },
   {
     target: 'bin/bossd',
@@ -263,6 +273,7 @@ test('.generate.stamp lists every non-proto generator input as a prerequisite', 
 const embedSites = [
   'plugins/bossd-plugin-claude/skilldata :: all:skills',
   'plugins/bossd-plugin-opencode :: bossd-question.js',
+  'services/boss/internal/hermes :: plugin/*.py plugin/skills/*/SKILL.md',
   'services/boss/internal/skillinstall :: all:skills',
   'services/bossd/migrations :: *.sql',
   'services/bosso/migrations_postgres :: *.sql',

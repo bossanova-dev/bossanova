@@ -65,6 +65,50 @@ func TestWatchdogProgramArgumentsPinTheUidDrop(t *testing.T) {
 	}
 }
 
+// TestWatchdogProgramArgumentsCarryANonDefaultSettingsPath (BOS-1368): a
+// baked profile rides the /usr/bin/env segment right after LC_CTYPE, so bossd
+// starts against it; the default spec above has no such entry, which the
+// exact-argv test pins.
+func TestWatchdogProgramArgumentsCarryANonDefaultSettingsPath(t *testing.T) {
+	spec := watchdogTestSpec()
+	spec.SettingsPath = "/abs/x/settings.json"
+	got := watchdogProgramArguments(spec)
+	want := []string{
+		"/bin/launchctl", "asuser", "501", "/usr/bin/sudo", "-u", "dave", "/usr/bin/env",
+		"HOME=/Users/dave",
+		"PATH=/usr/local/bin:/usr/bin:/bin",
+		"LC_CTYPE=UTF-8",
+		"BOSS_SETTINGS_PATH=/abs/x/settings.json",
+		"/usr/local/libexec/bossanova/bossd",
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("ProgramArguments = %q, want %q", got, want)
+	}
+
+	plist, err := renderWatchdogPlist(spec)
+	if err != nil {
+		t.Fatalf("renderWatchdogPlist: %v", err)
+	}
+	if !strings.Contains(plist, "\t\t<string>LC_CTYPE=UTF-8</string>\n\t\t<string>BOSS_SETTINGS_PATH=/abs/x/settings.json</string>\n") {
+		t.Errorf("rendered watchdog plist does not carry the settings path after LC_CTYPE:\n%s", plist)
+	}
+}
+
+// TestWatchdogProgramArgumentsWithoutSettingsPathAreUnchanged pins the unset
+// case explicitly: an empty SettingsPath adds no argv entry at all.
+func TestWatchdogProgramArgumentsWithoutSettingsPathAreUnchanged(t *testing.T) {
+	spec := watchdogTestSpec()
+	spec.SettingsPath = ""
+	for _, arg := range watchdogProgramArguments(spec) {
+		if strings.Contains(arg, "BOSS_SETTINGS_PATH") {
+			t.Fatalf("argv carries %q with no settings path set", arg)
+		}
+	}
+	if got := len(watchdogProgramArguments(spec)); got != 11 {
+		t.Errorf("default argv has %d entries, want the 11 it had before BOS-1368", got)
+	}
+}
+
 // TestRenderWatchdogPlistIsTheExpectedArtifact pins the whole rendered plist
 // byte for byte.
 //
@@ -154,6 +198,8 @@ func TestRenderWatchdogPlistRejectsUninterpolatableValues(t *testing.T) {
 		{"bossd path carries an ampersand", func(s *watchdogSpec) { s.BossdPath = "/usr/local/bin/bossd&x" }, "bossd path"},
 		{"empty user", func(s *watchdogSpec) { s.User = "" }, "user"},
 		{"empty home", func(s *watchdogSpec) { s.Home = "  " }, "home"},
+		{"settings path closes the string element", func(s *watchdogSpec) { s.SettingsPath = "/abs/x</string>/settings.json" }, "settings path"},
+		{"settings path is relative", func(s *watchdogSpec) { s.SettingsPath = "rel/settings.json" }, "settings path"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			spec := watchdogTestSpec()
@@ -765,5 +811,41 @@ func TestWatchdogOwnershipZeroValueIsNotObserved(t *testing.T) {
 func TestWatchdogTargetNamesTheSystemDomain(t *testing.T) {
 	if got, want := WatchdogTarget(), "system/"+WatchdogLabel; got != want {
 		t.Fatalf("WatchdogTarget() = %q, want %q", got, want)
+	}
+}
+
+// TestWatchdogPlistSettingsPath pins the doctor-side reader against the
+// renderer: the BOSS_SETTINGS_PATH argument an unattended install bakes into
+// ProgramArguments must read back, its absence must read as the default
+// profile, and an unparseable plist must read as unknown rather than default.
+func TestWatchdogPlistSettingsPath(t *testing.T) {
+	render := func(t *testing.T, settingsPath string) []byte {
+		t.Helper()
+		spec := watchdogTestSpec()
+		spec.SettingsPath = settingsPath
+		plist, err := renderWatchdogPlist(spec)
+		if err != nil {
+			t.Fatalf("renderWatchdogPlist: %v", err)
+		}
+		return []byte(plist)
+	}
+	tests := []struct {
+		name   string
+		data   []byte
+		want   string
+		wantOK bool
+	}{
+		{"baked profile", render(t, "/abs/x/settings.json"), "/abs/x/settings.json", true},
+		{"default profile", render(t, ""), "", true},
+		{"garbage bytes", []byte("\x00not a plist <<<"), "", false},
+		{"no ProgramArguments", []byte(`<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>x</string></dict></plist>`), "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := watchdogPlistSettingsPath(tt.data)
+			if got != tt.want || ok != tt.wantOK {
+				t.Fatalf("watchdogPlistSettingsPath() = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.wantOK)
+			}
+		})
 	}
 }

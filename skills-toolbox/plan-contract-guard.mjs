@@ -48,6 +48,7 @@ import {
   markdownH2Heading,
   mergedListItems,
   parseAcceptanceCriteria,
+  parsePlanCheckItems,
   parsePremises,
   planDescriptionSections,
   planSectionsForDescriptionMode,
@@ -470,14 +471,46 @@ function scanRiskCitations(config, description, mode) {
   )
 }
 
-function fixedStringNeedle(command) {
+// Search options whose VALUE is the next token, so that token is never read as the pattern.
+const SEARCH_VALUE_OPTIONS = new Set([
+  '-A',
+  '-B',
+  '-C',
+  '-g',
+  '-m',
+  '-t',
+  '-T',
+  '--context',
+  '--glob',
+  '--iglob',
+  '--include',
+  '--exclude',
+  '--exclude-dir',
+  '--max-count',
+  '--type',
+  '--type-not',
+])
+const REGEX_METACHARACTER = /[.*+?^${}()|[\]\\]/
+
+/**
+ * The literal needle of a `grep` / `rg` search, or null. A `-F` / `--fixed-strings` pattern is
+ * always a literal. With `plainIsLiteral` (a verify-only criterion, which claims pre-existing text
+ * is unchanged), a pattern carrying no regex metacharacter is one too: it matches exactly that text,
+ * so the plan's own use of the same term cannot be told apart from the intended occurrence.
+ */
+function fixedStringNeedle(command, { plainIsLiteral = false } = {}) {
   const tokens = tokenizeSimpleShell(command)
   const commandIndex = tokens.findIndex((token) => token === 'rg' || token === 'grep')
   if (commandIndex < 0) return null
   let fixed = false
+  const literal = (pattern) => {
+    if (pattern === null || pattern === undefined || pattern === '') return null
+    if (fixed) return pattern
+    return plainIsLiteral && !REGEX_METACHARACTER.test(pattern) ? pattern : null
+  }
   for (let index = commandIndex + 1; index < tokens.length; index += 1) {
     const token = tokens[index]
-    if (token === '--') return fixed ? (tokens[index + 1] ?? null) : null
+    if (token === '--') return literal(tokens[index + 1])
     if (token === '-e' || token === '--regexp') {
       index += 1
       continue
@@ -490,10 +523,27 @@ function fixedStringNeedle(command) {
       fixed = true
       continue
     }
+    if (SEARCH_VALUE_OPTIONS.has(token)) {
+      index += 1
+      continue
+    }
     if (token.startsWith('-')) continue
-    return fixed ? token : null
+    return literal(token)
   }
   return null
+}
+
+function occurrences(haystack, needle) {
+  let count = 0
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
+    count += 1
+  }
+  return count
+}
+
+/** The `plan: ` tag a plan-file-sourced finding carries, so the reader knows which file to edit. */
+function sourceTag(source) {
+  return source ? `${source}: ` : ''
 }
 
 /** The cited line plus `ANCHOR_WINDOW` lines either side, joined. `line` is 1-based. */
@@ -794,17 +844,25 @@ export function checkLineSpanningEmphasis(config, description, { mode = 'child-p
 }
 
 export function checkSelfFalsifiedLiteralSearch(config, description) {
+  return selfFalsifiedLiteralSearch(parseAcceptanceCriteria(config, description), description)
+}
+
+/**
+ * `criteria` searched against `text`, the document they came from. "Elsewhere" is counted rather
+ * than cut out: a criterion wrapped across lines is joined into one `text`, so removing it from the
+ * document by string replacement silently fails and the criterion would collide with itself.
+ */
+function selfFalsifiedLiteralSearch(criteria, text, source = null) {
   const violations = []
-  for (const criterion of parseAcceptanceCriteria(config, description)) {
+  for (const criterion of criteria) {
     if (!criterion.check) continue
-    const needle = fixedStringNeedle(criterion.check)
+    const needle = fixedStringNeedle(criterion.check, { plainIsLiteral: criterion.verifyOnly })
     if (!needle) continue
-    const elsewhere = description.replace(criterion.text, '')
-    if (!elsewhere.includes(needle)) continue
+    if (occurrences(text, needle) <= occurrences(criterion.text, needle)) continue
     violations.push(
       violation(
         'self-falsified-literal-search',
-        `criterion "${criterion.text}" searches for "${needle}", but the plan itself also mandates that string`,
+        `${sourceTag(source)}criterion "${criterion.text}" searches for "${needle}", but the plan itself also mandates that string`,
       ),
     )
   }
@@ -828,6 +886,18 @@ export function checkPrBodyOnlyEvidence(config, description) {
 }
 
 export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
+  return commandVacuity(
+    config,
+    description,
+    {
+      criteria: parseAcceptanceCriteria(config, description),
+      premises: parsePremises(config, description),
+    },
+    opts,
+  )
+}
+
+function commandVacuity(config, description, { criteria, premises }, opts = {}, source = null) {
   const violations = []
   const advisories = []
   // A check command naming a file this plan CREATES is absent today by design. The classifier is
@@ -844,7 +914,7 @@ export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
       violations.push(
         violation(
           `vacuous-${kind}-command-${finding.code}`,
-          `${kind} "${item.text}" names an unresolvable check command: ${finding.message}`,
+          `${sourceTag(source)}${kind} "${item.text}" names an unresolvable check command: ${finding.message}`,
         ),
       )
     }
@@ -852,16 +922,12 @@ export function checkVerifyOnlyCommandVacuity(config, description, opts = {}) {
       if (finding.code === 'path-operand-absent' && plannedPath(finding.path)) continue
       advisories.push({
         code: `advisory: ${finding.code}`,
-        message: `plan-contract-guard: ${kind} "${item.text}" has an advisory check command risk: ${finding.message}`,
+        message: `plan-contract-guard: ${sourceTag(source)}${kind} "${item.text}" has an advisory check command risk: ${finding.message}`,
       })
     }
   }
-  for (const criterion of parseAcceptanceCriteria(config, description)) {
-    checkItem('criterion', criterion)
-  }
-  for (const premise of parsePremises(config, description)) {
-    checkItem('premise', premise)
-  }
+  for (const criterion of criteria) checkItem('criterion', criterion)
+  for (const premise of premises) checkItem('premise', premise)
   return { violations, advisories }
 }
 
@@ -948,6 +1014,20 @@ function claimText(item) {
  * and one defect must not trip two codes.
  */
 export function checkUnmeasuredCountClaim(config, description) {
+  return [
+    ...unmeasuredCountRows({
+      criteria: parseAcceptanceCriteria(config, description),
+      premises: parsePremises(config, description),
+    }),
+    ...unmeasuredNarrativeByteFigures(config, description),
+  ]
+}
+
+/**
+ * The ROW rule alone. The narrative byte-figure scan stays description-scoped: it reads only
+ * recognised contract sections, and a free-form plan file has none to scope it to.
+ */
+function unmeasuredCountRows({ criteria, premises }, source = null) {
   const violations = []
   const inspect = (kind, item) => {
     if (!item.check) return
@@ -957,14 +1037,12 @@ export function checkUnmeasuredCountClaim(config, description) {
     violations.push(
       violation(
         'unmeasured-count-claim',
-        `${kind} "${claimText(item)}" asserts "${quantity}", but its check command re-measures nothing — record a command that counts (grep -c, rg -c, wc -l, grep -q, rg -q, an explicit count or assertion), or drop the number`,
+        `${sourceTag(source)}${kind} "${claimText(item)}" asserts "${quantity}", but its check command re-measures nothing — record a command that counts (grep -c, rg -c, wc -l, grep -q, rg -q, an explicit count or assertion), or drop the number`,
       ),
     )
   }
-  for (const criterion of parseAcceptanceCriteria(config, description))
-    inspect('criterion', criterion)
-  for (const premise of parsePremises(config, description)) inspect('premise', premise)
-  violations.push(...unmeasuredNarrativeByteFigures(config, description))
+  for (const criterion of criteria) inspect('criterion', criterion)
+  for (const premise of premises) inspect('premise', premise)
   return violations
 }
 
@@ -1064,19 +1142,53 @@ function unmeasuredNarrativeByteFigures(config, description) {
 }
 
 export function checkPremiseReusedAsCriterion(config, description) {
-  const premiseChecks = new Set(
-    parsePremises(config, description)
-      .map((premise) => premise.check?.trim())
-      .filter(Boolean),
+  return premiseReusedAsCriterion(
+    parseAcceptanceCriteria(config, description),
+    parsePremises(config, description),
   )
-  return parseAcceptanceCriteria(config, description)
+}
+
+function premiseReusedAsCriterion(criteria, premises, source = null) {
+  const premiseChecks = new Set(premises.map((premise) => premise.check?.trim()).filter(Boolean))
+  return criteria
     .filter((criterion) => premiseChecks.has(criterion.check?.trim()))
     .map((criterion) =>
       violation(
         'premise-reused-as-criterion',
-        `criterion "${criterion.text}" reuses a premise check command; a premise observes the pre-change tree and cannot certify the post-change constraint`,
+        `${sourceTag(source)}criterion "${criterion.text}" reuses a premise check command; a premise observes the pre-change tree and cannot certify the post-change constraint`,
       ),
     )
+}
+
+/**
+ * The item-level checks routed over the plan FILE, where the attachment-as-plan contract puts the
+ * acceptance criteria and premises. Bullets that also appear in the description were already judged
+ * there, so only plan-unique bullets are reported here, each tagged `plan:`. Premise checks are the
+ * union of both files', so a plan criterion reusing a description premise is still caught.
+ */
+function planItemChecks(config, description, plan, opts) {
+  const parsed = parsePlanCheckItems(config, plan)
+  const described = {
+    criteria: parseAcceptanceCriteria(config, description),
+    premises: parsePremises(config, description),
+  }
+  const seen = new Set([...described.criteria, ...described.premises].map((item) => item.text))
+  const unique = (items) => items.filter((item) => !seen.has(item.text))
+  const items = { criteria: unique(parsed.criteria), premises: unique(parsed.premises) }
+  const vacuity = commandVacuity(config, description, items, opts, 'plan')
+  return {
+    violations: [
+      ...selfFalsifiedLiteralSearch(items.criteria, parsed.text, 'plan'),
+      ...vacuity.violations,
+      ...premiseReusedAsCriterion(
+        items.criteria,
+        [...parsed.premises, ...described.premises],
+        'plan',
+      ),
+      ...unmeasuredCountRows(items, 'plan'),
+    ],
+    advisories: vacuity.advisories,
+  }
 }
 
 /**
@@ -1239,6 +1351,14 @@ export function checkPlanContract({
   violations.push(...checkPremiseReusedAsCriterion(config, description))
   violations.push(...checkUnmeasuredCountClaim(config, description))
   const advisories = [...commandVacuity.advisories]
+  // Since the attachment became the plan, its criteria and premises live in the plan FILE and the
+  // description only points at it — so the same item-level checks must also read the plan, or every
+  // one of them is dead at plan time. All of these codes are warnings; `ok` keeps its meaning.
+  if (typeof plan === 'string' && plan.trim() !== '') {
+    const planned = planItemChecks(config, description, plan, { cwd: citationCwd })
+    violations.push(...planned.violations)
+    advisories.push(...planned.advisories)
+  }
   if (!unterminated) {
     const subjectAreas = checkSubjectAreas(config, description, { mode, moduleRoots })
     violations.push(...subjectAreas.violations)

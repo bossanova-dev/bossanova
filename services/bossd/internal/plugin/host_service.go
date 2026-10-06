@@ -733,7 +733,9 @@ func hostServiceListClosedPRsHandler(srv any, ctx context.Context, dec func(any)
 // --- VCS RPC implementations ---
 
 func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.ListOpenPRsRequest) (*bossanovav1.ListOpenPRsResponse, error) {
-	prs, err := s.provider.ListOpenPRs(ctx, req.GetRepoOriginUrl())
+	// Plugin listings are background sweeps (the dependabot orchestrator lists
+	// every repo every interval), so they may share the cached open-PR list.
+	prs, err := s.provider.ListOpenPRs(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl())
 	if err != nil {
 		return nil, err
 	}
@@ -959,7 +961,10 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 }
 
 func (s *HostServiceServer) GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
-	comments, err := s.provider.GetReviewComments(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
+	// The repair plugin fingerprints review feedback on every sweep; a webhook
+	// for the PR drops the cached entry, so new feedback is never hidden for
+	// longer than the cache TTL.
+	comments, err := s.provider.GetReviewComments(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl(), int(req.GetPrNumber()))
 	if err != nil {
 		return nil, err
 	}

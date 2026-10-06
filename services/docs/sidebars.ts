@@ -25,6 +25,7 @@ const sidebars: SidebarsConfig = {
         'guides/broadcasts',
         'guides/logging',
         'guides/mcp',
+        'guides/hermes',
         'guides/notes',
         'guides/setup-scripts',
         'guides/pr-lifecycle',

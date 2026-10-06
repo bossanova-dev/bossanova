@@ -5,7 +5,14 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { OUTCOMES, coverage, reconcile, record, seedLedger } from './bs-review-ledger.mjs'
+import {
+  OUTCOMES,
+  coverage,
+  coverageTokens,
+  reconcile,
+  record,
+  seedLedger,
+} from './bs-review-ledger.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-review-ledger.mjs', import.meta.url))
 
@@ -458,22 +465,295 @@ test('a reviewer envelope with a malformed item still completes its row (the rev
   }
 })
 
-test('handled-failure envelopes do not count as completed findings', () => {
+test('handled-failure envelopes skip their row with the envelope error as cause', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
   try {
     writeFileSync(
       join(dir, 'findings-round-boss-review-ce.json'),
-      JSON.stringify({ ok: false, error: 'load failed', items: [] }),
+      JSON.stringify({ ok: false, error: '  load failed  ', items: [] }),
     )
     const seeded = seedLedger({ runId: 'run-1', populations: fixturePopulations(), now: 100 })
     const reconciled = reconcile(seeded, { findingsDir: dir, populations: fixturePopulations() })
+    const row = reconciled.rows.find((r) => r.name === 'round:boss-review-ce')
+    assert.equal(row.outcome, 'skipped')
+    assert.equal(row.cause, 'load failed')
+    assert.equal(row.completedAtMs, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a handled-failure envelope with no error text records a placeholder cause', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
+  try {
+    writeFileSync(
+      join(dir, 'findings-lens-0-golang-pro.json'),
+      JSON.stringify({ ok: false, extension: 'golang-pro', role: 'lens', items: [] }),
+    )
+    const seeded = seedLedger({ runId: 'run-1', populations: fixturePopulations(), now: 100 })
+    const reconciled = reconcile(seeded, { findingsDir: dir, populations: fixturePopulations() })
+    const row = reconciled.rows.find((r) => r.name === 'lens:go')
+    assert.equal(row.outcome, 'skipped')
+    assert.equal(row.cause, 'no error detail provided')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a failed envelope replaces a narrated skip cause but never a recorded timeout', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
+  try {
+    writeFileSync(
+      join(dir, 'findings-round-boss-review-ce.json'),
+      JSON.stringify({ ok: false, error: 'second-voice skipped (probe: not_authed)', items: [] }),
+    )
+    const seeded = seedLedger({ runId: 'run-1', populations: fixturePopulations(), now: 100 })
+    const narrated = record(seeded, 'round:boss-review-ce', { cause: 'not resolvable' })
+    let row = reconcile(narrated, {
+      findingsDir: dir,
+      populations: fixturePopulations(),
+    }).rows.find((r) => r.name === 'round:boss-review-ce')
+    assert.equal(row.outcome, 'skipped')
+    assert.equal(row.cause, 'second-voice skipped (probe: not_authed)')
+    const timed = record(seeded, 'round:boss-review-ce', {
+      outcome: OUTCOMES.timedOut,
+      cause: 'leg timeout',
+    })
+    row = reconcile(timed, { findingsDir: dir, populations: fixturePopulations() }).rows.find(
+      (r) => r.name === 'round:boss-review-ce',
+    )
+    assert.equal(row.outcome, 'timed-out')
+    assert.equal(row.cause, 'leg timeout')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('multi-line envelope error and fallback text reconcile to a single-line cause', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
+  try {
+    writeFileSync(
+      join(dir, 'findings-round-boss-review-ce.json'),
+      JSON.stringify({
+        ok: false,
+        error: '  helper failed:\n  stderr line 1\r\n\tline 2\n',
+        items: [],
+      }),
+    )
+    writeFileSync(
+      join(dir, 'findings-round-boss-review-thermonuclear.json'),
+      JSON.stringify({
+        ok: true,
+        extension: 'boss-review-thermonuclear',
+        role: 'round',
+        items: [],
+        fallback: 'skill absent;\ninline rubric ran\n',
+      }),
+    )
+    const populations = fixturePopulations()
+    populations.rounds.push({ name: 'boss-review-thermonuclear' })
+    const seeded = seedLedger({ runId: 'run-1', populations, now: 100 })
+    const rows = reconcile(seeded, { findingsDir: dir, populations }).rows
     assert.equal(
-      reconciled.rows.find((row) => row.name === 'round:boss-review-ce').outcome,
-      'not-reached',
+      rows.find((r) => r.name === 'round:boss-review-ce').cause,
+      'helper failed: stderr line 1 line 2',
+    )
+    assert.equal(
+      rows.find((r) => r.name === 'round:boss-review-thermonuclear').cause,
+      'skill absent; inline rubric ran',
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('a later failed file never downgrades a completed row', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
+  try {
+    const file = join(dir, 'findings-round-boss-review-ce.json')
+    writeFileSync(
+      file,
+      JSON.stringify({ ok: true, extension: 'boss-review-ce', role: 'round', items: [] }),
+    )
+    const seeded = seedLedger({ runId: 'run-1', populations: fixturePopulations(), now: 100 })
+    const first = reconcile(seeded, { findingsDir: dir, populations: fixturePopulations() })
+    writeFileSync(file, JSON.stringify({ ok: false, error: 'late failure', items: [] }))
+    const second = reconcile(first, { findingsDir: dir, populations: fixturePopulations() })
+    const row = second.rows.find((r) => r.name === 'round:boss-review-ce')
+    assert.equal(row.outcome, 'completed')
+    assert.equal(row.cause, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a fallback envelope completes its row as inlined with the fallback as cause', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
+  try {
+    writeFileSync(
+      join(dir, 'findings-round-boss-review-ce.json'),
+      JSON.stringify({
+        ok: true,
+        extension: 'boss-review-ce',
+        role: 'round',
+        items: [],
+        fallback: 'nested fan-out does not fit the leg',
+      }),
+    )
+    const seeded = seedLedger({ runId: 'run-1', populations: fixturePopulations(), now: 100 })
+    const once = reconcile(seeded, { findingsDir: dir, populations: fixturePopulations() })
+    const twice = reconcile(once, { findingsDir: dir, populations: fixturePopulations() })
+    for (const ledger of [once, twice]) {
+      const row = ledger.rows.find((r) => r.name === 'round:boss-review-ce')
+      assert.equal(row.outcome, 'completed')
+      assert.equal(row.tier, 'tier1')
+      assert.equal(row.mode, 'inlined')
+      assert.equal(row.cause, 'nested fan-out does not fit the leg')
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+function tokenPopulations() {
+  return {
+    lenses: [{ lens: 'web', skill: 'impeccable' }],
+    rounds: [
+      { name: 'boss-review-ce' },
+      { name: 'boss-review-thermonuclear' },
+      { name: 'boss-review-crossmodel', capability: 'second-voice' },
+    ],
+    defaultRounds: [{ capability: 'second-voice' }],
+  }
+}
+
+function completeAll(ledger, { except = [] } = {}) {
+  let next = ledger
+  for (const row of ledger.rows) {
+    if (except.includes(row.name)) continue
+    next = record(next, row.name, { outcome: OUTCOMES.completed, tier: 'tier1' })
+  }
+  return next
+}
+
+function seededTokens() {
+  return seedLedger({ runId: 'run-1', populations: tokenPopulations(), now: 100 })
+}
+
+test('a multi-line recorded cause renders on one line in the coverage token', () => {
+  const ledger = record(completeAll(seededTokens()), 'round:boss-review-ce', {
+    outcome: OUTCOMES.skipped,
+    cause: 'helper exited 1:\n  stderr tail\r\n',
+  })
+  const tokens = coverageTokens(ledger, tokenPopulations())
+  assert.ok(!tokens.coverage.includes('\n'))
+  assert.deepEqual(
+    tokens.misses.find((miss) => miss.name === 'round:boss-review-ce'),
+    { name: 'round:boss-review-ce', kind: 'skipped', cause: 'helper exited 1: stderr tail' },
+  )
+})
+
+test('coverageTokens: every row completed for real reads full', () => {
+  const tokens = coverageTokens(completeAll(seededTokens()), tokenPopulations())
+  assert.equal(tokens.coverage, 'full')
+  assert.deepEqual(tokens.misses, [])
+  assert.deepEqual(tokens.crossModel, { ran: true, token: null })
+})
+
+test('coverageTokens: inlined lens and rounds read reduced and name every reviewer', () => {
+  let ledger = completeAll(seededTokens())
+  for (const name of ['lens:web', 'round:boss-review-ce', 'round:boss-review-thermonuclear']) {
+    ledger = record(ledger, name, {
+      outcome: OUTCOMES.completed,
+      mode: 'inlined',
+      cause: `${name} inline rubric`,
+    })
+  }
+  const tokens = coverageTokens(ledger, tokenPopulations())
+  assert.ok(!tokens.coverage.startsWith('full'))
+  assert.equal(
+    tokens.coverage,
+    'reduced (lens:web inline fallback (lens:web inline rubric); ' +
+      'round:boss-review-ce inline fallback (round:boss-review-ce inline rubric); ' +
+      'round:boss-review-thermonuclear inline fallback (round:boss-review-thermonuclear inline rubric))',
+  )
+  assert.deepEqual(
+    tokens.misses.map((miss) => [miss.name, miss.kind]),
+    [
+      ['lens:web', 'inline-fallback'],
+      ['round:boss-review-ce', 'inline-fallback'],
+      ['round:boss-review-thermonuclear', 'inline-fallback'],
+    ],
+  )
+})
+
+test('coverageTokens: failed second-voice round plus refused default lists both misses', () => {
+  let ledger = completeAll(seededTokens(), {
+    except: ['round:boss-review-crossmodel', 'default:second-voice'],
+  })
+  ledger = record(ledger, 'round:boss-review-crossmodel', {
+    cause: 'second-voice skipped (codex-review: timed out)',
+  })
+  ledger = record(ledger, 'default:second-voice', {
+    cause: 'caller deadline: 900s left, needs 1500s',
+  })
+  const tokens = coverageTokens(ledger, tokenPopulations())
+  assert.equal(tokens.crossModel.ran, false)
+  assert.equal(
+    tokens.crossModel.token,
+    'skipped: default:second-voice skipped (caller deadline: 900s left, needs 1500s); ' +
+      'round:boss-review-crossmodel skipped (second-voice skipped (codex-review: timed out))',
+  )
+  assert.match(tokens.coverage, /^reduced \(/)
+  assert.equal(tokens.misses.length, 2)
+})
+
+test('coverageTokens: a completed second-voice round covers the default round', () => {
+  let ledger = completeAll(seededTokens(), { except: ['default:second-voice'] })
+  ledger = record(ledger, 'default:second-voice', {
+    cause: 'covered by extension boss-review-crossmodel',
+  })
+  const tokens = coverageTokens(ledger, tokenPopulations())
+  assert.equal(tokens.coverage, 'full')
+  assert.deepEqual(tokens.crossModel, { ran: true, token: null })
+})
+
+test('coverageTokens: an inlined second-voice round neither covers nor counts as ran', () => {
+  let ledger = completeAll(seededTokens(), { except: ['default:second-voice'] })
+  ledger = record(ledger, 'round:boss-review-crossmodel', {
+    outcome: OUTCOMES.completed,
+    mode: 'inlined',
+    cause: 'same-model rubric',
+  })
+  const tokens = coverageTokens(ledger, tokenPopulations())
+  assert.equal(tokens.crossModel.ran, false)
+  assert.match(tokens.coverage, /default:second-voice not reached \(no cause recorded\)/)
+})
+
+test('coverageTokens: an unrecorded not-reached row is named, never dropped', () => {
+  const ledger = completeAll(seededTokens(), { except: ['lens:web'] })
+  const tokens = coverageTokens(ledger, tokenPopulations())
+  assert.equal(tokens.coverage, 'reduced (lens:web not reached (no cause recorded))')
+  assert.deepEqual(tokens.misses, [
+    { name: 'lens:web', kind: 'not-reached', cause: 'no cause recorded' },
+  ])
+})
+
+test('coverageTokens: timed-out rows render their cause', () => {
+  let ledger = completeAll(seededTokens())
+  ledger = record(ledger, 'round:boss-review-ce', { outcome: OUTCOMES.timedOut, cause: 'timeout' })
+  const tokens = coverageTokens(ledger, tokenPopulations())
+  assert.equal(tokens.coverage, 'reduced (round:boss-review-ce timed out (timeout))')
+})
+
+test('coverageTokens: an empty ledger is never full', () => {
+  const ledger = seedLedger({ runId: 'run-1', populations: {}, now: 100 })
+  const tokens = coverageTokens(ledger, {})
+  assert.ok(!tokens.coverage.startsWith('full'))
+  assert.deepEqual(tokens.crossModel, {
+    ran: false,
+    token: 'skipped: no second-voice reviewer in this run',
+  })
 })
 
 test('ledger writes replace atomically without leaving scratch files', () => {
@@ -543,6 +823,23 @@ test('cli seed, reconcile, and coverage round-trip', () => {
       notReached: 3,
     })
     assert.equal(JSON.parse(readFileSync(ledgerPath, 'utf8')).rows.length, 4)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('cli tokens prints the coverageTokens JSON', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-ledger-'))
+  try {
+    const ledgerPath = join(dir, 'ledger-run-1.json')
+    const pops = join(dir, 'populations.json')
+    writeFileSync(pops, JSON.stringify(tokenPopulations()))
+    const ledger = record(completeAll(seededTokens()), 'lens:web', { cause: 'probe failed' })
+    writeFileSync(ledgerPath, JSON.stringify(ledger))
+    const res = runCli(['tokens', '--in', ledgerPath, '--populations', pops])
+    assert.equal(res.status, 0, res.stderr)
+    assert.deepEqual(JSON.parse(res.stdout), coverageTokens(ledger, tokenPopulations()))
+    assert.equal(JSON.parse(res.stdout).coverage, 'reduced (lens:web skipped (probe failed))')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

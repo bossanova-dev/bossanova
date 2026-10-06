@@ -763,27 +763,23 @@ test('CLI: --require-verbatim does not echo rejected note content', () => {
 
 // A terminal newline is the one difference this comparison can see that cannot carry reporter
 // content — the branch reporting it has already established the two blocks are otherwise identical.
-// Both directions used to exit 1, which meant a correct plan could be refused over whitespace at
-// end-of-file and the agent sent round again to add or drop a `\n`. They now REPORT and pass; the
-// diagnostic text is unchanged, so a reader still sees exactly what moved.
-test('CLI: --require-verbatim REPORTS one added trailing newline and still passes', () => {
+// Both directions used to exit 1, and then passed with a stderr report. The write-back verifier
+// excuses the same byte silently under `terminal-newline-trimming`, so the report was a warning on
+// every correct run that no reader could act on. Both guards now agree: tolerated, and silent.
+test('CLI: --require-verbatim tolerates one added trailing newline SILENTLY', () => {
   const original = 'line one\nline two\nline three'
   const rewritten = `## Original notes\n\n${original}\n`
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 0, res.stderr)
-  assert.match(res.stderr, /Original notes trailing newline differs at line 3/)
-  assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
-  assert.match(res.stderr, /reported, not fatal/)
+  assert.ok(!res.stderr.includes('trailing newline differs'), res.stderr)
 })
 
-test('CLI: --require-verbatim REPORTS one removed trailing newline and still passes', () => {
+test('CLI: --require-verbatim tolerates one removed trailing newline SILENTLY', () => {
   const original = 'line one\nline two\nline three\n'
   const rewritten = '## Original notes\n\nline one\nline two\nline three'
   const res = runCli(original, rewritten, ['--require-verbatim'])
   assert.equal(res.status, 0, res.stderr)
-  assert.match(res.stderr, /Original notes trailing newline differs at line 3/)
-  assert.match(res.stderr, /original lines: 3, rewritten lines: 3/)
-  assert.match(res.stderr, /reported, not fatal/)
+  assert.ok(!res.stderr.includes('trailing newline differs'), res.stderr)
 })
 
 test('CLI: --require-verbatim still FAILS when a trailing newline hides a real difference', () => {

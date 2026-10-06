@@ -443,10 +443,11 @@ func TestNewCmdRegistersBOS821Flags(t *testing.T) {
 // TestNewCmdDetachHelpDistinguishesTmuxUnattended pins the corrected --detach
 // help text. `runNewDetach` ignores the flag — the non-interactive --repo +
 // --prompt path always detaches — so help that implies a choice is a lie, and
-// the durable-pane option a caller actually wants is --tmux-unattended.
+// the durable-pane option a caller actually wants is --tmux-unattended. It
+// also names the BOSS_UNATTENDED=true contract so callers stop injecting it.
 func TestNewCmdDetachHelpDistinguishesTmuxUnattended(t *testing.T) {
 	usage := newCmd().Flags().Lookup("detach").Usage
-	for _, want := range []string{"--repo", "--prompt", "headlessly", "no-op", "--tmux-unattended", "stderr"} {
+	for _, want := range []string{"--repo", "--prompt", "BOSS_UNATTENDED=true", "headless branch", "no-op", "--tmux-unattended", "stderr"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("--detach usage %q is missing %q", usage, want)
 		}

@@ -19,8 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -159,6 +162,12 @@ type terminalConnectOpener struct {
 	// production wiring shares one AuthState with the DaemonStream opener.
 	authState *AuthState
 	logger    zerolog.Logger
+
+	// skipAbortOnCancel is a test-only seam: it suppresses the BOS-1375
+	// cancel hook (abortStreamOnCancel) so the half-open regression test can
+	// prove openStream's bounded teardown still recovers on its own by closing
+	// the stream's connection. Production never sets it.
+	skipAbortOnCancel bool
 }
 
 // TerminalStream opens a new bidi stream with the same auth headers
@@ -166,7 +175,17 @@ type terminalConnectOpener struct {
 // bosso cross-checks that the JWT's user owns the daemon identified by the
 // session token (services/bosso/internal/server/stream.go).
 func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidiStream {
-	raw := o.client.TerminalStream(ctx)
+	// Capture the net.Conn this stream rides on so openStream's bounded
+	// teardown can close it when a cancelled stream still will not let its
+	// reader go (BOS-1375). The pooled-connection hook (CloseIdle) cannot do
+	// that: x/net only closes a connection with no open streams, and a wedged
+	// stream never leaves the connection's stream table. GotConn fires on
+	// connect's request goroutine, hence the atomic slot.
+	conn := &terminalStreamConn{}
+	traceCtx := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { conn.set(info.Conn) },
+	})
+	raw := o.client.TerminalStream(traceCtx)
 	jwt := o.authToken
 	if o.tokens != nil {
 		// Refresh proactively if the cached token is within 60s of expiry.
@@ -220,13 +239,52 @@ func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidi
 			raw.RequestHeader().Set("X-Daemon-Token", tok)
 		}
 	}
-	return terminalConnectBidiAdapter{stream: raw}
+	if !o.skipAbortOnCancel {
+		abortStreamOnCancel(ctx, raw)
+	}
+	return terminalConnectBidiAdapter{stream: raw, conn: conn}
+}
+
+// terminalConnCloser is an optional capability of a terminalBidiStream:
+// closing the transport connection the stream rides on. openStream discovers
+// it by type assertion when escalating a reader that did not exit after
+// cancel, so test fakes need not implement it. Closing the connection makes
+// the HTTP/2 read loop abort every stream on it — including the DaemonStream,
+// which BOS-376 deliberately co-locates on the same connection.
+type terminalConnCloser interface {
+	CloseConn() error
+}
+
+// errNoTerminalStreamConn is returned by CloseConn when the stream never got
+// a connection (GotConn did not fire), so there is nothing to close.
+var errNoTerminalStreamConn = errors.New("terminal stream: no connection captured")
+
+// terminalStreamConn is the shared slot GotConn writes and CloseConn reads.
+// It is a pointer held by the value-typed adapter so every copy sees the
+// connection connect's request goroutine captured.
+type terminalStreamConn struct {
+	p atomic.Pointer[net.Conn]
+}
+
+func (c *terminalStreamConn) set(conn net.Conn) {
+	if conn != nil {
+		c.p.Store(&conn)
+	}
+}
+
+func (c *terminalStreamConn) close() error {
+	p := c.p.Load()
+	if p == nil {
+		return errNoTerminalStreamConn
+	}
+	return (*p).Close()
 }
 
 // terminalConnectBidiAdapter wraps the connect bidi type so the local
 // interface is satisfied explicitly.
 type terminalConnectBidiAdapter struct {
 	stream *connect.BidiStreamForClient[pb.TerminalServerMessage, pb.TerminalClientMessage]
+	conn   *terminalStreamConn
 }
 
 func (a terminalConnectBidiAdapter) Send(m *pb.TerminalServerMessage) error {
@@ -238,6 +296,14 @@ func (a terminalConnectBidiAdapter) Receive() (*pb.TerminalClientMessage, error)
 }
 
 func (a terminalConnectBidiAdapter) CloseRequest() error { return a.stream.CloseRequest() }
+
+// CloseConn closes the connection this stream was dispatched on.
+func (a terminalConnectBidiAdapter) CloseConn() error {
+	if a.conn == nil {
+		return errNoTerminalStreamConn
+	}
+	return a.conn.close()
+}
 
 // terminalAttach is the subset of *tmux.TerminalAttach this client uses.
 // Hoisted to an interface so tests can drop in a fake without spawning a
@@ -374,6 +440,10 @@ type TerminalStreamClient struct {
 	missedBeatsBudget  int
 	readyTimeoutBudget int
 	readyTimeoutStreak int
+
+	// attempts numbers openStream calls so the bounded teardown's logs name
+	// the attempt whose reader they escalated or abandoned (BOS-1375).
+	attempts atomic.Uint64
 
 	// wakeTimeout is how long an attach waits on a BOS-885 wake before giving
 	// up on it. Defaults to terminalAttachWakeTimeout; injectable so tests can
@@ -725,6 +795,7 @@ func (c *TerminalStreamClient) setCycleCancel(cancel context.CancelFunc) {
 // pumps' done channels — so by the time we return here, every PTY is
 // torn down.
 func (c *TerminalStreamClient) openStream(ctx context.Context) error {
+	attempt := c.attempts.Add(1)
 	streamCtx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
 	c.streamClosing = false
@@ -780,6 +851,18 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 	// (the pumps AND the reader, which emits pongs) is done, then wait for
 	// the single writer. MarkUnhealthy on every exit so the watchdog never
 	// sees a stale healthy signal after teardown.
+	//
+	// The reader join is bounded (BOS-1375, awaitReaderAfterCancel). When the
+	// reader is abandoned the teardown skips the upload join and
+	// close(outbound): the reader is the only spawner of upload-finish
+	// goroutines and may still be running, and it writes pongs to outbound, so
+	// closing it would hand a late-progressing reader a send on a closed
+	// channel. outbound is simply dropped. The writer still exits via
+	// streamCtx, which is already cancelled, and is joined as usual. A reader
+	// that progresses late shares client-scoped state (c.uploads,
+	// streamClosing) with the next attempt; attach registration is guarded by
+	// attachCtx.Err(), and the upload overlap is accepted on a path the cancel
+	// hook should make unreachable.
 	teardown := func() {
 		if c.health != nil {
 			c.health.MarkUnhealthy()
@@ -787,17 +870,21 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 		states := c.closeActiveAttaches()
 		cancel()
 		c.cancelAndWaitAttaches(states)
-		<-readerDone
-		// BOS-661: the reader is the only spawner of upload-finish
-		// goroutines, so joining it first makes this wait total. Both
-		// calls MUST precede close(outbound) — a finish still in flight
-		// writes its result there, and CancelAll then drops any upload
-		// whose attach vanished without a pump exit.
-		c.waitUploads()
-		c.cancelAllUploads()
+		readerJoined := c.awaitReaderAfterCancel(readerDone, stream, attempt)
+		if readerJoined {
+			// BOS-661: the reader is the only spawner of upload-finish
+			// goroutines, so joining it first makes this wait total. Both
+			// calls MUST precede close(outbound) — a finish still in flight
+			// writes its result there, and CancelAll then drops any upload
+			// whose attach vanished without a pump exit.
+			c.waitUploads()
+			c.cancelAllUploads()
+		}
 		<-hbDone
 		<-authWatchDone
-		close(outbound)
+		if readerJoined {
+			close(outbound)
+		}
 		<-writerDone
 	}
 
@@ -845,9 +932,26 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 		})
 	}
 
-	readErr := <-readErrCh
+	// Wait for the reader to end the stream, or for something to cancel it
+	// (heartbeat watchdog, CycleStream, logout, shutdown). The cancel case
+	// must not wait on the reader directly: a reader parked on a half-open
+	// HTTP/2 stream once held this receive for ten hours (BOS-1375).
+	// teardown bounds that join instead, and the reader's error is picked up
+	// afterwards if it did exit.
+	select {
+	case readErr := <-readErrCh:
+		readCtxErr := streamCtx.Err()
+		teardown()
+		return finalErr(readErr, readCtxErr)
+	case <-streamCtx.Done():
+	}
 	readCtxErr := streamCtx.Err()
 	teardown()
+	var readErr error
+	select {
+	case readErr = <-readErrCh:
+	default:
+	}
 	return finalErr(readErr, readCtxErr)
 }
 

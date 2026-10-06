@@ -106,6 +106,7 @@ func runMcpInstall(cmd *cobra.Command) error {
 	if st != nil && st.ServicePath != "" {
 		fmt.Printf("  service: %s\n", st.ServicePath)
 	}
+	fmt.Print(daemonInstallSettingsLine())
 	return nil
 }
 

@@ -2111,14 +2111,26 @@ func isUnattendedSession(sess *models.Session) bool {
 	return isCronSession(sess) || (sess != nil && (sess.IsTmuxUnattended || sess.Detach))
 }
 
+// unattendedMarkerEnv is the env every unattended run carries, whichever path
+// launched it. BOSS_UNATTENDED is the name that says what it means: no human is
+// watching, so skills take their headless branch. BOSS_CRON is the legacy
+// spelling every published skill already reads, so it stays set alongside —
+// despite its name it never implied a scheduled job (BOSS_CRON_JOB_ID does).
+func unattendedMarkerEnv() map[string]string {
+	return map[string]string{
+		"BOSS_UNATTENDED": "true",
+		"BOSS_CRON":       "true",
+	}
+}
+
 // ManagedSessionEnv returns the canonical BOSS_* environment set on every
 // managed chat's tmux session. The values let the agent (and any skill or
 // future agent runner — including Codex, which never sees the system prompt)
-// discover its boss context. Unattended sessions (cron OR tmux_unattended)
-// additionally get BOSS_CRON=true so shell-mode detection stays consistent with
-// the autonomy directive that BuildAppendSystemPrompt appends; only real cron jobs
-// also get BOSS_CRON_JOB_ID/BOSS_CRON_NAME. Binary paths are omitted when not
-// resolved.
+// discover its boss context. Unattended sessions (cron, tmux_unattended, or a
+// tmux-hosted detach run) additionally get the unattendedMarkerEnv pair so
+// shell-mode detection stays consistent with the autonomy directive that
+// BuildAppendSystemPrompt appends; only real cron jobs also get
+// BOSS_CRON_JOB_ID/BOSS_CRON_NAME. Binary paths are omitted when not resolved.
 //
 // agentName is the running agent for this chat. It takes precedence over
 // sess.AgentName, so a codex chat spawned from a claude session correctly
@@ -2144,7 +2156,9 @@ func managedSessionEnv(f SessionFacts) map[string]string {
 		env["BOSS_MCP_BIN"] = f.McpBin
 	}
 	if f.IsUnattended {
-		env["BOSS_CRON"] = "true"
+		for k, v := range unattendedMarkerEnv() {
+			env[k] = v
+		}
 	}
 	if f.IsCron {
 		env["BOSS_CRON_JOB_ID"] = f.CronJobID

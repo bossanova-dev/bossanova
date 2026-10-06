@@ -394,3 +394,44 @@ export function boundedStderrTail(maxBytes) {
     },
   }
 }
+
+// ---------------------------------------------------------------------------
+// fitTimeoutToLeg(timeoutMs, env) → positive integer ms, strictly below the leg.
+//
+// A cross-review helper runs inside an extension dispatch leg
+// (BOSS_SKILL_EXTENSION_TIMEOUT_MS, default 300 s). A helper allowed the whole
+// leg leaves its wrapping subagent no time to normalise and write the envelope,
+// so the round dies instead of returning an honest `ok: false`. Clamp the
+// review timeout to `leg - CROSS_REVIEW_LEG_RESERVE_MS`; when the leg is too
+// short for the reserve, fall back to half the leg so the result always stays
+// strictly below it. The leg parses digits-only, like the dispatch helper's
+// own reader; any other shape (or zero) means the default leg.
+// ---------------------------------------------------------------------------
+export const DEFAULT_EXTENSION_LEG_TIMEOUT_MS = 300_000
+export const CROSS_REVIEW_LEG_RESERVE_MS = 60_000
+
+export function extensionLegTimeoutMs(env = process.env) {
+  const raw = env?.BOSS_SKILL_EXTENSION_TIMEOUT_MS
+  if (raw == null || !/^[0-9]+$/.test(String(raw))) return DEFAULT_EXTENSION_LEG_TIMEOUT_MS
+  const n = Number.parseInt(String(raw), 10)
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_EXTENSION_LEG_TIMEOUT_MS
+}
+
+export function fitTimeoutToLeg(timeoutMs, env = process.env) {
+  const legMs = extensionLegTimeoutMs(env)
+  const budgetMs = Math.max(1, legMs - CROSS_REVIEW_LEG_RESERVE_MS, Math.floor(legMs / 2))
+  return Math.min(timeoutMs, budgetMs)
+}
+
+// resolveLegFitTimeout(label, timeoutMs, env) → { timeoutMs, note }
+// Applies fitTimeoutToLeg and, when it clamped, returns the one-line stderr
+// note naming both numbers so a skip cause can quote it verbatim.
+export function resolveLegFitTimeout(label, timeoutMs, env = process.env) {
+  const fitted = fitTimeoutToLeg(timeoutMs, env)
+  if (fitted >= timeoutMs) return { timeoutMs, note: null }
+  const legMs = extensionLegTimeoutMs(env)
+  return {
+    timeoutMs: fitted,
+    note: `${label}: timeout clamped to ${fitted}ms (requested ${timeoutMs}ms) to fit the ${legMs}ms extension leg`,
+  }
+}

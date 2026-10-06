@@ -27,6 +27,7 @@ const repoRoot = path.dirname(fileURLToPath(new URL('../Makefile', import.meta.u
 export const workflowRouteRules = [
   { workflow: 'test-bosso-production-deployment.yml', requiredTarget: null },
   { workflow: 'test-docs.yml', requiredTarget: null },
+  { workflow: 'test-hermes-plugin.yml', requiredTarget: 'test-hermes-plugin' },
   { workflow: 'test-marketing.yml', requiredTarget: 'test-web' },
   { workflow: 'test-plugin-distribution.yml', requiredTarget: null },
   { workflow: 'test-proto.yml', requiredTarget: null },

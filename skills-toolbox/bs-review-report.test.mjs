@@ -167,6 +167,44 @@ test('review coverage counts render in the always-visible verdict block', () => 
   assert.match(md, /❌ \*\*Confidence:\*\* Low/)
 })
 
+test('ledger-derived coverage tokens render under the coverage line', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    coverageTokens: {
+      coverage: 'reduced (round:boss-review-ce inline fallback (nested fan-out <300s>))',
+      crossModel: {
+        ran: false,
+        token: 'skipped: default:second-voice skipped (caller deadline)',
+      },
+      misses: [],
+    },
+  })
+  assert.match(
+    md,
+    /Review coverage token: reduced \(round:boss-review-ce inline fallback \(nested fan-out &lt;300s&gt;\)\)/,
+  )
+  assert.match(md, /Cross-model token: skipped: default:second-voice skipped \(caller deadline\)/)
+  const coverageAt = md.indexOf('Review coverage: discovered')
+  assert.ok(coverageAt >= 0 && coverageAt < md.indexOf('Review coverage token:'))
+})
+
+test('a cross-model round that ran renders without a skip token', () => {
+  const md = renderReport({
+    ...cleanFixture(),
+    coverageTokens: { coverage: 'full', crossModel: { ran: true, token: null }, misses: [] },
+  })
+  assert.match(md, /Review coverage token: full\n/)
+  assert.match(md, /Cross-model token: ran \(see findings\)/)
+})
+
+test('absent or malformed coverage tokens render no token line', () => {
+  for (const coverageTokens of [undefined, null, [], { coverage: '' }, { coverage: 7 }]) {
+    const md = renderReport({ ...cleanFixture(), coverageTokens })
+    assert.doesNotMatch(md, /Review coverage token:/)
+    assert.doesNotMatch(md, /Cross-model token:/)
+  }
+})
+
 test('missing ledger evidence does not by itself make a clean review unsound', () => {
   const fixture = cleanFixture()
   delete fixture.ledger

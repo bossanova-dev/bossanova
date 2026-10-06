@@ -58,10 +58,13 @@ func newRegistry() map[string]Prose {
 				"command exits 0.\n\n" +
 				"`--json` emits `{\"session\": {...}}`: every field of a `boss ls " +
 				"--json` row, plus the detail the text rendering prints — " +
-				"`repo_display_name`, `base_branch`, `worktree_path`, `account_id`, " +
+				"`repo_display_name`, `repo_should_archive_sessions_after_merge`, " +
+				"`base_branch`, `worktree_path`, `account_id`, " +
 				"`account_label`, `display_status`, `last_check_state`, " +
 				"`archived_at`, `setup_error` and `last_repair` (an object, or " +
 				"`null` when the repair plugin has never run for this session). " +
+				"`repo_should_archive_sessions_after_merge` is a boolean, or `null` " +
+				"when repository hydration failed. " +
 				"`display_status` uses the same vocabulary as the TUI and `boss " +
 				"session checks` (`idle`, `checking`, `passing`, `failing`, …). The " +
 				"chats table the text rendering prints below the header is " +
@@ -91,7 +94,12 @@ func newRegistry() map[string]Prose {
 				"prompt-carrying call defaults to headless and reports " +
 				"agent_launched=true, while attended:true creates the session idle " +
 				"awaiting a human `boss attach` (agent_launched=false). Prefer the " +
-				"default for programmatic/unattended launches.\n\n" +
+				"default for programmatic/unattended launches." +
+				" Such a run is unattended: bossd sets BOSS_UNATTENDED=true (and its " +
+				"legacy spelling BOSS_CRON=true) in the agent's environment, so skills " +
+				"that branch on it (boss-plan, boss-epic) take their headless branch " +
+				"and never wait on a human. No flag or env override is needed, and " +
+				"writing \"headless\" into the prompt changes nothing.\n\n" +
 				"--detach vs --tmux-unattended: they are NOT alternatives. The " +
 				"non-interactive --repo + --prompt path always detaches, so --detach " +
 				"is a no-op there and only affects flag parsing; it governs whether " +

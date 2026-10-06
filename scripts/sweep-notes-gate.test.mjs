@@ -1270,7 +1270,7 @@ test('attachSourceNotes measures bytes, passes every header, and creates the exa
   })
 })
 
-test('attachSourceNotes settles an indeterminate create by read-back, never by re-sending', async () => {
+test('attachSourceNotes settles an indeterminate create by read-back, re-running the leg once only on proven absence', async () => {
   const landed = fakeLinear({
     createImpl: (request, state) => {
       // The write reached the server, then the socket died.
@@ -1291,9 +1291,43 @@ test('attachSourceNotes settles an indeterminate create by read-back, never by r
   assert.equal(
     landed.calls.filter((call) => call.query === ATTACHMENT_CREATE_MUTATION).length,
     1,
-    'an indeterminate create is never re-sent',
+    'a create the read-back finds is never re-sent',
   )
   assert.equal(landed.calls.at(-1).query, ISSUE_ATTACHMENTS_QUERY)
+
+  // Proven absent once, then the re-run leg lands: a FRESH signed upload, a second create.
+  let attempt = 0
+  const recovered = fakeLinear({
+    createImpl: (request, state) => {
+      attempt += 1
+      if (attempt === 1) throw Object.assign(new Error('Linear API HTTP 502'), { status: 502 })
+      state.attachments.push(request.variables.input.title)
+      return {
+        attachmentCreate: {
+          success: true,
+          attachment: { id: 'a', title: request.variables.input.title },
+        },
+      }
+    },
+  })
+  const puts = []
+  const retried = await attachSourceNotes({
+    ...options,
+    put: async (request) => puts.push(request),
+    linearRequest: recovered.linearRequest,
+  })
+  assert.deepEqual(retried, {
+    status: 'created',
+    issueId: 'BOS-9',
+    title: 'Source notes (BOS-9)',
+    settledBy: 'response',
+  })
+  assert.equal(
+    recovered.calls.filter((call) => call.query === ATTACHMENT_CREATE_MUTATION).length,
+    2,
+  )
+  assert.equal(recovered.calls.filter((call) => call.query === FILE_UPLOAD_MUTATION).length, 2)
+  assert.equal(puts.length, 2, 'the re-run leg PUTs to a fresh signed URL')
 
   const lost = fakeLinear({
     createImpl: () => {
@@ -1304,7 +1338,12 @@ test('attachSourceNotes settles an indeterminate create by read-back, never by r
     attachSourceNotes({ ...options, linearRequest: lost.linearRequest }),
     /did not land "Source notes \(BOS-9\)": Linear request timed out/,
   )
-  assert.equal(lost.calls.filter((call) => call.query === ATTACHMENT_CREATE_MUTATION).length, 1)
+  assert.equal(
+    lost.calls.filter((call) => call.query === ATTACHMENT_CREATE_MUTATION).length,
+    2,
+    'proven absent twice: exactly one re-run, then the throw',
+  )
+  assert.equal(lost.calls.filter((call) => call.query === FILE_UPLOAD_MUTATION).length, 2)
 
   await assert.rejects(
     attachSourceNotes({ ...options, readFile: () => '', linearRequest: lost.linearRequest }),

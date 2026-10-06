@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
@@ -1202,5 +1205,82 @@ func TestDispatch_NonGitHubOriginSkipsEvaluation(t *testing.T) {
 	}
 	if len(ev.calls) != 0 {
 		t.Fatalf("evaluator calls = %d, want 0 for non-GitHub origin", len(ev.calls))
+	}
+}
+
+// orderLog records the order the dispatcher's collaborators run in.
+type orderLog struct {
+	mu    sync.Mutex
+	steps []string
+}
+
+func (o *orderLog) add(step string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.steps = append(o.steps, step)
+}
+
+func (o *orderLog) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.steps...)
+}
+
+type orderedInvalidator struct{ log *orderLog }
+
+func (i orderedInvalidator) InvalidatePR(repoPath string, prID int) {
+	i.log.add(fmt.Sprintf("invalidate %s#%d", repoPath, prID))
+}
+
+type orderedRefresher struct{ log *orderLog }
+
+func (r orderedRefresher) RefreshPR(_ context.Context, repoOriginURL string, prNumber int) error {
+	r.log.add(fmt.Sprintf("refresh %s#%d", repoOriginURL, prNumber))
+	return nil
+}
+
+type orderedPRPoller struct{ log *orderLog }
+
+func (p orderedPRPoller) PollPR(_ context.Context, repoOriginURL string, prNumber int) {
+	p.log.add(fmt.Sprintf("poll %s#%d", repoOriginURL, prNumber))
+}
+
+// TestDispatch_InvalidatesCacheThenPollsPR pins the webhook's three new duties:
+// record the delivery as webhook health, drop the PR's cached reads BEFORE
+// anything re-reads it, and run the state-machine poller for the PR (webhooks
+// never carry ChecksPassed, so this is how a green PR advances promptly while
+// its repo is on the slow safety-net poll).
+func TestDispatch_InvalidatesCacheThenPollsPR(t *testing.T) {
+	const origin = "https://github.com/owner/repo"
+	log := &orderLog{}
+	health := NewWebhookHealth(func() (time.Time, bool) { return time.Now().Add(-time.Hour), true })
+	dispatcher := NewWebhookDispatcher(orderedRefresher{log}, zerolog.Nop()).
+		WithReadInvalidator(orderedInvalidator{log}).
+		WithPRPoller(orderedPRPoller{log}).
+		WithWebhookHealth(health)
+	hook, waitPoll := captureEvalDone(t)
+	dispatcher.evalDoneHook = hook
+
+	if health.WebhookDeliveryHealthy(origin) {
+		t.Fatal("healthy before any delivery")
+	}
+	if err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "check_suite",
+		RepoOriginUrl: origin,
+		PullRequest:   42,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitPoll()
+
+	if !health.WebhookDeliveryHealthy(origin) {
+		t.Fatal("the delivery was not recorded as webhook health")
+	}
+	steps := log.snapshot()
+	if len(steps) != 3 || steps[0] != "invalidate "+origin+"#42" {
+		t.Fatalf("steps = %v, want invalidate first, then the poll and the refresh", steps)
+	}
+	if !slices.Contains(steps, "poll "+origin+"#42") || !slices.Contains(steps, "refresh "+origin+"#42") {
+		t.Fatalf("steps = %v, want both a poll and a refresh of #42", steps)
 	}
 }

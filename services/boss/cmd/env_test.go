@@ -62,6 +62,29 @@ func TestResolveEnvReport_ManagedNonCron(t *testing.T) {
 	}
 }
 
+// TestResolveEnvReport_UnattendedWithoutCronJob pins that BOSS_CRON alone is
+// not a scheduled job: bossd sets it (and BOSS_UNATTENDED) on every unattended
+// run, so a prompt-carrying `boss new` or an epic child reports "unattended"
+// with no cron block. Either marker on its own is enough — BOSS_CRON alone is
+// what an older bossd emits.
+func TestResolveEnvReport_UnattendedWithoutCronJob(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"both markers":     {"BOSS_SESSION_ID": "s", "BOSS_CRON": "true", "BOSS_UNATTENDED": "true"},
+		"legacy BOSS_CRON": {"BOSS_SESSION_ID": "s", "BOSS_CRON": "true"},
+		"BOSS_UNATTENDED":  {"BOSS_SESSION_ID": "s", "BOSS_UNATTENDED": "true"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := resolveEnvReport(func(k string) string { return env[k] })
+			if got.Mode != "unattended" {
+				t.Errorf("Mode = %q, want unattended", got.Mode)
+			}
+			if got.Cron != nil {
+				t.Errorf("Cron should be nil without BOSS_CRON_JOB_ID, got %+v", got.Cron)
+			}
+		})
+	}
+}
+
 func TestResolveEnvReport_StandaloneFallsBackToConfig(t *testing.T) {
 	// No BOSS_* vars: not a managed session. SettingsPath/Socket fall back to
 	// fresh config resolution; session identifiers are empty.

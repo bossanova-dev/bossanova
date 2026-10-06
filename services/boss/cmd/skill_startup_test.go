@@ -28,6 +28,9 @@ func setupSkillStartupTest(t *testing.T) string {
 	// make them order-dependent. t.Setenv restores the default afterward.
 	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(home, "settings.json"))
 	t.Setenv("BOSS_SKIP_SKILLS", "")
+	// Hermes resolves its skill dir from HERMES_HOME before HOME, so an
+	// inherited developer value would point these tests at a real tree.
+	t.Setenv("HERMES_HOME", "")
 	// Point every one of these tests at a socket that cannot exist.
 	//
 	// BOSS_SOCKET outranks the isolated HOME in client.DefaultSocketPath, so
@@ -534,6 +537,57 @@ func TestMaybeInstallSkillsNonInteractiveDoesNotFreshInstall(t *testing.T) {
 	}
 	if libskillinstall.IsInstalled(filepath.Join(home, ".codex", "skills")) {
 		t.Fatal("codex skills fresh-installed on the non-TTY path, want no-op")
+	}
+}
+
+func TestSelfHealSkillsRefreshesStaleHermesTreeUnderHermesHome(t *testing.T) {
+	setupSkillStartupTest(t)
+	hermesHome := t.TempDir()
+	t.Setenv("HERMES_HOME", hermesHome)
+	hermesDir := filepath.Join(hermesHome, "skills")
+	if err := libskillinstall.Extract(hermesDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stalePath := filepath.Join(hermesDir, libskillinstall.Namespace, "boss", "SKILL.md")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"hermes": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "stale" {
+		t.Fatal("stale hermes skill was not self-healed under HERMES_HOME")
+	}
+}
+
+func TestMaybeInstallSkillsIgnoresHermesWhenCLIAbsent(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	hermesHome := t.TempDir()
+	t.Setenv("HERMES_HOME", hermesHome)
+	setAvailableSkillAgents(map[string]bool{"claude": true, "codex": true})
+	calls := setSkillPromptAnswers(t, "", "")
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	if *calls != 2 {
+		t.Fatalf("prompts = %d, want 2 (claude and codex only)", *calls)
+	}
+	assertAgentSkillsInstalled(t, filepath.Join(home, ".claude", "skills"))
+	assertAgentSkillsInstalled(t, filepath.Join(home, ".codex", "skills"))
+	if _, err := os.Stat(filepath.Join(hermesHome, "skills")); !os.IsNotExist(err) {
+		t.Fatalf("hermes skills dir stat err = %v, want not-exist when hermes is not on PATH", err)
 	}
 }
 

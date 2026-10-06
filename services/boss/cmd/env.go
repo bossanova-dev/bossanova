@@ -21,9 +21,11 @@ import (
 // enumerated inventory of CLI and MCP capabilities. Field names are part of the
 // contract: renames are breaking changes.
 type EnvReport struct {
-	// Mode is one of "managed" (inside a bossanova-managed chat), "cron" (a
-	// scheduler-spawned managed chat), or "standalone" (run directly by a human
-	// outside a managed session).
+	// Mode is one of "managed" (inside a bossanova-managed chat a human
+	// drives), "cron" (a scheduler-spawned managed chat), "unattended" (any
+	// other run nobody is watching — a prompt-carrying `boss new`, an epic
+	// child — where skills take their headless branch), or "standalone" (run
+	// directly by a human outside a managed session).
 	Mode         string      `json:"mode"`
 	Profile      string      `json:"profile"` // ambient BOSS_ENV (e.g. "local"); deployment profile, not the daemon profile
 	Session      EnvSession  `json:"session"`
@@ -146,11 +148,16 @@ func resolveEnvReport(getenv func(string) string) EnvReport {
 		Daemon: EnvDaemon{Socket: getenv("BOSS_SOCKET")},
 	}
 
-	// Mode classification.
+	// Mode classification. BOSS_CRON is the legacy spelling of
+	// BOSS_UNATTENDED and is set on every unattended run, so it alone does not
+	// mean a scheduled job; only BOSS_CRON_JOB_ID does.
+	unattended := getenv("BOSS_UNATTENDED") == "true" || getenv("BOSS_CRON") == "true"
 	switch {
-	case getenv("BOSS_CRON") == "true":
+	case unattended && getenv("BOSS_CRON_JOB_ID") != "":
 		rep.Mode = "cron"
 		rep.Cron = &EnvCron{JobID: getenv("BOSS_CRON_JOB_ID"), Name: getenv("BOSS_CRON_NAME")}
+	case unattended:
+		rep.Mode = "unattended"
 	case rep.Session.SessionID != "":
 		rep.Mode = "managed"
 	default:

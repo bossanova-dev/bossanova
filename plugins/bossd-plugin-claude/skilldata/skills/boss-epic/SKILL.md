@@ -47,7 +47,9 @@ skill does the I/O.
 - **Tracker** — `resolveTrackerAdapter(env)` (`toolbox/tracker/adapter.mjs`): assembly
   (`selectPlanned`, `getIssue`), state writes (`moveState`), the progress comment
   (`readComments`/`writeComment`/`updateComment`). Workflow states resolve at runtime; Done/Canceled
-  match by state type (`BLOCKER_CLEARED_STATE_TYPES`).
+  match by state type (`BLOCKER_CLEARED_STATE_TYPES`). A failed capability call is classified with
+  `node "$BOSS_EPIC_TOOLBOX/tracker/cli.mjs" classify-outcome --observed "<err>" --operation read|write`
+  and its action line followed, never the error body's own retry advice.
 - **Session runner** — `resolveSessionRunnerAdapter(env)` (`toolbox/session/adapter.mjs`):
   `createSession`, `getSession`, `listSessions`, `listCheckSnapshots`, `mergeSession`,
   `resolveContext`, `listAgents`, `recordChat`, `sendChatMessage`, optional `getSessionStatuses`;

@@ -57,6 +57,10 @@ const (
 		<string>{{.Path}}</string>
 		<key>LC_CTYPE</key>
 		<string>UTF-8</string>
+{{- if .SettingsPath}}
+		<key>BOSS_SETTINGS_PATH</key>
+		<string>{{.SettingsPath}}</string>
+{{- end}}
 	</dict>
 </dict>
 </plist>
@@ -130,6 +134,10 @@ const (
 		<string>{{.Path}}</string>
 		<key>LC_CTYPE</key>
 		<string>UTF-8</string>
+{{- if .SettingsPath}}
+		<key>BOSS_SETTINGS_PATH</key>
+		<string>{{.SettingsPath}}</string>
+{{- end}}
 	</dict>
 </dict>
 </plist>
@@ -259,19 +267,24 @@ func bootoutLaunchdTarget(target string, stillRunning func() bool) error {
 	return nil
 }
 
+// SettingsPath, on both plist data types, is the BOSS_SETTINGS_PATH the job is
+// started with. Empty renders no key at all, so a default install is
+// byte-identical to one made before the variable was carried (BOS-1368).
 type plistData struct {
-	Label     string
-	BossdPath string
-	LogDir    string
-	Path      string
+	Label        string
+	BossdPath    string
+	LogDir       string
+	Path         string
+	SettingsPath string
 }
 
 type mcpPlistData struct {
-	Label   string
-	McpPath string
-	Addr    string
-	LogDir  string
-	Path    string
+	Label        string
+	McpPath      string
+	Addr         string
+	LogDir       string
+	Path         string
+	SettingsPath string
 }
 
 // serviceEnvPath builds the PATH for BOTH LaunchAgents — bossd and the MCP
@@ -312,8 +325,20 @@ func logDir() (string, error) {
 	return filepath.Join(home, "Library", "Logs", "bossanova"), nil
 }
 
-// generatePlist renders the LaunchAgent plist XML for bossd.
+// generatePlist renders the LaunchAgent plist XML for bossd, carrying the
+// BOSS_SETTINGS_PATH this process resolved (see serviceSettingsPath).
 func generatePlist(bossdPath string) (string, error) {
+	settingsPath, err := serviceSettingsPath()
+	if err != nil {
+		return "", err
+	}
+	return renderPlist(bossdPath, settingsPath)
+}
+
+// renderPlist renders the bossd LaunchAgent plist for an explicit settings
+// path. It is split from generatePlist so a rewrite can bake the value it
+// decided to preserve rather than whatever this shell happens to export.
+func renderPlist(bossdPath, settingsPath string) (string, error) {
 	ld, err := logDir()
 	if err != nil {
 		return "", err
@@ -326,10 +351,11 @@ func generatePlist(bossdPath string) (string, error) {
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, plistData{
-		Label:     Label,
-		BossdPath: bossdPath,
-		LogDir:    ld,
-		Path:      serviceEnvPath(),
+		Label:        Label,
+		BossdPath:    bossdPath,
+		LogDir:       ld,
+		Path:         serviceEnvPath(),
+		SettingsPath: settingsPath,
 	}); err != nil {
 		return "", fmt.Errorf("render plist: %w", err)
 	}
@@ -348,6 +374,10 @@ func mcpServicePath() (string, error) {
 
 // generateMcpPlist renders the LaunchAgent plist XML for the local MCP server.
 func generateMcpPlist(mcpBinPath string, port int) (string, error) {
+	settingsPath, err := serviceSettingsPath()
+	if err != nil {
+		return "", err
+	}
 	ld, err := logDir()
 	if err != nil {
 		return "", err
@@ -360,11 +390,12 @@ func generateMcpPlist(mcpBinPath string, port int) (string, error) {
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, mcpPlistData{
-		Label:   McpLabel,
-		McpPath: mcpBinPath,
-		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
-		LogDir:  ld,
-		Path:    serviceEnvPath(),
+		Label:        McpLabel,
+		McpPath:      mcpBinPath,
+		Addr:         fmt.Sprintf("127.0.0.1:%d", port),
+		LogDir:       ld,
+		Path:         serviceEnvPath(),
+		SettingsPath: settingsPath,
 	}); err != nil {
 		return "", fmt.Errorf("render mcp plist: %w", err)
 	}
@@ -697,12 +728,13 @@ func platformUninstall() error {
 // Rewriting only on a byte difference is deliberate. The plist normally names
 // the same stable staged path every time, so an unconditional write would churn
 // a file launchd watches for no gain.
+//
+// The installed plist is read BEFORE rendering because the render depends on
+// it: a profile baked at install time (BOS-1368) is kept when this shell does
+// not export BOSS_SETTINGS_PATH, so a plain `boss daemon restart` never moves
+// the daemon back to the default settings file. See rewriteServiceSettingsPath.
 func refreshStagedPlist(sourcePath, plistPath string) (string, error) {
 	stagedPath, err := EnsureStaged(sourcePath)
-	if err != nil {
-		return "", err
-	}
-	plist, err := generatePlist(stagedPath)
 	if err != nil {
 		return "", err
 	}
@@ -710,18 +742,37 @@ func refreshStagedPlist(sourcePath, plistPath string) (string, error) {
 	// #nosec G304 -- both callers pass platformServicePath's result: the fixed per-user LaunchAgents plist; non-secret local service state.
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	currentPlist, readErr := os.ReadFile(plistPath)
-	switch {
-	case readErr == nil && bytes.Equal(currentPlist, []byte(plist)):
-		// Preserve the existing file when its content is current.
-		return stagedPath, nil
-	case readErr == nil || os.IsNotExist(readErr):
-		if writeErr := os.WriteFile(plistPath, []byte(plist), 0o600); writeErr != nil {
-			return "", fmt.Errorf("rewrite plist: %w", writeErr)
-		}
-		return stagedPath, nil
-	default:
+	if readErr != nil && !os.IsNotExist(readErr) {
 		return "", fmt.Errorf("read plist before rewrite: %w", readErr)
 	}
+
+	installedSettings := ""
+	if readErr == nil {
+		value, ok := plistSettingsPath(currentPlist)
+		if !ok {
+			return "", fmt.Errorf("%s carries a %s this build cannot read; refusing to rewrite it and drop that profile — reinstall with '%s=<path> boss daemon install --force'",
+				plistPath, ServiceSettingsPathEnv, ServiceSettingsPathEnv)
+		}
+		installedSettings = value
+	}
+	settingsPath, err := rewriteServiceSettingsPath(installedSettings)
+	if err != nil {
+		return "", err
+	}
+
+	plist, err := renderPlist(stagedPath, settingsPath)
+	if err != nil {
+		return "", err
+	}
+
+	if readErr == nil && bytes.Equal(currentPlist, []byte(plist)) {
+		// Preserve the existing file when its content is current.
+		return stagedPath, nil
+	}
+	if writeErr := os.WriteFile(plistPath, []byte(plist), 0o600); writeErr != nil {
+		return "", fmt.Errorf("rewrite plist: %w", writeErr)
+	}
+	return stagedPath, nil
 }
 
 // refreshInstalledDaemon resolves the installed bossd and refreshes the staged
@@ -1379,6 +1430,45 @@ func InstalledServiceEnvPath() (string, bool) {
 	return plistEnvironmentPath(data)
 }
 
+// InstalledServiceSettingsPath returns the BOSS_SETTINGS_PATH recorded in the
+// LaunchAgent plist on disk right now — the settings file the RUNNING daemon
+// was started against. "" means the plist carries no such key, i.e. the
+// default settings file.
+//
+// ok is false when the plist could not be read (including when it is absent)
+// or carries the key with a value this build cannot parse, so "could not tell"
+// is never reported as "default". It deliberately differs from
+// InstalledServiceEnvPath there: an absent PATH is a stale install, whereas an
+// absent BOSS_SETTINGS_PATH is the ordinary default profile.
+func InstalledServiceSettingsPath() (string, bool) {
+	plistPath, err := platformServicePath()
+	if err != nil {
+		return "", false
+	}
+	// #nosec G304 -- platformServicePath returns the fixed per-user LaunchAgents plist; non-secret local service state.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-1368
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		return "", false
+	}
+	return plistSettingsPath(data)
+}
+
+// plistSettingsPath extracts EnvironmentVariables > BOSS_SETTINGS_PATH from
+// plist XML. A plist with no such key is the default profile ("", true). A
+// plist that names the key but whose value did not parse is ("", false): the
+// caller must not treat it as the default, or a rewrite would silently drop the
+// profile it carries.
+func plistSettingsPath(data []byte) (string, bool) {
+	if value, ok := plistEnvironmentValue(data, ServiceSettingsPathEnv); ok {
+		return value, true
+	}
+	if bytes.Contains(data, []byte("<key>"+ServiceSettingsPathEnv+"</key>")) {
+		return "", false
+	}
+	return "", true
+}
+
 // plistEnvironmentPath extracts EnvironmentVariables > PATH from plist XML.
 //
 // The PATH key is looked up ONLY inside the EnvironmentVariables dict, which is
@@ -1386,6 +1476,12 @@ func InstalledServiceEnvPath() (string, bool) {
 // a plist that sets no environment PATH but carries an unrelated <key>PATH</key>
 // elsewhere must report "not found", not that unrelated value.
 func plistEnvironmentPath(data []byte) (string, bool) {
+	return plistEnvironmentValue(data, "PATH")
+}
+
+// plistEnvironmentValue extracts EnvironmentVariables > want from plist XML,
+// scoped to that dict for the reason plistEnvironmentPath gives.
+func plistEnvironmentValue(data []byte, want string) (string, bool) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	for {
 		token, err := decoder.Token()
@@ -1401,7 +1497,7 @@ func plistEnvironmentPath(data []byte) (string, bool) {
 			return "", false
 		}
 		if key == "EnvironmentVariables" {
-			return plistDictStringValue(decoder, "PATH")
+			return plistDictStringValue(decoder, want)
 		}
 	}
 }

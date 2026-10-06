@@ -620,6 +620,32 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	repoName := info.RepoName
 	sessionTitle := info.SessionTitle
 	headSHA := info.HeadSHA
+
+	// Authoritative exponential-backoff gate. Sourced from persisted
+	// last_repair_started_at + last_repair_attempt_count so a daemon
+	// restart can't reset the schedule and let the next sweep fire an
+	// immediate retry — that was the regression behind the 321× counter
+	// on the production Dependabot PRs. The in-memory `m.cooldowns`
+	// fast-path above is just an "already attempted this minute"
+	// short-circuit; this is the real wait. It runs before the review
+	// fingerprint read below, which costs a GitHub call: a session sitting
+	// out a 30-minute backoff would otherwise pay that call on every
+	// one-minute sweep before being skipped.
+	if info.LastRepairAttemptCount > 0 && !info.LastRepairStartedAt.IsZero() {
+		wait := cooldownFor(info.LastRepairAttemptCount, baseCooldown)
+		elapsed := time.Since(info.LastRepairStartedAt)
+		if elapsed < wait {
+			m.logger.Info().
+				Str("session_id", sessionID).
+				Int32("attempt_count", info.LastRepairAttemptCount).
+				Dur("wait", wait).
+				Dur("elapsed", elapsed).
+				Dur("remaining", wait-elapsed).
+				Msg("exponential backoff active, skipping repair")
+			return
+		}
+	}
+
 	reviewFP, reviewFPOk := m.currentReviewFingerprint(repairCtx, info)
 	if headSHA != "" &&
 		info.LastRepairHeadSHA == headSHA &&
@@ -644,28 +670,6 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 			Str("old_review_fingerprint", info.LastRepairReviewFingerprint).
 			Str("new_review_fingerprint", reviewFP).
 			Msg("new review feedback on same rejected head; allowing repair")
-	}
-
-	// Authoritative exponential-backoff gate. Sourced from persisted
-	// last_repair_started_at + last_repair_attempt_count so a daemon
-	// restart can't reset the schedule and let the next sweep fire an
-	// immediate retry — that was the regression behind the 321× counter
-	// on the production Dependabot PRs. The in-memory `m.cooldowns`
-	// fast-path above is just an "already attempted this minute"
-	// short-circuit; this is the real wait.
-	if info.LastRepairAttemptCount > 0 && !info.LastRepairStartedAt.IsZero() {
-		wait := cooldownFor(info.LastRepairAttemptCount, baseCooldown)
-		elapsed := time.Since(info.LastRepairStartedAt)
-		if elapsed < wait {
-			m.logger.Info().
-				Str("session_id", sessionID).
-				Int32("attempt_count", info.LastRepairAttemptCount).
-				Dur("wait", wait).
-				Dur("elapsed", elapsed).
-				Dur("remaining", wait-elapsed).
-				Msg("exponential backoff active, skipping repair")
-			return
-		}
 	}
 
 	// Re-acquire lock to mark as repairing and re-check every guard. The

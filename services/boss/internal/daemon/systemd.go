@@ -84,6 +84,9 @@ RestartSec=5
 TimeoutStopSec=90
 Environment="PATH={{.Path}}"
 Environment=LC_CTYPE=C.UTF-8
+{{- if .SettingsPath}}
+Environment="BOSS_SETTINGS_PATH={{.SettingsPath}}"
+{{- end}}
 
 [Install]
 WantedBy=default.target
@@ -102,21 +105,30 @@ Restart=always
 RestartSec=5
 Environment="PATH={{.Path}}"
 Environment=LC_CTYPE=C.UTF-8
+{{- if .SettingsPath}}
+Environment="BOSS_SETTINGS_PATH={{.SettingsPath}}"
+{{- end}}
 
 [Install]
 WantedBy=default.target
 `
 )
 
+// SettingsPath, on both unit data types, is the BOSS_SETTINGS_PATH the unit
+// starts its process with, rendered QUOTED like PATH. Empty renders no line at
+// all, so a default install is byte-identical to one made before the variable
+// was carried (BOS-1368).
 type unitData struct {
-	BossdPath string
-	Path      string
+	BossdPath    string
+	Path         string
+	SettingsPath string
 }
 
 type mcpUnitData struct {
-	McpPath string
-	Addr    string
-	Path    string
+	McpPath      string
+	Addr         string
+	Path         string
+	SettingsPath string
 }
 
 // serviceEnvPath builds the PATH for BOTH systemd units — bossd and the MCP
@@ -158,13 +170,17 @@ func platformServicePath() (string, error) {
 
 // generateUnit renders the systemd unit file for bossd.
 func generateUnit(bossdPath string) (string, error) {
+	settingsPath, err := serviceSettingsPath()
+	if err != nil {
+		return "", err
+	}
 	tmpl, err := template.New("unit").Parse(unitTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parse unit template: %w", err)
 	}
 
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, unitData{BossdPath: bossdPath, Path: serviceEnvPath()}); err != nil {
+	if err := tmpl.Execute(&buf, unitData{BossdPath: bossdPath, Path: serviceEnvPath(), SettingsPath: settingsPath}); err != nil {
 		return "", fmt.Errorf("render unit: %w", err)
 	}
 
@@ -390,6 +406,10 @@ func mcpServicePath() (string, error) {
 
 // generateMcpUnit renders the systemd unit file for the local MCP server.
 func generateMcpUnit(mcpBinPath string, port int) (string, error) {
+	settingsPath, err := serviceSettingsPath()
+	if err != nil {
+		return "", err
+	}
 	tmpl, err := template.New("mcpUnit").Parse(mcpUnitTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parse mcp unit template: %w", err)
@@ -397,9 +417,10 @@ func generateMcpUnit(mcpBinPath string, port int) (string, error) {
 
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, mcpUnitData{
-		McpPath: mcpBinPath,
-		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
-		Path:    serviceEnvPath(),
+		McpPath:      mcpBinPath,
+		Addr:         fmt.Sprintf("127.0.0.1:%d", port),
+		Path:         serviceEnvPath(),
+		SettingsPath: settingsPath,
 	}); err != nil {
 		return "", fmt.Errorf("render mcp unit: %w", err)
 	}
@@ -669,6 +690,31 @@ func InstalledServiceEnvPath() (string, bool) {
 	return unitEnvironmentPath(string(data))
 }
 
+// InstalledServiceSettingsPath returns the BOSS_SETTINGS_PATH recorded in the
+// bossd unit file on disk right now — the settings file the RUNNING daemon was
+// started against. "" means the unit sets no such variable, i.e. the default
+// settings file.
+//
+// ok is false only when the unit could not be read (including when it is
+// absent), so "could not tell" is never reported as "default". Unlike launchd,
+// nothing on this platform rewrites an installed unit (platformRestart is a
+// bare `systemctl --user restart`), so this reader serves `boss daemon doctor`
+// alone.
+func InstalledServiceSettingsPath() (string, bool) {
+	unitPath, err := platformServicePath()
+	if err != nil {
+		return "", false
+	}
+	// #nosec G304 -- platformServicePath returns the fixed per-user systemd unit path; non-secret local service state.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-1368
+	data, err := os.ReadFile(unitPath)
+	if err != nil {
+		return "", false
+	}
+	value, _ := unitEnvironmentValue(string(data), ServiceSettingsPathEnv)
+	return value, true
+}
+
 // unitEnvironmentPath extracts the PATH from a unit's Environment= line,
 // accepting both the quoted form this package writes and the bare form an
 // older install (or a hand edit) may carry.
@@ -679,14 +725,21 @@ func InstalledServiceEnvPath() (string, bool) {
 // everything after `PATH=` would swallow the following assignments into the
 // path and report a spurious mismatch.
 func unitEnvironmentPath(unit string) (string, bool) {
+	return unitEnvironmentValue(unit, "PATH")
+}
+
+// unitEnvironmentValue extracts the value of one variable from a unit's
+// Environment= lines, with the assignment splitting unitEnvironmentPath
+// describes. ok is false when the variable is absent or empty.
+func unitEnvironmentValue(unit, name string) (string, bool) {
 	for _, line := range strings.Split(unit, "\n") {
 		value, ok := strings.CutPrefix(strings.TrimSpace(line), "Environment=")
 		if !ok {
 			continue
 		}
 		for _, assignment := range splitUnitAssignments(value) {
-			if path, ok := strings.CutPrefix(assignment, "PATH="); ok {
-				return path, path != ""
+			if v, ok := strings.CutPrefix(assignment, name+"="); ok {
+				return v, v != ""
 			}
 		}
 	}

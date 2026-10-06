@@ -2486,10 +2486,15 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		headlessRun = true
 		// Account env sits above proof (disjoint keys today; account wins by
 		// convention, mirroring the interactive tmux precedence account > proof).
-		// There is no managed BOSS_* layer on the headless path. The repo's
-		// stored LINEAR_API_KEY / SENTRY_* secrets are filled beneath the
-		// worktree .env (OverlayWithRepo) so the run authenticates to its own
-		// repo's Linear workspace, not the daemon's ambient one.
+		// There is no managed BOSS_* identity layer on the headless path, but
+		// the unattended markers are layered on top of everything: this
+		// paneless fallback is a detach run nobody is watching, exactly like
+		// its tmux-hosted sibling, so skills keyed on BOSS_UNATTENDED/BOSS_CRON
+		// must take their headless branch here too rather than silently running
+		// interactive. The repo's stored LINEAR_API_KEY / SENTRY_* secrets are
+		// filled beneath the worktree .env (OverlayWithRepo) so the run
+		// authenticates to its own repo's Linear workspace, not the daemon's
+		// ambient one.
 		headlessAccountEnv, accountErr := l.resolveAccountEnv(ctx, session)
 		if accountErr != nil {
 			// BOS-1142: refuse rather than start the headless run on the agent
@@ -2499,7 +2504,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			// it, not the preflight rollback.
 			return fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr))
 		}
-		headlessEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(headlessAccountEnv, l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
+		headlessEnv := mergeEnv(unattendedMarkerEnv(), resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(headlessAccountEnv, l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath))
 		// Hand the run the loopback question-signal context (BOS-486). The
 		// token is minted BEFORE the spawn — it has to be in the child's env —
 		// and bound to the agent session id the plugin resolves AFTER it, which
@@ -3138,7 +3143,7 @@ func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, 
 		HeadBranch: session.BranchName,
 		BaseBranch: session.BaseBranch,
 		Title:      title,
-		Body:       session.Plan,
+		Body:       draftPRBody(session.Plan, session.TrackerID),
 		Draft:      true,
 	})
 	if err != nil {
@@ -3181,6 +3186,90 @@ func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, 
 	}
 
 	return nil
+}
+
+// issueKeyPattern matches an issue-identifier-shaped token (BOS-865, ABC-12):
+// the shape tracker integrations scan PR descriptions for.
+var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}\b`)
+
+// draftPRBody returns the plan as the bootstrap draft PR's description with
+// every issue key OTHER than the session's own tracker id defused (BOS-1363).
+//
+// Linear's GitHub integration links a PR to every issue named after a magic
+// word in its description ("part of BOS-865", "Fixes ABC-12") and then moves
+// each linked issue through the team's PR workflow, Done issues included. The
+// plan is the prompt or the full tracker description, so any sibling ticket it
+// mentions would be dragged back to In Progress. Replacing the key's ASCII
+// hyphen with U+2011 NON-BREAKING HYPHEN renders identically on GitHub but no
+// longer matches a KEY-123 pattern. The session's own ticket (matched
+// case-insensitively) stays linkable; with no tracker id every key is defused,
+// since the title and branch carry the intended ticket anyway. Text without a
+// key comes back byte-identical.
+//
+// Fenced code blocks (``` or ~~~), inline code spans and non-Linear URLs are
+// left intact: rewriting a key-shaped token there (SHA-256 in a command,
+// docs/ABC-12.md in a GitHub link) would break copy-paste and links. Two kinds
+// of span are still defused, because each links an issue after a magic word
+// just like a bare key: an inline code span holding nothing but one key
+// ("Fixes `ABC-12`"), and a linear.app URL (which then no longer resolves).
+func draftPRBody(plan string, trackerID *string) string {
+	own := ""
+	if trackerID != nil {
+		own = strings.TrimSpace(*trackerID)
+	}
+	defuse := func(text string) string {
+		return issueKeyPattern.ReplaceAllStringFunc(text, func(key string) string {
+			if own != "" && strings.EqualFold(key, own) {
+				return key
+			}
+			return strings.Replace(key, "-", "\u2011", 1)
+		})
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range protectedSpanPattern.FindAllStringIndex(plan, -1) {
+		b.WriteString(defuse(plan[last:loc[0]]))
+		span := plan[loc[0]:loc[1]]
+		if isLinearURL(span) || isKeyOnlyCodeSpan(span) {
+			span = defuse(span)
+		}
+		b.WriteString(span)
+		last = loc[1]
+	}
+	b.WriteString(defuse(plan[last:]))
+	return b.String()
+}
+
+// protectedSpanPattern matches the spans draftPRBody leaves alone: a fenced
+// code block (``` or ~~~), an inline code span (single or double backtick),
+// or a URL (up to whitespace or a closing `)`, `]` or `>`). Fences come first
+// so an inline alternative never splits a block.
+var protectedSpanPattern = regexp.MustCompile("(?s:```.*?```)|(?s:~~~.*?~~~)|``[^\\n]*?``|`[^`\\n]*`|https?://[^\\s)\\]>]+")
+
+// keyOnlyPattern matches a string that is exactly one issue key.
+var keyOnlyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}$`)
+
+// isKeyOnlyCodeSpan reports whether span is an inline code span (not a fence)
+// whose trimmed content is exactly one issue key, e.g. `BOS-865`.
+func isKeyOnlyCodeSpan(span string) bool {
+	if !strings.HasPrefix(span, "`") || strings.HasPrefix(span, "```") {
+		return false
+	}
+	return keyOnlyPattern.MatchString(strings.TrimSpace(strings.Trim(span, "`")))
+}
+
+// isLinearURL reports whether span is an http(s) URL whose host is linear.app
+// or a subdomain of it. Code spans never qualify, even when they contain one.
+func isLinearURL(span string) bool {
+	if !strings.HasPrefix(span, "http://") && !strings.HasPrefix(span, "https://") {
+		return false
+	}
+	_, rest, _ := strings.Cut(span, "://")
+	host := strings.ToLower(rest)
+	if i := strings.IndexAny(host, "/?#:"); i >= 0 {
+		host = host[:i]
+	}
+	return host == "linear.app" || strings.HasSuffix(host, ".linear.app")
 }
 
 func (l *Lifecycle) draftPRTitle(ctx context.Context, session *models.Session) string {

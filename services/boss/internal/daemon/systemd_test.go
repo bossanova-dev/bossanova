@@ -790,3 +790,144 @@ func TestPlatformEnsureRunningReportsStartMode(t *testing.T) {
 		}
 	})
 }
+
+// --- BOS-1368: a non-default BOSS_SETTINGS_PATH survives into the user units
+
+// systemdSettingsTail is the exact text between the last Environment= line and
+// the [Install] section of a default unit. Asserting it pins the unset render
+// byte-identical to the template before BOS-1368: the conditional block must
+// leave no stray blank line behind.
+const systemdSettingsTail = "Environment=LC_CTYPE=C.UTF-8\n\n[Install]\n"
+
+func TestGenerateUnitsWithoutSettingsPathAreUnchanged(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+	t.Setenv(ServiceSettingsPathEnv, "")
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+	mcpUnit, err := generateMcpUnit("/usr/local/bin/mcp", DefaultMcpPort)
+	if err != nil {
+		t.Fatalf("generateMcpUnit: %v", err)
+	}
+	for name, rendered := range map[string]string{"bossd": unit, "mcp": mcpUnit} {
+		if strings.Contains(rendered, ServiceSettingsPathEnv) {
+			t.Errorf("%s unit carries %s with the variable unset:\n%s", name, ServiceSettingsPathEnv, rendered)
+		}
+		if !strings.Contains(rendered, systemdSettingsTail) {
+			t.Errorf("%s unit no longer renders byte-identically around the Environment= lines:\n%s", name, rendered)
+		}
+	}
+}
+
+func TestGenerateUnitsCarryANonDefaultSettingsPath(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv(ServiceSettingsPathEnv, "/abs/x/settings.json")
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+	mcpUnit, err := generateMcpUnit("/usr/local/bin/mcp", DefaultMcpPort)
+	if err != nil {
+		t.Fatalf("generateMcpUnit: %v", err)
+	}
+	want := "Environment=LC_CTYPE=C.UTF-8\nEnvironment=\"BOSS_SETTINGS_PATH=/abs/x/settings.json\"\n\n[Install]\n"
+	for name, rendered := range map[string]string{"bossd": unit, "mcp": mcpUnit} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("%s unit does not carry the quoted settings path:\n%s", name, rendered)
+		}
+		if got, ok := unitEnvironmentValue(rendered, ServiceSettingsPathEnv); !ok || got != "/abs/x/settings.json" {
+			t.Errorf("%s unit reads back as (%q, %v), want the baked path", name, got, ok)
+		}
+		for _, line := range strings.Split(rendered, "\n") {
+			if line != "" && !strings.HasPrefix(line, "[") && !strings.Contains(line, "=") {
+				t.Errorf("%s unit contains a non-directive line %q", name, line)
+			}
+		}
+	}
+}
+
+// TestGenerateUnitQuotesASettingsPathWithASpace: the value is quoted like
+// PATH, so a legal directory with a space stays one assignment.
+func TestGenerateUnitQuotesASettingsPathWithASpace(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv(ServiceSettingsPathEnv, "/abs/my profile/settings.json")
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+	if got, ok := unitEnvironmentValue(unit, ServiceSettingsPathEnv); !ok || got != "/abs/my profile/settings.json" {
+		t.Errorf("settings path reads back as (%q, %v), want it intact", got, ok)
+	}
+}
+
+func TestSystemdInstalledServiceSettingsPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	stubServiceSettings(t, config.Settings{})
+
+	if got, ok := InstalledServiceSettingsPath(); ok {
+		t.Errorf("InstalledServiceSettingsPath() with no unit = (%q, true), want ok=false", got)
+	}
+
+	unitPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
+	}
+	for _, want := range []string{"", "/abs/x/settings.json"} {
+		t.Setenv(ServiceSettingsPathEnv, want)
+		unit, err := generateUnit("/usr/local/bin/bossd")
+		if err != nil {
+			t.Fatalf("generateUnit: %v", err)
+		}
+		if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+			t.Fatalf("write unit: %v", err)
+		}
+		if got, ok := InstalledServiceSettingsPath(); !ok || got != want {
+			t.Errorf("InstalledServiceSettingsPath() = (%q, %v), want (%q, true)", got, ok, want)
+		}
+	}
+}
+
+func TestSystemdInstallRefusesAnUnbakeableSettingsPathWithoutWritingTheUnit(t *testing.T) {
+	for _, env := range []string{"rel/settings.json", "/abs/a\\b/settings.json"} {
+		t.Run(env, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+			stubServiceSettings(t, config.Settings{})
+			t.Setenv(ServiceSettingsPathEnv, env)
+
+			if err := platformInstall("/usr/local/bin/bossd", false); err == nil || !strings.Contains(err.Error(), ServiceSettingsPathEnv) {
+				t.Fatalf("platformInstall error = %v, want a %s refusal", err, ServiceSettingsPathEnv)
+			}
+			if err := platformMcpInstall("/usr/local/bin/mcp", DefaultMcpPort, false); err == nil {
+				t.Error("platformMcpInstall accepted an unbakeable settings path")
+			}
+			for _, resolve := range []func() (string, error){platformServicePath, mcpServicePath} {
+				p, err := resolve()
+				if err != nil {
+					t.Fatalf("resolve unit path: %v", err)
+				}
+				if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
+					t.Errorf("a refused install left a unit at %s", p)
+				}
+			}
+		})
+	}
+}

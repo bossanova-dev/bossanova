@@ -95,8 +95,9 @@
 //     separate from `planDependencyEdges` so that function's classify-anything
 //     contract still holds for every other caller.
 //   - `dependencyScanVerdict(result)` names the outcome — `linked`,
-//     `related-only`, `no-dependencies` or `could-not-evaluate` (any note reason
-//     in `COULD_NOT_EVALUATE_REASONS`) — and whether it is worth a description save.
+//     `related-only`, `no-dependencies`, `no-candidates` (a complete set held only
+//     the subject) or `could-not-evaluate` (any note reason in
+//     `COULD_NOT_EVALUATE_REASONS`) — and whether it is worth a description save.
 //   - `transitiveBlockWarnings(input)` detects, in BOTH directions, a surviving
 //     blocking write whose other side is itself entangled in open blocking work.
 
@@ -568,7 +569,13 @@ function braceAreaTokens(token, limit = BRACE_EXPANSION_LIMIT) {
  * so the classifier degrades to the older admit-any-slash behaviour rather than
  * rejecting every area at once.
  */
-function classifyAreaToken(token, moduleRoots, marked, leadPosition = false) {
+function classifyAreaToken(
+  token,
+  moduleRoots,
+  marked,
+  leadPosition = false,
+  rootFiles = new Set(),
+) {
   // A CommonMark backslash escape comes FIRST: a tracker that re-serializes
   // markdown writes `services/x/public/\_redirects`, an area no changed-file path
   // can ever equal. A backslash before ASCII punctuation can never be part of a
@@ -641,6 +648,12 @@ function classifyAreaToken(token, moduleRoots, marked, leadPosition = false) {
   // fabrication this scan exists to close: "so the web and services teams share
   // one shape" contributed `web` and `services` as areas, which `areasOverlap`
   // then containment-matched against every file beneath them.
+  //
+  // A KNOWN root file (a blob the caller read from the repo's own tree) is tested
+  // first and needs no file extension — `Makefile` has none, and the tree already
+  // proves it is a file. Marked or a split lead, it is a change site; anywhere
+  // else it is REPORTED rather than dropped to `{}`, so a planner code-marks it.
+  if (rootFiles.has(value)) return marked || leadPosition ? { area: value } : { unresolved: value }
   if (moduleRoots.has(value)) return marked || (named && leadPosition) ? { area: value } : {}
   // The directory a one-level glob named, under a root the caller never declared.
   // Reported, never guessed at — see `globCollapsedToWord`.
@@ -679,7 +692,7 @@ function noEditDeclaration(entry, split) {
   )
 }
 
-function areasFromLines(lines, moduleRoots, allowLeadFiles = true) {
+function areasFromLines(lines, moduleRoots, allowLeadFiles = true, rootFiles = new Set()) {
   const seenAreas = new Set()
   const seenUnresolved = new Set()
   const areas = []
@@ -692,7 +705,7 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true) {
     const outcomes = (part, leadPosition = false) =>
       entryTokens(part).flatMap(({ value, marked }) =>
         braceAreaTokens(value).map((expanded) =>
-          classifyAreaToken(expanded, moduleRoots, marked, leadPosition),
+          classifyAreaToken(expanded, moduleRoots, marked, leadPosition, rootFiles),
         ),
       )
     const lead = split ? outcomes(split.lead, allowLeadFiles) : []
@@ -770,9 +783,12 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true) {
  *
  * @param {object} config resolved skill config (config-first, like every plan parser)
  * @param {string} description the ticket/plan description
- * @param {{moduleRoots?: string[], keyChangesHeading?: string}} [options]
+ * @param {{moduleRoots?: string[], rootFiles?: string[], keyChangesHeading?: string}} [options]
  *   `moduleRoots` admits bare, slash-free tokens (a repo's top-level module names)
- *   as areas; `keyChangesHeading` overrides the heading resolved from the contract.
+ *   as areas; `rootFiles` names the repo's root-level FILES (blobs, e.g. from
+ *   `git ls-tree HEAD`): one is an area when code-marked or a split list-item lead
+ *   and `unresolved` anywhere else, never silently dropped; `keyChangesHeading`
+ *   overrides the heading resolved from the contract.
  * @returns {{areas: string[], unresolved: string[], referenced: string[], arealessEntries: string[], source: 'key-changes'|'fallback-text'|'none'}}
  *   `source` distinguishes THREE outcomes that must never be conflated: the
  *   section was parsed (`key-changes`), the section was absent so the whole
@@ -802,11 +818,14 @@ function areasFromLines(lines, moduleRoots, allowLeadFiles = true) {
  */
 export function extractKeyChangeAreas(config, description, options = {}) {
   assertConfigFirst(config, 'extractKeyChangeAreas')
-  const moduleRoots = new Set(
-    (Array.isArray(options.moduleRoots) ? options.moduleRoots : [])
-      .map((root) => text(root).trim().toLowerCase())
-      .filter((root) => root !== ''),
-  )
+  const lowerSet = (list) =>
+    new Set(
+      (Array.isArray(list) ? list : [])
+        .map((root) => text(root).trim().toLowerCase())
+        .filter((root) => root !== ''),
+    )
+  const moduleRoots = lowerSet(options.moduleRoots)
+  const rootFiles = lowerSet(options.rootFiles)
   const body = text(description)
   const heading = keyChangesHeading(config, options.keyChangesHeading)
   const section = heading
@@ -815,14 +834,14 @@ export function extractKeyChangeAreas(config, description, options = {}) {
 
   if (!section) {
     const lines = scanFences(body).lines.map((entry) => entry.line)
-    return { ...areasFromLines(lines, moduleRoots, false), source: 'fallback-text' }
+    return { ...areasFromLines(lines, moduleRoots, false, rootFiles), source: 'fallback-text' }
   }
 
   const lines = scanFences(section.bodyLines.join('\n')).lines.map((entry) => entry.line)
   if (!lines.some((line) => line.trim() !== '')) {
     return { areas: [], unresolved: [], referenced: [], arealessEntries: [], source: 'none' }
   }
-  return { ...areasFromLines(lines, moduleRoots), source: 'key-changes' }
+  return { ...areasFromLines(lines, moduleRoots, true, rootFiles), source: 'key-changes' }
 }
 
 // ---------------------------------------------------------------------------
@@ -1424,8 +1443,14 @@ function sameEpicNote(subject, skipped) {
  * @param {Record<string, object[]>} [input.childrenByParentId] children of an epic
  *   parent, when the caller has already fetched them: supplying them expands the
  *   parent in place; omitting them reports the parent for expansion instead
+ * @param {boolean} [input.candidateSetComplete] `candidates` is a complete scan of
+ *   every schedulable state (as `fetch-candidates` writes by default). An epic
+ *   parent with no supplied children then reads them from the set itself
+ *   (`expansion: 'in-set'`), and comparing nothing is a clean empty backlog rather
+ *   than a `no-candidates-compared` warning. Absent/false keeps the conservative
+ *   behaviour for a hand-built set.
  * @returns {{edges: object[], skipped: object[], notes: object[], questions: object[], compared: number,
- *   candidatesWithoutAreas: number}}
+ *   candidatesWithoutAreas: number, candidateSetComplete: boolean}}
  *   `candidatesWithoutAreas` counts the classified candidates (same-epic members and
  *   rung-1 rejections excluded) that contributed no area; when it equals every
  *   classified candidate, a `no-candidate-areas` warning says the scan could not
@@ -1434,9 +1459,13 @@ function sameEpicNote(subject, skipped) {
  *   rejections (the subject itself, a caller-excluded id) are not counted — so a
  *   set holding nothing else reports "could not evaluate" (compared 0, plus a
  *   warning note) rather than the indistinguishable "evaluated, found no
- *   dependencies". Each epic-parent entry in `skipped` also carries `expansion`
- *   (`'pending' | 'supplied' | 'depth-capped'`), which separates the two ways
- *   `expandChildren: false` is reached.
+ *   dependencies" — unless `candidateSetComplete` says the set is the whole
+ *   schedulable backlog, when compared 0 is an answer and no warning is added.
+ *   Each epic-parent entry in `skipped` also carries `expansion` (`'pending' |
+ *   'supplied' | 'in-set' | 'depth-capped'`), which separates the ways
+ *   `expandChildren: false` is reached; an `'in-set'` entry also names its
+ *   `children`. Only `'pending'` and `'depth-capped'` keep the `epic-parent` note —
+ *   it is an instruction, and for the other two the children's records carry it.
  */
 export function planDependencyEdges(input = {}) {
   const {
@@ -1448,6 +1477,7 @@ export function planDependencyEdges(input = {}) {
     maxExpansionDepth = DEFAULT_MAX_EXPANSION_DEPTH,
     epicLabel,
   } = input
+  const candidateSetComplete = input.candidateSetComplete === true
   const subjectAreas = Array.isArray(input.subjectAreas)
     ? input.subjectAreas
     : Array.isArray(subject.areas)
@@ -1598,12 +1628,23 @@ export function planDependencyEdges(input = {}) {
         questions: [],
         compared,
         candidatesWithoutAreas,
+        candidateSetComplete,
       }
     }
     if (classified.reason === 'epic-parent') {
       const parentKey = text(issue?.id).trim()
       const fetched = children[parentKey] ?? children[text(issue?.identifier).trim()] ?? null
       const supplied = Array.isArray(fetched)
+      // A complete state scan already holds every child that could produce an edge
+      // (one outside the schedulable states never can), so a fetch-and-re-run adds
+      // nothing: read the children off the set instead. They are queued already.
+      const parentAliases = issueAliases(issue)
+      const inSet =
+        !supplied && candidateSetComplete
+          ? (Array.isArray(candidates) ? candidates : []).filter((row) =>
+              parentAliases.includes(epicParentKey(row)),
+            )
+          : null
       const withinDepth = depth < maxExpansionDepth
       if (withinDepth && supplied) {
         // Children re-enter at rung 1 — they are ordinary candidates from here.
@@ -1620,8 +1661,32 @@ export function planDependencyEdges(input = {}) {
       // already expanded the parent, `depth-capped` means the cap stopped it and a
       // branch of the graph went unexamined. Collapsed onto one boolean, a capped
       // parent is silently indistinguishable from a fully handled one.
-      const expansion = supplied ? 'supplied' : withinDepth ? 'pending' : 'depth-capped'
-      skipped.push({ ...record, expandChildren: withinDepth && !supplied, expansion, depth })
+      //
+      // `in-set` is the third way: the children were read off a complete candidate
+      // set. For it and `supplied` the `epic-parent` note is no longer an
+      // instruction — the children's own records carry the outcome — so it is
+      // dropped rather than left to earn a second description save.
+      if (inSet) {
+        skipped.push({
+          ...record,
+          note: null,
+          expandChildren: false,
+          expansion: 'in-set',
+          children: inSet.map((row) => text(row?.identifier).trim() || text(row?.id).trim()),
+          depth,
+        })
+        continue
+      }
+      // The cap wins: supplied children past it were never queued, so reporting
+      // `supplied` (and dropping the note) would make a capped parent look handled.
+      const expansion = !withinDepth ? 'depth-capped' : supplied ? 'supplied' : 'pending'
+      skipped.push({
+        ...record,
+        note: withinDepth && supplied ? null : record.note,
+        expandChildren: withinDepth && !supplied,
+        expansion,
+        depth,
+      })
       continue
     }
     if (classified.edge === 'none') {
@@ -1640,15 +1705,19 @@ export function planDependencyEdges(input = {}) {
   ]
   const questions = [...edges, ...skipped].map((entry) => entry.question).filter(Boolean)
   if (compared === 0) {
-    notes.push(
-      note(
-        'warning',
-        'risks',
-        issueLabel(subject),
-        'no-candidates-compared',
-        `No candidates were evaluated for ${issueLabel(subject)}, so this run found no dependencies because it compared nothing — not because none exist. Re-run the candidate fetch before treating the dependency line as complete.`,
-      ),
-    )
+    // A complete candidate set that held nothing but the subject is an empty
+    // backlog, answered — not a fetch to re-run.
+    if (!candidateSetComplete) {
+      notes.push(
+        note(
+          'warning',
+          'risks',
+          issueLabel(subject),
+          'no-candidates-compared',
+          `No candidates were evaluated for ${issueLabel(subject)}, so this run found no dependencies because it compared nothing — not because none exist. Re-run the candidate fetch before treating the dependency line as complete.`,
+        ),
+      )
+    }
   } else if (
     comparedReasons.length === compared &&
     comparedReasons.every((reason) => reason === 'downgraded-unknown-state')
@@ -1718,7 +1787,15 @@ export function planDependencyEdges(input = {}) {
       ),
     )
   }
-  return { edges, skipped, notes, questions, compared, candidatesWithoutAreas }
+  return {
+    edges,
+    skipped,
+    notes,
+    questions,
+    compared,
+    candidatesWithoutAreas,
+    candidateSetComplete,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1883,14 +1960,17 @@ export function validateDependencyScanInput(input) {
  * is never read off a result that could not evaluate.
  *
  * @param {object} result a `planDependencyEdges` return value
- * @returns {{verdict: 'could-not-evaluate'|'linked'|'related-only'|'no-dependencies',
+ * @returns {{verdict: 'could-not-evaluate'|'no-candidates'|'linked'|'related-only'|'no-dependencies',
  *   compared: number, edges: number, relatedTo: number, reasons: string[],
  *   recordToDescription: boolean}}
  *   `edges` counts every edge, `relatedTo` the non-blocking ones. `reasons` lists
- *   the could-not-evaluate reasons present, sorted. `compared` of 0 is always
- *   could-not-evaluate. `recordToDescription` is false when nothing but the
- *   consolidated same-epic planning note came back — that note alone does not
- *   earn a second description save.
+ *   the could-not-evaluate reasons present, sorted. `compared` of 0 is
+ *   could-not-evaluate unless the result says `candidateSetComplete`: then it is
+ *   `no-candidates` — a clean empty backlog with nothing to record — provided no
+ *   other could-not-evaluate reason (an unresolved or arealess subject) is
+ *   present. `recordToDescription` is false when nothing but the consolidated
+ *   same-epic planning note came back — that note alone does not earn a second
+ *   description save.
  */
 export function dependencyScanVerdict(result) {
   const r = result && typeof result === 'object' ? result : {}
@@ -1904,16 +1984,19 @@ export function dependencyScanVerdict(result) {
       .map((entry) => entry.reason)
       .filter((reason) => COULD_NOT_EVALUATE_REASONS.includes(reason)),
   )
-  if (compared <= 0) reasons.add('no-candidates-compared')
+  const complete = r.candidateSetComplete === true
+  if (compared <= 0 && !complete) reasons.add('no-candidates-compared')
   const relatedTo = edges.filter((entry) => entry.edge === 'relatedTo').length
   const verdict =
     reasons.size > 0
       ? 'could-not-evaluate'
-      : edges.some((entry) => entry.write)
-        ? 'linked'
-        : relatedTo > 0
-          ? 'related-only'
-          : 'no-dependencies'
+      : compared <= 0
+        ? 'no-candidates'
+        : edges.some((entry) => entry.write)
+          ? 'linked'
+          : relatedTo > 0
+            ? 'related-only'
+            : 'no-dependencies'
   const substantive = notes.some(
     (entry) => !(entry.reason === 'same-epic-member' && entry.severity === 'info'),
   )

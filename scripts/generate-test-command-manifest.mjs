@@ -24,6 +24,7 @@ const defaultRootTargets = [
   'test-public-mirror',
   'test-web-e2e',
   'test-warehouse',
+  'test-hermes-plugin',
 ]
 
 // Hand-curated: the web suite is npm-script driven and cannot be derived from go.mod layout.
@@ -226,6 +227,10 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     // Same rule as the BOS-768 block above: this file is byte-for-byte generated, so
     // prose belongs here and nowhere else.
     '`services/warehouse` is a uv-managed dbt-postgres project, not a Go module, so no module target covers it. `make test-warehouse` runs `services/warehouse/scripts/test.sh` against a throwaway Postgres: it applies the real bosso goose migrations, grants the `warehouse_ci` role its reads minus the withheld credential columns, runs the Python unit and denial-probe tests with `WAREHOUSE_REQUIRE_DB=1` (so they fail rather than skip without a database), then `dbt parse`, `dbt build` as that role, and the schema-placement check. Like `make test-bosso-postgres`, it starts the test container only when `WAREHOUSE_TEST_ADMIN_URL` is not already supplied, and `BOSSO_TEST_PG_PORT` moves it off a taken 5432. The database-free unit tests alone are `cd services/warehouse && uv run python -m unittest discover -s tests/unit -t . -v`. `.github/workflows/test-warehouse.yml` runs the same script on a push touching the project, the bosso migrations or the withheld-column list, and the affected selector routes those paths to `test-warehouse` locally.',
+    '',
+    '### The Hermes plugin',
+    '',
+    '`services/boss/internal/hermes/plugin` is the native Hermes Agent plugin the `boss` binary embeds: standard-library Python with no syntax newer than 3.10, so no Go target runs its tests. `make test-hermes-plugin` runs its `unittest` suite (`plugin/tests/`) against a fake stdio MCP server — registration without I/O, tool round trips, error mapping, restart after a crash, timeouts and config precedence — and needs only `python3`. The Go renderer beside it (`internal/hermes`, which embeds the plugin) stays in `make test-boss`. `.github/workflows/test-hermes-plugin.yml` runs the suite on Python 3.10 on a push touching the plugin, and the affected selector routes the plugin directory to `test-hermes-plugin` (plus `test-boss`, because the files are embedded) locally.',
     '',
   ]
 

@@ -91,7 +91,7 @@ test('the find-or-create and [#N]-injection spine is present', () => {
     '--body-file "$PR_BODY" >&2',
     '"$ADD_PR_NUMBERS" "$PR_NUMBER" >&2',
     'git push --force-with-lease origin "$SESSION_BRANCH" >&2',
-    'test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})"',
+    'test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BRANCH")"',
   ]) {
     assert.ok(SOURCE.includes(token), `sweep-pr-gate.sh must contain: ${token}`)
   }
@@ -214,9 +214,13 @@ case "$1" in
       *) if [ -n "$STUB_PRE_EXISTING" ]; then printf '%s\\n' "$STUB_PRE_EXISTING" | sed 's/^/deadbee /'; fi ;;
     esac ;;
   rev-parse)
+    # The upstream deliberately answers the BASE tip: a bossd branch whose upstream is still
+    # origin/main (BOS-1363) must not decide the push-landed check, only the pushed ref may.
     case "$2" in
       HEAD) echo "$STUB_LOCAL_HEAD" ;;
-      *)    echo "$STUB_REMOTE_HEAD" ;;
+      "refs/remotes/origin/$SESSION_BRANCH") echo "$STUB_REMOTE_HEAD" ;;
+      "@{u}"|"@{upstream}") echo basetip ;;
+      *) echo "fatal: ambiguous argument '$2'" >&2; exit 128 ;;
     esac ;;
   push)
     if [ "$STUB_PUSH_FAILS" = true ]; then
@@ -362,9 +366,20 @@ test('behaviour: a push that does not land aborts before readying the PR', () =>
   // A rejected --force-with-lease (someone else pushed the branch) must not end with a ready
   // PR whose remote tip is not the commit set this gate validated.
   const { code, stdout, calls } = runStubbed({ pushLands: false })
-  assert.notEqual(code, 0, 'HEAD != @{u} must abort the gate')
+  assert.notEqual(code, 0, 'HEAD != origin/$SESSION_BRANCH must abort the gate')
   assert.equal(stdout, '')
   assert.doesNotMatch(calls, /pr ready/, 'a PR is never readied on an unlanded push')
+})
+
+test('behaviour: the push-landed check reads the pushed ref, not the upstream', () => {
+  // BOS-1363: bossd used to create session branches tracking origin/<base>, so @{u} named the
+  // base and the check failed after a push that landed. The stub answers @{u} with the base tip,
+  // so the happy path only passes when the gate reads refs/remotes/origin/$SESSION_BRANCH.
+  const { code, stdout, calls } = runStubbed()
+  assert.equal(code, 0)
+  assert.equal(stdout, '7\n')
+  assert.match(calls, /^git rev-parse refs\/remotes\/origin\/feature$/m)
+  assert.doesNotMatch(calls, /@\{u(pstream)?\}/, 'the gate must not consult the upstream')
 })
 
 test('behaviour: a failing git log aborts instead of readying an untagged PR', () => {

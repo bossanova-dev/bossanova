@@ -1002,9 +1002,12 @@ async function readIssueAttachments({ apiKey, linearRequest, issueId }) {
  * - The declared size is the BYTE length of what `readFile` returns for the
  *   exact file handed to `put`.
  * - Every header `fileUpload` returns is passed to `put`.
- * - The create is sent once, as a write. If it throws or is not confirmed, the
- *   outcome is settled by re-reading the attachments for the exact title — never
- *   by re-sending — and a create the read-back cannot find re-throws.
+ * - The create is sent as a write. If it throws or is not confirmed, the outcome
+ *   is settled by re-reading the attachments for the exact title — a create the
+ *   read-back finds is never re-sent. One the read-back proves ABSENT re-runs the
+ *   whole prepare → PUT → create leg once (a fresh signed upload; the first URL is
+ *   not reused), which is the classifier's `indeterminate` action; a second
+ *   absence re-throws.
  *
  * @returns {Promise<{status: 'skipped'|'created', issueId: string, title: string,
  *   settledBy?: 'response'|'read-back'}>}
@@ -1034,47 +1037,57 @@ export async function attachSourceNotes({
     : Buffer.byteLength(String(content ?? ''), 'utf8')
   if (size === 0) throw new Error(`attachSourceNotes refuses an empty source notes file: ${file}`)
 
-  const upload = await linearRequest({
-    apiKey,
-    query: FILE_UPLOAD_MUTATION,
-    variables: { contentType, filename: filename || `${issueId}-source-notes.md`, size },
-  })
-  const uploadFile = upload?.fileUpload?.uploadFile
-  if (
-    upload?.fileUpload?.success !== true ||
-    typeof uploadFile?.uploadUrl !== 'string' ||
-    typeof uploadFile?.assetUrl !== 'string' ||
-    !Array.isArray(uploadFile?.headers)
-  ) {
-    throw new Error(`fileUpload for ${issueId} returned no usable signed upload`)
-  }
-  const headers = { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000' }
-  for (const header of uploadFile.headers) {
-    if (typeof header?.key !== 'string' || typeof header?.value !== 'string') {
-      throw new Error(`fileUpload for ${issueId} returned a malformed header`)
-    }
-    headers[header.key] = header.value
-  }
-  await put({ file, uploadURL: uploadFile.uploadUrl, headers })
-
+  // One prepare → PUT → create leg. Resolves `true` when the response confirms the exact title,
+  // `false` when it does not, and throws only for a prepare/PUT defect; a create failure is
+  // recorded in `createError` for the read-back to settle.
   let createError = null
-  try {
-    const created = await linearRequest({
+  const sendLeg = async () => {
+    const upload = await linearRequest({
       apiKey,
-      query: ATTACHMENT_CREATE_MUTATION,
-      variables: { input: { issueId: before.uuid, title, url: uploadFile.assetUrl } },
-      operation: 'write',
+      query: FILE_UPLOAD_MUTATION,
+      variables: { contentType, filename: filename || `${issueId}-source-notes.md`, size },
     })
-    const result = created?.attachmentCreate
-    if (result?.success === true && result?.attachment?.title === title) {
-      return { status: 'created', issueId, title, settledBy: 'response' }
+    const uploadFile = upload?.fileUpload?.uploadFile
+    if (
+      upload?.fileUpload?.success !== true ||
+      typeof uploadFile?.uploadUrl !== 'string' ||
+      typeof uploadFile?.assetUrl !== 'string' ||
+      !Array.isArray(uploadFile?.headers)
+    ) {
+      throw new Error(`fileUpload for ${issueId} returned no usable signed upload`)
     }
-  } catch (error) {
-    createError = error
+    const headers = { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000' }
+    for (const header of uploadFile.headers) {
+      if (typeof header?.key !== 'string' || typeof header?.value !== 'string') {
+        throw new Error(`fileUpload for ${issueId} returned a malformed header`)
+      }
+      headers[header.key] = header.value
+    }
+    await put({ file, uploadURL: uploadFile.uploadUrl, headers })
+
+    createError = null
+    try {
+      const created = await linearRequest({
+        apiKey,
+        query: ATTACHMENT_CREATE_MUTATION,
+        variables: { input: { issueId: before.uuid, title, url: uploadFile.assetUrl } },
+        operation: 'write',
+      })
+      const result = created?.attachmentCreate
+      return result?.success === true && result?.attachment?.title === title
+    } catch (error) {
+      createError = error
+      return false
+    }
   }
-  const after = await readIssueAttachments({ apiKey, linearRequest, issueId })
-  if (after.titles.includes(title)) {
-    return { status: 'created', issueId, title, settledBy: 'read-back' }
+
+  const MAX_LEGS = 2
+  for (let leg = 1; leg <= MAX_LEGS; leg += 1) {
+    if (await sendLeg()) return { status: 'created', issueId, title, settledBy: 'response' }
+    const after = await readIssueAttachments({ apiKey, linearRequest, issueId })
+    if (after.titles.includes(title)) {
+      return { status: 'created', issueId, title, settledBy: 'read-back' }
+    }
   }
   throw new Error(
     `attachmentCreate for ${issueId} did not land ${JSON.stringify(title)}` +

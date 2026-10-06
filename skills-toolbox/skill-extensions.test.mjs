@@ -1158,8 +1158,10 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
   // PURPOSE: `KNOWN_EXTENSION_ROLES` and `ROLE_SCHEMAS` are now DERIVED from one `EXTENSION_ROLES`
   // table, so the drift that let discovery accept `draft`/`methodology`/`agent-driver` while
   // `validateResult` answered `unknown role` is no longer expressible.
+  // BOS-1376 (2026-10-06): completion expands the validated role registry to ten.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
+    'completion',
     'draft',
     'knowledge',
     'lens',

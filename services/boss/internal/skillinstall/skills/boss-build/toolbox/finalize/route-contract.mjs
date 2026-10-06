@@ -18,6 +18,7 @@ export const TERMINAL_ROUTES = Object.freeze({
     'claim-deleted',
     'notes-before-lock-release',
     'stop-hooks-removed',
+    'completion-phase-done',
     'lock-released',
   ]),
   PARTIAL: Object.freeze([
@@ -27,18 +28,21 @@ export const TERMINAL_ROUTES = Object.freeze({
     'claim-deleted',
     'notes-before-lock-release',
     'stop-hooks-removed',
+    'completion-phase-done',
     'lock-released',
   ]),
   BLOCKED: Object.freeze([
     'claim-deleted',
     'notes-before-lock-release',
     'stop-hooks-removed',
+    'completion-phase-done',
     'lock-released',
   ]),
   NO_CHANGE: Object.freeze([
     'claim-deleted',
     'notes-before-lock-release',
     'stop-hooks-removed',
+    'completion-phase-done',
     'lock-released',
   ]),
 })
@@ -47,6 +51,7 @@ export const OPTIONAL_ROUTE_TOKENS = Object.freeze([
   'blocked-pr-left-draft',
   'entry-state-restored',
   'no-change-breadcrumb-written',
+  'pr-merged-by-completion',
 ])
 
 export const TERMINAL_OUTCOMES = Object.freeze(Object.keys(TERMINAL_ROUTES))

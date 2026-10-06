@@ -43,7 +43,7 @@ syntax, arguments or flags from an index row.
 | `references/account.md`     | Adding, testing, rotating or switching a provider account       |
 | `references/trash.md`       | Resurrecting an archived session or emptying the trash          |
 | `references/daemon.md`      | Starting, stopping or inspecting bossd                          |
-| `references/mcp.md`         | Running or configuring the MCP server                           |
+| `references/mcp.md`         | Running or configuring the MCP server or the Hermes plugin      |
 | `references/skills.md`      | Installing or syncing the boss skill payload                    |
 | `references/settings.md`    | Changing global settings or authenticating                      |
 | `references/diagnostics.md` | Running the repair doctor, checks or other diagnostics          |
@@ -58,6 +58,11 @@ A prompt at creation means the work should **run**: `boss new --repo R --prompt 
 `--detach`, and `create_session` with a `prompt` defaults to headless (`agent_launched: true`; its
 `agent_session_id` is the chat to read with `get_chat_transcript` or message with
 `send_chat_message`). Pass `attended: true` only when a human will drive the session.
+
+Such a run is **already unattended**: bossd sets `BOSS_UNATTENDED=true` (and the legacy `BOSS_CRON=true`)
+in its environment, so a skill like `/boss-plan` takes its headless branch. There is no env flag to
+pass and none is needed; saying "headless" in the prompt does nothing. `boss env` inside the session
+reports `mode: unattended` (or `cron` for a scheduled job).
 
 `agent_launched: false` means no agent ran — you asked for `attended`, gave no prompt, or the daemon
 attached to an existing session (`attached_existing: true`, your prompt was **not** run). Start it

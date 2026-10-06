@@ -159,6 +159,21 @@ function renderLedgerCoverage(ledger = undefined) {
   )
 }
 
+// The PR-body tokens derived by `bs-review-ledger.mjs tokens`, rendered so the posted review
+// carries the same strings the PR publishes. Absent or malformed ⇒ no line.
+function renderCoverageTokens(tokens = undefined) {
+  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) return ''
+  if (typeof tokens.coverage !== 'string' || tokens.coverage === '') return ''
+  const lines = [`Review coverage token: ${esc(tokens.coverage)}`]
+  const crossModel = tokens.crossModel
+  if (crossModel && typeof crossModel === 'object' && typeof crossModel.token === 'string') {
+    lines.push(`Cross-model token: ${esc(crossModel.token)}`)
+  } else if (crossModel?.ran === true) {
+    lines.push('Cross-model token: ran (see findings)')
+  }
+  return lines.join('\n')
+}
+
 function verdictForDisplay(verdict = {}, derivedStatus = 'clean', confidence = null) {
   const next = { ...verdict }
   if (confidence) next.confidence = confidence.grade
@@ -827,6 +842,8 @@ export function renderReport(data = {}) {
   blocks.push(...lead)
   const ledgerCoverage = renderLedgerCoverage(verdictEvidence.ledger)
   if (ledgerCoverage) blocks.push(ledgerCoverage)
+  const coverageTokenLines = renderCoverageTokens(data.coverageTokens)
+  if (coverageTokenLines) blocks.push(coverageTokenLines)
   blocks.push(badges.join('\n'))
 
   blocks.push(detailsSection('Test Coverage', renderTestCoverage(displayVerdict)))

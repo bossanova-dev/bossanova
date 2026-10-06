@@ -16,6 +16,8 @@ import { fileURLToPath } from 'node:url'
 import {
   globToRegExp,
   DEFAULT_CONFIG,
+  completionMergeAllowed,
+  DEFAULT_TRACKER_STATES,
   CONFIG_FILENAME,
   findConfigFile,
   mergeConfig,
@@ -1506,6 +1508,7 @@ test('manifestPath returns a configured manifest', () => {
 })
 
 test('isHeadless honours each configured signal', () => {
+  assert.equal(isHeadless(DEFAULT_CONFIG, { BOSS_UNATTENDED: 'true' }, { isTTY: true }), true)
   assert.equal(isHeadless(DEFAULT_CONFIG, { BOSS_CRON: 'true' }, { isTTY: true }), true)
   assert.equal(isHeadless(DEFAULT_CONFIG, { BS_HEADLESS: '1' }, { isTTY: true }), true)
   assert.equal(isHeadless(DEFAULT_CONFIG, { OPENCLAW_SESSION: 'x' }, { isTTY: true }), true)
@@ -3302,6 +3305,157 @@ test('classifyCheckCommand flags the two measured false-drift shapes as advisory
   }
 })
 
+// BOS-1358 — three check-command shapes that report a false red or a mis-scoped result. All three
+// are advisory: none of them is a vacuous green, so none joins the blocking tier.
+const BOS1358_CODES = [
+  'pipefail-early-exit-reader',
+  'unscoped-negative-directory-search',
+  'go-build-writes-output',
+]
+const advisoryCodes = (command, options) =>
+  classifyCheckCommand(command, options).advisory.map((finding) => finding.code)
+
+test('BOS-1358 pipefail-early-exit-reader flags a reader that exits on its first hit', () => {
+  for (const command of [
+    'set -o pipefail; go test -v ./x | rg -q PASS',
+    'set -o pipefail; go test -v ./x | grep -q PASS',
+    'set -o pipefail; go test -v ./x | grep -qE "PASS|ok"',
+    'set -o pipefail; go test -v ./x | grep --quiet PASS',
+    'set -o pipefail; go test -v ./x | grep -m 1 PASS',
+    'set -o pipefail; go test -v ./x | rg --max-count=1 PASS',
+    'set -o pipefail; go test -v ./x | head -1',
+  ]) {
+    assert.ok(advisoryCodes(command).includes('pipefail-early-exit-reader'), command)
+  }
+  for (const command of [
+    // Counting drains the whole stream, so the writer never takes SIGPIPE.
+    'set -o pipefail; go test -v ./x | grep -c PASS',
+    'set -o pipefail; go test -v ./x | rg -c PASS',
+    // Without pipefail this is the existing vacuous-green rule's shape, not this one.
+    'go test -v ./x | grep -q PASS',
+    // A quiet reader that is not downstream of a pipe closes nothing.
+    'set -o pipefail; grep -q PASS out.log',
+  ]) {
+    assert.equal(advisoryCodes(command).includes('pipefail-early-exit-reader'), false, command)
+  }
+  const [finding] = classifyCheckCommand('set -o pipefail; go test -v ./x | grep -q PASS', {
+    kind: 'criterion',
+  }).advisory.filter((entry) => entry.code === 'pipefail-early-exit-reader')
+  assert.match(finding.message, /SIGPIPE/)
+  assert.match(finding.message, /141/)
+  assert.match(finding.message, /grep -c/)
+})
+
+test('BOS-1358 unscoped-negative-directory-search flags a negated search over a whole directory', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'boss-skill-config-negdir-'))
+  try {
+    mkdirSync(join(tmp, 'migrations'))
+    writeFileSync(join(tmp, 'migrations', '001.sql'), 'create table t (id int);\n')
+    writeFileSync(join(tmp, 'migrations', 'guard_test.go'), 'package m // names jsonb\n')
+    const options = { cwd: tmp }
+    for (const command of [
+      '! grep -rqi jsonb migrations',
+      '! grep -r -q jsonb migrations',
+      '! grep -Rq jsonb migrations',
+      '! rg -q jsonb migrations',
+    ]) {
+      assert.ok(
+        advisoryCodes(command, options).includes('unscoped-negative-directory-search'),
+        command,
+      )
+    }
+    for (const command of [
+      "! grep -rqi --include='*.sql' jsonb migrations",
+      "! grep -rqi --exclude='*_test.go' jsonb migrations",
+      "! rg -q -g '*.sql' jsonb migrations",
+      '! rg -q --type sql jsonb migrations',
+      // Not negated: a positive search over a directory can only be falsified by a real match.
+      'grep -rqi jsonb migrations',
+      // Not recursive: plain grep over a directory reads nothing from it.
+      '! grep -qi jsonb migrations/001.sql',
+      // The path operand is a file, not a directory.
+      '! rg -q jsonb migrations/001.sql',
+      // The path does not exist, so the directory branch is not the shape here.
+      '! grep -rqi jsonb missing-dir',
+      // `-m` takes a value: the pattern is `migrations`, and the only path operand is a file.
+      '! rg -m 1 migrations migrations/001.sql',
+    ]) {
+      assert.equal(
+        advisoryCodes(command, options).includes('unscoped-negative-directory-search'),
+        false,
+        command,
+      )
+    }
+    const [finding] = classifyCheckCommand('! grep -rqi jsonb migrations', options).advisory.filter(
+      (entry) => entry.code === 'unscoped-negative-directory-search',
+    )
+    assert.match(finding.message, /tests and guards/)
+    assert.match(finding.message, /--include='\*\.sql'/)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('BOS-1358 go-build-writes-output flags a single-package go build without -o', () => {
+  for (const command of [
+    'go build ./cmd/',
+    'cd services/boss && go build ./cmd/',
+    'go build -tags integration ./cmd/boss',
+  ]) {
+    assert.ok(advisoryCodes(command).includes('go-build-writes-output'), command)
+  }
+  for (const command of [
+    'go build -o /dev/null ./cmd/',
+    'go build -o=/dev/null ./cmd/',
+    'go vet ./cmd/',
+    'go build ./...',
+    'go build ./services/boss/...',
+  ]) {
+    assert.equal(advisoryCodes(command).includes('go-build-writes-output'), false, command)
+  }
+  const [finding] = classifyCheckCommand('go build ./cmd/').advisory.filter(
+    (entry) => entry.code === 'go-build-writes-output',
+  )
+  assert.match(finding.message, /same-named directory/)
+  assert.match(finding.message, /go build -o \/dev\/null/)
+})
+
+test('BOS-1358 codes stay advisory: none is blocking, for either kind', () => {
+  for (const code of BOS1358_CODES) {
+    assert.equal(COMMAND_BLOCKING_CODES.includes(code), false, code)
+    assert.notEqual(
+      commandFindingRemedy(code),
+      commandFindingRemedy('command-unresolvable'),
+      `${code} needs its own remedy`,
+    )
+  }
+  const tmp = mkdtempSync(join(tmpdir(), 'boss-skill-config-bos1358-'))
+  try {
+    mkdirSync(join(tmp, 'migrations'))
+    mkdirSync(join(tmp, 'cmd'))
+    // Every head here is PATH-guaranteed on a bare CI runner (`rg` is not), so an empty blocking
+    // tier is about the new findings and not about head resolution.
+    const carriers = [
+      ['pipefail-early-exit-reader', 'set -o pipefail; go test -v ./x | grep -q PASS'],
+      // `-w` keeps a criterion clear of the separate `unanchored-negative-search` blocking rule.
+      ['unscoped-negative-directory-search', '! grep -rqw jsonb migrations'],
+      ['go-build-writes-output', 'go build ./cmd/'],
+    ]
+    for (const [code, command] of carriers) {
+      for (const kind of ['criterion', 'premise', null]) {
+        const result = classifyCheckCommand(command, { cwd: tmp, kind })
+        assert.ok(
+          result.advisory.some((finding) => finding.code === code),
+          `${command} (${kind})`,
+        )
+        assert.deepEqual(result.blocking, [], `${command} (${kind})`)
+      }
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('classifyCheckCommand requires executable files for PATH and repo-relative commands', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'boss-skill-config-command-'))
   try {
@@ -3971,6 +4125,28 @@ test('mergedListItems finds a Planning bullet joined to its neighbour by a space
   )
 })
 
+test('BOS-1358 mergedListItems knows the Oversized-child Planning bullet', () => {
+  // Space-joined merges are flagged for KNOWN keys only, so an unregistered key would slip through.
+  assert.deepEqual(
+    mergedListItems(
+      DEFAULT_CONFIG,
+      planningDescription(
+        '- Contract: v1 - Oversized-child: twelve parts; split into three siblings',
+      ),
+    ).map(({ text }) => text),
+    ['- Oversized-child:'],
+  )
+  assert.deepEqual(
+    mergedListItems(
+      DEFAULT_CONFIG,
+      planningDescription(
+        '- Contract: v1\n- Oversized-child: twelve parts; split into three siblings',
+      ),
+    ),
+    [],
+  )
+})
+
 test('mergedListItems reads a blockquote prefix as part of the first bullet', () => {
   assert.deepEqual(mergedListItems(DEFAULT_CONFIG, planningDescription('> - Contract: v1')), [])
   assert.deepEqual(mergedListItems(DEFAULT_CONFIG, planningDescription('> > - Contract: v1')), [])
@@ -4077,6 +4253,7 @@ test('a team-only tracker block gets the default server, states and pipeline lab
       planned: 'Todo',
       inProgress: 'In Progress',
       inReview: 'In Review',
+      done: 'Done',
     })
     assert.equal(labelName(config, 'agentFriendly'), 'agent-friendly')
     assert.equal(labelName(config, 'epic'), 'epic')
@@ -4109,4 +4286,28 @@ test('explicit tracker names override the defaults per key', () => {
   assert.equal(tc.mcpServer, 'acme-linear')
   assert.equal(tc.labels.agentFriendly, 'Agent Friendly')
   assert.equal(tc.labels.needsHuman, 'needs-human')
+})
+
+test('completion merge opt-in accepts only literal true and defaults the done state', () => {
+  for (const config of [
+    undefined,
+    null,
+    {},
+    { completionDefaults: {} },
+    { completionDefaults: { allowMerge: false } },
+    { completionDefaults: { allowMerge: 'true' } },
+    { completionDefaults: { allowMerge: 1 } },
+  ])
+    assert.equal(completionMergeAllowed(config), false)
+  assert.equal(completionMergeAllowed({ completionDefaults: { allowMerge: true } }), true)
+  assert.equal(DEFAULT_TRACKER_STATES.done, 'Done')
+  assert.equal(
+    withTrackerDefaults({ trackerConfig: { linear: {} } }).trackerConfig.linear.states.done,
+    'Done',
+  )
+  assert.equal(
+    withTrackerDefaults({ trackerConfig: { linear: { states: { done: 'Closed' } } } }).trackerConfig
+      .linear.states.done,
+    'Closed',
+  )
 })

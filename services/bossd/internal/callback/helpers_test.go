@@ -142,9 +142,12 @@ type fakeProvider struct {
 	runsErr   error
 	runsCalls int
 	runsSHA   string
+
+	statusCalls int
 }
 
 func (f *fakeProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	f.statusCalls++
 	return f.status, f.statusErr
 }
 

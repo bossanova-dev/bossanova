@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -187,6 +188,54 @@ func TestReconcileSessionsRepairsStaleCronTitles(t *testing.T) {
 	active, _ = sessions.ListActive(ctx, "")
 	if n, _ := r.ReconcileSessions(ctx, active); n != 0 {
 		t.Fatalf("second pass updated = %d, want 0", n)
+	}
+}
+
+// TestReconcileSessionsDoesNotRereadAnUnrenamedCronPR pins the read budget: a
+// cron PR whose own title is still the cron default offers nothing to adopt,
+// and must not cost a GitHub read on every 60s reconcile tick for the rest of
+// the session's life. It is re-checked after cronTitleRecheckInterval, in case
+// the agent renames the PR later.
+func TestReconcileSessionsDoesNotRereadAnUnrenamedCronPR(t *testing.T) {
+	ctx := context.Background()
+	prNum := 2801
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/widgets"}
+	sessions := newReconcileMockSessionStore()
+	cronID := "cron-1"
+	sessions.addSession(&models.Session{
+		ID: "sess-1", RepoID: "repo-1", Title: "Bs-sweep-debt",
+		BranchName: "b", PRNumber: &prNum, CronJobID: &cronID,
+	})
+	provider := newReconcileMockProvider()
+	provider.prStatus[prNum] = &vcs.PRStatus{Title: "Bs-sweep-debt"}
+	now := time.Unix(1_800_000_000, 0)
+	r := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithCronJobs(&namedCronJobStore{name: "Bs-sweep-debt"})
+	r.now = func() time.Time { return now }
+
+	pass := func() {
+		t.Helper()
+		active, _ := sessions.ListActive(ctx, "")
+		if n, err := r.ReconcileSessions(ctx, active); err != nil || n != 0 {
+			t.Fatalf("ReconcileSessions = %d, %v; want 0, nil", n, err)
+		}
+	}
+	pass()
+	if provider.prStatusCalls != 1 {
+		t.Fatalf("first pass read the PR %d times, want 1", provider.prStatusCalls)
+	}
+	for i := 0; i < 10; i++ {
+		now = now.Add(time.Minute)
+		pass()
+	}
+	if provider.prStatusCalls != 1 {
+		t.Fatalf("PR read %d times across 10 minutes of ticks, want 1", provider.prStatusCalls)
+	}
+	now = now.Add(cronTitleRecheckInterval)
+	pass()
+	if provider.prStatusCalls != 2 {
+		t.Fatalf("PR read %d times after the recheck interval, want 2", provider.prStatusCalls)
 	}
 }
 

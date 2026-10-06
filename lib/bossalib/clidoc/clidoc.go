@@ -65,7 +65,7 @@ var GroupOrder = []GroupSpec{
 	{ID: "account", Title: "Account Management", ReadWhen: "Adding, testing, rotating or switching a provider account"},
 	{ID: "trash", Title: "Trash Management", ReadWhen: "Resurrecting an archived session or emptying the trash"},
 	{ID: "daemon", Title: "Daemon Management", ReadWhen: "Starting, stopping or inspecting bossd"},
-	{ID: "mcp", Title: "MCP Server", ReadWhen: "Running or configuring the MCP server"},
+	{ID: "mcp", Title: "MCP Server", ReadWhen: "Running or configuring the MCP server or the Hermes plugin"},
 	{ID: "skills", Title: "Skills", ReadWhen: "Installing or syncing the boss skill payload"},
 	{ID: "settings", Title: "Settings & Auth", ReadWhen: "Changing global settings or authenticating"},
 	{ID: "diagnostics", Title: "Diagnostics", ReadWhen: "Running the repair doctor, checks or other diagnostics"},

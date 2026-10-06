@@ -55,7 +55,7 @@ func TestGroupOrderReadWhenHintsArePinned(t *testing.T) {
 		"account":     "Adding, testing, rotating or switching a provider account",
 		"trash":       "Resurrecting an archived session or emptying the trash",
 		"daemon":      "Starting, stopping or inspecting bossd",
-		"mcp":         "Running or configuring the MCP server",
+		"mcp":         "Running or configuring the MCP server or the Hermes plugin",
 		"skills":      "Installing or syncing the boss skill payload",
 		"settings":    "Changing global settings or authenticating",
 		"diagnostics": "Running the repair doctor, checks or other diagnostics",
@@ -124,7 +124,12 @@ func TestRegistryBuilderPreservesSessionAndChatDocumentation(t *testing.T) {
 				"prompt-carrying call defaults to headless and reports " +
 				"agent_launched=true, while attended:true creates the session idle " +
 				"awaiting a human `boss attach` (agent_launched=false). Prefer the " +
-				"default for programmatic/unattended launches.\n\n" +
+				"default for programmatic/unattended launches." +
+				" Such a run is unattended: bossd sets BOSS_UNATTENDED=true (and its " +
+				"legacy spelling BOSS_CRON=true) in the agent's environment, so skills " +
+				"that branch on it (boss-plan, boss-epic) take their headless branch " +
+				"and never wait on a human. No flag or env override is needed, and " +
+				"writing \"headless\" into the prompt changes nothing.\n\n" +
 				"--detach vs --tmux-unattended: they are NOT alternatives. The " +
 				"non-interactive --repo + --prompt path always detaches, so --detach " +
 				"is a no-op there and only affects flag parsing; it governs whether " +

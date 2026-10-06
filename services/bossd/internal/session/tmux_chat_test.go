@@ -3563,7 +3563,7 @@ func TestBossSessionContext_AdvertisesExactlyExportedIdentifiers(t *testing.T) {
 		IsCron: true, IsUnattended: true, CronJobID: "j", CronName: "n",
 	}
 	// Behavioral (non-identifier) vars are intentionally never advertised.
-	behavioral := map[string]bool{"BOSS_CRON": true, "BOSS_CRON_JOB_ID": true, "BOSS_CRON_NAME": true}
+	behavioral := map[string]bool{"BOSS_UNATTENDED": true, "BOSS_CRON": true, "BOSS_CRON_JOB_ID": true, "BOSS_CRON_NAME": true}
 
 	prompt := bossSessionContext(f)
 	for name := range managedSessionEnv(f) {
@@ -3679,8 +3679,10 @@ func TestManagedSessionEnv(t *testing.T) {
 			t.Fatalf("env[%s] = %q, want %q", k, env[k], want)
 		}
 	}
-	if _, ok := env["BOSS_CRON"]; ok {
-		t.Fatalf("non-cron session must not set BOSS_CRON")
+	for _, k := range []string{"BOSS_CRON", "BOSS_UNATTENDED"} {
+		if _, ok := env[k]; ok {
+			t.Fatalf("attended session must not set %s", k)
+		}
 	}
 	if _, ok := env["BOSS_SETTINGS_PATH"]; !ok {
 		t.Fatalf("BOSS_SETTINGS_PATH must be set")
@@ -3695,26 +3697,34 @@ func TestManagedSessionEnv(t *testing.T) {
 	job := "cron-42"
 	cron := &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job}
 	cenv := ManagedSessionEnv(cron, "agent-1", "")
-	if cenv["BOSS_CRON"] != "true" || cenv["BOSS_CRON_JOB_ID"] != "cron-42" || cenv["BOSS_CRON_NAME"] != "Nightly" {
+	if cenv["BOSS_CRON"] != "true" || cenv["BOSS_UNATTENDED"] != "true" || cenv["BOSS_CRON_JOB_ID"] != "cron-42" || cenv["BOSS_CRON_NAME"] != "Nightly" {
 		t.Fatalf("cron env wrong: %v", cenv)
 	}
 }
 
-// TestManagedSessionEnv_IsTmuxUnattended proves a tmux_unattended session (no
-// CronJobID) gets BOSS_CRON=true — so shell-mode/autonomy detection fires — but
-// NOT BOSS_CRON_JOB_ID/BOSS_CRON_NAME, which are meaningless without a real
-// scheduled job.
-func TestManagedSessionEnv_IsTmuxUnattended(t *testing.T) {
-	sess := &models.Session{ID: "s9", Title: "Epic child", IsTmuxUnattended: true}
-	env := ManagedSessionEnv(sess, "agent-9", "claude")
-	if env["BOSS_CRON"] != "true" {
-		t.Fatalf("tmux_unattended session must set BOSS_CRON=true, got %q", env["BOSS_CRON"])
-	}
-	if _, ok := env["BOSS_CRON_JOB_ID"]; ok {
-		t.Errorf("tmux_unattended session must not set BOSS_CRON_JOB_ID, got %q", env["BOSS_CRON_JOB_ID"])
-	}
-	if _, ok := env["BOSS_CRON_NAME"]; ok {
-		t.Errorf("tmux_unattended session must not set BOSS_CRON_NAME, got %q", env["BOSS_CRON_NAME"])
+// TestManagedSessionEnv_UnattendedWithoutCronJob proves every unattended session
+// that is not a scheduled job — tmux_unattended (an epic child) and a
+// tmux-hosted detach run (a plain `boss new --repo --prompt`) — gets both
+// unattended markers, so shell-mode/autonomy detection fires, but NOT
+// BOSS_CRON_JOB_ID/BOSS_CRON_NAME, which are meaningless without a real job.
+func TestManagedSessionEnv_UnattendedWithoutCronJob(t *testing.T) {
+	for name, sess := range map[string]*models.Session{
+		"tmux_unattended": {ID: "s9", Title: "Epic child", IsTmuxUnattended: true},
+		"detach":          {ID: "s10", Title: "Plan run", Detach: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := ManagedSessionEnv(sess, "agent-9", "claude")
+			for _, k := range []string{"BOSS_CRON", "BOSS_UNATTENDED"} {
+				if env[k] != "true" {
+					t.Fatalf("%s session must set %s=true, got %q", name, k, env[k])
+				}
+			}
+			for _, k := range []string{"BOSS_CRON_JOB_ID", "BOSS_CRON_NAME"} {
+				if v, ok := env[k]; ok {
+					t.Errorf("%s session must not set %s, got %q", name, k, v)
+				}
+			}
+		})
 	}
 }
 

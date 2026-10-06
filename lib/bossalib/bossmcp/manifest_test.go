@@ -76,27 +76,60 @@ func TestToolNamesMatchesRegisteredSet(t *testing.T) {
 // a map[string]any, so key order is re-sorted and Go re-applies HTML escaping —
 // see the METHOD note on TestToolSurfaceSizeRatchet for what that costs.
 //
-// It runs entirely in-process. mcp.NewInMemoryTransports() is a net.Pipe pair,
-// so there is no daemon, no unix socket, no TCP listener and no `bin/mcp`
-// subprocess involved — which is what lets the size ratchet below run in CI,
-// where none of those exist. The backend is a zero-value fake: no handler is
-// ever invoked, only the schemas the SDK generates from their argument types
-// are read.
+// It is a thin wrapper over the exported ToolDefinitions, so the size ratchet
+// below measures exactly the surface that export hands other hosts. That runs
+// entirely in-process over mcp.NewInMemoryTransports() (a net.Pipe pair): no
+// daemon, no unix socket, no TCP listener and no `bin/mcp` subprocess — which
+// is what lets the size ratchet run in CI, where none of those exist. No
+// handler is ever invoked, only the schemas the SDK generates from their
+// argument types are read. ToolDefinitions refuses a paginated tools/list,
+// because a truncated page would shrink the measured surface without shrinking
+// the real one.
 func listedToolDefinitions(t *testing.T, opts Options) []*mcp.Tool {
 	t.Helper()
-	cs := newConnectedClient(t, &fakeBackend{}, opts)
-	res, err := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	tools, err := ToolDefinitions(context.Background(), opts)
 	if err != nil {
-		t.Fatalf("list tools: %v", err)
+		t.Fatalf("tool definitions: %v", err)
 	}
-	// ListTools returns ONE page. Inert today — the server's DefaultPageSize is
-	// 1000 against 69 tools — but a truncated page would shrink the measured
-	// surface without shrinking the real one, which is exactly the silent
-	// under-measurement the ratchet below is built to refuse.
-	if res.NextCursor != "" {
-		t.Fatalf("tools/list was paginated (nextCursor %q): this measures one page, not the whole surface", res.NextCursor)
+	return tools
+}
+
+// TestToolDefinitionsMatchToolNames pins the exported definitions to the
+// static inventory: exactly ToolNames(), in order, each with a non-empty input
+// schema. Renderers that ship these definitions to another host (the Hermes
+// plugin) rely on both the order and the schemas.
+func TestToolDefinitionsMatchToolNames(t *testing.T) {
+	tools, err := ToolDefinitions(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("ToolDefinitions: %v", err)
 	}
-	return res.Tools
+	names := ToolNames()
+	if len(tools) != len(names) {
+		t.Fatalf("ToolDefinitions() = %d tools, ToolNames() = %d", len(tools), len(names))
+	}
+	for i, tool := range tools {
+		if tool.Name != names[i] {
+			t.Errorf("ToolDefinitions()[%d] = %q, ToolNames()[%d] = %q", i, tool.Name, i, names[i])
+		}
+		schema, ok := tool.InputSchema.(map[string]any)
+		if !ok || len(schema) == 0 {
+			t.Errorf("tool %q has an empty input schema (%T)", tool.Name, tool.InputSchema)
+		}
+	}
+
+	ro, err := ToolDefinitions(context.Background(), Options{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("ToolDefinitions(ReadOnly): %v", err)
+	}
+	roNames := ReadOnlyToolNames()
+	if len(ro) != len(roNames) {
+		t.Fatalf("ToolDefinitions(ReadOnly) = %d tools, ReadOnlyToolNames() = %d", len(ro), len(roNames))
+	}
+	for i, tool := range ro {
+		if tool.Name != roNames[i] {
+			t.Errorf("ToolDefinitions(ReadOnly)[%d] = %q, ReadOnlyToolNames()[%d] = %q", i, tool.Name, i, roNames[i])
+		}
+	}
 }
 
 // TestToolSurfaceSizeRatchet is a DOWNWARD-ONLY ceiling on how big the boss MCP
@@ -234,9 +267,15 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// any read tool", and merge_strategy's "e.g." list was in fact the complete
 	// set of values. register_repo and clone_and_register_repo gained nothing:
 	// the daemon now defaults an omitted base from global settings.
+	// RE-PINNED DOWN 2026-10-05: 70 tools / 58,822 bytes, same method,
+	// schema-share self-check green in the same run. create_session now states
+	// that a prompt-carrying create runs unattended (BOSS_UNATTENDED=true), the
+	// fact agents kept missing before inventing an env flag. It paid for that by
+	// dropping "so the work can run" and "the result reports", which restated
+	// what agent_launched=true already says.
 	const (
 		maxToolCount   = 70
-		maxSchemaBytes = 58826
+		maxSchemaBytes = 58822
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

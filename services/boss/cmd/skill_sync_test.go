@@ -94,6 +94,15 @@ func markTrustedCheckout(t *testing.T, root string) {
 	if out, err := exec.Command("git", "init", "--quiet", root).CombinedOutput(); err != nil {
 		t.Fatalf("git init %q: %v\n%s", root, err, out)
 	}
+	// Every `git commit` otherwise spawns a detached `git maintenance run
+	// --auto` that outlives the commit and keeps writing under .git; a fast
+	// test then loses the race to t.TempDir's RemoveAll ("directory not
+	// empty"). Older gits spawn `gc --auto` instead, hence both keys.
+	for _, kv := range [][2]string{{"maintenance.auto", "false"}, {"gc.auto", "0"}} {
+		if out, err := exec.Command("git", "-C", root, "config", kv[0], kv[1]).CombinedOutput(); err != nil {
+			t.Fatalf("git config %s: %v\n%s", kv[0], err, out)
+		}
+	}
 	if out, err := exec.Command("git", "-C", root, "remote", "add", "origin", "git@github.com:recurser/bossanova.git").CombinedOutput(); err != nil {
 		t.Fatalf("git remote add origin: %v\n%s", err, out)
 	}
@@ -2419,6 +2428,98 @@ func TestRunSkillSyncAgentFilterTouchesOnlySelectedAgent(t *testing.T) {
 	assertAgentSkillsInstalled(t, filepath.Join(home, ".codex", "skills"))
 	if strings.Contains(out.String(), "claude") {
 		t.Fatalf("output mentioned claude under --agent codex: %q", out.String())
+	}
+}
+
+func TestRunSkillSyncInstallAndCheckHermesUnderHermesHome(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	hermesHome := t.TempDir()
+	t.Setenv("HERMES_HOME", hermesHome)
+	hermesDir := filepath.Join(hermesHome, "skills")
+	setAvailableSkillAgents(map[string]bool{"hermes": true})
+	t.Chdir(t.TempDir())
+
+	var out bytes.Buffer
+	if err := runSkillSync(&out, skillSyncInstall, "hermes"); err != nil {
+		t.Fatalf("runSkillSync install --agent hermes: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "boss skills: installed hermes ("+hermesDir+")") {
+		t.Fatalf("output = %q, want hermes installed into %s", out.String(), hermesDir)
+	}
+	assertAgentSkillsInstalled(t, hermesDir)
+	if _, err := os.Stat(filepath.Join(home, ".hermes")); !os.IsNotExist(err) {
+		t.Fatalf("~/.hermes stat err = %v, want untouched when HERMES_HOME is set", err)
+	}
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if settings.SkillsInstalledManifestByAgent["hermes"] != currentTestSkillManifest(t) {
+		t.Fatalf("hermes installed manifest = %q, want current", settings.SkillsInstalledManifestByAgent["hermes"])
+	}
+
+	out.Reset()
+	if err := runSkillCheck(&out, "hermes"); err != nil {
+		t.Fatalf("runSkillCheck --agent hermes: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"boss skills: hermes\n", "skills dir: " + hermesDir + "\n", "installed: yes", "payload: up to date"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("check output = %q, want %q", out.String(), want)
+		}
+	}
+}
+
+func TestRunSkillSyncWithoutHermesLeavesHermesDirUntouched(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	setAvailableSkillAgents(map[string]bool{"claude": true})
+	t.Chdir(t.TempDir())
+
+	var out bytes.Buffer
+	if err := runSkillSync(&out, skillSyncInstall, ""); err != nil {
+		t.Fatalf("runSkillSync install: %v\n%s", err, out.String())
+	}
+	assertAgentSkillsInstalled(t, filepath.Join(home, ".claude", "skills"))
+	if _, err := os.Stat(filepath.Join(home, ".hermes")); !os.IsNotExist(err) {
+		t.Fatalf("~/.hermes stat err = %v, want nothing written without hermes on PATH", err)
+	}
+	if !strings.Contains(out.String(), "boss skills: hermes not found on PATH, skipping") {
+		t.Fatalf("output = %q, want hermes skipped like any absent agent", out.String())
+	}
+}
+
+func TestSkillInstallAgentChoicesNamesEveryTarget(t *testing.T) {
+	if got, want := skillInstallAgentChoices(), "claude, codex or hermes"; got != want {
+		t.Fatalf("skillInstallAgentChoices() = %q, want %q", got, want)
+	}
+	err := validateSkillAgentFilter("gemini")
+	if err == nil || !strings.Contains(err.Error(), "want claude, codex or hermes") {
+		t.Fatalf("validateSkillAgentFilter(gemini) = %v, want the full agent list", err)
+	}
+	if err := validateSkillAgentFilter("hermes"); err != nil {
+		t.Fatalf("validateSkillAgentFilter(hermes) = %v, want nil", err)
+	}
+}
+
+func TestSkillGateAgentFilterMapsHermesSkillsHome(t *testing.T) {
+	t.Setenv("BOSS_SKILLS_HOME", filepath.Join(t.TempDir(), ".hermes", "skills"))
+	if got := skillGateAgentFilter(""); got != "hermes" {
+		t.Fatalf("skillGateAgentFilter() = %q, want hermes", got)
+	}
+}
+
+func TestSkillGateAgentFilterMapsCustomHermesHome(t *testing.T) {
+	hermesHome := filepath.Join(t.TempDir(), "agent-state")
+	t.Setenv("HERMES_HOME", hermesHome)
+	t.Setenv("BOSS_SKILLS_HOME", filepath.Join(hermesHome, "skills"))
+	if got := skillGateAgentFilter(""); got != "hermes" {
+		t.Fatalf("skillGateAgentFilter() = %q, want hermes for $HERMES_HOME/skills", got)
+	}
+}
+
+func TestSkillGateAgentFilterEmptySkillsHome(t *testing.T) {
+	t.Setenv("BOSS_SKILLS_HOME", "")
+	if got := skillGateAgentFilter(""); got != "" {
+		t.Fatalf("skillGateAgentFilter() = %q, want empty", got)
 	}
 }
 

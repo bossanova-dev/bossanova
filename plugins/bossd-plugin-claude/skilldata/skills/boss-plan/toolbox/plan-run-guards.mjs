@@ -18,9 +18,17 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 import { selectImplementationPlanAttachment } from './plan-attachment.mjs'
+import {
+  dependencyScanVerdict,
+  extractKeyChangeAreas,
+  planDependencyEdges,
+  validateDependencyScanInput,
+  withScanDefaults,
+} from './plan-deps-lib.mjs'
 import { parseEpicSpec } from './plan-epic-lib.mjs'
 import { EPIC_REVERIFY_CLASS, epicReverifyVerdict } from './plan-epic-phase25.mjs'
 import { RUN_SCRATCH_DIR_PREFIX, planScratchPath, planScratchToken } from './plan-scratch-paths.mjs'
@@ -38,6 +46,8 @@ import {
 
 export const PREMISE_LIMIT = 10
 
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
 const ALLOWED_METADATA_KEYS = new Set([
   'planPath',
   'labels',
@@ -54,10 +64,24 @@ function entry(code, field, message, extra = {}) {
   return { code, field, message: `plan-run-guards: ${message}`, ...extra }
 }
 
-function hasAtomic5Justification(descriptionSummary) {
+function planningSection(descriptionSummary) {
   const sections = String(descriptionSummary ?? '').split(/\n(?=##\s)/)
-  const planning = sections.find((section) => section.trimStart().startsWith('## Planning'))
-  return /^[-*]\s*Atomic-5:\s*\S/m.test(planning ?? '')
+  return sections.find((section) => section.trimStart().startsWith('## Planning')) ?? ''
+}
+
+// A parented ticket whose honest size is 5 or more and which is NOT atomic cannot be decomposed
+// under its existing epic parent, so it is planned as one ticket carrying `- Oversized-child:`
+// (why it is not atomic, and the suggested sibling split) and handed to a human to split. That
+// bullet is the estimate-5 justification for this shape; `- Atomic-5:` keeps meaning "atomic".
+function hasOversizedChildBullet(descriptionSummary) {
+  return /^[-*]\s*Oversized-child:\s*\S/m.test(planningSection(descriptionSummary))
+}
+
+function hasAtomic5Justification(descriptionSummary) {
+  return (
+    /^[-*]\s*Atomic-5:\s*\S/m.test(planningSection(descriptionSummary)) ||
+    hasOversizedChildBullet(descriptionSummary)
+  )
 }
 
 // `descriptionSummary` is either the description text inline, or `{ path }` naming this run's
@@ -196,7 +220,10 @@ export function validateDraftMetadata(
     }
     normalized.estimate = snapped
     if (snapped === 5 && descriptionText !== null && !hasAtomic5Justification(descriptionText)) {
-      warn('estimate', 'estimate 5 without an "- Atomic-5:" justification under ## Planning')
+      warn(
+        'estimate',
+        'estimate 5 without an "- Atomic-5:" or "- Oversized-child:" justification under ## Planning',
+      )
     }
   } else {
     if (Object.hasOwn(object, 'estimate')) warn('estimate', 'estimate was not a number; omitted')
@@ -249,6 +276,20 @@ export function validateDraftMetadata(
       ),
     )
   }
+  // An oversized child is a split request for a human, so it can never be agent-friendly. The
+  // helper enforces that even when the drafter's prose forgot to.
+  if (
+    descriptionText !== null &&
+    normalized.agentFriendly === true &&
+    hasOversizedChildBullet(descriptionText)
+  ) {
+    normalized.agentFriendly = false
+    warn(
+      'agentFriendly',
+      'agentFriendly true with an "- Oversized-child:" bullet under ## Planning; coerced to false (a human splits it into siblings)',
+    )
+  }
+
   // The description's content is checked once, by the Phase 4 plan-contract gate over the bytes
   // actually written; checking it here too only discarded plans that gate would have kept.
   if (Object.hasOwn(object, 'descriptionSummary')) {
@@ -555,6 +596,133 @@ function readJSON(file) {
   return JSON.parse(readFileSync(file, 'utf8'))
 }
 
+/**
+ * The repo's root-level entries from `git ls-tree -z HEAD`: `dirs` (trees and submodules) are module
+ * roots, `files` (blobs) are root files. Split because a root FILE needs no extension to be an area
+ * and an unmarked mention of one is reported rather than dropped (`extractKeyChangeAreas`
+ * `rootFiles`), while a directory keeps the module-root rules.
+ */
+export function listRepoRootEntries(cwd = process.cwd()) {
+  const out = execFileSync('git', ['ls-tree', '-z', 'HEAD'], { cwd, encoding: 'utf8' })
+  const dirs = []
+  const files = []
+  for (const record of out.split('\0')) {
+    const tab = record.indexOf('\t')
+    if (tab === -1) continue
+    const type = record.slice(0, tab).split(' ')[1]
+    const name = record.slice(tab + 1)
+    if (name === '') continue
+    if (type === 'blob') files.push(name)
+    else dirs.push(name)
+  }
+  return { dirs, files }
+}
+
+const FETCH_CANDIDATES_REMEDY =
+  'write the candidates file with `tracker/cli.mjs fetch-candidates --out-file <file> --id <ISSUE-ID>`'
+
+function candidateRowDefect(row) {
+  if (!plainObject(row)) return 'a row is not an object'
+  if (!['state', 'id'].includes(row.source)) return 'a row carries no `source` of state or id'
+  if (typeof row.stateType !== 'string' || row.stateType.trim() === '') {
+    return 'a row carries no stateType'
+  }
+  if (!Object.hasOwn(row, 'parentId')) return 'a row carries no own parentId'
+  return null
+}
+
+/**
+ * The `deps` boundary: classify one subject against a `fetch-candidates` file. Both issue sides come
+ * from that file — the subject is resolved from it by id or identifier — so nothing in the scan
+ * input is retyped. The set is complete (`candidateSetComplete`) unless a row carries
+ * `stateScope: 'override'` — fetch-candidates marks every row so when `--state` narrowed the scan.
+ *
+ * @param {{payload: unknown, rows: unknown, subjectId: string, config: object,
+ *   rootEntries: {dirs: string[], files: string[]}}} input
+ * @returns {{status: 'refused', refusals: {code: string, message: string}[]} |
+ *   {status: 'defects', defects: {code: string, id: string, remedy: string}[]} |
+ *   {status: 'ok', result: object, verdict: object, subject: object}}
+ *   `subject` is the subject's `extractKeyChangeAreas` result.
+ */
+export function runDependencyScan({ payload, rows, subjectId, config, rootEntries }) {
+  const refusals = []
+  const refuse = (code, message) => refusals.push({ code, message })
+  if (!plainObject(payload)) {
+    refuse('payload-not-object', 'the scan input must be a JSON object')
+  } else {
+    for (const key of ['candidates', 'subject']) {
+      if (Object.hasOwn(payload, key)) {
+        refuse(
+          `payload-carries-${key}`,
+          `the scan input carries \`${key}\`; both issue sides come from the candidates file — remove it`,
+        )
+      }
+    }
+  }
+  if (!Array.isArray(rows)) {
+    refuse(
+      'candidates-not-fetch-candidates',
+      `the candidates file is not an array; ${FETCH_CANDIDATES_REMEDY}`,
+    )
+  } else {
+    const defect = rows.map(candidateRowDefect).find(Boolean)
+    if (defect) {
+      refuse(
+        'candidates-not-fetch-candidates',
+        `the candidates file is not fetch-candidates output (${defect}); ${FETCH_CANDIDATES_REMEDY}`,
+      )
+    }
+  }
+  if (refusals.length > 0) return { status: 'refused', refusals }
+
+  const wanted = String(subjectId ?? '')
+    .trim()
+    .toLowerCase()
+  const subject = rows.find((row) =>
+    [row.id, row.identifier].some(
+      (value) => typeof value === 'string' && value.trim().toLowerCase() === wanted,
+    ),
+  )
+  if (!subject) {
+    return {
+      status: 'refused',
+      refusals: [
+        {
+          code: 'subject-not-in-candidates',
+          message: `${subjectId} is not in the candidates file; re-run fetch-candidates with --id ${subjectId}`,
+        },
+      ],
+    }
+  }
+
+  const input = withScanDefaults(config, { ...payload, subject, candidates: rows })
+  input.moduleRoots = [...new Set([...input.moduleRoots, ...rootEntries.dirs])]
+  const validated = validateDependencyScanInput(input)
+  if (!validated.ok) return { status: 'defects', defects: validated.defects }
+
+  const areasOf = (issue) =>
+    extractKeyChangeAreas(config, issue.description, {
+      moduleRoots: input.moduleRoots,
+      rootFiles: rootEntries.files,
+    })
+  const subjectScan = areasOf(subject)
+  input.subjectAreas = subjectScan.areas
+  input.subjectUnresolvedAreas = subjectScan.unresolved
+  input.candidates = rows.map((row) => ({ ...row, areas: areasOf(row).areas }))
+  // Complete only when the fetch scanned the default states: a `--state` override is marked on
+  // every row, and a narrowed set must reach could-not-evaluate rather than a clean verdict.
+  input.candidateSetComplete = !rows.some((row) => row.stateScope === 'override')
+  const result = planDependencyEdges(input)
+  return { status: 'ok', result, verdict: dependencyScanVerdict(result), subject: subjectScan }
+}
+
+function parseSubjectFlag(argv) {
+  const index = argv.indexOf('--subject')
+  if (index === -1) return null
+  const value = String(argv[index + 1] ?? '').trim()
+  return value === '' || value.startsWith('--') ? null : value
+}
+
 /** Key-sorted JSON, so two objects compare on content rather than on write order. */
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -641,7 +809,6 @@ function resolveRole(resolve, config, role) {
 }
 
 const readIfPresent = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : null)
-const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const childKey = (issue) =>
   typeof issue?.identifier === 'string' && issue.identifier !== '' ? issue.identifier : issue?.id
 
@@ -876,6 +1043,35 @@ function runGuardVerb(argv) {
       // fire that the caller never saw.
       return { verb, code: 0, reason: result.action === 'noop' ? 'noop' : 'plan' }
     }
+    if (command === 'deps' && first && second && parseSubjectFlag(argv)) {
+      verb = 'deps'
+      const subjectId = parseSubjectFlag(argv)
+      const scan = runDependencyScan({
+        payload: readJSON(first),
+        rows: readJSON(second),
+        subjectId,
+        config: loadSkillConfig({ cwd: process.cwd() }),
+        rootEntries: listRepoRootEntries(),
+      })
+      if (scan.status === 'refused') {
+        for (const r of scan.refusals)
+          process.stderr.write(`${r.code}: plan-run-guards: ${r.message}\n`)
+        return { verb, code: 1, reason: scan.refusals[0].code }
+      }
+      if (scan.status === 'defects') {
+        for (const d of scan.defects) process.stderr.write(`${d.code} ${d.id} ${d.remedy}\n`)
+        return { verb, code: 1, reason: 'scan-input-defect' }
+      }
+      const { result, verdict, subject } = scan
+      process.stderr.write(
+        `subjectAreas ${JSON.stringify(subject.areas)} unresolved ${JSON.stringify(subject.unresolved)}` +
+          ` referenced ${JSON.stringify(subject.referenced)} candidatesWithoutAreas ` +
+          `${result.candidatesWithoutAreas} ${verdict.verdict} compared=${verdict.compared}` +
+          ` edges=${verdict.edges} ${verdict.reasons}\n`,
+      )
+      process.stdout.write(`${JSON.stringify({ ...result, verdict })}\n`)
+      return { verb, code: 0, reason: verdict.verdict }
+    }
     if (command === 'epic-reverify' && first) {
       verb = 'epic-reverify'
       // This branch owns its read/parse/config errors: the shared catch below exits 1, and exit 1 is
@@ -966,7 +1162,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json>\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID>\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

@@ -14,6 +14,7 @@ require (
 	github.com/charmbracelet/x/vt v0.0.0-20260323091123-df7b1bcffcca
 	github.com/creack/pty/v2 v2.0.1
 	github.com/google/uuid v1.6.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/recurser/bossalib v0.0.0
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
@@ -53,7 +54,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
-	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/posthog/posthog-go v1.28.1 // indirect

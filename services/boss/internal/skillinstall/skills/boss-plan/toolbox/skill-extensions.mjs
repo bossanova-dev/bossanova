@@ -32,6 +32,25 @@ const BUILTIN_EXTENSION_FILE = 'EXTENSION.md'
 //                    `methodology` returns the core's fixed short task contract, and `agent-driver`
 //                    returns a `SurfaceRun` (see the agent-driver contract doc).
 export const EXTENSION_ROLES = {
+  completion: {
+    kind: 'fields',
+    keys: ['action', 'reason', 'mergeSha'],
+    refine(envelope) {
+      const errors = []
+      if (!['merged', 'skipped'].includes(envelope.action))
+        errors.push('action must be merged or skipped')
+      if (typeof envelope.reason !== 'string' || !envelope.reason.trim())
+        errors.push('reason must be a non-empty string')
+      if (
+        typeof envelope.mergeSha !== 'string' ||
+        (envelope.action === 'merged'
+          ? !/^[a-f0-9]{40}$/i.test(envelope.mergeSha)
+          : envelope.mergeSha !== '')
+      )
+        errors.push('mergeSha must be a 40-hex SHA when merged and empty when skipped')
+      return errors
+    },
+  },
   lens: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
   round: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
   surface: { kind: 'items', keys: ['path', 'caption', 'evidenceTokens'] },
@@ -604,6 +623,7 @@ export function validateResult(envelope, role) {
         errors.push(`"${key}" is not a non-empty string`)
       }
     }
+    if (typeof spec.refine === 'function') errors.push(...spec.refine(envelope))
     return withWarnings({ ok: errors.length === 0, errors }, warnings)
   }
   if (!Array.isArray(envelope.items)) {

@@ -35,6 +35,7 @@ if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/bo
 | Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …` |
 | What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                 |
 | Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`      |
+| What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …` |
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
 fabricated clean result. Its `unknown` verdict is never clean; confirm with `/usr/bin/git status
@@ -47,7 +48,9 @@ judgement.
 
 1. **Rebase, never merge the base in.** Sync with `git fetch origin <base>` then
    `git rebase origin/<base>` — never `git merge` the base and never `git pull`. A merge commit on the
-   branch makes GitHub's rebase-merge refuse the PR. Before any push that follows a base sync:
+   branch makes GitHub's rebase-merge refuse the PR. Record `PRE_REBASE_HEAD="$(git rev-parse HEAD)"`
+   before every base sync and run the post-rebase audit (Conflicts below) after it. Then, before
+   any push that follows a base sync:
 
    ```bash
    MERGE_COUNT=$(git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD) || exit 1
@@ -121,8 +124,29 @@ Rebase onto the base (rule 1). For each conflicted file, understand both sides �
 sources rather than hand-editing them; keep both sides of independent additions to append-only
 registries; for a disputed measurement or count, re-measure after the rebase rather than picking a
 side. Continue with `GIT_EDITOR=true git rebase --continue`; skip a replayed commit that became
-genuinely empty. After the rebase completes, re-run the relevant tests and grep for any call shape
-this branch refactored — including in files the base added.
+genuinely empty. After the rebase completes, audit it (substitute the recorded SHA; shell state does
+not survive between tool calls):
+
+```bash
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check --repo "$(git rev-parse --show-toplevel)" \
+  --pre-rebase-head "$PRE_REBASE_HEAD" --base "origin/$BASE_BRANCH"
+```
+
+Act on every list it reports:
+
+- `skippedCommits` ⇒ re-run the generators for those paths.
+- `lostAdditions` ⇒ re-apply the branch change onto the base's new structure and re-verify the
+  commit's own claim.
+- `baseAddedTests` ⇒ run them by name.
+- `retiredByBase`, `conventionSuspects`, `baseRelocations` ⇒ move the branch's writes to the base's
+  convention (judge each suspect first).
+- `deletedByBranch` ⇒ fix the base-side references.
+- verdict `unevaluated` ⇒ not clean: run the module tests and report it.
+
+Then re-run the relevant tests and grep for any call shape this branch refactored — including in
+files the base added; the audit does not check call shapes.
 Push with `--force-with-lease`. If a conflict is too tangled to settle safely, leave a PR comment
 naming the files and report it as a residual.
 

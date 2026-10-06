@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/recurser/bossalib/models"
@@ -20,6 +21,7 @@ type evaluatorStore interface {
 	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
 	ObserveBaseline(ctx context.Context, id string, now time.Time) error
 	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GithubCallback, error)
+	CancelUnreachable(ctx context.Context, id, event string, now time.Time) error
 }
 
 // prStatusProvider is the subset of vcs.Provider the evaluator queries for
@@ -40,6 +42,66 @@ type Evaluator struct {
 	provider prStatusProvider
 	now      func() time.Time
 	logger   zerolog.Logger
+	health   webhookHealth // optional; nil reconciles every PR every pass
+
+	evalMu    sync.Mutex
+	lastEvals map[prKey]time.Time
+}
+
+// webhookHealth reports whether GitHub webhooks currently reach the daemon for
+// a repo. upstream.WebhookHealth implements it.
+type webhookHealth interface {
+	WebhookDeliveryHealthy(repo string) bool
+}
+
+// reconcileSafetyNetInterval is how often ReconcileAll still re-reads a PR in a
+// repo whose webhooks reach the daemon. Every change on such a PR already runs
+// EvaluatePR from the webhook dispatcher; the periodic pass only has to catch a
+// delivery bosso dropped.
+const reconcileSafetyNetInterval = 10 * time.Minute
+
+type prKey struct {
+	owner string
+	name  string
+	pr    int
+}
+
+// SetWebhookHealth wires the webhook-delivery tracker ReconcileAll consults.
+// Must be called before the evaluator is shared. nil-safe.
+func (e *Evaluator) SetWebhookHealth(h webhookHealth) {
+	e.health = h
+}
+
+func (e *Evaluator) markEvaluated(k prKey, at time.Time) {
+	e.evalMu.Lock()
+	defer e.evalMu.Unlock()
+	if e.lastEvals == nil {
+		e.lastEvals = make(map[prKey]time.Time)
+	}
+	e.lastEvals[k] = at
+}
+
+// forgetEvaluatedExcept drops last-evaluation times for PRs that no longer have
+// an active callback, so the map is bounded by the live callback set.
+func (e *Evaluator) forgetEvaluatedExcept(live map[prKey]struct{}) {
+	e.evalMu.Lock()
+	defer e.evalMu.Unlock()
+	for k := range e.lastEvals {
+		if _, ok := live[k]; !ok {
+			delete(e.lastEvals, k)
+		}
+	}
+}
+
+// reconcileDue reports whether ReconcileAll should re-read k now.
+func (e *Evaluator) reconcileDue(k prKey, now time.Time) bool {
+	if e.health == nil || !e.health.WebhookDeliveryHealthy(repoPath(k.owner, k.name)) {
+		return true
+	}
+	e.evalMu.Lock()
+	defer e.evalMu.Unlock()
+	last, ok := e.lastEvals[k]
+	return !ok || now.Sub(last) >= reconcileSafetyNetInterval
 }
 
 // NewEvaluator constructs an Evaluator. now may be nil (defaults to time.Now).
@@ -81,6 +143,7 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 	if len(cbs) == 0 {
 		return nil
 	}
+	e.markEvaluated(prKey{cbs[0].RepoOwner, cbs[0].RepoName, prNumber}, e.now())
 
 	rp := repoPath(cbs[0].RepoOwner, cbs[0].RepoName)
 	status, err := e.provider.GetPRStatus(ctx, rp, prNumber)
@@ -103,9 +166,24 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 		runsSettled = e.runsSettled(ctx, rp, prNumber, status)
 	}
 	satisfied := satisfiedTriggers(status, checks, runsSettled)
+	checkState := vcs.EvaluateChecks("", checks, nil).State
 	now := e.now()
 	for _, cb := range cbs {
 		if !satisfied[cb.Trigger] {
+			if unreachableAfterMerge(status, checkState, cb.Trigger) {
+				if err := e.store.CancelUnreachable(ctx, cb.ID, "unreachable: pr merged", now); err != nil {
+					if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+						continue
+					}
+					e.logger.Warn().Err(err).Str("callback_id", cb.ID).
+						Msg("callback evaluator: cancel unreachable callback failed")
+					return fmt.Errorf("cancel unreachable callback %s: %w", cb.ID, err)
+				}
+				e.logger.Info().Str("callback_id", cb.ID).Str("trigger", string(cb.Trigger)).
+					Str("repo", rp).Int("pr", prNumber).
+					Msg("callback evaluator: canceled callback the merged PR can no longer satisfy")
+				continue
+			}
 			if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
 				if err := e.store.ObserveBaseline(ctx, cb.ID, now); err != nil {
 					if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
@@ -152,17 +230,18 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 // (merged/closed/checks) that were reached while the daemon was disconnected and
 // whose webhook was therefore never delivered. Errors on individual PRs are
 // collected and joined; evaluation of the remaining PRs continues.
+//
+// It is a background pass, so its reads go through the provider's read cache.
+// A PR in a repo whose webhooks reach the daemon is skipped until
+// reconcileSafetyNetInterval has passed since it was last evaluated.
 func (e *Evaluator) ReconcileAll(ctx context.Context) error {
+	ctx = vcs.WithCachedReads(ctx)
 	active := models.GithubCallbackStateActive
 	cbs, err := e.store.List(ctx, db.ListGithubCallbacksFilter{State: &active})
 	if err != nil {
 		return fmt.Errorf("list active github callbacks: %w", err)
 	}
-	type prKey struct {
-		owner string
-		name  string
-		pr    int
-	}
+	now := e.now()
 	seen := make(map[prKey]struct{}, len(cbs))
 	var errs []error
 	for _, cb := range cbs {
@@ -171,10 +250,14 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 			continue
 		}
 		seen[k] = struct{}{}
+		if !e.reconcileDue(k, now) {
+			continue
+		}
 		if err := e.EvaluatePR(ctx, cb.RepoOwner, cb.RepoName, cb.PRNumber); err != nil {
 			errs = append(errs, err)
 		}
 	}
+	e.forgetEvaluatedExcept(seen)
 	return errors.Join(errs...)
 }
 
@@ -205,6 +288,38 @@ func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, st
 		}
 	}
 	return true
+}
+
+// unreachableAfterMerge reports whether an unsatisfied trigger can never fire
+// because the PR has merged. Left active, such a callback is re-read from
+// GitHub on every reconcile until its 24h expiry — a boss-build wait arms both
+// checks_passed and checks_failed, and the loser of a green merge otherwise
+// sits there for a day.
+//
+//   - closed, ready_for_review, checks_passed_ready need a PR that is not
+//     merged (closed means closed-unmerged; the other two need an open PR).
+//   - checks_failed is dead once the head's checks finished green.
+//   - checks_passed is dead once a head check failed.
+//
+// Checks still pending (or unreadable) keep both checks triggers alive: the
+// head's checks can still complete after a merge. A closed-unmerged PR is not
+// final — it can be reopened — so nothing is retired for it.
+func unreachableAfterMerge(status *vcs.PRStatus, checkState vcs.CheckVerdictState, trigger models.GithubCallbackTrigger) bool {
+	if status == nil || status.State != vcs.PRStateMerged {
+		return false
+	}
+	switch trigger {
+	case models.GithubCallbackTriggerClosed,
+		models.GithubCallbackTriggerReadyForReview,
+		models.GithubCallbackTriggerChecksPassedReady:
+		return true
+	case models.GithubCallbackTriggerChecksFailed:
+		return checkState == vcs.CheckVerdictGreen
+	case models.GithubCallbackTriggerChecksPassed:
+		return checkState == vcs.CheckVerdictFailing
+	default:
+		return false
+	}
 }
 
 // satisfiedTriggers derives which triggers the authoritative state currently

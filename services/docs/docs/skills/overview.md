@@ -14,6 +14,11 @@ skill is a self-contained workflow you invoke by name (for example `/boss-build`
 and together they take a ticket from **Unplanned → planned Todo → PR → review →
 merge → proof** with minimal hand-holding.
 
+`boss skills install` extracts the suite into the global skill directory of every
+supported agent whose CLI is on `PATH`: Claude Code (`~/.claude/skills`), Codex
+(`~/.codex/skills`) and Hermes Agent (`~/.hermes/skills`, or `$HERMES_HOME/skills`
+when `HERMES_HOME` is set).
+
 Every skill is built as a **project-agnostic core** plus a few pluggable seams, so
 the same suite runs in any repository. The Bossanova-specific coupling (the issue
 tracker, proof-artifact publishing, the session runner, and the PR-finalize policy)

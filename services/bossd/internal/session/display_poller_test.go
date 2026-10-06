@@ -949,7 +949,7 @@ func TestPollIntervalStretchesAfterRecentWebhookRefresh(t *testing.T) {
 
 	poller.recordRefresh("sess-1", now)
 
-	if got := poller.intervalFor("sess-1", now.Add(time.Minute)); got != webhookHealthyInterval {
+	if got := poller.intervalFor("", "sess-1", now.Add(time.Minute)); got != webhookHealthyInterval {
 		t.Fatalf("intervalFor = %s, want %s", got, webhookHealthyInterval)
 	}
 }
@@ -968,7 +968,7 @@ func TestPollIntervalReturnsConfiguredAfterWebhookWindow(t *testing.T) {
 
 	poller.recordRefresh("sess-1", now.Add(-webhookHealthyWindow-time.Nanosecond))
 
-	if got := poller.intervalFor("sess-1", now); got != configured {
+	if got := poller.intervalFor("", "sess-1", now); got != configured {
 		t.Fatalf("intervalFor = %s, want %s", got, configured)
 	}
 }
@@ -990,13 +990,13 @@ func TestShouldPollSessionBackoffIsPerSessionNotPerRepo(t *testing.T) {
 
 	// Session A received a webhook; it should back off to the healthy interval.
 	poller.recordRefresh("sess-A", now)
-	if got := poller.shouldPollSession("sess-A", now.Add(time.Minute)); got {
+	if got := poller.shouldPollSession("", "sess-A", now.Add(time.Minute)); got {
 		t.Fatal("sess-A shouldPollSession = true, want false (webhook healthy)")
 	}
 
 	// Session B shares the same repo but got no webhook of its own; it must keep
 	// the configured (fast) interval rather than being starved by sess-A's webhook.
-	if got := poller.shouldPollSession("sess-B", now.Add(time.Minute)); !got {
+	if got := poller.shouldPollSession("", "sess-B", now.Add(time.Minute)); !got {
 		t.Fatalf("sess-B shouldPollSession = false, want true after configured interval %s", configured)
 	}
 }
@@ -1165,7 +1165,7 @@ func TestRefreshPRWithoutWebhookCreditLeavesPollIntervalAlone(t *testing.T) {
 	if err := credited.RefreshPR(ctx, "owner/repo", 42); err != nil {
 		t.Fatalf("RefreshPR returned error: %v", err)
 	}
-	if got := credited.intervalFor("sess-1", time.Now()); got != webhookHealthyInterval {
+	if got := credited.intervalFor("", "sess-1", time.Now()); got != webhookHealthyInterval {
 		t.Fatalf("RefreshPR interval = %v, want the webhook-healthy backoff %v", got, webhookHealthyInterval)
 	}
 
@@ -1173,12 +1173,12 @@ func TestRefreshPRWithoutWebhookCreditLeavesPollIntervalAlone(t *testing.T) {
 	if err := uncredited.RefreshPRWithoutWebhookCredit(ctx, "owner/repo", 42); err != nil {
 		t.Fatalf("RefreshPRWithoutWebhookCredit returned error: %v", err)
 	}
-	if got := uncredited.intervalFor("sess-1", time.Now()); got != 30*time.Second {
+	if got := uncredited.intervalFor("", "sess-1", time.Now()); got != 30*time.Second {
 		t.Fatalf("RefreshPRWithoutWebhookCredit interval = %v, want the configured 30s", got)
 	}
 	// The immediate-poll suppression is shared: both variants still record the
 	// poll, so a scheduled tick right behind the refresh is a no-op.
-	if uncredited.shouldPollSession("sess-1", time.Now()) {
+	if uncredited.shouldPollSession("", "sess-1", time.Now()) {
 		t.Fatal("expected the uncredited refresh to still suppress an immediate scheduled poll")
 	}
 }

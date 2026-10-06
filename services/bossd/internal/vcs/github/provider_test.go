@@ -778,15 +778,19 @@ func TestGetPRStatus_CommentedReviewDoesNotSuppressApprovedDecision(t *testing.T
 	}
 }
 
-func TestListOpenPRs_RetriesPrimaryRateLimit(t *testing.T) {
-	var calls atomic.Int32
+// TestListOpenPRs_PrimaryRateLimitDoesNotRetry pins that an exhausted primary
+// quota is not walked up the transient backoff ladder: the quota only returns
+// at its hourly reset, so retrying spends the wait re-hitting an empty quota.
+// The breaker tests in ratelimit_test.go cover what happens instead.
+func TestListOpenPRs_PrimaryRateLimitDoesNotRetry(t *testing.T) {
+	var listCalls atomic.Int32
 	var slept atomic.Int32
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
-		n := calls.Add(1)
-		if n == 1 {
-			return "", fmt.Errorf("gh pr list: HTTP 429: API rate limit exceeded for user ID")
+		if len(args) >= 2 && args[0] == "api" && args[1] == "rate_limit" {
+			return `{"resources":{"graphql":{"remaining":0,"reset":4102444800}}}`, nil
 		}
-		return `[]`, nil
+		listCalls.Add(1)
+		return "", fmt.Errorf("gh pr list: HTTP 429: API rate limit exceeded for user ID")
 	}
 
 	p := New(zerolog.Nop(),
@@ -796,14 +800,15 @@ func TestListOpenPRs_RetriesPrimaryRateLimit(t *testing.T) {
 		}),
 	)
 
-	if _, err := p.ListOpenPRs(context.Background(), "owner/repo"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := p.ListOpenPRs(context.Background(), "owner/repo")
+	if !errors.Is(err, vcs.ErrRateLimited) {
+		t.Fatalf("err = %v, want vcs.ErrRateLimited", err)
 	}
-	if got := calls.Load(); got != 2 {
-		t.Errorf("got %d calls, want 2", got)
+	if got := listCalls.Load(); got != 1 {
+		t.Errorf("got %d gh pr list calls, want 1", got)
 	}
-	if got := slept.Load(); got != 1 {
-		t.Errorf("got %d sleeps, want 1", got)
+	if got := slept.Load(); got != 0 {
+		t.Errorf("got %d sleeps, want 0", got)
 	}
 }
 
@@ -2177,11 +2182,23 @@ func TestIsGitHubTransientRefusesTheAnonymousRateLimit(t *testing.T) {
 	if isGitHubTransient(anonymous) {
 		t.Fatal("the anonymous rate limit is classified transient; it persists until credentials are fixed")
 	}
-	// The authenticated form must still be transient, or this guard has traded
-	// one misclassification for another.
+	// The authenticated form is not transient either, but for a different
+	// reason: it lasts until the hourly reset, so the rate-limit breaker pauses
+	// the quota rather than retrying it. It must still be recognised as a
+	// primary rate limit, or this guard has traded one misclassification for
+	// another.
 	authenticated := errors.New("gh api: HTTP 403: API rate limit exceeded for user ID 12345.")
-	if !isGitHubTransient(authenticated) {
-		t.Fatal("a genuine authenticated rate limit stopped being transient")
+	if isGitHubTransient(authenticated) {
+		t.Fatal("an exhausted primary quota is classified transient; the breaker owns it")
+	}
+	if !isPrimaryRateLimit(authenticated) {
+		t.Fatal("a genuine authenticated rate limit is no longer recognised as one")
+	}
+	if isPrimaryRateLimit(anonymous) {
+		t.Fatal("the anonymous rate limit is recognised as a primary quota; it is an auth failure")
+	}
+	if !isGitHubTransient(errors.New("gh pr list: HTTP 403: You have exceeded a secondary rate limit")) {
+		t.Fatal("a secondary rate limit stopped being transient")
 	}
 	// And the ordinary transient signatures are untouched.
 	if !isGitHubTransient(errors.New("gh pr view: HTTP 502 Bad Gateway")) {

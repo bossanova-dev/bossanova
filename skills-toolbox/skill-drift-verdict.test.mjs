@@ -968,7 +968,10 @@ test('the CLI over a vendored copy downgrades only an absent file its SKILL.md n
   // A reference in a file type outside any extension allowlist still counts.
   writeFileSync(skillMd, '# boss-plan\n')
   const script = path.join(copy.root, 'ns', 'boss-plan', 'toolbox', 'run-step')
-  writeFileSync(script, '#!/usr/bin/env python3\nimport unreleased_helper  # unreleased-helper.mjs\n')
+  writeFileSync(
+    script,
+    '#!/usr/bin/env python3\nimport unreleased_helper  # unreleased-helper.mjs\n',
+  )
   const extensionless = run(copy.viaLink)
   assert.equal(extensionless.status, 1, extensionless.stdout)
   assert.match(extensionless.stdout, /^BLOCKED: /)

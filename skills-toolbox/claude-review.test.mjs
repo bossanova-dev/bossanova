@@ -14,6 +14,7 @@ import {
   probe,
   resolveClaudeBin,
   resolveTimeoutMs,
+  resolveRunTimeoutMs,
   run,
   sanitizeOutput,
 } from './claude-review.mjs'
@@ -883,4 +884,54 @@ test('CLI run — requires --base and --head flags', () => {
   })
   assert.equal(result.status, 1)
   assert.match(result.stderr, /--head/)
+})
+
+// ---------------------------------------------------------------------------
+// Leg-fit timeout: run() with no explicit timeoutMs stays strictly below the leg
+// ---------------------------------------------------------------------------
+
+test('resolveRunTimeoutMs: the default helper timeout is clamped strictly below the leg', () => {
+  const lines = []
+  const stderr = { write: (line) => lines.push(line) }
+  const env = { BOSS_CROSS_REVIEW_TIMEOUT_MS: '300000' }
+  assert.equal(resolveRunTimeoutMs(env, { stderr }), 240000)
+  assert.deepEqual(lines, [
+    'claude-review: timeout clamped to 240000ms (requested 300000ms) to fit the 300000ms extension leg\n',
+  ])
+  const override = {
+    BOSS_CROSS_REVIEW_TIMEOUT_MS: '900000',
+    BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000',
+  }
+  assert.equal(resolveRunTimeoutMs(override, { stderr }), 540000)
+  lines.length = 0
+  assert.equal(resolveRunTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '120000' }, { stderr }), 120000)
+  assert.deepEqual(lines, [])
+})
+
+test('run: no explicit timeoutMs applies the leg-fit clamp and says so on stderr', async () => {
+  const dir = makeTmpDir()
+  const lines = []
+  const originalWrite = process.stderr.write
+  try {
+    const bin = writeFakeBin(dir, 'claude', 'echo "review: looks good"; exit 0')
+    process.stderr.write = (chunk) => {
+      lines.push(String(chunk))
+      return true
+    }
+    const result = await run({
+      env: { BOSS_CLAUDE_BIN: bin, BOSS_CROSS_REVIEW_TIMEOUT_MS: '300000' },
+      base: 'abc1234',
+      head: 'def5678',
+      repo: dir,
+    })
+    process.stderr.write = originalWrite
+    assert.equal(result.ok, true, result.stderr)
+    assert.ok(
+      lines.some((line) => line.includes('timeout clamped to 240000ms (requested 300000ms)')),
+      `expected the clamp note on stderr, got ${JSON.stringify(lines)}`,
+    )
+  } finally {
+    process.stderr.write = originalWrite
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

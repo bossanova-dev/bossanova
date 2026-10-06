@@ -289,6 +289,21 @@ test('notes discovery is stdout-only and exact for an empty root for every termi
   }
 })
 
+test('validateResult accepts lens and round envelopes that declare an inline fallback', () => {
+  for (const role of ['lens', 'round']) {
+    const envelope = {
+      ok: true,
+      extension: 'boss-review-example',
+      role,
+      items: [],
+      notes: '',
+      error: null,
+      fallback: 'wrapped reviewer unavailable; ran the inline rubric',
+    }
+    assert.deepEqual(validateResult(envelope, role), { ok: true, errors: [] })
+  }
+})
+
 test('validateResult accepts a well-formed notes envelope', () => {
   const envelope = {
     ok: true,
@@ -363,8 +378,10 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   // than an `items[]` findings array, and their schemas describe the named top-level fields their
   // documented results carry, which is what stopped `validateResult` answering `unknown role` for a
   // role discovery had just handed the core.
+  // BOS-1376 (2026-10-06): nine → ten; completion has its own validated result contract.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
+    'completion',
     'draft',
     'knowledge',
     'lens',
@@ -614,4 +631,54 @@ test('a renamed extension still named in a doc is reported as missing', () => {
     missingExtensionNames('lens example: `boss-review-golang-renamed`, `boss-review-x`', root),
     ['boss-review-golang-renamed'],
   )
+})
+
+test('completion extensions are discoverable and validate conditional merge results', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-build-merge', [
+    'name: boss-build-merge',
+    'x-boss-extension:',
+    '  extends: boss-build',
+    '  role: completion',
+  ])
+  assert.equal(
+    discoverExtensions({ core: 'boss-build', root, role: 'completion' }).extensions.length,
+    1,
+  )
+  const merged = {
+    ok: true,
+    extension: 'boss-build-merge',
+    role: 'completion',
+    action: 'merged',
+    reason: 'eligible',
+    mergeSha: 'a'.repeat(40),
+  }
+  const skipped = { ...merged, action: 'skipped', reason: 'not-opted-in', mergeSha: '' }
+  for (const result of [merged, skipped])
+    assert.equal(validateResult(result, 'completion').ok, true)
+  for (const result of [
+    { ...merged, mergeSha: '' },
+    { ...merged, mergeSha: 'bad' },
+    { ...skipped, mergeSha: merged.mergeSha },
+    { ...merged, action: 'other' },
+    { ...skipped, reason: '' },
+    { ...skipped, ok: false },
+  ])
+    assert.equal(validateResult(result, 'completion').ok, false, JSON.stringify(result))
+  const file = path.join(root, 'result.json')
+  fs.writeFileSync(file, JSON.stringify(merged))
+  const cli = spawnSync(
+    process.execPath,
+    [
+      path.join(import.meta.dirname, 'skill-extensions.mjs'),
+      'validate',
+      '--role',
+      'completion',
+      '--file',
+      file,
+    ],
+    { encoding: 'utf8' },
+  )
+  assert.equal(cli.status, 0, cli.stderr)
+  assert.equal(JSON.parse(cli.stdout).ok, true)
 })

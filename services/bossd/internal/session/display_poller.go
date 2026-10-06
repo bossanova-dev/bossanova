@@ -32,6 +32,7 @@ type DisplayPoller struct {
 	tracker            *status.DisplayTracker
 	snapshots          db.CheckSnapshotStore // optional; nil disables persistence
 	completionNotifier SessionCompletionNotifier
+	health             WebhookHealth        // optional; nil polls every repo at interval
 	archiver           SessionArchiver      // optional; nil disables archive-after-merge
 	archiveTracker     ArchiveWorkerTracker // optional; nil leaves archives outside shutdown coordination
 	interval           time.Duration
@@ -74,6 +75,13 @@ func NewDisplayPoller(
 // tests that don't want SQLite writes on every tick).
 func (p *DisplayPoller) SetSnapshotStore(s db.CheckSnapshotStore) {
 	p.snapshots = s
+}
+
+// SetWebhookHealth wires the webhook-delivery tracker. Sessions in a repo whose
+// webhooks reach the daemon are polled at webhookSafetyNetInterval instead of
+// interval. nil-safe: leaving it unset polls every repo at interval.
+func (p *DisplayPoller) SetWebhookHealth(h WebhookHealth) {
+	p.health = h
 }
 
 // SetCompletionNotifier wires the task-orchestrator completion hook for
@@ -145,7 +153,14 @@ func (p *DisplayPoller) recordRefresh(sessionID string, ts time.Time) {
 	}
 }
 
-func (p *DisplayPoller) intervalFor(sessionID string, now time.Time) time.Duration {
+// intervalFor is the poll interval for one session. Webhook evidence only ever
+// LENGTHENS it: a session a webhook refreshed recently backs off to at least
+// webhookHealthyInterval, and a session in a repo whose webhooks reach the
+// daemon backs off to at least webhookSafetyNetInterval. Both take the max with
+// the configured interval, so a deliberately long DisplayPollInterval is never
+// shortened by good news.
+func (p *DisplayPoller) intervalFor(repoOriginURL, sessionID string, now time.Time) time.Duration {
+	interval := p.interval
 	p.refreshMu.Lock()
 	last, ok := p.latestWebhookRefresh[sessionID]
 	if ok && now.Sub(last) > webhookHealthyWindow {
@@ -154,9 +169,12 @@ func (p *DisplayPoller) intervalFor(sessionID string, now time.Time) time.Durati
 	}
 	p.refreshMu.Unlock()
 	if ok && now.Sub(last) <= webhookHealthyWindow {
-		return webhookHealthyInterval
+		interval = max(interval, webhookHealthyInterval)
 	}
-	return p.interval
+	if p.health != nil && p.health.WebhookDeliveryHealthy(repoOriginURL) {
+		interval = max(interval, webhookSafetyNetInterval)
+	}
+	return interval
 }
 
 func (p *DisplayPoller) markPolled(sessionID string, ts time.Time) {
@@ -168,8 +186,8 @@ func (p *DisplayPoller) markPolled(sessionID string, ts time.Time) {
 	p.lastPoll[sessionID] = ts
 }
 
-func (p *DisplayPoller) shouldPollSession(sessionID string, now time.Time) bool {
-	interval := p.intervalFor(sessionID, now)
+func (p *DisplayPoller) shouldPollSession(repoOriginURL, sessionID string, now time.Time) bool {
+	interval := p.intervalFor(repoOriginURL, sessionID, now)
 
 	p.lastPollMu.Lock()
 	defer p.lastPollMu.Unlock()
@@ -216,12 +234,10 @@ func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prN
 // RefreshPRWithoutWebhookCredit re-polls one PR's display status on demand
 // without treating the refresh as evidence of webhook health. Callers that
 // refresh because the daemon itself just acted on the PR (MergeSession) have no
-// webhook to credit: crediting one would replace the session's scheduled poll
-// interval with webhookHealthyInterval, so at any DisplayPollInterval below
-// that (including the 2-minute default) a still-active session's status would
-// refresh LESS often after a blocked or failed merge than before it. Note
-// intervalFor substitutes rather than taking a max, so a configured interval
-// above webhookHealthyInterval would be shortened instead — either way the
+// webhook to credit: crediting one would stretch the session's scheduled poll
+// interval to webhookHealthyInterval, so at any DisplayPollInterval below that
+// (including the 2-minute default) a still-active session's status would
+// refresh LESS often after a blocked or failed merge than before it — the
 // caller's cadence should not hinge on who last refreshed. The immediate-poll
 // suppression (markPolled) still applies to both variants — that part is just
 // "this session was polled a moment ago".
@@ -274,7 +290,13 @@ func (p *DisplayPoller) refreshPR(ctx context.Context, repoOriginURL string, prN
 }
 
 // poll iterates all active sessions with PRs and updates display statuses.
+//
+// The scheduled sweep reads through the provider's short read cache
+// (vcs.WithCachedReads), so it shares one GitHub read per PR with the
+// state-machine poller. RefreshPR does not: it runs after a webhook or the
+// daemon's own action on the PR, when only a fresh read is useful.
 func (p *DisplayPoller) poll(ctx context.Context) {
+	ctx = vcs.WithCachedReads(ctx)
 	now := time.Now()
 	p.pruneWebhookRefreshes(now)
 	activeSessions := make(map[string]struct{})
@@ -300,7 +322,7 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 				continue
 			}
 			activeSessions[sess.ID] = struct{}{}
-			if !p.shouldPollSession(sess.ID, now) {
+			if !p.shouldPollSession(repo.OriginURL, sess.ID, now) {
 				continue
 			}
 			p.pollSession(ctx, repo, sess.ID, *sess.PRNumber)

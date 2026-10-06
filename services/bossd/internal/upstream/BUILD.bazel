@@ -24,6 +24,7 @@ go_library(
         "tokens.go",
         "webhook_dispatcher.go",
         "webhook_events.go",
+        "webhook_health.go",
     ],
     importpath = "github.com/recurser/bossd/internal/upstream",
     visibility = ["//services/bossd:__subpackages__"],
@@ -68,6 +69,7 @@ go_test(
         "snapshot_test.go",
         "stream_auth_wedge_test.go",
         "stream_bus_test.go",
+        "stream_halfopen_test.go",
         "stream_reconnect_test.go",
         "stream_reregister_test.go",
         "stream_teardown_test.go",
@@ -81,6 +83,7 @@ go_test(
         "tokens_refresh_test.go",
         "webhook_dispatcher_test.go",
         "webhook_events_test.go",
+        "webhook_health_test.go",
         "wiring_test.go",
     ],
     data = glob(["testdata/**"]) + glob(

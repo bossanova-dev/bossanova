@@ -271,19 +271,35 @@ export function record(ledger, name, update = {}) {
   return next
 }
 
-function validFindingsFile(path, info, marker = '') {
+// Extension-authored causes land in the single-line coverage token, so collapse every whitespace
+// run (including newlines from a captured stderr tail) to one space.
+function oneLine(value) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
+}
+
+// Classify one findings file: `valid` (completes its row, `fallback` set when the extension ran its
+// inline rubric instead of the reviewer it wraps), `failed` (an `ok: false` envelope — skips its row
+// with the extension's own error text), or `ignored`.
+function classifyFindingsFile(path, info, marker = '') {
   let parsed
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'))
   } catch {
-    return false
+    return { kind: 'ignored' }
   }
   if (Array.isArray(parsed)) {
-    return info?.type !== 'lens' || ['dispatched', 'inlined'].includes(marker)
+    const valid = info?.type !== 'lens' || ['dispatched', 'inlined'].includes(marker)
+    return valid ? { kind: 'valid', fallback: null } : { kind: 'ignored' }
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  if (!parsed || typeof parsed !== 'object') return { kind: 'ignored' }
+  if (parsed.ok === false) {
+    const error = oneLine(parsed.error)
+    return { kind: 'failed', cause: error || 'no error detail provided' }
+  }
   const expectedRole = info?.type === 'lens' ? 'lens' : 'round'
-  return validateResult(parsed, expectedRole).ok
+  if (!validateResult(parsed, expectedRole).ok) return { kind: 'ignored' }
+  const fallback = oneLine(parsed.fallback)
+  return { kind: 'valid', fallback: fallback || null }
 }
 
 function reviewerNameForFindings(filename) {
@@ -347,8 +363,25 @@ export function reconcile(
       const path = join(findingsDir, filename)
       const info = reviewerNameForFindings(filename)
       const marker = tierMarkerFor(path)
-      if (!validFindingsFile(path, info, marker)) continue
+      const result = classifyFindingsFile(path, info, marker)
+      if (result.kind === 'ignored') continue
       const rowName = rowNameForFinding(info, next.rows, populations)
+      if (result.kind === 'failed') {
+        const index = next.rows.findIndex((row) => row.name === rowName)
+        const current = index >= 0 ? next.rows[index] : null
+        // A failure never downgrades a completed row, and never rewrites a recorded timeout.
+        if (
+          current &&
+          (current.outcome === OUTCOMES.notReached || current.outcome === OUTCOMES.skipped)
+        ) {
+          next.rows[index] = normalizeRow({
+            ...current,
+            outcome: OUTCOMES.skipped,
+            cause: result.cause,
+          })
+        }
+        continue
+      }
       const index = next.rows.findIndex((row) => row.name === rowName)
       if (index < 0) {
         if (info?.type !== 'round' || !FALLBACK_ROUNDS.has(info.id)) continue
@@ -378,9 +411,9 @@ export function reconcile(
       next.rows[rowIndex] = normalizeRow({
         ...current,
         tier: tierAndMode.tier,
-        mode: tierAndMode.mode,
+        mode: result.fallback ? MODES.inlined : tierAndMode.mode,
         outcome: OUTCOMES.completed,
-        cause: null,
+        cause: result.fallback,
         completedAtMs,
         durationMs: Math.max(0, completedAtMs - next.seededAtMs),
       })
@@ -413,6 +446,84 @@ export function coverage(ledger) {
     else counts.notReached += 1
   }
   return counts
+}
+
+const MISS_LABELS = Object.freeze({
+  'inline-fallback': 'inline fallback',
+  [OUTCOMES.skipped]: 'skipped',
+  [OUTCOMES.timedOut]: 'timed out',
+  [OUTCOMES.notReached]: 'not reached',
+})
+const SECOND_VOICE = 'second-voice'
+
+function roundCapabilities(populations = {}) {
+  const capabilities = new Map()
+  for (const round of asArray(populations?.rounds)) {
+    const name = round?.name ?? round?.extension ?? round?.capability
+    if (nonEmptyString(name) && nonEmptyString(round?.capability)) {
+      capabilities.set(`round:${name}`, round.capability)
+    }
+  }
+  return capabilities
+}
+
+function capabilityOf(row, capabilities) {
+  if (row.name.startsWith('default:')) return row.name.slice('default:'.length)
+  return capabilities.get(row.name) ?? null
+}
+
+function ranForReal(row) {
+  return row.outcome === OUTCOMES.completed && row.mode !== MODES.inlined
+}
+
+function missFor(row) {
+  if (ranForReal(row)) return null
+  const kind = row.outcome === OUTCOMES.completed ? 'inline-fallback' : row.outcome
+  const fallbackCause = row.tier === 'tier3' ? 'inline rubric tier' : 'no cause recorded'
+  return { name: row.name, kind, cause: oneLine(row.cause) || fallbackCause }
+}
+
+function renderMiss(miss) {
+  return `${miss.name} ${MISS_LABELS[miss.kind]} (${miss.cause})`
+}
+
+/**
+ * Derive the published review-coverage and cross-model tokens from a reconciled ledger. Pure: the
+ * tokens can never claim more than the ledger rows record. A row that did not complete, or that
+ * completed by running an inline rubric, is a miss named with its recorded cause — except a
+ * `default:<capability>` row a completed same-capability round extension already covered.
+ */
+export function coverageTokens(ledger, populations = {}) {
+  const rows = normalizeLedger(ledger).rows
+  const capabilities = roundCapabilities(populations)
+  const coveredCapabilities = new Set(
+    rows
+      .filter((row) => row.name.startsWith('round:') && ranForReal(row))
+      .map((row) => capabilities.get(row.name))
+      .filter(nonEmptyString),
+  )
+  const misses = []
+  for (const row of rows) {
+    const miss = missFor(row)
+    if (!miss) continue
+    if (row.name.startsWith('default:') && coveredCapabilities.has(capabilityOf(row, capabilities)))
+      continue
+    misses.push(miss)
+  }
+  let coverageToken = 'full'
+  if (rows.length === 0) coverageToken = 'reduced (no reviewers recorded)'
+  else if (misses.length > 0) coverageToken = `reduced (${misses.map(renderMiss).join('; ')})`
+
+  const secondVoiceRows = rows.filter((row) => capabilityOf(row, capabilities) === SECOND_VOICE)
+  const ran = secondVoiceRows.some(ranForReal)
+  let crossModelToken = null
+  if (!ran) {
+    crossModelToken =
+      secondVoiceRows.length === 0
+        ? `skipped: no ${SECOND_VOICE} reviewer in this run`
+        : `skipped: ${secondVoiceRows.map((row) => renderMiss(missFor(row))).join('; ')}`
+  }
+  return { coverage: coverageToken, crossModel: { ran, token: crossModelToken }, misses }
 }
 
 function readJSONArg(value, label) {
@@ -450,11 +561,12 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    'usage: bs-review-ledger <seed|record|reconcile|coverage> [options]',
+    'usage: bs-review-ledger <seed|record|reconcile|coverage|tokens> [options]',
     '  seed --run-id <id> --populations <json-or-file> --out <path> [--now <ms>]',
     '  record --in <path> --out <path> --name <row> [--phase <phase>] [--tier <tier>] [--outcome <outcome>] [--cause <reason>]',
     '  reconcile --in <path> --out <path> --findings-dir <dir> --populations <json-or-file> [--invalid <json-or-file>]',
     '  coverage --in <path>',
+    '  tokens --in <path> --populations <json-or-file>',
   ].join('\n')
 }
 
@@ -495,6 +607,14 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === 'coverage') {
     process.stdout.write(`${JSON.stringify(coverage(readLedger(args.in)))}\n`)
+    return
+  }
+  if (command === 'tokens') {
+    const tokens = coverageTokens(
+      readLedger(args.in),
+      readJSONArg(args.populations, '--populations'),
+    )
+    process.stdout.write(`${JSON.stringify(tokens)}\n`)
     return
   }
   throw new Error(usage())

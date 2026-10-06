@@ -5,12 +5,15 @@ go_library(
     srcs = [
         "actionable_errors.go",
         "provider.go",
+        "ratelimit.go",
+        "readcache.go",
     ],
     importpath = "github.com/recurser/bossd/internal/vcs/github",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/vcs",
         "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_x_sync//singleflight",
     ],
 )
 
@@ -19,6 +22,8 @@ go_test(
     srcs = [
         "provider_e2e_test.go",
         "provider_test.go",
+        "ratelimit_test.go",
+        "readcache_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":github"],

@@ -230,8 +230,16 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			if tc.wantTrigger && got != models.GithubCallbackStateTriggered {
 				t.Errorf("state = %q, want triggered", got)
 			}
-			if !tc.wantTrigger && got != models.GithubCallbackStateActive {
-				t.Errorf("state = %q, want active (no trigger)", got)
+			// Not triggered means still waiting — or, on a merged PR whose
+			// state can no longer satisfy the trigger, retired as canceled
+			// (see TestEvaluatePR_CancelsCallbacksAMergedPRCanNoLongerSatisfy).
+			// Either way it must never have fired.
+			wantIdle := models.GithubCallbackStateActive
+			if unreachableAfterMerge(tc.status, vcs.EvaluateChecks("", tc.checks, nil).State, tc.trigger) {
+				wantIdle = models.GithubCallbackStateCanceled
+			}
+			if !tc.wantTrigger && got != wantIdle {
+				t.Errorf("state = %q, want %q (no trigger)", got, wantIdle)
 			}
 		})
 	}
@@ -651,4 +659,112 @@ func (c *countingProvider) ListWorkflowRuns(_ context.Context, _, _ string) ([]v
 func fixedNow() func() time.Time {
 	t := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	return func() time.Time { return t }
+}
+
+// TestEvaluatePR_CancelsCallbacksAMergedPRCanNoLongerSatisfy pins the cleanup
+// that keeps a merged PR from being polled for a day: boss-build arms
+// checks_passed and checks_failed in separate groups, and once the PR merges
+// green the checks_failed half can never fire. Left active it was re-read from
+// GitHub on every reconcile until its 24h expiry.
+func TestEvaluatePR_CancelsCallbacksAMergedPRCanNoLongerSatisfy(t *testing.T) {
+	cases := []struct {
+		name       string
+		trigger    models.GithubCallbackTrigger
+		checks     []vcs.CheckResult
+		wantCancel bool
+	}{
+		{"checks_failed after a green merge", models.GithubCallbackTriggerChecksFailed,
+			[]vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}, true},
+		{"checks_passed after a red merge", models.GithubCallbackTriggerChecksPassed,
+			[]vcs.CheckResult{completedCheck("build", vcs.CheckConclusionFailure)}, true},
+		{"ready_for_review on a merged PR", models.GithubCallbackTriggerReadyForReview, nil, true},
+		{"checks_passed_ready on a merged PR", models.GithubCallbackTriggerChecksPassedReady, nil, true},
+		{"closed on a merged PR", models.GithubCallbackTriggerClosed, nil, true},
+		// Checks still running can finish after the merge, either way.
+		{"checks_failed while checks are pending", models.GithubCallbackTriggerChecksFailed,
+			[]vcs.CheckResult{pendingCheck("build")}, false},
+		{"checks_passed while checks are pending", models.GithubCallbackTriggerChecksPassed,
+			[]vcs.CheckResult{pendingCheck("build")}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+				TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+				Trigger: tc.trigger, Message: "wait",
+			})
+			prov := &fakeProvider{status: prStatus(vcs.PRStateMerged), checks: tc.checks}
+			ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+			if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+				t.Fatalf("EvaluatePR: %v", err)
+			}
+			want := models.GithubCallbackStateActive
+			if tc.wantCancel {
+				want = models.GithubCallbackStateCanceled
+			}
+			if got := getState(t, store, cb.ID); got != want {
+				t.Fatalf("state = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestEvaluatePR_KeepsCallbacksOnAClosedUnmergedPR pins the other side: a
+// closed PR can be reopened, so its unsatisfied callbacks are left to expire.
+func TestEvaluatePR_KeepsCallbacksOnAClosedUnmergedPR(t *testing.T) {
+	store := newStore(t)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerReadyForReview, Message: "wait",
+	})
+	prov := &fakeProvider{status: prStatus(vcs.PRStateClosed)}
+	ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("EvaluatePR: %v", err)
+	}
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateActive {
+		t.Fatalf("state = %q, want active", got)
+	}
+}
+
+type stubWebhookHealth map[string]bool
+
+func (s stubWebhookHealth) WebhookDeliveryHealthy(repo string) bool { return s[repo] }
+
+// TestReconcileAll_SafetyNetForWebhookHealthyRepos pins that the periodic
+// reconcile stops re-reading PRs whose repo's webhooks reach the daemon (each
+// webhook already runs EvaluatePR) except once per safety-net interval, while
+// a repo without that evidence is re-read every pass.
+func TestReconcileAll_SafetyNetForWebhookHealthyRepos(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		healthy bool
+		want    int
+	}{
+		{"webhook-healthy repo", true, 2},
+		{"repo without webhook evidence", false, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			mustCreate(t, store, db.CreateGithubCallbackParams{
+				TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+				Trigger: models.GithubCallbackTriggerMerged, Message: "wait",
+			})
+			now := time.Now()
+			prov := &fakeProvider{status: prStatus(vcs.PRStateOpen)}
+			ev := NewEvaluator(store, prov, func() time.Time { return now }, zerolog.Nop())
+			ev.SetWebhookHealth(stubWebhookHealth{"acme/widgets": tc.healthy})
+
+			// Passes at t=0, 5m, 10m, 15m: the healthy repo is due at 0 and 10m.
+			for i := 0; i < 4; i++ {
+				if err := ev.ReconcileAll(context.Background()); err != nil {
+					t.Fatalf("ReconcileAll: %v", err)
+				}
+				now = now.Add(5 * time.Minute)
+			}
+			if prov.statusCalls != tc.want {
+				t.Fatalf("PR read %d times over four passes, want %d", prov.statusCalls, tc.want)
+			}
+		})
+	}
 }

@@ -5,11 +5,11 @@
 	debt-knip \
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
-	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-warehouse grant-warehouse-reads bootstrap-posthog-raw deploy-warehouse-flow test-docs test-integration-bossd test-manifest test-manifest-update \
+	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-warehouse test-hermes-plugin grant-warehouse-reads bootstrap-posthog-raw deploy-warehouse-flow test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
-	lint-proto-breaking post-rebase-check check-race-budget \
+	lint-proto-breaking post-rebase-check apiversion-check check-race-budget \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Fast affected check (default target) — lint + test only the affected/changed
@@ -189,6 +189,15 @@ BOSS_SKILL_FILES := $(shell find $(SKILLS_SRC_DIR) -type f 2>/dev/null)
 # rule with no payload prerequisite at all and silently reinstate the stale-embed
 # bug. Named, make instead fails loudly with "No rule to make target".
 BOSS_SKILL_DIRS := $(SKILLS_SRC_DIR) $(shell find $(SKILLS_SRC_DIR) -type d 2>/dev/null)
+# BOSS_HERMES_PLUGIN_*: services/boss/internal/hermes embeds `plugin/*.py` and
+# `plugin/skills/*/SKILL.md` — never plugin/tests/ or __pycache__/ — so the walk
+# is filtered to exactly those patterns. Its directories are named for the same
+# deletion reason as the skill payload above.
+HERMES_PLUGIN_DIR := services/boss/internal/hermes/plugin
+BOSS_HERMES_PLUGIN_FILES := $(shell find $(HERMES_PLUGIN_DIR) -maxdepth 1 -type f -name '*.py' 2>/dev/null) \
+	$(shell find $(HERMES_PLUGIN_DIR)/skills -type f -name SKILL.md 2>/dev/null)
+BOSS_HERMES_PLUGIN_DIRS := $(HERMES_PLUGIN_DIR) $(HERMES_PLUGIN_DIR)/skills \
+	$(shell find $(HERMES_PLUGIN_DIR)/skills -mindepth 1 -type d 2>/dev/null)
 BOSSD_MIGRATION_FILES := $(shell find services/bossd/migrations -type f -name '*.sql' 2>/dev/null)
 BOSSD_MIGRATION_DIRS := services/bossd/migrations
 BOSSO_MIGRATION_FILES := $(shell find services/bosso/migrations_postgres -type f -name '*.sql' 2>/dev/null)
@@ -497,7 +506,7 @@ endif
 ## build: Build service binaries (generates protos first if needed)
 build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
-$(BIN_DIR)/boss: $(GEN_STAMP) $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES)
+$(BIN_DIR)/boss: $(GEN_STAMP) $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES) $(BOSS_HERMES_PLUGIN_DIRS) $(BOSS_HERMES_PLUGIN_FILES)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
@@ -892,6 +901,14 @@ endif
 test-warehouse: $(WAREHOUSE_TEST_PG_PREREQS)
 	WAREHOUSE_TEST_ADMIN_URL='$(WAREHOUSE_TEST_ADMIN_URL)' bash services/warehouse/scripts/test.sh
 
+## test-hermes-plugin: Run the Hermes plugin's standard-library unittest suite
+## (services/boss/internal/hermes/plugin/tests) against a fake stdio MCP server:
+## registration, tool round trips, error mapping, restart after a crash, timeouts
+## and config precedence. Needs python3 >= 3.10 and nothing else. The Go renderer
+## that embeds the plugin is tested by test-boss.
+test-hermes-plugin:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s services/boss/internal/hermes/plugin/tests -v
+
 ## grant-warehouse-reads: Owner step. Apply the warehouse role's read grants, minus
 ## withheld credential columns, as the app-table owner. Needs WAREHOUSE_ADMIN_URL
 ## (the app user's URL, e.g. through `make db-production`) and WAREHOUSE_ROLE.
@@ -1062,8 +1079,16 @@ BUF_BREAKING_BASE ?= .git\#branch=origin/main
 lint-proto-breaking:
 	buf breaking --against '$(BUF_BREAKING_BASE)'
 
+## apiversion-check: Reconcile this branch's API-version contracts against origin/main and
+## origin/production, then run the apiversion ledger/registry/OpenAPI/web/changelog sync tests.
+# --fetch is deliberate and has no offline bypass: a stale local origin/production is exactly the
+# bug this gate exists to catch. Offline it exits 2 (unevaluated) and says why.
+apiversion-check:
+	node scripts/apiversion-ledger.mjs check --fetch
+	cd lib/bossalib && go test -count=1 -run 'Released|DefaultRegistry|OpenAPI|WebAPIVersion|Changelog|ProductionChanges' ./apiversion/
+
 ## post-rebase-check: Re-run deterministic checks and re-measure pinned values after a rebase.
-post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test
+post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test apiversion-check
 
 lint-bossalib: lint-check-version
 	node scripts/lint-affected.mjs --module lib/bossalib

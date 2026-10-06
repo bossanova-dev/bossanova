@@ -533,7 +533,35 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{}, SwitchActiveOrganizationRetiredMessageChange{}, AbandonedCheckoutStatusChange{}, CloudAccessOrganizationChange{}, ProxyListSessionsOwnerResolutionChange{}, ProxyListReposHolderResolutionChange{}, PendingInvitationResponseChange{}, AcceptedInvitationResponseChange{}, SupersededCredentialClassChange{}, RefreshChainUnprovenOutcomeChange{}, SessionListRankOrderChange{}, WaitingDemotionLabelChange{})
+	c, err := NewChanges(
+		DefaultRegistry(),
+		OrphanedStateChange{},
+		AgentAuthFailedChange{},
+		UnmanagedLabelChange{},
+		LimitedChatStatusChange{},
+		NoEligibleAccountChange{},
+		ErroredStatusChange{},
+		RespawnSameAccountOutcomeChange{},
+		AgentStalledChange{},
+		WaitingChatStatusChange{},
+		DraftPRFailureLabelChange{},
+		GateFailedOutcomeChange{},
+		SwitchDeadlineCodeChange{},
+		SwitchResultCeilingMessageChange{},
+		SwitchCanceledCodeChange{},
+		StaleCheckStateChange{},
+		SwitchActiveOrganizationRetiredMessageChange{},
+		AbandonedCheckoutStatusChange{},
+		CloudAccessOrganizationChange{},
+		ProxyListSessionsOwnerResolutionChange{},
+		ProxyListReposHolderResolutionChange{},
+		PendingInvitationResponseChange{},
+		AcceptedInvitationResponseChange{},
+		SupersededCredentialClassChange{},
+		RefreshChainUnprovenOutcomeChange{},
+		SessionListRankOrderChange{},
+		WaitingDemotionLabelChange{},
+	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}

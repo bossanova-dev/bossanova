@@ -202,7 +202,7 @@ func rootCmd() *cobra.Command {
 	addGrouped("account", accountCmd())
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
-	addGrouped("mcp", mcpCmd())
+	addGrouped("mcp", mcpCmd(), hermesCmd())
 	// `boss init` joins the existing `skills` group rather than minting a new
 	// one: it writes the config the boss skills read, so it belongs beside the
 	// commands that install them.
@@ -471,14 +471,15 @@ func newCmd() *cobra.Command {
 	cmd.Flags().String("account", "", "Account id or label to run this session under (empty = system default)")
 	cmd.Flags().Bool("detach", false,
 		"A no-op on the non-interactive --repo + --prompt path, which always runs "+
-			"headlessly, prints session-id as soon as the session exists, prints chat-id later "+
+			"unattended (BOSS_UNATTENDED=true; skills take their headless branch), prints session-id as soon as the session exists, prints chat-id later "+
 			"if the daemon provides one, and streams setup progress on stderr; --tmux-unattended is the "+
 			"distinct durable-pane option")
 	cmd.Flags().Bool("no-attach", false, "Alias for --detach")
 	cmd.Flags().Bool("tmux-unattended", false,
 		"Host the session in a durable tmux pane that survives a daemon restart and is "+
 			"attach-safe (independent of --detach, which only governs whether this command "+
-			"attaches a chat pane before it exits)")
+			"attaches a chat pane before it exits). Not needed for unattended mode: every "+
+			"--repo + --prompt run already gets BOSS_UNATTENDED=true")
 	cmd.Flags().Bool("defer-pr", false,
 		"Open no draft PR up front; a PR is opened at finalize only if the run produced "+
 			"commits. For runs not expected to change the repository. Pair with "+
@@ -989,6 +990,7 @@ var (
 	skillInstallAgents = []skillInstallAgent{
 		{name: "Claude", command: "claude", agent: libskillinstall.AgentClaude},
 		{name: "Codex", command: "codex", agent: libskillinstall.AgentCodex},
+		{name: "Hermes", command: "hermes", agent: libskillinstall.AgentHermes},
 	}
 	skillInstallLookPath   = exec.LookPath
 	skillInstallIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }

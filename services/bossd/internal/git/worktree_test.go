@@ -172,6 +172,99 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+// assertSelfTracking fails unless branch's upstream config names its own ref
+// on origin rather than the base it was started from (BOS-1363).
+func assertSelfTracking(t *testing.T, repoDir, branch string) {
+	t.Helper()
+	if got := gitOutput(t, repoDir, "config", "--get", "branch."+branch+".remote"); got != "origin" {
+		t.Errorf("branch.%s.remote = %q, want %q", branch, got, "origin")
+	}
+	if got, want := gitOutput(t, repoDir, "config", "--get", "branch."+branch+".merge"), "refs/heads/"+branch; got != want {
+		t.Errorf("branch.%s.merge = %q, want %q", branch, got, want)
+	}
+}
+
+// TestCreate_BranchTracksItself pins BOS-1363: a fresh session branch started
+// from origin/<base> must not inherit the base as its upstream. Before the first
+// push neither @{u} nor @{push} resolves (no base is implied); after bossd's
+// Push both name origin/<branch> and HEAD equals @{push}.
+func TestCreate_BranchTracksItself(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Self tracking",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	branch := result.BranchName
+	assertSelfTracking(t, repoDir, branch)
+
+	// Before the first push origin/<branch> does not exist, so @{u} must fail
+	// to resolve rather than silently naming origin/main.
+	probe := exec.Command("git", "rev-parse", "--abbrev-ref", "@{u}")
+	probe.Dir = result.WorktreePath
+	if out, err := probe.CombinedOutput(); err == nil {
+		t.Fatalf("@{u} resolved before any push to %q, want an error", strings.TrimSpace(string(out)))
+	}
+
+	gitOutput(t, result.WorktreePath, "commit", "--allow-empty", "-m", "session work")
+	if err := mgr.Push(ctx, result.WorktreePath, branch); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	if got, want := gitOutput(t, result.WorktreePath, "rev-parse", "--abbrev-ref", "@{u}"), "origin/"+branch; got != want {
+		t.Errorf("@{u} after push = %q, want %q", got, want)
+	}
+	head := gitOutput(t, result.WorktreePath, "rev-parse", "HEAD")
+	if push := gitOutput(t, result.WorktreePath, "rev-parse", "@{push}"); push != head {
+		t.Errorf("@{push} = %q, want HEAD %q", push, head)
+	}
+}
+
+// TestCreate_BarePushLandsOnSessionBranch pins the other half of BOS-1363:
+// before bossd ever pushes, a bare `git push` from the created worktree (git's
+// default push.default=simple) lands on origin/<branch> and leaves the remote
+// base branch untouched. With the base as upstream git refused this push.
+func TestCreate_BarePushLandsOnSessionBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Bare push",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	branch := result.BranchName
+	remoteMainBefore := gitOutput(t, repoDir, "ls-remote", "origin", "refs/heads/main")
+
+	gitOutput(t, result.WorktreePath, "commit", "--allow-empty", "-m", "session work")
+	head := gitOutput(t, result.WorktreePath, "rev-parse", "HEAD")
+	// Pin push.default so a developer's global config cannot change the verdict.
+	gitOutput(t, result.WorktreePath, "-c", "push.default=simple", "push")
+
+	if remoteBranch := gitOutput(t, repoDir, "ls-remote", "origin", "refs/heads/"+branch); !strings.HasPrefix(remoteBranch, head) {
+		t.Errorf("origin/%s = %q, want prefix %q", branch, remoteBranch, head)
+	}
+	if remoteMainAfter := gitOutput(t, repoDir, "ls-remote", "origin", "refs/heads/main"); remoteMainAfter != remoteMainBefore {
+		t.Errorf("origin/main moved: before %q, after %q", remoteMainBefore, remoteMainAfter)
+	}
+}
+
 // TestCreate_FailingSetupScriptIsNonFatal pins the degraded-but-created
 // behaviour: a setup script that exits non-zero must not abort worktree
 // creation. The worktree is valid, so Create returns a result with SetupErr
@@ -1827,6 +1920,50 @@ func TestResurrect_BranchDeletedRecreatesFromBase(t *testing.T) {
 	if branchTip != mainTip {
 		t.Errorf("recreated branch tip = %q, want main tip %q", branchTip, mainTip)
 	}
+}
+
+// TestResurrect_RecreatedBranchTracksItself pins BOS-1363 on the resurrect
+// recreate-branch path: a branch recreated from refs/remotes/origin/<base> gets
+// the same self-tracking config as a fresh Create, not the base as upstream.
+func TestResurrect_RecreatedBranchTracksItself(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect tracking",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Remove the worktree, the local branch and its config section, and the
+	// local base, so the recreate falls through to refs/remotes/origin/main —
+	// the remote-tracking start point that used to record the base as upstream.
+	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	gitOutput(t, repoDir, "worktree", "prune")
+	gitOutput(t, repoDir, "checkout", "--detach")
+	gitOutput(t, repoDir, "branch", "-D", result.BranchName, "main")
+	if _, err := runGit(ctx, repoDir, "config", "--get", "branch."+result.BranchName+".merge"); err == nil {
+		t.Fatal("precondition: branch config survived branch -D")
+	}
+
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: result.WorktreePath,
+		BranchName:   result.BranchName,
+		BaseBranch:   "main",
+	}); err != nil {
+		t.Fatalf("Resurrect: %v", err)
+	}
+	assertSelfTracking(t, repoDir, result.BranchName)
 }
 
 // TestResurrect_ZeroCommitBranchRecreatesFromBase covers the second BOS-180

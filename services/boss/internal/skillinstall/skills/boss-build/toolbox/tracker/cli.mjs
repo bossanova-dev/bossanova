@@ -434,7 +434,13 @@ async function runFetchCandidates(rest, { write, errWrite, env, resolveAdapter, 
   let serialized
   try {
     serialized = JSON.stringify(
-      candidates.map((row) => ({ ...row, keyChanges: keyChangesSection(config, row.description) })),
+      // `stateScope` records whether the state scan used the default states: a `--state`
+      // override narrows it, so the deps verb must not treat the file as a complete set.
+      candidates.map((row) => ({
+        ...row,
+        keyChanges: keyChangesSection(config, row.description),
+        stateScope: states.length ? 'override' : 'default',
+      })),
     )
   } catch {
     return fail('could not serialize candidates')

@@ -723,6 +723,12 @@ type GithubCallbackStore interface {
 	// ObserveBaseline marks the first transition-required evaluation as observed
 	// without firing the callback or canceling its group siblings.
 	ObserveBaseline(ctx context.Context, id string, now time.Time) error
+	// CancelUnreachable cancels an ACTIVE callback whose trigger the PR can no
+	// longer reach (e.g. checks_failed on a PR that merged green), recording
+	// event in last_event. It touches only that row — no group siblings — and
+	// returns ErrGithubCallbackTriggerConflict if the row is no longer active,
+	// or sql.ErrNoRows if absent.
+	CancelUnreachable(ctx context.Context, id, event string, now time.Time) error
 	// ExpireOverdue transitions every non-terminal callback whose expires_at is at
 	// or before now to the expired state, returning the number of rows changed.
 	ExpireOverdue(ctx context.Context, now time.Time) (int, error)

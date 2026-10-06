@@ -35,6 +35,7 @@ test('terminal routes cover exactly the four published outcomes', () => {
     'blocked-pr-left-draft',
     'entry-state-restored',
     'no-change-breadcrumb-written',
+    'pr-merged-by-completion',
   ])
   for (const [outcome, tokens] of Object.entries(TERMINAL_ROUTES)) {
     assert.ok(tokens.length > 0, `${outcome} must owe at least one token`)
@@ -180,4 +181,26 @@ test('assertRouteSatisfied can classify in-memory stamps', () => {
     ).honestOutcome,
     'PARTIAL',
   )
+})
+
+test('merged REVIEW_READY retains its outcome with completion stamped before release', () => {
+  const stamps = TERMINAL_ROUTES.REVIEW_READY.map((token) => ({ token }))
+  stamps.splice(
+    stamps.findIndex(({ token }) => token === 'lock-released'),
+    0,
+    { token: 'pr-merged-by-completion' },
+  )
+  assert.equal(assertRouteSatisfied('REVIEW_READY', stamps).ok, true)
+  for (const outcome of Object.keys(TERMINAL_ROUTES)) {
+    const tokens = TERMINAL_ROUTES[outcome]
+    assert.ok(tokens.indexOf('stop-hooks-removed') < tokens.indexOf('completion-phase-done'))
+    assert.ok(tokens.indexOf('completion-phase-done') < tokens.indexOf('lock-released'))
+    assert.equal(
+      assertRouteSatisfied(
+        outcome,
+        tokens.filter((t) => t !== 'completion-phase-done').map((token) => ({ token })),
+      ).ok,
+      false,
+    )
+  }
 })

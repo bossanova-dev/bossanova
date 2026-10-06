@@ -60,6 +60,17 @@ async function fetchCandidates(
   return { code, out, err, query }
 }
 
+test('fetch-candidates marks every row of a --state-narrowed fetch as an override', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    const { code } = await fetchCandidates(['--out-file', file, '--state', 'Todo'])
+    assert.equal(code, 0)
+    const rows = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.ok(rows.length > 0)
+    assert.ok(rows.every((row) => row.stateScope === 'override'))
+  })
+})
+
 test('fetch-candidates atomically writes full candidates.json with one secret-free stat receipt', async () => {
   await withScratch(async (dir) => {
     const file = path.join(dir, 'candidates.json')
@@ -90,6 +101,7 @@ test('fetch-candidates atomically writes full candidates.json with one secret-fr
     assert.equal(query.states.length, 3)
     const rows = JSON.parse(fs.readFileSync(file, 'utf8'))
     assert.equal(rows[0].keyChanges, '- `app/file.mjs`: UNIQUE_BODY_TOKEN\n  exact continuation\n')
+    assert.equal(rows[0].stateScope, 'default', 'a default-state fetch says so on every row')
     assert.deepEqual(
       validateDependencyScanInput({
         subject: { ...fullCandidate, id: 'subject' },
@@ -1656,6 +1668,33 @@ test('classify-outcome reads an explicit --status when the text carries none', (
     classify(['--observed', 'upstream said no', '--status', '429']).machine,
     'tracker-outcome verdict=retryable reason=rate-limited retry=yes operation=read',
   )
+})
+
+test('classify-outcome answers a 502 write indeterminate and a 1101 by operation', () => {
+  const cases = [
+    [
+      ['--observed', 'HTTP 502 upstream_unavailable', '--operation', 'write'],
+      'tracker-outcome verdict=indeterminate reason=write-may-have-applied retry=no operation=write',
+    ],
+    [
+      ['--observed', 'HTTP 502 upstream_unavailable', '--operation', 'read'],
+      'tracker-outcome verdict=retryable reason=server-error retry=yes operation=read',
+    ],
+    [
+      ['--observed', 'Cloudflare error 1101 Worker threw exception. Do not retry'],
+      'tracker-outcome verdict=retryable reason=edge-worker-exception retry=yes operation=read',
+    ],
+    [
+      ['--observed', 'error code: 1101', '--operation', 'write'],
+      'tracker-outcome verdict=indeterminate reason=write-may-have-applied retry=no operation=write',
+    ],
+  ]
+  for (const [args, line] of cases) {
+    const { code, machine, err } = classify(args)
+    assert.equal(code, 0, `${args.join(' ')} must exit 0`)
+    assert.equal(err, '')
+    assert.equal(machine, line)
+  }
 })
 
 test('classify-outcome exits non-zero with a diagnostic and EMPTY stdout when the observation is missing', () => {

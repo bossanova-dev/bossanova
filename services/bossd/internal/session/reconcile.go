@@ -36,6 +36,12 @@ const defaultPRAssociationCacheTTL = 60 * time.Second
 // association that lands a few seconds late.
 const defaultPRAssociationFailureTTL = 15 * time.Second
 
+// cronTitleRecheckInterval is how long the stale-cron-title pass leaves a
+// session alone after its PR was read and offered no better title. A PR whose
+// own title is still the cron default (the agent never renamed it) otherwise
+// costs one GitHub read every reconcile tick for the session's whole life.
+const cronTitleRecheckInterval = 15 * time.Minute
+
 // errCachedPRListing marks an error served from the negative cache rather than
 // from a fresh provider call.
 //
@@ -104,6 +110,9 @@ type PRAssociationResolver struct {
 	failureTTL time.Duration
 	now        func() time.Time
 	prCache    map[string]prCacheEntry
+	// cronTitleChecked records, per session, the PR and time of the last
+	// stale-cron-title read that found nothing to adopt. Guarded by mu.
+	cronTitleChecked map[string]cronTitleCheck
 
 	// flights collapses concurrent misses for one cache key onto a single
 	// provider call. The cache alone cannot do this: main.go shares this
@@ -112,6 +121,12 @@ type PRAssociationResolver struct {
 	// repo then costs one gh call PER CONCURRENT PASS — the exact per-call cost
 	// the negative cache exists to remove. Keyed identically to prCache.
 	flights singleflight.Group
+}
+
+// cronTitleCheck is one remembered stale-cron-title read.
+type cronTitleCheck struct {
+	prNumber  int
+	checkedAt time.Time
 }
 
 // NewPRAssociationResolver creates a PR association resolver with the default
@@ -511,10 +526,16 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 	if r.cronJobs == nil {
 		return 0
 	}
+	// A background read: the PR status is shared with the pollers through the
+	// provider's read cache.
+	ctx = vcs.WithCachedReads(ctx)
 	var repaired int64
 	for _, sess := range sessions {
 		if sess == nil || sess.ArchivedAt != nil || sess.PRNumber == nil ||
 			sess.CronJobID == nil || *sess.CronJobID == "" {
+			continue
+		}
+		if r.cronTitleRecentlyChecked(sess.ID, *sess.PRNumber) {
 			continue
 		}
 		updatedSess, changed, err := adoptPRTitleWhenCronTitleStale(
@@ -526,6 +547,7 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 			continue
 		}
 		if !changed {
+			r.rememberCronTitleChecked(sess.ID, *sess.PRNumber)
 			continue
 		}
 		repaired++
@@ -534,6 +556,33 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 		}
 	}
 	return repaired
+}
+
+// cronTitleRecentlyChecked reports whether sessionID's PR was read for a better
+// title within cronTitleRecheckInterval and offered none. A different PR number
+// is a different question, so it is never suppressed.
+func (r *PRAssociationResolver) cronTitleRecentlyChecked(sessionID string, prNumber int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	check, ok := r.cronTitleChecked[sessionID]
+	return ok && check.prNumber == prNumber && r.now().Sub(check.checkedAt) < cronTitleRecheckInterval
+}
+
+func (r *PRAssociationResolver) rememberCronTitleChecked(sessionID string, prNumber int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cronTitleChecked == nil {
+		r.cronTitleChecked = make(map[string]cronTitleCheck)
+	}
+	now := r.now()
+	// Bounded by live cron sessions; drop long-expired rows so archived
+	// sessions do not accumulate.
+	for id, check := range r.cronTitleChecked {
+		if now.Sub(check.checkedAt) >= 4*cronTitleRecheckInterval {
+			delete(r.cronTitleChecked, id)
+		}
+	}
+	r.cronTitleChecked[sessionID] = cronTitleCheck{prNumber: prNumber, checkedAt: now}
 }
 
 // NeedsPRAssociation reports whether a session is ready for PR discovery.
@@ -686,7 +735,9 @@ func (r *PRAssociationResolver) listOnce(ctx context.Context, cacheKey, repoID, 
 
 // listAndCache is the flight body: one provider call, one cache write.
 func (r *PRAssociationResolver) listAndCache(ctx context.Context, cacheKey, repoID, originURL string) ([]vcs.PRSummary, error) {
-	openPRs, err := r.provider.ListOpenPRs(ctx, originURL)
+	// A background read: it may share the provider's cached open-PR list with
+	// the plugin host's listings of the same repo.
+	openPRs, err := r.provider.ListOpenPRs(vcs.WithCachedReads(ctx), originURL)
 	if err != nil {
 		listErr := fmt.Errorf("list open PRs for repo %q: %w", repoID, err)
 		r.rememberListingFailure(ctx, cacheKey, listErr)

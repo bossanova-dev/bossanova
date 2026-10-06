@@ -39,6 +39,7 @@ type Agent string
 const (
 	AgentClaude Agent = "claude"
 	AgentCodex  Agent = "codex"
+	AgentHermes Agent = "hermes"
 )
 
 // DefaultDir returns the global Claude skills directory (~/.claude/skills).
@@ -46,8 +47,24 @@ func DefaultDir() (string, error) {
 	return DirForAgent(AgentClaude)
 }
 
+// HermesSkillsDir returns the skills directory inside an explicit Hermes home,
+// for callers that have already resolved the home and must not consult the
+// HERMES_HOME environment variable.
+func HermesSkillsDir(hermesHome string) string {
+	return filepath.Join(hermesHome, "skills")
+}
+
 // DirForAgent returns the global skill directory for a supported coding agent.
+// Hermes honours an absolute HERMES_HOME (its own home/profile selector) and
+// otherwise uses ~/.hermes/skills; a relative HERMES_HOME is ignored rather
+// than failing, because skills install must not fail closed on a cosmetic env
+// value.
 func DirForAgent(agent Agent) (string, error) {
+	if agent == AgentHermes {
+		if hermesHome := os.Getenv("HERMES_HOME"); filepath.IsAbs(hermesHome) {
+			return HermesSkillsDir(hermesHome), nil
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -57,6 +74,8 @@ func DirForAgent(agent Agent) (string, error) {
 		return filepath.Join(home, ".claude", "skills"), nil
 	case AgentCodex:
 		return filepath.Join(home, ".codex", "skills"), nil
+	case AgentHermes:
+		return HermesSkillsDir(filepath.Join(home, ".hermes")), nil
 	default:
 		return "", fmt.Errorf("unsupported agent %q", agent)
 	}

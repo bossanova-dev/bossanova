@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1101,10 +1101,12 @@ test('block-boundary-blank-line: a blank line between two list items agrees with
 })
 
 test('block-boundary-blank-line near-miss: a PARAGRAPH between list items is never absorbed', () => {
-  // The blank lines flanking a paragraph do not qualify at the paragraph end, so nothing is
-  // dropped and the paragraph's own bytes survive: two lists split by prose cannot become one.
+  // The blank line BEFORE the paragraph never qualifies — a paragraph is not a closing line — and
+  // the paragraph's own bytes always survive, so two lists split by prose cannot become one. Since
+  // BOS-1356 the blank line AFTER it does qualify (paragraph -> list item renders the same either
+  // way), which is why this asserts the canonical form rather than the input returned verbatim.
   const split = '* a\n\nA paragraph between them.\n\n* b'
-  assert.equal(canonBlank(split), split, 'neither flanking blank line qualifies')
+  assert.equal(canonBlank(split), '* a\n\nA paragraph between them.\n* b')
   assert.notEqual(
     canonBlank(split),
     canonBlank('* a\n* b'),
@@ -1353,4 +1355,510 @@ test('separate Planning bullets raise no merged-list-item cause', () => {
   const result = verify(text, text)
   assert.equal(result.exitCode, 0)
   assert.equal(result.cause, WRITEBACK_CAUSES.EQUAL)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1356 note #1 — `backslash-escape-insertion`.
+//
+// Measured (BOS-1311): the tracker stored `stg_<source>__` inside `## Original notes` as
+// `stg\_<source>\_\_`. The verbatim-block conjunct turned that into blocking `drift` on a correct
+// write-back. The canonical form DROPS a backslash that escapes `_` or `*` — the two characters
+// measured — and nothing else. The near misses are what bound it: an escaped backslash is a
+// different character, and a backslash inside a code span or a fence is literal and visible.
+// ---------------------------------------------------------------------------
+
+const ESCAPE_TRANSFORM = 'backslash-escape-insertion'
+const escapeOnly = new Set([ESCAPE_TRANSFORM])
+const canonEsc = (text) => normalizeDescription(text, escapeOnly)
+
+test('backslash-escape-insertion: the measured underscore pair and an asterisk pair agree', () => {
+  assert.equal(canonEsc('stg\\_<source>\\_\\_'), canonEsc('stg_<source>__'))
+  assert.equal(canonEsc('a 2\\*3 product'), canonEsc('a 2*3 product'))
+  assert.equal(canonEsc('stg\\_<source>\\_\\_'), 'stg_<source>__')
+})
+
+test('backslash-escape-insertion near-miss: an ESCAPED BACKSLASH before `_` is left alone', () => {
+  // `\\_` is a literal backslash followed by `_`: the run of backslashes is even, so none of them
+  // escapes the underscore. Counting only the previous character would strip the second one.
+  assert.equal(canonEsc('stg\\\\_x'), 'stg\\\\_x')
+  assert.notEqual(canonEsc('stg\\\\_x'), canonEsc('stg_x'))
+  // An odd run of three is an escaped backslash plus an escaped underscore: exactly one is dropped.
+  assert.equal(canonEsc('stg\\\\\\_x'), 'stg\\\\_x')
+})
+
+test('backslash-escape-insertion near-miss: a backslash inside an inline code span is literal', () => {
+  assert.equal(canonEsc('run `stg\\_x` now'), 'run `stg\\_x` now')
+  assert.notEqual(canonEsc('run `stg\\_x` now'), canonEsc('run `stg_x` now'))
+  // A double-backtick span is closed only by a double-backtick run.
+  assert.equal(canonEsc('run ``a ` b\\_c`` now'), 'run ``a ` b\\_c`` now')
+  // Text AFTER the code span is still canonicalized.
+  assert.equal(canonEsc('`a\\_b` and c\\_d'), '`a\\_b` and c_d')
+})
+
+test('backslash-escape-insertion near-miss: a backslash inside a fenced block is literal', () => {
+  const fenced = '```\nstg\\_x\n```\nstg\\_y\n'
+  assert.equal(canonEsc(fenced), '```\nstg\\_x\n```\nstg_y\n')
+  assert.notEqual(canonEsc('```\nstg\\_x\n```\n'), canonEsc('```\nstg_x\n```\n'))
+})
+
+test('backslash-escape-insertion near-miss: a backslash inside an INDENTED code block is literal', () => {
+  // Four spaces (or a tab) after a blank line, at the start, after a heading or after another code
+  // line opens an indented code block, whose backslashes are displayed verbatim.
+  for (const block of [
+    '    stg\\_x\n',
+    'Intro.\n\n    stg\\_x\n',
+    '## H\n    stg\\_x\n',
+    '\tstg\\_x\n',
+  ]) {
+    assert.equal(canonEsc(block), block, `${JSON.stringify(block)} is an indented code block`)
+    assert.notEqual(canonEsc(block), canonEsc(block.replace('\\_', '_')))
+  }
+  // Every line of the block stays literal, including one after an interior blank line.
+  const multi = '    a\\_b\n\n    c\\*d\n'
+  assert.equal(canonEsc(multi), multi)
+  // An indented line that CONTINUES a paragraph or a list item is not code, so it is canonicalized.
+  assert.equal(canonEsc('Para text\n    stg\\_x\n'), 'Para text\n    stg_x\n')
+  assert.equal(canonEsc('* item\n    * stg\\_x\n'), '* item\n    * stg_x\n')
+  // Text after the block is canonicalized again.
+  assert.equal(canonEsc('    a\\_b\nc\\_d\n'), '    a\\_b\nc_d\n')
+})
+
+test('backslash-escape-insertion near-miss: escapes of characters never measured are untouched', () => {
+  for (const text of ['\\# not a heading', '\\[not a link\\]', 'a \\< b', 'a\\`b', 'end\\']) {
+    assert.equal(canonEsc(text), text, `${JSON.stringify(text)} carries no measured escape`)
+  }
+})
+
+test('backslash-escape-insertion runs BEFORE the emphasis rules: an escaped delimiter agrees', () => {
+  // `x \* y` only reaches `x* y` when the escape is dropped before the whitespace migration sees
+  // the run; applied the other way round the backslash shields the `*` and the pair differs.
+  const both = new Set([ESCAPE_TRANSFORM, 'emphasis-delimiter-whitespace-migration'])
+  assert.equal(normalizeDescription('x \\* y', both), normalizeDescription('x * y', both))
+  assert.equal(normalizeDescription('x \\* y', both), 'x* y')
+})
+
+test('backslash-escape-insertion is idempotent', () => {
+  for (const text of ['stg\\_<source>\\_\\_', 'a\\\\\\_b \\*c\\* `d\\_e`', '```\n\\_\n```\n\\*']) {
+    const once = canonEsc(text)
+    assert.equal(canonEsc(once), once, `${JSON.stringify(text)} must reach a fixpoint`)
+  }
+})
+
+test('tier 2: `\\_` escapes inside `## Original notes` reach normalized-equivalent, not drift', () => {
+  const intended = description({ notes: 'The model is stg_<source>__ and 2*3.\n' })
+  const stored = description({ notes: 'The model is stg\\_<source>\\_\\_ and 2\\*3.\n' })
+  assert.notEqual(intended, stored, 'the fixture must actually differ')
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+  assert.equal(result.exitCode, 0)
+})
+
+test('tier 4: the same notes escapes are drift when the id is NOT declared', () => {
+  // Load-bearing, not decorative: one declaration apart, the verbatim conjunct blocks.
+  const intended = description({ notes: 'The model is stg_<source>__.\n' })
+  const stored = description({ notes: 'The model is stg\\_<source>\\_\\_.\n' })
+  const others = [...ALL_TRANSFORMS].filter((id) => id !== ESCAPE_TRANSFORM)
+  const result = verify(intended, stored, others)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.DRIFT)
+  assert.equal(result.cause, WRITEBACK_CAUSES.NOTES)
+})
+
+test('CLI: notes escapes reach normalized-equivalent from the repo default vocabulary', () => {
+  // This repo declares no descriptionNormalization block, so the full vocabulary applies.
+  const intended = description({ notes: 'The model is stg_<source>__.\n' })
+  const stored = description({ notes: 'The model is stg\\_<source>\\_\\_.\n' })
+  const { res } = runCli(intended, stored)
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /^writeback-verdict: normalized-equivalent$/m)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1356 notes #2 and #3 — a blank line between a PARAGRAPH and the list that follows it.
+//
+// Measured (BOS-1333): the tracker inserted a blank line between `Text:` and the bullet list after
+// it. In CommonMark a bullet item, or an ordered item numbered 1, interrupts a paragraph, so the two
+// spellings render the same. Any other ordered start does NOT interrupt a paragraph — `para\n3. a`
+// is one paragraph — so that near miss is the bound. An item's indented continuation line is
+// ordinary paragraph text under the same rule, which covers the residual of BOS-1279.
+// ---------------------------------------------------------------------------
+
+test('block-boundary-blank-line: a blank line between a paragraph and a bullet list agrees', () => {
+  assert.equal(canonBlank('Text:\n* a\n* b'), canonBlank('Text:\n\n* a\n* b'))
+  assert.equal(canonBlank('Text:\n- a'), canonBlank('Text:\n\n- a'), 'every bullet marker')
+  assert.equal(canonBlank('Text:\n+ a'), canonBlank('Text:\n\n\n+ a'), 'a multi-line run too')
+})
+
+test('block-boundary-blank-line: a blank line between a paragraph and a `1.` / `1)` list agrees', () => {
+  assert.equal(canonBlank('Steps:\n1. a\n2. b'), canonBlank('Steps:\n\n1. a\n2. b'))
+  assert.equal(canonBlank('Steps:\n1) a'), canonBlank('Steps:\n\n1) a'))
+})
+
+test('block-boundary-blank-line near-miss: an ordered list starting at 3 after a paragraph stays different', () => {
+  // `para\n3. a` is ONE paragraph — a `3.` item cannot interrupt it — so the blank line changes the
+  // rendering and must survive canonicalization as a difference.
+  assert.equal(canonBlank('Text:\n\n3. a'), 'Text:\n\n3. a')
+  assert.notEqual(canonBlank('Text:\n\n3. a'), canonBlank('Text:\n3. a'))
+})
+
+test('block-boundary-blank-line near-miss: a paragraph DROPPED from between two lists stays different', () => {
+  assert.notEqual(canonBlank('* a\n\nBetween.\n\n* b'), canonBlank('* a\n\n* b'))
+  assert.notEqual(canonBlank('* a\n\nBetween.\n\n* b'), canonBlank('* a\n* b'))
+})
+
+test('block-boundary-blank-line near-miss: a blank line after a paragraph before a fence or table stays', () => {
+  for (const text of [
+    'Text:\n\n```\n* a\n```\n',
+    'Text:\n\n| h |\n| - |\n',
+    'Text:\n\n## Heading\n',
+    'Text:\n\n> quoted\n',
+    'Text:\n\n* * *\n',
+  ]) {
+    assert.equal(
+      canonBlank(text),
+      text,
+      `${JSON.stringify(text)} closes on no interrupting list item`,
+    )
+  }
+  assert.notEqual(canonBlank('Text:\n\n```\nx\n```\n'), canonBlank('Text:\n```\nx\n```\n'))
+  assert.notEqual(canonBlank('Text:\n\n| h |\n| - |\n'), canonBlank('Text:\n| h |\n| - |\n'))
+})
+
+test('block-boundary-blank-line near-miss: a blank line inside a fence stays', () => {
+  const fenced = '```\nText:\n\n* a\n```\n'
+  assert.equal(canonBlank(fenced), fenced)
+  assert.notEqual(canonBlank(fenced), canonBlank('```\nText:\n* a\n```\n'))
+})
+
+test('block-boundary-blank-line near-miss: the blank line that ends a raw HTML block stays', () => {
+  // A raw HTML block runs until a BLANK line, so a line of text or a list item inside one is HTML
+  // content, and dropping the blank line after it turns the following list into more HTML.
+  for (const text of ['<div>\ntext\n\n* item\n', '<div>\n* a\n\n* b\n', '<div>\ntext\n\n## H\n']) {
+    assert.equal(canonBlank(text), text, `${JSON.stringify(text)} closes a raw HTML block`)
+  }
+  assert.notEqual(canonBlank('<div>\ntext\n\n* item\n'), canonBlank('<div>\ntext\n* item\n'))
+  assert.notEqual(canonBlank('<div>\n* a\n\n* b\n'), canonBlank('<div>\n* a\n* b\n'))
+  // A blank line ENDS the HTML block, so a paragraph after it opens the boundary as usual.
+  assert.equal(canonBlank('<div>\n\nText:\n\n* a\n'), '<div>\n\nText:\n* a\n')
+})
+
+test('block-boundary-blank-line near-miss: only ORDINARY text opens the paragraph boundary', () => {
+  // A heading, a table row, a thematic break, a setext underline and an indented code line are not
+  // paragraph text, so a blank line between any of them and a list is left alone.
+  for (const text of [
+    '## Heading\n\n* a\n',
+    '| a | b |\n\n* a\n',
+    '---\n\n* a\n',
+    '***\n\n* a\n',
+    'Title\n===\n\n* a\n',
+    '    indented code\n\n* a\n',
+    '<div>\n\n* a\n',
+  ]) {
+    assert.equal(canonBlank(text), text, `${JSON.stringify(text)} does not open on paragraph text`)
+  }
+})
+
+test('block-boundary-blank-line: an item continuation line before a blank line and the next item agrees', () => {
+  // The BOS-1279 residual: the continuation line carries no marker, so the list-item opener alone
+  // did not qualify it.
+  assert.equal(canonBlank('* a\n  cont\n\n* b'), canonBlank('* a\n  cont\n* b'))
+})
+
+test('block-boundary-blank-line: the new boundary is idempotent', () => {
+  for (const text of [
+    'Text:\n\n* a\n',
+    'Steps:\n\n1. a\n\nMore:\n\n- b\n',
+    '* a\n  cont\n\n* b\n',
+    'Text:\n\n3. a\n',
+    '```\nText:\n\n* a\n```\n\nText:\n\n* a\n',
+  ]) {
+    const once = canonBlank(text)
+    assert.equal(canonBlank(once), once, `${JSON.stringify(text)} must reach a fixpoint`)
+  }
+})
+
+test('tier 2: a blank line INSERTED between a paragraph and its list reaches normalized-equivalent', () => {
+  const intended = description({
+    sections: { '## Approach': 'Two steps:\n- read back\n- compare' },
+  })
+  const stored = intended
+    .replace('Two steps:\n- read back', 'Two steps:\n\n* read back')
+    .replace('\n- compare', '\n* compare')
+  assert.notEqual(intended, stored, 'the fixture must actually differ')
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+  assert.equal(result.exitCode, 0)
+})
+
+test('tier 2: the BOS-1279 shape — an appended Planning bullet stored without its blank line', () => {
+  // The note's shape: the step-5(f) append put a blank line above a new `## Planning` bullet, and
+  // the tracker stored it reattached to the list, with its own marker substitution on top.
+  const intended = description({
+    sections: { '## Planning': '- Contract: v1\n- Atomic-5: yes\n\n- Dependencies: none' },
+  })
+  const stored = description({
+    sections: { '## Planning': '* Contract: v1\n* Atomic-5: yes\n* Dependencies: none' },
+  })
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+  assert.equal(result.exitCode, 0)
+})
+
+test('tier 2: the continuation-line variant of BOS-1279 reaches normalized-equivalent', () => {
+  const intended = description({
+    sections: { '## Testing': '- unit coverage\n  over every tier\n\n- integration coverage' },
+  })
+  const stored = description({
+    sections: { '## Testing': '* unit coverage\n  over every tier\n* integration coverage' },
+  })
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+})
+
+test('tier 3: a paragraph followed by a `3.` list with its blank line removed is not certified', () => {
+  const intended = description({ sections: { '## Approach': 'Then:\n\n3. compare' } })
+  const stored = description({ sections: { '## Approach': 'Then:\n3. compare' } })
+  assertNotCertifiedEquivalent(verify(intended, stored))
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1356 note #4 — a recognised delimiter row is REBUILT in one canonical form.
+//
+// Measured (BOS-1340): `|---|---|---|` stored as `| -- | -- | -- |`. Rewriting the dash runs alone
+// left the cell padding the tracker added as a difference. A row the positional test has already
+// recognised is now re-emitted as `| c1 | c2 | … |` with each cell `:?---:?`, keeping its own colons,
+// so the cell count and every alignment colon still survive as differences.
+// ---------------------------------------------------------------------------
+
+const BOS1340_INTENDED = '| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n'
+const BOS1340_STORED = '| a | b | c |\n| -- | -- | -- |\n| 1 | 2 | 3 |\n'
+
+test('table-delimiter-row: the measured BOS-1340 padded row agrees with the unpadded one', () => {
+  assert.notEqual(BOS1340_INTENDED, BOS1340_STORED)
+  assert.equal(canonRow(BOS1340_INTENDED), canonRow(BOS1340_STORED))
+  assert.equal(canonRow(BOS1340_STORED), '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n')
+})
+
+test('table-delimiter-row: colons survive the rebuild in every padding', () => {
+  assert.equal(canonRow(tableDoc('|:--|--:|')), canonRow(tableDoc('| :- | -: |')))
+  assert.equal(canonRow(tableDoc('|:-:|-|')), '| id | role |\n| :---: | --- |\n| 1 | two |\n')
+  assert.notEqual(canonRow(tableDoc('|:--|---|')), canonRow(tableDoc('| -- | -- |')))
+  assert.notEqual(canonRow(tableDoc('|---|---|---|')), canonRow(tableDoc('| -- | -- |')))
+})
+
+test('table-delimiter-row: the rebuild keeps the row indentation', () => {
+  // A table inside a list item is indented; the indentation decides which block owns the row, so it
+  // is carried through unchanged rather than canonicalized.
+  assert.equal(canonRow('  | a | b |\n  |---|---|\n'), canonRow('  | a | b |\n  | -- | -- |\n'))
+  assert.equal(canonRow('  | a | b |\n  |---|---|\n'), '  | a | b |\n  | --- | --- |\n')
+})
+
+test('table-delimiter-row: header and body rows are never re-padded', () => {
+  // Only the delimiter-row reshaping was measured; a padded header still differs.
+  assert.notEqual(canonRow('|a|b|\n|---|---|\n'), canonRow('| a | b |\n|---|---|\n'))
+})
+
+test('table-delimiter-row: the rebuild is idempotent', () => {
+  for (const text of [
+    BOS1340_INTENDED,
+    BOS1340_STORED,
+    tableDoc('|:-:|-:|'),
+    '  | a |\n  |:-|\n',
+  ]) {
+    const once = canonRow(text)
+    assert.equal(canonRow(once), once, `${JSON.stringify(text)} must reach a fixpoint`)
+  }
+})
+
+test('tier 2: the BOS-1340 table reaches normalized-equivalent', () => {
+  const intended = emphasis(`A table:\n\n${BOS1340_INTENDED}`)
+  const stored = emphasis(`A table:\n\n${BOS1340_STORED}`)
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+  assert.equal(result.exitCode, 0)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1356 note #5 — `emphasis-span-restructuring` recognises the LEADING, TRAILING and
+// line-WRAPPED splits, not only the medial one.
+//
+// Measured (BOS-1277): medial passed while `**`x` a b**` stored as `` `x` **a b** ``, its mirror
+// `**a b `x`**` stored as `**a b** `x``, and a split that crossed a line break all stayed
+// `unattributed`. The canonical form stays the MERGED single span. The near misses are the ones the
+// medial rule already pins — emphasis deleted, emphasis demoted, the two-run `**`x`**` — plus the
+// paragraph boundary a wrapped match must never cross.
+// ---------------------------------------------------------------------------
+
+test('emphasis-span-restructuring: a LEADING code-span split agrees with the merged span', () => {
+  agree('**`x` a b**', '`x` **a b**', 'the code span moved out in front of the emphasis')
+  agree(
+    'The **`boss skills check` gate reports drift** today.',
+    'The `boss skills check` **gate reports drift** today.',
+    'the measured leading shape in a sentence',
+  )
+  agree('_`x` a b_', '`x` _a b_', 'underscore delimiters too')
+  assert.equal(canonEm('`x` **a b**'), '**`x` a b**', 'the canonical form is the merged span')
+})
+
+test('emphasis-span-restructuring: a TRAILING code-span split agrees with the merged span', () => {
+  agree('**a b `x`**', '**a b** `x`', 'the code span moved out behind the emphasis')
+  agree('__a b `x`__', '__a b__ `x`', 'underscore delimiters too')
+  assert.equal(canonEm('**a b** `x`'), '**a b `x`**', 'the canonical form is the merged span')
+})
+
+test('emphasis-span-restructuring: a split WRAPPED across one line break agrees', () => {
+  agree(
+    '**a long `x` wrapped\nline**',
+    '**a long** `x` **wrapped\nline**',
+    'one newline inside a segment',
+  )
+  agree('**a `x`\nb**', '**a** `x`\n**b**', 'one newline in the joint whitespace')
+})
+
+test('emphasis-span-restructuring: the medial merge still wins at a medial joint', () => {
+  // Medial runs first in every pass, so a code span between two runs of the same delimiter is
+  // merged exactly as before — never re-read as a leading or trailing split.
+  assert.equal(canonEm('**a** `x` **b**'), '**a `x` b**')
+  // A code span sitting at a joint whose medial merge cannot complete is refused by both new shapes.
+  assert.equal(canonEm('**a** `x` **b'), '**a** `x` **b')
+})
+
+test('emphasis-span-restructuring near-miss: DELETED emphasis in the leading and trailing shapes', () => {
+  for (const [intended, stored] of [
+    ['**`x` a b**', '`x` a b'],
+    ['`x` **a b**', '`x` a b'],
+    ['**a b `x`**', 'a b `x`'],
+    ['**a b** `x`', 'a b `x`'],
+  ]) {
+    assert.notEqual(canonEm(intended), canonEm(stored), `${intended} lost its emphasis`)
+  }
+})
+
+test('emphasis-span-restructuring near-miss: DEMOTED emphasis in the leading and trailing shapes', () => {
+  assert.notEqual(canonEm('**`x` a b**'), canonEm('*`x` a b*'))
+  assert.notEqual(canonEm('`x` **a b**'), canonEm('`x` *a b*'))
+  assert.notEqual(canonEm('**a b** `x`'), canonEm('*a b* `x`'))
+  assert.notEqual(canonEm('**a b** `x`'), canonEm('**a b `x`*'))
+})
+
+test('emphasis-span-restructuring near-miss: the two-run emphasised code span is not a leading split', () => {
+  assert.equal(canonEm('**`x`**'), '**`x`**')
+  assert.notEqual(canonEm('**`x`** b'), canonEm('`x` b'))
+  assert.notEqual(canonEm('a **`x`**'), canonEm('a `x`'))
+})
+
+test('emphasis-span-restructuring near-miss: a split across a BLANK line is not merged', () => {
+  // A blank line is a paragraph boundary; no emphasis span crosses it, so neither may the merge.
+  assert.notEqual(canonEm('**a** `x`\n\n**b**'), canonEm('**a `x`\n\nb**'))
+  assert.notEqual(canonEm('**a\n\nb** `x` **c**'), canonEm('**a\n\nb `x` c**'))
+})
+
+test('emphasis-span-restructuring near-miss: a wrapped split never crosses a block-opening line', () => {
+  for (const next of ['- c', '1. c', '# c', '```c', '> c']) {
+    assert.notEqual(
+      canonEm(`**a** \`x\` **b\n${next}**`),
+      canonEm(`**a \`x\` b\n${next}**`),
+      `the line \`${next}\` opens a block, so the split is not one span`,
+    )
+  }
+})
+
+test('emphasis-span-restructuring: the leading, trailing and wrapped shapes are idempotent', () => {
+  for (const text of [
+    '`x` **a b**',
+    '**a b** `x`',
+    '`x` **a** `y`',
+    '**a long** `x` **wrapped\nline**',
+    '**a** `x`\n\n**b**',
+    '**a** `x` **b\n- c**',
+  ]) {
+    const once = canonEm(text)
+    assert.equal(canonEm(once), once, `${JSON.stringify(text)} must reach a fixpoint`)
+  }
+})
+
+test('tier 2: leading and trailing emphasis splits reach normalized-equivalent', () => {
+  const intended = emphasis('The **`helper` runs once** and **then exits `0`**.')
+  const stored = emphasis('The `helper` **runs once** and **then exits** `0`.')
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+  assert.equal(result.exitCode, 0)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1356 note #8 — every MEASURED verdict names the helper copy that produced it.
+//
+// A note once blamed an append position for a verdict that toolbox provenance actually decided:
+// which copy of this file ran was never recorded. The CLI now prints the realpath of the module
+// right after the verdict line, so the next measurement records its provenance mechanically. The
+// verdict line itself is unchanged, and a refusal still prints neither line.
+// ---------------------------------------------------------------------------
+
+const HELPER_LINE = `plan-writeback-verify: helper ${realpathSync(HELPER)}`
+
+/** The stdout lines, so a test can assert adjacency rather than mere presence. */
+const stdoutLines = (res) => res.stdout.split('\n')
+
+test('CLI: every measured verdict is followed by the helper realpath line', () => {
+  const text = description()
+  const cases = [
+    [text, text, 'byte-exact'],
+    [text, text.replace(/^- /gm, '* '), 'normalized-equivalent'],
+    [text, text.replace('Measure write-back', 'Measure writeback'), 'unattributed'],
+    [text, text.replace('first observation', 'FIRST observation'), 'drift'],
+  ]
+  for (const [intended, stored, verdict] of cases) {
+    const lines = stdoutLines(runCli(intended, stored).res)
+    const at = lines.indexOf(`writeback-verdict: ${verdict}`)
+    assert.ok(at >= 0, `the ${verdict} verdict line is byte-identical to before`)
+    assert.equal(lines[at + 1], HELPER_LINE, `the helper line follows the ${verdict} verdict`)
+    assert.equal(lines.filter((line) => line === HELPER_LINE).length, 1, 'exactly one helper line')
+  }
+})
+
+test('CLI: a refusal prints neither a verdict line nor a helper line', () => {
+  for (const { res } of [
+    runCli(description(), ''),
+    runCli(description(), '', { omitStored: true }),
+  ]) {
+    assert.notEqual(res.status, 0)
+    const out = res.stdout + res.stderr
+    assert.ok(!out.includes('writeback-verdict:'), 'a refusal emits no verdict')
+    assert.ok(!out.includes('plan-writeback-verify: helper '), 'and no helper line')
+  }
+})
+
+test('CLI: a SYMLINKED helper reports the file that actually ran', () => {
+  // An installed toolbox can be a symlink; the provenance line must name the real file.
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-link-'))
+  const link = path.join(dir, 'plan-writeback-verify.mjs')
+  symlinkSync(HELPER, link)
+  const intended = path.join(dir, 'intended.md')
+  writeFileSync(intended, description())
+  const res = spawnSync(process.execPath, [link, '--intended', intended, '--stored', intended], {
+    encoding: 'utf8',
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+  })
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(stdoutLines(res).includes(HELPER_LINE), res.stdout)
+  assert.ok(!res.stdout.includes(`helper ${link}`), 'not the symlink path')
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1356 note #7 — same byte count, different bytes.
+//
+// Measured (BOS-1289): the tracker renormalized a description to different bytes with an identical
+// byte count. The verifier compares strings, never sizes; this pins that a size-equal rewrite can
+// never read as `byte-exact`, and asserts the equal length itself so the fixture cannot quietly stop
+// being the incident.
+// ---------------------------------------------------------------------------
+
+test('an equal-byte-length but byte-different stored text is never byte-exact', () => {
+  const intended = description({ sections: { '## Testing': '- unit coverage' } })
+  const stored = intended.replace('- unit coverage', '* unit coverage')
+  assert.notEqual(stored, intended, 'the fixture must actually differ')
+  assert.equal(Buffer.byteLength(stored), Buffer.byteLength(intended), 'and keep its byte length')
+  const declared = verify(intended, stored)
+  assert.notEqual(declared.verdict, WRITEBACK_VERDICTS.BYTE_EXACT)
+  assert.equal(declared.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+  assertNotCertifiedEquivalent(verify(intended, stored, []))
 })

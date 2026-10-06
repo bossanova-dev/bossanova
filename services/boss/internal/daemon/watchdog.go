@@ -15,9 +15,11 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -190,11 +192,17 @@ type watchdogSpec struct {
 	// LaunchAgent renders.
 	Path   string
 	LogDir string
+	// SettingsPath is the BOSS_SETTINGS_PATH bossd runs with, or "" for the
+	// default profile, in which case the argv carries no entry for it
+	// (BOS-1368). It has to travel in the argv like HOME and PATH, not in a
+	// plist EnvironmentVariables dict, for the reason watchdogProgramArguments
+	// gives.
+	SettingsPath string
 }
 
 // watchdogProgramArguments is the exact argv the root LaunchDaemon execs.
 //
-//	/bin/launchctl asuser <uid> /usr/bin/sudo -u <user> /usr/bin/env HOME=… PATH=… LC_CTYPE=UTF-8 <bossd>
+//	/bin/launchctl asuser <uid> /usr/bin/sudo -u <user> /usr/bin/env HOME=… PATH=… LC_CTYPE=UTF-8 [BOSS_SETTINGS_PATH=…] <bossd>
 //
 // Three segments, each of which is doing something the others cannot:
 //
@@ -224,8 +232,11 @@ type watchdogSpec struct {
 //     profile. U1's own transcript had to say `/usr/bin/env HOME=/Users/dave`
 //     for exactly this reason. A plist EnvironmentVariables dict would not do:
 //     it applies to launchctl, and sudo resets what it hands on.
+//
+// BOSS_SETTINGS_PATH is appended after LC_CTYPE only when the install baked a
+// non-default profile, so a default install's argv is unchanged.
 func watchdogProgramArguments(spec watchdogSpec) []string {
-	return []string{
+	args := []string{
 		watchdogLaunchctlPath,
 		"asuser",
 		strconv.Itoa(spec.UID),
@@ -236,8 +247,11 @@ func watchdogProgramArguments(spec watchdogSpec) []string {
 		"HOME=" + spec.Home,
 		"PATH=" + spec.Path,
 		"LC_CTYPE=UTF-8",
-		spec.BossdPath,
 	}
+	if spec.SettingsPath != "" {
+		args = append(args, ServiceSettingsPathEnv+"="+spec.SettingsPath)
+	}
+	return append(args, spec.BossdPath)
 }
 
 // plistHostileChars are the characters an interpolated value may not contain
@@ -270,6 +284,12 @@ func validateWatchdogSpec(spec watchdogSpec) error {
 			return fmt.Errorf("watchdog %s %q contains characters that cannot be interpolated into a plist", field.name, field.value)
 		}
 	}
+	// Optional, unlike the fields above: empty is the default profile.
+	if spec.SettingsPath != "" {
+		if err := validateServiceSettingsPath(spec.SettingsPath); err != nil {
+			return fmt.Errorf("watchdog settings path: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -297,6 +317,75 @@ func renderWatchdogPlist(spec watchdogSpec) (string, error) {
 		return "", fmt.Errorf("render watchdog plist: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// InstalledWatchdogSettingsPath returns the BOSS_SETTINGS_PATH baked into the
+// watchdog LaunchDaemon plist at plistPath — the unattended substrate's
+// counterpart of InstalledServiceSettingsPath. An unattended install removes
+// the per-user LaunchAgent plist and carries the profile as a ProgramArguments
+// element instead (see watchdogProgramArguments), so reading the LaunchAgent
+// there would always report "could not tell". "" with ok true is the default
+// profile; ok false means the plist could not be read or parsed.
+func InstalledWatchdogSettingsPath(plistPath string) (string, bool) {
+	// #nosec G304 -- plistPath is the fixed watchdog LaunchDaemon plist from watchdogPaths; non-secret local service state.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-1368
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		return "", false
+	}
+	return watchdogPlistSettingsPath(data)
+}
+
+// watchdogPlistSettingsPath extracts the BOSS_SETTINGS_PATH=<path> argument
+// from a watchdog plist's ProgramArguments array. A ProgramArguments array
+// carrying no such element is the default profile ("", true); a plist that
+// does not parse, or has no ProgramArguments at all, is ("", false) so "could
+// not tell" is never reported as "default".
+func watchdogPlistSettingsPath(data []byte) (string, bool) {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	lastKey := ""
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			// io.EOF before any ProgramArguments array is as unknowable as a
+			// malformed document.
+			return "", false
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		switch start.Name.Local {
+		case "plist", "dict":
+			// Descend into the document and its top-level dict.
+			continue
+		case "key":
+			if err := dec.DecodeElement(&lastKey, &start); err != nil {
+				return "", false
+			}
+			continue
+		case "array":
+			if lastKey == "ProgramArguments" {
+				var args struct {
+					Strings []string `xml:"string"`
+				}
+				if err := dec.DecodeElement(&args, &start); err != nil {
+					return "", false
+				}
+				prefix := ServiceSettingsPathEnv + "="
+				for _, arg := range args.Strings {
+					if value, found := strings.CutPrefix(arg, prefix); found {
+						return value, true
+					}
+				}
+				return "", true
+			}
+		}
+		lastKey = ""
+		if err := dec.Skip(); err != nil {
+			return "", false
+		}
+	}
 }
 
 // pathSecurityFact is one observed filesystem path, reduced to the facts the

@@ -631,18 +631,25 @@ func TestDefaultDir(t *testing.T) {
 func TestDirForAgent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	hermesHome := t.TempDir()
 
 	tests := []struct {
-		name  string
-		agent Agent
-		want  string
+		name       string
+		agent      Agent
+		hermesHome string
+		want       string
 	}{
 		{name: "claude", agent: AgentClaude, want: filepath.Join(home, ".claude", "skills")},
 		{name: "codex", agent: AgentCodex, want: filepath.Join(home, ".codex", "skills")},
+		{name: "hermes default", agent: AgentHermes, want: filepath.Join(home, ".hermes", "skills")},
+		{name: "hermes absolute HERMES_HOME", agent: AgentHermes, hermesHome: hermesHome, want: filepath.Join(hermesHome, "skills")},
+		{name: "hermes relative HERMES_HOME ignored", agent: AgentHermes, hermesHome: "relative/hermes", want: filepath.Join(home, ".hermes", "skills")},
+		{name: "claude ignores HERMES_HOME", agent: AgentClaude, hermesHome: hermesHome, want: filepath.Join(home, ".claude", "skills")},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HERMES_HOME", tt.hermesHome)
 			got, err := DirForAgent(tt.agent)
 			if err != nil {
 				t.Fatalf("DirForAgent: %v", err)

@@ -362,13 +362,22 @@ func platformInstallUnattended(bossdPath string, force bool) error {
 		return fmt.Errorf("set root ownership on %s: %w", layout.BinaryPath, err)
 	}
 
+	// BOS-1368: `sudo` usually strips BOSS_SETTINGS_PATH (env_reset), so a
+	// non-default profile reaches this install only when the operator passes it
+	// through as `sudo BOSS_SETTINGS_PATH=… boss daemon install`. The install
+	// prints what it baked, which is how a stripped variable becomes visible.
+	settingsPath, err := serviceSettingsPath()
+	if err != nil {
+		return err
+	}
 	plist, err := renderWatchdogPlist(watchdogSpec{
-		UID:       target.UID,
-		User:      target.User,
-		Home:      target.Home,
-		BossdPath: layout.BinaryPath,
-		Path:      serviceEnvPath(),
-		LogDir:    layout.LogDir,
+		UID:          target.UID,
+		User:         target.User,
+		Home:         target.Home,
+		BossdPath:    layout.BinaryPath,
+		Path:         serviceEnvPath(),
+		LogDir:       layout.LogDir,
+		SettingsPath: settingsPath,
 	})
 	if err != nil {
 		return err

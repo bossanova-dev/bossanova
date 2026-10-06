@@ -66,8 +66,9 @@ type mockHostClient struct {
 
 	recordOutcomeReqs []*bossanovav1.RecordRepairOutcomeRequest
 
-	reviewCommentsResp *bossanovav1.GetReviewCommentsResponse
-	reviewCommentsErr  error
+	reviewCommentsResp  *bossanovav1.GetReviewCommentsResponse
+	reviewCommentsCalls int
+	reviewCommentsErr   error
 }
 
 var _ hostClient = (*mockHostClient)(nil)
@@ -111,6 +112,7 @@ func (m *mockHostClient) applyRepoRepairDefault(sessions []*bossanovav1.Session)
 func (m *mockHostClient) GetReviewComments(_ context.Context, _ *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.reviewCommentsCalls++
 	if m.reviewCommentsErr != nil {
 		return nil, m.reviewCommentsErr
 	}
@@ -1653,6 +1655,34 @@ func TestMaybeRepair_SkipsDuringExponentialBackoff(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	startCalls, _, _, _ := mock.snapshot()
 	assert.Equal(t, 0, startCalls, "exponential backoff must skip repair when persisted attempt count says we should wait")
+}
+
+// TestMaybeRepair_BackoffSkipsBeforeReadingReviews pins the GitHub read budget:
+// a session sitting out its backoff is skipped before the review-fingerprint
+// read, so the one-minute sweep does not spend a GitHub call per session just
+// to be told to wait.
+func TestMaybeRepair_BackoffSkipsBeforeReadingReviews(t *testing.T) {
+	mock := newTestMock()
+	prNumber := int32(42)
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                     "s1",
+			State:                  bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			RepoOriginUrl:          "https://github.com/acme/widgets",
+			PrNumber:               &prNumber,
+			LastRepairAttemptCount: 5,
+			LastRepairStartedAt:    timestamppb.New(time.Now().Add(-1 * time.Minute)),
+		},
+	}
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false)
+
+	time.Sleep(50 * time.Millisecond)
+	mock.mu.Lock()
+	calls := mock.reviewCommentsCalls
+	mock.mu.Unlock()
+	assert.Equal(t, 0, calls, "a session inside its backoff window must not cost a review-comments read")
 }
 
 // TestMaybeRepair_FiresAfterExponentialBackoffElapsed verifies the

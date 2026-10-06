@@ -4955,6 +4955,56 @@ func TestStartSession_DeferPRFalse_CreatesDraftPR(t *testing.T) {
 	}
 }
 
+// TestStartSession_DraftPRBodyDefusesForeignIssueKeys pins BOS-1363 at the
+// bootstrap call site: the CreateDraftPR body is the plan with every issue key
+// but the session's own defused, while the stored plan keeps its bytes.
+func TestStartSession_DraftPRBodyDefusesForeignIssueKeys(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	trackerID := "BOS-867"
+	plan := "Linear issue:\n\n[BOS-867] Ship it\n\nThis is part of BOS-865."
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       plan,
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		TrackerID:  &trackerID,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	awaitDraftPR(t, lc, "sess-1")
+
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("createPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	want := "Linear issue:\n\n[BOS-867] Ship it\n\nThis is part of BOS\u2011865."
+	if got := vp.createPRCalls[0].Body; got != want {
+		t.Fatalf("CreateDraftPR body = %q, want %q", got, want)
+	}
+	if got := sessions.sessions["sess-1"].Plan; got != plan {
+		t.Fatalf("stored plan = %q, want it unchanged %q", got, plan)
+	}
+}
+
 func TestStartSession_CreateDraftPRFailureStoresBlockedReason(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -9781,6 +9831,37 @@ func TestStartSession_QuestionHookEnvSkipsNonConsumingAgents(t *testing.T) {
 				t.Errorf("agent %q: registrar recorded %d tokens, want %d", tc.agentName, got, wantTokens)
 			}
 		})
+	}
+}
+
+// TestStartSession_PanelessDetachCarriesUnattendedMarkers proves the paneless
+// detach fallback (tmux unavailable) still marks the run unattended. Without
+// it a prompt-carrying `boss new` on a tmux-less host runs a skill like
+// boss-plan down its interactive branch, waiting on questions nobody answers.
+// A worktree .env must not be able to switch the markers off.
+func TestStartSession_PanelessDetachCarriesUnattendedMarkers(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr := seedHeadlessSession(t)
+	wt.worktreePath = t.TempDir()
+	if err := os.WriteFile(filepath.Join(wt.worktreePath, ".env"), []byte("BOSS_CRON=false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cr.nextID = "ses_run_1"
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	awaitDraftPR(t, lc, "sess-1")
+
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 headless start, got %d", len(cr.started))
+	}
+	env := cr.started[0].env
+	for _, k := range []string{"BOSS_UNATTENDED", "BOSS_CRON"} {
+		if env[k] != "true" {
+			t.Errorf("paneless detach run: %s = %q, want %q", k, env[k], "true")
+		}
 	}
 }
 

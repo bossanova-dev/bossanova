@@ -53,7 +53,12 @@ func TestMissingReleased_DetectsSimulatedRemoval(t *testing.T) {
 	// reported missing, in ReleasedVersions order.
 	shrunk := []apiversion.Version{apiversion.Baseline}
 	missing := apiversion.MissingReleased(shrunk)
-	want := []apiversion.Version{apiversion.V20260704, apiversion.V20260705, apiversion.V20260706, apiversion.V20260711, apiversion.V20260718, apiversion.V20260723, apiversion.V20260803, apiversion.V20260804, apiversion.V20260812, apiversion.V20260816, apiversion.V20260820, apiversion.V20260821, apiversion.V20260825, apiversion.V20260902, apiversion.V20260903, apiversion.V20260904, apiversion.V20260905, apiversion.V20260906, apiversion.V20260907, apiversion.V20260908, apiversion.V20260909, apiversion.V20260910, apiversion.V20260911, apiversion.V20260912, apiversion.V20260913, apiversion.V20260914}
+	// Every ledger entry after Baseline, derived rather than hand-listed so a
+	// version cut never has to edit this test (BOS-1364).
+	if apiversion.ReleasedVersions[0] != apiversion.Baseline {
+		t.Fatalf("ReleasedVersions[0] = %q, want Baseline %q", apiversion.ReleasedVersions[0], apiversion.Baseline)
+	}
+	want := apiversion.ReleasedVersions[1:]
 	if len(missing) != len(want) {
 		t.Fatalf("MissingReleased(%v) = %v, want %v — the append-only guard must detect every dropped shipped version",
 			shrunk, missing, want)

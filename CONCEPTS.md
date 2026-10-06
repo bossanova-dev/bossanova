@@ -450,6 +450,11 @@ explicit marker — no closed stamp, and a merged state — so the combination i
 may be caught wearing, and one that is only safe to act on if the row is re-read immediately before
 the archive is dispatched rather than trusted from the list the pass began with.
 
+A session can also archive _itself_ — a finished unattended planning run asks for its own archive.
+Because archiving closes the session's chat panes first, that request kills its own caller midway, so
+an archive that has started must run to completion without depending on the caller staying
+connected, and the request must be launched from outside anything the archive is about to release.
+
 ### Resurrect
 
 The reverse of an **Archive**: an archived session is brought back — its released workspace is
@@ -724,6 +729,21 @@ genuinely abandoned scratch is the job of a separate age-based sweep, which is t
 permitted to remove another run's directory, and only once it is old enough that no live run could
 still hold it. The names a run may write are declared in one place rather than restated at each
 cleanup site, so that the set cleanup removes and the set the run creates cannot drift apart.
+
+### Tracker outcome
+
+The single verdict every skill and helper uses to decide what happens after an attempt against the
+issue tracker: `ok`, `retryable`, `permanent`, `indeterminate`, or `false-empty`, each paired with a
+separate reason that says why. `indeterminate` means the request may already have applied, so it is
+neither retried blind nor abandoned: the caller reads the tracker back and proceeds if the change
+landed, or retries once if it did not. `false-empty` means a read produced no usable evidence. That
+is not the same as a genuine "no rows".
+
+The operation, not the failure's surface, decides a transient failure. Timeouts, dropped
+connections, server errors, edge-worker exceptions, and garbled bodies are `retryable` on a read and
+`indeterminate` on a write. A rate limit stays `retryable` either way because it is a rejection, not
+an application. A failure's own retry advice, such as an error body saying "do not retry", is not a
+signal. An unrecognised failure is `permanent`, so it is not retried on a guess.
 
 ## Scheduled sessions (cron)
 
@@ -1020,6 +1040,13 @@ transform that rewrites text and then re-scans its own output can assemble a fre
 an earlier pass just produced, so the bound belongs in what the pattern is allowed to match, not in
 the number of times it is applied.
 
+The position includes the enclosing block, not only the line. A reshaping that is harmless in a
+paragraph can change meaning inside a code block, where the same characters are shown literally, or
+inside a raw markup block, where a blank line is what ends the block. Where the enclosing block cannot
+be determined with confidence, the canonicalizer leaves the text unchanged, so the uncertainty shows
+up as drift rather than as equivalence. Where several canonicalizers apply in sequence and one
+exposes input for another, the order they run in is part of the contract and is stated explicitly.
+
 ## Agent runtime gating
 
 ### Agent runner
@@ -1185,6 +1212,12 @@ The name a daemon self-reports so a human can tell which machine they are lookin
 A daemon's display name resolves as: the operator's `daemon_name` override, else the host's operator-facing computer name where the platform keeps one separately from its hostname (macOS), else the machine hostname with a trailing `.lan`/`.local` removed. The fallback chain exists because the raw hostname is the wrong answer twice over on macOS: the DHCP-derived `mac.lan` is a name the operator never chose, and it is _generic_, so two similarly-configured machines report the same string and become indistinguishable in a list. The derivation must never turn a non-empty hostname into an empty one, because registration rejects a blank hostname outright.
 
 The name is captured once at daemon startup and reused for every re-registration, so changing it applies on daemon restart rather than live — which is why every surface that offers to edit it also says so. Because the TUI previews the value rather than reading it back from the daemon, both the daemon and the TUI must derive it through the same helper; a second implementation in either place is what makes the preview quietly disagree with what the daemon actually advertises.
+
+### Daemon profile
+
+One self-contained daemon instance on a machine — its own settings file, and through it its own socket, data directory and database — selected by naming that settings file rather than by any per-command flag. Two profiles on one host are wholly separate daemons that happen to share a binary; a client reaches the profile whose settings file it resolved, and nothing else.
+
+A login-started daemon runs the profile baked into its service definition at install, because the service manager launches it with only the environment that definition spells out — never the installing shell's. The same holds for any client another program launches on the operator's behalf, such as an agent plugin's tool server: it reaches the profile its install record names, not the installing shell's. So the default profile is "bake nothing", and judging whether a requested profile _is_ the default must use the default the launched process would resolve, not one the installing shell computed under overrides that process never sees — and that judgement applies equally when no profile was named at all, since "nothing named" describes the shell, not the reader. Once baked, the profile survives every rewrite of the definition run from a shell that names no profile; only an install that explicitly names a different one changes it, and a restart deliberately does not. A diagnostic that reports the profile must read it from whichever definition actually starts the daemon on that host, since the active supervision arrangement can move it, and any remedy it prints must name the profile it inspected, because the reader runs that remedy from a shell that may select a different one.
 
 ## Daemon binary lifecycle
 
@@ -1496,6 +1529,12 @@ names only the freshly armed stage; a callback that has matched or been claimed 
 longer active but is still live and will still wake its waiter. Anything that removes or counts a
 run's remaining callbacks must select by liveness, not by the active stage, or it leaves behind
 exactly the ones closest to firing.
+
+A merged pull request ends every watch it can no longer satisfy: an armed callback whose trigger a
+merged PR cannot reach — closed or ready-for-review, checks-failed once its checks finished green,
+checks-passed once one failed — is canceled at the next evaluation instead of being re-checked until
+it expires. Checks still running keep both check watches live. A closed but unmerged PR can be
+reopened, so its watches are left to expire.
 
 ### Callback group
 
@@ -2815,7 +2854,7 @@ The number of **Improvement notes** a single **Notes sweep** removes from the ac
 
 ### Dependency scan
 
-The step of planning a ticket that compares its **Areas** against every other open planned ticket and decides, for each pair, whether to write a blocking edge, a non-blocking relation, or nothing — then orients any blocking edge so the prerequisite lands first.
+The step of planning a ticket that compares its **Areas** against every other ticket in its **Candidate set** and decides, for each pair, whether to write a blocking edge, a non-blocking relation, or nothing — then orients any blocking edge so the prerequisite lands first.
 
 A blocking edge has one of two bases: a _logical_ basis (one ticket needs something the other produces) or an _overlap_ basis (both change the same thing). Only a **Same-file overlap** can give an overlap basis a blocking edge; everything weaker is at most a **Directory overlap**.
 
@@ -2836,6 +2875,16 @@ _Avoid:_ "overlap" unqualified, which had meant both this and a **Same-file over
 ### Repo-wide token
 
 A path a repo declares shared by nearly every ticket — an append-only index, a large prose test suite — so it never counts toward any overlap. Declared once in the repo's skill config and unioned with anything a single run adds; the published default is empty, since which files are shared is a property of the repo, not of the planner.
+
+### Candidate set
+
+The tickets a **Dependency scan** compares its subject against: every ticket in a schedulable state (planned, in progress or in review), fetched with full descriptions.
+
+A candidate set is _complete_ only when the fetch that produced it scanned every schedulable state, and the fetch records that on every row rather than leaving the scan to assume it. Over a complete set, comparing nothing is a clean answer — the backlog holds nothing else — and the scan records nothing; over a partial or unproven set, comparing nothing means the scan could not evaluate and the fetch must be re-run.
+
+### Epic expansion
+
+Replacing an epic parent in the **Candidate set** with its active children, because the parent itself names no change site and only its children can overlap or block. The children may be supplied by the caller, read off a complete candidate set (every child that could produce an edge is already in it), or still owed; only the last leaves an instruction to fetch them. A depth cap bounds how far nested epics expand, and a parent stopped by the cap is reported as unexamined even when its children were supplied.
 
 ## Flagged ambiguities
 

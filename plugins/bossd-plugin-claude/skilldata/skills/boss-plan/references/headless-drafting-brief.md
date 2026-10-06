@@ -57,7 +57,9 @@ claim in it against the file it names before relying on it.
   least two genuinely separable pieces. A single ticket is estimated 0/1/2/3; a truly atomic 5 stays
   one ticket with a `- Atomic-5:` justification under `## Planning`; an 8 is never one ticket. Build
   it by following [`epic.md`](epic.md) end to end — unless you were given `allowEpic: false` (you are
-  drafting an epic's child), in which case plan it as one ticket.
+  drafting an epic's child), in which case plan it as one ticket, and a non-atomic honest ≥ 5 there
+  gets estimate 5, a `- Oversized-child: <why not atomic; suggested sibling split>` bullet and
+  `agentFriendly: false`.
 
 Set depth from the estimate. Keep a reporter-set priority, otherwise rank against the planned
 backlog.

@@ -198,3 +198,34 @@ func TestSessionRowJSONOmitsBlockedReason(t *testing.T) {
 		t.Fatalf("the ls row grew a blocked_reason field: %s", encoded)
 	}
 }
+
+func TestSessionDetailJSONArchiveAfterMerge(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		displayName string
+		archive     bool
+		want        string
+	}{
+		{name: "hydrated true", displayName: "app", archive: true, want: "true"},
+		{name: "hydrated false", displayName: "app", want: "false"},
+		{name: "hydration missing", want: "null"},
+		{name: "flag without hydration", archive: true, want: "null"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(newSessionDetailJSON(&pb.Session{
+				RepoDisplayName:                     tt.displayName,
+				RepoShouldArchiveSessionsAfterMerge: tt.archive,
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(fields["repo_should_archive_sessions_after_merge"]); got != tt.want {
+				t.Fatalf("archive-after-merge = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}

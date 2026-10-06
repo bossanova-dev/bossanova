@@ -95,7 +95,9 @@ if [ -n "$UNTAGGED" ]; then
   exit 1
 fi
 git push --force-with-lease origin "$SESSION_BRANCH" >&2
-test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})"
+# Compare against the ref the explicit push above just updated, never @{u}: a branch whose
+# upstream is still the base (origin/main) would fail this check after a successful push.
+test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BRANCH")"
 if [ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ]; then
   gh pr ready "$PR_NUMBER" >&2
 fi

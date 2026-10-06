@@ -41,6 +41,7 @@ go_library(
         "start_lock.go",
         "switch_account.go",
         "tmux_chat.go",
+        "webhook_polling.go",
     ],
     importpath = "github.com/recurser/bossd/internal/session",
     visibility = ["//services/bossd:__subpackages__"],
@@ -133,6 +134,7 @@ go_test(
         "testhelpers_test.go",
         "tmux_chat_modal_test.go",
         "tmux_chat_test.go",
+        "webhook_polling_test.go",
     ],
     data = glob(["testdata/**"]) + glob(
         ["*.go"],

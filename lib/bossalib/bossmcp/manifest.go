@@ -1,5 +1,13 @@
 package bossmcp
 
+import (
+	"context"
+	"fmt"
+	"sort"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
 // readOnlyToolNames is the canonical list of read-only (Phase-1 read table)
 // tool names, in registration order. It is the single source of truth for
 // both the read-only tools/list expectation and ReadOnlyToolNames().
@@ -75,3 +83,71 @@ func ReadOnlyToolNames() []string {
 func WriteToolNames() []string {
 	return append([]string{}, writeToolNames...)
 }
+
+// ToolDefinitions returns the full definitions — name, description, input
+// schema and annotations — of every tool RegisterTools installs under opts, in
+// ToolNames() order: the same tools a tools/list response carries. (The SDK
+// lists tools alphabetically; they are reordered here so callers get the
+// canonical inventory order, read-only tools first.)
+//
+// It runs entirely in-process: the tools are registered on a throwaway server
+// against definitionsBackend and listed over mcp.NewInMemoryTransports(), so no
+// daemon, socket or subprocess is involved and no tool handler is ever invoked. Callers
+// that render the tool surface for another host (the Hermes plugin renderer)
+// use it to ship schemas that match the binary they were built from.
+//
+// It returns an error when tools/list is paginated, because one page would
+// silently under-report the surface.
+func ToolDefinitions(ctx context.Context, opts Options) ([]*mcp.Tool, error) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "bossanova", Version: "definitions"}, nil)
+	RegisterTools(server, definitionsBackend{}, opts)
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "bossanova-definitions", Version: "definitions"}, nil)
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect in-memory server: %w", err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect in-memory client: %w", err)
+	}
+	defer func() { _ = clientSession.Close() }()
+
+	res, err := clientSession.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		return nil, fmt.Errorf("list tools: %w", err)
+	}
+	if res.NextCursor != "" {
+		return nil, fmt.Errorf("tools/list was paginated (nextCursor %q): one page is not the whole surface", res.NextCursor)
+	}
+	return orderByToolNames(res.Tools), nil
+}
+
+// orderByToolNames sorts tools into ToolNames() order. A tool missing from the
+// static inventory (which TestToolNamesMatchesRegisteredSet forbids) sorts
+// after every known one, keeping the SDK's relative order.
+func orderByToolNames(tools []*mcp.Tool) []*mcp.Tool {
+	rank := make(map[string]int, len(readOnlyToolNames)+len(writeToolNames))
+	for i, name := range ToolNames() {
+		rank[name] = i
+	}
+	rankOf := func(name string) int {
+		if r, ok := rank[name]; ok {
+			return r
+		}
+		return len(rank)
+	}
+	out := append([]*mcp.Tool{}, tools...)
+	sort.SliceStable(out, func(i, j int) bool { return rankOf(out[i].Name) < rankOf(out[j].Name) })
+	return out
+}
+
+// definitionsBackend satisfies Backend for ToolDefinitions without backing any
+// operation. A bare nil Backend is not enough: several registrations take a
+// method value (backend.StopSession and friends), and evaluating a method value
+// on a nil interface panics. Embedding the nil interface gives the struct a
+// full method set whose bound values are safe to take; calling one would
+// panic, but ToolDefinitions only lists tools and never calls a handler.
+type definitionsBackend struct{ Backend }

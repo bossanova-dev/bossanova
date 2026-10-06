@@ -12,11 +12,14 @@ import {
   buildExecArgv,
   classifyProbe,
   createTierAProbeRoot,
+  CROSS_REVIEW_LEG_RESERVE_MS,
+  fitTimeoutToLeg,
   interpretResult,
   removeTierAProbeRoot,
   REVIEW_PREAMBLE,
   reviewPreamble,
   resolveAgentBin,
+  resolveLegFitTimeout,
   sanitizeOutput,
   sliceLenUtf8Safe,
 } from './cross-review-lib.mjs'
@@ -412,4 +415,43 @@ test('REVIEW_PREAMBLE carries the core safety constraints', () => {
   assert.ok(REVIEW_PREAMBLE.includes('.claude/'))
   assert.ok(/DATA/.test(REVIEW_PREAMBLE))
   assert.ok(/read-only/i.test(REVIEW_PREAMBLE))
+})
+
+// ---------------------------------------------------------------------------
+// fitTimeoutToLeg — the helper timeout always stays strictly below the leg
+// ---------------------------------------------------------------------------
+
+test('fitTimeoutToLeg: default leg clamps the default helper timeout to 240000', () => {
+  assert.equal(CROSS_REVIEW_LEG_RESERVE_MS, 60_000)
+  assert.equal(fitTimeoutToLeg(300_000, {}), 240_000)
+})
+
+test('fitTimeoutToLeg: a longer leg leaves a smaller helper timeout untouched', () => {
+  assert.equal(fitTimeoutToLeg(300_000, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000' }), 300_000)
+})
+
+test('fitTimeoutToLeg: a helper override above the leg is clamped strictly below it', () => {
+  for (const leg of ['300000', '600000', '90000', '30000', '2']) {
+    const fitted = fitTimeoutToLeg(1_800_000, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: leg })
+    assert.ok(fitted > 0, `leg ${leg}: ${fitted} must be positive`)
+    assert.ok(fitted < Number(leg), `leg ${leg}: ${fitted} must be strictly below the leg`)
+  }
+  assert.equal(fitTimeoutToLeg(1_800_000, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000' }), 540_000)
+})
+
+test('fitTimeoutToLeg: a non-digit or zero leg means the default leg', () => {
+  for (const leg of ['10s', '1e6', ' 600000', '', '0']) {
+    assert.equal(fitTimeoutToLeg(300_000, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: leg }), 240_000)
+  }
+})
+
+test('resolveLegFitTimeout: names both numbers only when it clamps', () => {
+  assert.deepEqual(resolveLegFitTimeout('codex-review', 300_000, {}), {
+    timeoutMs: 240_000,
+    note: 'codex-review: timeout clamped to 240000ms (requested 300000ms) to fit the 300000ms extension leg',
+  })
+  assert.deepEqual(resolveLegFitTimeout('codex-review', 120_000, {}), {
+    timeoutMs: 120_000,
+    note: null,
+  })
 })

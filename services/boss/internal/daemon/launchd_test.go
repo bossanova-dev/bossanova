@@ -3250,3 +3250,277 @@ func TestRunLaunchctlBoundedProbeWrapsARealDeadlineExpiry(t *testing.T) {
 		t.Errorf("State = %q, want %q", got.State, JobDisabledStateUnknown)
 	}
 }
+
+// --- BOS-1368: a non-default BOSS_SETTINGS_PATH survives into the LaunchAgents
+
+// launchdSettingsTail is the exact text that closes a default EnvironmentVariables
+// dict. Asserting it (and not merely the absence of the key) is what pins the
+// unset render byte-identical to the template before BOS-1368: a stray blank
+// line or a leftover tab from the conditional block would break it.
+const launchdSettingsTail = "\t\t<key>LC_CTYPE</key>\n\t\t<string>UTF-8</string>\n\t</dict>\n"
+
+func TestGeneratePlistsWithoutSettingsPathAreUnchanged(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+	t.Setenv(ServiceSettingsPathEnv, "")
+
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+	mcpPlist, err := generateMcpPlist("/usr/local/bin/mcp", DefaultMcpPort)
+	if err != nil {
+		t.Fatalf("generateMcpPlist: %v", err)
+	}
+	for name, rendered := range map[string]string{"bossd": plist, "mcp": mcpPlist} {
+		if strings.Contains(rendered, ServiceSettingsPathEnv) {
+			t.Errorf("%s plist carries %s with the variable unset:\n%s", name, ServiceSettingsPathEnv, rendered)
+		}
+		if !strings.Contains(rendered, launchdSettingsTail) {
+			t.Errorf("%s plist EnvironmentVariables no longer closes byte-identically:\n%s", name, rendered)
+		}
+	}
+	if got, want := plist, mustRenderPlist(t, "/usr/local/bin/bossd", ""); got != want {
+		t.Errorf("generatePlist with the variable unset differs from renderPlist(\"\"):\n%s\n---\n%s", got, want)
+	}
+}
+
+func mustRenderPlist(t *testing.T, bossdPath, settingsPath string) string {
+	t.Helper()
+	plist, err := renderPlist(bossdPath, settingsPath)
+	if err != nil {
+		t.Fatalf("renderPlist: %v", err)
+	}
+	return plist
+}
+
+func TestGeneratePlistsCarryANonDefaultSettingsPath(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+	t.Setenv(ServiceSettingsPathEnv, "/abs/x/settings.json")
+
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+	mcpPlist, err := generateMcpPlist("/usr/local/bin/mcp", DefaultMcpPort)
+	if err != nil {
+		t.Fatalf("generateMcpPlist: %v", err)
+	}
+	want := "\t\t<string>UTF-8</string>\n\t\t<key>BOSS_SETTINGS_PATH</key>\n\t\t<string>/abs/x/settings.json</string>\n\t</dict>\n"
+	for name, rendered := range map[string]string{"bossd": plist, "mcp": mcpPlist} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("%s plist does not carry the settings path inside EnvironmentVariables:\n%s", name, rendered)
+		}
+		if strings.Count(rendered, ServiceSettingsPathEnv) != 1 {
+			t.Errorf("%s plist names %s more than once:\n%s", name, ServiceSettingsPathEnv, rendered)
+		}
+		// Read back through the same parser doctor and the rewrite use.
+		if got, ok := plistSettingsPath([]byte(rendered)); !ok || got != "/abs/x/settings.json" {
+			t.Errorf("%s plist reads back as (%q, %v), want the baked path", name, got, ok)
+		}
+		var v struct{}
+		if err := xml.Unmarshal([]byte(rendered), &v); err != nil {
+			t.Errorf("%s plist is not well-formed XML: %v", name, err)
+		}
+	}
+}
+
+func TestPlistSettingsPath(t *testing.T) {
+	wrap := func(env string) string {
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>EnvironmentVariables</key><dict>` + env + `</dict>
+</dict></plist>`
+	}
+	cases := []struct {
+		name  string
+		plist string
+		want  string
+		ok    bool
+	}{
+		{name: "absent key is the default profile", plist: wrap(`<key>PATH</key><string>/bin</string>`), want: "", ok: true},
+		{name: "present key is read", plist: wrap(`<key>BOSS_SETTINGS_PATH</key><string>/abs/x/settings.json</string>`), want: "/abs/x/settings.json", ok: true},
+		{name: "an entity-escaped value is decoded", plist: wrap(`<key>BOSS_SETTINGS_PATH</key><string>/abs/a&amp;b/settings.json</string>`), want: "/abs/a&b/settings.json", ok: true},
+		{name: "a present key with no string value is unreadable", plist: wrap(`<key>BOSS_SETTINGS_PATH</key><integer>3</integer>`), want: "", ok: false},
+		{name: "a present key with an empty value is unreadable", plist: wrap(`<key>BOSS_SETTINGS_PATH</key><string></string>`), want: "", ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := plistSettingsPath([]byte(tc.plist))
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("plistSettingsPath() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestInstalledServiceSettingsPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stubServiceSettings(t, config.Settings{})
+
+	if got, ok := InstalledServiceSettingsPath(); ok {
+		t.Errorf("InstalledServiceSettingsPath() with no plist = (%q, true), want ok=false", got)
+	}
+
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	mkdirLaunchAgents(t)
+	for _, want := range []string{"", "/abs/x/settings.json"} {
+		if err := os.WriteFile(plistPath, []byte(mustRenderPlist(t, "/usr/local/bin/bossd", want)), 0o600); err != nil {
+			t.Fatalf("write plist: %v", err)
+		}
+		if got, ok := InstalledServiceSettingsPath(); !ok || got != want {
+			t.Errorf("InstalledServiceSettingsPath() = (%q, %v), want (%q, true)", got, ok, want)
+		}
+	}
+}
+
+// installWithSettingsPath installs a LaunchAgent from a shell exporting env and
+// returns the plist path and a resolvable restart environment.
+func installWithSettingsPath(t *testing.T, env string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	stubDefaultServiceSettings(t)
+	sourcePath := writeFakeCellarBossd(t, home, "version one")
+	stubExecutableNextTo(t, sourcePath)
+
+	t.Setenv(ServiceSettingsPathEnv, env)
+	if err := platformInstall(sourcePath, false); err != nil {
+		t.Fatalf("platformInstall: %v", err)
+	}
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	return plistPath
+}
+
+func readPlistSettingsPath(t *testing.T, plistPath string) string {
+	t.Helper()
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read plist: %v", err)
+	}
+	got, ok := plistSettingsPath(data)
+	if !ok {
+		t.Fatalf("plist settings path unreadable:\n%s", data)
+	}
+	return got
+}
+
+// TestPlatformRestartKeepsTheInstalledSettingsPath is the reason the rewrite
+// reads the installed plist first: `boss daemon restart` is routinely run from
+// a shell that never exported the variable, and must not move the daemon back
+// to the default settings file.
+func TestPlatformRestartKeepsTheInstalledSettingsPath(t *testing.T) {
+	plistPath := installWithSettingsPath(t, "/abs/x/settings.json")
+	notices := captureSettingsNotices(t)
+
+	t.Setenv(ServiceSettingsPathEnv, "")
+	if err := platformRestart(); err != nil {
+		t.Fatalf("platformRestart: %v", err)
+	}
+	if got := readPlistSettingsPath(t, plistPath); got != "/abs/x/settings.json" {
+		t.Errorf("restart without the variable rewrote the profile to %q, want it kept", got)
+	}
+	if len(*notices) != 0 {
+		t.Errorf("a preserving restart printed a change notice: %v", *notices)
+	}
+}
+
+func TestPlatformRestartWithADifferentSettingsPathWinsAndNotices(t *testing.T) {
+	plistPath := installWithSettingsPath(t, "/abs/x/settings.json")
+	notices := captureSettingsNotices(t)
+
+	t.Setenv(ServiceSettingsPathEnv, "/abs/y/settings.json")
+	if err := platformRestart(); err != nil {
+		t.Fatalf("platformRestart: %v", err)
+	}
+	if got := readPlistSettingsPath(t, plistPath); got != "/abs/y/settings.json" {
+		t.Errorf("restart with an explicit variable baked %q, want the new value", got)
+	}
+	if want := [][2]string{{"/abs/x/settings.json", "/abs/y/settings.json"}}; len(*notices) != 1 || (*notices)[0] != want[0] {
+		t.Errorf("notices = %v, want %v", *notices, want)
+	}
+}
+
+// TestRefreshStagedPlistKeepsTheInstalledSettingsPath covers the other rewrite
+// path: the staged-plist refresh platformEnsureRunning performs before loading
+// the LaunchAgent. It must preserve the profile just as restart does.
+func TestRefreshStagedPlistKeepsTheInstalledSettingsPath(t *testing.T) {
+	plistPath := installWithSettingsPath(t, "/abs/x/settings.json")
+	t.Setenv(ServiceSettingsPathEnv, "")
+
+	if _, err := refreshInstalledDaemon(plistPath); err != nil {
+		t.Fatalf("refreshInstalledDaemon: %v", err)
+	}
+	if got := readPlistSettingsPath(t, plistPath); got != "/abs/x/settings.json" {
+		t.Errorf("refresh without the variable rewrote the profile to %q, want it kept", got)
+	}
+}
+
+// TestRefreshStagedPlistRefusesToDropAnUnreadableSettingsPath: a plist that
+// names the key with a value this build cannot read must not be read as the
+// default and rewritten without it.
+func TestRefreshStagedPlistRefusesToDropAnUnreadableSettingsPath(t *testing.T) {
+	plistPath := installWithSettingsPath(t, "")
+	t.Setenv(ServiceSettingsPathEnv, "")
+	broken := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>EnvironmentVariables</key><dict><key>BOSS_SETTINGS_PATH</key><integer>3</integer></dict>
+</dict></plist>
+`
+	if err := os.WriteFile(plistPath, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
+	_, err := refreshInstalledDaemon(plistPath)
+	if err == nil || !strings.Contains(err.Error(), ServiceSettingsPathEnv) {
+		t.Fatalf("refreshInstalledDaemon error = %v, want a refusal naming %s", err, ServiceSettingsPathEnv)
+	}
+	after, readErr := os.ReadFile(plistPath)
+	if readErr != nil {
+		t.Fatalf("read plist: %v", readErr)
+	}
+	if string(after) != broken {
+		t.Errorf("a refused refresh rewrote the plist:\n%s", after)
+	}
+}
+
+func TestPlatformInstallRefusesAnUnbakeableSettingsPathWithoutWritingThePlist(t *testing.T) {
+	for _, env := range []string{"rel/settings.json", "/abs/a%b/settings.json"} {
+		t.Run(env, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+			stubDefaultServiceSettings(t)
+			sourcePath := writeFakeCellarBossd(t, home, "version one")
+			t.Setenv(ServiceSettingsPathEnv, env)
+
+			if err := platformInstall(sourcePath, false); err == nil || !strings.Contains(err.Error(), ServiceSettingsPathEnv) {
+				t.Fatalf("platformInstall error = %v, want a %s refusal", err, ServiceSettingsPathEnv)
+			}
+			plistPath, err := platformServicePath()
+			if err != nil {
+				t.Fatalf("platformServicePath: %v", err)
+			}
+			if _, statErr := os.Stat(plistPath); !os.IsNotExist(statErr) {
+				t.Errorf("a refused install left a plist at %s (stat err %v)", plistPath, statErr)
+			}
+			if err := platformMcpInstall("/usr/local/bin/mcp", DefaultMcpPort, false); err == nil {
+				t.Error("platformMcpInstall accepted an unbakeable settings path")
+			}
+			mcpPath, _ := mcpServicePath()
+			if _, statErr := os.Stat(mcpPath); !os.IsNotExist(statErr) {
+				t.Errorf("a refused MCP install left a plist at %s", mcpPath)
+			}
+		})
+	}
+}

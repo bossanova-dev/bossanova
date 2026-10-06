@@ -56,6 +56,7 @@ export const TRACKER_OUTCOME_REASONS = Object.freeze({
   REQUEST_TIMEOUT: 'request-timeout',
   SERVER_ERROR: 'server-error',
   RATE_LIMITED: 'rate-limited',
+  EDGE_WORKER_EXCEPTION: 'edge-worker-exception',
   MISSING_CREDENTIAL: 'missing-credential',
   UNAUTHORIZED: 'unauthorized',
   FORBIDDEN: 'forbidden',
@@ -109,8 +110,15 @@ const UNRECOGNIZED = outcome(V.PERMANENT, R.UNRECOGNIZED, false)
 const MISSING_CREDENTIAL =
   /api[_ -]?key(?:\s+is)?\s+(?:not set|missing|empty)|missing api[_ -]?key|no api[_ -]?key/i
 const TIMEOUT = /timed?\s*out|timeout|ETIMEDOUT|ESOCKETTIMEDOUT|UND_ERR_(?:CONNECT_)?TIMEOUT/i
+// A non-JSON body where JSON was expected is an upstream that answered mid-reset, not a query
+// defect, so it rides the transport rule rather than a table of its own.
 const TRANSPORT =
-  /fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|network (?:error|failure)|terminated/i
+  /fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|network (?:error|failure)|terminated|unexpected token .* in JSON|is not valid JSON|unexpected end of JSON input/i
+// The edge worker's 1101. Its body says "Do not retry", and that advice is NOT the signal: it was
+// transient on reads and on a write, so the operation decides, exactly as for a timeout.
+const EDGE_WORKER = /worker threw exception|error(?: code)?[: ]*1101/i
+// An upstream outage named in prose with no parsable status reads as the 5xx it is.
+const UPSTREAM_UNAVAILABLE = /upstream_unavailable|bad gateway|service unavailable/i
 const VALIDATION =
   /graphql (?:error|validation)|validation (?:error|failed)|cannot query field|unknown argument|invalid value|bad request|argument .* is required/i
 
@@ -124,7 +132,11 @@ function readStatus(status, text) {
 /** Normalize the many shapes a caller may hold an observation in into `{text, status, result}`. */
 function normalize(observed) {
   if (observed === null || observed === undefined) return { text: '', status: null, has: false }
-  if (typeof observed === 'string') return { text: observed, status: null, has: observed !== '' }
+  // A bare string reads its status from the text exactly as `{error: string}` already did, so the
+  // same words cannot classify two ways depending on how the caller happened to wrap them.
+  if (typeof observed === 'string') {
+    return { text: observed, status: readStatus(null, observed), has: observed !== '' }
+  }
   if (observed instanceof Error) {
     return {
       text: String(observed.message ?? ''),
@@ -156,8 +168,8 @@ function normalize(observed) {
  *
  * @param {unknown} observed An Error, its text, or a record `{error?, status?, result?}`. A bare
  *   object with neither `error` nor `status` is read AS the result.
- * @param {{operation?: 'read'|'write'}} [options] `operation` is what makes a timeout mean two
- *   different things: a READ that timed out changed nothing and can simply be retried, while a
+ * @param {{operation?: 'read'|'write'}} [options] `operation` is what makes a timeout (or a 5xx,
+ *   a 1101, a dropped socket) mean two different things: a READ that timed out changed nothing and can simply be retried, while a
  *   WRITE that timed out may already have applied — that is the `indeterminate` case, and retry is
  *   DECLINED there so the caller is forced through a read-back instead of a blind second write.
  * @returns {{verdict: TrackerVerdict, reason: string, retry: boolean}} Frozen. Never throws:
@@ -189,28 +201,34 @@ export function classifyTrackerOutcome(observed, { operation = 'read' } = {}) {
     if (status === 401) return outcome(V.PERMANENT, R.UNAUTHORIZED, false)
     if (status === 403) return outcome(V.PERMANENT, R.FORBIDDEN, false)
     if (status === 429) return outcome(V.RETRYABLE, R.RATE_LIMITED, true)
-    if (status >= 500 && status <= 599) return outcome(V.RETRYABLE, R.SERVER_ERROR, true)
+    // A 5xx answers for the RESPONSE, not the request: a write that got one may already have
+    // applied (a 502 once arrived after the create had landed), so it is verified, never resent.
+    if (status >= 500 && status <= 599) return transient(isWrite, R.SERVER_ERROR)
     if (status === 400 || status === 422) return outcome(V.PERMANENT, R.VALIDATION_ERROR, false)
     // A 408 "Request Timeout" is a timeout first and a status second; fall through to the
     // operation-sensitive timeout rule rather than answering it as a generic 4xx.
     if (status !== 408 && status >= 400 && status <= 499) return UNRECOGNIZED
   }
 
-  if (TIMEOUT.test(text) || status === 408) {
-    return isWrite
-      ? outcome(V.INDETERMINATE, R.WRITE_MAY_HAVE_APPLIED, false)
-      : outcome(V.RETRYABLE, R.REQUEST_TIMEOUT, true)
-  }
-  if (TRANSPORT.test(text)) {
-    // A write whose CONNECTION failed is also unsafe to repeat blind: the request may have reached
-    // the server before the socket died. Reads have nothing to lose and are retried.
-    return isWrite
-      ? outcome(V.INDETERMINATE, R.WRITE_MAY_HAVE_APPLIED, false)
-      : outcome(V.RETRYABLE, R.TRANSPORT_FAILED, true)
-  }
+  if (EDGE_WORKER.test(text)) return transient(isWrite, R.EDGE_WORKER_EXCEPTION)
+  if (UPSTREAM_UNAVAILABLE.test(text)) return transient(isWrite, R.SERVER_ERROR)
+  if (TIMEOUT.test(text) || status === 408) return transient(isWrite, R.REQUEST_TIMEOUT)
+  // A write whose CONNECTION failed is also unsafe to repeat blind: the request may have reached
+  // the server before the socket died. Reads have nothing to lose and are retried.
+  if (TRANSPORT.test(text)) return transient(isWrite, R.TRANSPORT_FAILED)
   if (VALIDATION.test(text)) return outcome(V.PERMANENT, R.VALIDATION_ERROR, false)
 
   return UNRECOGNIZED
+}
+
+/**
+ * The one transient-failure rule: a read is retried under `readReason`; a write may already have
+ * applied, so it is `indeterminate` and verified by a read-back, never resent blind.
+ */
+function transient(isWrite, readReason) {
+  return isWrite
+    ? outcome(V.INDETERMINATE, R.WRITE_MAY_HAVE_APPLIED, false)
+    : outcome(V.RETRYABLE, readReason, true)
 }
 
 /**

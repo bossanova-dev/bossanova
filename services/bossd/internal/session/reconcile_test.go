@@ -40,7 +40,8 @@ type reconcileMockProvider struct {
 	// openHook, when set, runs inside ListOpenPRs after the call is recorded
 	// and with the mutex released. It lets a test hold a listing open until
 	// every concurrent caller has provably reached the provider.
-	openHook func()
+	openHook      func()
+	prStatusCalls int
 }
 
 func TestNeedsPRAssociation(t *testing.T) {
@@ -185,6 +186,7 @@ func (m *reconcileMockProvider) CreateDraftPR(context.Context, vcs.CreatePROpts)
 func (m *reconcileMockProvider) GetPRStatus(_ context.Context, _ string, prID int) (*vcs.PRStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.prStatusCalls++
 	if err := m.prStatusErr[prID]; err != nil {
 		return nil, err
 	}

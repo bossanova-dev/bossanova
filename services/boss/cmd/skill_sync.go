@@ -889,7 +889,7 @@ func skillsCmd() *cobra.Command {
 			return runSkillSync(c.OutOrStdout(), skillSyncUpdateOnly, syncAgent)
 		},
 	}
-	sync.Flags().StringVar(&syncAgent, "agent", "", "Restrict to one agent: claude or codex (default: all on PATH)")
+	sync.Flags().StringVar(&syncAgent, "agent", "", "Restrict to one agent: "+skillInstallAgentChoices()+" (default: all on PATH)")
 
 	var force bool
 	var installAgent string
@@ -909,7 +909,7 @@ func skillsCmd() *cobra.Command {
 		},
 	}
 	install.Flags().BoolVar(&force, "force", false, "Reinstall (Extract) unconditionally, even when current")
-	install.Flags().StringVar(&installAgent, "agent", "", "Restrict to one agent: claude or codex (default: all on PATH)")
+	install.Flags().StringVar(&installAgent, "agent", "", "Restrict to one agent: "+skillInstallAgentChoices()+" (default: all on PATH)")
 
 	var checkAgent string
 	var gate bool
@@ -925,7 +925,7 @@ func skillsCmd() *cobra.Command {
 		},
 	}
 	check.Flags().BoolVar(&gate, "gate", false, "Fail only when installed skills drift from checkout source for paths not edited by this branch")
-	check.Flags().StringVar(&checkAgent, "agent", "", "Restrict to one agent: claude or codex (default: all on PATH)")
+	check.Flags().StringVar(&checkAgent, "agent", "", "Restrict to one agent: "+skillInstallAgentChoices()+" (default: all on PATH)")
 
 	cmd.AddCommand(sync, install, check)
 	return cmd
@@ -1171,7 +1171,20 @@ func validateSkillAgentFilter(only string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("unknown agent %q (want claude or codex)", only)
+	return fmt.Errorf("unknown agent %q (want %s)", only, skillInstallAgentChoices())
+}
+
+// skillInstallAgentChoices renders the --agent values from skillInstallAgents
+// ("claude, codex or hermes") so help and errors cannot drift from the table.
+func skillInstallAgentChoices() string {
+	names := make([]string, 0, len(skillInstallAgents))
+	for _, target := range skillInstallAgents {
+		names = append(names, target.command)
+	}
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 func runSkillGate(out io.Writer, only string) error {
@@ -1256,14 +1269,27 @@ func skillGateAgentFilter(only string) string {
 	if only != "" {
 		return only
 	}
-	switch filepath.Base(filepath.Dir(filepath.Clean(os.Getenv("BOSS_SKILLS_HOME")))) {
-	case ".claude":
-		return "claude"
-	case ".codex":
-		return "codex"
-	default:
+	skillsHome := os.Getenv("BOSS_SKILLS_HOME")
+	if skillsHome == "" {
 		return ""
 	}
+	skillsHome = filepath.Clean(skillsHome)
+	// An exact match against each agent's resolved directory recognises a
+	// tree at a custom location (e.g. $HERMES_HOME/skills).
+	for _, target := range skillInstallAgents {
+		if dir, err := libskillinstall.DirForAgent(target.agent); err == nil && filepath.Clean(dir) == skillsHome {
+			return target.command
+		}
+	}
+	// Otherwise fall back to the conventional ~/.<agent>/skills layout, which
+	// still names the agent for a tree under another user's home.
+	parent := filepath.Base(filepath.Dir(skillsHome))
+	for _, target := range skillInstallAgents {
+		if parent == "."+target.command {
+			return target.command
+		}
+	}
+	return ""
 }
 
 // classifySkillGateDrift splits drift entries into those explained by an edit
@@ -1719,22 +1745,13 @@ func skillCheckRemedyAdvice(payload selectedSkillPayload, dir string, installed 
 //     so it works as first-time setup.
 //   - skillSyncForce (install --force): Extract unconditionally.
 //
-// A single agent may be selected via only ("claude"/"codex"); when set, an
+// A single agent may be selected via only ("claude"/"codex"/"hermes"); when set, an
 // unresolvable/failed agent makes the command exit non-zero, whereas in the
 // all-agents mode a per-agent failure is a non-fatal warning. Successful extracts
 // record the installed manifest so a later interactive boss does not re-prompt.
 func runSkillSync(out io.Writer, mode skillSyncMode, only string) error {
-	if only != "" {
-		known := false
-		for _, t := range skillInstallAgents {
-			if t.command == only {
-				known = true
-				break
-			}
-		}
-		if !known {
-			return fmt.Errorf("unknown agent %q (want claude or codex)", only)
-		}
+	if err := validateSkillAgentFilter(only); err != nil {
+		return err
 	}
 
 	payload, err := skillPayload()

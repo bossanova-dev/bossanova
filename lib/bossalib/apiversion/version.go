@@ -618,26 +618,57 @@ func (r *Registry) Newer(a, b Version) bool {
 }
 
 // DefaultRegistry returns a Registry seeded with the known production API
-// versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
-// V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816,
-// V20260820, V20260821, V20260825, V20260902, V20260903, V20260904,
-// V20260905, V20260906, V20260907, V20260908, V20260909, V20260910,
-// V20260911, V20260912, V20260913, and V20260914. Current is V20260914 (the
-// newest behavior) while Default
-// stays Baseline (the oldest supported version), so a
-// header-less caller is pinned to Baseline and is down-converted by
-// ProductionChanges, and a client that negotiates V20260913 runs zero transforms.
+// versions. The slice is ordered oldest→newest and its last member is Current
+// (the newest behavior). At most one trailing member is unreleased: every
+// earlier member has shipped and is recorded in ReleasedVersions (released.go).
+// Default stays Baseline (the oldest supported version), so a header-less
+// caller is pinned to Baseline and is down-converted by ProductionChanges, and
+// a client that negotiates Current runs zero transforms.
+//
+// The slice lists one version per line so concurrent branches that each append
+// a version conflict on adjacent lines that a resolver keeps both of; resolve
+// any conflict here by union and re-run `make apiversion-check`.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
 // by the transform framework tests and the reference ReferenceChange).
 //
 // To add a new API version, append it here, set it as Current, and add the
-// matching VersionChange to ProductionChanges. See docs/api-versioning.md for
-// the full procedure.
+// matching VersionChange to ProductionChanges. Pick the date with
+// `node scripts/apiversion-ledger.mjs check --fetch` (its target). See
+// docs/api-versioning.md for the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825, V20260902, V20260903, V20260904, V20260905, V20260906, V20260907, V20260908, V20260909, V20260910, V20260911, V20260912, V20260913, V20260914, V20260915},
+		[]Version{
+			Baseline,
+			V20260704,
+			V20260705,
+			V20260706,
+			V20260711,
+			V20260718,
+			V20260723,
+			V20260803,
+			V20260804,
+			V20260812,
+			V20260816,
+			V20260820,
+			V20260821,
+			V20260825,
+			V20260902,
+			V20260903,
+			V20260904,
+			V20260905,
+			V20260906,
+			V20260907,
+			V20260908,
+			V20260909,
+			V20260910,
+			V20260911,
+			V20260912,
+			V20260913,
+			V20260914,
+			V20260915,
+		},
 		V20260915,
 		Baseline,
 	)

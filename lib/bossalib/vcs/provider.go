@@ -107,3 +107,34 @@ type ReviewObservation struct {
 // continue. Callers must treat the review state as unknown rather than as
 // "nothing is blocking": the merge gate blocks on it instead of proceeding.
 var ErrReviewThreadsUnverified = errors.New("review thread state could not be verified")
+
+// ErrRateLimited is returned (wrapped) when the hosting service's API quota is
+// exhausted. A provider that sees the quota run out stops calling the API until
+// the quota resets and fails every call in the meantime with this error, so a
+// caller should treat it as "try again after the reset", never as a fact about
+// the PR.
+var ErrRateLimited = errors.New("VCS API rate limit exhausted")
+
+type cachedReadsKey struct{}
+
+// WithCachedReads marks ctx as a background read that may be served from a
+// provider's short-lived read cache and coalesced with an identical in-flight
+// request. Pollers and other periodic loops opt in; anything that acts on the
+// answer (a merge gate, a pre-merge refresh) must not, so a read without this
+// mark always goes to the remote and refreshes the cache for everyone else.
+func WithCachedReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cachedReadsKey{}, true)
+}
+
+// CachedReadsAllowed reports whether ctx was marked by WithCachedReads.
+func CachedReadsAllowed(ctx context.Context) bool {
+	allowed, _ := ctx.Value(cachedReadsKey{}).(bool)
+	return allowed
+}
+
+// ReadInvalidator is an OPTIONAL Provider capability: a provider that caches
+// reads implements it so a webhook for a PR can drop that PR's cached state
+// before anything re-reads it. Callers type-assert and skip it when absent.
+type ReadInvalidator interface {
+	InvalidatePR(repoPath string, prID int)
+}

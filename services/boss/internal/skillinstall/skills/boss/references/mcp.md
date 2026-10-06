@@ -2,6 +2,34 @@
 
 ## MCP Server
 
+### `boss hermes`
+
+Wire Hermes Agent to the local bossd as a native plugin
+
+### `boss hermes install [flags]`
+
+Install the bossanova Hermes plugin and skills for this OS user
+
+**Flags:**
+
+- `--dry-run` — Print the resolved values and rendered files; write and run nothing
+- `--force` — Replace an existing plugins/bossanova directory that boss did not install
+- `--hermes-home` — Hermes home directory (default: $HERMES_HOME, else ~/.hermes)
+- `--no-enable` — Do not run `hermes plugins enable bossanova`
+- `--settings` — bossanova settings file (default: $BOSS_SETTINGS_PATH, else the OS default)
+- `--socket` — bossd socket (default: $BOSS_SOCKET, else socket_path in the settings file, else the app data dir)
+
+### `boss hermes status [flags]`
+
+Report whether the installed bossanova Hermes plugin is current
+
+**Flags:**
+
+- `--hermes-home` — Hermes home directory (default: $HERMES_HOME, else ~/.hermes)
+- `--json` — Emit the report as JSON
+- `--settings` — bossanova settings file (default: $BOSS_SETTINGS_PATH, else the OS default)
+- `--socket` — bossd socket (default: $BOSS_SOCKET, else socket_path in the settings file, else the app data dir)
+
 ### `boss mcp`
 
 Manage the local MCP server

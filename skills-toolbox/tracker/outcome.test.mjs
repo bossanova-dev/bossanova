@@ -172,6 +172,7 @@ test('every retryable slug differs from every permanent slug', () => {
     R.REQUEST_TIMEOUT,
     R.SERVER_ERROR,
     R.RATE_LIMITED,
+    R.EDGE_WORKER_EXCEPTION,
     R.MISSING_CREDENTIAL,
     R.UNAUTHORIZED,
     R.FORBIDDEN,
@@ -199,6 +200,86 @@ test('a WRITE whose connection died is indeterminate too, not retryable', () => 
     classifyTrackerOutcome('fetch failed', { operation: 'write' }),
     V.INDETERMINATE,
     R.WRITE_MAY_HAVE_APPLIED,
+    false,
+  )
+})
+
+// A 5xx answers for the RESPONSE, not the request: a 502 `upstream_unavailable` arrived after an
+// attachment create had landed, so a write that got a 5xx may have applied. Reads keep retrying.
+test('a 5xx on a WRITE is indeterminate; the same 5xx on a read stays retryable', () => {
+  for (const observed of [{ status: 502 }, { status: 500 }, 'Linear API HTTP 503']) {
+    expectVerdict(
+      classifyTrackerOutcome(observed, { operation: 'write' }),
+      V.INDETERMINATE,
+      R.WRITE_MAY_HAVE_APPLIED,
+      false,
+    )
+    expectVerdict(classifyTrackerOutcome(observed), V.RETRYABLE, R.SERVER_ERROR, true)
+  }
+})
+
+test('a 429 on a WRITE is still retryable — a rate limit is a rejection, not an application', () => {
+  expectVerdict(
+    classifyTrackerOutcome({ status: 429 }, { operation: 'write' }),
+    V.RETRYABLE,
+    R.RATE_LIMITED,
+    true,
+  )
+})
+
+// The edge worker's own "Do not retry" advice is NOT a signal: the 1101 was transient on reads
+// and on a write, so the operation — not the body's prose — decides.
+test('an edge-worker 1101 is retryable on a read and indeterminate on a write', () => {
+  for (const observed of [
+    'error code: 1101',
+    'Cloudflare error 1101 Worker threw exception. Do not retry - the same request will produce the same exception',
+  ]) {
+    expectVerdict(classifyTrackerOutcome(observed), V.RETRYABLE, R.EDGE_WORKER_EXCEPTION, true)
+    expectVerdict(
+      classifyTrackerOutcome(observed, { operation: 'write' }),
+      V.INDETERMINATE,
+      R.WRITE_MAY_HAVE_APPLIED,
+      false,
+    )
+  }
+})
+
+test('upstream-unavailable text with no status reads as a 5xx', () => {
+  for (const observed of ['upstream_unavailable', 'Bad Gateway', 'Service Unavailable']) {
+    expectVerdict(classifyTrackerOutcome(observed), V.RETRYABLE, R.SERVER_ERROR, true)
+    expectVerdict(
+      classifyTrackerOutcome(observed, { operation: 'write' }),
+      V.INDETERMINATE,
+      R.WRITE_MAY_HAVE_APPLIED,
+      false,
+    )
+  }
+})
+
+test('a non-JSON upstream body is a transport failure', () => {
+  for (const observed of [
+    'Unexpected token \'<\', "<!DOCTYPE "... is not valid JSON',
+    'Unexpected token < in JSON at position 0',
+    'Unexpected end of JSON input',
+  ]) {
+    expectVerdict(classifyTrackerOutcome(observed), V.RETRYABLE, R.TRANSPORT_FAILED, true)
+    expectVerdict(
+      classifyTrackerOutcome(observed, { operation: 'write' }),
+      V.INDETERMINATE,
+      R.WRITE_MAY_HAVE_APPLIED,
+      false,
+    )
+  }
+})
+
+test('a tagged GraphQL failure naming 1101 is still permanent — provenance wins', () => {
+  const tagged = new Error('Linear GraphQL error: error code: 1101 Worker threw exception')
+  tagged.kind = 'graphql'
+  expectVerdict(classifyTrackerOutcome(tagged), V.PERMANENT, R.VALIDATION_ERROR, false)
+  expectVerdict(
+    classifyTrackerOutcome(tagged, { operation: 'write' }),
+    V.PERMANENT,
+    R.VALIDATION_ERROR,
     false,
   )
 })
@@ -416,6 +497,36 @@ test('withBoundedRetry makes no second attempt for an indeterminate write', asyn
     /timed out/,
   )
   assert.equal(calls, 1, 'a write that may have applied must be verified, not repeated')
+})
+
+test('withBoundedRetry sends a WRITE that got a 5xx exactly once', async () => {
+  let calls = 0
+  await assert.rejects(
+    () =>
+      withBoundedRetry(
+        async () => {
+          calls += 1
+          throw Object.assign(new Error('upstream'), { status: 502 })
+        },
+        { maxAttempts: 5, operation: 'write', sleep: sleepRecorder() },
+      ),
+    /upstream/,
+  )
+  assert.equal(calls, 1, 'a 5xx write may have applied and must be verified, not resent')
+})
+
+test('withBoundedRetry retries a READ that hit an edge-worker 1101 and resolves', async () => {
+  let calls = 0
+  const result = await withBoundedRetry(
+    async () => {
+      calls += 1
+      if (calls === 1) throw new Error('Cloudflare error 1101 Worker threw exception. Do not retry')
+      return 'read'
+    },
+    { operation: 'read', sleep: sleepRecorder() },
+  )
+  assert.equal(result, 'read')
+  assert.equal(calls, 2)
 })
 
 test('withBoundedRetry resolves when a transient failure clears', async () => {

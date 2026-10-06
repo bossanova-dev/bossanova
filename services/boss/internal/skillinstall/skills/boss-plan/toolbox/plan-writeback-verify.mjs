@@ -43,7 +43,8 @@
 //
 // Node builtins only — this runs in dependency-light cron worktrees.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
@@ -114,10 +115,109 @@ const fencedLineMap = (lines) => {
   return literal
 }
 
+/**
+ * One line with every backslash that escapes `_` or `*` removed, outside inline code spans.
+ *
+ * A backtick run opens a code span only when a run of EXACTLY the same length closes it later on the
+ * line; otherwise the backticks are ordinary text. A backslash run is counted whole: only an ODD run
+ * escapes the character after it, and then only its last backslash does. An odd run before a
+ * backtick escapes that backtick, so it is copied as text and can never open a code span.
+ */
+const unescapeEmphasisCharacters = (line) => {
+  let out = ''
+  let i = 0
+  while (i < line.length) {
+    const char = line[i]
+    if (char === '\\') {
+      let end = i
+      while (end < line.length && line[end] === '\\') end += 1
+      const escapes = (end - i) % 2 === 1
+      const next = line[end]
+      out += escapes && (next === '_' || next === '*') ? line.slice(i, end - 1) : line.slice(i, end)
+      i = end
+      if (escapes && next === '`') {
+        out += next
+        i += 1
+      }
+      continue
+    }
+    if (char === '`') {
+      let open = i
+      while (open < line.length && line[open] === '`') open += 1
+      const width = open - i
+      let close = -1
+      for (let j = open; j < line.length;) {
+        if (line[j] !== '`') {
+          j += 1
+          continue
+        }
+        let k = j
+        while (k < line.length && line[k] === '`') k += 1
+        if (k - j === width) {
+          close = k
+          break
+        }
+        j = k
+      }
+      const end = close === -1 ? open : close
+      out += line.slice(i, end)
+      i = end
+      continue
+    }
+    out += char
+    i += 1
+  }
+  return out
+}
+
 // One canonicalizer per transform id in skill-config's closed vocabulary. Each maps BOTH spellings
 // of its transform onto one canonical form, so it can be applied to the intended and the stored side
 // alike without knowing which one the tracker reshaped. Each is idempotent.
 export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
+  // `stg_<source>__` stored as `stg\_<source>\_\_`: a backslash escape inserted before `_` or `*`,
+  // the two characters measured. The canonical form DROPS the escaping backslash.
+  //
+  // It must run FIRST — see `DESCRIPTION_TRANSFORM_ORDER` — so the emphasis and delimiter rules
+  // see unescaped text on BOTH sides rather than having to recognise an escaped delimiter as well.
+  //
+  // Bounded three ways, and each bound is a near-miss test. The run of backslashes is COUNTED, not
+  // just the previous character: `\\_` is an escaped backslash followed by a bare `_`, so an even
+  // run escapes nothing and is left alone, and an odd run loses exactly its last backslash. Inline
+  // code spans and fenced blocks are skipped, because a backslash there is literal and visible.
+  // Code spans are recognised per LINE, matching every other code-span pattern in this file; a code
+  // span that wraps across a line is not recognised as one, which is a known residual.
+  //
+  // Accepted residual, the cost of a side-agnostic rule: `\*a\*` (literal asterisks) and `*a*`
+  // (italic) now compare equal, and so do `\* text` and the list item `* text`. A false pass there
+  // needs a transport that turns an escape into live markup, which has never been observed; the
+  // flanking-aware alternative would reimplement part of CommonMark's delimiter algorithm inside a
+  // gate.
+  //
+  // INDENTED code blocks are skipped too. A line indented four columns opens one unless it would
+  // continue the line above it, so it is read as code when the previous line is blank, absent, a
+  // heading, a fence line or itself code — and as a continuation after anything else (paragraph text,
+  // a list item). That errs toward "literal": an indented paragraph inside a loose list item reads as
+  // code and keeps its escapes, which can only surface as drift, never as a false pass.
+  'backslash-escape-insertion': (text) => {
+    const lines = String(text).split('\n')
+    const literal = fencedLineMap(lines)
+    const INDENTED = /^(?: {4}| {0,3}\t)/
+    const ATX_HEADING = /^[ \t]{0,3}#{1,6}(?:[ \t]|$)/
+    const code = lines.map(() => false)
+    for (let i = 0; i < lines.length; i += 1) {
+      if (literal[i] || lines[i].trim() === '' || !INDENTED.test(lines[i])) continue
+      const prev = i - 1
+      code[i] =
+        prev < 0 ||
+        lines[prev].trim() === '' ||
+        code[prev] ||
+        literal[prev] ||
+        ATX_HEADING.test(lines[prev])
+    }
+    return lines
+      .map((line, i) => (literal[i] || code[i] ? line : unescapeEmphasisCharacters(line)))
+      .join('\n')
+  },
   // `- item` / `+ item` / `* item` -> one canonical marker. Byte-count neutral, which is why a size
   // comparison cannot stand in for the byte comparison.
   'unordered-list-marker-substitution': (text) => text.replace(/^([ \t]*)[-+*]([ \t])/gm, '$1*$2'),
@@ -136,9 +236,10 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   // loss as normalized-equivalent and exited zero. A canonicalizer for a RESTRUCTURING must
   // preserve the presence or absence of the emphasis and normalize only its position.
   //
-  // The merge is anchored on the OUTER delimiter pair: the recognised shape is an opening run, then
-  // one or more JOINTS — a closing run, an inline code span, an opening run — then a closing run,
-  // every run the SAME delimiter. Only the interior runs are dropped. A run that IS the emphasis
+  // Three split shapes are recognised — medial, leading and trailing — and all three reduce to the
+  // one merged span. The medial merge is anchored on the OUTER delimiter pair: the recognised shape
+  // is an opening run, then one or more JOINTS — a closing run, an inline code span, an opening run
+  // — then a closing run, every run the SAME delimiter. Only the interior runs are dropped. A run that IS the emphasis
   // (`**`x`**`, two runs) has no outer pair to anchor on and survives untouched, so it still
   // differs from the un-emphasised `` `x` ``. Deliberately conservative: a shape this pattern does
   // not recognise stays a byte difference and is reported as drift, which is the safe direction.
@@ -168,40 +269,116 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
     // around `` `z` `` — a false pass, and one the bounded fixpoint loop below would reach on its
     // own even from an input that needed no merge at all.
     //
-    // What a match is bounded to, exactly: one line (no segment or code span may contain a newline)
-    // and one emphasis span of the delimiter being matched.
+    // What a match is bounded to, exactly: one emphasis span of the delimiter being matched, and at
+    // most ONE line break (the transport was measured also splitting a span that wraps a line). A
+    // segment or the joint whitespace may carry that one newline; a code span never does. Two
+    // newlines are refused outright — a blank line is a paragraph boundary no emphasis span crosses,
+    // and the two-newline joint `**a**\n`c`\n**b**` stays a difference as it always has — and so is
+    // a newline followed by a line that opens a block (list item, heading, fence, block quote),
+    // because no emphasis span continues into one. That bound is checked on each candidate match,
+    // and a refused candidate is retried one character later, so a valid single-line split that
+    // starts inside a refused one is still found.
     //
     // Every delimiter run is additionally fenced by `(?<![*_])` / `(?![*_])` so it can only match a
     // MAXIMAL run: without that fence the engine backtracks `**` down to `*` and rewrites
     // `**`x`**` as `*`x`*`, which loses a delimiter and collides bold with italic — the same class
     // of loss this rewrite exists to end.
     const CODE = String.raw`\`[^\`\n]*\``
+    const OPENS_BLOCK =
+      /^[ \t]{0,3}(?:[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|#{1,6}(?:[ \t]|$)|`{3,}|~{3,}|>)/
+    const withinOneLine = (match) => {
+      const breaks = match.split('\n')
+      return breaks.length <= 2 && breaks.slice(1).every((line) => !OPENS_BLOCK.test(line))
+    }
+    const quote = (delim) => (delim === '*' ? String.raw`\*` : delim)
     const splitFor = (delim) => {
-      const q = delim === '*' ? String.raw`\*` : delim
+      const q = quote(delim)
       const OPEN = String.raw`(?<![*_])(${q}{1,3})(?![*_])(?=\S)`
       const RUN = String.raw`(?<![*_])\1(?![*_])`
-      const SEG = String.raw`[^\`\n${q}]*?`
-      const JOINT = String.raw`${RUN}[ \t]*${CODE}[ \t]*${RUN}`
+      const SEG = String.raw`[^\`${q}]*?`
+      const WS = String.raw`[ \t]*\n?[ \t]*`
+      const JOINT = String.raw`${RUN}${WS}${CODE}${WS}${RUN}`
       return new RegExp(`${OPEN}(?:${SEG}${JOINT})+${SEG}(?<=\\S)${RUN}`, 'g')
     }
-    // Rebuild the matched span by dropping ONLY its interior joint runs. The delimiter is known by
-    // then, so the inner pattern is unambiguous — and rebuilding this way, rather than with numbered
-    // groups, is what lets the joint repeat an unbounded number of times.
+    // Rebuild the matched span by dropping ONLY its interior joint runs. The delimiter RUN is known
+    // by then, so the inner pattern is unambiguous — and rebuilding this way, rather than with
+    // numbered groups, is what lets the joint repeat an unbounded number of times.
     const merge = (match, delim) => {
       const quoted = delim.replace(/\*/g, String.raw`\*`)
       const joint = new RegExp(
-        String.raw`(?<![*_])${quoted}(?![*_])([ \t]*)(${CODE})([ \t]*)(?<![*_])${quoted}(?![*_])`,
+        String.raw`(?<![*_])${quoted}(?![*_])([ \t]*\n?[ \t]*)(${CODE})([ \t]*\n?[ \t]*)(?<![*_])${quoted}(?![*_])`,
         'g',
       )
       const inner = match.slice(delim.length, match.length - delim.length)
       return delim + inner.replace(joint, '$1$2$3') + delim
     }
-    const splits = ['*', '_'].map(splitFor)
+    // The LEADING and TRAILING splits: `**`x` a b**` stored as `` `x` **a b** ``, and its
+    // mirror `**a b `x`**` stored as `**a b** `x``. Both reduce to the same merged single span as
+    // the medial rule. Each is anchored on the SURVIVING outer run, which must be maximal and must
+    // flank its text exactly as `splitFor`'s outer pair does, and each stays on one line. The body
+    // of the surviving span may carry code spans (so a medial merge followed by a trailing split
+    // converges) but never a run of the pass's own delimiter, which keeps a match to one span.
+    //
+    // Both REFUSE a code span that sits at a medial joint — a run of the same delimiter on its other
+    // side. That joint is the medial rule's to merge, and it runs first in every pass, so
+    // `**a** `x` **b**` canonicalizes exactly as it did before; where the medial merge cannot
+    // complete (`**a** `x` **b`), neither shape reaches across the joint instead.
+    const leadFor = (delim) => {
+      const q = quote(delim)
+      const BODY = String.raw`(?:[^\`\n${q}]|${CODE})*?`
+      return new RegExp(
+        String.raw`(?<!${q}[ \t]*)(${CODE})([ \t]*)(?<![*_])(${q}{1,3})(?![*_])(?=\S)(${BODY})(?<=\S)(?<![*_])\3(?![*_])`,
+        'g',
+      )
+    }
+    const trailFor = (delim) => {
+      const q = quote(delim)
+      const BODY = String.raw`(?:[^\`\n${q}]|${CODE})*?`
+      return new RegExp(
+        String.raw`(?<![*_])(${q}{1,3})(?![*_])(?=\S)(${BODY})(?<=\S)(?<![*_])\1(?![*_])([ \t]*)(${CODE})(?![ \t]*${q})`,
+        'g',
+      )
+    }
+    // `String.replace` resumes AFTER a refused match; this resumes one character after its START,
+    // so a refused wrapped candidate cannot hide a valid split that begins inside it.
+    const replaceBounded = (input, pattern, accept, rewrite) => {
+      let result = ''
+      let copied = 0
+      pattern.lastIndex = 0
+      for (let found = pattern.exec(input); found !== null; found = pattern.exec(input)) {
+        if (!accept(found[0])) {
+          pattern.lastIndex = found.index + 1
+          continue
+        }
+        result += input.slice(copied, found.index) + rewrite(found)
+        copied = found.index + found[0].length
+      }
+      return result + input.slice(copied)
+    }
+    const delims = ['*', '_']
+    const splits = delims.map(splitFor)
+    const leads = delims.map(leadFor)
+    const trails = delims.map(trailFor)
     let out = String(text)
-    // Run to a fixpoint (bounded) so the result is idempotent and order-independent.
+    // Run to a fixpoint (bounded) so the result is idempotent. Within a pass the medial merge runs
+    // to completion for both delimiters before either outer shape is tried.
     for (let pass = 0; pass < 10; pass += 1) {
       let next = out
-      for (const split of splits) next = next.replace(split, merge)
+      for (const split of splits) {
+        next = replaceBounded(next, split, withinOneLine, ([match, run]) => merge(match, run))
+      }
+      for (const trail of trails) {
+        next = next.replace(
+          trail,
+          (_, run, body, space, code) => `${run}${body}${space}${code}${run}`,
+        )
+      }
+      for (const lead of leads) {
+        next = next.replace(
+          lead,
+          (_, code, space, run, body) => `${run}${code}${space}${body}${run}`,
+        )
+      }
       if (next === out) break
       out = next
     }
@@ -213,9 +390,11 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   // rewritten to a different length. Per the GFM tables extension a delimiter cell is hyphens with
   // an optional leading or trailing colon — the colons carry alignment, the dash count carries
   // nothing — so canonicalizing the run length is meaning-preserving where dropping a colon is not.
-  // Only the dash runs are rewritten, and only on a line that is a delimiter row in full: colons,
-  // pipes and surrounding whitespace are left exactly as they are, so a row that LOST a colon or a
-  // cell still differs from the one it came from.
+  // Only a line that is a delimiter row in full is touched, and it is REBUILT canonically: outer
+  // pipes, cell padding and dash count are normalized (measured: `|---|---|---|` stored as
+  // `| -- | -- | -- |`), while the row's indentation, its cell count and every alignment colon pass
+  // through, so a row that LOST a colon or a cell still differs from the one it came from. Header
+  // and body rows are never re-padded: only the delimiter-row reshaping was measured.
   //
   // It does NOT rewrite a dash line that is not a delimiter row. In GFM a delimiter row is defined
   // POSITIONALLY — it is the row immediately after a table's header row — so the shape alone is not
@@ -239,6 +418,22 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
     // cannot backtrack quadratically on a long line.
     const DELIMITER_ROW = /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?[ \t]*$/
     const delimiterShaped = (line) => line.includes('|') && DELIMITER_ROW.test(line)
+    // Re-emit a RECOGNISED delimiter row in one canonical form: the row's own indentation, then
+    // `| c1 | c2 | … |`, each cell `:?---:?` with its own colons. Only cell padding, outer pipes and
+    // dash count are canonicalized — the cell count and every alignment colon pass through.
+    const rebuildDelimiterRow = (line) => {
+      const indent = /^[ \t]*/.exec(line)[0]
+      const cells = line
+        .trim()
+        .replace(/^\|/, '')
+        .replace(/\|$/, '')
+        .split('|')
+        .map((cell) => {
+          const trimmed = cell.trim()
+          return `${trimmed.startsWith(':') ? ':' : ''}---${trimmed.endsWith(':') ? ':' : ''}`
+        })
+      return `${indent}| ${cells.join(' | ')} |`
+    }
     const lines = String(text).split('\n')
     const literal = fencedLineMap(lines)
     // The line before this one, when it was ordinary text outside a fence; null otherwise.
@@ -252,7 +447,7 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
         const headed = previous !== null && previous.includes('|') && !delimiterShaped(previous)
         const rewrite = headed && delimiterShaped(line)
         previous = line
-        return rewrite ? line.replace(/-+/g, '---') : line
+        return rewrite ? rebuildDelimiterRow(line) : line
       })
       .join('\n')
   },
@@ -262,19 +457,24 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   // reduces to the other and the canonicalizer can be applied to the intended and the stored side
   // alike without knowing which one the tracker reshaped.
   //
-  // Recognised shape, both ends required: a run of blank lines whose preceding line is a list item
-  // and whose following line is a list item or an ATX heading. Everything else is deliberately left
-  // alone — a blank line after a paragraph, before a fence, before a table, at the end of the
-  // document. Only BLANK lines are ever dropped, never a line carrying text, and that is the whole
+  // Recognised shapes, both ends required: a run of blank lines whose preceding line is a list item
+  // and whose following line is a list item or an ATX heading; or one whose preceding
+  // line is ordinary paragraph text and whose following line is a list item that can interrupt a
+  // paragraph — a bullet item, or an ordered item numbered `1.` / `1)`. Everything else is
+  // deliberately left alone — a blank line before a fence, before a table, before a heading after a
+  // paragraph, before a `3.` item, at the end of the document. Only BLANK lines are ever dropped, never a line carrying text, and that is the whole
   // bound on a tolerance that is NOT purely cosmetic (a blank line inside a list makes the list
   // loose, which changes the rendered markup). It is what keeps the two near misses drift: a stored
   // text that dropped a list item is still missing that item's bytes, and two lists separated by a
   // paragraph cannot be merged into one, because the paragraph is a text line this rule will not
   // remove and the blank lines flanking it do not qualify at the paragraph end.
   //
-  // A LAZY CONTINUATION line ends the recognised shape: in `* a long item` / `  continued` / blank /
+  // A LAZY CONTINUATION line ends the list-item shape: in `* a long item` / `  continued` / blank /
   // `## H` the line before the run carries no marker, so the blank line stays and the difference is
-  // reported. That is the conservative direction — an unrecognised shape stays a byte difference.
+  // reported. The paragraph shape reads that same continuation line as paragraph text, so before a
+  // following ITEM (`* a` / `  cont` / blank / `* b`) the run does qualify. The accepted cost, the
+  // same class as the list-item rule's: when the "paragraph" line is really a continuation inside a
+  // list, the blank line changes that list's looseness, not its content.
   //
   // FENCED content is skipped for the reason the table rule skips it: it is literal text, and
   // reshaping it would change what the block SHOWS rather than how the document renders. Literal
@@ -295,6 +495,24 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
     // not a list item, and mistaking one for the other canonicalizes away a real difference.
     const LIST_ITEM = /^[ \t]{0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+\S/
     const ATX_HEADING = /^[ \t]{0,3}#{1,6}(?:[ \t]|$)/
+    // The third boundary: ordinary PARAGRAPH text followed by a list item that can
+    // INTERRUPT a paragraph. In CommonMark only a bullet item or an ordered item numbered 1 can, so
+    // only those close the run — `para\n3. a` is one paragraph, and the blank line there changes
+    // the rendering. A thematic break is shaped like a bullet item (`* * *`) but is not a list item.
+    const INTERRUPTING_ITEM = /^[ \t]{0,3}(?:[-+*]|1[.)])[ \t]+\S/
+    const THEMATIC_BREAK = /^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/
+    const SETEXT_UNDERLINE = /^[ \t]{0,3}(?:=+|-+)[ \t]*$/
+    // Paragraph text: indented 0-3 spaces (four is an indented code block), and none of the block
+    // shapes. A table row is recognised by its pipe, the same test the table rule uses for a header.
+    // A line opening with `<` may open a raw HTML block, which only a BLANK line ends — there the
+    // blank line decides whether the next line is a list or more HTML, so it is not paragraph text.
+    const paragraphText = (line) =>
+      /^[ \t]{0,3}[^\s<]/.test(line) &&
+      !LIST_ITEM.test(line) &&
+      !ATX_HEADING.test(line) &&
+      !line.includes('|') &&
+      !THEMATIC_BREAK.test(line) &&
+      !SETEXT_UNDERLINE.test(line)
     const lines = String(text).split('\n')
     // Map the fenced lines FIRST, fences included. The drop decision reads one line backward and
     // one line forward, so a running toggle would have to guess at the forward one.
@@ -316,7 +534,23 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
         end < lines.length &&
         !literal[end] &&
         (LIST_ITEM.test(lines[end]) || ATX_HEADING.test(lines[end]))
-      if (!(opensOnItem && closesOnBlock)) for (let k = i; k < end; k += 1) out.push(lines[k])
+      const opensOnParagraph = i > 0 && !literal[i - 1] && paragraphText(lines[i - 1])
+      const closesOnInterruptingItem =
+        end < lines.length &&
+        !literal[end] &&
+        INTERRUPTING_ITEM.test(lines[end]) &&
+        !THEMATIC_BREAK.test(lines[end])
+      // The run's preceding non-blank lines, back to the previous blank line, may sit inside a raw
+      // HTML block opened by an EARLIER line of that run: `<div>` / `text` / blank / `* item`. Only
+      // a blank line ends such a block, so this run decides whether the next line is a list or more
+      // HTML, and it is kept. Any `<` line counts, which refuses some autolinks too — the safe side.
+      let start = i - 1
+      while (start > 0 && !literal[start - 1] && lines[start - 1].trim() !== '') start -= 1
+      const closesHtmlBlock = lines.slice(start, i).some((line) => /^[ \t]{0,3}</.test(line))
+      const qualifies =
+        !closesHtmlBlock &&
+        ((opensOnItem && closesOnBlock) || (opensOnParagraph && closesOnInterruptingItem))
+      if (!qualifies) for (let k = i; k < end; k += 1) out.push(lines[k])
       i = end
     }
     // Idempotent: qualification is decided against the INPUT lines, and dropping blank lines never
@@ -336,6 +570,24 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
  * This throws rather than warning. An unverifiable fidelity gate must fail loudly: the whole point
  * of the helper is that nothing else observes what landed on the tracker.
  */
+/**
+ * The order `normalizeDescription` applies the normalizers in, stated rather than inherited from
+ * object-literal key order. It is load-bearing: `backslash-escape-insertion` must run before the
+ * emphasis and list-marker rules, because an escaped `\*` is not a delimiter to them — `x \* y`
+ * canonicalizes to `x* y` only when the escape is dropped before the whitespace migration runs.
+ * The rest follow the table. Checked at load against the table's ids, so it cannot omit one.
+ */
+export const DESCRIPTION_TRANSFORM_ORDER = Object.freeze([
+  'backslash-escape-insertion',
+  'unordered-list-marker-substitution',
+  'emphasis-delimiter-whitespace-migration',
+  'emphasis-span-restructuring',
+  'trailing-whitespace-trimming',
+  'terminal-newline-trimming',
+  'table-delimiter-row-normalization',
+  'block-boundary-blank-line-normalization',
+])
+
 const missingNormalizers = DESCRIPTION_NORMALIZATION_TRANSFORMS.filter(
   (id) => typeof DESCRIPTION_TRANSFORM_NORMALIZERS[id] !== 'function',
 )
@@ -349,6 +601,16 @@ if (missingNormalizers.length > 0 || orphanNormalizers.length > 0) {
       `unreachable normalizers: [${orphanNormalizers.join(', ')}]`,
   )
 }
+const normalizerIds = Object.keys(DESCRIPTION_TRANSFORM_NORMALIZERS)
+if (
+  DESCRIPTION_TRANSFORM_ORDER.length !== normalizerIds.length ||
+  normalizerIds.some((id) => !DESCRIPTION_TRANSFORM_ORDER.includes(id))
+) {
+  throw new Error(
+    'plan-writeback-verify: DESCRIPTION_TRANSFORM_ORDER must list every normalizer exactly once; ' +
+      `order: [${DESCRIPTION_TRANSFORM_ORDER.join(', ')}]; normalizers: [${normalizerIds.join(', ')}]`,
+  )
+}
 
 /**
  * Apply ONLY the declared transforms, in a fixed order so both sides canonicalize identically.
@@ -356,8 +618,8 @@ if (missingNormalizers.length > 0 || orphanNormalizers.length > 0) {
  */
 export function normalizeDescription(text, tolerated) {
   let out = String(text ?? '')
-  for (const [id, normalize] of Object.entries(DESCRIPTION_TRANSFORM_NORMALIZERS)) {
-    if (tolerated.has(id)) out = normalize(out)
+  for (const id of DESCRIPTION_TRANSFORM_ORDER) {
+    if (tolerated.has(id)) out = DESCRIPTION_TRANSFORM_NORMALIZERS[id](out)
   }
   return out
 }
@@ -665,6 +927,11 @@ function main() {
   gateRecorder.record(result.exitCode === 0 ? 'pass' : 'fire', result.cause ?? result.verdict)
 
   console.log(`writeback-verdict: ${result.verdict}`)
+  // Provenance: WHICH copy of this helper measured the verdict. A stale installed
+  // toolbox once decided a verdict that a note then blamed on the input, and nothing recorded which
+  // copy ran. Additive only: the verdict line above keeps its exact form for the callers that grep
+  // it, and a refusal returns before this point, so it still prints neither line.
+  console.log(`plan-writeback-verify: helper ${realpathSync(fileURLToPath(import.meta.url))}`)
   console.log(`plan-writeback-verify: ${result.reason}`)
 
   // An advisory verdict is a PASS that must still be seen. Put it on stderr too, and say plainly

@@ -19,7 +19,9 @@ summary (cost extraction matches a line-leading token).
 - `REVIEW_READY` — PR pushed, green and ready; ticket moved to the **in-review** state; PR URL
   commented on the ticket; `please-review` applied. Open review findings do **not** prevent this: a
   round-capped review ships here with the findings **published** (PR comment, ticket comment, a
-  `## Review findings` pointer in the body). Human review is the next gate.
+  `## Review findings` pointer in the body). Human review is the next gate. A verified Step 12
+  completion merge keeps the token and prints
+  `REVIEW_READY <ticket> <pr-url> merged <sha> — <summary>`; the ticket moves to `.done`.
 - `PARTIAL` — branch green and pushed, at least one in-scope acceptance criterion satisfied **and**
   certified by the review, and everything left undone is an unmet in-scope criterion. Ticket stays
   **in-progress**; PR ready but marked do-not-merge; never `please-review`.
@@ -43,7 +45,9 @@ resumed**, not a stop condition.
   whose concrete MCP tools live in the adapter's operation map. Workspace, backlog team and states
   come from `trackerConfigFor(config)` (`toolbox/skill-config.mjs`); the backlog is a team, never a
   project filter. The three states are roles — `.planned`, `.inProgress`, `.inReview` — resolved to
-  this workspace's names at runtime; never hard-code a state name.
+  this workspace's names at runtime; never hard-code a state name. A failed capability call is
+  classified with `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" classify-outcome --observed "<err>" --operation read|write`
+  and its action line followed, never the error body's own retry advice.
 - Priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.
 - **Plan**: an attachment titled like a plan (`Implementation plan (<ISSUE-ID>)` preferred);
   `selectImplementationPlanAttachment(ticket.attachments, issueID)` picks it.
@@ -77,6 +81,8 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Are the checks green / is the merge state blocking? | `node pr-check-state.mjs classify\|merge-state …`                           |
 | Wait for CI without guessing                        | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)       |
 | May I stop watching CI?                             | `node callback/ci-watch.mjs classify …`                                     |
+| Is completion merge authorized?                     | `node completion-gate.mjs envelope\|merge\|settle`                          |
+| Are follow-up sections well-formed?                 | `node completion-gate.mjs followups --body-file <path>`                     |
 | Is the verify-only evidence well-formed?            | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`            |
 | What is left before this terminal state is honest?  | `node finalize/route-contract.mjs assert --outcome <state> …`               |
 
@@ -89,7 +95,8 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    the reviewer's job, not this run's. Where the ticket was edited after the plan, the ticket wins.
    Where a premise no longer holds, build what the plan is for against the code as it is and record
    the departure. Where a criterion cannot be checked from a worktree (production access, a deployed
-   environment), implement the change and say in the PR body what a human must verify. Never print
+   environment), implement the change and record what a human must verify under
+   `## Human follow-up` as open checklist items. Never print
    or commit secret values.
 3. **Commit per task, never leave work behind.** Tagless conventional commits with a scope
    (`feat(scope): …`), path-scoped (`git commit --only -m "…" -- <files>`), never `git add -A`. Leave
@@ -97,7 +104,9 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    pushed: every route that ends after implementation pushes first.
 4. **Rebase, never merge.** Never merge the base into the branch, never `git pull`, never
    `--rebase-merges`; force-push only with `--force-with-lease` over this run's own rewrite.
-5. **Never merge the PR.** Terminal success is review-ready.
+5. **Never merge by default.** Only a Step 12 `completion` extension may request a merge, through
+   `completion-gate.mjs merge`, when the repo explicitly opts in and the helper certifies the run.
+   No other merge path is permitted; terminal success keeps `REVIEW_READY`.
 6. **Await every subagent.** Dispatch with awaited `Task` (Claude) or `spawn_agent` + `wait_agent`
    (Codex); never background a dispatch and move on. Keep bulk output (diffs, CI logs, review
    transcripts) inside subagents that return short summaries.
@@ -286,8 +295,8 @@ list-planned` (a non-zero exit stops `NO_CHANGE` quoting its stderr; never fall 
   has a plan. None ⇒ `NO_CHANGE` (`all agent-friendly planned tickets are blocked, ineligible, epic
 parents, or missing plans`).
 
-`agent-question` never blocks; copy the plan's open questions into the PR body. Selection has no side
-effects: nothing is claimed or moved until Step 3. Detail:
+`agent-question` never blocks; copy the plan's open questions into `## Open questions` as open
+checklist items. Selection has no side effects: nothing is claimed or moved until Step 3. Detail:
 [`references/claim-and-eligibility.md`](references/claim-and-eligibility.md).
 
 Record the ticket in the lock (`"$LOCK" acquire "$BLI_RUNID" <TICKET-ID>`). Capture the ticket's
@@ -471,6 +480,25 @@ tree; a worktree stuck mid-rebase is `BLOCKED` cause 2). `behind` or `mergeTree`
 `mergeTree` = `conflicts`, is drift you record and tell the reviewer about, not something to rebase
 over. Carry the detector's `note` verbatim to the reviewer and into `## Autonomous decisions`.
 
+**Post-rebase audit.** Capture `PRE_REBASE_HEAD="$(git rev-parse HEAD)"` before any rebase in this
+run; after it succeeds, ask what it silently changed:
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/post-rebase-audit.mjs" check --repo "$(git rev-parse --show-toplevel)" \
+  --pre-rebase-head "$PRE_REBASE_HEAD" --base "$BASE_REF"
+```
+
+Act on every list it reports, then record its stderr note in `## Autonomous decisions` beside the
+base-drift `note`:
+
+- `skippedCommits` ⇒ re-run the generators for those paths.
+- `lostAdditions` ⇒ re-apply the branch change onto the base's new structure; re-verify its claim.
+- `baseAddedTests` ⇒ run them by name.
+- `retiredByBase`, `conventionSuspects`, `baseRelocations` ⇒ move the branch's writes to the base's
+  convention (judge each suspect first).
+- `deletedByBranch` ⇒ fix the base-side references.
+- verdict `unevaluated` ⇒ not clean: run the module tests and record it.
+
 **Depth.** Full review unless the diff is small and touches no configured lens: quick when
 `reviewDeltaDefaults(config).forceFull` is false, no changed file matches a lens
 (`lensesForFile(config, path)` is empty for every file), and fewer than
@@ -520,9 +548,10 @@ must also beat `$RUN_DIR/review.heartbeat`
 phase boundary, write the rendered report to `$(git rev-parse --git-dir)/boss-build/review-report.md`
 (the run dir is cleaned up after classification), and return only:
 
-- the `## Cross-model review` token (from boss-review's second-voice ledger row): `clean` |
-  `findings-fixed (<dispositions>)` | `skipped: <reason>` | `error: <reason>`;
-- the `## Review coverage` token: `full` | `full (skipped: <rounds>)` | `quick: <reason>`;
+- boss-review's `bs-review-ledger.mjs tokens` output verbatim: `coverage` (`full` |
+  `reduced (<misses>)`) is the `## Review coverage` token; `crossModel.token` (`skipped: <misses>`)
+  is the `## Cross-model review` token, or when `crossModel.ran` is true `clean` |
+  `findings-fixed (<dispositions>)` from the report; `error: <reason>` only when it never ran;
 - the base-drift note and a one-line summary of open findings.
 
 `boss-review` writes the earned verdict into the run file itself. If the dispatch tool itself fails,
@@ -585,7 +614,8 @@ commit a knowledge artifact, so Step 7 captures the reviewed tip **after** this.
 
 Every route from Step 6 comes through here.
 
-1. **Push** (record `REVIEWED_HEAD=$(git rev-parse HEAD)` first):
+1. **Push** (record `REVIEWED_HEAD=$(git rev-parse HEAD)` first and persist it to
+   `$(git rev-parse --git-dir)/boss-build-reviewed-head`):
 
    ```bash
    PUSH_JSON="$(node "$BOSS_BUILD_TOOLBOX/finalize/push-branch.mjs" --branch "$SESSION_BRANCH")" || true
@@ -598,14 +628,18 @@ Every route from Step 6 comes through here.
 
 2. **Did the reviewed tree ship?** `git fetch -q origin "$SESSION_BRANCH"`; if `FETCH_HEAD` is not
    `REVIEWED_HEAD` (someone pushed on top, or the push rebased), either re-run Steps 5–6 on the new
-   tip or publish `none: review coverage unknown (branch tip moved after review: <A> → <B>)`. Never
+   tip and persist that reviewed head again, or publish
+   `none: review coverage unknown (branch tip moved after review: <A> → <B>)`. Never
    claim coverage of a tree that was not reviewed.
 
 3. **PR.** Compose the body in a temp file outside the worktree
    ([`references/publish.md`](references/publish.md) has the template), then create a **draft**
    (`gh pr create --draft --label agent-made --title "[<ISSUE-ID>] <issue title>" --body-file …`)
    when Step 2.5 said fresh with no PR, else `gh pr edit "$PR_NUMBER"` the existing one. Run
-   `validateVerifyOnlyEvidence(config, body)` over the body before publishing it. Never put the
+   `validateVerifyOnlyEvidence(config, body)` over the body before publishing it. Always include
+   the checklist sections `## Human follow-up` and
+   `## Open questions`; run `completion-gate.mjs followups --body-file <path>` alongside the
+   evidence validator and fix malformed sections before publishing. Never put the
    phrase `do not merge` in a title or body except through the PARTIAL marker (boss-epic's merge
    gate matches it).
 
@@ -637,7 +671,7 @@ PRE_INJECT_HEAD="$(git rev-parse HEAD)"
 BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER" >"$TAG_LOG" 2>&1 ||
   echo "inject-pr-tag exited non-zero; HEAD was $PRE_INJECT_HEAD before it ran. See $TAG_LOG" >&2
 git push --force-with-lease origin "$SESSION_BRANCH"
-test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upstream
+test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BRANCH")" || exit 1  # HEAD == what was pushed
 ```
 
 A non-zero injector exit is a disclosure item, not a blocker — history may be partly rewritten, so
@@ -679,8 +713,12 @@ for attempt in 1 2 3 4 5 6; do
   sleep 10
 done
 if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_STATE" = "BLOCKED" ]; then
+  PRE_REBASE_HEAD="$(git rev-parse HEAD)" || exit 1
   git rebase "origin/$BASE_BRANCH"
-  # Re-run the relevant tests here (## Verification) before pushing.
+  # Route the audit's findings by Step 6's post-rebase list, then re-run the relevant tests here
+  # (## Verification) before pushing.
+  node "$BOSS_BUILD_TOOLBOX/post-rebase-audit.mjs" check --repo "$(git rev-parse --show-toplevel)" \
+    --pre-rebase-head "$PRE_REBASE_HEAD" --base "origin/$BASE_BRANCH"
   git push --force-with-lease origin "$SESSION_BRANCH"
   # The push re-opened the CI wait: arm (callback-watches.md Protocol step 1), then the bounded
   # poll (Protocol step 5) until CI_WAIT_STATE=settled; anything else goes back to Step 8.
@@ -719,8 +757,9 @@ Tokens:
 `REVIEW_READY` — `verify-only-evidence-validated`, `premise-discharged`, `required-deferred-asserted`,
 `pr-ready`, `please-review-added`; `PARTIAL` — `partial-gate-satisfied`, `pr-ready`,
 `do-not-merge-marked`; every route — `claim-deleted`, `notes-before-lock-release`,
-`stop-hooks-removed`, `lock-released`; optional — `blocked-pr-left-draft`, `entry-state-restored`,
-`no-change-breadcrumb-written`.
+`stop-hooks-removed`, `completion-phase-done`, `lock-released`; optional — `blocked-pr-left-draft`,
+`entry-state-restored`,
+`no-change-breadcrumb-written`, `pr-merged-by-completion`.
 
 ## Step 10: Settle
 
@@ -765,6 +804,12 @@ may change it.
   each bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`; validate with `--role notes`. Never fatal.
 - Remove bossd's Stop hooks so it does not double-finalize:
   `node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"` (a no-op standalone).
+- **Completion**: after Stop-hook removal, before lock release, run the unsampled, non-fatal
+  [completion phase](references/completion-extensions.md) exactly once per run. It ignores
+  `BOSS_NOTES_SUPPRESSED`; no extension or no PR is a silent no-op. Stamp
+  `completion-phase-done` on every route. A verified merge also stamps
+  `pr-merged-by-completion`, moves the ticket to `.done` and removes `please-review`
+  (bookkeeping failures warn). `OUTCOME` never changes.
 - Release the lock: `"$BOSS_BUILD_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"`.
 - Assert the route receipt (an incomplete receipt only warns; a missing helper is a hard stop):
 
@@ -795,7 +840,9 @@ rm -f "$RC_ERR"
 - On every route with a PR, first `boss callback remove --all --pr "$PR_NUMBER" --repo <owner/name> --json`; a non-zero
   exit is a failed cleanup to report (callback-watches.md step 6). Nothing is re-armed except below,
   and `$WATCH_LIST_JSON` must be listed after this cleanup, never reused from before it.
-- On `REVIEW_READY` / `PARTIAL`, decide whether you may stop watching CI:
+- When the completion record is `merged`, skip CI-watch classification after callback cleanup;
+  there is no open PR to watch. On other `REVIEW_READY` / `PARTIAL` runs, decide whether you may
+  stop watching CI:
 
 ```bash
 node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
@@ -815,7 +862,7 @@ node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
 once more, print. `unknown` (`unreadable-check-state`) ⇒ run the bounded poll, then print. Never
 arm twice.
 
-Then print the terminal state.
+Then print the terminal state, adding `merged <sha>` only for a verified completion merge.
 
 ## Verification
 

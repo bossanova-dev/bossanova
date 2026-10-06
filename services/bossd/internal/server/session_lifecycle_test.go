@@ -31,12 +31,24 @@ type lifecycleSessionStoreFake struct {
 	updateCalls   int
 	archiveErr    error
 	archiveCalled bool
+	// archiveHonorsCtx makes Archive behave like a real store under a
+	// cancelled context: it fails with ctx.Err() instead of writing the row.
+	archiveHonorsCtx bool
+	// archiveCtxHasDeadline records whether Archive's context carried a
+	// deadline, so a test can assert the detached context is still bounded.
+	archiveCtxHasDeadline bool
 }
 
 // Archive records that the lifecycle archive reached the DB write. The embedded
 // db.SessionStore would otherwise nil-panic, so the success path of
 // session.Lifecycle.ArchiveSession needs this override.
-func (f *lifecycleSessionStoreFake) Archive(_ context.Context, _ string) error {
+func (f *lifecycleSessionStoreFake) Archive(ctx context.Context, _ string) error {
+	_, f.archiveCtxHasDeadline = ctx.Deadline()
+	if f.archiveHonorsCtx {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	f.archiveCalled = true
 	return f.archiveErr
 }
@@ -443,4 +455,38 @@ func TestArchiveSession_MissingSession(t *testing.T) {
 			t.Error("onSessionDeleted must not be called on non-ErrNoRows errors")
 		}
 	})
+}
+
+// TestArchiveSession_CallerCancelledContext covers BOS-1372: once an archive
+// RPC has started it must finish even when the caller goes away. A session
+// archiving itself kills its own tmux pane — and the `boss archive` client in
+// it — partway through, which cancels the request context; running the rest of
+// the archive on that context would leave the panes dead and the row
+// unarchived. The handler therefore detaches the archive from the caller's
+// cancellation while still bounding it with a deadline.
+func TestArchiveSession_CallerCancelledContext(t *testing.T) {
+	store := &lifecycleSessionStoreFake{
+		session:          &models.Session{ID: "s1", RepoID: "r1", WorktreePath: "/x"},
+		archiveHonorsCtx: true,
+	}
+	repos := &archiveRepoStoreFake{repo: &models.Repo{ID: "r1", LocalPath: "/x"}}
+	lc := session.NewLifecycle(store, repos, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+	srv := &Server{sessions: store, repos: repos, lifecycle: lc}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp, err := srv.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: "s1"}))
+	if err != nil {
+		t.Fatalf("archive with a cancelled caller context failed: %v", err)
+	}
+	if !store.archiveCalled {
+		t.Fatal("expected the archive to reach sessions.Archive despite the cancelled caller context")
+	}
+	if !store.archiveCtxHasDeadline {
+		t.Error("expected the detached archive context to carry a deadline")
+	}
+	if resp.Msg.GetSession().GetId() != "s1" {
+		t.Errorf("response session id = %q, want s1", resp.Msg.GetSession().GetId())
+	}
 }

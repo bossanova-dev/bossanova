@@ -17,7 +17,8 @@ Triage is **EPIC** when the honest estimate is ≥ 5 or the work spans several i
 shippable PRs, with at least `EPIC_MIN_CHILDREN` (2) genuinely separable pieces. A single ticket is
 estimated only 0/1/2/3; an honest 5 that is truly atomic stays one ticket with a `- Atomic-5:`
 justification under `## Planning`; an 8 is never a single ticket. A child of an epic is drafted with
-`allowEpic: false` and is never decomposed again (depth 1).
+`allowEpic: false` and is never decomposed again (depth 1); a non-atomic honest ≥ 5 child is planned
+as estimate 5 with `- Oversized-child:` (why, and the sibling split) and `needs-human`.
 
 Guards: each child ≤ `CHILD_MAX_ESTIMATE` (3); at most `EPIC_MAX_CHILDREN` (12). A cycle or dangling
 `blockedByKeys` reference ⇒ plan it as one ticket and record why. Too big to split into ≤ 12 children
@@ -26,7 +27,7 @@ of ≤ 3 ⇒ `needs-human` ("too large to auto-plan"), never one oversized ticke
 ## Preconditions
 
 - The source must be **unplanned** and must not itself have a `parentId` (decomposing a child mints
-  grandchildren `boss-epic` never schedules — plan it as one ticket).
+  grandchildren `boss-epic` never schedules — plan it as one ticket, `- Oversized-child:` if non-atomic ≥ 5).
 - An explicitly named source in another state: classify with `detectEpicParent(issue)` over one
   `get_issue` payload (attachments **and** description). `isEpicParent` ⇒ it is an existing epic: go to
   [Resume](#resume), never a single-ticket plan. `ambiguous` (two or more `Epic spec (…)` attachments)

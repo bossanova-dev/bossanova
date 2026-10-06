@@ -23,6 +23,10 @@ const intentionallyBranchIgnored = new Map([
     'pinned because the native Go race/coverage tier is the main-push cost center documented as release-tier only',
   ],
   [
+    'test-hermes-plugin.yml',
+    'pinned because the Hermes plugin suite is PR-scoped; the Go renderer that embeds it runs in bazel.yml',
+  ],
+  [
     'test-marketing.yml',
     'pinned because marketing build inputs are PR-scoped and do not carry generated repo-wide hygiene pins',
   ],

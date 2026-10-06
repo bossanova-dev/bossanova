@@ -3539,10 +3539,22 @@ func (s *Server) ArchiveSessionAndNotify(ctx context.Context, id string) error {
 	return nil
 }
 
+// archiveRPCBudget bounds an archive the RPC has started once it is detached
+// from the caller: generous enough for a slow `git worktree remove` on a large
+// worktree, finite so a wedged step cannot pin the handler forever.
+const archiveRPCBudget = 2 * time.Minute
+
 func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
 	if req.Msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
+	// An archive that has started must finish even if the caller goes away
+	// (BOS-1372). It kills every chat's tmux pane before removing the worktree
+	// and marking the row, so a session archiving itself kills its own client
+	// mid-call; on the request context the remaining steps would then fail with
+	// context.Canceled, leaving dead panes on an unarchived session.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveRPCBudget)
+	defer cancel()
 	if err := s.ArchiveSessionAndNotify(ctx, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

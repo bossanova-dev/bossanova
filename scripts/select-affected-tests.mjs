@@ -569,6 +569,16 @@ export function selectTargets(files) {
       continue
     }
 
+    // The Hermes plugin's Python sources are not Go, so no module rule runs their
+    // stdlib unittest suite; `make test-hermes-plugin` does. Deliberately NOT terminal:
+    // services/boss/internal/hermes embeds these files (go:embed), so the moduleRules
+    // lookup below must still add test-boss. Mirrors test-hermes-plugin.yml's
+    // `services/boss/internal/hermes/plugin/**` path.
+    if (file.startsWith('services/boss/internal/hermes/plugin/')) {
+      selectWholeTarget(selections, 'test-hermes-plugin')
+      selectedPrimaryTarget = true
+    }
+
     // The bosso Postgres migrations are the schema the warehouse models read and the
     // grant script walks, and the withheld-column list beside them decides what the
     // warehouse role may read. A migration can therefore break `dbt build` or the grant
@@ -576,6 +586,16 @@ export function selectTargets(files) {
     // moduleRules lookup below must still add test-bosso, which owns these files' own
     // tests. Mirrors test-warehouse.yml's `services/bosso/migrations_postgres/**` path.
     if (file.startsWith('services/bosso/migrations_postgres/')) {
+      selectWholeTarget(selections, 'test-warehouse')
+      selectedPrimaryTarget = true
+    }
+
+    // services/warehouse/scripts/test.sh applies the claw reader's reader.sql as the
+    // warehouse role and reads growth.contract_version through it, so a reader change
+    // can break test-warehouse too. Not terminal: test-bosso owns the clawreader
+    // package's own grants test. Mirrors test-warehouse.yml's
+    // `services/bosso/internal/clawreader/**` path.
+    if (file.startsWith('services/bosso/internal/clawreader/')) {
       selectWholeTarget(selections, 'test-warehouse')
       selectedPrimaryTarget = true
     }

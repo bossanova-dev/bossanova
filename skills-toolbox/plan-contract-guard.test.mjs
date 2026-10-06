@@ -1892,3 +1892,210 @@ describe('line-spanning emphasis lint (BOS-1199)', () => {
     )
   })
 })
+
+// BOS-1358 — since the attachment became the plan, acceptance criteria and premises live in the
+// plan FILE under free-form headings and the description only points at it. Every item-level
+// check-command lint read the description alone, so all of them were dead at plan time. These
+// cases reproduce the recon probe: bad bullets present ONLY in the plan.
+describe('BOS-1358 item-level checks routed over the plan file', () => {
+  const MANDATED = 'must stay visible'
+  const planWith = ({ criteriaHeading = '## Acceptance criteria', extra = [] } = {}) =>
+    [
+      '# Plan',
+      '',
+      '## Approach',
+      '',
+      `Add the exact phrase \`${MANDATED}\` to the skill body.`,
+      '',
+      '## Premises',
+      '',
+      '- [ ] (central) there are 7 files in the toolbox — check: `ls skills-toolbox`',
+      '- [ ] the needle is present today — check: `grep -q needle skills-toolbox/skill-config.mjs`',
+      '',
+      criteriaHeading,
+      '',
+      '- [ ] the suite passes — check: `go test -v ./x | grep -q PASS`',
+      '- [ ] the needle is still present — check: `grep -q needle skills-toolbox/skill-config.mjs`',
+      `- [ ] no mandated text remains — check: \`grep -rF "${MANDATED}" skills-toolbox\``,
+      ...extra,
+      '',
+      '## Original notes',
+      '',
+      '- [ ] reporter text is never linted — check: `go test ./y | grep -q ok`',
+      '',
+    ].join('\n')
+  const ITEM_CODES = [
+    'vacuous-criterion-command-pipe-without-pipefail',
+    'unmeasured-count-claim',
+    'self-falsified-literal-search',
+    'premise-reused-as-criterion',
+  ]
+
+  test('a description without criteria raises no item-level finding on its own', () => {
+    const result = checkPlanContract({ description: conformant() })
+    for (const code of ITEM_CODES) assert.equal(codes(result).includes(code), false, code)
+  })
+
+  for (const criteriaHeading of [
+    '## Acceptance criteria',
+    '## Acceptance Criteria',
+    '### Done means',
+  ]) {
+    test(`bullets only in the plan are linted under "${criteriaHeading}", tagged plan:`, () => {
+      const result = checkPlanContract({
+        description: conformant(),
+        plan: planWith({ criteriaHeading }),
+        citationCwd: process.cwd(),
+      })
+      for (const code of ITEM_CODES) {
+        const finding = result.violations.find((v) => v.code === code)
+        assert.ok(finding, `${code} missing: ${JSON.stringify(codes(result))}`)
+        assert.match(finding.message, /^plan-contract-guard: plan: /, code)
+      }
+      assert.equal(result.ok, true, JSON.stringify(result.blocking))
+      assert.ok(
+        !result.violations.some((v) => /reporter text is never linted/.test(v.message)),
+        'bullets under the terminal Original notes heading are not parsed',
+      )
+    })
+  }
+
+  test('a bullet under a heading containing "Premise" is a premise, elsewhere a criterion', () => {
+    const plan = [
+      '# Plan',
+      '',
+      '## Key premises',
+      '',
+      '- [ ] there are 7 files in the toolbox — check: `ls skills-toolbox`',
+      '',
+      '### Done means',
+      '',
+      '- [ ] there are 9 rows in the table — check: `ls skills-toolbox`',
+      '',
+    ].join('\n')
+    const messages = checkPlanContract({ description: conformant(), plan })
+      .violations.filter((v) => v.code === 'unmeasured-count-claim')
+      .map((v) => v.message)
+    assert.ok(
+      messages.some((m) => /plan: premise "there are 7 files/.test(m)),
+      JSON.stringify(messages),
+    )
+    assert.ok(
+      messages.some((m) => /plan: criterion "there are 9 rows/.test(m)),
+      JSON.stringify(messages),
+    )
+  })
+
+  test('the same bullet in the description and the plan is reported once, untagged', () => {
+    const bullet = '- [ ] the suite passes — check: `go test -v ./x | grep -q PASS`'
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      `## Acceptance criteria\n\n${bullet}`,
+    )
+    const plan = `# Plan\n\n## Acceptance criteria\n\n${bullet}\n`
+    const findings = checkPlanContract({ description, plan }).violations.filter(
+      (v) => v.code === 'vacuous-criterion-command-pipe-without-pipefail',
+    )
+    assert.equal(findings.length, 1, JSON.stringify(findings))
+    assert.doesNotMatch(findings[0].message, /plan-contract-guard: plan: /)
+  })
+
+  test('plan-sourced advisory command risks carry the plan: tag and never block', () => {
+    const plan = [
+      '# Plan',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- [ ] the build compiles — check: `go build ./cmd/`',
+      '',
+    ].join('\n')
+    const result = checkPlanContract({ description: conformant(), plan })
+    const advisory = result.advisories.find((a) => a.code === 'advisory: go-build-writes-output')
+    assert.ok(advisory, JSON.stringify(result.advisories))
+    assert.match(advisory.message, /plan-contract-guard: plan: criterion /)
+    assert.equal(result.ok, true)
+  })
+
+  test('a criterion wrapped across lines does not collide with its own literal', () => {
+    const plan = [
+      '# Plan',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- [ ] (verify-only) the label is unchanged',
+      '  — check: `grep -q ReadyLabel skills-toolbox/skill-config.mjs`',
+      '',
+    ].join('\n')
+    assert.ok(
+      !codes(checkPlanContract({ description: conformant(), plan })).includes(
+        'self-falsified-literal-search',
+      ),
+    )
+  })
+})
+
+// BOS-1358 note 6 — a verify-only criterion claims pre-existing text is UNCHANGED, so a literal
+// search the same plan also uses as vocabulary cannot tell the intended occurrence from the plan's
+// own new use. A non-verify-only criterion keeps the `-F`-only rule: plans routinely name the
+// helper a normal criterion greps for.
+describe('BOS-1358 verify-only literal collisions', () => {
+  const planFor = (criterion) =>
+    [
+      '# Plan',
+      '',
+      '## Approach',
+      '',
+      'Introduce a verdict class named ReadyLabel alongside the existing label.',
+      '',
+      '## Acceptance criteria',
+      '',
+      criterion,
+      '',
+    ].join('\n')
+  const selfFalsified = (criterion) =>
+    checkPlanContract({ description: conformant(), plan: planFor(criterion) }).violations.filter(
+      (v) => v.code === 'self-falsified-literal-search',
+    )
+
+  test('a verify-only metacharacter-free literal used elsewhere in the plan is flagged', () => {
+    const findings = selfFalsified(
+      '- [ ] (verify-only) the display name is unchanged — check: `grep -q ReadyLabel skills-toolbox/skill-config.mjs`',
+    )
+    assert.equal(findings.length, 1)
+    assert.match(findings[0].message, /plan: criterion .*"ReadyLabel"/)
+  })
+
+  test('the same command on a non-verify-only criterion is not flagged', () => {
+    assert.deepEqual(
+      selfFalsified(
+        '- [ ] the display name is unchanged — check: `grep -q ReadyLabel skills-toolbox/skill-config.mjs`',
+      ),
+      [],
+    )
+  })
+
+  test('a verify-only pattern carrying regex metacharacters is not a literal', () => {
+    assert.deepEqual(
+      selfFalsified(
+        '- [ ] (verify-only) the display name is unchanged — check: `grep -q "ReadyLabel$" skills-toolbox/skill-config.mjs`',
+      ),
+      [],
+    )
+  })
+
+  test('the widened rule applies to description-sourced verify-only criteria too', () => {
+    const description = conformant()
+      .replace(
+        KEY_CHANGES_BLOCK,
+        `${KEY_CHANGES_BLOCK}\n- Introduce a verdict class named ReadyLabel.`,
+      )
+      .replace(
+        '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        '## Acceptance criteria\n\n- [ ] (verify-only) the name is unchanged — check: `grep -q ReadyLabel skills-toolbox/skill-config.mjs`',
+      )
+    assert.deepEqual(
+      checkSelfFalsifiedLiteralSearch(DEFAULT_CONFIG, description).map((v) => v.code),
+      ['self-falsified-literal-search'],
+    )
+  })
+})

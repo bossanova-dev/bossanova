@@ -90,8 +90,14 @@ type Status struct {
 // bossdPath is the absolute path to the bossd binary. If force is false and
 // the service file already exists, Install returns an error to avoid
 // overwriting an existing installation.
+//
+// A BOSS_SETTINGS_PATH that cannot be baked into the service is refused here,
+// before any platform path stages a binary or writes a file (BOS-1368).
 func Install(bossdPath string, force bool) error {
 	if err := validatePath(bossdPath); err != nil {
+		return err
+	}
+	if _, err := serviceSettingsPath(); err != nil {
 		return err
 	}
 	return platformInstall(bossdPath, force)
@@ -159,6 +165,9 @@ func GetStatus() (*Status, error) {
 // the absolute path to the mcp binary.
 func McpInstall(mcpBinPath string, port int, force bool) error {
 	if err := validatePath(mcpBinPath); err != nil {
+		return err
+	}
+	if _, err := serviceSettingsPath(); err != nil {
 		return err
 	}
 	return platformMcpInstall(mcpBinPath, port, force)

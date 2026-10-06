@@ -4638,3 +4638,158 @@ func TestRootCommandWarnsOnRevisionDriftWithoutChangingTheExitCode(t *testing.T)
 		t.Fatalf("the warning leaked onto stdout:\n%q", stdout.String())
 	}
 }
+
+// --- BOS-1368: the service's settings path --------------------------------
+
+func TestDaemonServiceSettingsLines(t *testing.T) {
+	const def = "/home/u/.config/bossanova/settings.json"
+	const mismatch = "service settings: mismatch (warning)"
+	cases := []struct {
+		name        string
+		installed   string
+		installedOK bool
+		resolved    string
+		resolveErr  error
+		want        []string
+		wantAbsent  []string
+	}{
+		{
+			name: "unreadable service file is unknown, never default", installed: "", installedOK: false, resolved: def,
+			want: []string{"service settings: unknown"}, wantAbsent: []string{"default", mismatch},
+		},
+		{
+			name: "default install matches a default CLI", installedOK: true, resolved: def,
+			want: []string{"service settings: default (" + def + ")"}, wantAbsent: []string{mismatch},
+		},
+		{
+			name: "baked profile matches the same CLI profile", installed: "/abs/x/settings.json", installedOK: true, resolved: "/abs/x/settings.json",
+			want: []string{"service settings: /abs/x/settings.json"}, wantAbsent: []string{mismatch},
+		},
+		{
+			name: "default install against a profiled CLI warns with both paths and the reinstall", installedOK: true, resolved: "/abs/x/settings.json",
+			want: []string{mismatch, def, "/abs/x/settings.json", "'BOSS_SETTINGS_PATH=/abs/x/settings.json boss daemon install --force'"},
+		},
+		{
+			name: "baked profile against a default CLI warns", installed: "/abs/x/settings.json", installedOK: true, resolved: def,
+			want: []string{mismatch, "starts bossd with /abs/x/settings.json", "resolved " + def},
+		},
+		{
+			name: "an unresolvable CLI path is reported, not compared", installed: "/abs/x/settings.json", installedOK: true, resolveErr: errors.New("BOSS_SETTINGS_PATH must be absolute"),
+			want: []string{"service settings: /abs/x/settings.json", "not compared (warning)", "must be absolute"}, wantAbsent: []string{mismatch},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := strings.Join(daemonServiceSettingsLines(tc.installed, tc.installedOK, tc.resolved, tc.resolveErr, def), "\n")
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("output unexpectedly contains %q:\n%s", absent, got)
+				}
+			}
+		})
+	}
+}
+
+// writeDaemonDoctorPlistWithSettings writes a LaunchAgent plist whose
+// EnvironmentVariables carry settingsPath ("" for none).
+func writeDaemonDoctorPlistWithSettings(t *testing.T, home, programArgument, settingsPath string) {
+	t.Helper()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.bossanova.bossd.plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
+		t.Fatalf("mkdir LaunchAgents: %v", err)
+	}
+	env := `<key>PATH</key><string>` + daemon.ServiceEnvPath() + `</string>`
+	if settingsPath != "" {
+		env += `<key>BOSS_SETTINGS_PATH</key><string>` + settingsPath + `</string>`
+	}
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>ProgramArguments</key><array><string>` + programArgument + `</string></array>
+<key>EnvironmentVariables</key><dict>` + env + `</dict>
+</dict></plist>`
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+}
+
+// TestRunDaemonDoctorReportsServiceSettingsPath drives the real doctor against
+// a plist on disk: it reports the baked path, warns on a mismatch, and the
+// warning alone never changes doctor's verdict.
+func TestRunDaemonDoctorReportsServiceSettingsPath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the fixture writes a macOS plist to drive the installed read")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorState(t, stagedPath, true, nil)
+	cliSettings := os.Getenv("BOSS_SETTINGS_PATH")
+
+	run := func() (string, error) {
+		var output bytes.Buffer
+		cmd := &cobra.Command{}
+		cmd.SetOut(&output)
+		err := runDaemonDoctor(cmd)
+		return output.String(), err
+	}
+
+	writeDaemonDoctorPlistWithSettings(t, home, stagedPath, cliSettings)
+	matching, matchingErr := run()
+	if !strings.Contains(matching, "service settings: "+cliSettings) {
+		t.Errorf("doctor does not report the baked settings path %q:\n%s", cliSettings, matching)
+	}
+	if strings.Contains(matching, "service settings: mismatch") {
+		t.Errorf("a matching settings path was reported as a mismatch:\n%s", matching)
+	}
+
+	other := filepath.Join(home, "other", "settings.json")
+	writeDaemonDoctorPlistWithSettings(t, home, stagedPath, other)
+	mismatched, mismatchedErr := run()
+	for _, want := range []string{
+		"service settings: " + other,
+		"service settings: mismatch (warning)",
+		"BOSS_SETTINGS_PATH=" + cliSettings + " boss daemon install --force",
+	} {
+		if !strings.Contains(mismatched, want) {
+			t.Errorf("mismatch output missing %q:\n%s", want, mismatched)
+		}
+	}
+	if (matchingErr == nil) != (mismatchedErr == nil) {
+		t.Errorf("a settings mismatch changed doctor's verdict: matching err %v, mismatched err %v", matchingErr, mismatchedErr)
+	}
+}
+
+// TestRunDaemonInstallReportsTheBakedSettingsPath: the install prints what it
+// baked, which is the only way an operator sees that `sudo` stripped the
+// variable they exported.
+func TestRunDaemonInstallReportsTheBakedSettingsPath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	prepareDaemonDoctorPaths(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	cliSettings := os.Getenv("BOSS_SETTINGS_PATH")
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonInstall(cmd); err != nil {
+		t.Fatalf("runDaemonInstall: %v", err)
+	}
+	if want := "  settings: " + cliSettings + "\n"; !strings.Contains(output.String(), want) {
+		t.Errorf("install output missing %q:\n%s", want, output.String())
+	}
+	if got, ok := daemon.InstalledServiceSettingsPath(); !ok || got != cliSettings {
+		t.Errorf("installed plist carries (%q, %v), want the CLI's %q", got, ok, cliSettings)
+	}
+}
+
+func TestDaemonInstallSettingsLineSaysDefault(t *testing.T) {
+	t.Setenv("BOSS_SETTINGS_PATH", "")
+	if got := daemonInstallSettingsLine(); got != "  settings: default\n" {
+		t.Errorf("daemonInstallSettingsLine() = %q, want the default label", got)
+	}
+}

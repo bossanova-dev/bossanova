@@ -2791,7 +2791,22 @@ func runDaemonInstall(cmd *cobra.Command) error {
 	if st != nil && st.ServicePath != "" {
 		_, _ = fmt.Fprintf(out, "  service: %s\n", st.ServicePath)
 	}
+	_, _ = fmt.Fprint(out, daemonInstallSettingsLine())
 	return nil
+}
+
+// daemonInstallSettingsLine names the settings file the install baked into
+// the service (BOS-1368). It matters most under `sudo`, whose env_reset
+// usually strips BOSS_SETTINGS_PATH: "default" here is how an operator sees
+// that the profile they exported never reached the install.
+func daemonInstallSettingsLine() string {
+	settingsPath, err := daemon.ServiceSettingsPath()
+	if err != nil {
+		// Install already refused an unbakeable value, so this is unreachable
+		// in practice; say so rather than guess.
+		return fmt.Sprintf("  settings: unknown (%v)\n", err)
+	}
+	return fmt.Sprintf("  settings: %s\n", daemon.DescribeServiceSettingsPath(settingsPath))
 }
 
 func daemonInstallBossdLine(installedPath, sourcePath string) string {

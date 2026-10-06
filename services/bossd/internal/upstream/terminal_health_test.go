@@ -85,3 +85,27 @@ func TestTerminalHealth_NilSafe(t *testing.T) {
 	h.NoteForcedReRegister() // must not panic
 	_ = h.Snapshot()         // must not panic
 }
+
+// TestTerminalHealth_BoundedTeardownCounters asserts the BOS-1375
+// bounded-teardown counters advance independently and surface in Snapshot.
+func TestTerminalHealth_BoundedTeardownCounters(t *testing.T) {
+	t.Parallel()
+	h := NewTerminalHealth()
+	h.NoteReaderConnClose()
+	h.NoteReaderConnClose()
+	h.NoteReaderAbandoned()
+	snap := h.Snapshot()
+	if snap.ReaderConnCloses != 2 {
+		t.Errorf("ReaderConnCloses = %d, want 2", snap.ReaderConnCloses)
+	}
+	if snap.ReadersAbandoned != 1 {
+		t.Errorf("ReadersAbandoned = %d, want 1", snap.ReadersAbandoned)
+	}
+	if snap.ReadyTimeouts != 0 || snap.ForcedReRegisters != 0 {
+		t.Errorf("unrelated counters moved: %+v", snap)
+	}
+
+	var nilHealth *TerminalHealth
+	nilHealth.NoteReaderConnClose() // must not panic
+	nilHealth.NoteReaderAbandoned() // must not panic
+}

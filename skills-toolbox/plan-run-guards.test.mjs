@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url'
 import {
   PREMISE_LIMIT,
   adoptReturnedMetadata,
+  listRepoRootEntries,
+  runDependencyScan,
   planIdempotencePrecheck,
   premiseDrift,
   reconcilePremiseAnnotations,
@@ -124,6 +126,87 @@ test('validateDraftMetadata warns, never refuses, on an estimate 5 with no Atomi
   const result = validateDraftMetadata(metadata({ estimate: 5 }))
   assert.equal(result.ok, true)
   assert.ok(result.warnings.some((warning) => /Atomic-5/.test(warning.message)))
+})
+
+// BOS-1358 note 4 — a parented ticket honestly sized 5+ that is not atomic is planned as one ticket
+// with `- Oversized-child:` and handed to a human to split; `- Atomic-5:` keeps meaning "atomic".
+const OVERSIZED_CHILD = '- Oversized-child: twelve independent parts; split into three siblings'
+// `## Planning` is optional in the contract, so the shared fixture does not emit it; add it here.
+const withPlanning = (...lines) =>
+  descriptionSummary().replace(
+    '## Original notes',
+    `## Planning\n\n${lines.join('\n')}\n\n## Original notes`,
+  )
+
+test('BOS-1358 validateDraftMetadata accepts Oversized-child as the estimate-5 justification', () => {
+  const result = validateDraftMetadata(
+    metadata({
+      estimate: 5,
+      agentFriendly: false,
+      descriptionSummary: withPlanning('- Contract: v1', OVERSIZED_CHILD),
+    }),
+  )
+  assert.equal(result.ok, true, JSON.stringify(result.violations))
+  assert.deepEqual(result.warnings, [])
+  assert.equal(result.normalized.agentFriendly, false)
+
+  const atomic = validateDraftMetadata(
+    metadata({
+      estimate: 5,
+      descriptionSummary: withPlanning('- Contract: v1', '- Atomic-5: one indivisible change'),
+    }),
+  )
+  assert.deepEqual(atomic.warnings, [])
+  assert.equal(atomic.normalized.agentFriendly, true)
+})
+
+test('BOS-1358 validateDraftMetadata coerces an agent-friendly Oversized-child to needs-human', () => {
+  const result = validateDraftMetadata(
+    metadata({
+      estimate: 5,
+      agentFriendly: true,
+      descriptionSummary: withPlanning('- Contract: v1', OVERSIZED_CHILD),
+    }),
+  )
+  assert.equal(result.ok, true, JSON.stringify(result.violations))
+  assert.equal(result.normalized.agentFriendly, false)
+  const warning = result.warnings.find((entry) => entry.field === 'agentFriendly')
+  assert.ok(warning, JSON.stringify(result.warnings))
+  assert.match(warning.message, /Oversized-child/)
+  assert.ok(!result.warnings.some((entry) => entry.field === 'estimate'))
+
+  // The bullet must be under ## Planning: the same words in prose elsewhere change nothing.
+  const prose = validateDraftMetadata(
+    metadata({
+      estimate: 3,
+      descriptionSummary: descriptionSummary().replace(
+        '## Summary\n\nBounded metadata summary prose for ## Summary.',
+        `## Summary\n\n${OVERSIZED_CHILD}`,
+      ),
+    }),
+  )
+  assert.equal(prose.normalized.agentFriendly, true)
+})
+
+test('BOS-1358 adopt-metadata CLI writes the Oversized-child coercion to disk', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-oversized-'))
+  const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
+  const returned = metadata({
+    estimate: 5,
+    agentFriendly: true,
+    descriptionSummary: withPlanning('- Contract: v1', OVERSIZED_CHILD),
+  })
+  const run = spawnSync(
+    process.execPath,
+    [GUARD, 'adopt-metadata', metadataPath, JSON.stringify(returned)],
+    { encoding: 'utf8' },
+  )
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stderr, /Oversized-child/)
+  assert.doesNotMatch(run.stderr, /estimate 5 without/)
+  const written = JSON.parse(readFileSync(metadataPath, 'utf8'))
+  assert.equal(written.agentFriendly, false)
+  assert.equal(written.estimate, 5)
 })
 
 test('validateDraftMetadata maps labels onto the configured names and drops the rest', () => {
@@ -1525,4 +1608,264 @@ test('epic-reverify: the usage line names the verb, and the gate records under i
     ['plan-run-guards.epic-reverify', 'pass', 'ok'],
     ['plan-run-guards.epic-reverify', 'fire', 'parent-unplanned'],
   ])
+})
+
+// ---------------------------------------------------------------------------
+// BOS-1362 — the `deps` verb: the dependency scan driven from the two files code writes
+// ---------------------------------------------------------------------------
+
+const DEPS_CONFIG = {
+  trackerConfig: {
+    linear: {
+      mcpServer: 'linear',
+      team: 'Example',
+      states: {
+        unplanned: 'Todo',
+        planned: 'Planned',
+        inProgress: 'In Progress',
+        inReview: 'In Review',
+      },
+      labels: { epic: 'Epic' },
+    },
+  },
+}
+
+const depsDescription = (bullets) =>
+  `## Planning\n\n- Contract: v1\n\n## Key changes\n\n${bullets.join('\n')}\n\n## Testing\n\n- run the suite\n`
+
+const depsRow = (over = {}) => ({
+  id: 'uuid-1',
+  identifier: 'TCK-1',
+  title: 'Subject',
+  stateName: 'Planned',
+  stateType: 'unstarted',
+  parentId: null,
+  labels: [],
+  priority: 3,
+  source: 'id',
+  description: depsDescription(['- `app/api/x.go`: edit the handler']),
+  ...over,
+})
+
+const depsCandidate = (over = {}) =>
+  depsRow({ id: 'uuid-2', identifier: 'TCK-2', title: 'Candidate', source: 'state', ...over })
+
+const gitIn = (cwd, ...args) =>
+  spawnSync(
+    'git',
+    [
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      ...args,
+    ],
+    { cwd, encoding: 'utf8' },
+  )
+
+/** A throwaway repo whose HEAD tree holds a root `Makefile`, an `app/` dir and the config. */
+function depsRepo() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-deps-'))
+  writeFileSync(path.join(dir, '.boss-skills.json'), JSON.stringify(DEPS_CONFIG))
+  writeFileSync(path.join(dir, 'Makefile'), 'all:\n')
+  mkdirSync(path.join(dir, 'app'))
+  writeFileSync(path.join(dir, 'app', 'x.go'), 'package app\n')
+  for (const args of [
+    ['init', '-q'],
+    ['add', '.'],
+    ['commit', '-q', '-m', 'init'],
+  ]) {
+    const res = gitIn(dir, ...args)
+    assert.equal(res.status, 0, res.stderr)
+  }
+  return dir
+}
+
+function runDeps(dir, { payload = {}, rows, subject = 'TCK-1', outcomes } = {}) {
+  const payloadPath = path.join(dir, 'deps-in.json')
+  const rowsPath = path.join(dir, 'candidates.json')
+  writeFileSync(payloadPath, JSON.stringify(payload))
+  writeFileSync(rowsPath, typeof rows === 'string' ? rows : JSON.stringify(rows))
+  const args = [GUARD, 'deps', payloadPath, rowsPath, '--subject', subject]
+  return spawnSync(process.execPath, args, {
+    cwd: dir,
+    encoding: 'utf8',
+    env: outcomes ? { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes } : process.env,
+  })
+}
+
+test('deps: classifies the subject from the candidates file and prints verdict and summary', () => {
+  const dir = depsRepo()
+  const outcomes = path.join(dir, 'outcomes.tsv')
+  const res = runDeps(dir, { rows: [depsRow(), depsCandidate()], outcomes })
+  assert.equal(res.status, 0, res.stderr)
+  const out = JSON.parse(res.stdout)
+  assert.equal(out.verdict.verdict, 'related-only')
+  assert.equal(out.candidateSetComplete, true)
+  assert.equal(out.compared, 1, 'the subject row is rejected at rung 1, never compared')
+  assert.deepEqual(
+    out.edges.map((edge) => [edge.identifier, edge.edge]),
+    [['TCK-2', 'relatedTo']],
+  )
+  assert.match(
+    res.stderr,
+    /^subjectAreas \["app\/api\/x\.go"\] unresolved \[\] referenced \[\] candidatesWithoutAreas 0 related-only compared=1 edges=1 $/m,
+  )
+  assert.deepEqual(recordedOutcomes(outcomes), [['plan-run-guards.deps', 'pass', 'related-only']])
+})
+
+test('deps: a payload carrying subject or candidates is refused with nothing on stdout', () => {
+  const dir = depsRepo()
+  for (const key of ['subject', 'candidates']) {
+    const res = runDeps(dir, { payload: { [key]: [] }, rows: [depsRow(), depsCandidate()] })
+    assert.equal(res.status, 1)
+    assert.equal(res.stdout, '')
+    assert.match(res.stderr, new RegExp(`payload-carries-${key}`))
+  }
+})
+
+test('deps: a subject absent from the candidates file is refused with the --id remedy', () => {
+  const dir = depsRepo()
+  const res = runDeps(dir, { rows: [depsCandidate()], subject: 'TCK-9' })
+  assert.equal(res.status, 1)
+  assert.equal(res.stdout, '')
+  assert.match(res.stderr, /subject-not-in-candidates/)
+  assert.match(res.stderr, /--id TCK-9/)
+})
+
+test('deps: a candidates file that is not fetch-candidates output is refused naming it', () => {
+  const dir = depsRepo()
+  const { source: _drop, ...sourceless } = depsCandidate()
+  const { parentId: _parent, ...parentless } = depsCandidate()
+  for (const rows of [
+    { rows: [] },
+    [depsRow(), sourceless],
+    [depsRow(), parentless],
+    [depsRow(), depsCandidate({ stateType: '' })],
+  ]) {
+    const res = runDeps(dir, { rows })
+    assert.equal(res.status, 1, JSON.stringify(rows))
+    assert.equal(res.stdout, '')
+    assert.match(res.stderr, /candidates-not-fetch-candidates/)
+    assert.match(res.stderr, /fetch-candidates --out-file/)
+  }
+})
+
+test('deps: an input defect is printed as code id remedy and refused', () => {
+  const dir = depsRepo()
+  const res = runDeps(dir, {
+    payload: { declaredRelatedIds: ['TCK-77'] },
+    rows: [depsRow(), depsCandidate()],
+  })
+  assert.equal(res.status, 1)
+  assert.equal(res.stdout, '')
+  assert.match(res.stderr, /^declared-related-not-fetched tck-77 fetch tck-77 by id/im)
+})
+
+test('deps: a candidates file holding only the subject is a clean no-candidates verdict', () => {
+  const dir = depsRepo()
+  const res = runDeps(dir, { rows: [depsRow()] })
+  assert.equal(res.status, 0, res.stderr)
+  const out = JSON.parse(res.stdout)
+  assert.equal(out.verdict.verdict, 'no-candidates')
+  assert.equal(out.verdict.recordToDescription, false)
+  assert.deepEqual(out.verdict.reasons, [])
+  assert.match(res.stderr, / no-candidates compared=0 edges=0 $/m)
+})
+
+test('deps: a --state-narrowed candidates file is could-not-evaluate, not no-candidates', () => {
+  const dir = depsRepo()
+  const res = runDeps(dir, { rows: [depsRow({ stateScope: 'override' })] })
+  assert.equal(res.status, 0, res.stderr)
+  const out = JSON.parse(res.stdout)
+  assert.notEqual(out.verdict.verdict, 'no-candidates')
+  assert.equal(out.verdict.verdict, 'could-not-evaluate')
+  // Non-vacuity: the same row from a default-state fetch is the clean verdict.
+  const clean = runDeps(dir, { rows: [depsRow({ stateScope: 'default' })] })
+  assert.equal(JSON.parse(clean.stdout).verdict.verdict, 'no-candidates')
+})
+
+test('deps: a root Makefile reaches both sides, so an unmarked split lead overlaps', () => {
+  const dir = depsRepo()
+  const res = runDeps(dir, {
+    rows: [
+      depsRow({ description: depsDescription(['- Makefile: add a target']) }),
+      depsCandidate({ description: depsDescription(['- Makefile: wire the target']) }),
+    ],
+  })
+  assert.equal(res.status, 0, res.stderr)
+  const out = JSON.parse(res.stdout)
+  assert.deepEqual(
+    out.edges.map((edge) => [edge.identifier, edge.edge, edge.shared]),
+    [['TCK-2', 'relatedTo', ['makefile']]],
+  )
+  assert.match(res.stderr, /^subjectAreas \["makefile"\] unresolved \[\]/m)
+
+  // The same root file in passing prose is reported, never silently dropped.
+  const prose = runDeps(dir, {
+    rows: [
+      depsRow({
+        description: depsDescription(['- `app/api/x.go`: edit', '- Edit the root Makefile too']),
+      }),
+      depsCandidate(),
+    ],
+  })
+  assert.equal(prose.status, 0, prose.stderr)
+  assert.equal(JSON.parse(prose.stdout).verdict.verdict, 'could-not-evaluate')
+  assert.match(prose.stderr, /unresolved \["makefile"\]/)
+})
+
+test('deps: an epic parent whose child is in the file is expanded in-set, not re-fetched', () => {
+  const dir = depsRepo()
+  const res = runDeps(dir, {
+    rows: [
+      depsRow(),
+      depsCandidate({ id: 'uuid-10', identifier: 'TCK-10', labels: ['Epic'] }),
+      depsCandidate({ id: 'uuid-11', identifier: 'TCK-11', parentId: 'uuid-10' }),
+    ],
+  })
+  assert.equal(res.status, 0, res.stderr)
+  const out = JSON.parse(res.stdout)
+  const parent = out.skipped.find((entry) => entry.identifier === 'TCK-10')
+  assert.equal(parent.expansion, 'in-set')
+  assert.equal(parent.expandChildren, false)
+  assert.deepEqual(parent.children, ['TCK-11'])
+  assert.equal(
+    out.notes.some((entry) => entry.reason === 'epic-parent'),
+    false,
+  )
+})
+
+test('deps: the usage line names the verb, and --subject is required', () => {
+  const dir = depsRepo()
+  const res = spawnSync(process.execPath, [GUARD, 'deps', 'a.json', 'b.json'], {
+    cwd: dir,
+    encoding: 'utf8',
+  })
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /deps <deps-in\.json> <candidates\.json> --subject <ISSUE-ID>/)
+})
+
+test('listRepoRootEntries splits root blobs from trees', () => {
+  const dir = depsRepo()
+  const entries = listRepoRootEntries(dir)
+  assert.deepEqual(entries.files.sort(), ['.boss-skills.json', 'Makefile'])
+  assert.deepEqual(entries.dirs, ['app'])
+})
+
+test('runDependencyScan refuses before reading anything it cannot trust', () => {
+  const refused = runDependencyScan({
+    payload: [],
+    rows: 'nope',
+    subjectId: 'TCK-1',
+    config: DEFAULT_CONFIG,
+    rootEntries: { dirs: [], files: [] },
+  })
+  assert.equal(refused.status, 'refused')
+  assert.deepEqual(
+    refused.refusals.map((entry) => entry.code),
+    ['payload-not-object', 'candidates-not-fetch-candidates'],
+  )
 })
